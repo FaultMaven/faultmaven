@@ -61,7 +61,7 @@ def register_services(redis_client=None) -> None:
     from faultmaven.modules.knowledge.domain.services.vector_store_service import (
         VectorStoreService,
     )
-    from faultmaven.services.auth_service import AuthService
+    from faultmaven.modules.auth.domain.services.auth_service import AuthService
     from faultmaven.services.file_storage_service import FileStorageService
 
     # AuthService - Used by UserService
@@ -141,7 +141,7 @@ def register_services(redis_client=None) -> None:
         get_investigation_session_repository,
     )
     from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
-    from faultmaven.services.investigation_session_service import (
+    from faultmaven.modules.case.domain.services.investigation_session_service import (
         APIInvestigationSessionService,
     )
 

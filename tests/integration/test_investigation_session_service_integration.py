@@ -51,7 +51,7 @@ from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
 from faultmaven.services.case_service import APICaseService
-from faultmaven.services.investigation_session_service import (
+from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
 

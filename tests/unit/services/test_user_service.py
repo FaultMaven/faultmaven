@@ -20,8 +20,11 @@ import pytest
 from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.infrastructure.persistence.user_repository import InMemoryUserRepository
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
-from faultmaven.services.auth_service import AuthenticationError, AuthService
-from faultmaven.services.user_service import UserService
+from faultmaven.modules.auth.domain.services.auth_service import (
+    AuthenticationError,
+    AuthService,
+)
+from faultmaven.modules.auth.domain.services.user_service import UserService
 
 
 @pytest.fixture
@@ -50,7 +53,9 @@ def user_service(user_repo, mock_auth_service):
     """Create UserService with mocked dependencies."""
     import fakeredis.aioredis as fakeredis_aio
 
-    with patch("faultmaven.services.user_service.get_settings") as mock_settings:
+    with patch(
+        "faultmaven.modules.auth.domain.services.user_service.get_settings"
+    ) as mock_settings:
         mock_settings.return_value.security.jwt_issuer = "faultmaven"
         mock_settings.return_value.security.jwt_audience = "faultmaven-api"
         mock_settings.return_value.security.jwt_algorithm = "HS256"

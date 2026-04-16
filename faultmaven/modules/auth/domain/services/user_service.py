@@ -27,24 +27,27 @@ import jwt
 
 from faultmaven.config.settings import get_settings
 
+# Interface imports for clean architecture compliance
+# Redis type is for DI signatures only — the actual client is injected at runtime
 if TYPE_CHECKING:
     from redis.asyncio import Redis
+
+    from faultmaven.models.interfaces import IVectorStore
+
 from faultmaven.exceptions import (
-    AuthenticationError,
     AuthorizationError,
     ConflictError,
     NotFoundError,
     ValidationException,
 )
-from faultmaven.modules.auth.domain.models.auth import TokenPair
-from faultmaven.modules.auth.domain.models.rbac import Role, get_permissions_for_roles
-from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
+from faultmaven.infrastructure.persistence.user_repository import (
     InMemoryUserRepository,
     UserRepository,
 )
-from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
-    User as RepositoryUser,
-)
+from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
+from faultmaven.models.auth import TokenPair
+from faultmaven.models.rbac import Role, get_permissions_for_roles
+from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
     hash_password,
     validate_password_strength,
@@ -57,7 +60,9 @@ def _get_authentication_error():
     """Lazy import of AuthenticationError to avoid import-linter violations."""
     import importlib
 
-    auth_service_module = importlib.import_module("faultmaven.services.auth_service")
+    auth_service_module = importlib.import_module(
+        "faultmaven.modules.auth.domain.services.auth_service"
+    )
     return auth_service_module.AuthenticationError
 
 
@@ -74,7 +79,7 @@ PASSWORD_RESET_TOKEN_EXPIRY_HOURS = 1
 RESET_TOKEN_PREFIX = "password_reset:"
 
 
-class UserService:
+class UserService(BaseService):
     """User management service.
 
     Handles all user-related operations including registration,
@@ -97,22 +102,19 @@ class UserService:
 
         Args:
             user_repo: User repository for persistence
-            auth_service: Auth service for JWT token operations (REQUIRED - must be injected)
+            auth_service: Auth service for JWT token operations (required)
             redis_client: Redis client for token tracking (optional)
 
         Raises:
-            ValueError: If auth_service is not provided (Composition Root principle)
+            ValueError: If required dependencies are not provided
         """
+        super().__init__("user_service")
         self.user_repo = user_repo
 
-        # Composition Root principle: dependencies must be explicitly injected
-        # Do NOT use ServiceContainer.get() here - that's Service Locator anti-pattern
+        # Require explicit dependency injection
         if auth_service is None:
-            raise ValueError(
-                "auth_service is required for UserService. "
-                "Inject it via the Composition Root (container/main.py), "
-                "not via ServiceContainer.get()."
-            )
+            raise ValueError("auth_service is required for UserService")
+
         self.auth_service = auth_service
 
         self.redis_client = redis_client
@@ -157,7 +159,7 @@ class UserService:
             5. Create user record
             6. Return created user
         """
-        logger.info(f"Registering new user: {email}")
+        self.logger.info(f"Registering new user: {email}")
 
         # Validate email format
         self._validate_email(email)
@@ -191,13 +193,13 @@ class UserService:
         # Save user
         try:
             created_user = await self.user_repo.create(user)
-            logger.info(f"User registered successfully: {created_user.user_id}")
+            self.logger.info(f"User registered successfully: {created_user.user_id}")
             return created_user
         except ConflictError:
             # Re-raise conflict errors
             raise
         except Exception as e:
-            logger.error(f"Failed to register user: {e}")
+            self.logger.error(f"Failed to register user: {e}")
             raise
 
     # ============================================================
@@ -236,12 +238,12 @@ class UserService:
         # Lazy import of AuthenticationError
         AuthenticationError = _get_authentication_error()
 
-        logger.debug(f"Authenticating user: {email}")
+        self.logger.debug(f"Authenticating user: {email}")
 
         # Get user by email
         user = await self.user_repo.get_by_email(email)
         if not user:
-            logger.debug(f"User not found: {email}")
+            self.logger.debug(f"User not found: {email}")
             raise AuthenticationError(
                 "Invalid email or password",
                 error_code="INVALID_CREDENTIALS",
@@ -249,7 +251,7 @@ class UserService:
 
         # Verify user is active
         if not user.is_active:
-            logger.debug(f"Inactive user attempted login: {email}")
+            self.logger.debug(f"Inactive user attempted login: {email}")
             raise AuthenticationError(
                 "Account is deactivated. Please contact support.",
                 error_code="ACCOUNT_INACTIVE",
@@ -259,7 +261,7 @@ class UserService:
         if not user.hashed_password or not verify_password(
             password, user.hashed_password
         ):
-            logger.debug(f"Invalid password for user: {email}")
+            self.logger.debug(f"Invalid password for user: {email}")
             raise AuthenticationError(
                 "Invalid email or password",
                 error_code="INVALID_CREDENTIALS",
@@ -270,10 +272,8 @@ class UserService:
         user.updated_at = datetime.now(timezone.utc)
         await self.user_repo.save(user)
 
-        # Use SingleTenantProvider.DEFAULT_ORG_ID for local mode
-        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
-
-        organization_id = organization_id or SingleTenantProvider.DEFAULT_ORG_ID
+        # Use default organization if not specified
+        organization_id = organization_id or "org-default"
 
         # Get user's roles and permissions
         roles = user.roles if user.roles else ["member"]
@@ -288,7 +288,7 @@ class UserService:
             permissions=permissions,
         )
 
-        logger.info(f"User authenticated successfully: {user.user_id}")
+        self.logger.info(f"User authenticated successfully: {user.user_id}")
 
         return user, token_pair.access_token, token_pair.refresh_token
 
@@ -319,7 +319,7 @@ class UserService:
             4. Store reset token in Redis with TTL
             5. Return reset token
         """
-        logger.debug(f"Password reset requested for: {email}")
+        self.logger.debug(f"Password reset requested for: {email}")
 
         # Get user by email
         user = await self.user_repo.get_by_email(email)
@@ -327,7 +327,7 @@ class UserService:
         if not user:
             # Return a dummy token to prevent email enumeration
             # In production, this would still trigger a "check your email" message
-            logger.debug(f"Password reset for non-existent email: {email}")
+            self.logger.debug(f"Password reset for non-existent email: {email}")
             return self._generate_dummy_reset_token()
 
         # Generate reset token
@@ -354,7 +354,7 @@ class UserService:
         ttl_seconds = PASSWORD_RESET_TOKEN_EXPIRY_HOURS * 3600
         await self.redis_client.setex(key, ttl_seconds, user.user_id)
 
-        logger.info(f"Password reset token generated for user: {user.user_id}")
+        self.logger.info(f"Password reset token generated for user: {user.user_id}")
         return reset_token
 
     async def reset_password(
@@ -386,13 +386,16 @@ class UserService:
             8. Mark reset token as used (remove from Redis)
             9. Return updated user
         """
-        logger.debug("Processing password reset")
+        self.logger.debug("Processing password reset")
+
+        # Lazy import of AuthenticationError
+        AuthenticationError = _get_authentication_error()
 
         # Verify reset token
         try:
             claims = self._verify_reset_token(reset_token)
         except Exception as e:
-            logger.debug(f"Invalid reset token: {e}")
+            self.logger.debug(f"Invalid reset token: {e}")
             raise AuthenticationError(
                 "Invalid or expired password reset token",
                 error_code="INVALID_RESET_TOKEN",
@@ -442,7 +445,7 @@ class UserService:
         # Revoke all user's JWT tokens (force re-login)
         await self.auth_service.revoke_user_tokens(user_id)
 
-        logger.info(f"Password reset successfully for user: {user_id}")
+        self.logger.info(f"Password reset successfully for user: {user_id}")
         return updated_user
 
     # ============================================================
@@ -479,7 +482,7 @@ class UserService:
             6. Revoke all user's JWT tokens (force re-login)
             7. Return updated user
         """
-        logger.debug(f"Password change requested for user: {user_id}")
+        self.logger.debug(f"Password change requested for user: {user_id}")
 
         # Get user
         user = await self.user_repo.get(user_id)
@@ -490,6 +493,7 @@ class UserService:
         if not user.hashed_password or not verify_password(
             current_password, user.hashed_password
         ):
+            AuthenticationError = _get_authentication_error()
             raise AuthenticationError(
                 "Current password is incorrect",
                 error_code="INVALID_PASSWORD",
@@ -509,7 +513,7 @@ class UserService:
         # Revoke all user's JWT tokens (force re-login)
         await self.auth_service.revoke_user_tokens(user_id)
 
-        logger.info(f"Password changed successfully for user: {user_id}")
+        self.logger.info(f"Password changed successfully for user: {user_id}")
         return updated_user
 
     # ============================================================
@@ -550,7 +554,7 @@ class UserService:
             5. Save user record
             6. Return updated user
         """
-        logger.debug(f"Updating profile for user: {user_id}")
+        self.logger.debug(f"Updating profile for user: {user_id}")
 
         # Get user
         user = await self.user_repo.get(user_id)
@@ -585,9 +589,11 @@ class UserService:
         updated_user = await self.user_repo.save(user)
 
         if email_changed:
-            logger.info(f"Email updated for user: {user_id} (verification required)")
+            self.logger.info(
+                f"Email updated for user: {user_id} (verification required)"
+            )
         else:
-            logger.info(f"Profile updated for user: {user_id}")
+            self.logger.info(f"Profile updated for user: {user_id}")
 
         return updated_user
 
@@ -599,78 +605,65 @@ class UserService:
         self,
         user_id: str,
     ) -> RepositoryUser:
-        """Deactivate user account (soft delete).
+        """Deactivate user account (soft delete)."""
+        self.logger.info(f"Deactivating user: {user_id}")
 
-        Args:
-            user_id: User's ID
-
-        Returns:
-            Deactivated User object
-
-        Raises:
-            NotFoundError: User not found
-
-        Workflow:
-            1. Get user by ID
-            2. Set is_active=False
-            3. Revoke all user's JWT tokens
-            4. Update updated_at timestamp
-            5. Save user record
-            6. Return deactivated user
-        """
-        logger.info(f"Deactivating user: {user_id}")
-
-        # Get user
         user = await self.user_repo.get(user_id)
         if not user:
             raise NotFoundError("User", user_id)
 
-        # Deactivate
         user.is_active = False
         user.deleted_at = datetime.now(timezone.utc)
         user.updated_at = datetime.now(timezone.utc)
 
-        # Save user
         deactivated_user = await self.user_repo.save(user)
-
-        # Revoke all user's JWT tokens
         await self.auth_service.revoke_user_tokens(user_id)
-
-        logger.info(f"User deactivated: {user_id}")
         return deactivated_user
+
+    async def deactivate_user_admin(
+        self,
+        user_id: str,
+        organization_id: str,
+        admin_user_id: str,
+    ) -> RepositoryUser:
+        """Deactivate user account (admin-only, soft delete)."""
+        if admin_user_id == user_id:
+            raise AuthorizationError("Cannot deactivate your own account")
+
+        user = await self.user_repo.get(user_id)
+        if not user:
+            raise NotFoundError("User", user_id)
+        if not user.is_active:
+            raise ConflictError("User already deactivated")
+
+        return await self.deactivate_user(user_id)
 
     async def activate_user(
         self,
         user_id: str,
     ) -> RepositoryUser:
-        """Reactivate user account.
+        """Reactivate user account."""
+        self.logger.info(f"Activating user: {user_id}")
 
-        Args:
-            user_id: User's ID
-
-        Returns:
-            Activated User object
-
-        Raises:
-            NotFoundError: User not found
-        """
-        logger.info(f"Activating user: {user_id}")
-
-        # Get user
         user = await self.user_repo.get(user_id)
         if not user:
             raise NotFoundError("User", user_id)
+        if user.is_active:
+            raise ConflictError("User already active")
 
-        # Activate
         user.is_active = True
         user.deleted_at = None
         user.updated_at = datetime.now(timezone.utc)
+        return await self.user_repo.save(user)
 
-        # Save user
-        activated_user = await self.user_repo.save(user)
-
-        logger.info(f"User activated: {user_id}")
-        return activated_user
+    async def activate_user_admin(
+        self,
+        user_id: str,
+        organization_id: str,
+        admin_user_id: str,
+    ) -> RepositoryUser:
+        """Reactivate user account (admin-only)."""
+        return await self.activate_user(user_id)
 
     # ============================================================
     # User Lookup
@@ -706,6 +699,7 @@ class UserService:
 
     async def list_users(
         self,
+        organization_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
@@ -715,6 +709,7 @@ class UserService:
         """List users with pagination and optional filtering.
 
         Args:
+            organization_id: Organization context for scoping (not yet enforced in in-memory repo)
             limit: Maximum results
             offset: Pagination offset
             is_active: Filter by active status
@@ -734,6 +729,10 @@ class UserService:
         # Apply additional filters (TASK-019)
         filtered_users = []
         for user in users:
+            # Ensure is_active filtering even if repository doesn't apply it
+            if is_active is not None and user.is_active != is_active:
+                continue
+
             # Filter by role
             if role is not None:
                 user_roles = user.roles if user.roles else ["member"]
@@ -791,12 +790,9 @@ class UserService:
         user_roles = user.roles if user.roles else ["member"]
         permissions = [p.value for p in get_permissions_for_roles(user_roles)]
 
-        # Import here to avoid circular imports
-        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
-
         return {
             "user_id": user.user_id,
-            "organization_id": SingleTenantProvider.DEFAULT_ORG_ID,
+            "organization_id": "org-default",
             "email": user.email,
             "full_name": user.display_name,
             "roles": user_roles,
@@ -818,6 +814,7 @@ class UserService:
         self,
         user_id: str,
         role: str,
+        organization_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Assign role to user (TASK-019).
@@ -825,6 +822,7 @@ class UserService:
         Args:
             user_id: Target user ID
             role: Role to assign (admin, member, viewer)
+            organization_id: Organization context for authorization (required)
             admin_user_id: Admin performing the action (cannot be same as user_id)
 
         Returns:
@@ -869,7 +867,7 @@ class UserService:
         # Revoke all user tokens (roles changed, tokens stale)
         tokens_revoked = await self.auth_service.revoke_user_tokens(user_id)
 
-        logger.info(
+        self.logger.info(
             f"Role assigned: {user_id} -> {role}, tokens revoked: {tokens_revoked}"
         )
         return updated_user
@@ -878,6 +876,7 @@ class UserService:
         self,
         user_id: str,
         role: str,
+        organization_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Remove role from user (TASK-019).
@@ -887,6 +886,7 @@ class UserService:
         Args:
             user_id: Target user ID
             role: Role to remove (admin, member)
+            organization_id: Organization context for authorization (required)
             admin_user_id: Admin performing the action (cannot be same as user_id)
 
         Returns:
@@ -931,7 +931,7 @@ class UserService:
         # Revoke all user tokens (roles changed, tokens stale)
         tokens_revoked = await self.auth_service.revoke_user_tokens(user_id)
 
-        logger.info(
+        self.logger.info(
             f"Role removed: {user_id}, role={role}, downgraded to viewer, "
             f"tokens revoked: {tokens_revoked}"
         )

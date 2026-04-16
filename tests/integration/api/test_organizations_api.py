@@ -194,7 +194,9 @@ def unauthed_client(mock_api_service, mock_org_service):
     # Mock validate_token to raise 401 for empty/missing tokens
     async def validate_token_side_effect(token):
         if not token or token == "":
-            from faultmaven.services.auth_service import AuthenticationError
+            from faultmaven.modules.auth.domain.services.auth_service import (
+                AuthenticationError,
+            )
 
             raise AuthenticationError("Missing or invalid token")
         # For any other token, return None (invalid)

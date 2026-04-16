@@ -34,7 +34,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.services.auth_service import (
+from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
     TokenRevocationError,

@@ -29,7 +29,10 @@ from faultmaven.api.middleware.auth import (
     set_auth_service,
 )
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.services.auth_service import AuthenticationError, TokenRevocationError
+from faultmaven.modules.auth.domain.services.auth_service import (
+    AuthenticationError,
+    TokenRevocationError,
+)
 
 # ============================================================
 # Test Fixtures

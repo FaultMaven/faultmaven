@@ -42,7 +42,7 @@ from faultmaven.modules.case.domain.models import (
 )
 
 # AgentExecutionRepository removed - APIInvestigationSessionService now uses case_repo
-from faultmaven.services.investigation_session_service import (
+from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
 

@@ -22,7 +22,7 @@ import pytest
 
 from faultmaven.models.auth import AuthenticatedUser, TokenClaims, TokenPair
 from faultmaven.models.rbac import Permission, Role, get_permissions_for_roles
-from faultmaven.services.auth_service import (
+from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
     TokenRevocationError,
@@ -66,7 +66,8 @@ def mock_redis():
 def auth_service(mock_settings):
     """Create AuthService with mocked settings."""
     with patch(
-        "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+        return_value=mock_settings,
     ):
         service = AuthService()
         return service
@@ -76,7 +77,8 @@ def auth_service(mock_settings):
 def auth_service_with_redis(mock_settings, mock_redis):
     """Create AuthService with mocked settings and Redis."""
     with patch(
-        "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+        return_value=mock_settings,
     ):
         service = AuthService(redis_client=mock_redis)
         return service
@@ -921,7 +923,8 @@ class TestKeyLoading:
         mock_settings.security.jwt_public_key = public_pem
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService()
 
@@ -970,7 +973,8 @@ class TestKeyLoading:
         mock_settings.security.jwt_public_key_path = str(public_key_path)
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService()
 
@@ -987,9 +991,12 @@ class TestKeyLoading:
         mock_settings.security.jwt_public_key_path = None
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
-            with patch("faultmaven.services.auth_service.logger") as mock_logger:
+            with patch(
+                "faultmaven.modules.auth.domain.services.auth_service.logger"
+            ) as mock_logger:
                 service = AuthService()
 
                 # Verify warning was logged about dev keys
@@ -1015,9 +1022,12 @@ class TestKeyLoading:
         mock_settings.security.jwt_public_key_path = "/nonexistent/public.pem"
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
-            with patch("faultmaven.services.auth_service.logger") as mock_logger:
+            with patch(
+                "faultmaven.modules.auth.domain.services.auth_service.logger"
+            ) as mock_logger:
                 service = AuthService()
 
                 # Verify warnings were logged for missing files
@@ -1049,7 +1059,8 @@ class TestKeyLoading:
         mock_settings.security.jwt_public_key_path = None
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService()
 
@@ -1097,7 +1108,8 @@ class TestKeyLoading:
         )
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService(
                 private_key=provided_private,
@@ -1117,7 +1129,8 @@ class TestKeyLoading:
         mock_settings.security.jwt_public_key_path = None
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService()
 
@@ -1159,7 +1172,8 @@ class TestAlgorithmSelection:
         mock_settings.security.jwt_public_key_path = None
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService()
             assert service._algorithm == "HS256"
@@ -1203,7 +1217,8 @@ class TestAlgorithmSelection:
         mock_settings.security.jwt_public_key_path = None
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService()
             assert service._algorithm == "RS256"
@@ -1252,7 +1267,8 @@ class TestAlgorithmSelection:
         mock_settings.security.jwt_public_key_path = None
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService()
             # Despite RSA keys being present, should use HS256 because AUTH_MODE=local
@@ -1272,7 +1288,8 @@ class TestAlgorithmSelection:
         mock_settings.security.jwt_public_key_path = None
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService()
 
@@ -1333,7 +1350,8 @@ class TestAlgorithmSelection:
         mock_settings.security.jwt_public_key_path = None
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService()
 
@@ -1421,7 +1439,8 @@ class TestTokenVerificationEdgeCases:
         mock_settings.security.jwt_public_key = public_pem
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService(private_key=private_pem, public_key=public_pem)
 
@@ -1485,7 +1504,8 @@ class TestTokenVerificationEdgeCases:
         mock_settings.auth.auth_mode = "oauth"  # Use oauth mode for RS256
 
         with patch(
-            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=mock_settings,
         ):
             service = AuthService(private_key=private_pem, public_key=public_pem)
 

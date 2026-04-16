@@ -39,7 +39,7 @@ from faultmaven.modules.case.domain.models import (
     CaseStatus,
     InvestigationStrategy,
 )
-from faultmaven.services.investigation_session_service import (
+from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
 

@@ -420,7 +420,7 @@ def create_auth_service(
         AuthService instance (with or without Redis depending on availability)
     """
     try:
-        from faultmaven.services.auth_service import AuthService
+        from faultmaven.modules.auth.domain.services.auth_service import AuthService
 
         # Load keys from settings if available
         private_key = None
@@ -447,7 +447,7 @@ def create_auth_service(
     except Exception as e:
         logger.warning(f"AuthService initialization failed: {e}")
         # Return a minimal AuthService without Redis
-        from faultmaven.services.auth_service import AuthService
+        from faultmaven.modules.auth.domain.services.auth_service import AuthService
 
         return AuthService()
 

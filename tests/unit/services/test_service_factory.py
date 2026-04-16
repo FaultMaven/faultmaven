@@ -30,7 +30,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 from faultmaven.services.case_service import APICaseService
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.services.file_storage_service import FileStorageService
-from faultmaven.services.investigation_session_service import (
+from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
 from faultmaven.services.service_factory import ServiceFactory

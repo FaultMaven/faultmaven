@@ -31,7 +31,7 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.services.auth_service import AuthService
+from faultmaven.modules.auth.domain.services.auth_service import AuthService
 
 # ============================================================
 # Fixtures
@@ -44,7 +44,9 @@ def auth_service():
     settings = get_settings()
 
     # Patch settings to ensure local auth mode
-    with patch("faultmaven.services.auth_service.get_settings") as mock_get_settings:
+    with patch(
+        "faultmaven.modules.auth.domain.services.auth_service.get_settings"
+    ) as mock_get_settings:
         mock_settings = MagicMock()
         mock_settings.auth.auth_mode = "local"
         mock_settings.security.jwt_algorithm = "HS256"

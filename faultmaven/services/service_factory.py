@@ -41,7 +41,7 @@ from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.services.case_service import APICaseService
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.services.file_storage_service import FileStorageService
-from faultmaven.services.investigation_session_service import (
+from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
 
@@ -221,7 +221,7 @@ class ServiceFactory:
             InMemoryUserRepository,
             PostgreSQLUserRepository,
         )
-        from faultmaven.services.user_service import UserService
+        from faultmaven.modules.auth.domain.services.user_service import UserService
 
         # Use PostgreSQL for production, InMemory for development
         # For now, default to InMemory
