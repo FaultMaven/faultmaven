@@ -1,12 +1,8 @@
-# Database Schema
+# Database Schema (Historical Reference)
 
-This directory contains PostgreSQL schema definition scripts for the FaultMaven database.
+> **These SQL files are historical reference only.** The project uses Alembic for database migrations. See `alembic/versions/` for the current schema. The single clean baseline migration (`001_clean_baseline`) creates all 30 tables.
 
-## Schema Structure
-
-**Purpose**: These SQL scripts create the complete database schema from scratch for fresh deployments.
-
-**Target State**: Enterprise-ready normalized PostgreSQL schema with multi-tenancy and sharing
+This directory contains legacy PostgreSQL schema scripts from an earlier architecture iteration.
 
 ---
 

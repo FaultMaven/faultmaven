@@ -44,7 +44,7 @@ faultmaven/
 │   │   ├── system_optimization.py     # System optimization
 │   │   └── trailing_slash.py          # URL normalization
 │   ├── v1/                 # API v1 utilities and dependencies
-│   └── routes/             # Legacy routes (admin, auth, cases, evidence, sessions, users)
+│   └── routes/             # Admin routes (admin.py, admin_config.py, sessions.py)
 ├── modules/                # Feature modules (primary code organization)
 │   │
 │   │ # VERTICAL MODULES (own database tables, have contracts.py + infrastructure/)
@@ -62,15 +62,13 @@ faultmaven/
 │   │   ├── milestone_engine.py      # Main investigation orchestrator (process_turn)
 │   │   ├── hypothesis_manager.py    # Hypothesis lifecycle & confidence scoring
 │   │   ├── schemas.py               # Pydantic schemas for structured LLM output
-│   │   ├── working_conclusion_generator.py  # Progress metrics (partially integrated)
+│   │   ├── working_conclusion_generator.py  # Progress metrics
 │   │   └── prompts/                 # Prompt templates and context building
 │   │       ├── templates.py         # INQUIRY/INVESTIGATING/TERMINAL templates
 │   │       └── context_builder.py   # Token-aware context assembly
-│   ├── knowledge/          # Knowledge ingestion and retrieval
 │   ├── preprocessing/      # Data preprocessor
-│   ├── processing/         # Log analyzer, pattern learner
-│   └── confidence/         # Confidence scoring aggregator
-├── infrastructure/         # Shared adapters (18 subdirectories)
+│   └── processing/         # Log analyzer, pattern learner
+├── infrastructure/         # Shared adapters (15 subdirectories)
 │   ├── llm/                # LLM provider routing, caching
 │   │   ├── providers/      # 9 LLM providers (see Supported LLM Providers)
 │   │   ├── router.py       # Provider routing with fallback chain
@@ -78,7 +76,6 @@ faultmaven/
 │   │   └── local_llm_manager.py
 │   ├── persistence/        # Database layer (SQLAlchemy)
 │   ├── knowledge/          # Vector databases (ChromaDB)
-│   ├── vector/             # Vector storage abstraction
 │   ├── auth/               # JWT, bcrypt, RBAC, user stores
 │   ├── security/           # PII protection (Presidio)
 │   ├── protection/         # System protection and rate limiting
@@ -90,9 +87,8 @@ faultmaven/
 │   ├── health/             # Health checks, SLA tracker, component monitor
 │   ├── jobs/               # Background job service
 │   ├── tasks/              # Async task management
-│   ├── shims/              # Compatibility shims
-│   ├── concurrency/        # Report lock manager
-│   └── telemetry/          # Decision recording, correlation tracking
+│   ├── shims/              # Compatibility shims (enterprise feature flags)
+│   └── concurrency/        # Report lock manager
 ├── bootstrap/              # Application startup and service factories
 ├── config/                 # Pydantic-settings configuration
 │   ├── settings.py         # Main settings with validation
@@ -103,8 +99,8 @@ faultmaven/
 │   ├── base.py             # Base container
 │   ├── registry.py         # Service registry
 │   └── providers/          # Infrastructure, services, tools providers
-├── services/               # Legacy service layer
-└── models/                 # Legacy models
+├── services/               # Shared service layer (preprocessing, analytics, base classes)
+└── models/                 # Shared interfaces, API schemas, domain models
 ```
 
 ### Module Types
