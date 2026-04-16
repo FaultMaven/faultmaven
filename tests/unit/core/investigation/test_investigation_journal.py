@@ -175,12 +175,14 @@ class TestJournalEntryOutput:
         assert output.entry_type == "finding"
         assert output.evidence_id is None
 
-    def test_content_max_length(self):
-        with pytest.raises(Exception):
-            JournalEntryOutput(
-                entry_type="finding",
-                content="x" * 201,
-            )
+    def test_content_max_length_truncates(self):
+        """Long content is truncated to 200 chars, not rejected."""
+        output = JournalEntryOutput(
+            entry_type="finding",
+            content="x" * 300,
+        )
+        assert len(output.content) == 200
+        assert output.content.endswith("...")
 
 
 # ============================================================
