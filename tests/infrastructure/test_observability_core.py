@@ -173,13 +173,19 @@ class TestObservabilityIntegration:
         import sys
 
         # Remove the mock from sys.modules to import the real class
-        if "faultmaven.core.knowledge.ingestion" in sys.modules:
-            mock_module = sys.modules["faultmaven.core.knowledge.ingestion"]
+        if "faultmaven.modules.knowledge.domain.services.ingestion" in sys.modules:
+            mock_module = sys.modules[
+                "faultmaven.modules.knowledge.domain.services.ingestion"
+            ]
             # Check if it's a mock (SimpleNamespace)
             if not hasattr(mock_module, "__file__"):
-                del sys.modules["faultmaven.core.knowledge.ingestion"]
+                del sys.modules[
+                    "faultmaven.modules.knowledge.domain.services.ingestion"
+                ]
 
-        from faultmaven.core.knowledge.ingestion import KnowledgeIngester
+        from faultmaven.modules.knowledge.domain.services.ingestion import (
+            KnowledgeIngester,
+        )
 
         # Check that key methods have been wrapped with @trace
         assert hasattr(KnowledgeIngester.ingest_document, "__wrapped__")

@@ -34,7 +34,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from faultmaven.api.middleware.auth import get_current_user
-from faultmaven.api.services.organization_api_service import APIOrganizationService
+from faultmaven.modules.auth.domain.services.organization_api_service import (
+    APIOrganizationService,
+)
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,

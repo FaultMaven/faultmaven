@@ -534,7 +534,7 @@ class TestDIContainerErrorHandling:
 
         # Mock failure in knowledge service creation
         with patch(
-            "faultmaven.core.knowledge.ingestion.KnowledgeIngester",
+            "faultmaven.modules.knowledge.domain.services.ingestion.KnowledgeIngester",
             side_effect=Exception("Knowledge ingester unavailable"),
         ):
 

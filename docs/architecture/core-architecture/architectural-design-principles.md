@@ -70,7 +70,7 @@ RECOMMENDED (Apply judgment)
 8. [Architectural Boundary Enforcement](#8-architectural-boundary-enforcement)
 9. [Test Safety Net](#9-test-safety-net)
 10. [Bounded Complexity for AI Integration](#10-bounded-complexity-for-ai-integration)
-11. [Incremental Refactoring](#11-incremental-refactoring)
+11. [Clean Moves, Not Rewrites](#11-clean-moves-not-rewrites)
 12. [Escape Hatches](#12-escape-hatches)
 
 ---
@@ -638,6 +638,10 @@ source_modules = faultmaven.models
 forbidden_modules = faultmaven.services
 ```
 
+### Dead Code Intolerance
+
+Unused files create false signals during audits, confuse AI assistants reading the codebase, and obscure the real architecture. If code has zero imports and no route registration, remove it. Git history preserves everything — the codebase should reflect what the system *is*, not what it *was*.
+
 ### CI/CD Integration
 
 ```yaml
@@ -807,43 +811,30 @@ async def run_phase(self, phase: Phase) -> PhaseResult:
 
 ---
 
-## 11. Incremental Refactoring
+## 11. Clean Moves, Not Rewrites
 
 ### Principle
 
-> **"Prefer incremental refactoring over big rewrites."**
+> **"Move code to its correct location. Don't rewrite logic during a move. Don't leave the old copy behind."**
 
-### Why Big Rewrites Fail
+### Process
 
-Industry research shows 80% of rewrites fail or take 2-3x longer because:
+1. **Identify** the target structure
+2. **Move** files with `git mv` (preserves history and blame)
+3. **Update** all references and imports
+4. **Test** — all tests must pass
+5. **Delete** the origin — no shims, no re-exports, no "TODO: remove old version"
+6. **Commit** — one bounded move per commit, each commit complete
 
-- **Lost Knowledge**: Rewrites miss edge cases captured in original code
-- **Discovery Tax**: Teams rediscover already-solved problems
-- **Stalled Delivery**: Business value stops during rewrite
-- **Test Loss**: Existing test suites become obsolete
+### Pre-Launch vs Post-Launch
 
-### The Incremental Approach
+**Pre-launch:** Clean breaks over compatibility layers. Dead code misleads future developers and AI assistants — it's not "safe to leave for now," it's actively harmful to codebase legibility.
 
-**Key Insight**: Most refactoring involves **moving code** and **updating references**, not rewriting logic.
+**Post-launch:** When external consumers depend on import paths or API contracts, introduce a deprecation window with a sunset date (see P12). Even post-launch, bias toward completing the move over maintaining two paths.
 
-### Refactoring Process
+### The Rewrite Trap
 
-1. **Identify**: Choose a small, well-bounded area
-2. **Plan**: Design the target structure
-3. **Move**: Use `git mv` to preserve history
-4. **Update**: Fix references and imports
-5. **Test**: Verify all tests pass
-6. **Document**: Update relevant docs
-7. **Merge**: Integrate changes
-8. **Repeat**: Continue with next increment
-
-### Git History Preservation
-
-Always use `git mv` rather than copy-delete to preserve:
-
-- File history and blame information
-- Author contributions
-- Evolution and context of changes
+Moving code is not rewriting it. If you find yourself changing logic during a structural move, stop — that's two changes conflated into one. Move first, refactor logic in a separate commit.
 
 ---
 
@@ -864,6 +855,10 @@ Always use `git mv` rather than copy-delete to preserve:
 # Sunset: 2026-04-15 (90 days)
 from faultmaven.modules.case.domain.models import Case, Investigation
 ```
+
+### Pre-Launch Rule
+
+During active development, escape hatches should not defer cleanup. If the correct location for code is known, move it there. Escape hatches exist for production constraints, not development convenience.
 
 ### Automated Enforcement
 
@@ -924,6 +919,7 @@ def check_exceptions():
 |---------|------|---------|
 | 1.0 | 2026-01-05 | Original 7 principles |
 | 2.0 | 2026-01-09 | Consolidated to 10 principles with enforcement mechanisms |
+| 2.1 | 2026-04-16 | P8: dead code intolerance. P11: "Clean Moves, Not Rewrites" with pre/post-launch distinction. P12: pre-launch cleanup rule. |
 
 ### Key Changes in v2.0
 

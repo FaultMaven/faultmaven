@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.api.services.organization_api_service import (
+from faultmaven.modules.auth.domain.services.organization_api_service import (
     ROLE_ADMIN,
     ROLE_MEMBER,
     ROLE_OWNER,

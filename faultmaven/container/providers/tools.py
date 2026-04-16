@@ -25,7 +25,9 @@ def create_knowledge_ingester(settings: FaultMavenSettings) -> Any | None:
         return None
 
     try:
-        from faultmaven.core.knowledge.ingestion import KnowledgeIngester
+        from faultmaven.modules.knowledge.domain.services.ingestion import (
+            KnowledgeIngester,
+        )
 
         return KnowledgeIngester(settings=settings)
     except Exception as e:

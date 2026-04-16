@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
+from starlette.requests import Request
 
 from faultmaven.api.middleware.auth import get_current_user, require_admin
 from faultmaven.api.models import (
@@ -28,7 +29,6 @@ from faultmaven.api.models import (
     UserDetailResponse,
     UserStatusResponse,
 )
-from faultmaven.api.routes.auth import get_user_service
 from faultmaven.api.v1.dependencies import get_llm_provider
 from faultmaven.exceptions import (
     AuthorizationError,
@@ -39,6 +39,18 @@ from faultmaven.exceptions import (
 from faultmaven.models.auth import AuthenticatedUser
 
 logger = logging.getLogger(__name__)
+
+
+async def get_user_service(request: Request):
+    """Get UserService instance from app.state (Composition Root)."""
+    user_service = getattr(request.app.state, "user_service", None)
+    if user_service:
+        return user_service
+    raise RuntimeError(
+        "UserService not available from app.state. "
+        "Ensure the container is properly initialized with auth_service."
+    )
+
 
 router = APIRouter(
     prefix="/api/v1/admin",

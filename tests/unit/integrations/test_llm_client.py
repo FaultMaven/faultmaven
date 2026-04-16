@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.exceptions import LLMException
-from faultmaven.integrations.llm_client import (
+from faultmaven.modules.agent.domain.services.llm_client import (
     AnthropicClient,
     BaseLLMClient,
     LLMClient,

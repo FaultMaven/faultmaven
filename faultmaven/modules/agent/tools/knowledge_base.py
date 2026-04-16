@@ -34,7 +34,7 @@ from langchain.tools import BaseTool as LangChainBaseTool
 from langchain_core.tools import Tool
 from pydantic import PrivateAttr
 
-from faultmaven.core.knowledge.ingestion import KnowledgeIngester
+from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 from faultmaven.models.interfaces import BaseTool as IBaseTool
 from faultmaven.models.interfaces import ToolResult
 

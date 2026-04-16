@@ -27,7 +27,7 @@ from faultmaven.api.models import (
     AgentExecutionResponse,
     ExecutionEventSSE,
 )
-from faultmaven.domain.events import ExecutionEventType
+from faultmaven.modules.agent.domain.events.execution_events import ExecutionEventType
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,

@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 # Import enhanced components if available
 try:
-    from faultmaven.core.knowledge.advanced_retrieval import (
+    from faultmaven.modules.knowledge.domain.services.advanced_retrieval import (
         AdvancedKnowledgeRetrieval,
         RetrievalContext,
         RetrievalResult,
