@@ -1,0 +1,55 @@
+{
+  "$comment": "Single source of truth for domain→path and module→type mappings. Referenced by /new-endpoint, /doc-audit, /design-check. Update this file when modules are added, renamed, reorganized, or change type.",
+
+  "modules": {
+    "auth":          { "type": "vertical",       "path": "faultmaven/modules/auth/" },
+    "case":          { "type": "vertical",       "path": "faultmaven/modules/case/" },
+    "knowledge":     { "type": "vertical",       "path": "faultmaven/modules/knowledge/" },
+    "agent":         { "type": "domain_service", "path": "faultmaven/modules/agent/" },
+    "evidence":      { "type": "domain_service", "path": "faultmaven/modules/evidence/" },
+    "preprocessing": { "type": "domain_service", "path": "faultmaven/modules/preprocessing/" },
+    "report":        { "type": "domain_service", "path": "faultmaven/modules/report/" }
+  },
+
+  "module_types": {
+    "vertical": {
+      "description": "Owns database tables; has contracts.py, api/, domain/, infrastructure/",
+      "structure": ["contracts.py", "api/routes.py", "domain/models/", "domain/services/", "infrastructure/persistence/"]
+    },
+    "domain_service": {
+      "description": "Business logic only; has api/ and domain/; imports shared models from Case or Auth contracts",
+      "structure": ["api/routes.py", "domain/services/"]
+    }
+  },
+
+  "domains": {
+    "investigation": {
+      "docs": ["docs/architecture/investigation-engine/"],
+      "code": ["faultmaven/modules/agent/", "faultmaven/core/investigation/"]
+    },
+    "knowledge": {
+      "docs": ["docs/architecture/knowledge-and-ai/", "docs/guides/knowledge-base.md"],
+      "code": ["faultmaven/modules/knowledge/", "faultmaven/infrastructure/knowledge/"]
+    },
+    "data-processing": {
+      "docs": ["docs/architecture/data-processing/"],
+      "code": ["faultmaven/modules/preprocessing/", "faultmaven/core/preprocessing/"]
+    },
+    "storage": {
+      "docs": ["docs/architecture/data-and-storage/", "docs/operations/data-storage-management.md"],
+      "code": ["faultmaven/infrastructure/persistence/", "faultmaven/modules/evidence/"]
+    },
+    "auth": {
+      "docs": ["docs/architecture/security/"],
+      "code": ["faultmaven/modules/auth/", "faultmaven/infrastructure/auth/"]
+    },
+    "case": {
+      "docs": ["docs/architecture/case-and-session/"],
+      "code": ["faultmaven/modules/case/"]
+    },
+    "core-architecture": {
+      "docs": ["docs/architecture/core-architecture/"],
+      "code": ["faultmaven/modules/", "faultmaven/infrastructure/", "faultmaven/container/"]
+    }
+  }
+}
