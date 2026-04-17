@@ -70,16 +70,6 @@ async def get_enhanced_agent_service(request: Request):
     return request.app.state.enhanced_agent_service
 
 
-async def get_memory_service(request: Request):
-    """Get MemoryService instance from app.state (Composition Root)"""
-    return request.app.state.memory_service
-
-
-async def get_planning_service(request: Request):
-    """Get PlanningService instance from app.state (Composition Root)"""
-    return request.app.state.planning_service
-
-
 async def get_case_service(request: Request) -> Optional[ICaseService]:
     """Get CaseService instance from app.state (Composition Root)"""
     return getattr(request.app.state, "case_service", None)
