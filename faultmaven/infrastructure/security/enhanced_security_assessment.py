@@ -41,7 +41,7 @@ from faultmaven.core.processing.pattern_learner import (
 )
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.security.redaction import DataSanitizer
-from faultmaven.models.interfaces import ConversationContext, IMemoryService, ISanitizer
+from faultmaven.models.interfaces import ConversationContext, ISanitizer
 
 
 class SecurityRiskLevel(Enum):
@@ -114,7 +114,6 @@ class EnhancedSecurityAssessment:
 
     def __init__(
         self,
-        memory_service: Optional[IMemoryService] = None,
         data_sanitizer: Optional[ISanitizer] = None,
         pattern_learner: Optional[PatternLearner] = None,
     ):
@@ -122,16 +121,14 @@ class EnhancedSecurityAssessment:
         Initialize Enhanced Security Assessment with integrated services
 
         Args:
-            memory_service: Memory service for context retrieval
             data_sanitizer: Base data sanitizer for PII detection
             pattern_learner: Pattern learning service for security patterns
         """
         self.logger = logging.getLogger(__name__)
 
         # Core services
-        self._memory_service = memory_service
         self._data_sanitizer = data_sanitizer or DataSanitizer()
-        self._pattern_learner = pattern_learner or PatternLearner(memory_service)
+        self._pattern_learner = pattern_learner or PatternLearner()
 
         # Enhanced security patterns organized by category
         self._enhanced_security_patterns = {
@@ -297,27 +294,10 @@ class EnhancedSecurityAssessment:
         assessment_id = self._generate_assessment_id(content)
 
         try:
-            # Retrieve memory context for enhanced assessment
-            memory_context = None
             memory_enhanced = False
 
-            if self._memory_service and session_id:
-                try:
-                    # Get conversation context for security-aware assessment
-                    content_preview = (
-                        content[:200] + "..." if len(content) > 200 else content
-                    )
-                    memory_context = await self._memory_service.retrieve_context(
-                        session_id, f"security assessment: {content_preview}"
-                    )
-                    memory_enhanced = True
-                except Exception as e:
-                    self.logger.warning(
-                        f"Failed to retrieve memory context for security assessment: {e}"
-                    )
-
             # Extract security context insights
-            security_context = self._extract_security_context(memory_context, context)
+            security_context = self._extract_security_context(None, context)
 
             # Apply base sanitizer for known patterns
             base_sanitized = self._data_sanitizer.sanitize(content)
@@ -348,7 +328,7 @@ class EnhancedSecurityAssessment:
 
             # Generate recommendations
             recommendations = self._generate_security_recommendations(
-                risk_assessed_findings, security_context, memory_context
+                risk_assessed_findings, security_context, None
             )
 
             # Compile assessment result
