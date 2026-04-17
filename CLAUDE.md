@@ -275,7 +275,7 @@ modules/auth/
 | Layer | Technologies |
 |-------|--------------|
 | Framework | Python 3.11+, FastAPI 0.115.8+, Uvicorn, AsyncIO |
-| LLM/AI | LangGraph 0.1.2+, LangChain 0.1.15+, OpenAI, Anthropic, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter |
+| LLM/AI | OpenAI, Anthropic, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter |
 | Database | SQLAlchemy 2.0+, SQLite (local), PostgreSQL (prod), Alembic 1.13+ |
 | Vector DB | ChromaDB 0.5.3+, sentence-transformers 3.0.1+ |
 | Cache | Redis 5.0+ (cloud), FakeRedis (local — full API parity, no external server) |
