@@ -15,7 +15,7 @@ Key Components:
 
 Technology Stack:
 --------------------------------------------------------------------------------
-ChromaDB, LangChain Tools
+ChromaDB
 
 Core Design Principles:
 --------------------------------------------------------------------------------
@@ -30,34 +30,25 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from langchain.tools import BaseTool as LangChainBaseTool
-from langchain_core.tools import Tool
-from pydantic import PrivateAttr
-
 from faultmaven.models.interfaces import BaseTool as IBaseTool
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 
 
-class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
+class KnowledgeBaseTool(IBaseTool):
     """Enhanced RAG tool for querying the knowledge base with contextual search"""
 
     name: str = "knowledge_base_search"
     description: str = """
-    Search the knowledge base for relevant troubleshooting information, 
-    documentation, and guides. Use this tool when you need to find 
+    Search the knowledge base for relevant troubleshooting information,
+    documentation, and guides. Use this tool when you need to find
     specific information about errors, solutions, or procedures.
-    
+
     Input should be a search query describing what you're looking for.
     Context can be provided as a dictionary to enhance search specificity.
     """
-    _logger: logging.Logger = PrivateAttr()
-    _knowledge_ingester: KnowledgeIngester = PrivateAttr()
 
     def __init__(self, knowledge_ingester: KnowledgeIngester, **kwargs):
-        # Initialize both parent classes properly
-        LangChainBaseTool.__init__(self)
-        IBaseTool.__init__(self)
         self._logger = logging.getLogger(__name__)
         self._knowledge_ingester = knowledge_ingester
 
@@ -370,7 +361,6 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
             if not query or not query.strip():
                 return ToolResult(success=False, data=None, error="No query provided")
 
-            # Call existing LangChain method
             result = await self._arun(query, context)
 
             return ToolResult(success=True, data=result, error=None)
@@ -415,43 +405,8 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
             },
         }
 
-    def get_tool_schema(self) -> Dict[str, Any]:
-        """
-        Get the tool schema for LangChain integration (legacy compatibility).
 
-        Returns:
-            Tool schema dictionary
-        """
-        schema = self.get_schema()
-        # Convert our schema format to LangChain format
-        return {
-            "name": schema["name"],
-            "description": schema["description"],
-            "args_schema": schema["parameters"],
-        }
-
-
-def create_knowledge_base_tool(knowledge_ingester: KnowledgeIngester) -> Tool:
-    """
-    Factory function to create a LangChain Tool from KnowledgeBaseTool
-
-    Args:
-        knowledge_ingester: KnowledgeIngester instance
-
-    Returns:
-        LangChain Tool instance
-    """
-    kb_tool = KnowledgeBaseTool(knowledge_ingester)
-
-    return Tool(
-        name=kb_tool.name,
-        description=kb_tool.description,
-        func=kb_tool._run,
-        coroutine=kb_tool._arun,
-    )
-
-
-class KnowledgeBaseFilteredTool(LangChainBaseTool, IBaseTool):
+class KnowledgeBaseFilteredTool(IBaseTool):
     """RAG tool with advanced filtering capabilities"""
 
     name: str = "knowledge_base_filtered_search"
@@ -459,11 +414,8 @@ class KnowledgeBaseFilteredTool(LangChainBaseTool, IBaseTool):
     Search the knowledge base with advanced filtering options (e.g., by type, tag, or source).
     Input should be a JSON object with a 'query' field and optional filter fields.
     """
-    _logger: logging.Logger = PrivateAttr()
-    _knowledge_ingester: KnowledgeIngester = PrivateAttr()
 
     def __init__(self, knowledge_ingester: KnowledgeIngester, **kwargs):
-        super().__init__()
         self._logger = logging.getLogger(__name__)
         self._knowledge_ingester = knowledge_ingester
 
@@ -514,7 +466,6 @@ class KnowledgeBaseFilteredTool(LangChainBaseTool, IBaseTool):
                     success=False, data=None, error="No query_json provided"
                 )
 
-            # Call existing LangChain method
             result = await self._arun(query_json)
 
             return ToolResult(success=True, data=result, error=None)

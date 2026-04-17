@@ -13,9 +13,6 @@ Design: Design C (Stateless Sub-Agent + Proactive Phase Handlers)
 import logging
 from typing import Any, Dict, Optional
 
-from langchain.tools import BaseTool as LangChainBaseTool
-from pydantic import PrivateAttr
-
 from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
@@ -26,7 +23,7 @@ from faultmaven.modules.agent.tools.kb_config import KBConfig
 logger = logging.getLogger(__name__)
 
 
-class DocumentQATool(LangChainBaseTool):
+class DocumentQATool:
     """
     KB-neutral stateless document Q&A tool.
 
@@ -43,12 +40,6 @@ class DocumentQATool(LangChainBaseTool):
     name: str = "document_qa"  # Overridden by wrappers
     description: str = "Answer factual questions from documents"
 
-    # Private attributes (not part of Pydantic schema)
-    _vector_store: KnowledgeVectorStore = PrivateAttr()
-    _llm_router: LLMRouter = PrivateAttr()
-    _settings = PrivateAttr()
-    _kb_config: KBConfig = PrivateAttr()  # Strategy pattern
-
     def __init__(
         self,
         vector_store: KnowledgeVectorStore,
@@ -63,8 +54,6 @@ class DocumentQATool(LangChainBaseTool):
             llm_router: LLM router for synthesis calls
             kb_config: KB-specific configuration strategy
         """
-        LangChainBaseTool.__init__(self)
-
         self._vector_store = vector_store
         self._llm_router = llm_router
         self._settings = get_settings()
