@@ -14,6 +14,7 @@ Exit Codes:
     1: Duplicates found (prints details)
     2: Error occurred
 """
+
 import argparse
 import asyncio
 import os
@@ -68,14 +69,16 @@ async def check_duplicates(database_url: str) -> Tuple[bool, List[dict]]:
 
             duplicates = []
             for row in rows:
-                duplicates.append({
-                    "normalized_email": row[0],
-                    "count": row[1],
-                    "user_ids": row[2],
-                    "emails": row[3],
-                    "usernames": row[4],
-                    "created_dates": row[5],
-                })
+                duplicates.append(
+                    {
+                        "normalized_email": row[0],
+                        "count": row[1],
+                        "user_ids": row[2],
+                        "emails": row[3],
+                        "usernames": row[4],
+                        "created_dates": row[5],
+                    }
+                )
 
             return True, duplicates
 
@@ -96,7 +99,7 @@ def print_duplicates(duplicates: List[dict]) -> None:
         print(f"  Count: {dup['count']}")
         print(f"\n  Conflicting Users:")
 
-        for j in range(len(dup['user_ids'])):
+        for j in range(len(dup["user_ids"])):
             print(f"    [{j + 1}] User ID: {dup['user_ids'][j]}")
             print(f"        Email: {dup['emails'][j]}")
             print(f"        Username: {dup['usernames'][j]}")
@@ -172,7 +175,9 @@ async def main():
 
     try:
         database_url = get_database_url(args.database)
-        print(f"Checking database: {database_url.split('@')[-1] if '@' in database_url else database_url}")
+        print(
+            f"Checking database: {database_url.split('@')[-1] if '@' in database_url else database_url}"
+        )
         print("Scanning for duplicate emails...\n")
 
         has_duplicates, duplicates = await check_duplicates(database_url)
@@ -188,6 +193,7 @@ async def main():
     except Exception as e:
         print(f"\n✗ Error checking for duplicates: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         return 2
 

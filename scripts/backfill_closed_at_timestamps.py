@@ -26,6 +26,7 @@ Exit Codes:
     1: Missing timestamps found (dry-run mode)
     2: Error occurred
 """
+
 import argparse
 import asyncio
 import json
@@ -79,21 +80,20 @@ async def get_cases_missing_closed_at(session: AsyncSession) -> List[Dict[str, A
         # Parse JSONB metadata
         metadata = json.loads(row[3]) if row[3] else {}
 
-        cases.append({
-            "case_id": row[0],
-            "status": row[1],
-            "updated_at": row[2],
-            "metadata": metadata,
-        })
+        cases.append(
+            {
+                "case_id": row[0],
+                "status": row[1],
+                "updated_at": row[2],
+                "metadata": metadata,
+            }
+        )
 
     return cases
 
 
 async def backfill_case_closed_at(
-    session: AsyncSession,
-    case_id: str,
-    closed_at: datetime,
-    dry_run: bool = False
+    session: AsyncSession, case_id: str, closed_at: datetime, dry_run: bool = False
 ) -> bool:
     """
     Backfill closed_at timestamp for a single case.
@@ -123,7 +123,7 @@ async def backfill_case_closed_at(
         {
             "case_id": case_id,
             "closed_at": closed_at.isoformat(),
-        }
+        },
     )
 
     return True
@@ -189,7 +189,9 @@ async def main():
     try:
         database_url = get_database_url(args.database)
         engine = create_async_engine(database_url, echo=False)
-        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async_session = sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
 
         # Open audit log file
         log_path = Path(args.log_file)
@@ -197,7 +199,9 @@ async def main():
 
         try:
             async with async_session() as session:
-                print(f"Checking database: {database_url.split('@')[-1] if '@' in database_url else database_url}")
+                print(
+                    f"Checking database: {database_url.split('@')[-1] if '@' in database_url else database_url}"
+                )
                 if args.dry_run:
                     print("MODE: DRY-RUN (no actual changes will be made)")
                 print()
@@ -273,7 +277,9 @@ async def main():
                     print("\nNext steps:")
                     print("  1. Review audit log for backfilled cases")
                     print("  2. Run tests to verify cleanup behavior:")
-                    print("     pytest tests/unit/infrastructure/persistence/test_database_case_repository.py -v")
+                    print(
+                        "     pytest tests/unit/infrastructure/persistence/test_database_case_repository.py -v"
+                    )
                     return 0
 
         finally:
@@ -283,6 +289,7 @@ async def main():
     except Exception as e:
         print(f"\n✗ Error backfilling timestamps: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         return 2
 

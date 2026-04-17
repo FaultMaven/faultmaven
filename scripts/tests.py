@@ -32,6 +32,7 @@ Usage:
     # Stop background tests
     python scripts/tests.py stop
 """
+
 import argparse
 import os
 import signal
@@ -135,16 +136,17 @@ def status_tests():
         # Fallback: check if pytest process is running
         try:
             result = subprocess.run(
-                ["pgrep", "-f", "pytest"],
-                capture_output=True,
-                text=True,
-                timeout=2
+                ["pgrep", "-f", "pytest"], capture_output=True, text=True, timeout=2
             )
             if result.returncode == 0 and result.stdout.strip():
-                pid = result.stdout.strip().split('\n')[0]
+                pid = result.stdout.strip().split("\n")[0]
                 print(f"Tests are running (PID: {pid}, but PID file missing)")
                 return 0
-        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+        except (
+            subprocess.TimeoutExpired,
+            FileNotFoundError,
+            subprocess.SubprocessError,
+        ):
             pass
         print("No tests currently running.")
         return 1
@@ -193,9 +195,12 @@ def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
         if config.get("parallel") and not getattr(args, "no_parallel", False):
             try:
                 import xdist  # noqa: F401
+
                 pytest_cmd.extend(["-n", "auto"])
             except ImportError:
-                print("Warning: pytest-xdist not installed. Install with: pip install pytest-xdist")
+                print(
+                    "Warning: pytest-xdist not installed. Install with: pip install pytest-xdist"
+                )
                 print("         Running tests sequentially instead.")
         # Set environment variables
         if config.get("env"):
@@ -244,12 +249,14 @@ def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
 
     # Coverage options
     if args.coverage:
-        pytest_cmd.extend([
-            "--cov=faultmaven",
-            "--cov-report=term-missing",
-            "--cov-report=xml:coverage.xml",
-            "--cov-report=html:htmlcov",
-        ])
+        pytest_cmd.extend(
+            [
+                "--cov=faultmaven",
+                "--cov-report=term-missing",
+                "--cov-report=xml:coverage.xml",
+                "--cov-report=html:htmlcov",
+            ]
+        )
         if args.coverage_fail_under:
             pytest_cmd.append(f"--cov-fail-under={args.coverage_fail_under}")
 
@@ -257,10 +264,13 @@ def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
     if getattr(args, "parallel", False) and not ci_mode:
         try:
             import xdist  # noqa: F401
+
             jobs = getattr(args, "jobs", None)
             pytest_cmd.extend(["-n", str(jobs) if jobs else "auto"])
         except ImportError:
-            print("Warning: pytest-xdist not installed. Install with: pip install pytest-xdist")
+            print(
+                "Warning: pytest-xdist not installed. Install with: pip install pytest-xdist"
+            )
             print("         Running tests sequentially instead.")
 
     # JUnit XML output for CI
@@ -319,12 +329,17 @@ def run_load_tests(args) -> int:
     cmd = ["locust", "-f", str(locustfile), "--host", host]
 
     if args.headless:
-        cmd.extend([
-            "--users", str(args.users or 10),
-            "--spawn-rate", str(args.spawn_rate or 2),
-            "--run-time", args.run_time or "60s",
-            "--headless",
-        ])
+        cmd.extend(
+            [
+                "--users",
+                str(args.users or 10),
+                "--spawn-rate",
+                str(args.spawn_rate or 2),
+                "--run-time",
+                args.run_time or "60s",
+                "--headless",
+            ]
+        )
         if args.csv:
             cmd.extend(["--csv", args.csv])
 
@@ -372,9 +387,13 @@ Examples:
     # load command
     load_parser = subparsers.add_parser("load", help="Run load tests with Locust")
     load_parser.add_argument("--host", help="Target host URL")
-    load_parser.add_argument("--headless", action="store_true", help="Run without web UI")
+    load_parser.add_argument(
+        "--headless", action="store_true", help="Run without web UI"
+    )
     load_parser.add_argument("--users", type=int, help="Number of users (default: 10)")
-    load_parser.add_argument("--spawn-rate", type=int, help="Users per second (default: 2)")
+    load_parser.add_argument(
+        "--spawn-rate", type=int, help="Users per second (default: 2)"
+    )
     load_parser.add_argument("--run-time", help="Test duration (default: 60s)")
     load_parser.add_argument("--csv", help="CSV output prefix")
 
@@ -401,65 +420,92 @@ def _add_test_arguments(parser):
     ci_group = parser.add_argument_group("CI/CD Pipeline Modes")
     ci_exclusive = ci_group.add_mutually_exclusive_group()
     ci_exclusive.add_argument(
-        "--ci", action="store_true",
-        help="Fast CI mode: unit tests only, parallel execution"
+        "--ci",
+        action="store_true",
+        help="Fast CI mode: unit tests only, parallel execution",
     )
     ci_exclusive.add_argument(
-        "--ci-full", action="store_true",
-        help="Full CI mode: unit + integration + infrastructure"
+        "--ci-full",
+        action="store_true",
+        help="Full CI mode: unit + integration + infrastructure",
     )
     ci_exclusive.add_argument(
-        "--ci-nightly", action="store_true",
-        help="Nightly mode: all tests including benchmarks"
+        "--ci-nightly",
+        action="store_true",
+        help="Nightly mode: all tests including benchmarks",
     )
     ci_exclusive.add_argument(
-        "--ci-enterprise", action="store_true",
-        help="Enterprise mode: tests requiring Redis, PostgreSQL"
+        "--ci-enterprise",
+        action="store_true",
+        help="Enterprise mode: tests requiring Redis, PostgreSQL",
     )
 
     # Test categories
     cat_group = parser.add_argument_group("Test Categories")
     cat_group.add_argument("--unit", action="store_true", help="Run unit tests")
-    cat_group.add_argument("--integration", action="store_true", help="Run integration tests")
-    cat_group.add_argument("--infrastructure", action="store_true", help="Run infrastructure tests")
-    cat_group.add_argument("--benchmarks", action="store_true", help="Run performance benchmarks")
-    cat_group.add_argument("--performance", action="store_true", help="Run performance overhead tests")
-    cat_group.add_argument("--health", action="store_true", help="Run health/smoke tests")
-    cat_group.add_argument("--dir", "--directory", dest="directory", help="Run tests in specific directory")
+    cat_group.add_argument(
+        "--integration", action="store_true", help="Run integration tests"
+    )
+    cat_group.add_argument(
+        "--infrastructure", action="store_true", help="Run infrastructure tests"
+    )
+    cat_group.add_argument(
+        "--benchmarks", action="store_true", help="Run performance benchmarks"
+    )
+    cat_group.add_argument(
+        "--performance", action="store_true", help="Run performance overhead tests"
+    )
+    cat_group.add_argument(
+        "--health", action="store_true", help="Run health/smoke tests"
+    )
+    cat_group.add_argument(
+        "--dir", "--directory", dest="directory", help="Run tests in specific directory"
+    )
 
     # Filtering
     filter_group = parser.add_argument_group("Test Filtering")
-    filter_group.add_argument("-k", "--keyword", help="Filter tests by keyword expression")
+    filter_group.add_argument(
+        "-k", "--keyword", help="Filter tests by keyword expression"
+    )
     filter_group.add_argument("-m", "--marker", help="Run tests with specific marker")
 
     # Execution options
     exec_group = parser.add_argument_group("Execution Options")
-    exec_group.add_argument("-x", "--fail-fast", action="store_true", help="Stop after first failure")
-    exec_group.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    exec_group.add_argument(
+        "-x", "--fail-fast", action="store_true", help="Stop after first failure"
+    )
+    exec_group.add_argument(
+        "-v", "--verbose", action="store_true", help="Verbose output"
+    )
     exec_group.add_argument("-q", "--quiet", action="store_true", help="Quiet output")
     exec_group.add_argument(
-        "-d", "--daemon", action="store_true",
-        help="Run in background (for CI/long test suites, not typical local dev)"
+        "-d",
+        "--daemon",
+        action="store_true",
+        help="Run in background (for CI/long test suites, not typical local dev)",
     )
     exec_group.add_argument(
-        "-n", "--parallel", action="store_true",
-        help="Run tests in parallel (requires pytest-xdist)"
+        "-n",
+        "--parallel",
+        action="store_true",
+        help="Run tests in parallel (requires pytest-xdist)",
     )
     exec_group.add_argument(
-        "-j", "--jobs", type=int,
-        help="Number of parallel workers (default: auto)"
+        "-j", "--jobs", type=int, help="Number of parallel workers (default: auto)"
     )
     exec_group.add_argument(
-        "--no-parallel", action="store_true",
-        help="Disable parallel execution even in CI modes"
+        "--no-parallel",
+        action="store_true",
+        help="Disable parallel execution even in CI modes",
     )
 
     # Coverage
     cov_group = parser.add_argument_group("Coverage Options")
-    cov_group.add_argument("--coverage", action="store_true", help="Generate coverage report")
     cov_group.add_argument(
-        "--coverage-fail-under", type=int,
-        help="Fail if coverage is below threshold"
+        "--coverage", action="store_true", help="Generate coverage report"
+    )
+    cov_group.add_argument(
+        "--coverage-fail-under", type=int, help="Fail if coverage is below threshold"
     )
 
     # CI output

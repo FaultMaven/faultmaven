@@ -25,7 +25,9 @@ sys.path.insert(0, str(project_root))
 from faultmaven.container import container
 
 
-async def create_user(username: str, email: str = None, display_name: str = None, is_admin: bool = False):
+async def create_user(
+    username: str, email: str = None, display_name: str = None, is_admin: bool = False
+):
     """Create a new user account"""
     print("=" * 80)
     print("Create New User Account")
@@ -55,16 +57,14 @@ async def create_user(username: str, email: str = None, display_name: str = None
     print(f"\nCreating user '{username}'...")
     try:
         user = await user_store.create_user(
-            username=username,
-            email=email,
-            display_name=display_name
+            username=username, email=email, display_name=display_name
         )
 
         # Set roles based on admin flag
         if is_admin:
-            user.roles = ['user', 'admin']
+            user.roles = ["user", "admin"]
         else:
-            user.roles = ['user']
+            user.roles = ["user"]
 
         # Update user with correct roles
         user = await user_store.update_user(user)
@@ -80,9 +80,11 @@ async def create_user(username: str, email: str = None, display_name: str = None
         print(f"  Created: {user.created_at}")
         print()
         print("Next steps:")
-        print(f"  1. Login with: curl -X POST http://localhost:8090/api/v1/auth/dev-login \\")
+        print(
+            f"  1. Login with: curl -X POST http://localhost:8090/api/v1/auth/dev-login \\"
+        )
         print(f"       -H 'Content-Type: application/json' \\")
-        print(f"       -d '{{\"username\": \"{user.username}\"}}'")
+        print(f'       -d \'{{"username": "{user.username}"}}\'')
         print()
         return True
 
@@ -113,13 +115,15 @@ async def interactive_create():
         email = None
 
     # Get display name (optional)
-    display_name = input("Display Name (optional, will auto-generate if empty): ").strip()
+    display_name = input(
+        "Display Name (optional, will auto-generate if empty): "
+    ).strip()
     if not display_name:
         display_name = None
 
     # Get role
     role_input = input("Role (user/admin) [default: user]: ").strip().lower()
-    is_admin = role_input == 'admin'
+    is_admin = role_input == "admin"
 
     print()
     print("Creating user with:")
@@ -130,7 +134,7 @@ async def interactive_create():
     print()
 
     confirm = input("Create this user? (yes/no): ").strip().lower()
-    if confirm not in ['yes', 'y']:
+    if confirm not in ["yes", "y"]:
         print("❌ Cancelled")
         return False
 
@@ -140,13 +144,28 @@ async def interactive_create():
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Create a new FaultMaven user account")
-    parser.add_argument('--username', '-u', help='Username (required)')
-    parser.add_argument('--email', '-e', help='Email address (optional, auto-generated if not provided)')
-    parser.add_argument('--display-name', '-d', help='Display name (optional, auto-generated if not provided)')
-    parser.add_argument('--role', '-r', choices=['user', 'admin'], default='user',
-                       help='User role (default: user)')
-    parser.add_argument('--interactive', '-i', action='store_true',
-                       help='Interactive mode (prompt for all values)')
+    parser.add_argument("--username", "-u", help="Username (required)")
+    parser.add_argument(
+        "--email", "-e", help="Email address (optional, auto-generated if not provided)"
+    )
+    parser.add_argument(
+        "--display-name",
+        "-d",
+        help="Display name (optional, auto-generated if not provided)",
+    )
+    parser.add_argument(
+        "--role",
+        "-r",
+        choices=["user", "admin"],
+        default="user",
+        help="User role (default: user)",
+    )
+    parser.add_argument(
+        "--interactive",
+        "-i",
+        action="store_true",
+        help="Interactive mode (prompt for all values)",
+    )
 
     args = parser.parse_args()
 
@@ -155,13 +174,15 @@ def main():
         success = asyncio.run(interactive_create())
     else:
         # Command-line mode
-        is_admin = args.role == 'admin'
-        success = asyncio.run(create_user(
-            username=args.username,
-            email=args.email,
-            display_name=args.display_name,
-            is_admin=is_admin
-        ))
+        is_admin = args.role == "admin"
+        success = asyncio.run(
+            create_user(
+                username=args.username,
+                email=args.email,
+                display_name=args.display_name,
+                is_admin=is_admin,
+            )
+        )
 
     sys.exit(0 if success else 1)
 

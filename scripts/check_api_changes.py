@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Set environment to skip service checks during spec generation
 import os
-os.environ['SKIP_SERVICE_CHECKS'] = 'true'
+
+os.environ["SKIP_SERVICE_CHECKS"] = "true"
 
 # Import FastAPI app
 from faultmaven.main import app
@@ -36,7 +37,7 @@ def save_spec(spec: Dict[str, Any], output_path: Path) -> None:
     import yaml
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         yaml.dump(spec, f, default_flow_style=False, sort_keys=False, indent=2)
 
     print(f"✅ OpenAPI spec saved to: {output_path}")
@@ -49,7 +50,7 @@ def load_yaml_spec(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
 
-    with open(path, 'r') as f:
+    with open(path, "r") as f:
         return yaml.safe_load(f)
 
 
@@ -60,7 +61,9 @@ def backup_locked_spec(locked_path: Path, backup_path: Path) -> None:
         print(f"📦 Backed up locked spec to: {backup_path}")
 
 
-def update_locked_spec(current_path: Path, locked_path: Path, backup_path: Path) -> None:
+def update_locked_spec(
+    current_path: Path, locked_path: Path, backup_path: Path
+) -> None:
     """Update locked spec from current, with backup."""
     backup_locked_spec(locked_path, backup_path)
     shutil.copy2(current_path, locked_path)
@@ -77,8 +80,8 @@ def compare_specs(current: Dict[str, Any], locked: Dict[str, Any]) -> Tuple[bool
     has_breaking = False
 
     # Compare paths (endpoints)
-    current_paths = set(current.get('paths', {}).keys())
-    locked_paths = set(locked.get('paths', {}).keys())
+    current_paths = set(current.get("paths", {}).keys())
+    locked_paths = set(locked.get("paths", {}).keys())
 
     # Removed endpoints (BREAKING)
     removed_paths = locked_paths - current_paths
@@ -95,15 +98,17 @@ def compare_specs(current: Dict[str, Any], locked: Dict[str, Any]) -> Tuple[bool
 
     # Compare common paths for method changes
     for path in sorted(current_paths & locked_paths):
-        current_methods = set(current['paths'][path].keys())
-        locked_methods = set(locked['paths'][path].keys())
+        current_methods = set(current["paths"][path].keys())
+        locked_methods = set(locked["paths"][path].keys())
 
         # Removed HTTP methods (BREAKING)
         removed_methods = locked_methods - current_methods
         if removed_methods:
             has_breaking = True
             for method in sorted(removed_methods):
-                changes.append(f"🔴 BREAKING: Removed {method.upper()} method from {path}")
+                changes.append(
+                    f"🔴 BREAKING: Removed {method.upper()} method from {path}"
+                )
 
         # Added HTTP methods (NON-BREAKING)
         added_methods = current_methods - locked_methods
@@ -114,9 +119,9 @@ def compare_specs(current: Dict[str, Any], locked: Dict[str, Any]) -> Tuple[bool
         # Compare request/response schemas for common methods
         for method in sorted(current_methods & locked_methods):
             method_changes = compare_method(
-                current['paths'][path][method],
-                locked['paths'][path][method],
-                f"{method.upper()} {path}"
+                current["paths"][path][method],
+                locked["paths"][path][method],
+                f"{method.upper()} {path}",
             )
             changes.extend(method_changes)
 
@@ -126,8 +131,8 @@ def compare_specs(current: Dict[str, Any], locked: Dict[str, Any]) -> Tuple[bool
 
     # Compare schemas/components
     schema_changes = compare_schemas(
-        current.get('components', {}).get('schemas', {}),
-        locked.get('components', {}).get('schemas', {})
+        current.get("components", {}).get("schemas", {}),
+        locked.get("components", {}).get("schemas", {}),
     )
     changes.extend(schema_changes)
 
@@ -142,8 +147,8 @@ def compare_method(current: Dict, locked: Dict, endpoint_name: str) -> list:
     changes = []
 
     # Compare request body if present
-    current_request = current.get('requestBody', {}).get('content', {})
-    locked_request = locked.get('requestBody', {}).get('content', {})
+    current_request = current.get("requestBody", {}).get("content", {})
+    locked_request = locked.get("requestBody", {}).get("content", {})
 
     if current_request != locked_request:
         # Detailed comparison would go here
@@ -154,17 +159,19 @@ def compare_method(current: Dict, locked: Dict, endpoint_name: str) -> list:
             changes.append(f"🟡 Added request body to {endpoint_name}")
 
     # Compare required parameters
-    current_params = current.get('parameters', [])
-    locked_params = locked.get('parameters', [])
+    current_params = current.get("parameters", [])
+    locked_params = locked.get("parameters", [])
 
-    current_required = {p['name'] for p in current_params if p.get('required', False)}
-    locked_required = {p['name'] for p in locked_params if p.get('required', False)}
+    current_required = {p["name"] for p in current_params if p.get("required", False)}
+    locked_required = {p["name"] for p in locked_params if p.get("required", False)}
 
     # New required parameters are BREAKING
     new_required = current_required - locked_required
     if new_required:
         for param in sorted(new_required):
-            changes.append(f"🔴 BREAKING: New required parameter '{param}' in {endpoint_name}")
+            changes.append(
+                f"🔴 BREAKING: New required parameter '{param}' in {endpoint_name}"
+            )
 
     # Removed required parameters (changed to optional) is NON-BREAKING
     removed_required = locked_required - current_required
@@ -173,15 +180,17 @@ def compare_method(current: Dict, locked: Dict, endpoint_name: str) -> list:
             changes.append(f"🟢 Parameter '{param}' is now optional in {endpoint_name}")
 
     # Compare response schemas
-    current_responses = set(current.get('responses', {}).keys())
-    locked_responses = set(locked.get('responses', {}).keys())
+    current_responses = set(current.get("responses", {}).keys())
+    locked_responses = set(locked.get("responses", {}).keys())
 
     # Removed response codes might be BREAKING depending on which ones
     removed_responses = locked_responses - current_responses
     if removed_responses:
         for code in sorted(removed_responses):
-            if code in {'200', '201', '204'}:  # Success codes
-                changes.append(f"🔴 BREAKING: Removed {code} response from {endpoint_name}")
+            if code in {"200", "201", "204"}:  # Success codes
+                changes.append(
+                    f"🔴 BREAKING: Removed {code} response from {endpoint_name}"
+                )
             else:
                 changes.append(f"🟡 Removed {code} response from {endpoint_name}")
 
@@ -209,17 +218,19 @@ def compare_schemas(current: Dict, locked: Dict) -> list:
 
     # Compare common schemas for field changes
     for schema in sorted(current_schemas & locked_schemas):
-        current_props = current[schema].get('properties', {})
-        locked_props = locked[schema].get('properties', {})
+        current_props = current[schema].get("properties", {})
+        locked_props = locked[schema].get("properties", {})
 
-        current_required = set(current[schema].get('required', []))
-        locked_required = set(locked[schema].get('required', []))
+        current_required = set(current[schema].get("required", []))
+        locked_required = set(locked[schema].get("required", []))
 
         # New required fields are BREAKING
         new_required = current_required - locked_required
         if new_required:
             for field in sorted(new_required):
-                changes.append(f"🔴 BREAKING: New required field '{field}' in schema {schema}")
+                changes.append(
+                    f"🔴 BREAKING: New required field '{field}' in schema {schema}"
+                )
 
         # Removed required fields (now optional) is NON-BREAKING
         removed_required = locked_required - current_required
@@ -231,7 +242,9 @@ def compare_schemas(current: Dict, locked: Dict) -> list:
         removed_fields = set(locked_props.keys()) - set(current_props.keys())
         if removed_fields:
             for field in sorted(removed_fields):
-                changes.append(f"🔴 BREAKING: Removed field '{field}' from schema {schema}")
+                changes.append(
+                    f"🔴 BREAKING: Removed field '{field}' from schema {schema}"
+                )
 
         # Added fields (NON-BREAKING)
         added_fields = set(current_props.keys()) - set(locked_props.keys())
@@ -250,7 +263,7 @@ def main():
     parser.add_argument(
         "--update-locked",
         action="store_true",
-        help="Update the locked spec with current spec (creates backup)"
+        help="Update the locked spec with current spec (creates backup)",
     )
     args = parser.parse_args()
 

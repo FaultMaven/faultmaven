@@ -38,8 +38,7 @@ from urllib3.util.retry import Retry
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -49,25 +48,28 @@ BUILTIN_ACCOUNTS = [
         "username": "admin@faultmaven.ai",
         "email": "admin@faultmaven.ai",
         "display_name": "System Administrator",
-        "description": "Administrative access account"
+        "description": "Administrative access account",
     },
     {
         "username": "dev@faultmaven.ai",
         "email": "dev@faultmaven.ai",
         "display_name": "Developer",
-        "description": "Developer testing account"
+        "description": "Developer testing account",
     },
     {
         "username": "test@faultmaven.ai",
         "email": "test@faultmaven.ai",
         "display_name": "Test User",
-        "description": "Automated testing account"
-    }
+        "description": "Automated testing account",
+    },
 ]
+
 
 class AccountCreationError(Exception):
     """Custom exception for account creation failures"""
+
     pass
+
 
 def create_session() -> requests.Session:
     """Create HTTP session with retry strategy"""
@@ -78,16 +80,32 @@ def create_session() -> requests.Session:
         retry_strategy = Retry(
             total=3,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"],
-            backoff_factor=1
+            allowed_methods=[
+                "HEAD",
+                "GET",
+                "PUT",
+                "DELETE",
+                "OPTIONS",
+                "TRACE",
+                "POST",
+            ],
+            backoff_factor=1,
         )
     except TypeError:
         # Fallback for older urllib3 versions
         retry_strategy = Retry(
             total=3,
             status_forcelist=[429, 500, 502, 503, 504],
-            method_whitelist=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"],
-            backoff_factor=1
+            method_whitelist=[
+                "HEAD",
+                "GET",
+                "PUT",
+                "DELETE",
+                "OPTIONS",
+                "TRACE",
+                "POST",
+            ],
+            backoff_factor=1,
         )
 
     adapter = HTTPAdapter(max_retries=retry_strategy)
@@ -95,6 +113,7 @@ def create_session() -> requests.Session:
     session.mount("https://", adapter)
 
     return session
+
 
 def check_server_health(server_url: str, session: requests.Session) -> bool:
     """Check if FaultMaven server is reachable"""
@@ -113,7 +132,10 @@ def check_server_health(server_url: str, session: requests.Session) -> bool:
         logger.error(f"Cannot reach server at {server_url}: {e}")
         return False
 
-def create_account(account: Dict, server_url: str, session: requests.Session) -> Tuple[bool, str]:
+
+def create_account(
+    account: Dict, server_url: str, session: requests.Session
+) -> Tuple[bool, str]:
     """
     Create a single account using the registration API
 
@@ -127,14 +149,14 @@ def create_account(account: Dict, server_url: str, session: requests.Session) ->
         payload = {
             "username": account["username"],
             "email": account["email"],
-            "display_name": account["display_name"]
+            "display_name": account["display_name"],
         }
 
         response = session.post(
             register_url,
             json=payload,
             headers={"Content-Type": "application/json"},
-            timeout=30
+            timeout=30,
         )
 
         if response.status_code == 201:
@@ -158,12 +180,15 @@ def create_account(account: Dict, server_url: str, session: requests.Session) ->
             except:
                 pass
 
-            logger.error(f"❌ Failed to create {account['username']}: {response.status_code} - {error_msg}")
+            logger.error(
+                f"❌ Failed to create {account['username']}: {response.status_code} - {error_msg}"
+            )
             return False, f"Failed {account['username']}: {error_msg}"
 
     except requests.exceptions.RequestException as e:
         logger.error(f"❌ Network error creating {account['username']}: {e}")
         return False, f"Network error for {account['username']}: {str(e)}"
+
 
 def create_builtin_accounts(server_url: str) -> int:
     """
@@ -187,7 +212,9 @@ def create_builtin_accounts(server_url: str) -> int:
     success_count = 0
 
     for account in BUILTIN_ACCOUNTS:
-        logger.info(f"Processing account: {account['username']} ({account['description']})")
+        logger.info(
+            f"Processing account: {account['username']} ({account['description']})"
+        )
         success, message = create_account(account, server_url, session)
         results.append((account["username"], success, message))
 
@@ -195,9 +222,9 @@ def create_builtin_accounts(server_url: str) -> int:
             success_count += 1
 
     # Report results
-    logger.info("\n" + "="*60)
+    logger.info("\n" + "=" * 60)
     logger.info("BUILT-IN ACCOUNTS CREATION SUMMARY")
-    logger.info("="*60)
+    logger.info("=" * 60)
 
     for username, success, message in results:
         status = "✅ SUCCESS" if success else "❌ FAILED"
@@ -217,24 +244,23 @@ def create_builtin_accounts(server_url: str) -> int:
         logger.error("\n💥 Failed to create any accounts.")
         return 1
 
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
         description="Create built-in accounts for FaultMaven",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
+        epilog=__doc__,
     )
 
     parser.add_argument(
         "--server-url",
         default="http://localhost:8090",
-        help="FaultMaven server URL (default: http://localhost:8090)"
+        help="FaultMaven server URL (default: http://localhost:8090)",
     )
 
     parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose logging"
+        "--verbose", "-v", action="store_true", help="Enable verbose logging"
     )
 
     args = parser.parse_args()
@@ -244,6 +270,7 @@ def main():
 
     # Allow override from environment variable
     import os
+
     server_url = os.getenv("FAULTMAVEN_SERVER_URL", args.server_url)
 
     try:
@@ -257,6 +284,7 @@ def main():
     except Exception as e:
         logger.error(f"💥 Unexpected error: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
