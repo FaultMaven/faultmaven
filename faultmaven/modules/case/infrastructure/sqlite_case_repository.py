@@ -1051,13 +1051,18 @@ class SQLiteCaseRepository(CaseRepository):
     # ========================================================================
 
     async def update_activity_timestamp(self, case_id: str) -> bool:
-        """Update last_activity_at timestamp."""
+        """Refresh the case's activity timestamp.
+
+        The ORM schema has no dedicated `last_activity_at` column; `updated_at`
+        already tracks the last modification time (with an `onupdate=func.now()`
+        ORM hook for session-level writes). Raw SQL updates bypass that hook,
+        so we set `updated_at` explicitly here.
+        """
         try:
-            # SQLite: use datetime('now') instead of NOW()
             query = text(
                 """
                 UPDATE cases
-                SET last_activity_at = datetime('now')
+                SET updated_at = datetime('now')
                 WHERE case_id = :case_id
             """
             )
@@ -1140,9 +1145,15 @@ class SQLiteCaseRepository(CaseRepository):
     async def cleanup_expired(
         self, max_age_days: int = 90, batch_size: int = 100
     ) -> int:
-        """Clean up expired/old cases."""
+        """Delete closed cases whose closure timestamp is older than max_age_days.
+
+        `closed_at` is stored inside the `metadata` JSON column (see save()
+        persistence path); there is no dedicated `closed_at` column on the
+        `cases` table. We read it via `json_extract` and compare lexicographically
+        against an ISO-8601 cutoff — works because our serialized timestamps are
+        always ISO-8601 UTC strings which sort chronologically.
+        """
         try:
-            # SQLite: use datetime() function instead of INTERVAL
             query = text(
                 """
                 DELETE FROM cases
@@ -1150,7 +1161,8 @@ class SQLiteCaseRepository(CaseRepository):
                     SELECT case_id
                     FROM cases
                     WHERE status = 'closed'
-                    AND closed_at < datetime('now', '-' || :max_age_days || ' days')
+                    AND json_extract(metadata, '$.closed_at') IS NOT NULL
+                    AND json_extract(metadata, '$.closed_at') < datetime('now', '-' || :max_age_days || ' days')
                     LIMIT :batch_size
                 )
             """
