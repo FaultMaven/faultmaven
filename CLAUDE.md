@@ -4,7 +4,7 @@ This document provides essential context for AI assistants working with the Faul
 
 ## Project Overview
 
-FaultMaven is an **AI-powered troubleshooting copilot** for modern engineering teams. It correlates live telemetry with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation.
+FaultMaven is an **AI-powered troubleshooting copilot**. It correlates live telemetry with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation.
 
 **Key Value Propositions:**
 - Evidence-centric investigation (logs, metrics, configs, past solutions)
