@@ -36,7 +36,9 @@ def login(client: httpx.Client, username: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Test RBAC via HTTP API")
-    parser.add_argument("--api-url", default="http://localhost:8090", help="FaultMaven API URL")
+    parser.add_argument(
+        "--api-url", default="http://localhost:8090", help="FaultMaven API URL"
+    )
     args = parser.parse_args()
 
     client = httpx.Client(base_url=args.api_url, timeout=10)

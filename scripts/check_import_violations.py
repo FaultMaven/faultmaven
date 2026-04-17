@@ -26,7 +26,6 @@ import sys
 import re
 from typing import Dict, Tuple
 
-
 # Baseline violations (updated in Phase 3 Week 14-15)
 # ALL contracts must remain at 0 violations after DI Container implementation
 BASELINE = {
@@ -52,9 +51,14 @@ def run_import_linter() -> Tuple[str, int]:
     """
     # Try .venv/bin/lint-imports first, then fallback to system lint-imports
     import os
-    venv_lint_imports = os.path.join(os.path.dirname(__file__), "../.venv/bin/lint-imports")
 
-    lint_import_cmd = venv_lint_imports if os.path.exists(venv_lint_imports) else "lint-imports"
+    venv_lint_imports = os.path.join(
+        os.path.dirname(__file__), "../.venv/bin/lint-imports"
+    )
+
+    lint_import_cmd = (
+        venv_lint_imports if os.path.exists(venv_lint_imports) else "lint-imports"
+    )
 
     try:
         result = subprocess.run(
@@ -88,7 +92,9 @@ def parse_contract_results(output: str) -> Dict[str, int]:
     # Extract the summary section
     if "Contracts:" in output:
         # Parse "Contracts: X kept, Y broken" line
-        contracts_line = re.search(r"Contracts:\s+(\d+)\s+kept,\s+(\d+)\s+broken", output)
+        contracts_line = re.search(
+            r"Contracts:\s+(\d+)\s+kept,\s+(\d+)\s+broken", output
+        )
         if contracts_line:
             kept = int(contracts_line.group(1))
             broken = int(contracts_line.group(2))
@@ -171,9 +177,9 @@ def check_violations(current: Dict[str, int]) -> Tuple[bool, str]:
     messages = []
     is_valid = True
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("VIOLATION COMPARISON")
-    print("="*60)
+    print("=" * 60)
 
     for contract_name, baseline_count in BASELINE.items():
         current_count = current.get(contract_name, 0)
@@ -237,7 +243,7 @@ def check_violations(current: Dict[str, int]) -> Tuple[bool, str]:
 def main():
     """Main entry point."""
     print("🔍 Running import-linter architectural boundary check...")
-    print("="*60)
+    print("=" * 60)
 
     # Run import-linter
     output, exit_code = run_import_linter()
@@ -255,7 +261,7 @@ def main():
     is_valid, message = check_violations(current_violations)
 
     print(message)
-    print("="*60)
+    print("=" * 60)
 
     if is_valid:
         print("\n✅ SUCCESS: No new architectural violations detected")

@@ -21,6 +21,7 @@ Exit Codes:
     1: Duplicates found but not resolved (dry-run mode)
     2: Error occurred
 """
+
 import argparse
 import asyncio
 import os
@@ -61,20 +62,24 @@ async def get_duplicates(session: AsyncSession) -> List[dict]:
 
     duplicates = []
     for row in rows:
-        duplicates.append({
-            "normalized_email": row[0],
-            "count": row[1],
-            "user_ids": row[2],
-            "emails": row[3],
-            "usernames": row[4],
-            "created_dates": row[5],
-            "is_active_flags": row[6],
-        })
+        duplicates.append(
+            {
+                "normalized_email": row[0],
+                "count": row[1],
+                "user_ids": row[2],
+                "emails": row[3],
+                "usernames": row[4],
+                "created_dates": row[5],
+                "is_active_flags": row[6],
+            }
+        )
 
     return duplicates
 
 
-async def soft_delete_users(session: AsyncSession, user_ids: List[str], dry_run: bool = False) -> int:
+async def soft_delete_users(
+    session: AsyncSession, user_ids: List[str], dry_run: bool = False
+) -> int:
     """
     Soft-delete users by setting deleted_at timestamp.
 
@@ -102,8 +107,7 @@ async def soft_delete_users(session: AsyncSession, user_ids: List[str], dry_run:
     """)
 
     result = await session.execute(
-        query,
-        {"deleted_at": now, "updated_at": now, "user_ids": user_ids}
+        query, {"deleted_at": now, "updated_at": now, "user_ids": user_ids}
     )
     await session.commit()
 
@@ -117,8 +121,8 @@ def print_duplicate_group(group: dict, index: int) -> None:
     print(f"  Total Users: {group['count']}")
     print(f"\n  Users:")
 
-    for i in range(len(group['user_ids'])):
-        status = "ACTIVE" if group['is_active_flags'][i] else "INACTIVE"
+    for i in range(len(group["user_ids"])):
+        status = "ACTIVE" if group["is_active_flags"][i] else "INACTIVE"
         oldest_marker = " (OLDEST)" if i == 0 else ""
         print(f"    [{i + 1}] {status}{oldest_marker}")
         print(f"        User ID: {group['user_ids'][i]}")
@@ -128,7 +132,9 @@ def print_duplicate_group(group: dict, index: int) -> None:
         print()
 
 
-async def resolve_auto(session: AsyncSession, duplicates: List[dict], dry_run: bool = False) -> int:
+async def resolve_auto(
+    session: AsyncSession, duplicates: List[dict], dry_run: bool = False
+) -> int:
     """
     Automatically resolve duplicates by keeping oldest user.
 
@@ -146,8 +152,8 @@ async def resolve_auto(session: AsyncSession, duplicates: List[dict], dry_run: b
         print_duplicate_group(group, i)
 
         # Keep oldest (index 0), soft-delete the rest
-        keep_user_id = group['user_ids'][0]
-        delete_user_ids = group['user_ids'][1:]
+        keep_user_id = group["user_ids"][0]
+        delete_user_ids = group["user_ids"][1:]
 
         print(f"  Decision: Keep user {keep_user_id} (oldest)")
         print(f"           Soft-delete: {delete_user_ids}")
@@ -162,7 +168,9 @@ async def resolve_auto(session: AsyncSession, duplicates: List[dict], dry_run: b
     return total_deleted
 
 
-async def resolve_interactive(session: AsyncSession, duplicates: List[dict], dry_run: bool = False) -> int:
+async def resolve_interactive(
+    session: AsyncSession, duplicates: List[dict], dry_run: bool = False
+) -> int:
     """
     Interactively resolve duplicates.
 
@@ -181,18 +189,22 @@ async def resolve_interactive(session: AsyncSession, duplicates: List[dict], dry
 
         # Prompt user to choose which to keep
         while True:
-            choice = input(f"  Which user to KEEP? [1-{group['count']} or 's' to skip]: ").strip()
+            choice = input(
+                f"  Which user to KEEP? [1-{group['count']} or 's' to skip]: "
+            ).strip()
 
-            if choice.lower() == 's':
+            if choice.lower() == "s":
                 print("  Skipped.")
                 break
 
             try:
                 choice_idx = int(choice) - 1
-                if 0 <= choice_idx < group['count']:
-                    keep_user_id = group['user_ids'][choice_idx]
+                if 0 <= choice_idx < group["count"]:
+                    keep_user_id = group["user_ids"][choice_idx]
                     delete_user_ids = [
-                        uid for j, uid in enumerate(group['user_ids']) if j != choice_idx
+                        uid
+                        for j, uid in enumerate(group["user_ids"])
+                        if j != choice_idx
                     ]
 
                     print(f"  Decision: Keep user {keep_user_id}")
@@ -277,7 +289,9 @@ async def main():
 
     # Validate arguments
     if not (args.dry_run or args.auto or args.interactive):
-        print("Error: Must specify --dry-run, --auto, or --interactive", file=sys.stderr)
+        print(
+            "Error: Must specify --dry-run, --auto, or --interactive", file=sys.stderr
+        )
         return 2
 
     if sum([args.auto, args.interactive]) > 1:
@@ -287,11 +301,15 @@ async def main():
     try:
         database_url = get_database_url(args.database)
         engine = create_async_engine(database_url, echo=False)
-        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async_session = sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
 
         try:
             async with async_session() as session:
-                print(f"Resolving duplicates in: {database_url.split('@')[-1] if '@' in database_url else database_url}")
+                print(
+                    f"Resolving duplicates in: {database_url.split('@')[-1] if '@' in database_url else database_url}"
+                )
                 if args.dry_run:
                     print("MODE: DRY-RUN (no actual changes will be made)")
                 print()
@@ -306,9 +324,13 @@ async def main():
                 print("=" * 80)
 
                 if args.auto or args.dry_run:
-                    total_deleted = await resolve_auto(session, duplicates, args.dry_run)
+                    total_deleted = await resolve_auto(
+                        session, duplicates, args.dry_run
+                    )
                 else:  # interactive
-                    total_deleted = await resolve_interactive(session, duplicates, args.dry_run)
+                    total_deleted = await resolve_interactive(
+                        session, duplicates, args.dry_run
+                    )
 
                 print("\n" + "=" * 80)
                 if args.dry_run:
@@ -330,6 +352,7 @@ async def main():
     except Exception as e:
         print(f"\n✗ Error resolving duplicates: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         return 2
 

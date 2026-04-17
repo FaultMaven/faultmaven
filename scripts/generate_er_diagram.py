@@ -69,9 +69,7 @@ def generate_table_summary() -> str:
         table = Base.metadata.tables[table_name]
         col_count = len(table.columns)
         pk_cols = [c.name for c in table.columns if c.primary_key]
-        fk_targets = sorted(
-            {fk.column.table.name for fk in table.foreign_keys}
-        )
+        fk_targets = sorted({fk.column.table.name for fk in table.foreign_keys})
 
         pk_str = ", ".join(pk_cols)
         fk_str = ", ".join(fk_targets) if fk_targets else "—"
@@ -111,7 +109,8 @@ def main():
         description="Generate ER diagram from SQLAlchemy models."
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         type=str,
         help="Output file path (default: stdout)",
     )
