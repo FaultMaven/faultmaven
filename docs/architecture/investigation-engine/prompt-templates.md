@@ -126,7 +126,7 @@ Follow this progression based on conversation state:
 ┌─────────────────────────────────────────────────────────┐
 │ Step 0: KNOWLEDGE PRE-CHECK (Before Asking Questions)  │
 │ Implementation: Agent calls kb_qa tool during the      │
-│ tool-augmented generation loop (Rule 7: Knowledge      │
+│ tool-augmented generation loop (Rule 6: Knowledge      │
 │ First). Scope filtering is automatic via ToolContext.   │
 ├─────────────────────────────────────────────────────────┤
 │ When user describes any symptom, FIRST search KB:      │
@@ -492,6 +492,11 @@ def _build_current_state_section(case: Case) -> str:
 - Hypotheses: {len(case.hypotheses)} generated ({active_hypotheses} active)
 - Solutions: {len(case.solutions)} proposed"""
 
+    # Pending action (if any)
+    pending_action_display = ""
+    if case.pending_action:
+        pending_action_display = f"\n**PENDING ACTION:** {case.pending_action.description}\n"
+
     # Recent conversation
     recent_conversation = _format_recent_conversation(case.turn_history)
 
@@ -506,7 +511,7 @@ def _build_current_state_section(case: Case) -> str:
         working_conclusion_display = f"""
 **WORKING CONCLUSION:**
 Statement: {wc.statement}
-Confidence: {wc.confidence * 100:.0f}%{caveats_display}"""
+Likelihood: {wc.likelihood * 100:.0f}%{caveats_display}"""
 
     return f"""═══════════════════════════════════════════════════════════
 WHAT YOU ALREADY KNOW (Don't re-verify!)
@@ -519,9 +524,7 @@ WHAT YOU ALREADY KNOW (Don't re-verify!)
 {milestones_display}
 
 {data_summary}
-
-{pending_requests}
-
+{pending_action_display}
 {recent_conversation}
 {working_conclusion_display}"""
 
@@ -615,41 +618,10 @@ YOUR TASK
         return header + "ERROR: Unknown stage"
 
 
-def _get_diagnosis_focus_emphasis(progress: InvestigationProgress) -> str:
-    """Compute focus zone from progress milestones (Framework §8.5).
-
-    Returns a priority signal injected before standard DIAGNOSIS instructions.
-    The LLM still has all DIAGNOSIS capabilities — this guides emphasis only.
-
-    Focus zones:
-    - VERIFY THE PROBLEM:  symptom_verified=False
-    - ROOT CAUSE ANALYSIS: symptom_verified=True, root_cause_identified=False
-    - PROPOSE A SOLUTION:  root_cause_identified=True, solution_proposed=False
-    - (empty):             solution_proposed=True (pending action context handles it)
-    """
-    if not progress.symptom_verified:
-        return """
-**CURRENT FOCUS: VERIFY THE PROBLEM**
-Your primary goal this turn is to gather logs, confirm symptoms, and
-establish the scope and timeline. Ask the user for the specific evidence
-needed to prove the problem exists.
-"""
-    elif progress.symptom_verified and not progress.root_cause_identified:
-        return """
-**CURRENT FOCUS: ROOT CAUSE ANALYSIS**
-The problem is verified. Your primary goal this turn is to form and test
-hypotheses. Look at the causal evidence, form a theory, and actively seek
-the data needed to prove or disprove it.
-"""
-    elif progress.root_cause_identified and not progress.solution_proposed:
-        return """
-**CURRENT FOCUS: PROPOSE A SOLUTION**
-You have identified the root cause. Your primary goal this turn is to
-formulate a concrete, executable fix. Provide specific commands for the
-user to run so the investigation can transition to Treatment.
-"""
-    else:
-        return ""  # solution_proposed=True: pending action context handles this state
+# _get_diagnosis_focus_emphasis() is canonical in
+# evidence-driven-investigation-framework.md §8.5 (three-branch branching on
+# symptom_verified / root_cause_identified / solution_proposed with the exact
+# emphasis strings). Not reproduced here to avoid drift.
 
 
 def _get_diagnosis_instructions(case: Case) -> str:

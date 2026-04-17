@@ -31,11 +31,12 @@ Rules that fail this test belong elsewhere: investigation strategy goes in promp
 | 3 | [Advisor Role](#rule-3-advisor-role) | Effective | All templates | Vocabulary constraint: banned/required phrases |
 | 4 | [Graceful Pivot](#rule-4-graceful-pivot) | Resilient | INVESTIGATING base instructions | Conditional: user can't provide → acknowledge + alternative |
 | 5 | [Work With What You Get](#rule-5-work-with-what-you-get) | Resilient | INVESTIGATING base instructions | Conditional: non-cooperation → prescribed fallbacks |
-| 6 | [Steady Advance](#rule-6-steady-advance) | Productive | INVESTIGATING base (end) | Negative constraint: do not recycle content |
-| 7 | [Knowledge First](#rule-7-knowledge-first) | Effective | INQUIRY template + INVESTIGATING base + DA system instruction | Structural: KB lookup as default over independent diagnosis |
+| 6 | [Knowledge First](#rule-6-knowledge-first) | Effective | INQUIRY template + INVESTIGATING base + DA system instruction | Structural: KB lookup as default over independent diagnosis |
 
-**Rules 1-3, 7** govern **what the agent does** (effectiveness).
-**Rules 4-6** govern **how the agent handles adversity** (resilience and productivity).
+**Rules 1-3, 6** govern **what the agent does** (effectiveness).
+**Rules 4-5** govern **how the agent handles adversity** (resilience).
+
+Cross-turn concerns (preventing repetition of analysis across turns, detecting stagnation) are handled by the progress transparency system rather than per-turn prompt rules, per the enforceability principle above — see [Progress Transparency](./progress-transparency.md).
 
 ---
 
@@ -196,7 +197,9 @@ Agent: "No problem. As an alternative, could you check if there were any
 
 ```text
 Never stall. If the user provides partial or off-topic data, extract what
-is useful and state the next productive step.
+is useful and state the next productive step. When you have no new analysis
+to add, a brief response is better than padding — if you are stuck, say so
+and state what specific data or input would unblock you.
 ```
 
 **Prescribed behaviors**:
@@ -207,6 +210,7 @@ is useful and state the next productive step.
 | **Goes off-topic** | Answer the question. If it connects to the investigation, draw that connection. If not, answer and move on — the investigation context remains available. |
 | **Disengages** (short responses over multiple turns) | Summarize in 1-2 sentences, give ONE clear next action, make re-engagement low-effort via `suggested_follow_ups`. |
 | **Unrequested data dump** | Scan for relevance, extract what's useful, ask one clarifying question if needed. |
+| **Nothing new to add this turn** | A brief acknowledgement beats manufactured content. Never pad to seem productive. If stuck, state the limitation directly and name what would unblock progress. |
 
 **Hard constraint**: Do not repeat a data request the user didn't fulfill (see Rule 4). Work without it, offer an alternative, or re-frame why the data matters.
 
@@ -216,38 +220,7 @@ is useful and state the next productive step.
 
 ---
 
-## Rule 6: Steady Advance
-
-**What it prevents**: Agent treads water — restating the same analysis, re-summarizing established facts, or producing turns that add nothing new.
-
-**Injection point**: Last position in INVESTIGATING base template. LLMs give disproportionate attention to final instructions (recency effect).
-
-**Prompt injection**:
-
-```text
-CRITICAL: Do NOT restate or summarize what has already been established.
-If you have new analysis, a new recommendation, or a pivot — include it.
-If you don't, a brief response is better than padding. Never manufacture
-content to seem productive. If you are stuck, say so and state what
-specific data or input would unblock you.
-```
-
-**Prescribed behavior**: The agent does not recycle content. Specifically:
-
-- Do not restate previously established facts as if they are new analysis
-- Do not re-summarize the investigation state unless the user asks for a summary
-- Do not pad a response with low-value suggestions to appear productive
-- When stuck, state the limitation directly and what would unblock progress
-
-**Hard constraint**: No "As I mentioned earlier, the logs show..." without new context that changes what that evidence means.
-
-**Complements Rule 4**: Rule 4 prevents repeating data requests. Rule 6 prevents repeating analysis. Both prevent the agent from spinning its wheels, but on different outputs.
-
-**Why it matters**: Recycled content wastes the user's time and inflates context. In long investigations, it degrades both user experience and LLM performance as the context fills with repeated material.
-
----
-
-## Rule 7: Knowledge First
+## Rule 6: Knowledge First
 
 **What it prevents**: Agent invents diagnostic procedures or solutions when an organizational Runbook already exists, or answers technical questions from training data when the KB has documented guidance.
 
@@ -302,8 +275,7 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | 3 (Advisor Role) | All templates | ASSISTANT ROLE | Varies: early in INQUIRY/TERMINAL, mid in INVESTIGATING |
 | 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
 | 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
-| 6 (Steady Advance) | INVESTIGATION_BASE | STEADY ADVANCE | Last section (recency effect) |
-| 7 (Knowledge First) | INQUIRY + INVESTIGATION_BASE + DA system instruction | YOUR TASK (INQUIRY), DIAGNOSIS (INVESTIGATING), TYPE B routing (DA instruction) | Early in each |
+| 6 (Knowledge First) | INQUIRY + INVESTIGATION_BASE + DA system instruction | YOUR TASK (INQUIRY), DIAGNOSIS (INVESTIGATING), TYPE B routing (DA instruction) | Early in each |
 
 ### Dynamic Injection: Focus Zone and INQUIRY State
 
@@ -326,10 +298,10 @@ The DA system instruction classifies user questions into three types and prescri
 | Type | Description | Tool Requirement | Rule Enforced |
 | ---- | ----------- | ---------------- | ------------- |
 | TYPE A — Case Question | About THIS case's evidence (IPs, errors, timestamps) | **MUST** search evidence (`search_file`, `deep_analysis`) | Rule 2 (Evidence-Grounded) |
-| TYPE B — Knowledge Question | General technical knowledge (best practices, common causes, how-to) | **MUST** search `kb_qa` first; answer from own knowledge only if no results | Rule 7 (Knowledge First) |
-| TYPE C — Hybrid | Needs both evidence AND external knowledge | Search evidence first, then KB/web for reference baseline | Rules 2 + 7 |
+| TYPE B — Knowledge Question | General technical knowledge (best practices, common causes, how-to) | **MUST** search `kb_qa` first; answer from own knowledge only if no results | Rule 6 (Knowledge First) |
+| TYPE C — Hybrid | Needs both evidence AND external knowledge | Search evidence first, then KB/web for reference baseline | Rules 2 + 6 |
 
-**Why this matters for behavioral rules:** The DA system instruction applies to ALL turns with tools — including INQUIRY. Because `tool_choice=auto`, the LLM decides whether to comply. The "MUST" language for TYPE A and TYPE B is the primary enforcement mechanism for Rules 2 and 7 during the tool-augmented loop.
+**Why this matters for behavioral rules:** The DA system instruction applies to ALL turns with tools — including INQUIRY. Because `tool_choice=auto`, the LLM decides whether to comply. The "MUST" language for TYPE A and TYPE B is the primary enforcement mechanism for Rules 2 and 6 during the tool-augmented loop.
 
 **Location:** `milestone_engine.py:_build_da_system_instruction()` (~lines 2968-3095).
 
@@ -352,34 +324,33 @@ CONCISENESS
 DIAGNOSTIC REASONING (Rule 2)                           OBSERVATION -> ANALYSIS -> CONCLUSION
 EVIDENCE GROUNDING (Rule 2 extension)                   Anti-hallucination hard constraints
 ...security constraints, hypothesis management...
-STEADY ADVANCE (Rule 6)                                 LAST — recency effect
 ```
 
 ### Design Rationale
 
-Two structural invariants are enforced:
+One structural invariant is enforced:
 
-1. **Rule 6 is always last**. LLMs give disproportionate attention to final instructions (recency effect). Placing Steady Advance last ensures the anti-repetition constraint is the freshest instruction when the LLM begins generating.
+- **Focus Zone is prepended to stage instructions**. It appears at the top of `{adaptive_instructions}` for DIAGNOSIS, making it the first instruction-level content the LLM sees after the dynamic context header.
 
-2. **Focus Zone is prepended to stage instructions**. It appears at the top of `{adaptive_instructions}` for DIAGNOSIS, making it the first instruction-level content the LLM sees after the dynamic context header.
-
-The remaining rules occupy stable positions in the template but are not ordered for primacy/recency optimization. The dynamic context header (identity, evidence, hypotheses, conversation history) consumes thousands of tokens before any instruction, so positional effects within the instruction block are negligible compared to Rule 6's last-position advantage and Focus Zone's first-instruction position.
+The remaining rules occupy stable positions in the template but are not ordered for primacy/recency optimization. The dynamic context header (identity, evidence, hypotheses, conversation history) consumes thousands of tokens before any instruction, so positional effects within the instruction block are negligible compared to Focus Zone's first-instruction position.
 
 ---
 
 ## Mechanical Safety Nets (Non-Prompt Enforcement)
 
-In addition to the 7 behavioral rules above (which are enforced via prompt injection), the `AgentOrchestrationService` implements **mechanical safety nets** that operate outside the prompt:
+In addition to the 6 behavioral rules above (which are enforced via prompt injection), the `AgentOrchestrationService` implements **mechanical safety nets** that operate outside the prompt:
+
+> **Label disambiguation**: "Rule N" throughout this document refers to the behavioral rules above (Rule 1 – Rule 6). The mechanical safety nets are labeled "R3", "R4", "R5" to match their identifiers in `agent_orchestration_service.py` and `orchestration-capabilities.md`. They are **not** behavioral rules and the numbering is independent.
 
 | Safety Net | Trigger | Action | Enforcement |
 | --- | --- | --- | --- |
-| Coverage gap detection (R3) | User query contains entities (timestamps, services) outside evidence coverage | Advisory injected into LLM context | Mechanical: regex entity extraction + coverage metadata comparison |
-| Auto-escalation (R4) | 2 consecutive empty `search_file` results | `[ESCALATION ADVISORY]` appended to tool result | Mechanical: counter in execution loop |
+| Coverage gap detection (R3) | User query contains entities (timestamps, services, error codes, IPs) outside evidence coverage | Advisory injected into LLM context | Mechanical: regex entity extraction + coverage metadata comparison |
+| Per-evidence DA failure tracking + auto-vectorization (R4) | Reactive triggers on a qualifying large evidence file: tool timeout, 3+ consecutive empty `search_file` results on the same file, or low DA confidence (< 0.2). Per-evidence state via `EvidenceDAState`. | Auto-vectorize the file (no user confirmation); inject raw content for small files below the vectorization threshold | Mechanical: independent counters/flags per evidence file in execution loop |
 | Context budget (R5) | Tool result chars exceed 30K budget | Standard/aggressive compression of tool results | Mechanical: character counter + keyword-based line filtering |
 
-These are **not behavioral rules** because they don't constrain the LLM's output structure or vocabulary. They are system-level interventions that modify what the LLM *sees* (injected advisories, compressed results) rather than what it *does*. They complement the behavioral rules by ensuring the LLM has the right information to make good decisions.
+These are **not behavioral rules** because they don't constrain the LLM's output structure or vocabulary. They are system-level interventions that modify what the LLM *sees* (injected advisories, compressed results, semantically-indexed evidence) rather than what it *does*. They complement the behavioral rules by ensuring the LLM has the right information to make good decisions.
 
-See [Orchestration Capabilities §5](./orchestration-capabilities.md#5-tier-escalation-hardening-mechanical-safety-nets) for implementation details.
+See [Orchestration Capabilities §5](./orchestration-capabilities.md#5-orchestration-hardening-mechanical-safety-nets) for implementation details.
 
 ---
 

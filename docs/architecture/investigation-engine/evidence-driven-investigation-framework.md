@@ -542,18 +542,9 @@ INQUIRY → DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT → RESOLVED
 
 ### 7.3 Path Selection
 
-Path selection remains system-determined from the temporal_state x urgency_level matrix:
+Path selection is system-determined from the `temporal_state × urgency_level` matrix. The three paths (`MITIGATION_FIRST`, `ROOT_CAUSE`, `USER_CHOICE`) determine whether the agent offers mitigation during DIAGNOSIS; actual entry into MITIGATION is inferred from user compliance with the proposed temp fix.
 
-| | CRITICAL | HIGH | MEDIUM | LOW |
-|---|---|---|---|---|
-| **ONGOING** | MITIGATION_FIRST | MITIGATION_FIRST | USER_CHOICE | USER_CHOICE |
-| **HISTORICAL** | USER_CHOICE | ROOT_CAUSE | ROOT_CAUSE | ROOT_CAUSE |
-
-- **MITIGATION_FIRST**: Agent proactively offers mitigation during DIAGNOSIS before pursuing root cause.
-- **ROOT_CAUSE**: Agent goes straight to root cause analysis. Mitigation is not offered unless the user requests it.
-- **USER_CHOICE**: Agent presents both options and lets the user decide. Used for ambiguous urgency/temporal combinations where the right approach depends on context the system cannot infer (e.g., historical + critical: "We had a catastrophic outage last week, the CEO wants answers by tomorrow" — the user knows whether speed or thoroughness matters more).
-
-The path determines **whether the agent offers mitigation** during DIAGNOSIS. The actual entry into MITIGATION stage is inferred from user compliance with the proposed temp fix.
+See **[Investigation Lifecycle Logic §2.1 Path Selection Matrix](./investigation-lifecycle-logic.md#21-path-selection-matrix)** for the canonical matrix (all cells, per-cell rationale, and path semantics).
 
 ### 7.4 Edge Cases
 
@@ -613,7 +604,7 @@ RESOLVED case
 1. **Content readiness** (`assess_runbook_readiness`) — Maps case data to the 7 canonical runbook sections. Requires problem definition + root cause with actionable fix (commands/steps). Returns READY, NEEDS_ENRICHMENT, or NOT_SUITABLE.
 2. **No similar runbook exists** — Vector search in ChromaDB via `RunbookKnowledgeBase`. ≥85% match → existing covers. 70-84% → suggest with caveat. <70% → no conflict.
 
-**Auto-summary guardrail** (`should_generate_terminal_summary()`): Summaries are auto-generated for all terminal cases that have both sufficient conversation (>=4 messages) and investigation substance (evidence, hypotheses, confirmed description, or completed milestones). Always skipped for duplicates.
+**Auto-summary generation**: Terminal cases with meaningful content get an auto-generated summary (`RESOLUTION_SUMMARY` or `CLOSURE_SUMMARY`). See [Investigation Lifecycle Logic §4.5.0](./investigation-lifecycle-logic.md#450-auto-generated-terminal-summary) for the canonical spec (content-focus table, skip-if-trivial guardrail, transition paths).
 
 **Flywheel effect**: Runbooks generated from resolved cases are indexed in ChromaDB. When future cases arrive with similar symptoms, the agent's `kb_qa` tool surfaces these runbooks, potentially enabling fast-track resolution (INQUIRY → RESOLVED) without a full investigation cycle.
 
@@ -730,7 +721,7 @@ The focus zone is injected immediately after the stage header, before the standa
 
 The proposal should be a specific action ("Run `kubectl rollout restart...`"), not a request for permission ("Would you like me to suggest a fix?"). The user's compliance (executing and submitting results) triggers the inference-based transition to TREATMENT.
 
-### 8.5 TREATMENT Prompt Objectives
+### 8.6 TREATMENT Prompt Objectives
 
 TREATMENT has two modes:
 
@@ -747,7 +738,7 @@ TREATMENT has two modes:
 
 This is a limited-use capability — most investigations resolve on the first fix. The TREATMENT prompt includes extended diagnosis instructions proportionally.
 
-### 8.6 What the "Jump Ahead" Removal Means
+### 8.7 What the "Jump Ahead" Removal Means
 
 The old SYMPTOM_VERIFICATION prompt said: "YOU CAN JUMP AHEAD to root_cause_identified." This is removed entirely. In DIAGNOSIS, there is no "jumping" because there are no sub-stages to jump between. The agent simply processes evidence and advances naturally.
 
@@ -1195,5 +1186,5 @@ All open questions from the initial draft have been resolved.
 |----------|-------------|
 | [Investigation Data Models](./investigation-data-models.md) | Data models to be updated per Section 10 |
 | [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) | Lifecycle logic to be updated per Sections 4, 7 |
-| [Prompt Engineering Guide](./prompt-engineering-guide.md) | Prompt architecture to be updated per Section 8 |
+| [Agent Behavioral Rules](./agent-behavioral-rules.md) | Prompt-injected rules that constrain agent output (replaces the former prompt engineering guide) |
 | [Prompt Templates](./prompt-templates.md) | Templates to be updated per Section 8 |

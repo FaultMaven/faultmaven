@@ -106,7 +106,7 @@ async def handle_inquiry_turn(case: Case, user_message: str) -> str:
     """
     Process inquiry turn and manage problem statement workflow.
 
-    ITERATIVE REFINEMENT PATTERN (Section 1.7, line 773):
+    ITERATIVE REFINEMENT PATTERN:
     1. Agent generates proposed_problem_statement from conversation
     2. Agent presents statement for confirmation
     3. User confirms OR provides corrections
@@ -343,7 +343,7 @@ propose_transition(
 
 #### INQUIRY → RESOLVED (Disposition, Fast-Track)
 
-> **Implementation Status:** Design complete, wiring deferred. The `KnowledgeResolution` model exists in contracts and the `InquiryResponse.knowledge_resolution` field is in the schema, but `_process_response_structured()` does not yet process this field. See limitation G5 in [Opportunistic Investigation Framework](./opportunistic-investigation-framework.md#known-limitations--deferred-items).
+> **Implementation Status:** Design complete, wiring deferred. The `KnowledgeResolution` model exists in contracts and the `InquiryResponse.knowledge_resolution` field is in the schema, but `_process_response_structured()` does not yet process this field.
 
 **Trigger**: Knowledge base match resolves issue without formal investigation
 
@@ -979,44 +979,9 @@ All manual case actions use **existing endpoints** - no new APIs required:
 
 ### 1.6 Agent Role Constraints
 
-**CRITICAL**: The agent is an **ADVISOR**, not an executor. It helps users troubleshoot but never performs actions itself.
+The agent is an **ADVISOR**, not an executor — it suggests, asks, recommends, and explains, but never runs commands, accesses systems, or makes infrastructure changes itself. This constraint is enforced as a behavioral rule with a vocabulary constraint (banned/required phrase table).
 
-#### What the Agent Can Do
-
-- **Suggest** actions for users to take
-- **Ask** for data users can provide
-- **Recommend** diagnostic steps
-- **Explain** reasoning and implications
-- **Guide** through investigation methodology
-
-#### What the Agent CANNOT Do
-
-- Execute commands or queries
-- Access systems, logs, or metrics directly
-- Run diagnostic tools
-- Make changes to infrastructure
-
-#### Language Constraints
-
-**Prohibited Phrases** (implies agent execution):
-
-- ❌ "Let me check the logs"
-- ❌ "I'll execute that command"
-- ❌ "I'll look into the database"
-- ❌ "Let me run a query"
-- ❌ "Which would you like me to run?"
-
-**Correct Phrases** (advisor tone):
-
-- ✅ "Could you check the logs for errors?"
-- ✅ "You might want to try running that command"
-- ✅ "It would help to look at the database metrics"
-- ✅ "You could run a query to confirm"
-- ✅ "Which would you like to try first?"
-
-**Rationale**: This constraint ensures user expectations align with actual capabilities. Users who think the agent is executing commands will become frustrated when nothing happens.
-
-**Implementation**: LLM system prompts must explicitly state advisor-only role and prohibit execution language.
+See **[Agent Behavioral Rules — Rule 3: Advisor Role](./agent-behavioral-rules.md#rule-3-advisor-role)** for the full banned/required phrase table, rationale, and prompt-injection text.
 
 ---
 
@@ -1118,7 +1083,7 @@ Root Cause           — What was identified as the cause
 Solution Applied     — What fixed it, with key commands/configs
 Confirming Evidence  — Which evidence items confirmed the fix
 Timeline             — created_at → key milestones → resolved_at
-Milestones Reached   — Which of the 9 progress milestones completed
+Milestones Reached   — Which of the 6 progress milestones completed
 Investigation Path   — MITIGATION_FIRST or ROOT_CAUSE, mitigation applied?
 ```
 
@@ -1502,24 +1467,10 @@ def validate_milestone_claims(
                 f"(expected >= {expectations['min_evidence']})"
             )
 
-# Minimum evidence expectations for PROGRESS MILESTONES (non-stage-driving):
-# These are validated when the LLM claims a progress milestone has been reached.
-PROGRESS_MILESTONE_EVIDENCE_EXPECTATIONS = {
-    "symptom_verified":     {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
-    "scope_assessed":       {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
-    "timeline_established": {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
-    "changes_identified":   {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE]},
-    "root_cause_identified":{"min_evidence": 2, "categories": [CAUSAL_EVIDENCE]},
-    "solution_proposed":    {"min_evidence": 0, "categories": []},  # Set programmatically when
-                                                                     # ProposedAction with action_type=SOLUTION is created
-}
-
-# GATE MILESTONES are NOT evidence-validated — they are set by
-# the LLM in structured output when it detects user compliance (Framework §4.2):
-#   - mitigation_accepted: User complied with proposed temp fix
-#   - mitigation_verified: User confirmed mitigation worked
-#   - solution_accepted:   User complied with proposed solution
-#   - solution_verified:   User confirmed fix worked (User-Agent Handshake)
+# PROGRESS_MILESTONE_EVIDENCE_EXPECTATIONS and the gate-milestone triggers
+# are canonical in investigation-data-models.md §1.2 "Progress Milestone
+# Evidence Expectations". See that table for min_evidence counts, expected
+# categories per progress milestone, and the four gate-milestone triggers.
 ```
 
 **Evidence Classification**:
@@ -1693,147 +1644,11 @@ def determine_turn_outcome(case: Case, progress_made: bool) -> TurnOutcome:
 
 ### 3.3 Diagnostic Reasoning Requirements
 
-**REQUIREMENT**: Before suggesting any action, mitigation, or hypothesis, the agent MUST demonstrate context-specific diagnostic reasoning that explains WHY the suggestion is relevant to this specific investigation.
+The agent must demonstrate context-specific diagnostic reasoning — grounded in this case's evidence — before suggesting any action, mitigation, or hypothesis during INVESTIGATING. The reasoning structure (OBSERVATION → ANALYSIS → CONCLUSION), prohibited/required patterns, worked BAD/GOOD examples, and post-generation validator enforcement are canonical in:
 
-**PURPOSE**: Prevent generic advice disconnected from case evidence. Force grounded reasoning based on actual symptoms, timeline, and context.
+See **[Agent Behavioral Rules — Rule 2: Evidence-Grounded](./agent-behavioral-rules.md#rule-2-evidence-grounded)**.
 
----
-
-**Diagnostic Reasoning Pattern** (agent response structure):
-
-1. **Observation** - What specific evidence/symptom triggered this line of thinking?
-2. **Analysis** - Why does this evidence point toward this explanation/action?
-3. **Suggestion** - What specific action follows from this reasoning?
-4. **Expected Outcome** - What should happen if this reasoning is correct?
-
----
-
-**Example: BAD (Generic Advice)**
-
-```
-❌ Agent: "Your database is slow. You should:
-   - Scale up your database pods
-   - Add read replicas
-   - Enable connection pooling
-   - Check for slow queries"
-```
-
-**Why Bad**: No connection to this specific case. Could apply to any database issue. No diagnostic reasoning.
-
----
-
-**Example: GOOD (Grounded Diagnostic Reasoning)**
-
-```
-✅ Agent: "I notice the timeouts started exactly 2 minutes after deployment e8f3a92:
-
-OBSERVATION:
-- Error rate jumped from 0% to 40% at 14:03 UTC
-- Deployment e8f3a92 completed at 14:01 UTC
-- Timeline correlation: +2 minutes
-- No infrastructure changes in that window
-
-ANALYSIS:
-This tight temporal correlation (2-minute gap) suggests the deployment
-introduced the issue rather than database capacity. If this were a capacity
-problem, we'd expect gradual degradation, not a sharp cliff at deployment time.
-
-SUGGESTED MITIGATION:
-Rollback deployment e8f3a92 to previous version (d4b2c11) to test causation.
-
-EXPECTED OUTCOME:
-If my reasoning is correct:
-- Error rate should drop from 40% to near-0% within 60 seconds of rollback
-- Connection timeouts should stop
-- If errors persist after rollback, we can rule out the deployment"
-```
-
-**Why Good**:
-- Grounds reasoning in specific evidence (timestamps, deployment ID, error rate)
-- Explains WHY correlation matters (sharp vs gradual)
-- Mitigation is testable and reversible
-- Defines success criteria
-
----
-
-**Example: BAD (Hypothesis without Reasoning)**
-
-```
-❌ Agent: "Based on the symptoms, here are three hypotheses:
-   1. Database connection pool exhaustion
-   2. Network timeout misconfiguration
-   3. Deadlock in transaction processing"
-```
-
-**Why Bad**: Lists possibilities without explaining which evidence points where. No prioritization or diagnostic logic.
-
----
-
-**Example: GOOD (Hypothesis with Diagnostic Reasoning)**
-
-```
-✅ Agent: "From the evidence, I'm forming a primary hypothesis:
-
-OBSERVATION:
-- Logs show 'connection timeout after 5000ms' errors
-- Database metrics show connection pool at 45/100 (not exhausted)
-- No slow query logs during error window
-- Application default timeout: 5 seconds
-- Database query latency: 8-12 seconds (above timeout)
-
-ANALYSIS:
-The database isn't refusing connections (pool not full), but queries are
-taking 8-12 seconds while the app times out at 5 seconds. This explains
-why we see timeouts despite available capacity.
-
-PRIMARY HYPOTHESIS:
-Recent deployment introduced N+1 query pattern causing queries to take
-8-12 seconds, exceeding application's 5-second timeout threshold.
-
-DIAGNOSTIC TEST:
-Can you share the query execution plan for the slow queries? If we see
-sequential scans or missing JOINs that weren't present before deployment
-e8f3a92, that would validate this hypothesis."
-```
-
-**Why Good**:
-- Uses specific metrics (5s timeout vs 8-12s latency)
-- Rules out competing explanations (pool exhaustion)
-- Hypothesis is testable and falsifiable
-- Requests specific evidence to validate
-
----
-
-**PROHIBITED PATTERNS** (agent must NEVER do these):
-
-❌ **Checklist Engineering**: "Try these 10 things and see what works"
-❌ **Solution Brainstorming**: "Here are 5 possible solutions..."
-❌ **Generic Best Practices**: "You should implement monitoring/logging/alerting"
-❌ **Speculation Without Evidence**: "It's probably a memory leak or DNS issue"
-❌ **Action Without Explanation**: "Run this command: `kubectl restart deployment foo`"
-
----
-
-**REQUIRED PATTERNS** (agent must ALWAYS do these):
-
-✅ **Evidence-Grounded**: Quote specific metrics, timestamps, log lines, error messages
-✅ **Causal Reasoning**: Explain mechanism (HOW would X cause Y?)
-✅ **Falsifiable**: Define what evidence would prove hypothesis wrong
-✅ **Prioritized**: Explain why this hypothesis over alternatives
-✅ **Testable**: Suggest specific evidence that would validate/refute
-
----
-
-**ENFORCEMENT**:
-
-This requirement applies to ALL agent suggestions during INVESTIGATING state:
-- Mitigation proposals (during DIAGNOSIS, primarily on MITIGATION_FIRST path but applicable whenever agent detects urgency)
-- Hypothesis generation (all paths, in DIAGNOSIS and extended diagnosis within TREATMENT)
-- Diagnostic command suggestions
-- Solution proposals
-- Evidence requests (explain WHY specific evidence is needed)
-
-**EXCEPTION**: INQUIRY state (problem statement refinement) does not require diagnostic reasoning, as investigation hasn't started yet.
+**Scope note**: The requirement applies to all agent suggestions during INVESTIGATING state (mitigation proposals, hypothesis generation, diagnostic/solution suggestions, evidence requests). INQUIRY state (problem statement refinement) is exempt because investigation hasn't started yet.
 
 ---
 

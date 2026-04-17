@@ -42,7 +42,7 @@ This documentation follows the [Diátaxis framework](https://diataxis.fr/), orga
 |----------|-------------|
 | [Architecture Overview](./architecture/architecture-overview.md) | Master system design |
 | [Case and Session Concepts](./architecture/case-and-session/case-and-session-concepts.md) | Core domain concepts |
-| [Investigation Framework](./architecture/investigation-engine/opportunistic-investigation-framework.md) | Opportunistic investigation process |
+| [Investigation Framework](./architecture/investigation-engine/evidence-driven-investigation-framework.md) | Evidence-driven investigation process (opportunistic, milestone-based) |
 | [Testing Standards](./development/testing/standards.md) | Testing requirements and standards |
 
 ## Contributing
