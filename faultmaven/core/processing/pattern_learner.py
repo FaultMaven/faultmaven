@@ -46,7 +46,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.models.interfaces import IMemoryService
 
 
 class PatternType(Enum):
@@ -108,9 +107,8 @@ class PatternLearner:
     provides quality assessment and pattern lifecycle management.
     """
 
-    def __init__(self, memory_service: Optional[IMemoryService] = None):
+    def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self._memory_service = memory_service
 
         # Pattern storage by type
         self._patterns: Dict[PatternType, List[Pattern]] = defaultdict(list)
@@ -243,10 +241,6 @@ class PatternLearner:
                 "timestamp": time.time(),
             }
             self._learning_history.append(learning_session)
-
-            # Persist patterns to memory service if available
-            if self._memory_service:
-                await self._persist_patterns_to_memory(session_id)
 
             processing_time = (time.time() - start_time) * 1000
             learning_confidence = self._calculate_learning_confidence(
@@ -429,35 +423,13 @@ class PatternLearner:
     async def _extract_learning_context(
         self, session_id: str, context: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Extract learning context from memory and provided context"""
-        learning_context = {
+        """Extract learning context from provided context"""
+        return {
             "user_expertise": "unknown",
             "domain_focus": [],
             "recent_patterns": [],
             "session_context": context or {},
         }
-
-        if self._memory_service:
-            try:
-                # Get conversation context for learning enhancement
-                conv_context = await self._memory_service.retrieve_context(
-                    session_id, "pattern learning context"
-                )
-
-                if conv_context and conv_context.user_profile:
-                    learning_context["user_expertise"] = conv_context.user_profile.get(
-                        "skill_level", "unknown"
-                    )
-
-                if conv_context and conv_context.domain_context:
-                    learning_context["domain_focus"] = list(
-                        conv_context.domain_context.keys()
-                    )
-
-            except Exception as e:
-                self.logger.warning(f"Failed to extract learning context: {e}")
-
-        return learning_context
 
     def _analyze_feedback(
         self,
@@ -1029,43 +1001,3 @@ class PatternLearner:
         complexity_diversity = min(1.0, complexity_std / 20.0)  # Normalize
 
         return (type_diversity + complexity_diversity) / 2.0
-
-    async def _persist_patterns_to_memory(self, session_id: str):
-        """Persist learned patterns to memory service"""
-        try:
-            if not self._memory_service:
-                return
-
-            # Create a summary of patterns for memory consolidation
-            pattern_summary = {
-                "total_patterns": len(self._pattern_index),
-                "patterns_by_type": {
-                    pt.value: len(self._patterns.get(pt, [])) for pt in PatternType
-                },
-                "top_patterns": [
-                    {
-                        "id": p.pattern_id,
-                        "type": p.pattern_type.value,
-                        "description": p.description,
-                        "confidence": p.confidence,
-                    }
-                    for p in sorted(
-                        self._pattern_index.values(),
-                        key=lambda x: x.confidence,
-                        reverse=True,
-                    )[:5]
-                ],
-                "learning_metrics": self._metrics.copy(),
-            }
-
-            # Store pattern learning result
-            await self._memory_service.consolidate_insights(
-                session_id,
-                {
-                    "pattern_learning": pattern_summary,
-                    "learning_timestamp": time.time(),
-                },
-            )
-
-        except Exception as e:
-            self.logger.warning(f"Failed to persist patterns to memory: {e}")

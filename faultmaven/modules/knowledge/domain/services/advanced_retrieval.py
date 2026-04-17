@@ -23,7 +23,6 @@ from faultmaven.exceptions import KnowledgeBaseException
 from faultmaven.models import SearchResult
 from faultmaven.models.interfaces import (
     ConversationContext,
-    IMemoryService,
     IVectorStore,
 )
 
@@ -89,16 +88,13 @@ class AdvancedKnowledgeRetrieval:
     def __init__(
         self,
         vector_store: Optional[IVectorStore] = None,
-        memory_service: Optional[IMemoryService] = None,
     ):
         """Initialize Advanced Knowledge Retrieval system
 
         Args:
             vector_store: Optional vector store for semantic search
-            memory_service: Optional memory service for context enhancement
         """
         self._vector_store = vector_store
-        self._memory = memory_service
         self._logger = logging.getLogger(__name__)
 
         # Retrieval strategy configurations
@@ -242,32 +238,6 @@ class AdvancedKnowledgeRetrieval:
         """Enhance query using memory insights and reasoning context"""
         enhancement_insights = []
         query_parts = [context.query]
-
-        # Add memory-based enhancements
-        if self._memory and context.memory_insights:
-            memory_keywords = []
-            for insight in context.memory_insights:
-                if (
-                    insight.get("type") == "pattern"
-                    and insight.get("confidence", 0) > 0.7
-                ):
-                    keywords = insight.get("keywords", [])
-                    memory_keywords.extend(keywords)
-
-            if memory_keywords:
-                # Use most frequent keywords from memory
-                keyword_freq = {}
-                for kw in memory_keywords:
-                    keyword_freq[kw] = keyword_freq.get(kw, 0) + 1
-
-                top_keywords = sorted(
-                    keyword_freq.items(), key=lambda x: x[1], reverse=True
-                )[:3]
-                for keyword, freq in top_keywords:
-                    query_parts.append(keyword)
-                    enhancement_insights.append(
-                        f"Added memory keyword: {keyword} (frequency: {freq})"
-                    )
 
         # Add domain context enhancements
         if context.domain_context:
@@ -861,7 +831,7 @@ class AdvancedKnowledgeRetrieval:
 
         health_info = {
             "status": "healthy",
-            "components": {"vector_store": "unknown", "memory_service": "unknown"},
+            "components": {"vector_store": "unknown"},
             "performance_metrics": self._metrics.copy(),
             "capabilities": {
                 "context_aware_retrieval": True,
@@ -869,7 +839,6 @@ class AdvancedKnowledgeRetrieval:
                 "multi_stage_search": True,
                 "knowledge_gap_detection": True,
                 "reasoning_integration": True,
-                "memory_integration": self._memory is not None,
             },
         }
 
@@ -884,16 +853,5 @@ class AdvancedKnowledgeRetrieval:
         else:
             health_info["components"]["vector_store"] = "unavailable"
             health_info["status"] = "degraded"
-
-        # Check memory service
-        if self._memory:
-            try:
-                # Simple health check would go here
-                health_info["components"]["memory_service"] = "healthy"
-            except Exception:
-                health_info["components"]["memory_service"] = "unhealthy"
-                health_info["status"] = "degraded"
-        else:
-            health_info["components"]["memory_service"] = "unavailable"
 
         return health_info

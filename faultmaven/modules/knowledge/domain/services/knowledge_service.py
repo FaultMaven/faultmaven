@@ -37,7 +37,6 @@ from faultmaven.models import KnowledgeBaseDocument, SearchResult
 from faultmaven.models.interfaces import (
     IKnowledgeIngester,
     ILLMProvider,
-    IMemoryService,
     ISanitizer,
     ITracer,
     IVectorStore,
@@ -71,9 +70,6 @@ class KnowledgeService:
         vector_store: Optional[IVectorStore] = None,
         redis_client: Optional[object] = None,
         settings: Optional[Any] = None,
-        memory_service: Optional[
-            IMemoryService
-        ] = None,  # Enhanced: Memory service for context
         llm_provider: Optional[
             ILLMProvider
         ] = None,  # Enhanced: LLM for intelligent processing
@@ -89,7 +85,6 @@ class KnowledgeService:
             vector_store: Optional interface for vector database operations
             redis_client: Optional Redis client for metadata storage
             settings: Configuration settings for the service
-            memory_service: Optional memory service for enhanced context-aware search
             llm_provider: Optional LLM for intelligent query processing
             db_session_factory: Optional async session factory for SQLite access
         """
@@ -102,14 +97,13 @@ class KnowledgeService:
         self._db_session_factory = db_session_factory
 
         # Enhanced capabilities
-        self._memory = memory_service
         self._llm = llm_provider
 
         # Initialize advanced retrieval engine if available
         if ENHANCED_RETRIEVAL_AVAILABLE and vector_store:
             try:
                 self._advanced_retrieval = AdvancedKnowledgeRetrieval(
-                    vector_store=vector_store, memory_service=memory_service
+                    vector_store=vector_store
                 )
                 self._enhanced_mode = True
             except Exception as e:

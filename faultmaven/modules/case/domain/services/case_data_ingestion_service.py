@@ -28,7 +28,6 @@ from faultmaven.models import DataInsightsResponse, DataType, UploadedData
 from faultmaven.models.interfaces import (
     IDataClassifier,
     ILogProcessor,
-    IMemoryService,
     ISanitizer,
     IStorageBackend,
     ITracer,
@@ -101,10 +100,6 @@ class CaseDataIngestionService:
         storage_backend: Optional[IStorageBackend] = None,
         session_service=None,  # Optional session service for operation tracking
         settings: Optional[Any] = None,
-        memory_service: Optional[
-            IMemoryService
-        ] = None,  # Enhanced: Memory service for context
-        pattern_learner: Optional[Any] = None,  # Enhanced: Pattern learning service
     ):
         """
         Initialize the Data Service with interface dependencies
@@ -117,8 +112,6 @@ class CaseDataIngestionService:
             storage_backend: Optional storage backend interface
             session_service: Optional session service for operation tracking
             settings: Configuration settings for the service
-            memory_service: Optional memory service for enhanced context-aware processing
-            pattern_learner: Optional pattern learning service for adaptive processing
         """
         self._classifier = data_classifier
         self._processor = log_processor
@@ -128,23 +121,12 @@ class CaseDataIngestionService:
         self._session_service = session_service
         self._settings = settings
 
-        # Enhanced capabilities
-        self._memory_service = memory_service
-        self._pattern_learner = pattern_learner
-
-        # Initialize enhanced components if available
-        if ENHANCED_COMPONENTS_AVAILABLE and memory_service:
-            try:
-                self._enhanced_classifier = EnhancedDataClassifier(memory_service)
-                self._enhanced_processor = EnhancedLogProcessor(memory_service)
-                if pattern_learner is None:
-                    self._pattern_learner = PatternLearner(memory_service)
-                self._enhanced_mode = True
-            except Exception as e:
-                logger.warning(f"Enhanced components initialization failed: {e}")
-                self._enhanced_mode = False
-        else:
-            self._enhanced_mode = False
+        # Enhanced mode is unreachable — the `core.processing.classifier` module
+        # referenced by ENHANCED_COMPONENTS_AVAILABLE no longer exists, so the
+        # flag is always False at runtime. Kept as `False` here for any
+        # remaining `if self._enhanced_mode:` guards until they are removed.
+        self._enhanced_mode = False
+        self._pattern_learner = None
 
         # Performance metrics
         self._metrics = {

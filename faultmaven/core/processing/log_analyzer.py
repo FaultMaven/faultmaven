@@ -51,7 +51,6 @@ from faultmaven.models.common import AgentStateEnum as AgentState
 from faultmaven.models.interfaces import (
     ConversationContext,
     ILogProcessor,
-    IMemoryService,
 )
 
 
@@ -74,9 +73,8 @@ class EnhancedProcessingResult:
 class EnhancedLogProcessor(ILogProcessor):
     """Memory-aware log processor with pattern learning and context understanding"""
 
-    def __init__(self, memory_service: Optional[IMemoryService] = None):
+    def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self._memory_service = memory_service
 
         # Pattern learning components
         self._learned_anomaly_patterns = defaultdict(list)
@@ -229,30 +227,11 @@ class EnhancedLogProcessor(ILogProcessor):
         """
         start_time = time.time()
 
-        # Retrieve memory context if available
-        memory_context = None
         memory_enhanced = False
-
-        if self._memory_service and session_id:
-            try:
-                # Create a query from log content preview for context retrieval
-                content_preview = (
-                    content[:300] + "..." if len(content) > 300 else content
-                )
-                memory_context = await self._memory_service.retrieve_context(
-                    session_id, content_preview
-                )
-                memory_enhanced = True
-                self._metrics["memory_enhanced"] += 1
-            except Exception as e:
-                self.logger.warning(
-                    f"Failed to retrieve memory context for log processing: {e}"
-                )
-                memory_context = None
 
         # Combine context sources
         combined_context = {
-            "memory": memory_context,
+            "memory": None,
             "additional": context or {},
             "session_id": session_id,
             "data_type": data_type,
