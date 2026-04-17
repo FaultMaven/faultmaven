@@ -17,6 +17,12 @@ Security implementation and configuration guides.
 | [Comprehensive Protection Guide](./comprehensive-protection-implementation-guide.md) | Full protection system |
 | [PII Sanitization](./pii-sanitization-configuration.md) | Privacy protection |
 
+## Vulnerability Management
+
+| Document | Description |
+|----------|-------------|
+| [Vulnerability Exceptions](./vulnerability-exceptions.md) | Documented CVEs with accepted-risk justifications |
+
 ## Quick Links
 
 - **[Monitoring](../monitoring/)** - Logging and observability
