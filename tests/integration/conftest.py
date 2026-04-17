@@ -45,8 +45,6 @@ except ImportError:
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models.interfaces import (
     ILLMProvider,
-    IMemoryService,
-    IPlanningService,
     ISanitizer,
     ITracer,
     IVectorStore,
