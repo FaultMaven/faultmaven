@@ -38,7 +38,7 @@ dependencies = [
     # LLM Framework (REQUIRED - core functionality)
     "openai>=1.0.0",
     "anthropic>=0.25.0",
-    "fireworks-ai>=0.12.1",
+    "fireworks-ai>=0.19.20",
     "tiktoken>=0.5.0",
 
     # Database (SQLite in base, PostgreSQL drivers in enterprise)
@@ -79,6 +79,9 @@ dependencies = [
     "pylogrus>=0.1.2",
     "scikit-learn>=1.5.0",
     "pyod>=2.0.1",
+    # fireworks-ai 0.19.20 pins protobuf==5.29.3 exactly; the 5.29.6
+    # fix for GHSA-7gcm-g887-7qv7 is unavailable until fireworks-ai
+    # loosens their pin. See docs/operations/security/vulnerability-exceptions.md
     "protobuf>=4.25.0,<6",
 
     # Web utilities
@@ -102,7 +105,7 @@ dependencies = [
 [project.optional-dependencies]
 enterprise = [
     # Observability (Opik tracing, Prometheus metrics)
-    "opik>=0.2.1",
+    "opik>=1.11.13",
     "prometheus-client>=0.20.0",
 
     # Security (Presidio PII redaction)
