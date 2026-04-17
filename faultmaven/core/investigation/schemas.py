@@ -5,7 +5,8 @@ It implements the "Form-Filler" pattern where the LLM returns a structured state
 along with its natural language response.
 
 Design Reference:
-- docs/architecture/investigation-engine/prompt-engineering-guide.md
+- docs/architecture/investigation-engine/agent-behavioral-rules.md
+- docs/architecture/investigation-engine/prompt-templates.md
 - Investigation Architecture v2.0
 
 Key Features:

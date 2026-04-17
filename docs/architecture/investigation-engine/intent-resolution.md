@@ -372,18 +372,13 @@ User requests "Resolved"
 
 ---
 
-## 9. Pending Transition — Deterministic Handling
+## 9. Pending Transition — Intent Routing Interface
 
-When a `pending_transition` exists (resolution or closure confirmation awaiting yes/no), all user inputs are handled deterministically — no message falls through to the LLM tool loop:
+Intent resolution bridges into `pending_transition` handling via the `CONFIRMATION` intent type. When the classifier resolves a user input to `{type: "confirmation", confirmation_value: true|false}`, that metadata feeds into the deterministic dispatch (`confirm_pending_transition()` / `cancel_pending_transition()`).
 
-| User input | Handler | Result |
-|---|---|---|
-| Clear yes (pattern or intent) | `confirm_pending_transition()` | Execute transition, return |
-| Clear no (pattern or intent) | `cancel_pending_transition()` | Cancel, acknowledge, return |
-| Anything else | Re-present confirmation | Show COOPERATIVE Yes/No suggestions, return |
-| Repeated dropdown click | `status_transition_confirms` | Treat as implicit confirmation |
+The full deterministic dispatch table (clear yes / clear no / anything else / repeated dropdown click), the User-Agent Handshake pattern, and the "no LLM tool loop fallthrough when pending_transition exists" invariant are canonical in:
 
-The "anything else" path prevents crashes from the LLM failing to produce tool calls on short/ambiguous messages with `tool_choice=required`.
+See **[Investigation Lifecycle Logic §1.2 — Pending transition confirmation](./investigation-lifecycle-logic.md#investigating--resolved-disposition)** and the surrounding User-Agent Handshake section.
 
 ---
 

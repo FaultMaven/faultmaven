@@ -10,11 +10,10 @@ This document defines the core data models used in FaultMaven's evidence-driven 
 
 ## Table of Contents
 
-1. [Field Naming Conventions](#field-naming-conventions)
-2. [Core Data Models](#1-core-data-models)
-3. [Evidence Model](#2-evidence-model)
-4. [Hypothesis Workflow](#3-hypothesis-workflow)
-5. [Checkpointing Model](#5-checkpointing-model)
+- [Field Naming Conventions](#field-naming-conventions)
+- [Core Data Models](#1-core-data-models)
+- [Evidence Model](#2-evidence-model)
+- [Hypothesis Workflow](#3-hypothesis-workflow)
 
 ---
 
@@ -615,7 +614,8 @@ class ReportType(str, Enum):
     CLOSURE_SUMMARY = "closure_summary"        # CLOSED cases
 
     # User-requested via ConversionService
-    RUNBOOK = "runbook"
+    RUNBOOK = "runbook"                        # From RESOLVED cases (requires root cause)
+    MITIGATION_PLAYBOOK = "mitigation_playbook"  # From CLOSED(mitigation_sufficient) cases
 
 
 class CaseReport(BaseModel):
@@ -640,36 +640,16 @@ class CaseReport(BaseModel):
     metadata: Optional[RunbookMetadata] = None
 ```
 
-**Auto-generated summary mapping:**
-
-| Case Status | Auto-Generated Type | Content Focus |
-|-------------|---------------------|---------------|
-| RESOLVED | `RESOLUTION_SUMMARY` | Root cause, solution, confirming evidence, timeline, milestones |
-| CLOSED | `CLOSURE_SUMMARY` | Investigation state at closure, approaches tried, closure reason, leading hypotheses |
-
-**Key properties:**
+**Key properties** (stored on `CaseReport`):
 
 - `auto_generated=True` — distinguishes from user-requested reports
 - `linked_to_closure=False` — auto-summaries do NOT freeze the case; only user-requested reports do
 - `version=1` — no versioning for auto-summaries (generated once)
 - `created_by="system"` — audit trail shows system origin
-- Generation uses SYNTHESIS LLM capability (Fireworks/Groq) for speed and cost
 
-**Skip-if-trivial guardrail** (`should_generate_terminal_summary()` in `terminal_transitions.py`):
+The content-focus table (which fields each summary type covers), the skip-if-trivial guardrail (≥4 messages + substance check, duplicate exclusion), the set of terminal transition paths that schedule generation, and the SYNTHESIS-capability generation path are canonical in:
 
-Auto-summary generation is scheduled for ALL terminal transition paths:
-
-- `_execute_resolved_transition()` — INVESTIGATING → RESOLVED
-- `_execute_closed_transition()` — INVESTIGATING/INQUIRY → CLOSED (via User-Agent Handshake)
-- `force_close_investigation()` — INVESTIGATING → CLOSED (direct user action)
-- `close_from_inquiry()` — INQUIRY → CLOSED (direct user action)
-
-The guardrail skips generation when a case lacks meaningful content. Two independent checks must both pass:
-
-1. **Minimum conversation depth**: At least 4 messages
-2. **Investigation substance** (at least one): evidence, hypotheses, confirmed description, or completed milestones
-
-Always skipped for `closure_reason == "duplicate"`. Everything else with substance gets a summary, including abandoned and escalated cases.
+See **[Investigation Lifecycle Logic §4.5.0](./investigation-lifecycle-logic.md#450-auto-generated-terminal-summary)** (full specification) and **[§1.7.3](./investigation-lifecycle-logic.md#173-auto-generated-terminal-summary)** (post-terminal lifecycle view).
 
 ### 1.5.2 Resolution & Runbook Readiness Models
 
@@ -964,7 +944,7 @@ class InquiryData(BaseModel):
 
         LLM creates and revises based on conversation until user confirms without reservation.
         Becomes immutable once problem_statement_confirmed = True.
-        See USER-CONFIRMATION-DESIGN-PRINCIPLE.md for full pattern documentation.
+        See investigation-lifecycle-logic.md §1.2 for the iterative refinement pattern.
         """,
         max_length=1000
     )
@@ -1291,48 +1271,26 @@ class ConfidenceLevel(str, Enum):
 
 ```python
 class JournalEntry(BaseModel):
-    """A single entry in the investigation journal.
+    """A single append-only entry in the investigation journal.
 
-    Captures a distilled insight, decision, or context that the agent
-    needs to remember across the entire investigation. Entries are
-    append-only and always included in the LLM context.
+    Captures a distilled insight, decision, or context the agent needs
+    to remember across the entire investigation. Always included in the
+    LLM context.
     """
 
-    turn: int = Field(description="Turn number when this entry was created")
-
+    turn: int
     entry_type: Literal[
         "finding", "decision", "user_context",
         "ruled_out", "blocker", "milestone"
-    ] = Field(description="Type of journal entry")
-
-    content: str = Field(
-        description="The distilled insight (max 200 chars)",
-        max_length=200,
-    )
-
-    evidence_id: Optional[str] = Field(
-        default=None,
-        description="Evidence ID this entry relates to, if any",
-    )
-
-    hypothesis_id: Optional[str] = Field(
-        default=None,
-        description="Hypothesis ID this entry relates to, if any",
-    )
+    ]
+    content: str  # max 200 chars
+    evidence_id: Optional[str] = None
+    hypothesis_id: Optional[str] = None
 ```
 
-Entry types:
+Stored on `Case.investigation_journal` (append-only list) and persisted in the metadata JSONB blob. Always included in full in the LLM context as an `<investigation_journal>` XML block.
 
-| Type | What it captures | Example |
-|---|---|---|
-| `finding` | A specific, concrete discovery from evidence | "142 OOM errors from service-A, 14:02-16:45 UTC, correlating with ChromaDB upgrade" |
-| `decision` | An investigative direction chosen and why | "Focusing on ChromaDB connection pooling — memory growth matches upgrade timeline" |
-| `user_context` | Important context the user provided that isn't evidence | "User deployed ChromaDB 0.4.22 on Feb 9; only EU region affected" |
-| `ruled_out` | A hypothesis or direction that was eliminated and why | "Network hypothesis refuted: packet captures show no loss or latency anomalies" |
-| `blocker` | Something blocking progress | "Cannot verify connection pool settings — user doesn't have access to ChromaDB config" |
-| `milestone` | A milestone reached with key supporting fact | "Root cause identified: ChromaDB 0.4.22 connection pooling disabled by default" |
-
-The journal is stored on `Case.investigation_journal` (append-only list) and persisted in the metadata JSONB blob. It is always included in full in the LLM context as an `<investigation_journal>` XML block. See [Investigation Journal](./investigation-journal.md) for full design.
+See **[Investigation Journal](./investigation-journal.md)** for the canonical design: entry-type taxonomy with examples, creation rules, LLM-context injection format, and the Phase 2/3 implementation plan.
 
 ### 1.13 EscalationState
 
@@ -1398,7 +1356,7 @@ class EscalationType(str, Enum):
     OTHER = "other"                                # Other escalation reason
 ```
 
-### 1.13 DocumentationData
+### 1.14 DocumentationData
 
 ```python
 class DocumentationData(BaseModel):
@@ -1667,30 +1625,9 @@ class EvidenceRequirement(BaseModel):
 
 ### 3.2 Anchoring Detection
 
-**Level 1: Hypothesis Category Anchoring**
+**Level 1: Hypothesis Category Anchoring** — detect when the agent is stuck testing the same hypothesis category (4+ REFUTED or INCONCLUSIVE hypotheses in the same `category`). The threshold (`category_anchoring_threshold=4`), repair action (ban the anchored category), and detection-flow placement within `ProgressMonitor.check_progress()` are canonical in:
 
-```python
-def detect_category_anchoring(case: Case) -> Optional[str]:
-    """
-    Detect if agent stuck testing same hypothesis category.
-
-    Checks both REFUTED and INCONCLUSIVE hypotheses. INCONCLUSIVE status is
-    assigned when a hypothesis has likelihood 0.3–0.5 for 3+ turns with no
-    evidence change (see HypothesisManager._check_status_transition).
-    """
-
-    category_counts = {}
-    for h in case.hypotheses.values():
-        if h.status in [HypothesisStatus.REFUTED, HypothesisStatus.INCONCLUSIVE]:
-            category_counts[h.category] = category_counts.get(h.category, 0) + 1
-
-    # Anchoring if 4+ hypotheses in same category
-    for category, count in category_counts.items():
-        if count >= 4:
-            return f"Tested {count} '{category.value}' hypotheses without validation. Try different category."
-
-    return None
-```
+See **[Progress Transparency — Agent State Repair](./progress-transparency.md#agent-state-repair-exception-handling)** (HYPOTHESIS_ANCHORING row + threshold + repair-flow diagram).
 
 **Level 2: Evidence Purpose Anchoring**
 

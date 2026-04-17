@@ -4,7 +4,7 @@ This document specifies the progress transparency feature for the FaultMaven inv
 
 **Related Documents**:
 
-- [Agent Behavioral Rules](./agent-behavioral-rules.md) — The 7 rules governing agent behavior
+- [Agent Behavioral Rules](./agent-behavioral-rules.md) — The 6 rules governing agent behavior
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) — Stage transitions and milestones
 - [Prompt Templates](./prompt-templates.md) — Where progress transparency is injected
 - [Error Handling and Recovery](./error-handling-and-recovery.md) — System-level safety nets

@@ -67,7 +67,7 @@ This document defines error handling and recovery strategies for the FaultMaven 
 
 **Strategy**: Log error, notify monitoring, suggest escalation
 
-### 1.4 Logic Errors (Investigation Stalls)
+### 1.5 Logic Errors (Investigation Stalls)
 - No progress for 3+ turns
 - Hypothesis anchoring (same category tested repeatedly)
 - Evidence contradictions
@@ -623,13 +623,9 @@ Key design principles:
 
 ### 5.2 Agent State Repair Patterns
 
-| Pattern               | Stages               | Detection                              | Action              |
-|-----------------------|----------------------|----------------------------------------|----------------------|
-| HYPOTHESIS_ANCHORING  | DIAGNOSIS, TREATMENT | 4+ failed hypotheses in same category  | Ban category         |
-| HYPOTHESIS_DEADLOCK   | DIAGNOSIS, TREATMENT | 3+ hypotheses, all INCONCLUSIVE        | Retire hypotheses    |
-| EXHAUSTED             | DIAGNOSIS            | Broad coverage, no convergence         | Structured handoff   |
-| FIX_FAILURE_CYCLE     | MITIGATION, TREATMENT| 2+ accepted fixes unverified           | Summary of attempts  |
-| ACTION_LOOP           | All                  | Identical structural output 5+ turns   | Prompt break         |
+The five repair patterns (HYPOTHESIS_ANCHORING, HYPOTHESIS_DEADLOCK, EXHAUSTED, FIX_FAILURE_CYCLE, ACTION_LOOP) — their stages, detection thresholds, and repair actions — are canonical in:
+
+See **[Progress Transparency — Agent State Repair](./progress-transparency.md#agent-state-repair-exception-handling)**.
 
 ### 5.3 Integration
 

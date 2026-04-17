@@ -2103,7 +2103,7 @@ class MilestoneEngine:
             # 1. Gather Context & Build Prompt
             # KB retrieval during turns is handled by the kb_qa tool in the
             # tool-augmented generation loop. The agent decides when to call
-            # kb_qa based on prompt directives (Rule 7: Knowledge First).
+            # kb_qa based on prompt directives (Rule 6: Knowledge First).
             # This ensures proper scope filtering via ToolContext (user_id,
             # team_ids) which the engine doesn't have at this level.
 
@@ -4993,8 +4993,7 @@ class MilestoneEngine:
         return any(msg.startswith(p) or msg == p for p in decline_patterns)
 
     # Documented >70% confidence threshold for KB fast-track resolution
-    # References: opportunistic-investigation-framework.md line 111,
-    #             investigation-lifecycle-logic.md line 277,
+    # References: investigation-lifecycle-logic.md §1.2 (INQUIRY → RESOLVED Fast-Track),
     #             templates.py line 50
     KB_FAST_TRACK_THRESHOLD = 0.7
 

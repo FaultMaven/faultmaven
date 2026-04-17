@@ -5,7 +5,7 @@ Refactored for milestone-based architecture (no OODA/phase references).
 
 Design Reference:
 - docs/architecture/investigation-engine/investigation-data-models.md
-- docs/architecture/investigation-engine/opportunistic-investigation-framework.md
+- docs/architecture/investigation-engine/evidence-driven-investigation-framework.md
 
 Key Features:
 - Works directly with Case model (no InvestigationState wrapper)

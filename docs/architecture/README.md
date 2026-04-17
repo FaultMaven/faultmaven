@@ -10,7 +10,7 @@ These four documents are the authoritative source for their respective domains. 
 |----------|--------|
 | **[Architectural Design Principles](core-architecture/architectural-design-principles.md)** | The 12 design principles (deployment-agnostic, vertical modules, composition root, interfaces, observability) |
 | **[Investigation Lifecycle Logic](investigation-engine/investigation-lifecycle-logic.md)** | Case actions, state transitions, stage routing, turn tracking |
-| **[Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)** | 7 prompt-injected rules that constrain agent output |
+| **[Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)** | 6 prompt-injected rules that constrain agent output |
 | **[Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md)** | 3-tier KB, storage, retrieval, federated search |
 
 ## Entry Point

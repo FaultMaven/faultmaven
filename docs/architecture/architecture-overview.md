@@ -11,7 +11,7 @@ These four documents are authoritative. On any conflict, they supersede other do
 
 1. **[Architectural Design Principles](core-architecture/architectural-design-principles.md)** — The 12 design principles
 2. **[Investigation Lifecycle Logic](investigation-engine/investigation-lifecycle-logic.md)** — State transitions, stage routing, turns
-3. **[Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)** — 7 prompt-injected rules
+3. **[Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)** — 6 prompt-injected rules
 4. **[Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md)** — 3-tier KB, storage, retrieval
 
 ## System Shape
@@ -92,9 +92,9 @@ Investigation is driven by the `MilestoneEngine` (not a rigid phase machine). Tu
 
 Key concepts:
 - **Case Status**: INQUIRY → INVESTIGATING → RESOLVED / CLOSED
-- **Milestones** drive progress: `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`, `solution_applied`, `solution_verified`, `mitigation_applied`
+- **Milestones** drive progress: 4 gate milestones (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`) drive stage transitions; 6 progress milestones (`symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`) provide LLM context
 - **Hypotheses** have a lifecycle: CAPTURED → ACTIVE → VALIDATED / REFUTED / RETIRED, with confidence decay (`0.85^iterations`)
-- **Behavioral rules** (7 total) constrain every agent response via prompt injection — see [Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)
+- **Behavioral rules** (6 total) constrain every agent response via prompt injection — see [Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)
 
 Full lifecycle and routing logic: [Investigation Lifecycle Logic](investigation-engine/investigation-lifecycle-logic.md).
 
