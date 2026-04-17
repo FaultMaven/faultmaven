@@ -240,7 +240,7 @@ Evidence should use smaller chunks for retrieval precision, with context provide
 | Overlap | 50 tokens | Minimal overlap; evidence boundaries are structural (timestamps, blank lines), not semantic |
 | Context window | ±10 lines at retrieval time | Forensic context provided in tool results, not in the embedding. Same pattern as `search_file` keyword results. |
 | Split strategy | Type-aware via chunk type discriminator | Logs: temporal window boundaries. Configs: section/key boundaries. Metrics: anomaly window boundaries. |
-| Implementation | `services/preprocessing/chunking_service.py` | — |
+| Implementation | `modules/preprocessing/chunking_service.py` | — |
 
 **Design rationale:** Once evidence is vectorized (Tier 4), it becomes the primary search path for all subsequent semantic queries — follow-up questions, agent-initiated correlations, cross-file analysis. The embedding must be precise enough to surface the right 512-token window when the user asks "what happened at 14:32?" Forensic context (the surrounding log entries) is retrieved at query time by expanding the matched chunk's position in the original file, not by inflating the chunk size.
 
@@ -417,7 +417,7 @@ On first startup, `seed_builtin_runbooks()` copies 59 runbooks from `resources/k
 | Frontmatter extraction | `faultmaven/utils/frontmatter.py` |
 | Model cache (BGE-M3 global singleton) | `faultmaven/infrastructure/model_cache.py` |
 | Vector metadata schema | `faultmaven/models/vector_metadata.py` |
-| Evidence chunking service | `faultmaven/services/preprocessing/chunking_service.py` |
+| Evidence chunking service | `faultmaven/modules/preprocessing/chunking_service.py` |
 
 ---
 

@@ -194,7 +194,7 @@ Knowledge and evidence use different chunking strategies because they serve diff
 |--------|---------------------|----------------------------------|
 | **Strategy** | Structure-aware splitting on markdown headers | Token-based with section-aware splitting |
 | **Chunk size** | Variable per section (100-char min, 3000-char max); sentence-boundary fallback for structureless text | 4000 tokens (~16KB), section-aware |
-| **Implementation** | `core/knowledge/ingestion.py:390` | `services/preprocessing/chunking_service.py:33` |
+| **Implementation** | `core/knowledge/ingestion.py:390` | `modules/preprocessing/chunking_service.py:33` |
 | **Rationale** | Runbooks are well-structured markdown with predictable `##` sections. Each section becomes one chunk (a diagnostic step doesn't share a chunk with an unrelated prevention tip). Variable chunk sizes are intentional — a 200-char config description is one chunk, a 2500-char procedure section is one chunk. | Evidence files are heterogeneous (logs, CSVs, JSON configs) with no predictable structure. Larger chunks preserve context — a log entry only makes sense with surrounding entries. Section-aware splitting respects structural boundaries within files (e.g., config file sections, log timestamp groups). |
 | **Impact on retrieval** | Focused, section-aligned chunks → high precision per chunk, multiple chunks needed for full answer | Large, context-rich chunks → each chunk provides enough context for forensic analysis |
 

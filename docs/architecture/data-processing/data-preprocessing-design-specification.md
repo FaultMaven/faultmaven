@@ -286,7 +286,7 @@ Severity distribution: ERROR=23, WARN=45, CRITICAL=2
 | UnstructuredText | Lines, structure type, error mentions count |
 | Documentation | Format, sections/code blocks/commands count |
 
-Coverage metadata is additive — appended after the separator, never modifying existing output. Utility functions in `faultmaven/services/preprocessing/extractors/utils.py` provide `COVERAGE_SEPARATOR`, `format_coverage_metadata()`, `extract_timestamp()`, and `extract_time_range()`.
+Coverage metadata is additive — appended after the separator, never modifying existing output. Utility functions in `faultmaven/modules/preprocessing/extractors/utils.py` provide `COVERAGE_SEPARATOR`, `format_coverage_metadata()`, `extract_timestamp()`, and `extract_time_range()`.
 
 ### 2.3 Classification Fallback: Best-Effort Dispatch
 
@@ -1071,8 +1071,8 @@ Evidence form is assigned deterministically based on how evidence enters the sys
 | `core/preprocessing/tier2/basic.py` | Expose `_keyword_search` for Tier 2 tool |
 | `core/preprocessing/vector_storage.py` | Remove auto-call from upload path; keep as tool target |
 | `core/investigation/milestone_engine.py` | v4.1: Removed `_determine_evidence_form()` and `submission_classification` reads; evidence form is payload-driven |
-| `services/preprocessing/classifier.py` | Add best-effort fallback (highest-scoring candidate instead of always UNSTRUCTURED_TEXT) |
-| `services/preprocessing/preprocessing_service.py` | Expose `classify_and_extract(content, filename)` for pasted text path |
+| `modules/preprocessing/classifier.py` | Add best-effort fallback (highest-scoring candidate instead of always UNSTRUCTURED_TEXT) |
+| `modules/preprocessing/preprocessing_service.py` | Expose `classify_and_extract(content, filename)` for pasted text path |
 | `modules/agent/tools/deep_analysis_tool.py` | No change (becomes Tier 3 tool) |
 | `container/providers/tools.py` | Register `search_file` and `vectorize_file` tools |
 | System prompt | Add escalation strategy guidance |

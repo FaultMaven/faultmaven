@@ -334,7 +334,7 @@ scrape_configs:
 
 Alert rules are defined in the infrastructure monitoring layer.
 
-> **Note**: `faultmaven/infrastructure/monitoring/evidence_metrics.py` was removed during codebase cleanup. Evidence metrics are now tracked via the general observability stack (`infrastructure/observability/`).
+> **Note**: `faultmaven/infrastructure/observability/evidence_metrics.py` was removed during codebase cleanup. Evidence metrics are now tracked via the general observability stack (`infrastructure/observability/`).
 
 **Copy to Prometheus:**
 ```bash

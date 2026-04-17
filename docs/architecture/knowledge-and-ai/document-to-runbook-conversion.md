@@ -164,7 +164,7 @@ Upload (file + scope + metadata)
   ├── 1. Format Extraction
   │     PDF/DOCX/HTML → plain text with structure preserved
   │     Markdown/TXT → pass through
-  │     Reuse existing extractors from faultmaven/services/preprocessing/
+  │     Reuse existing extractors from faultmaven/modules/preprocessing/
   │
   ├── 2. Content Cleanup
   │     Strip: navigation boilerplate, cookie banners, sidebars
@@ -229,7 +229,7 @@ Upload (file + scope + metadata)
 | Markdown | Pass-through | Full structure preserved | Strip HTML comments |
 | TXT | Pass-through | No structure | Best-effort heading detection (ALL CAPS lines, underlined lines) |
 
-The existing extractors in `faultmaven/services/preprocessing/` handle PDF, DOCX, and unstructured text. HTML extraction exists in the page capture pipeline (`source_type="page_capture"` branch). These should be reused — the conversion pipeline calls the same extraction functions, not new implementations.
+The existing extractors in `faultmaven/modules/preprocessing/` handle PDF, DOCX, and unstructured text. HTML extraction exists in the page capture pipeline (`source_type="page_capture"` branch). These should be reused — the conversion pipeline calls the same extraction functions, not new implementations.
 
 ### 2.3 Content Cleanup Rules
 

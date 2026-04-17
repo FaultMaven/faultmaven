@@ -55,6 +55,7 @@ faultmaven/
 │   │ # DOMAIN SERVICES (business logic only, NO contracts.py, NO infrastructure/)
 │   ├── agent/              # Investigation orchestration & AI tools
 │   ├── evidence/           # Evidence processing (uses Case repository)
+│   ├── preprocessing/      # Data classification, extraction (11 extractors), chunking
 │   └── report/             # Report generation (uses Case repository)
 │
 ├── core/                   # Core investigation engine
@@ -66,9 +67,9 @@ faultmaven/
 │   │   └── prompts/                 # Prompt templates and context building
 │   │       ├── templates.py         # INQUIRY/INVESTIGATING/TERMINAL templates
 │   │       └── context_builder.py   # Token-aware context assembly
-│   ├── preprocessing/      # Data preprocessor
+│   ├── preprocessing/      # Tier 0/1 mechanical preprocessor
 │   └── processing/         # Log analyzer, pattern learner
-├── infrastructure/         # Shared adapters (15 subdirectories)
+├── infrastructure/         # Shared adapters (13 subdirectories)
 │   ├── llm/                # LLM provider routing, caching
 │   │   ├── providers/      # 9 LLM providers (see Supported LLM Providers)
 │   │   ├── router.py       # Provider routing with fallback chain
@@ -82,8 +83,7 @@ faultmaven/
 │   ├── caching/            # Intelligent cache
 │   ├── storage/            # File storage (local, S3, Azure)
 │   ├── logging/            # Structured logging (structlog), coordinator
-│   ├── observability/      # Opik tracing, Prometheus metrics
-│   ├── monitoring/         # APM integration, alerting, metrics collector
+│   ├── observability/      # Opik tracing, Prometheus metrics, APM, alerting, SLA, confidence/dashboard services
 │   ├── health/             # Health checks, SLA tracker, component monitor
 │   ├── jobs/               # Background job service
 │   ├── tasks/              # Async task management
@@ -99,7 +99,7 @@ faultmaven/
 │   ├── base.py             # Base container
 │   ├── registry.py         # Service registry
 │   └── providers/          # Infrastructure, services, tools providers
-├── services/               # Shared service layer (preprocessing, analytics, base classes)
+├── services/               # Shared service utilities (BaseService class + request-scoped DI factory)
 └── models/                 # Shared interfaces, API schemas, domain models
 ```
 

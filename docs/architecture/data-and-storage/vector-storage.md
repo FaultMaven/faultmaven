@@ -637,7 +637,7 @@ await store.rebuild_index()
 **Ingestion & Query**:
 - `faultmaven/tools/knowledge_ingester.py` - Batch document ingestion (admin)
 - `faultmaven/tools/global_kb_qa.py` - Global KB Q&A tool
-- `faultmaven/services/preprocessing_service.py` - Case evidence preprocessing
+- `faultmaven/modules/preprocessing_service.py` - Case evidence preprocessing
 
 **API Endpoints**:
 - `faultmaven/api/v1/routes/case.py` - Evidence upload and search

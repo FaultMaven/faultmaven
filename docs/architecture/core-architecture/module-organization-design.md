@@ -176,7 +176,7 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 
 **Decision**: ✅ **VERTICAL** (all 3 criteria met)
 
-**Note**: Even though `knowledge/` uses `infrastructure/vector/` (horizontal), it remains vertical because it owns the business logic and data.
+**Note**: Even though `knowledge/` uses `infrastructure/knowledge/` (horizontal), it remains vertical because it owns the business logic and data.
 
 ---
 
@@ -803,9 +803,9 @@ from faultmaven.modules.agent.domain.orchestrator import InvestigationOrchestrat
 | `modules/knowledge/` | ✅ Yes (`kb_documents` + ChromaDB) | ✅ Yes | ✅ Yes | ✅ **VERTICAL** | `data-storage-design.md` Section 5.5.2 |
 | `modules/evidence/` | ❌ No (data in Case tables) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | `case-storage-design.md` Section 4.3 |
 | `modules/agent/` | ❌ No (no agent tables) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | No agent tables in schema |
+| `modules/preprocessing/` | ❌ No (operates on Evidence data) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | Data classification, extraction, chunking |
 | `modules/report/` | ❌ No (data in Case `reports` table) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | `case-storage-design.md` Section 4.9, `data-storage-design.md` Section 8 (TD-001 complete) |
 | `infrastructure/llm/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Provider abstraction |
-| `infrastructure/vector/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Provider abstraction |
 | `infrastructure/storage/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Provider abstraction |
 | `infrastructure/logging/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Cross-cutting concern |
 | `infrastructure/observability/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Cross-cutting concern |
@@ -947,15 +947,7 @@ These components provide **technical capabilities** and should remain horizontal
   - No business logic, just technical integration
 - **Structure**: Keep as-is (providers, router, registry)
 
-#### 2. **`infrastructure/vector/`** ❌ **KEEP HORIZONTAL**
-- **Purpose**: Vector store abstraction (ChromaDB, InMemory, etc.)
-- **Why Horizontal**:
-  - Used by Knowledge module (and potentially others)
-  - Provider-agnostic abstraction
-  - No business logic
-- **Structure**: Keep as-is (interfaces, implementations)
-
-#### 3. **`infrastructure/storage/`** ❌ **KEEP HORIZONTAL**
+#### 2. **`infrastructure/storage/`** ❌ **KEEP HORIZONTAL**
 - **Purpose**: File storage abstraction (S3, filesystem, Azure Blob)
 - **Why Horizontal**:
   - Used by Evidence, Knowledge, Report modules
@@ -963,7 +955,7 @@ These components provide **technical capabilities** and should remain horizontal
   - No business logic
 - **Structure**: Keep as-is (interfaces, implementations)
 
-#### 4. **`infrastructure/logging/`** ❌ **KEEP HORIZONTAL**
+#### 3. **`infrastructure/logging/`** ❌ **KEEP HORIZONTAL**
 - **Purpose**: Structured logging, correlation IDs, log coordination
 - **Why Horizontal**:
   - Used by ALL modules
@@ -971,23 +963,15 @@ These components provide **technical capabilities** and should remain horizontal
   - No business logic
 - **Structure**: Keep as-is (config, coordinator, unified)
 
-#### 5. **`infrastructure/observability/`** ❌ **KEEP HORIZONTAL**
-- **Purpose**: Tracing, metrics, performance monitoring
+#### 4. **`infrastructure/observability/`** ❌ **KEEP HORIZONTAL**
+- **Purpose**: Tracing, metrics, APM, alerting, SLA, confidence/dashboard services
 - **Why Horizontal**:
   - Used by ALL modules
   - Pure cross-cutting concern
   - No business logic
-- **Structure**: Keep as-is (tracing, metrics_collector, performance_monitoring)
+- **Structure**: `tracing.py`, `metrics_collector.py`, `apm_metrics.py`, `apm_integration.py`, `alerting.py`, `sla_monitor.py`, `performance_monitoring.py`, `confidence_service.py`, `dashboard_service.py`, `metrics_exporters/`
 
-#### 6. **`infrastructure/monitoring/`** ❌ **KEEP HORIZONTAL**
-- **Purpose**: APM integration, alerting, SLA tracking
-- **Why Horizontal**:
-  - Used by ALL modules
-  - Pure cross-cutting concern
-  - No business logic
-- **Structure**: Keep as-is (metrics_collector, alerting, apm_integration)
-
-#### 7. **`infrastructure/health/`** ❌ **KEEP HORIZONTAL**
+#### 5. **`infrastructure/health/`** ❌ **KEEP HORIZONTAL**
 - **Purpose**: Health checks, component monitoring, SLA tracking
 - **Why Horizontal**:
   - Used by ALL modules
@@ -995,7 +979,7 @@ These components provide **technical capabilities** and should remain horizontal
   - No business logic
 - **Structure**: Keep as-is (component_monitor, sla_tracker)
 
-#### 8. **`infrastructure/protection/`** ❌ **KEEP HORIZONTAL**
+#### 6. **`infrastructure/protection/`** ❌ **KEEP HORIZONTAL**
 - **Purpose**: Client protection, rate limiting, anomaly detection
 - **Why Horizontal**:
   - Used by ALL API endpoints
@@ -1003,7 +987,7 @@ These components provide **technical capabilities** and should remain horizontal
   - No business logic
 - **Structure**: Keep as-is (rate_limiter, anomaly_detector, protection_coordinator)
 
-#### 9. **`infrastructure/security/`** ❌ **KEEP HORIZONTAL**
+#### 7. **`infrastructure/security/`** ❌ **KEEP HORIZONTAL**
 - **Purpose**: PII redaction, security assessment, data sanitization
 - **Why Horizontal**:
   - Used by multiple modules (Evidence, Report, Agent)
@@ -1011,7 +995,7 @@ These components provide **technical capabilities** and should remain horizontal
   - No business logic
 - **Structure**: Keep as-is (redaction, security_assessment)
 
-#### 10. **`infrastructure/persistence/`** ❌ **KEEP HORIZONTAL**
+#### 8. **`infrastructure/persistence/`** ❌ **KEEP HORIZONTAL**
 - **Purpose**: Database connection management, session management
 - **Why Horizontal**:
   - Provides database connections to all modules
@@ -1181,7 +1165,7 @@ faultmaven/
 
 ### 2. **Knowledge Vector Store**
 
-**Decision**: Knowledge module uses `infrastructure/vector/` (horizontal) for vector store abstraction.
+**Decision**: Knowledge module uses `infrastructure/knowledge/` (horizontal) for vector store abstraction.
 
 **Rationale**:
 - Vector stores are provider-agnostic infrastructure
@@ -1317,10 +1301,10 @@ infrastructure/logging/
 ### ❌ **Don't Mix Business Logic in Infrastructure**
 ```python
 # ❌ WRONG: Business logic in infrastructure
-infrastructure/vector/knowledge_indexer.py  # Business logic!
+infrastructure/knowledge/knowledge_indexer.py  # Business logic!
 
 # ✅ RIGHT: Infrastructure provides capability, module uses it
-infrastructure/vector/vector_store.py       # Technical capability
+infrastructure/knowledge/vector_store.py       # Technical capability
 modules/knowledge/domain/services/indexing_service.py  # Business logic
 ```
 
@@ -1337,13 +1321,12 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 | `modules/knowledge/` | ✅ Vertical | Owns domain data (kb_documents + ChromaDB) |
 | `modules/evidence/` | ❌ Domain Service | Business logic only; data owned by Case module |
 | `modules/agent/` | ❌ Domain Service | Orchestration logic; no persistent state ownership |
+| `modules/preprocessing/` | ❌ Domain Service | Data classification, extraction, chunking; operates on Evidence data |
 | `modules/report/` | ❌ Domain Service | Generation logic; data owned by Case module (TD-001 complete) |
 | `infrastructure/llm/` | ❌ Horizontal | Provider abstraction, no business logic |
-| `infrastructure/vector/` | ❌ Horizontal | Provider abstraction, no business logic |
 | `infrastructure/storage/` | ❌ Horizontal | Provider abstraction, no business logic |
 | `infrastructure/logging/` | ❌ Horizontal | Cross-cutting concern |
-| `infrastructure/observability/` | ❌ Horizontal | Cross-cutting concern |
-| `infrastructure/monitoring/` | ❌ Horizontal | Cross-cutting concern |
+| `infrastructure/observability/` | ❌ Horizontal | Cross-cutting concern (tracing, metrics, APM, alerting, SLA, confidence/dashboard) |
 | `infrastructure/health/` | ❌ Horizontal | Cross-cutting concern |
 | `infrastructure/protection/` | ❌ Horizontal | Cross-cutting concern |
 | `infrastructure/security/` | ❌ Horizontal | Cross-cutting concern |
