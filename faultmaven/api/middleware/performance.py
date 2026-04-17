@@ -16,9 +16,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from faultmaven.utils.serialization import to_json_compatible
 
 from ...infrastructure.logging.coordinator import LoggingCoordinator
-from ...infrastructure.monitoring.alerting import alert_manager
-from ...infrastructure.monitoring.apm_integration import apm_integration
-from ...infrastructure.monitoring.metrics_collector import metrics_collector
+from ...infrastructure.observability.alerting import alert_manager
+from ...infrastructure.observability.apm_integration import apm_integration
+from ...infrastructure.observability.apm_metrics import metrics_collector
 
 
 class PerformanceTrackingMiddleware(BaseHTTPMiddleware):

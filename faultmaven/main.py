@@ -660,11 +660,11 @@ async def lifespan(app: FastAPI):
 
     # Initialize Phase 2 monitoring components
     try:
-        from .infrastructure.monitoring.alerting import (
+        from .infrastructure.observability.alerting import (
             alert_manager,
             setup_default_alert_rules,
         )
-        from .infrastructure.monitoring.apm_integration import apm_integration
+        from .infrastructure.observability.apm_integration import apm_integration
 
         # Start APM integration background export
         apm_integration.start_background_export()
@@ -752,7 +752,7 @@ async def lifespan(app: FastAPI):
 
     # Cleanup Phase 2 monitoring components
     try:
-        from .infrastructure.monitoring.apm_integration import apm_integration
+        from .infrastructure.observability.apm_integration import apm_integration
 
         # Stop APM background export
         apm_integration.stop_background_export()
@@ -1868,9 +1868,9 @@ async def get_performance_metrics():
     """Get comprehensive performance metrics."""
     try:
         from .api.middleware.performance import PerformanceMetricsEndpoint
-        from .infrastructure.monitoring.alerting import alert_manager
-        from .infrastructure.monitoring.apm_integration import apm_integration
-        from .infrastructure.monitoring.metrics_collector import metrics_collector
+        from .infrastructure.observability.alerting import alert_manager
+        from .infrastructure.observability.apm_integration import apm_integration
+        from .infrastructure.observability.apm_metrics import metrics_collector
 
         # Find the performance middleware instance
         performance_middleware = None
@@ -1907,8 +1907,8 @@ async def get_performance_metrics():
 async def get_realtime_metrics(time_window_minutes: int = 5):
     """Get real-time performance metrics."""
     try:
-        from .infrastructure.monitoring.alerting import alert_manager
-        from .infrastructure.monitoring.metrics_collector import metrics_collector
+        from .infrastructure.observability.alerting import alert_manager
+        from .infrastructure.observability.apm_metrics import metrics_collector
 
         # Validate time window
         if time_window_minutes < 1 or time_window_minutes > 60:
@@ -1947,7 +1947,7 @@ async def get_realtime_metrics(time_window_minutes: int = 5):
 async def get_alert_status():
     """Get current alert status and statistics."""
     try:
-        from .infrastructure.monitoring.alerting import alert_manager
+        from .infrastructure.observability.alerting import alert_manager
 
         active_alerts = alert_manager.get_active_alerts()
         alert_stats = alert_manager.get_alert_statistics()

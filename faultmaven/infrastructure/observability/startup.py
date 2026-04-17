@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 
 from faultmaven.container import container
 from faultmaven.infrastructure.caching.intelligent_cache import IntelligentCache
-from faultmaven.infrastructure.monitoring.sla_monitor import SLAMonitor
+from faultmaven.infrastructure.observability.sla_monitor import SLAMonitor
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
 from faultmaven.services.analytics.dashboard_service import AnalyticsDashboardService
 from faultmaven.services.performance_optimization import PerformanceOptimizationService

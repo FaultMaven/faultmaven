@@ -326,7 +326,7 @@ class _DummyAPMIntegration:
 
 # Provide a minimal stub for apm_integration to avoid import-side initialization in tests
 sys.modules.setdefault(
-    "faultmaven.infrastructure.monitoring.apm_integration",
+    "faultmaven.infrastructure.observability.apm_integration",
     SimpleNamespace(
         APMIntegration=_DummyAPMIntegration,
         apm_integration=SimpleNamespace(
@@ -338,7 +338,7 @@ sys.modules.setdefault(
 
 # Provide a minimal stub for metrics_collector referenced by performance middleware
 sys.modules.setdefault(
-    "faultmaven.infrastructure.monitoring.metrics_collector",
+    "faultmaven.infrastructure.observability.apm_metrics",
     SimpleNamespace(
         metrics_collector=SimpleNamespace(
             get_metrics_summary=lambda: {},
@@ -351,7 +351,7 @@ sys.modules.setdefault(
 
 # Provide a minimal stub for alerting referenced by performance endpoints
 sys.modules.setdefault(
-    "faultmaven.infrastructure.monitoring.alerting",
+    "faultmaven.infrastructure.observability.alerting",
     SimpleNamespace(
         alert_manager=SimpleNamespace(
             get_active_alerts=lambda: [],
