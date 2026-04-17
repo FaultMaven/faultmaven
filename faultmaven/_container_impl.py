@@ -418,28 +418,6 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "performance_monitor", None)
 
-    # Phase 2: Advanced Intelligence Services Getters
-
-    def get_memory_service(self):
-        """Get the memory service - now provided by AgentStateManager"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Memory service requested but container not initialized")
-            if not getattr(self, "_initializing", False):
-                pass  # Container must be initialized via await container.initialize() at startup
-        # Memory service functionality is now provided by AgentStateManager
-        return getattr(self, "agent_state_manager", None)
-
-    def get_planning_service(self):
-        """Get the planning service - now provided by BusinessLogicWorkflowEngine"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Planning service requested but container not initialized")
-            if not getattr(self, "_initializing", False):
-                pass  # Container must be initialized via await container.initialize() at startup
-        # Planning service functionality is now provided by BusinessLogicWorkflowEngine
-        return getattr(self, "business_logic_workflow_engine", None)
-
     def get_enhanced_agent_service(self):
         """Get the enhanced agent service with memory and planning capabilities"""
         if not self._initialized:

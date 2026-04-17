@@ -483,8 +483,6 @@ async def lifespan(app: FastAPI):
             app.state.evidence_service = container.get_evidence_service()
             app.state.preprocessing_service = container.get_preprocessing_service()
             app.state.enhanced_agent_service = container.get_enhanced_agent_service()
-            app.state.memory_service = container.get_memory_service()
-            app.state.planning_service = container.get_planning_service()
             app.state.orchestration_service = container.get_orchestration_service()
             app.state.data_service = container.get_data_service()
             app.state.tenant_provider = container.get_tenant_provider()
