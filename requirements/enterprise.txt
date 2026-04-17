@@ -45,8 +45,6 @@ attrs==25.4.0
     #   aiohttp
     #   jsonschema
     #   referencing
-authlib==1.6.9
-    # via safety
 azure-core==1.38.3
     # via azure-storage-blob
 azure-storage-blob==12.28.0
@@ -107,9 +105,7 @@ click==8.3.1
     #   black
     #   flask
     #   litellm
-    #   nltk
     #   opik
-    #   safety
     #   typer
     #   uvicorn
 cloudpathlib==0.23.0
@@ -132,7 +128,6 @@ coverage==7.13.5
 cryptography==46.0.5
     # via
     #   faultmaven (pyproject.toml)
-    #   authlib
     #   azure-storage-blob
     #   presidio-anonymizer
 cuda-bindings==12.9.4
@@ -154,10 +149,6 @@ dnspython==2.8.0
     # via email-validator
 docstring-parser==0.17.0
     # via anthropic
-dparse==0.6.4
-    # via
-    #   safety
-    #   safety-schemas
 durationpy==0.10
     # via kubernetes
 email-validator==2.3.0
@@ -179,7 +170,6 @@ fastuuid==0.14.0
 filelock==3.25.2
     # via
     #   huggingface-hub
-    #   safety
     #   tldextract
     #   torch
 fireworks-ai==0.17.4
@@ -257,7 +247,6 @@ httpx==0.28.1
     #   litellm
     #   openai
     #   opik
-    #   safety
     #   tavily-python
 httpx-sse==0.4.3
     # via fireworks-ai
@@ -299,7 +288,6 @@ jinja2==3.1.6
     #   litellm
     #   opik
     #   pytest-html
-    #   safety
     #   spacy
     #   torch
 jiter==0.13.0
@@ -312,7 +300,6 @@ jmespath==1.1.0
     #   botocore
 joblib==1.5.3
     # via
-    #   nltk
     #   pyod
     #   scikit-learn
 jsonschema==4.26.0
@@ -345,8 +332,6 @@ markupsafe==3.0.3
     #   jinja2
     #   mako
     #   werkzeug
-marshmallow==3.26.2
-    # via safety
 matplotlib==3.10.8
     # via pyod
 mccabe==0.7.0
@@ -379,8 +364,6 @@ nest-asyncio==1.6.0
     # via fireworks-ai
 networkx==3.6.1
     # via torch
-nltk==3.9.3
-    # via safety
 numba==0.64.0
     # via pyod
 numpy==1.26.4
@@ -480,14 +463,10 @@ packaging==26.0
     # via
     #   black
     #   build
-    #   dparse
     #   huggingface-hub
-    #   marshmallow
     #   matplotlib
     #   onnxruntime
     #   pytest
-    #   safety
-    #   safety-schemas
     #   spacy
     #   thinc
     #   transformers
@@ -557,8 +536,6 @@ pydantic==2.9.2
     #   opik
     #   presidio-analyzer
     #   pydantic-settings
-    #   safety
-    #   safety-schemas
     #   spacy
     #   thinc
     #   weasel
@@ -673,7 +650,6 @@ referencing==0.37.0
     #   jsonschema-specifications
 regex==2026.2.28
     # via
-    #   nltk
     #   presidio-analyzer
     #   tiktoken
     #   transformers
@@ -688,7 +664,6 @@ requests==2.32.5
     #   requests-file
     #   requests-oauthlib
     #   responses
-    #   safety
     #   spacy
     #   tavily-python
     #   tiktoken
@@ -710,20 +685,12 @@ rpds-py==0.30.0
     # via
     #   jsonschema
     #   referencing
-ruamel-yaml==0.19.1
-    # via
-    #   safety
-    #   safety-schemas
 ruff==0.9.10
     # via betterproto-fw
 s3transfer==0.16.0
     # via boto3
 safetensors==0.7.0
     # via transformers
-safety==3.7.0
-    # via faultmaven (pyproject.toml)
-safety-schemas==0.0.16
-    # via safety
 scikit-learn==1.8.0
     # via
     #   faultmaven (pyproject.toml)
@@ -798,7 +765,6 @@ tenacity==9.1.4
     #   faultmaven (pyproject.toml)
     #   chromadb
     #   opik
-    #   safety
 thinc==8.3.10
     # via spacy
 threadpoolctl==3.6.0
@@ -817,15 +783,12 @@ tokenizers==0.22.2
     #   transformers
 tomli==2.4.0
     # via coverage
-tomlkit==0.14.0
-    # via safety
 torch==2.10.0
     # via sentence-transformers
 tqdm==4.67.3
     # via
     #   chromadb
     #   huggingface-hub
-    #   nltk
     #   openai
     #   opik
     #   sentence-transformers
@@ -839,7 +802,6 @@ typer==0.24.1
     # via
     #   chromadb
     #   huggingface-hub
-    #   safety
     #   transformers
     #   typer-slim
 typer-slim==0.24.0
@@ -879,8 +841,6 @@ typing-extensions==4.15.0
     #   pytest-asyncio
     #   python-docx
     #   referencing
-    #   safety
-    #   safety-schemas
     #   sentence-transformers
     #   sqlalchemy
     #   starlette
