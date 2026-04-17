@@ -29,11 +29,11 @@ from ...models import SessionContext
 # TD-001: IReportStore removed - reports now stored via CaseRepository
 from ...models.interfaces import IJobService
 from ...models.interfaces_case import ICaseService
-from ...providers.tenancy.base import TenantProvider
 
 # Lazy import to avoid circular dependency - DataService, SessionService, KnowledgeService imported in functions or TYPE_CHECKING
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
 from ...modules.preprocessing import PreprocessingService
+from ...providers.tenancy.base import TenantProvider
 
 # Type hints for lazy imports
 if TYPE_CHECKING:

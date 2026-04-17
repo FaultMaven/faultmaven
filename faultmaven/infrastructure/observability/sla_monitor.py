@@ -38,11 +38,11 @@ from email.mime.text import MIMEText
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
-from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
-from faultmaven.models.interfaces import ITracer
 from faultmaven.infrastructure.observability.dashboard_service import (
     AnalyticsDashboardService,
 )
+from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
+from faultmaven.models.interfaces import ITracer
 
 
 @dataclass
