@@ -866,21 +866,26 @@ class TestAnalytics:
 
 class TestActivityTimestamp:
     """
-    update_activity_timestamp references cases.last_activity_at, but the
-    production ORM schema stores that value in the metadata JSON column.
-    These tests exercise the error path (wrapping) and the error-wrapping
-    behavior when the session fails.
+    update_activity_timestamp refreshes the case's `updated_at` column
+    (which serves as the activity marker — the ORM schema has no dedicated
+    `last_activity_at` column).
     """
 
     @pytest.mark.asyncio
-    async def test_update_activity_timestamp_wraps_schema_mismatch(self, repository):
+    async def test_update_activity_timestamp_success(self, repository):
         case = _make_case()
         await repository.save(case)
 
-        # The ORM-generated cases table lacks a last_activity_at column, so the
-        # UPDATE will fail; the repository must wrap it in RepositoryException.
-        with pytest.raises(RepositoryException, match="Failed to update activity"):
-            await repository.update_activity_timestamp(case.case_id)
+        updated = await repository.update_activity_timestamp(case.case_id)
+
+        assert updated is True
+
+    @pytest.mark.asyncio
+    async def test_update_activity_timestamp_missing_case(self, repository):
+        # Unknown case_id: the UPDATE matches zero rows, returns False.
+        updated = await repository.update_activity_timestamp("case_does_not_exist")
+
+        assert updated is False
 
     @pytest.mark.asyncio
     async def test_update_activity_timestamp_wraps_errors(self, async_session):
@@ -900,16 +905,16 @@ class TestActivityTimestamp:
 
 class TestCleanupExpired:
     """
-    The SQLite cleanup query references cases.closed_at, but the ORM schema
-    stores that timestamp in the metadata JSON column. Under this schema the
-    operation always raises RepositoryException — these tests lock in that
-    wrapping behavior.
+    cleanup_expired deletes closed cases whose closure timestamp is older
+    than `max_age_days`. `closed_at` lives inside the metadata JSON column,
+    extracted via json_extract in the DELETE query.
     """
 
     @pytest.mark.asyncio
-    async def test_cleanup_wraps_schema_mismatch(self, repository):
-        with pytest.raises(RepositoryException, match="Failed to cleanup expired"):
-            await repository.cleanup_expired(max_age_days=90)
+    async def test_cleanup_no_expired_cases(self, repository):
+        # No cases in the table → deletes nothing, returns 0.
+        deleted = await repository.cleanup_expired(max_age_days=90)
+        assert deleted == 0
 
     @pytest.mark.asyncio
     async def test_cleanup_wraps_errors(self, async_session):
