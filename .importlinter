@@ -18,9 +18,9 @@ modules =
     #   case_service → modules/case/domain/services/api_case_service.py
     #   investigation_session_service → modules/case/domain/services/
     #   evidence_artifact_service, file_storage_service → modules/evidence/domain/services/
-    # Remaining shared services:
-    faultmaven.services.analytics
-    faultmaven.services.preprocessing
+    # Preprocessing moved to modules/preprocessing (Domain Service pattern)
+    faultmaven.modules.preprocessing
+    # Analytics moved to infrastructure/observability (cross-cutting metrics)
     # Knowledge services (vertical slice module)
     faultmaven.modules.knowledge.domain.services.search_service
     faultmaven.modules.knowledge.domain.services.embedding_service

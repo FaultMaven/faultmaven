@@ -71,7 +71,7 @@ from faultmaven.modules.agent.tools.vectorize_file_tool import (
     VECTORIZATION_MAX_SIZE_BYTES,
 )
 from faultmaven.modules.case.contracts import ICaseRepository
-from faultmaven.services.preprocessing.extractors.utils import COVERAGE_SEPARATOR
+from faultmaven.modules.preprocessing.extractors.utils import COVERAGE_SEPARATOR
 
 logger = logging.getLogger(__name__)
 

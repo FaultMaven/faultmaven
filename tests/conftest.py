@@ -629,7 +629,7 @@ except Exception as e:
     KnowledgeBaseTool = Mock
     WebSearchTool = Mock
 
-# from faultmaven.services.preprocessing.classifier import DataClassifier  # May need heavy deps
+# from faultmaven.modules.preprocessing.classifier import DataClassifier  # May need heavy deps
 # from faultmaven.core.processing.log_analyzer import LogProcessor
 # Conditional import for LLMRouter (may import torch/transformers which can have issues)
 try:

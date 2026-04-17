@@ -94,7 +94,7 @@ def create_log_processor() -> Any:
 
 def create_data_classifier() -> Any:
     """Create data classifier for preprocessing."""
-    from faultmaven.services.preprocessing.classifier import DataClassifier
+    from faultmaven.modules.preprocessing.classifier import DataClassifier
 
     return DataClassifier()
 
@@ -105,7 +105,7 @@ def create_extractors() -> dict[str, Any]:
     Returns:
         Dict mapping extractor names to instances
     """
-    from faultmaven.services.preprocessing.extractors import (
+    from faultmaven.modules.preprocessing.extractors import (
         CommandOutputExtractor,
         DocumentationExtractor,
         ErrorReportExtractor,
@@ -139,7 +139,7 @@ def create_chunking_service(
     settings: FaultMavenSettings,
 ) -> Any:
     """Create chunking service for large documents."""
-    from faultmaven.services.preprocessing.chunking_service import ChunkingService
+    from faultmaven.modules.preprocessing.chunking_service import ChunkingService
 
     return ChunkingService(
         llm_router=llm_provider,
@@ -157,7 +157,7 @@ def create_preprocessing_service(
     settings: FaultMavenSettings,
 ) -> Any:
     """Create preprocessing service with all extractors."""
-    from faultmaven.services.preprocessing.preprocessing_service import (
+    from faultmaven.modules.preprocessing.preprocessing_service import (
         PreprocessingService,
     )
 

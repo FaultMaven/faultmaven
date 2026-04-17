@@ -1474,7 +1474,7 @@ class TestDetectCoverageGaps:
         return case
 
     def test_detects_timestamp_gap(self, orchestration_service):
-        from faultmaven.services.preprocessing.extractors.utils import (
+        from faultmaven.modules.preprocessing.extractors.utils import (
             COVERAGE_SEPARATOR,
         )
 
@@ -1494,7 +1494,7 @@ class TestDetectCoverageGaps:
         assert "14:00" in gaps[0]
 
     def test_no_gap_when_timestamp_covered(self, orchestration_service):
-        from faultmaven.services.preprocessing.extractors.utils import (
+        from faultmaven.modules.preprocessing.extractors.utils import (
             COVERAGE_SEPARATOR,
         )
 
@@ -1514,7 +1514,7 @@ class TestDetectCoverageGaps:
         assert len(gaps) == 0
 
     def test_detects_missing_service(self, orchestration_service):
-        from faultmaven.services.preprocessing.extractors.utils import (
+        from faultmaven.modules.preprocessing.extractors.utils import (
             COVERAGE_SEPARATOR,
         )
 
@@ -1532,7 +1532,7 @@ class TestDetectCoverageGaps:
         assert "kafka" in gaps[0]
 
     def test_no_gap_when_service_covered(self, orchestration_service):
-        from faultmaven.services.preprocessing.extractors.utils import (
+        from faultmaven.modules.preprocessing.extractors.utils import (
             COVERAGE_SEPARATOR,
         )
 
@@ -1570,7 +1570,7 @@ class TestBuildCoverageAdvisories:
     """Tests for _build_coverage_advisories."""
 
     def test_returns_advisory_on_gap(self, orchestration_service):
-        from faultmaven.services.preprocessing.extractors.utils import (
+        from faultmaven.modules.preprocessing.extractors.utils import (
             COVERAGE_SEPARATOR,
         )
 
@@ -1598,7 +1598,7 @@ class TestBuildCoverageAdvisories:
         assert advisory == ""
 
     def test_returns_empty_when_covered(self, orchestration_service):
-        from faultmaven.services.preprocessing.extractors.utils import (
+        from faultmaven.modules.preprocessing.extractors.utils import (
             COVERAGE_SEPARATOR,
         )
 
