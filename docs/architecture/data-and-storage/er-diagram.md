@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-03-25 22:46 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-04-18 10:00 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**32 tables** in the schema.
+**33 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -18,8 +18,8 @@
 | `case_messages` | 9 | `message_id` | cases |
 | `case_tags` | 5 | `tag_id` | cases |
 | `cases` | 21 | `case_id` | sessions |
-| `conversion_drafts` | 15 | `id` | conversion_jobs |
-| `conversion_jobs` | 14 | `id` | — |
+| `conversion_drafts` | 21 | `id` | conversion_jobs |
+| `conversion_jobs` | 16 | `id` | — |
 | `evidence` | 15 | `evidence_id` | cases |
 | `evidence_artifacts` | 16 | `evidence_id` | cases |
 | `hypotheses` | 23 | `hypothesis_id` | cases |
@@ -32,6 +32,7 @@
 | `organization_members` | 9 | `user_id, organization_id` | organizations, roles, users |
 | `organizations` | 14 | `organization_id` | — |
 | `permissions` | 4 | `permission_id` | — |
+| `reports` | 14 | `report_id` | cases |
 | `role_permissions` | 2 | `role_id, permission_id` | permissions, roles |
 | `roles` | 7 | `role_id` | — |
 | `sessions` | 7 | `session_id` | — |
@@ -164,12 +165,18 @@ erDiagram
         VARCHAR title
         VARCHAR file_path
         VARCHAR status
+        VARCHAR source_type
         BOOLEAN validation_passed
         JSON validation_errors
         JSON validation_warnings
         NUMERIC quality_score
         JSON quality_details
         VARCHAR knowledge_item_id
+        VARCHAR domain
+        VARCHAR service
+        VARCHAR severity
+        TEXT tags
+        VARCHAR document_type
         DATETIME created_at
         DATETIME verified_at
         VARCHAR verified_by
@@ -185,6 +192,8 @@ erDiagram
         VARCHAR source_content_type
         INTEGER source_size_bytes
         VARCHAR source_path
+        VARCHAR source_type
+        VARCHAR case_id
         INTEGER failure_modes_detected
         JSON analysis_result
         DATETIME created_at
@@ -381,6 +390,22 @@ erDiagram
         VARCHAR action
         TEXT description
     }
+    reports {
+        VARCHAR report_id PK
+        VARCHAR case_id FK
+        VARCHAR report_type
+        INTEGER version
+        BOOLEAN is_current
+        BOOLEAN linked_to_closure
+        VARCHAR title
+        TEXT content
+        VARCHAR format
+        VARCHAR generation_status
+        INTEGER generation_time_ms
+        JSON metadata
+        DATETIME generated_at
+        DATETIME updated_at
+    }
     role_permissions {
         VARCHAR role_id PK
         VARCHAR permission_id PK
@@ -515,6 +540,7 @@ erDiagram
     cases ||--o{ evidence_artifacts : ""
     cases ||--o{ hypotheses : ""
     cases ||--o{ investigation_sessions : ""
+    cases ||--o{ reports : ""
     cases ||--o{ solutions : ""
     cases ||--o{ uploaded_files : ""
     conversion_jobs ||--o{ conversion_drafts : ""
