@@ -16,14 +16,43 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from faultmaven.models.api import DataType as DetailedDataType
+
+# =============================================================================
+# Extraction Method Vocabulary (shared by ExtractionResult + PreprocessingResult)
+# =============================================================================
+#
+# Every Tier 1 extractor sets its `strategy_name` to one of the domain strategy
+# values below. The orchestrator may override with a runtime marker when the
+# standard path is bypassed (timeout, error, passthrough, UNANALYZABLE, or
+# classification_failed).
+#
+# Adding a new extractor? Add its strategy_name here so Pydantic can validate.
+
+ExtractionMethod = Literal[
+    # Domain strategies (from extractors)
+    "crime_scene",  # LogsAndErrorsExtractor
+    "exception_context",  # ErrorReportExtractor
+    "trace_correlation",  # TraceDataExtractor
+    "command_parsing",  # CommandOutputExtractor
+    "statistical",  # MetricsAndPerformanceExtractor
+    "profiling_hotspot",  # ProfilingDataExtractor
+    "ast_parse",  # SourceCodeExtractor
+    "documentation_structure",  # DocumentationExtractor
+    "vision",  # VisualEvidenceExtractor
+    "direct",  # StructuredConfigExtractor / UnstructuredTextExtractor
+    # Runtime markers (set by PreprocessingService)
+    "page_capture_passthrough",  # page captures bypass extraction
+    "structure_extraction",  # timeout/error fallback to TEXT preview
+    "none",  # UNANALYZABLE short-circuit
+    "classification_failed",  # low-confidence short-circuit for user modal
+]
 
 # =============================================================================
 # Unified DataType (6 types — shared across preprocessing and evidence)
@@ -83,16 +112,13 @@ class ExtractionResult(BaseModel):
     """
     Output from a single Tier 1 extractor.
 
-    Each extractor (logs, metrics, config, code, text, image) returns this.
-    The preprocessing orchestrator wraps it into a full PreprocessingResult.
+    The 11 extractors return this; the preprocessing orchestrator wraps it
+    into a full PreprocessingResult. See `ExtractionMethod` for the allowed
+    `method` values.
     """
 
-    method: str = Field(
-        description=(
-            "Extraction method: structural_index, statistical_profile, "
-            "parse_and_sanitize, ast_extraction, structure_extraction, "
-            "metadata_extraction"
-        )
+    method: ExtractionMethod = Field(
+        description="Extractor strategy_name or runtime marker"
     )
     content: str = Field(description="Extracted structural index / processed content")
     metadata: Dict[str, Any] = Field(
@@ -101,59 +127,16 @@ class ExtractionResult(BaseModel):
     )
 
 
-class SanitizationResult(BaseModel):
-    """Output from the sanitization step."""
-
-    content: str = Field(description="Content with PII/secrets redacted")
-    redactions_made: int = Field(default=0, description="Number of redactions applied")
-    redactions: List[tuple] = Field(
-        default_factory=list,
-        description="List of (type, count) redaction details",
-    )
-    skipped: bool = Field(
-        default=False,
-        description="True if sanitization was skipped (e.g., local LLM provider)",
-    )
-
-
-class ErrorSummary(BaseModel):
-    """Structured insights from log structural index."""
-
-    total_errors: int
-    severity_distribution: Dict[str, int]
-    first_error_line: int
-    last_error_line: int
-    error_burst_detected: bool
-    unique_error_types: List[str]
-
-
-class AnomalySummary(BaseModel):
-    """Structured insights from metrics statistical profile."""
-
-    total_anomalies: int
-    metrics_analyzed: List[str]
-    anomaly_types: Dict[str, int]
-    most_anomalous_metric: str
-    time_range: str
-
-
-class ConfigSummary(BaseModel):
-    """Structured insights from config parsing."""
-
-    format: str
-    total_keys: int
-    secrets_found: int
-    secrets_redacted: bool
-    validation_status: str
-
-
 class PreprocessingResult(BaseModel):
     """
-    Output from Tier 0 + Tier 1 preprocessing.
+    Output from Tier 0 + Tier 1 preprocessing — the bridge from raw
+    uploaded data to the Evidence Architecture.
 
-    This is the bridge between raw uploaded data and the Evidence Architecture.
-    Contains the structural index (for agent analysis and vector DB) and
-    a concise summary (for Evidence.summary).
+    Carries the structural index (for agent analysis and vector DB),
+    a concise summary (for `Evidence.summary`), and extraction metadata.
+
+    PII redaction is NOT performed here — it runs at the LLM boundary
+    (MilestoneEngine). Structural indexes are stored raw.
 
     Design Reference:
         data-preprocessing-design-specification.md Section 7.1
@@ -188,12 +171,8 @@ class PreprocessingResult(BaseModel):
     content_type: str = Field(description="MIME type of original file")
 
     # Extraction metadata
-    extraction_method: str = Field(
-        description=(
-            "Method: structural_index, statistical_profile, "
-            "parse_and_sanitize, ast_extraction, structure_extraction, "
-            "metadata_extraction"
-        )
+    extraction_method: ExtractionMethod = Field(
+        description="Extractor strategy_name or runtime marker (see ExtractionMethod)"
     )
     compression_ratio: float = Field(
         ge=0.0,
@@ -206,10 +185,6 @@ class PreprocessingResult(BaseModel):
 
     # Deduplication
     content_hash: str = Field(description="SHA-256 hash of raw file content")
-
-    # Sanitization
-    sanitization_applied: bool = Field(default=False)
-    redactions_count: int = Field(default=0)
 
     # Performance
     processing_time_ms: int = Field(

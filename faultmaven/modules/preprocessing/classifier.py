@@ -1,36 +1,271 @@
 """
-Data Classification Service
+Data Classification Service (Tier 0).
 
-Fast, rule-based classification (0 LLM calls) with 5-tier prioritization:
-1. User override (confidence=1.0)
-2. Agent hint (confidence=0.95)
-3. Source URL patterns (confidence=0.88-0.94) - for page captures
-4. Browser context (confidence=0.85-0.92)
-5. Rule-based patterns with file upload boost (confidence=0.60-0.98)
+Fast, rule-based classification (zero LLM calls) with 5-priority signal
+ordering. Priorities are ordered by signal reliability, not by confidence
+magnitude:
 
-Called directly from _preprocess_attachment() in the unified turn pipeline
-for all attachments (file uploads and pasted data).
+1. User override              — confidence = 1.0 (source="user_override")
+2. Validated agent hint       — confidence = 0.95 (source="agent_hint")
+3. Source URL pattern         — confidence = 0.88-0.94 (source="source_url")
+4. Browser context            — confidence = 0.85-0.92 (source="browser_context")
+5. Rule-based content+ext     — confidence = 0.45-0.98 (source="rule_based"
+                                 or "rule_based_best_effort")
+
+Called from `_preprocess_attachment()` in the unified turn pipeline for
+every attachment (file uploads and pasted text). Page captures are detected
+here via source_metadata and handled with URL-based classification first,
+then source_type-aware confidence boosting.
+
+Design Reference:
+    docs/architecture/data-processing/data-classification-strategy.md
 """
 
+import functools
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
 from faultmaven.models.api import ClassificationResult, DataType
 
 if TYPE_CHECKING:
     from faultmaven.models.api import SourceMetadata
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+
+
+# =============================================================================
+# Opik telemetry (optional — no-op when Opik is not installed).
+# Emits a tracing span per classify() call with tags describing the decision
+# so we can measure classifier behavior (source distribution, confidence
+# buckets, classification_failed rate) without touching logs.
+# =============================================================================
+
+try:
+    import opik
+    from opik import opik_context
+
+    _OPIK_AVAILABLE = True
+except ImportError:
+    _OPIK_AVAILABLE = False
+
+
+def _opik_track_classifier(func: Callable) -> Callable:
+    """Wrap classify() with an Opik span and attach classifier-decision tags."""
+    if _OPIK_AVAILABLE:
+        tracked = opik.track(
+            name="tier0_classify", capture_input=False, capture_output=False
+        )(func)
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            result: ClassificationResult = tracked(*args, **kwargs)
+            try:
+                if result.confidence >= CONFIDENCE_THRESHOLDS["auto_accept"]:
+                    bucket = "high"
+                elif (
+                    result.confidence >= CONFIDENCE_THRESHOLDS["classification_failed"]
+                ):
+                    bucket = "medium"
+                else:
+                    bucket = "low"
+                opik_context.update_current_span(
+                    tags=[
+                        f"source:{result.source}",
+                        f"data_type:{result.data_type.value}",
+                        f"confidence:{bucket}",
+                        f"classification_failed:{result.classification_failed}",
+                    ]
+                )
+            except Exception:
+                # Never let telemetry break classification.
+                pass
+            return result
+
+        return wrapper
+
+    # No-op when Opik isn't installed.
+    @functools.wraps(func)
+    def passthrough(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return passthrough
+
+
+# =============================================================================
+# Confidence thresholds (load-bearing — drive the classification_failed flag
+# and downstream acceptance decisions). Adjusting these shifts the frontier
+# between auto-accept and user-modal.
+# =============================================================================
+
+CONFIDENCE_THRESHOLDS = {
+    # Below this → classification_failed=True → frontend modal for user override.
+    "classification_failed": 0.50,
+    # At or above this → auto-accept without qualification in downstream UX.
+    "auto_accept": 0.85,
+}
+
+
+# File uploads carry a trustworthy extension signal that page captures and
+# pasted text do not. Applied as an additive bump on rule-based content scores.
+FILE_UPLOAD_CONFIDENCE_BOOST = 0.03
+
+
+# Page captures get a small specificity bump on top of URL-pattern confidence
+# since the URL itself is the strongest available signal.
+PAGE_CAPTURE_CONFIDENCE_BOOST = 0.02
+
+
+# =============================================================================
+# Linux/Unix command-output signatures (Tier 0 command detection).
+#
+# Each command requires 2+ pattern matches to classify, to limit false positives
+# from text that happens to contain a single header-like pattern. Patterns are
+# `re.search`-able against a content sample (first 5KB, MULTILINE | IGNORECASE).
+#
+# Commands route to the detailed DataType whose extractor produces the best
+# structural index:
+#   - Resource/perf monitoring (top/ps/vmstat/iostat/netstat/free/df/lsof)
+#     → COMMAND_OUTPUT (CommandOutputExtractor: parses tabular process/IO data)
+#   - Log-oriented (dmesg/journalctl/strace/ltrace)
+#     → LOGS_AND_ERRORS (LogsAndErrorsExtractor: timestamp-aware, severity-aware)
+#   - Profiling (perf)
+#     → PROFILING_DATA (ProfilingDataExtractor: hotspot analysis)
+#   - Machine inventory (lscpu)
+#     → STRUCTURED_CONFIG (StructuredConfigExtractor: key:value parsing)
+# =============================================================================
+
+COMMAND_OUTPUTS: dict = {
+    # --- Resource & system info → COMMAND_OUTPUT ---
+    "top": {
+        "type": DataType.COMMAND_OUTPUT,
+        "patterns": [
+            r"top\s+-\s+\d{2}:\d{2}:\d{2}\s+up",
+            r"Tasks:\s+\d+\s+total,\s+\d+\s+running",
+            r"%Cpu\(s\):",
+            r"KiB Mem\s*:",
+            r"PID\s+USER\s+PR\s+NI\s+VIRT\s+RES",
+        ],
+        "confidence": 0.95,
+    },
+    "ps": {
+        "type": DataType.COMMAND_OUTPUT,
+        "patterns": [
+            r"USER\s+PID\s+%CPU\s+%MEM\s+VSZ\s+RSS",
+            r"^\s*[\w\-]+\s+\d+\s+[\d\.]+\s+[\d\.]+",
+        ],
+        "confidence": 0.90,
+    },
+    "vmstat": {
+        "type": DataType.COMMAND_OUTPUT,
+        "patterns": [
+            r"procs\s+-+memory-+\s+-+swap-+\s+-+io-+",
+            r"r\s+b\s+swpd\s+free\s+buff\s+cache",
+        ],
+        "confidence": 0.95,
+    },
+    "iostat": {
+        "type": DataType.COMMAND_OUTPUT,
+        "patterns": [
+            r"avg-cpu:\s+%user\s+%nice\s+%system",
+            r"Device.*tps.*kB_read/s.*kB_wrtn/s",
+        ],
+        "confidence": 0.95,
+    },
+    "netstat": {
+        "type": DataType.COMMAND_OUTPUT,
+        "patterns": [
+            r"Proto\s+Recv-Q\s+Send-Q\s+Local Address\s+Foreign Address",
+            r"tcp\s+\d+\s+\d+\s+[\d\.:]+\s+[\d\.:]+",
+        ],
+        "confidence": 0.90,
+    },
+    "free": {
+        "type": DataType.COMMAND_OUTPUT,
+        "patterns": [
+            r"total\s+used\s+free\s+shared\s+buff/cache\s+available",
+            r"Mem:\s+\d+",
+            r"Swap:\s+\d+",
+        ],
+        "confidence": 0.95,
+    },
+    "df": {
+        "type": DataType.COMMAND_OUTPUT,
+        "patterns": [
+            r"Filesystem\s+1K-blocks\s+Used\s+Available\s+Use%",
+            r"/dev/\w+\s+\d+\s+\d+\s+\d+\s+\d+%",
+        ],
+        "confidence": 0.95,
+    },
+    "lsof": {
+        "type": DataType.COMMAND_OUTPUT,
+        "patterns": [
+            r"COMMAND\s+PID\s+USER\s+FD\s+TYPE\s+DEVICE",
+            r"^\w+\s+\d+\s+\w+\s+\d+[rwu]\s",
+        ],
+        "confidence": 0.90,
+    },
+    # --- Log-oriented command output → LOGS_AND_ERRORS ---
+    "dmesg": {
+        "type": DataType.LOGS_AND_ERRORS,
+        "patterns": [
+            r"^\[\s*[\d\.]+\]",
+            r"\bkernel:\s",
+            r"\bLinux version\s",
+        ],
+        "confidence": 0.95,
+    },
+    "journalctl": {
+        "type": DataType.LOGS_AND_ERRORS,
+        "patterns": [
+            r"^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}",
+            r"systemd\[\d+\]:",
+            r"\[\d+\]:",
+        ],
+        "confidence": 0.95,
+    },
+    "strace": {
+        "type": DataType.LOGS_AND_ERRORS,
+        "patterns": [
+            r"\w+\([^)]*\)\s+=\s+-?\d+",
+            r"<\d+\.\d+>",
+            r"SIGTERM|SIGKILL|SIGSEGV",
+        ],
+        "confidence": 0.95,
+    },
+    "ltrace": {
+        "type": DataType.LOGS_AND_ERRORS,
+        "patterns": [
+            r"\w+\([^)]*\)\s+=\s+\w+",
+            r"<\d+\.\d+>",
+        ],
+        "confidence": 0.90,
+    },
+    # --- Profiling → PROFILING_DATA ---
+    "perf": {
+        "type": DataType.PROFILING_DATA,
+        "patterns": [
+            r"Performance counter stats",
+            r"seconds time elapsed",
+            r"cycles|instructions",
+        ],
+        "confidence": 0.95,
+    },
+    # --- Machine inventory → STRUCTURED_CONFIG ---
+    "lscpu": {
+        "type": DataType.STRUCTURED_CONFIG,
+        "patterns": [
+            r"Architecture:\s+\w+",
+            r"CPU\(s\):\s+\d+",
+            r"Model name:\s+",
+        ],
+        "confidence": 0.95,
+    },
+}
 
 
 class DataClassifier:
-    """Fast, rule-based classification with confidence scoring"""
+    """Fast, rule-based classification with confidence scoring."""
 
-    # Confidence thresholds
-    CONFIDENCE_HIGH = 0.90  # >90% = high confidence
-    CONFIDENCE_MEDIUM = 0.60  # 60-90% = medium confidence
-    CONFIDENCE_LOW_THRESHOLD = 0.60  # <60% = request user input
-
+    @_opik_track_classifier
     def classify(
         self,
         filename: str,
@@ -241,9 +476,10 @@ class DataClassifier:
 
         for pattern, data_type, confidence in url_patterns:
             if pattern in url_lower:
-                # Boost confidence slightly for page_capture vs file_upload
+                # Page captures get a small specificity bump — URL is the
+                # strongest available signal for that source type.
                 if source_type == "page_capture":
-                    confidence = min(confidence + 0.02, 0.98)
+                    confidence = min(confidence + PAGE_CAPTURE_CONFIDENCE_BOOST, 0.98)
 
                 return ClassificationResult(
                     data_type=data_type,
@@ -298,30 +534,32 @@ class DataClassifier:
         source_metadata: Optional["SourceMetadata"] = None,
     ) -> ClassificationResult:
         """
-        Rule-based classification with confidence scoring (Priority 5)
+        Rule-based classification (priority 5) — extension + content patterns.
 
-        Uses extension + content pattern matching.
-        Boosts confidence for file uploads (more reliable than page captures).
+        File uploads receive `FILE_UPLOAD_CONFIDENCE_BOOST` on content-based
+        scores, since the extension signal they carry is more reliable than
+        what page captures or pasted text provide.
 
         Args:
-            filename: Original filename
-            content: File content (first 5KB for sampling)
-            source_metadata: Optional source info for confidence boosting
+            filename: Original filename (extension is a strong hint)
+            content: File content (first 5KB is sampled for perf)
+            source_metadata: Optional; used to detect file_upload for boost
 
         Returns:
-            ClassificationResult
+            ClassificationResult — always populated (worst case, best-effort
+            fallback or UNSTRUCTURED_TEXT with classification_failed=True).
         """
         # Sample content (first 5KB for performance)
         sample = content[:5000].lower()
         ext = Path(filename).suffix.lower()
 
-        # Confidence boost for file uploads (file extensions are trustworthy)
+        # Confidence boost for file uploads (extensions are trustworthy).
         is_file_upload = (
             source_metadata and source_metadata.source_type == "file_upload"
         )
-        confidence_boost = 0.03 if is_file_upload else 0.0
+        confidence_boost = FILE_UPLOAD_CONFIDENCE_BOOST if is_file_upload else 0.0
 
-        # 1. Check for VISUAL_EVIDENCE (highest priority - most specific)
+        # 1. VISUAL_EVIDENCE — image extensions are definitive.
         if ext in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]:
             return ClassificationResult(
                 data_type=DataType.VISUAL_EVIDENCE,
@@ -330,65 +568,16 @@ class DataClassifier:
                 classification_failed=False,
             )
 
-        # 2. Check for TRACE_DATA (distributed traces - very specific patterns)
-        trace_patterns = [
-            r'(traceId|trace_id)["\s:]+[a-f0-9]{32}',  # OpenTelemetry trace IDs (32-char hex)
-            r'(spanId|span_id|parentId)["\s:]+[a-f0-9]{16,}',  # Span IDs
-            r'"(serviceName|service\.name)"',  # Service mesh indicators
-            r'"operationName".*"spans":\s*\[',  # Jaeger trace structure
-        ]
+        # 2. TRACE_DATA vs PROFILING_DATA — two disambiguation helpers.
+        #    Order matters: try trace first (more specific), then profiling.
+        trace_result = self._disambiguate_profiling_vs_trace(sample, confidence_boost)
+        if trace_result is not None:
+            return trace_result
 
-        trace_score = sum(
-            1 for p in trace_patterns if re.search(p, sample, re.IGNORECASE)
-        )
-
-        if trace_score >= 2:
-            return ClassificationResult(
-                data_type=DataType.TRACE_DATA,
-                confidence=min(0.95 + confidence_boost, 0.99),
-                source="rule_based",
-                classification_failed=False,
-            )
-
-        # 3. Check for PROFILING_DATA (performance profiling - specific headers)
-        profiling_patterns = [
-            r"\bncalls\s+tottime\s+percall\s+cumtime",  # cProfile header
-            r"[\w\.]+(?:;[\w\.]+)+\s+\d+",  # Flame graph format: foo;bar;baz 123
-            r"\d+\s+calls?\s+in\s+[\d\.]+\s+seconds",  # Profiling summary
-            r"filename:lineno\(function\)",  # cProfile format
-        ]
-
-        profiling_score = sum(
-            1 for p in profiling_patterns if re.search(p, sample, re.IGNORECASE)
-        )
-
-        if profiling_score >= 1:
-            return ClassificationResult(
-                data_type=DataType.PROFILING_DATA,
-                confidence=min(0.92 + confidence_boost, 0.98),
-                source="rule_based",
-                classification_failed=False,
-            )
-
-        # 4. Check for COMMAND_OUTPUT (shell command results - specific formats)
-        command_patterns = [
-            (r"(top\s+-|Tasks:|%Cpu\(s\)|KiB Mem)", "top"),
-            (r"PID\s+USER\s+%CPU\s+%MEM\s+VSZ\s+RSS", "ps"),
-            (r"avg-cpu:\s+%user\s+%nice\s+%system", "iostat"),
-            (r"Device.*tps.*kB_read/s.*kB_wrtn/s", "iostat"),
-            (r"Proto\s+Recv-Q\s+Send-Q\s+Local Address\s+Foreign Address", "netstat"),
-            (r"total\s+used\s+free\s+shared\s+buff/cache\s+available", "free"),
-            (r"Filesystem\s+1K-blocks\s+Used\s+Available\s+Use%", "df"),
-        ]
-
-        for pattern, cmd in command_patterns:
-            if re.search(pattern, sample, re.IGNORECASE):
-                return ClassificationResult(
-                    data_type=DataType.COMMAND_OUTPUT,
-                    confidence=min(0.95 + confidence_boost, 0.98),
-                    source="rule_based",
-                    classification_failed=False,
-                )
+        # 3. COMMAND_OUTPUT — 13 Linux/Unix commands, 2+ pattern match required.
+        command_result = self._detect_command_output(sample, confidence_boost)
+        if command_result is not None:
+            return command_result
 
         # 5. Check for ERROR_REPORT vs LOGS_AND_ERRORS (systematic approach)
 
@@ -743,3 +932,84 @@ class DataClassifier:
             source="rule_based",
             classification_failed=True,
         )
+
+    # =========================================================================
+    # Named disambiguation helpers
+    # =========================================================================
+
+    def _disambiguate_profiling_vs_trace(
+        self, sample: str, confidence_boost: float
+    ) -> Optional[ClassificationResult]:
+        """
+        Disambiguate between TRACE_DATA (distributed traces) and PROFILING_DATA
+        (performance profiling output). Returns None if neither matches.
+
+        Rules:
+        - Trace wins if ≥2 of 4 trace-specific patterns match. These cover
+          OpenTelemetry-style 32-char trace IDs, span IDs, service mesh
+          identifiers, and Jaeger-style JSON structure.
+        - Otherwise, profiling wins if ≥1 of 4 profiling patterns matches
+          (cProfile header, flame graph syntax, call-count summary,
+          filename:lineno format).
+        """
+        trace_patterns = [
+            r'(traceId|trace_id)["\s:]+[a-f0-9]{32}',  # OpenTelemetry 32-char hex
+            r'(spanId|span_id|parentId)["\s:]+[a-f0-9]{16,}',
+            r'"(serviceName|service\.name)"',
+            r'"operationName".*"spans":\s*\[',
+        ]
+        trace_score = sum(
+            1 for p in trace_patterns if re.search(p, sample, re.IGNORECASE)
+        )
+        if trace_score >= 2:
+            return ClassificationResult(
+                data_type=DataType.TRACE_DATA,
+                confidence=min(0.95 + confidence_boost, 0.99),
+                source="rule_based",
+                classification_failed=False,
+            )
+
+        profiling_patterns = [
+            r"\bncalls\s+tottime\s+percall\s+cumtime",  # cProfile header
+            r"[\w\.]+(?:;[\w\.]+)+\s+\d+",  # Flame graph: foo;bar;baz 123
+            r"\d+\s+calls?\s+in\s+[\d\.]+\s+seconds",  # Profiling summary
+            r"filename:lineno\(function\)",  # cProfile format
+        ]
+        profiling_score = sum(
+            1 for p in profiling_patterns if re.search(p, sample, re.IGNORECASE)
+        )
+        if profiling_score >= 1:
+            return ClassificationResult(
+                data_type=DataType.PROFILING_DATA,
+                confidence=min(0.92 + confidence_boost, 0.98),
+                source="rule_based",
+                classification_failed=False,
+            )
+
+        return None
+
+    def _detect_command_output(
+        self, sample: str, confidence_boost: float
+    ) -> Optional[ClassificationResult]:
+        """
+        Detect Linux/Unix command output using the `COMMAND_OUTPUTS` signatures.
+
+        Each command requires **≥2 pattern matches** to claim the
+        classification — this limits false positives from content that
+        incidentally contains a header-like string. Commands route to
+        the appropriate detailed DataType (see `COMMAND_OUTPUTS` docstring).
+        """
+        for cmd_name, signature in COMMAND_OUTPUTS.items():
+            matched = sum(
+                1
+                for p in signature["patterns"]
+                if re.search(p, sample, re.MULTILINE | re.IGNORECASE)
+            )
+            if matched >= 2:
+                return ClassificationResult(
+                    data_type=signature["type"],
+                    confidence=min(signature["confidence"] + confidence_boost, 0.99),
+                    source="rule_based",
+                    classification_failed=False,
+                )
+        return None

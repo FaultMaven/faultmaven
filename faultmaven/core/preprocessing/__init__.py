@@ -1,21 +1,15 @@
 """Data Preprocessing Package
 
-Three-tier data preprocessing pipeline:
-- Tier 0+1: Classification and mechanical extraction (models.py, data_preprocessor.py)
-- Tier 2: On-demand deep analysis (tier2/)
-- Vector DB: Structural index storage (vector_storage.py)
+Four-tier data preprocessing pipeline:
+- Tier 0: Classification (DataClassifier in faultmaven.modules.preprocessing.classifier)
+- Tier 1: Mechanical extraction (extractors in faultmaven.modules.preprocessing.extractors)
+- Tier 2: Mechanical search (search_file agent tool + BasicTier2Service)
+- Tier 3: Interpreted search / deep analysis (tier2/ backends — legacy package name)
 
 Design Reference:
     docs/architecture/data-processing/data-preprocessing-design-specification.md
 """
 
-from .data_preprocessor import (
-    get_preprocessor_for_data_type,
-    preprocess_config,
-    preprocess_errors,
-    preprocess_logs,
-    preprocess_metrics,
-)
 from .models import (
     AnalysisContext,
     Chunk,
@@ -26,7 +20,6 @@ from .models import (
     FileInfo,
     FileTooLargeError,
     PreprocessingResult,
-    SanitizationResult,
     UnifiedDataType,
     compute_content_hash,
     generate_concise_summary,
@@ -35,17 +28,9 @@ from .models import (
 from .vector_storage import chunk_structural_index, store_in_vector_db_background
 
 __all__ = [
-    # Legacy preprocessors
-    "preprocess_logs",
-    "preprocess_metrics",
-    "preprocess_errors",
-    "preprocess_config",
-    "get_preprocessor_for_data_type",
-    # Design v3.0 models
     "UnifiedDataType",
     "PreprocessingResult",
     "ExtractionResult",
-    "SanitizationResult",
     "DeepAnalysisResult",
     "AnalysisContext",
     "DataExcerpt",
@@ -56,7 +41,6 @@ __all__ = [
     "to_unified_data_type",
     "compute_content_hash",
     "generate_concise_summary",
-    # Vector DB
     "chunk_structural_index",
     "store_in_vector_db_background",
 ]

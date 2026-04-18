@@ -4,18 +4,14 @@ import pytest
 
 from faultmaven.core.preprocessing.models import (
     AnalysisContext,
-    AnomalySummary,
     Chunk,
-    ConfigSummary,
     DataExcerpt,
     DeepAnalysisResult,
     DuplicateFileError,
-    ErrorSummary,
     ExtractionResult,
     FileInfo,
     FileTooLargeError,
     PreprocessingResult,
-    SanitizationResult,
     UnifiedDataType,
     compute_content_hash,
     generate_concise_summary,
@@ -79,77 +75,15 @@ class TestToUnifiedDataType:
 
 class TestExtractionResult:
     def test_basic_construction(self):
-        result = ExtractionResult(method="structural_index", content="parsed data")
-        assert result.method == "structural_index"
+        result = ExtractionResult(method="crime_scene", content="parsed data")
+        assert result.method == "crime_scene"
         assert result.content == "parsed data"
         assert result.metadata == {}
 
     def test_with_metadata(self):
         meta = {"error_count": 5, "line_count": 100}
-        result = ExtractionResult(
-            method="statistical_profile", content="stats", metadata=meta
-        )
+        result = ExtractionResult(method="statistical", content="stats", metadata=meta)
         assert result.metadata == meta
-
-
-# =============================================================================
-# SanitizationResult
-# =============================================================================
-
-
-class TestSanitizationResult:
-    def test_defaults(self):
-        result = SanitizationResult(content="clean text")
-        assert result.redactions_made == 0
-        assert result.redactions == []
-        assert result.skipped is False
-
-    def test_with_redactions(self):
-        result = SanitizationResult(
-            content="redacted", redactions_made=3, redactions=[("email", 2), ("ssn", 1)]
-        )
-        assert result.redactions_made == 3
-        assert len(result.redactions) == 2
-
-
-# =============================================================================
-# ErrorSummary / AnomalySummary / ConfigSummary
-# =============================================================================
-
-
-class TestSummaryModels:
-    def test_error_summary(self):
-        es = ErrorSummary(
-            total_errors=10,
-            severity_distribution={"ERROR": 8, "CRITICAL": 2},
-            first_error_line=5,
-            last_error_line=100,
-            error_burst_detected=True,
-            unique_error_types=["NullPointerException", "TimeoutError"],
-        )
-        assert es.total_errors == 10
-        assert es.error_burst_detected is True
-
-    def test_anomaly_summary(self):
-        anomaly = AnomalySummary(
-            total_anomalies=3,
-            metrics_analyzed=["cpu", "memory"],
-            anomaly_types={"spike": 2, "drop": 1},
-            most_anomalous_metric="cpu",
-            time_range="2024-01-01T00:00:00Z to 2024-01-01T01:00:00Z",
-        )
-        assert anomaly.total_anomalies == 3
-
-    def test_config_summary(self):
-        cs = ConfigSummary(
-            format="yaml",
-            total_keys=50,
-            secrets_found=2,
-            secrets_redacted=True,
-            validation_status="valid",
-        )
-        assert cs.format == "yaml"
-        assert cs.secrets_found == 2
 
 
 # =============================================================================
@@ -166,14 +100,12 @@ class TestPreprocessingResult:
             structural_index="=== Errors ===\nNullPointer at line 5",
             content_size_bytes=1024,
             content_type="text/plain",
-            extraction_method="structural_index",
+            extraction_method="crime_scene",
             compression_ratio=0.15,
             content_hash="abc123def456",
         )
         assert result.data_type == UnifiedDataType.LOGS
         assert result.content_size_bytes == 1024
-        assert result.sanitization_applied is False
-        assert result.redactions_count == 0
         assert result.processing_time_ms == 0
 
     def test_temp_id_auto_generated(self):
@@ -211,7 +143,7 @@ class TestPreprocessingResult:
             structural_index="def foo(): pass",
             content_size_bytes=50,
             content_type="text/x-python",
-            extraction_method="ast_extraction",
+            extraction_method="ast_parse",
             compression_ratio=0.5,
             content_hash="hash",
         )

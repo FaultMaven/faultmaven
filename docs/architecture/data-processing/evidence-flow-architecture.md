@@ -39,15 +39,23 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 ┌─────────────────────────────────────────────────────────────────────────┐
 │              File Preprocessing Layer (Tier 0 + Tier 1)                  │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ 1. Compute content_hash (SHA-256)                                  │ │
-│  │ 2. Check for duplicate (early exit if hash exists)                │ │
-│  │ 3. Tier 0: Classify data type → DataType enum + confidence        │ │
-│  │    (also propagates source_type from source_metadata)             │ │
-│  │ 4. Tier 1: Type-specific mechanical extraction (structural index) │ │
-│  │    (page captures skip Tier 1 — pass-through as structured MD)   │ │
-│  │ 5. Persist raw file via storage_service.upload                     │ │
-│  │    (local filesystem or S3 depending on STORAGE_BACKEND)          │ │
-│  │ 6. Generate PreprocessingResult (summary, structural_index, etc.) │ │
+│  │ PreprocessingService.classify_and_extract(content, filename,       │ │
+│  │                                             source_metadata)       │ │
+│  │                                                                    │ │
+│  │ 1. Tier 0: Classify data type → DataType enum + confidence        │ │
+│  │    (propagates source_type from source_metadata)                  │ │
+│  │ 2. Short-circuits:                                                 │ │
+│  │      - UNANALYZABLE → placeholder (extraction_method=none)        │ │
+│  │      - classification_failed → placeholder (user modal)            │ │
+│  │      - source_type=page_capture → pass-through as structured MD   │ │
+│  │ 3. Tier 1: Type-specific mechanical extraction (structural index) │ │
+│  │    under 2s timeout; on timeout/error falls back to TEXT preview  │ │
+│  │ 4. Compute content_hash (SHA-256 of UTF-8 text)                    │ │
+│  │ 5. Return PreprocessingResult                                      │ │
+│  │                                                                    │ │
+│  │ Raw file persistence (storage_service.store_file) happens at the  │ │
+│  │ evidence-creation layer, not here. Dedup via content_hash is      │ │
+│  │ not yet wired — see Deferred Items in the preprocessing spec.     │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────┬───────────────────────────────────────────────────────────────────┘
       │
@@ -281,10 +289,14 @@ User          API(/turns)    Investigation    LLM         Database
 
 ---
 
-## Sequence Diagram: Duplicate Upload
+## Sequence Diagram: Duplicate Upload (Deferred)
+
+> **Status:** Duplicate detection is **not currently wired up**. `PreprocessingResult.content_hash` is computed for every attachment, but no repository consults it before evidence creation. Re-uploading the same file today produces a second Evidence row. Closing this requires `find_by_content_hash()` on the case/evidence repository plus a short-circuit in `_preprocess_attachment`. Tracked as a Deferred Item in the preprocessing spec; related failure-mode design in [evidence-failure-modes.md](./evidence-failure-modes.md).
+
+The target flow, once dedup is implemented, looks like this:
 
 ```
-User          API(/turns)    Investigation    Preprocessing    Database
+User          API(/turns)    Investigation    Preprocessing    Evidence Repo
  │              │                │                │             │
  │─POST turn───>│                │                │             │
  │ {files:      │                │                │             │
@@ -292,29 +304,101 @@ User          API(/turns)    Investigation    Preprocessing    Database
  │              │─process_turn──>│                │             │
  │              │ (TurnPayload)  │                │             │
  │              │                │                │             │
- │              │                │─preprocess─────>│             │
- │              │                │ attachment      │             │
- │              │                │                │──compute────│
- │              │                │                │  hash       │
- │              │                │                │  (abc123)   │
+ │              │                │─classify_and──>│             │
+ │              │                │  _extract      │             │
+ │              │                │                │─compute hash│
+ │              │                │<───────────────│ (abc123)    │
+ │              │                │  PreprocessingResult         │
+ │              │                │                              │
+ │              │                │─find_by_content_hash────────>│
+ │              │                │  (case_id, abc123)           │
+ │              │                │<─────────────────────────────│
+ │              │                │  MATCH ev_xyz (turn 5)        │
+ │              │                │                              │
+ │              │                │  (skip Evidence creation,    │
+ │              │                │   return existing ev_xyz     │
+ │              │                │   with status=duplicate)     │
+ │              │<─TurnResponse──│                              │
+ │              │ {status:       │                              │
+ │              │  duplicate}    │                              │
+ │              │                │                              │
+ │<─200 OK─────│                │                              │
+ │ TurnResponse │                │                              │
+```
+
+---
+
+## Sequence Diagram: Classification Failed → User Modal
+
+Triggered when Tier 0 classification produces `confidence < 0.50` — the file cannot be routed to an extractor with enough certainty to auto-accept. The frontend shows a modal for user selection, then resubmits with `user_override` set (Priority 1 of the 5-priority classifier, confidence 1.0).
+
+```
+User          API(/turns)    Investigation    Preprocessing    Frontend
  │              │                │                │             │
- │              │                │                │──check──────>│
- │              │                │                │  duplicate  │
- │              │                │                │             │
- │              │                │                │<────────────│
- │              │                │                │  MATCH      │
- │              │                │                │  ev_xyz     │
- │              │                │<───────────────│  (turn 5)   │
- │              │                │  duplicate     │             │
- │              │                │  found         │             │
- │              │                │                │             │
+ │─POST turn───>│                │                │             │
+ │ {ambiguous.  │                │                │             │
+ │  csv}        │                │                │             │
+ │              │─process_turn──>│                │             │
+ │              │                │─classify_and──>│             │
+ │              │                │  _extract      │             │
+ │              │                │                │ conf=0.45   │
+ │              │                │                │ failed=True │
+ │              │                │<───────────────│             │
+ │              │                │  PreprocessingResult         │
+ │              │                │  extraction_method=          │
+ │              │                │    "classification_failed"   │
+ │              │                │  metadata.suggested_types=   │
+ │              │                │    [metrics, text]           │
  │              │<─TurnResponse──│                │             │
- │              │ {status:       │                │             │
- │              │  duplicate}    │                │             │
- │              │                │                │             │
+ │              │ (placeholder   │                │             │
+ │              │  evidence)     │                │             │
  │<─200 OK─────│                │                │             │
- │ TurnResponse │                │                │             │
  │              │                │                │             │
+ │──────────────┼────────────────┼────────────────┼────────────>│
+ │              │                │                │  detect     │
+ │              │                │                │  marker,    │
+ │              │                │                │  show modal │
+ │              │<───user picks──┼────────────────┼─────────────│
+ │              │  type          │                │             │
+ │─POST turn───>│ (same file +   │                │             │
+ │              │  user_override)│                │             │
+ │              │─process_turn──>│                │             │
+ │              │                │─classify_and──>│             │
+ │              │                │                │ Priority 1: │
+ │              │                │                │ user_override│
+ │              │                │                │ conf=1.0    │
+ │              │                │<───────────────│ extractor   │
+ │              │                │  success       │ runs        │
+```
+
+---
+
+## Sequence Diagram: UNANALYZABLE Short-Circuit
+
+Triggered when the user has opted a file out of analysis (e.g., VISUAL_EVIDENCE with vision disabled, or an explicit UNANALYZABLE classification). The service returns a reference-only placeholder so the Evidence record exists (for audit / future access) without invoking any extractor.
+
+```
+User          API(/turns)    Investigation    Preprocessing
+ │              │                │                │
+ │─POST turn───>│                │                │
+ │ {image.png,  │                │                │
+ │  vision=off} │                │                │
+ │              │─process_turn──>│                │
+ │              │                │─classify_and──>│
+ │              │                │  _extract      │
+ │              │                │                │ Tier 0:
+ │              │                │                │ UNANALYZABLE
+ │              │                │<───────────────│
+ │              │                │  PreprocessingResult
+ │              │                │  extraction_method="none"
+ │              │                │  content="[File 'image.png'
+ │              │                │    marked as UNANALYZABLE —
+ │              │                │    reference only...]"
+ │              │<─TurnResponse──│                │
+ │              │ (placeholder   │                │
+ │              │  evidence,     │                │
+ │              │  no extraction)│                │
+ │<─200 OK─────│                │                │
 ```
 
 ---

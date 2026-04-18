@@ -1,9 +1,27 @@
 # Evidence Creation Failure Modes and Recovery
 
-**Version:** 1.2
-**Date:** 2026-02-23
-**Status:** Design Specification (Deferred to post-MVP)
+**Version:** 1.3
+**Date:** 2026-04-18
+**Status:** Design Specification — partial implementation; remainder deferred post-MVP
 **Context:** Failure analysis and recovery strategies for single-phase evidence creation
+
+---
+
+## Current Implementation Status (validated 2026-04-18)
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Scenario 1 — File upload fails | Implicit (no code change needed) | Storage failures raise before any evidence object exists. No orphan state. |
+| Scenario 2 — LLM call timeout | **Partial** | Tier 0+1 is zero-LLM (classification + extraction), so the legacy "LLM timeout at ingest" path in this doc no longer applies. A separate timeout exists for Tier 1 extractors (2 s) with a TEXT-preview fallback — not the LLM-timeout failure mode this doc was originally written for. Turn-time LLM calls in `milestone_engine.py` can still time out; async-retry is not yet wired. |
+| Scenario 3 — LLM returns invalid category | **Done** | `EvidenceToAdd.validate_category` in `core/investigation/schemas.py:306` falls back to `CONTEXTUAL_EVIDENCE` with a warning log. |
+| Scenario 4 — DB insert fails after LLM / storage | Deferred | No idempotency key, no orphan cleanup. Orphan files can accumulate in storage if DB writes fail after `store_file` succeeds. |
+| Content-hash deduplication — hash consistency | **Done** | `PreprocessingService.classify_and_extract` computes `SHA-256(UTF-8 text)` uniformly for file uploads and pasted content. Both paths produce the same hash for the same content. |
+| Content-hash deduplication — repository lookup | **Deferred** | `PreprocessingResult.content_hash` is computed but no repository consults it. `find_by_content_hash()` is not implemented. Re-uploading the same file today produces a second Evidence row. |
+| Storage cleanup (TTL / reference counting) | Deferred | Neither approach below is implemented. |
+| Retry infrastructure (async retry job) | Deferred | No `retry_evidence_analysis` / `retry_evidence_creation` tasks exist. |
+| `file_references` table | Deferred | Not created. |
+
+The rest of the document describes the **target** failure-handling design. Treat scenarios marked "Deferred" as design commitments, not current behavior; scenarios marked "Done"/"Partial" have code references above.
 
 ---
 
@@ -12,10 +30,12 @@
 Single-phase evidence creation has a dependency chain:
 
 ```
-File upload → Storage (S3) → LLM analysis → DB insert
+File upload → Storage (local/S3) → Preprocessing (Tier 0+1, zero LLM) → DB insert → (later) LLM turn processing
 ```
 
 Each step can fail, leaving the system in an inconsistent state. This document defines explicit error recovery strategies for each failure point.
+
+> **Note:** The 2026-02 version of this document placed LLM analysis *between* storage and DB insert. That was for an earlier architecture where an LLM classifier ran at ingest. As of v4.1 (Unified Ingestion Pipeline), classification is purely rule-based and runs before storage — no LLM calls happen during evidence creation. LLM calls happen at turn processing time (`milestone_engine.process_turn`). This doc has been partially rewritten; scenarios below retain the original framing for reference and will be refactored when implementation begins.
 
 ---
 
@@ -749,37 +769,9 @@ async def process_turn_with_attachment(
 
 ---
 
-## Implementation Checklist
+## Implementation status
 
-### Core Error Handling
-- [ ] Add try/catch for file upload (clean failure)
-- [ ] Add try/catch for LLM call (cleanup or retry)
-- [ ] Add try/catch for DB insert (retry with preserved LLM result)
-- [ ] Add category fallback validator in EvidenceToAdd schema
-
-### Retry Infrastructure
-- [ ] Implement `retry_evidence_analysis` background job
-- [ ] Implement `retry_evidence_creation` background job
-- [ ] Add exponential backoff logic
-- [ ] Add max retries configuration
-
-### Idempotency
-- [ ] Add UNIQUE constraint on (case_id, content_hash)
-- [ ] Check for duplicate before upload
-- [ ] Check for existing evidence before retry
-
-### Storage Cleanup
-- [ ] Add TTL metadata to uploaded files
-- [ ] Implement daily cleanup job for orphaned files
-- [ ] Monitor orphaned file rate (should be <1%)
-
-### Monitoring & Alerts
-- [ ] Track LLM timeout rate
-- [ ] Track LLM error rate
-- [ ] Track DB insert failure rate
-- [ ] Track retry success rate
-- [ ] Alert on permanent failures (max retries exceeded)
-- [ ] Track orphaned file cleanup rate
+Current state is summarised in the "Current Implementation Status" table at the top of this document. The detailed step-by-step plan for closing the remaining items (orphan cleanup, async LLM timeout recovery, monitoring) lives in a temporary working doc: [`docs/working/PLAN-evidence-failure-modes-implementation.md`](../../working/PLAN-evidence-failure-modes-implementation.md). That plan will be deleted and this design doc will be updated once the milestones land.
 
 ---
 
@@ -791,6 +783,6 @@ async def process_turn_with_attachment(
 
 ---
 
-**Document Version:** 1.2
-**Last Updated:** 2026-02-23
-**Status:** Design Specification
+**Document Version:** 1.3
+**Last Updated:** 2026-04-18
+**Status:** Design Specification — partial implementation; see "Current Implementation Status" table above.

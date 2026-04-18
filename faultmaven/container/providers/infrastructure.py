@@ -134,26 +134,10 @@ def create_extractors() -> dict[str, Any]:
     }
 
 
-def create_chunking_service(
-    llm_provider: Any,
-    settings: FaultMavenSettings,
-) -> Any:
-    """Create chunking service for large documents."""
-    from faultmaven.modules.preprocessing.chunking_service import ChunkingService
-
-    return ChunkingService(
-        llm_router=llm_provider,
-        chunk_size_tokens=settings.preprocessing.chunk_size_tokens,
-        overlap_tokens=settings.preprocessing.chunk_overlap_tokens,
-        max_parallel_chunks=settings.preprocessing.map_reduce_max_parallel,
-    )
-
-
 def create_preprocessing_service(
     data_classifier: Any,
     data_sanitizer: Any,
     extractors: dict[str, Any],
-    chunking_service: Any,
     settings: FaultMavenSettings,
 ) -> Any:
     """Create preprocessing service with all extractors."""
@@ -175,8 +159,6 @@ def create_preprocessing_service(
         error_report_extractor=extractors["error_report_extractor"],
         documentation_extractor=extractors["documentation_extractor"],
         command_output_extractor=extractors["command_output_extractor"],
-        chunking_service=chunking_service,
-        chunk_trigger_tokens=settings.preprocessing.chunk_trigger_tokens,
     )
 
 
@@ -594,18 +576,14 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     for name, extractor in extractors.items():
         setattr(container, name, extractor)
 
-    # Chunking service
-    chunking_service = create_chunking_service(llm_provider, settings)
-    container._register_service("chunking_service", chunking_service)
-
     # Preprocessing service
     preprocessing_service = create_preprocessing_service(
-        data_classifier, data_sanitizer, extractors, chunking_service, settings
+        data_classifier, data_sanitizer, extractors, settings
     )
     container._register_service(
         "preprocessing_service",
         preprocessing_service,
-        dependencies=["data_classifier", "chunking_service"],
+        dependencies=["data_classifier"],
     )
 
     # Deep analysis service (Tier 3 deep LLM analysis)

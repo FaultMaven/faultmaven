@@ -16,6 +16,7 @@ def mock_classifier():
     result.data_type = DataType.LOGS_AND_ERRORS
     result.confidence = 0.90
     result.source = "rule_based"
+    result.source_type = None
     result.classification_failed = False
     result.suggested_types = None
     classifier.classify.return_value = result
@@ -87,9 +88,8 @@ class TestClassifyAndExtract:
     @pytest.mark.asyncio
     async def test_no_sanitization_at_extraction_layer(self, service, mock_sanitizer):
         """Extraction never sanitizes — PII redaction happens at the LLM boundary."""
-        result = await service.classify_and_extract(content="data with password=secret")
+        await service.classify_and_extract(content="data with password=secret")
         mock_sanitizer.sanitize.assert_not_called()
-        assert result.sanitization_applied is False
 
     @pytest.mark.asyncio
     async def test_content_hash_computed_from_text(self, service):

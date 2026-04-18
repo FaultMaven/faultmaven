@@ -7,7 +7,6 @@ import pytest
 
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
 from faultmaven.core.preprocessing.vector_storage import (
-    EXTRACTION_VERSION,
     _estimate_tokens,
     _get_last_n_tokens,
     chunk_structural_index,
@@ -102,9 +101,6 @@ class TestChunkStructuralIndex:
         # With overlap, later chunks should contain some text from previous chunks
         assert len(chunks) >= 2
 
-    def test_extraction_version_constant(self):
-        assert EXTRACTION_VERSION == "v3.0"
-
 
 # =============================================================================
 # store_in_vector_db_background
@@ -147,7 +143,6 @@ class TestStoreInVectorDbBackground:
         assert docs[0]["id"] == "ev_456_chunk_0"
         assert docs[0]["metadata"]["evidence_id"] == "ev_456"
         assert docs[0]["metadata"]["data_type"] == "logs"
-        assert docs[0]["metadata"]["extraction_version"] == EXTRACTION_VERSION
 
         # Verify BGE-M3 embeddings were generated and passed
         embeddings = call_kwargs["embeddings"]

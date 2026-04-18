@@ -78,28 +78,53 @@ class BasicTier2Service(ITier2AnalysisService):
         return True
 
     def _keyword_search(self, content: str, query: str) -> List[dict]:
-        """Find sections of content matching query keywords."""
+        """
+        Two-pass keyword search (matches the `search_file` tool v4.2 spec).
+
+        Pass 1 (strict): a line must contain ALL query keywords. This returns
+        highly specific matches for multi-word queries and suppresses noise
+        from single-term hits.
+
+        Pass 2 (fallback): only if pass 1 returns nothing, re-run with ANY
+        keyword matching. This guarantees we still surface candidates for
+        single-term queries or when no single line matches every term.
+
+        Keywords shorter than 3 chars are dropped (stop-word-ish).
+        """
         lines = content.split("\n")
         keywords = [kw.lower() for kw in query.split() if len(kw) > 2]
 
         if not keywords:
             return []
 
-        matches: list[dict] = []
-        for i, line in enumerate(lines):
-            line_lower = line.lower()
-            matched_keywords = [kw for kw in keywords if kw in line_lower]
-            if matched_keywords:
+        def _collect(require_all: bool) -> list[dict]:
+            out: list[dict] = []
+            for i, line in enumerate(lines):
+                line_lower = line.lower()
+                matched = [kw for kw in keywords if kw in line_lower]
+                if require_all:
+                    if len(matched) < len(keywords):
+                        continue
+                elif not matched:
+                    continue
                 start = max(0, i - self.context_lines)
                 end = min(len(lines), i + self.context_lines + 1)
-                matches.append(
+                out.append(
                     {
                         "text": "\n".join(lines[start:end]),
                         "start": start + 1,
                         "end": end,
-                        "relevance": len(matched_keywords) / len(keywords),
+                        "relevance": len(matched) / len(keywords),
                     }
                 )
+            return out
+
+        # Pass 1: strict (ALL keywords on same line)
+        matches = _collect(require_all=True)
+
+        # Pass 2: fallback to ANY if strict pass was empty
+        if not matches:
+            matches = _collect(require_all=False)
 
         return self._merge_overlapping(matches)[: self.max_excerpts]
 

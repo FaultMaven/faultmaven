@@ -354,10 +354,15 @@ investigation_service.process_turn(payload: TurnPayload)
   ├─ STEP 1: PRE-LLM PREPROCESSING
   │   for attachment in payload.attachments:
   │       _preprocess_attachment(case, attachment)
-  │           → DataClassifier.classify(content, filename)
-  │           → extractor.extract(content)
-  │           → sanitize(result)
+  │           → preprocessing_service.classify_and_extract(content, filename)
+  │                 → DataClassifier.classify(...)
+  │                 → extractor.extract(content)   [with 2s timeout]
+  │                 → PreprocessingResult
   │           → Evidence(form=DOCUMENT, preprocessed_content=structural_index)
+  │
+  │   PII redaction is NOT applied at extraction time.
+  │   It runs at the LLM boundary (MilestoneEngine), so structural indexes
+  │   are stored raw and the redaction map can be kept consistent per-case.
   │
   ├─ STEP 2: LLM INFERENCE
   │   Context includes structural indexes via Context Sliding Window
@@ -376,12 +381,20 @@ investigation_service.process_turn(payload: TurnPayload)
 | **Filename** | Real filename (e.g., `app.log`) | Synthetic: `pasted-content-{ts}.txt` |
 | **Extension hints** | Available (`.log`, `.yaml`, `.csv`) | Not available — classifier relies on content patterns |
 | **Raw file storage** | Stored via `content_ref` | Stored via `content_ref` |
-| **Deduplication** | SHA-256 of file bytes | SHA-256 of content |
+| **Content hash** | SHA-256 of UTF-8 text | SHA-256 of UTF-8 text |
 | **Extractors used** | Same 11 | Same 11 |
 | **Form** | `DOCUMENT` | `DOCUMENT` |
 | **Preprocessing** | Step 1 (before LLM) | Step 1 (before LLM) |
 
-**Output**: `PreprocessingResult` with `summary` (<500 chars) and `structural_index` (full extraction). Raw content stored via `content_ref`.
+**Single entry point**: `PreprocessingService.classify_and_extract(content, filename, source_metadata)`. The service short-circuits extraction for three special paths:
+
+- `source_type == "page_capture"` → `page_capture_passthrough` (copilot already produced structured markdown).
+- `data_type == UNANALYZABLE` → placeholder with `extraction_method="none"`.
+- `classification_failed=True` (confidence < 0.50) → placeholder with `extraction_method="classification_failed"` plus `suggested_types` in `extraction_metadata` for the frontend modal.
+
+Otherwise the type-specific extractor runs under a 2-second timeout (see §4.9). Output is a `PreprocessingResult` — see §7.1 for the full field list.
+
+**Deduplication** is a known gap: `PreprocessingResult.content_hash` is computed but not consulted by any repository today. Adding dedup requires a `find_by_content_hash()` method on the case/evidence repository plus a short-circuit in `_preprocess_attachment`. Tracked as future work in [evidence-failure-modes.md](./evidence-failure-modes.md).
 
 ---
 
@@ -501,34 +514,30 @@ async def _regex_search(
 
 #### C. Extractor Re-run
 
-Re-runs a domain-specific extractor with different parameters. The extractor is selected based on the evidence's `data_type`.
+Re-runs the domain-specific extractor selected by the evidence's `DetailedDataType`. The extractor runs with its default configuration — **extractors do not currently accept per-call parameter overrides**. The `extract(content: str) -> str` contract is uniform across all 11 extractors.
 
-**Use cases:**
-- Log file was initially processed with default crime scene window (±200 lines around highest severity error). User asks about a different time range → re-run with `time_window=("14:45:00", "14:46:00")`.
-- Metrics file was profiled with default z-score threshold (3.0). User wants to see more anomalies → re-run with `z_score_threshold=2.0`.
-- Log file's initial extraction focused on errors. User asks about warnings → re-run with `min_severity="WARN"`.
+When a different slice of the file is needed (narrower time window, lower severity threshold, different z-score), use **keyword** or **regex** search to reach the same data rather than re-parametrizing the extractor.
 
 ```python
 async def _rerun_extractor(
     raw_content: str,
     detailed_data_type: DetailedDataType,
-    params: dict,
 ) -> ExtractionResult:
     """
-    Re-run a domain-specific extractor with overridden parameters.
+    Re-run a domain-specific extractor on the raw content.
 
     Uses the evidence's DetailedDataType (12 types) to select the exact
-    extractor that originally processed the file, not the unified type.
-    See Appendix B for supported params per extractor.
+    extractor that originally processed the file. Returns the same
+    structural index shape as Tier 1.
     """
-    # Dispatch by DetailedDataType → same extractor that ran at upload
     extractor = preprocessing_service.extractors.get(detailed_data_type)
     if not extractor:
         return extract_text_structure(raw_content)
 
-    # Apply parameter overrides (extractor-specific)
-    return extractor.extract(raw_content, **params)
+    return extractor.extract(raw_content)
 ```
+
+**Why no parameterization?** The agent can already reach any slice of the file through keyword/regex search. Parameterizing 11 extractors would fragment their API for marginal gain over the existing search paths.
 
 ### 3.4 Zero-Result Recovery: Vocabulary Extraction (v4.2)
 
@@ -1100,8 +1109,10 @@ These items are out of scope for the initial v4.0 implementation but are documen
 | ~~**Unified endpoint processing**~~ | ~~Merge `/queries` and `/data` into single endpoint~~ | **Done in v4.1** — `POST /cases/{id}/turns` with two-step pipeline. Old endpoints deleted. |
 | **Cross-file correlation** | Tier 3 analysis across multiple files simultaneously | Requires multi-file context windowing |
 | **Vectorization cost tracking** | Track per-case vectorization costs for billing | Enterprise feature |
-| **Extractor re-run parameters** | Extractors accept runtime override `**kwargs` (e.g., `time_window`, `min_severity`, `z_score_threshold`) via `search_file` extractor mode. Currently extractors use hard-coded constants; the tool gracefully falls back to defaults. See Appendix B for planned parameter tables. | After core pipeline stabilizes |
 | **Deep analysis file size cap** | `DEEP_ANALYSIS_MAX_FILE_SIZE_MB` config to reject oversized files before sending to Tier 3 backend | When large file uploads are common |
+| **Content-hash deduplication** | `PreprocessingResult.content_hash` is computed but never consulted. Closing this requires `find_by_content_hash()` on the case/evidence repository + a short-circuit in `_preprocess_attachment`. Design decisions are finalised (per-case scope, text-hash equality, toast UX). | Implementation plan: [`docs/working/PLAN-content-hash-deduplication.md`](../../working/PLAN-content-hash-deduplication.md) |
+| **Classifier LLM rescue** | Route `classification_failed=True` inputs through `CLASSIFIER_PROVIDER` before the user modal (~5% of inputs, ~400 ms added latency on slow path only). Behind settings flag, default off. | Implementation plan: [`docs/working/PLAN-classifier-llm-rescue.md`](../../working/PLAN-classifier-llm-rescue.md) (after telemetry baseline) |
+| **Evidence failure modes (orphan cleanup, async retry, monitoring)** | Scenario 3 (category fallback) and content-hash consistency are done. Remaining milestones: TTL-based orphan cleanup, async LLM timeout recovery at turn processing, failure-mode dashboards. TTL approach chosen over reference counting. | Implementation plan: [`docs/working/PLAN-evidence-failure-modes-implementation.md`](../../working/PLAN-evidence-failure-modes-implementation.md) |
 | **DIFF_PATCH extractor** | Parse unified diffs / git patches — files changed, lines added/removed | When deployment-change investigations are common |
 | **THREAD_DUMP extractor** | JVM thread dump parsing — deadlock detection, lock contention | When Java-heavy user base emerges |
 | ~~**Page Capture Stage 2: Query-Time Reranking**~~ | **Implemented in v5.2.** `_rerank_page_capture_sections()` in `context_builder.py` splits page capture structural indexes on `\n##` headings, scores each section against user query via normalised keyword overlap (stopwords excluded), reorders so query-relevant content appears first. Preamble (`[captured_at: …]` + page title) pinned at position 0. Runs before per-item char cap so relevant sections survive truncation. Triggered only for `extraction_method="page_capture_passthrough"` evidence. | ~~Post-v5.1~~ Done |
@@ -1187,83 +1198,61 @@ PII_REDACT_PASSWORDS=true
 
 ---
 
-## Appendix B: Extractor Re-run Parameters
+## Appendix B: Extractor Reference
 
-> **Status: NOT YET IMPLEMENTED.** The `search_file` tool's extractor mode dispatches the correct extractor but passes `**params` through a `try/except TypeError` — if the extractor doesn't accept kwargs, it runs with defaults and returns a note. The parameter tables below document the *planned* override interface; extractors currently use hard-coded constants. See Deferred Items.
+All 11 extractors share the uniform `extract(content: str) -> str` contract. They are stateless, produce a structural index with appended coverage metadata, and run under a 2-second Tier 1 timeout. None accept per-call parameter overrides; when the agent needs a different slice of the data it uses keyword or regex search via `search_file`.
 
-When the agent calls `search_file` with `search_type="extractor"`, the extractor is selected based on the evidence's `DetailedDataType` (not the unified type). This ensures re-runs use the same specialized extractor that processed the file originally.
+### Strategy names
 
-### LOGS_AND_ERRORS — `LogsAndErrorsExtractor`
+Each extractor exposes `strategy_name` which flows into `ExtractionResult.method` and `PreprocessingResult.extraction_method` (both are `ExtractionMethod` Literals):
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `time_window` | `tuple[str, str]` | None | Start/end timestamps to filter log lines |
-| `min_severity` | `str` | `"ERROR"` | Minimum severity to include (`WARN`, `ERROR`, `CRITICAL`, `FATAL`) |
-| `context_lines` | `int` | 200 | Lines of context around error clusters |
-| `cluster_gap` | `int` | 50 | Max lines between errors to form a cluster |
-| `burst_threshold` | `int` | 10 | Errors within cluster_gap to trigger burst detection |
-| `tail_lines` | `int` | 500 | Lines from end to extract if no errors found |
+| Extractor | `strategy_name` | DetailedDataType |
+| --- | --- | --- |
+| `LogsAndErrorsExtractor` | `crime_scene` | `LOGS_AND_ERRORS` |
+| `ErrorReportExtractor` | `exception_context` | `ERROR_REPORT` |
+| `TraceDataExtractor` | `trace_correlation` | `TRACE_DATA` |
+| `CommandOutputExtractor` | `command_parsing` | `COMMAND_OUTPUT` |
+| `MetricsAndPerformanceExtractor` | `statistical` | `METRICS_AND_PERFORMANCE` |
+| `ProfilingDataExtractor` | `profiling_hotspot` | `PROFILING_DATA` |
+| `StructuredConfigExtractor` | `direct` | `STRUCTURED_CONFIG` |
+| `SourceCodeExtractor` | `ast_parse` | `SOURCE_CODE` |
+| `UnstructuredTextExtractor` | `direct` | `UNSTRUCTURED_TEXT` |
+| `DocumentationExtractor` | `documentation_structure` | `DOCUMENTATION` |
+| `VisualEvidenceExtractor` | `vision` | `VISUAL_EVIDENCE` |
 
-### ERROR_REPORT — `ErrorReportExtractor`
+Runtime markers (set by `PreprocessingService`, not by any extractor):
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `language` | `str` | auto-detect | Override language detection (python/java/javascript/go) |
-| `include_library_frames` | `bool` | False | Include library/framework frames in call path (default: user code only) |
+| Marker | Triggered when |
+| --- | --- |
+| `page_capture_passthrough` | `source_type == "page_capture"` — content is already structured markdown from the copilot; extractor is skipped |
+| `structure_extraction` | Tier 1 timed out or raised — falls back to a truncated preview with `timeout_fallback=True` or `error_fallback=True` in metadata |
+| `none` | `detailed_data_type == UNANALYZABLE` — placeholder returned, no extractor runs |
+| `classification_failed` | `confidence < 0.50` — placeholder returned with `suggested_types` in metadata; frontend shows modal |
 
-### TRACE_DATA — `TraceDataExtractor`
+### Output budget (uniform across extractors)
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `slow_span_threshold` | `float` | 0.20 | Fraction of total trace duration to flag as slow (default: 20%) |
-| `service_filter` | `list[str]` | None | Only analyze spans from these services |
+- `MAX_STRUCTURAL_INDEX_TOKENS = 2500`
+- `MAX_STRUCTURAL_INDEX_CHARS = 10000`
+- When output exceeds the cap, `truncate_output()` preserves the first 40 % + last 40 % so both file headers and tails remain visible.
 
-### COMMAND_OUTPUT — `CommandOutputExtractor`
+### Shared utilities (`extractors/utils.py`)
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `cpu_threshold` | `int` | 70 | CPU % to flag as hog |
-| `mem_threshold` | `int` | 80 | Memory % to flag as hog |
-| `disk_threshold` | `int` | 85 | Disk % to flag as full |
+- `extract_timestamp(line)` / `extract_time_range(content)` — recognise ISO-8601 (with/without `T`), syslog BSD, epoch seconds, epoch milliseconds. Scan only the first 10 and last 10 lines to stay within the Tier 1 latency budget.
+- `format_coverage_metadata(**kwargs)` — appends `--- COVERAGE METADATA ---` with key-value pairs (Lines, Time range, Format, etc.) so downstream tooling can reason about what the extractor saw.
+- `has_content()` + `EMPTY_CONTENT_RESPONSE` — uniform empty-input guard.
 
-### METRICS_AND_PERFORMANCE — `MetricsAndPerformanceExtractor`
+### Extractor-specific notes
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `z_score_threshold` | `float` | 3.0 | Z-score threshold for anomaly detection |
-| `columns` | `list[str]` | None | Specific metrics/columns to analyze (None = all) |
-| `time_range` | `tuple[str, str]` | None | Filter to specific time range |
-
-### PROFILING_DATA — `ProfilingDataExtractor`
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `hotspot_threshold` | `float` | 0.05 | Fraction of total time to flag as hotspot (default: 5%) |
-| `top_n` | `int` | 5 | Number of top hotspots to report |
-
-### STRUCTURED_CONFIG — `StructuredConfigExtractor`
-
-No re-run parameters. Config extraction is deterministic — same input always produces same output.
-
-**Secret redaction** is always-on (not gated by `sanitize_pii`) since structural indexes are persisted and sent to LLMs. Two layers:
-
-1. **Key-based**: Suffix-anchored patterns match the terminal key segment only (e.g., `_password$`, `_token$`, `_secret$`). Keys where the secret word is a prefix (e.g., `token_type`, `auth_method`) are NOT redacted. A non-secret value bypass skips redaction for obvious enum/boolean values (e.g., `require_password=true`).
-2. **Value-based**: Regex patterns for long alphanumeric strings, OpenAI-style keys, all-caps hex strings, plus detect-secrets structured token detectors (JWT, GitHub, AWS, Stripe, etc.).
-
-### SOURCE_CODE — `SourceCodeExtractor`
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `language` | `str` | auto-detect | Override language detection |
-| `include_bodies` | `bool` | False | Include function bodies (not just signatures) |
-
-### UNSTRUCTURED_TEXT, DOCUMENTATION, VISUAL_EVIDENCE
-
-No re-run parameters. These extractors have no tunable thresholds.
+- **LogsAndErrorsExtractor** — entity profile (services, hostnames, frequent identifiers) is **prepended** to the structural index so it survives context-builder truncation.
+- **TraceDataExtractor** — embedded-JSON recovery: when the content is not pure JSON, scans for `{[\s\S]*}` to salvage trace structures from mixed-format payloads.
+- **ConfigExtractor (StructuredConfigExtractor)** — secret redaction is always-on (not gated by `sanitize_pii`) since structural indexes are persisted and may be sent to LLMs. Two layers:
+  1. **Key-based** — suffix-anchored patterns match the terminal key segment only (e.g., `_password$`, `_token$`, `_secret$`). Keys where the secret word is a prefix (e.g., `token_type`, `auth_method`) are NOT redacted. A non-secret value bypass skips redaction for obvious enum/boolean values.
+  2. **Value-based** — `detect-secrets` with 21 plugins enabled: Artifactory, AWS, Azure, BasicAuth, Cloudant, Discord, GitHub, GitLab, IBM Cloud, IBM COS, JWT, Mailchimp, Npm, OpenAI, SendGrid, Slack, Softlayer, SquareOAuth, Stripe, Telegram, Twilio. Adding a detector means updating `config_extractor.py` and noting it here — this list is a security contract.
+- **SourceCodeExtractor** — tries `tree-sitter` first for AST fidelity on Python / JS / TS / Java / Go / Rust / C when the library is installed, and falls back to a multi-language regex scanner otherwise.
 
 ---
 
-**Document Version**: 5.2
-**Last Updated**: 2026-03-15
+**Document Version**: 5.3
+**Last Updated**: 2026-04-18
 **Status**: FINAL
 **Predecessor**: v5.1 (data-preprocessing-design-specification.md)

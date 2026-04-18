@@ -22,10 +22,6 @@ from faultmaven.infrastructure.model_cache import model_cache
 
 logger = logging.getLogger(__name__)
 
-# Current extraction version — increment when Tier 1 logic changes.
-# Used for tracking stale indexes in vector DB (Section 5.4).
-EXTRACTION_VERSION = "v3.0"
-
 
 def _estimate_tokens(text: str) -> int:
     """Estimate token count: 1 token ~ 4 characters."""
@@ -181,7 +177,6 @@ async def store_in_vector_db_background(
                 "chunk_index": i,
                 "total_chunks": len(chunks),
                 "upload_timestamp": datetime.now(timezone.utc).isoformat(),
-                "extraction_version": EXTRACTION_VERSION,
             }
             # Add any scalar metadata from the caller
             for k, v in metadata.items():
