@@ -17,10 +17,9 @@ Read these before acting. The first is one of the four canonical source-of-truth
 
 1. **`docs/architecture/core-architecture/architectural-design-principles.md`** — Canonical. The 12 design principles (deployment-agnostic, vertical modules, composition root, interfaces, observability).
 2. **`docs/architecture/core-architecture/README.md`** — Index and reading order for the core-architecture section.
-3. **`docs/architecture/core-architecture/module-organization-design.md`** — Module boundaries and how modules compose.
-4. **`docs/architecture/core-architecture/vertical-vs-layer-structuring-explained.md`** — The "why" behind Vertical Modules vs Domain Services.
-5. **`docs/architecture/core-architecture/infrastructure-layer-guide.md`** — What belongs in `faultmaven/infrastructure/` vs inside a module.
-6. **`CLAUDE.md` §Architecture** — Module inventory, cross-module import rules, module-type table. Read for facts; this skill does not restate them.
+3. **`docs/architecture/core-architecture/module-organization-design.md`** — Module boundaries, Domain Service patterns, and the "why" behind Vertical Modules vs Domain Services (the previous standalone explainer was archived 2026-04-18 and folded into this doc).
+4. **`docs/architecture/core-architecture/infrastructure-layer-guide.md`** — What belongs in `faultmaven/infrastructure/` vs inside a module.
+5. **`CLAUDE.md` §Architecture** — Module inventory, cross-module import rules, module-type table. Read for facts; this skill does not restate them.
 
 If any referenced document does not exist at the path above, **stop and tell the user** — do not fabricate content to fill the gap.
 

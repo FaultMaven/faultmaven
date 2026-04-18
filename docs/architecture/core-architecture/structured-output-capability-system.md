@@ -279,14 +279,19 @@ def test_new_provider_basic_model_best_effort():
 
 ## Current Provider Support
 
+FaultMaven ships 9 LLM providers (see `faultmaven/CLAUDE.md` § Supported LLM Providers). Capability detection is implemented per provider; the table below is generated from the `get_structured_output_capability()` overrides in `faultmaven/infrastructure/llm/providers/`.
+
 | Provider | STRICT Models | BEST_EFFORT Models | FUNCTION_CALLING Models |
 |----------|---------------|-------------------|------------------------|
 | **OpenAI** | GPT-4o, GPT-4o-mini, GPT-4-turbo, GPT-4-2024, GPT-3.5-turbo-0125 | - | Older GPT-3.5 models |
-| **Groq** | openai/gpt-oss-20b, openai/gpt-oss-120b | Llama-3.3, Mixtral, all other models | - |
 | **Anthropic** | - | - | All Claude models |
 | **Gemini** | Gemini 2.0, Gemini 1.5 | Gemini 1.0 and older | - |
+| **Groq** | openai/gpt-oss-20b, openai/gpt-oss-120b | Llama-3.3, Mixtral, all other models | - |
+| **Fireworks** | - | All models (no strict json_schema enforcement upstream) | - |
+| **HuggingFace** | - | All models (Inference API has no json_schema enforcement) | - |
 | **Cohere** | - | All models | - |
-| **Local** | - | Most models | Functionary, Hermes |
+| **OpenRouter** | Inherits from `OpenAIProvider` (routed via OpenAI-compatible API). Effective capability depends on the underlying model OpenRouter is proxying — verify per model | | |
+| **Local (Ollama / vLLM)** | - | Most models | Functionary, Hermes |
 
 ## Design Principles
 

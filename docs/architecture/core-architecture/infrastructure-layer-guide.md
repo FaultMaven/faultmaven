@@ -123,48 +123,41 @@ class RedisSessionStore(ISessionStore):
         await self.redis_client.set(full_key, serialized, ex=ttl)
 ```
 
-## Redis Logging Architecture Improvement
+## Historical Example: Redis Session Store Migration
 
-### Problem Statement
+> **Status:** Historical. The migration described below is complete. This section is kept as a worked example of how to recognize and remediate the anti-pattern of treating internal infrastructure as an external service. For *current* guidance on which pattern to use today, see [Pattern 2: Internal Infrastructure](#pattern-2-internal-infrastructure) above and the [Decision Matrix](#decision-matrix-which-pattern-to-use) below.
 
-Previously, `RedisSessionStore` used a verbose `RedisClient` that inherited from `BaseExternalClient`, causing excessive logging for high-frequency session operations that occur on every HTTP request.
+### Problem (resolved)
 
-**Root Cause**: Architectural anti-pattern - session storage operations were being treated as "external service calls" requiring comprehensive logging, when Redis is internal infrastructure.
+`RedisSessionStore` previously inherited from `BaseExternalClient`, which wrapped every Redis call in comprehensive logging. Because session lookups happen on every HTTP request, this generated excessive log volume for an operation against trusted internal infrastructure.
 
-### Solution Implementation
+**Root cause:** session storage was incorrectly treated as an external-service call.
 
-1. **Changed RedisSessionStore to use lightweight client**:
+### Migration steps taken
+
+1. **Switched `RedisSessionStore` to a lightweight client:**
    ```python
    # Before (excessive logging)
    class RedisSessionStore(BaseExternalClient):
        async def get(self, key: str):
            return await self.call_external("get_session", self._redis_get, key)
 
-   # After (optimized)
+   # After (current)
    class RedisSessionStore(ISessionStore):
        def __init__(self):
            self.redis_client = create_redis_client()  # Lightweight factory
 
        async def get(self, key: str):
-           return await self.redis_client.get(f"{self.prefix}{key}")  # Direct call
+           return await self.redis_client.get(f"{self.prefix}{key}")
    ```
 
-2. **Removed unused verbose Redis client**:
-   - Deleted `faultmaven/infrastructure/persistence/redis.py` (297 lines)
-   - Eliminated `RedisClient(BaseExternalClient)` pattern
-   - Updated all test mocks accordingly
+2. **Removed the verbose Redis client wrapper** (`faultmaven/infrastructure/persistence/redis.py`, ~297 lines) and updated test mocks.
 
-3. **Maintained interface compliance**:
-   - All functionality preserved through `ISessionStore` interface
-   - No breaking changes to dependent services
-   - Test coverage maintained
+3. **Preserved the `ISessionStore` interface** so dependent services were unaffected.
 
-### Benefits Achieved
+### Outcome
 
-1. **Performance Improvement**: Eliminated logging overhead for high-frequency session operations
-2. **Proper Separation of Concerns**: Internal infrastructure vs external service monitoring
-3. **Resource Efficiency**: Reduced CPU and memory usage for session operations
-4. **Architectural Clarity**: Clear distinction between internal and external service patterns
+Logging overhead on per-request session reads/writes was eliminated, and the Pattern 1 / Pattern 2 distinction described above became the codified rule for new infrastructure code.
 
 ## Decision Matrix: Which Pattern to Use
 

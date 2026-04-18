@@ -1,7 +1,7 @@
 # FaultMaven Architectural Design Principles
 
-**Version**: 2.0
-**Date**: 2026-01-09
+**Version**: 2.1
+**Date**: 2026-04-16
 **Status**: Active
 **Related Documents**:
 
@@ -20,7 +20,7 @@ This document defines the **core architectural design principles** that guide Fa
 
 These principles optimize for a small team (<15) building an AI-powered SRE tool. They prioritize debuggability over abstraction, and measurable outcomes over theoretical purity.
 
-### The 10 Principles
+### The 12 Principles
 
 | # | Principle | One-Line Rule |
 |---|-----------|---------------|
@@ -31,9 +31,11 @@ These principles optimize for a small team (<15) building an AI-powered SRE tool
 | 5 | Composition Root | All DI wiring in `main.py`; services never touch container |
 | 6 | Errors as Domain Concepts | Every module defines its exception hierarchy |
 | 7 | Observability by Default | Correlation IDs, structured logs, traces on external calls |
-| 8 | Boundary Enforcement | Import-linter enforces rules at build time |
+| 8 | Boundary Enforcement | Import-linter enforces rules at build time; dead code is removed, not left behind |
 | 9 | Test Safety Net | 70% code coverage floor + 85% AI evaluation benchmarks |
 | 10 | Bounded AI Complexity | LangGraph owns state; LLM adapters are stateless |
+| 11 | Clean Moves, Not Rewrites | Move code to its correct location; don't rewrite during the move; don't leave the origin behind |
+| 12 | Escape Hatches | Architectural exceptions are allowed but tracked, counted, and time-limited |
 
 ### Principle Hierarchy
 
@@ -48,11 +50,13 @@ IMPORTANT (Violations require documented exception)
 ├── 2. Vertical Modules with Contracts
 ├── 3. Database Boundaries
 ├── 7. Observability by Default
-└── 8. Boundary Enforcement
+├── 8. Boundary Enforcement
+└── 11. Clean Moves, Not Rewrites
 
 RECOMMENDED (Apply judgment)
 ├── 4. Interface-Based Design
-└── 9. Test Safety Net
+├── 9. Test Safety Net
+└── 12. Escape Hatches
 ```
 
 ---
@@ -252,7 +256,7 @@ faultmaven/
 
 ```python
 # ✅ ALLOWED: Import from contracts
-from faultmaven.modules.case.contracts import CaseDTO, ICaseQuery
+from faultmaven.modules.case.contracts import CaseDTO, ICaseRepository
 
 # ❌ FORBIDDEN: Import from internal domain
 from faultmaven.modules.case.domain.models import Case
@@ -302,23 +306,36 @@ For complete recommendations, examples, and edge case handling, see [Module Orga
 
 ### Table Naming Convention
 
+Tables are named after the business entity they store. Module-name prefixes are **not** required — the live schema uses unprefixed names for the primary entity of a module (`users`, `cases`, `evidence`, `reports`, `knowledge_items`) and semantic prefixes only to disambiguate sub-entities or related collections (`case_messages`, `case_actions`, `case_checkpoints`, `knowledge_suggestions`, `oauth_revoked_tokens`).
+
 ```sql
--- Each module prefixes its tables
-case_cases, case_investigations, case_evidence
-knowledge_items, knowledge_embeddings
-auth_users, auth_sessions, auth_tokens
+-- Auth module (user domain)
+users, organizations, organization_members, roles, permissions,
+role_permissions, teams, team_members, user_audit_log,
+oauth_revoked_tokens, oauth_authorization_codes
+
+-- Case module (case domain — owns evidence, reports, sessions, agent audit data)
+cases, case_messages, case_actions, case_tags, case_checkpoints,
+evidence, evidence_artifacts, hypotheses, solutions, uploaded_files,
+investigation_sessions, agent_executions, agent_tool_calls,
+agent_tool_calls_v2, standalone_evidence, sessions, reports
+
+-- Knowledge module
+knowledge_items, knowledge_suggestions
 ```
+
+**Source of truth:** `faultmaven/infrastructure/persistence/models.py`. The ER diagram (`docs/architecture/data-and-storage/er-diagram.md`) is regenerated from these models.
 
 ### Cross-Module Data Access
 
 ```python
 # ❌ WRONG: Report module queries case tables directly
 async def generate_report(case_id):
-    case = await db.execute("SELECT * FROM case_cases WHERE id = ?", case_id)
+    case = await db.execute("SELECT * FROM cases WHERE case_id = ?", case_id)
 
-# ✅ RIGHT: Report module calls case service via contract
+# ✅ RIGHT: Report module calls case repository via contract
 async def generate_report(case_id):
-    case = await self.case_query.get_case(case_id)
+    case = await self.case_repo.get(case_id)
 ```
 
 ### Preventing N+1 Problems
@@ -327,22 +344,22 @@ When modules can't JOIN, naive implementations create N+1 patterns. **Contracts 
 
 ```python
 # modules/case/contracts.py
-class ICaseQuery(Protocol):
-    """Public contract for case queries."""
+class ICaseRepository(Protocol):
+    """Public contract for cross-module case access."""
 
-    async def get_case(self, case_id: str) -> CaseDTO:
+    async def get(self, case_id: str) -> CaseDTO:
         """Single case lookup."""
         ...
 
-    async def get_cases_by_ids(self, case_ids: list[str]) -> list[CaseDTO]:
+    async def get_by_ids(self, case_ids: list[str]) -> list[CaseDTO]:
         """Bulk lookup - prevents N+1."""
         ...
 
-    async def get_cases_for_user(
+    async def list_for_user(
         self,
         user_id: str,
         limit: int = 100,
-        cursor: str | None = None
+        cursor: str | None = None,
     ) -> PaginatedResult[CaseDTO]:
         """Paginated query - prevents unbounded results."""
         ...
@@ -353,11 +370,11 @@ class ICaseQuery(Protocol):
 async def generate_bulk_report(case_ids: list[str]):
     cases = []
     for case_id in case_ids:  # 100 cases = 100 queries
-        cases.append(await case_query.get_case(case_id))
+        cases.append(await case_repo.get(case_id))
 
 # ✅ BULK PATTERN
 async def generate_bulk_report(case_ids: list[str]):
-    cases = await case_query.get_cases_by_ids(case_ids)  # 1 query
+    cases = await case_repo.get_by_ids(case_ids)  # 1 query
 ```
 
 ### Contract Design Rules
@@ -378,9 +395,10 @@ async def generate_bulk_report(case_ids: list[str]):
 
 | Component | Multiple Implementations? | Use Protocol? |
 |-----------|---------------------------|---------------|
-| LLM providers | Yes (7 providers) | ✅ Yes |
+| LLM providers | Yes (9 providers: Anthropic, OpenAI, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, Local Ollama/vLLM) | ✅ Yes |
 | Vector stores | Yes (ChromaDB PersistentClient, HttpClient) | ✅ Yes |
-| Storage backends | Yes (S3, filesystem) | ✅ Yes |
+| Storage backends | Yes (S3, Azure Blob, filesystem) | ✅ Yes |
+| Session stores | Yes (Redis, FakeRedis) | ✅ Yes |
 | Module contracts | Yes (for cross-module calls) | ✅ Yes |
 | CaseService | No (one implementation) | ❌ No |
 | ReportGenerator | No (one implementation) | ❌ No |
@@ -393,11 +411,11 @@ If "Go to Definition" takes you to a Protocol instead of real code, ask: **"Will
 
 | Interface | Purpose | Implementations |
 |-----------|---------|-----------------|
-| `ILLMProvider` | LLM integration | OpenAI, Anthropic, Fireworks, Gemini, Local |
+| `ILLMProvider` | LLM integration | Anthropic, OpenAI, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, Local (Ollama/vLLM) |
 | `IVectorStore` | Vector search | ChromaDB (PersistentClient local, HttpClient cloud) |
-| `ISessionStore` | Session management | Redis (real cloud, FakeRedis local) |
+| `ISessionStore` | Session management | Redis (cloud), FakeRedis (local) |
 | `IStorageBackend` | File storage | S3, Azure Blob, Filesystem |
-| `ICaseQuery` | Cross-module case access | CaseQueryService |
+| `ICaseRepository` | Cross-module case access | SQLite, PostgreSQL hybrid, sessionless variants |
 
 ### Example: IVectorStore Protocol
 
@@ -916,21 +934,23 @@ def check_exceptions():
 | 2.0 | 2026-01-09 | Consolidated to 10 principles with enforcement mechanisms |
 | 2.1 | 2026-04-16 | P8: dead code intolerance. P11: "Clean Moves, Not Rewrites" with pre/post-launch distinction. P12: pre-launch cleanup rule. |
 
-### Key Changes in v2.0
+### Key Changes Across Versions
 
-| Area | v1.0 | v2.0 |
-|------|------|------|
-| DI Pattern | Service Locator example | Pure Composition Root |
-| Module Communication | Implicit | Explicit contracts |
-| Database Access | Not addressed | Per-module boundaries, N+1 prevention |
-| Error Handling | Not addressed | Domain exception hierarchies |
-| Observability | Not addressed | Correlation IDs, structured logs |
-| Testing | "Don't decrease coverage" | 70% floor + 85% AI evaluation |
-| AI Architecture | Implicit | Explicit LangGraph/adapter boundary |
-| Exceptions | Not addressed | 90-day sunsets with automation |
+| Area | v1.0 | v2.0 | v2.1 |
+|------|------|------|------|
+| DI Pattern | Service Locator example | Pure Composition Root | (unchanged) |
+| Module Communication | Implicit | Explicit contracts | (unchanged) |
+| Database Access | Not addressed | Per-module boundaries, N+1 prevention | Table-prefix rule relaxed: unprefixed primary tables, semantic prefixes only for sub-entities |
+| Error Handling | Not addressed | Domain exception hierarchies | (unchanged) |
+| Observability | Not addressed | Correlation IDs, structured logs | (unchanged) |
+| Testing | "Don't decrease coverage" | 70% floor + 85% AI evaluation | (unchanged) |
+| AI Architecture | Implicit | Explicit LangGraph/adapter boundary | (unchanged) |
+| Boundary Enforcement | Not addressed | Import-linter contracts | P8 extended: dead code intolerance |
+| Exceptions | Not addressed | 90-day sunsets with automation | Promoted to standalone P12 |
+| Code Movement | Not addressed | Not addressed | New P11: clean moves over rewrites; pre/post-launch distinction |
 
 ---
 
 **Document Owner**: Engineering Leadership
 **Status**: Active
-**Last Updated**: 2026-01-09
+**Last Updated**: 2026-04-16
