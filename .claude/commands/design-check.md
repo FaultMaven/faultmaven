@@ -5,10 +5,10 @@ description: Detect drift between design docs and implementation for a domain, i
 # /design-check
 
 Detect drift between design documents and implementation within a specific domain, in **both directions**:
-- **Aspirational drift:** what the design specifies that the code does not implement
-- **Undocumented evolution:** what the code does that the design does not describe
+- **Design-only:** the design specifies something the code does not implement
+- **Code-only:** the code does something no design doc describes
 
-Does NOT decide which side is "correct." Reports both; user decides.
+Does NOT decide which side is "correct" or whether a divergence is a positive adaptation vs. a regression — a separate triage pass makes that call. This skill's job is objective, accurate identification of differences. Call out unambiguous bugs, errors, or internal inconsistencies (e.g., a repository targeting a table that does not exist, two enums with the same name and different value spaces) — those are factual findings, not judgments.
 
 ## Argument
 
@@ -46,12 +46,12 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 >
 > **Step 3 — Read the code.** For each item on the design checklist, locate the implementation in the code:
 > - **Present and matching** → OK
-> - **Present but diverges** → undocumented evolution (the code does something the design does not describe)
-> - **Absent** → aspirational drift (the design specifies it, code does not implement it)
+> - **Present but diverges** → code-only (the code does something the design does not describe; record both what the design said and what the code does)
+> - **Absent** → design-only (the design specifies it, code does not implement it)
 >
-> Then scan the code for behaviors, classes, methods, flags, or flows that are not mentioned anywhere in the design docs. Those are also **undocumented evolution**.
+> Then scan the code for behaviors, classes, methods, flags, or flows that are not mentioned anywhere in the design docs. Those are also **code-only**.
 >
-> **Step 4 — Do NOT judge which side is correct.** Your job is to report the drift in both directions, with evidence, and let the user decide. A design element that appears "outdated" and a code behavior that appears "experimental" are treated the same way — both are reported.
+> **Step 4 — Stay objective; do not judge adaptive vs. regression.** Report divergences in both directions with evidence. A separate triage pass decides whether each item should be resolved by updating the design or by changing the code — that is not your call. However, call out unambiguous bugs, errors, or internal inconsistencies as facts when they are clear from the evidence (e.g., code referencing a schema object that does not exist anywhere, two same-named enums with incompatible value spaces, a storage layout that contradicts itself across files). State them as observations, not recommendations.
 >
 > **Step 5 — Write the report** to `docs/working/ANALYSIS-design-check-<DOMAIN>.md` with this structure:
 >
@@ -63,24 +63,45 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 > **Design elements traced:** <count>
 > **Code behaviors traced:** <count>
 >
-> ## Aspirational Drift (design → code)
+> ## Note to the agent acting on this report
+>
+> **Think of this report as a CT scan, not a treatment plan.** It lists objective differences between what the design documents specify and what the code actually does. It does not prescribe fixes.
+>
+> You are the doctor. Your job is to read each finding and decide the disposition. For every item:
+>
+> 1. **Ask: is this a positive pivot or a regression?**
+>    - **Positive pivot** (deliberate improvement, code is now the better reality) → **update the design document to match the code.** The code becomes the new source of truth.
+>    - **Regression / bug / incomplete work** (accidental divergence, unfinished migration, missing implementation) → **bring the code back to the design specification.** The design remains the source of truth.
+> 2. **Unambiguous inconsistencies are factual errors, not interpretive calls.** They must be fixed regardless of which side you favor — the system is currently self-contradictory (e.g., code queries a table that does not exist, two same-named enums have incompatible values). Address them directly.
+> 3. **Evaluate each finding individually.** A single section may contain a mix of "update docs" and "fix code" items. Do not batch-decide by section heading.
+> 4. **When the evidence is ambiguous, consult a human stakeholder before acting.** If you cannot tell from code and docs alone whether a divergence was deliberate, ask.
+> 5. **Think systemically and holistically.** For each gap, do not optimize only for the local file or component. Decide which way to resolve it based on overall system robustness, performance, maintainability, and coherence — including effects on neighboring modules, data flows, operational cost, and long-term evolvability. A "locally clean" fix that weakens the system is worse than a messier fix that strengthens it.
+>
+> The radiologist (this skill) has reported what it sees. You decide which findings are benign variants, which need surgery, and which need medication.
+>
+> ---
+>
+> ## Design-only (spec says X, code does not)
 > Design specifies X but code does not implement it.
 >
 > - **[<doc>:<section>]** <specification>
 >   → Expected in: <code path>
 >   → Observed: not present / partial / diverges in <way>
 >
-> ## Undocumented Evolution (code → design)
+> ## Code-only (code does Y, no spec for Y)
 > Code does X but no design doc describes it.
 >
 > - **[<code path>:<line>]** <behavior>
 >   → Not mentioned in: <docs checked>
 >
+> ## Unambiguous inconsistencies
+> (Optional — only include if you found factual errors: references to non-existent schema objects, same-named constructs with incompatible definitions, code paths that contradict each other. State as observations, no recommendations.)
+>
 > ## Matches
 > (Optional — summarize cleanly matched areas in one paragraph so the user can see coverage.)
 >
 > ## Overall Assessment
-> <one paragraph: magnitude of drift, whether it's concentrated in one area, whether docs or code is evolving faster>
+> <one paragraph: magnitude of drift and where it concentrates. Do not speculate on whether docs or code is "correct" — the triage pass will decide.>
 > ```
 >
 > **Step 6 — Completion check.** You are done when every design element has been traced to code (or marked as missing) and every significant code behavior has been traced to a design element (or marked as undocumented). Print the report path.
@@ -89,7 +110,7 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 
 ### 3. Surface the report
 
-After the subagent finishes, show the user the report path and a one-line summary (e.g., *"6 aspirational drifts, 9 undocumented behaviors — see `docs/working/ANALYSIS-design-check-investigation.md`"*).
+After the subagent finishes, show the user the report path and a one-line summary (e.g., *"6 design-only, 9 code-only, 1 unambiguous inconsistency — see `docs/working/ANALYSIS-design-check-investigation.md`"*).
 
 ## Completion Criteria
 
