@@ -198,7 +198,7 @@ Knowledge queries still get tool access (with `tool_choice="auto"`) so the LLM c
 | `deep_analysis` | ~$0.01-0.05 | 3-15s | Yes | Agent needs interpreted analysis |
 | `web_search` | $0.00 | 1-2s | No | Error messages, external docs (Google CSE or Tavily) |
 | `kb_qa` | ~$0.01 | 0.5-2s | Yes (synthesis) | Unified KB: all scopes (global + personal + team) |
-| `vectorize_file` | ~$0.05-0.50 | 10-60s | Embed only | Auto-triggered on DA failure; file must pass size gates |
+| `vectorize_file` | ~$0.05-0.50 | 10-60s | Embed only | Auto-triggered: proactively at the start of DA-mode turns for qualifying large files, reactively on DA failure signals. File must pass size gates. |
 | `case_evidence_search` | $0.00 | ~0.5s | No | After vectorization, semantic search |
 
 ---
@@ -433,7 +433,7 @@ The `Evidence.original_filename` field (set during `_preprocess_attachment()`) p
 
 #### DA Tool Loop Integration
 
-In Directed Analysis turns, `search_file` is available as a function-calling tool within the bounded DA Tool Loop (`_tool_augmented_generate()` in `milestone_engine.py`). The LLM iterates up to 4 times calling `search_file` and `schema_tool`, with an iteration-0 guardrail that forces at least one search before generating a structured response. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling-v50) for full details.
+In Directed Analysis turns, `search_file` is available inside the bounded DA Tool Loop (`_tool_augmented_generate()` in `milestone_engine.py`) alongside the other investigation tools (`deep_analysis`, `kb_qa`, `web_search`, `case_evidence_search`) and the terminating `schema_tool`. The LLM iterates up to 4 times with an iteration-0 guardrail that forces at least one investigation-tool call before the structured response is generated. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling-v50) for full details.
 
 ### 3.3 Search Modes
 
@@ -704,7 +704,7 @@ Three independent fallback trigger signals remain for cases where proactive vect
 
 > **Removed in v5.2:** The `da_call_count >= 3` trigger. Calling DA 3 times on a file is legitimate thorough investigation (e.g., error patterns, timeline, root cause), not failure. This trigger conflated investigation depth with tool inadequacy.
 
-**Cross-turn persistence**: `da_invocation_count` is stored on the Evidence model and persisted via `repository.save(case)` after each `deep_analysis` call.
+**Cross-turn persistence**: `da_invocation_count` is stored on the Evidence model and persisted via `repository.save(case)` after each `deep_analysis` call. The persisted counter is **not** itself a vectorization trigger in v5.2 — it exists so the secondary `/sessions/execute` path (`agent_orchestration_service._get_persisted_da_call_count()`) can reconstruct per-evidence DA history across turns for its `EvidenceDAState` tracking.
 
 **Reactive vectorization** calls `_reactive_vectorize()` which checks the size gate, calls `_vectorize_evidence()`, and injects the `[SYSTEM]` message on success. Each trigger fires independently — whichever fires first vectorizes the file.
 
@@ -756,7 +756,7 @@ async def vectorize_file(
     """
 ```
 
-### 5.4 What Gets Vectorized
+### 5.6 What Gets Vectorized
 
 The Tier 1 **structural index** — not the raw file content. This is unchanged from v3.2 Section 5.
 
@@ -766,7 +766,7 @@ The Tier 1 **structural index** — not the raw file content. This is unchanged 
 
 **Chunking strategy**: Section-aware splitting (unchanged from v3.2 Section 5.2).
 
-### 5.5 Configuration
+### 5.7 Configuration
 
 ```bash
 # Tier 4: Vectorization (on-demand)
@@ -781,7 +781,7 @@ VECTOR_CHUNK_SIZE_TOKENS=500
 VECTOR_CHUNK_OVERLAP_TOKENS=50
 ```
 
-### 5.6 Migration from v3.2
+### 5.8 Migration from v3.2
 
 In v3.2, `store_in_vector_db_background()` is called automatically after every upload. In v4.0, this background call is removed from the upload path. Instead, `vectorize_file` is called explicitly by the agent.
 
@@ -880,7 +880,7 @@ Default is Type A (evidence search is always safe).
 
 ### 6.1 Orchestration Hardening: Mechanical Safety Nets (v4.2, updated v5.2)
 
-Four mechanical safety nets in `AgentOrchestrationService` — proactive vectorization, coverage gap detection, per-evidence DA failure tracking with reactive vectorization, and context budgeting.
+Three mechanical safety nets in `AgentOrchestrationService`: coverage gap detection (R3), vectorization with proactive + reactive paths (R4), and context budgeting (R5).
 
 #### R3: Coverage Gap Detection
 
@@ -1086,15 +1086,7 @@ Evidence form is assigned deterministically based on how evidence enters the sys
 
 ### 9.3 Agent Tool Summary
 
-| Tool | Cost | LLM? | When |
-|------|------|------|------|
-| *(evidence context)* | $0 | No | Always available (structural index in LLM context) |
-| `search_file` | $0 | No | Agent needs specific data from raw file |
-| `deep_analysis` | ~$0.01 | Yes | Agent needs interpreted analysis |
-| `web_search` | $0 | No | External docs/solutions (Google CSE or Tavily) |
-| `kb_qa` | ~$0.01 | Yes (synthesis) | Unified KB: all scopes (global + personal + team) |
-| `vectorize_file` | ~$0.05+ | Embed only | Auto-triggered on DA failure (no user confirmation) |
-| `case_evidence_search` | $0 | No | After vectorization, semantic search |
+See §1.3 [Tool Cost Matrix](#13-tool-cost-matrix) for the canonical cost/latency/usage table. This section previously duplicated that table.
 
 ---
 
