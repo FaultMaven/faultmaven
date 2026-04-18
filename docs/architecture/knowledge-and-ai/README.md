@@ -9,10 +9,6 @@ Documentation for FaultMaven's knowledge management, vector search, and AI agent
 - **[Runbook Content Architecture](./runbook-content-architecture.md)** — What goes INTO the KB: taxonomy, templates, quality gates, lifecycle governance, RAG-optimized authoring rules
 - **[Document-to-Runbook Conversion](./document-to-runbook-conversion.md)** — Converting uploaded documents into template-compliant runbooks: preprocessing pipeline, KNOWLEDGE_PROVIDER LLM, draft management
 
-## Handover Documents
-
-- **[Frontend Conversion Handover](./HANDOVER-conversion-frontend.md)** — API contracts, UI flow, TypeScript interfaces, and Dashboard integration guide for the conversion feature frontend
-
 ## Key Technologies
 
 - **Vector Database**: ChromaDB (single `faultmaven_kb` collection for KB; per-case `case_{id}` collections for evidence)

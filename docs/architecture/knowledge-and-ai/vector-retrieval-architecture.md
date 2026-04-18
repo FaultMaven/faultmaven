@@ -100,7 +100,6 @@ Each candidate chunk is scored across four weighted signals:
 | Chunk domain matches case context domain | +0.30 |
 | Chunk service matches case context service | +0.30 |
 | Status is `verified` | +0.40 |
-| Status is `community` | +0.20 |
 | Status is `deprecated` | -0.30 |
 | Status is `draft` | -0.10 |
 
@@ -168,7 +167,7 @@ This approach preserves the semantic coherence of runbook sections. A diagnostic
 | `title` | Yes | Runbook title |
 | `domain` | Yes | Engineering vertical (database, networking, compute, etc.) |
 | `service` | Yes | Specific technology (postgresql, kubernetes, redis, etc.) |
-| `status` | Yes | Lifecycle state: draft, in-review, verified, community, stale, deprecated |
+| `status` | Yes | Lifecycle state: draft, in-review, verified, stale, deprecated |
 | `last_updated` | Yes | ISO date — used for staleness scoring in reranker and synthesis |
 | `chunk_index` | Yes | Position within the chunked document |
 | `total_chunks` | Yes | Total chunks for this document |
@@ -177,8 +176,8 @@ This approach preserves the semantic coherence of runbook sections. A diagnostic
 | `team_id` | Yes | Set for team-scope chunks |
 | `document_type` | Yes | Content classification (e.g., troubleshooting_guide) |
 | `tags` | Yes | Comma-separated tags from frontmatter |
-| `symptom_class` | **Not stored** | Present in runbook frontmatter but not extracted into chunk metadata. Would improve retrieval for symptom-matching queries. |
-| `severity` | **Not stored** | Present in runbook frontmatter but not extracted into chunk metadata. |
+| `symptom_class` | Yes | Comma-joined failure modes — propagated from frontmatter at ingestion (`ingestion.py:363`) |
+| `severity` | Yes | Severity level — propagated from frontmatter at ingestion (`ingestion.py:361`) |
 
 ### Staleness-Aware Synthesis
 
@@ -193,12 +192,12 @@ The synthesis LLM's system prompt (in `UnifiedKBConfig.system_prompt`) explicitl
 ### Tool Path
 
 ```text
-Agent calls: kb_qa(question)
+Agent calls: answer_from_kb(question)
   │
   ├── KBToolAdapter.execute_with_context()
   │     Extracts user_id and team_ids from ToolContext
   │
-  ├── AnswerFromKB._arun(question, user_id, team_ids)
+  ├── AnswerFromKB._arun(question, user_id, team_ids)  # class in kb_qa.py
   │     Builds combined $or scope filter
   │
   ├── DocumentQATool.answer_question()
@@ -255,7 +254,7 @@ Vector search (Tier 4) is the most expensive tier and is not the first resort. T
 | 0 + 1 | Structural indexing (11 domain extractors, runs on upload) | $0 | Always, on upload |
 | 2 | Keyword/regex search on raw files (`search_file`) | $0 | Agent tool call |
 | 3 | LLM-interpreted analysis on file sections (`deep_analysis`) | ~$0.01 | Agent tool call |
-| 4 | Chunk + embed + semantic search (`case_evidence_search`) | ~$0.05+ | See vectorization triggers below |
+| 4 | Chunk + embed + semantic search (`answer_from_case_evidence`) | ~$0.05+ | See vectorization triggers below |
 
 ### Vectorization Triggers
 
@@ -268,7 +267,7 @@ Vectorization of evidence files is triggered by two paths:
 - Tool execution timeout
 - Low confidence score (< 0.2) from `deep_analysis`
 
-The `searchable="true"` attribute on evidence XML in the context builder signals to the agent that a file has been indexed and `case_evidence_search` can be called against it.
+The `searchable="true"` attribute on evidence XML in the context builder signals to the agent that a file has been indexed and `answer_from_case_evidence` can be called against it.
 
 ### Evidence vs. KB — Why Different Strategies
 
@@ -285,13 +284,13 @@ The `searchable="true"` attribute on evidence XML in the context builder signals
 
 ## 6. Tool Result Formatting
 
-### KB Tool (`kb_qa`)
+### KB Tool (`answer_from_kb`)
 
 The design intent is relay — full procedure detail should reach the user. The `_format_tool_result()` wrapper appends "Include the detailed content below — do NOT summarize into a single sentence." However, the inner `DocumentQATool` synthesis prompt says "be concise and factual," creating a tension (see §7 open issues).
 
 Source citations use document titles: `Sources: Kubernetes CrashLoopBackOff, PostgreSQL Connection Pool Exhaustion`.
 
-### Evidence Tool (`case_evidence_search`)
+### Evidence Tool (`answer_from_case_evidence`)
 
 The synthesis prompt instructs the LLM to cite with forensic precision: filename, line number, and timestamp. Citation format: `In filename, line 42: ...`.
 
