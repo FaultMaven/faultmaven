@@ -1,0 +1,104 @@
+---
+config:
+  theme: redux
+  layout: dagre
+  look: classic
+title: "FaultMaven Dependency Injection (Composition Root)"
+---
+flowchart TB
+%% How services get composed from infrastructure at startup.
+%% Sibling primary diagram: system-architecture.mmd
+%%
+%% Sources (file:symbol):
+%%   faultmaven/main.py::lifespan                          (L325-525)
+%%   faultmaven/container/_container_impl.py               (init + register_* wrappers)
+%%   faultmaven/container/providers/infrastructure.py      (infra bindings)
+%%   faultmaven/container/providers/tools.py               (tools bindings)
+%%   faultmaven/container/providers/services.py            (service bindings)
+
+    %% ============================================================
+    %% TIER 1 — CONFIGURATION (single source of truth)
+    %% ============================================================
+    Settings["⚙️ <b>Settings</b><br/>config/settings.py · Pydantic<br/>· env vars<br/>· llm_config_overrides (cloud mode)<br/>· presets (LOCAL / STANDARD / ENTERPRISE)"]
+
+    %% ============================================================
+    %% TIER 2 — INFRASTRUCTURE PROVIDER
+    %%   Creates stateless + shared-client primitives.
+    %%   No business logic. Never depends on other providers.
+    %% ============================================================
+    subgraph INFRA["🔧 Infrastructure Provider &middot; providers/infrastructure.py"]
+        direction TB
+        Infra_LLM["<b>LLM stack</b><br/>create_llm_provider() → LLMRouter<br/>create_da_provider() → DA override<br/>create_sanitizer() → PII redactor<br/>create_tracer() → Opik / noop"]
+        Infra_Vec["<b>Vector stack (ChromaDB × 2)</b><br/>create_kb_chromadb_client()<br/>create_evidence_chromadb_client()<br/>create_vector_store() → ChromaDBVectorStore<br/>create_knowledge_vector_store() → faultmaven_kb<br/>create_case_vector_store() → case_{id}"]
+        Infra_Session["<b>Session / Cache</b><br/>create_redis_client() → Redis or FakeRedis<br/>create_session_store() → RedisSessionStore<br/>create_token_manager() → RedisTokenManager"]
+        Infra_Persist["<b>Relational / Identity</b><br/>create_case_repository() → SessionlessCaseRepository<br/>create_user_store() → Database / Redis user store"]
+        Infra_Prep["<b>Preprocessing</b><br/>create_data_classifier() · create_extractors() (11)<br/>create_chunking_service() · create_preprocessing_service()"]
+    end
+
+    %% ============================================================
+    %% TIER 3 — TOOLS PROVIDER
+    %%   Agent-facing tools. Depends on infrastructure only.
+    %% ============================================================
+    subgraph TOOLS["🧰 Tools Provider &middot; providers/tools.py"]
+        direction TB
+        Tools_Ingest["<b>Knowledge ingester</b><br/>create_knowledge_ingester()<br/>→ KnowledgeIngester"]
+        Tools_QA["<b>Agent QA tools</b><br/>create_document_qa_tools()<br/>→ answer_from_kb (unified)<br/>→ answer_from_case_evidence (via adapter)"]
+        Tools_Registry["<b>Tool registry</b><br/>create_registry_tools()<br/>→ search_file · deep_analysis<br/>→ web_search (Tavily) · list_evidence · read_file"]
+    end
+
+    %% ============================================================
+    %% TIER 4 — SERVICES PROVIDER
+    %%   Business logic. Depends on infrastructure + tools.
+    %% ============================================================
+    subgraph SERVICES["🏗️ Services Provider &middot; providers/services.py"]
+        direction TB
+        Svc_Auth["<b>Auth / Identity</b><br/>create_auth_service · create_user_service<br/>create_oauth_service · create_jwt_token_generator<br/>create_organization_service · create_team_service<br/>create_tenant_provider"]
+        Svc_Case["<b>Case / Investigation</b><br/>create_case_service<br/>create_milestone_engine 🫀<br/>create_investigation_service<br/>create_investigation_orchestrator"]
+        Svc_Other["<b>Evidence · Knowledge · Report · Session · Data</b><br/>create_evidence_service · create_knowledge_service<br/>create_report_generation_service<br/>create_session_service · create_data_service"]
+    end
+
+    %% ============================================================
+    %% TIER 5 — APP.STATE
+    %%   Where routers discover services via Depends().
+    %% ============================================================
+    AppState["📬 <b>app.state</b><br/>main.py lifespan L415-525<br/>Services attached here. Routers read via Depends()."]
+
+    %% ============================================================
+    %% SIDE PANEL — WIRING ORDER (executed at startup)
+    %% ============================================================
+    Order["🔁 <b>Wiring order (main.py lifespan)</b><br/>1. Settings() — single source of truth<br/>2. register_infrastructure(container)<br/>3. register_tools(container)<br/>4. register_services(container)<br/>5. attach services → app.state<br/>6. late-bind conversion_service → milestone_engine<br/>7. apply llm_config_overrides (cloud only)"]
+
+    %% ============================================================
+    %% EDGES (high-signal flows only)
+    %% ============================================================
+    Settings --> INFRA
+    INFRA --> TOOLS
+    INFRA --> SERVICES
+    TOOLS --> SERVICES
+    SERVICES --> AppState
+
+    %% Zoom-in edges to highlight the milestone engine's dependencies:
+    Infra_LLM -.-> Svc_Case
+    Infra_Persist -.-> Svc_Case
+    Infra_Vec -.-> Svc_Case
+    Tools_QA -.-> Svc_Case
+    Tools_Registry -.-> Svc_Case
+
+    Order -.-> AppState
+
+    %% ============================================================
+    %% STYLING
+    %% ============================================================
+    classDef settings fill:#e1bee7,stroke:#6a1b9a,stroke-width:2px,color:#4a148c
+    classDef infra fill:#ffccbc,stroke:#d84315,color:#bf360c
+    classDef tools fill:#fff9c4,stroke:#f9a825,color:#f57f17
+    classDef services fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
+    classDef state fill:#bbdefb,stroke:#1565c0,stroke-width:3px,color:#0d47a1
+    classDef note fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray: 5 5,color:#424242
+
+    class Settings settings
+    class Infra_LLM,Infra_Vec,Infra_Session,Infra_Persist,Infra_Prep infra
+    class Tools_Ingest,Tools_QA,Tools_Registry tools
+    class Svc_Auth,Svc_Case,Svc_Other services
+    class AppState state
+    class Order note

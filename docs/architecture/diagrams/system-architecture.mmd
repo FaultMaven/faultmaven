@@ -1,254 +1,230 @@
-graph TB
-    %% Transport/API Layer
-    subgraph "Transport/API Layer"
-        MainApp["main.py<br/>FastAPI Application"]
-        APIRoutes["api/v1/routes/"]
-        Dependencies["api/v1/dependencies.py"]
-        Middleware["api/middleware/"]
+---
+config:
+  theme: redux
+  layout: dagre
+  look: classic
+title: "FaultMaven System Architecture (Runtime View)"
+---
+flowchart TB
+%% One-screen runtime view of the FaultMaven modular monolith.
+%% Sibling sub-diagram: DI-diagram.mmd (dependency injection wiring).
+%% Source-of-truth references cited in ./system-architecture.md (or this file's git history).
 
-        subgraph "API Routes"
-            DataRoute["data.py"]
-            KnowledgeRoute["knowledge.py"]
-            SessionRoute["session.py"]
-            CaseRoute["case.py"]
-            AuthRoute["auth.py"]
-            JobsRoute["jobs.py"]
+    %% ============================================================
+    %% EXTERNAL ACTORS (left edge — what talks to the API)
+    %% ============================================================
+    subgraph ACTORS["🧑 External Actors"]
+        direction TB
+        User["End User<br/>(SRE / On-call engineer)"]
+        Dashboard["FaultMaven Dashboard<br/><i>React 19 · Vite · TS</i>"]
+        Copilot["Copilot Browser Extension<br/><i>WXT · React · OAuth PKCE</i>"]
+        CLI["CLI / scripts/*"]
+    end
+
+    %% ============================================================
+    %% TRANSPORT LAYER
+    %% ============================================================
+    subgraph TRANSPORT["🛰️ Transport Layer · faultmaven/main.py"]
+        direction TB
+        FastAPI["FastAPI Application"]
+        MW["<b>Middleware pipeline (11)</b><br/>CORS → TrailingSlash → Idempotency<br/>→ RequestID/RateLimit → Protection<br/>→ GZip → Logging → Performance<br/>→ SystemOpt → OpikTrace → ContractProbe"]
+        Routers["<b>API Routers (14)</b><br/>auth · oauth · session · organizations · teams<br/>case · evidence · agent · knowledge · conversion<br/>report · admin · admin_config · investigation_sessions"]
+        FastAPI --> MW --> Routers
+    end
+
+    %% ============================================================
+    %% MODULAR MONOLITH
+    %% ============================================================
+    subgraph MODULES["📦 Modular Monolith · faultmaven/modules/"]
+        direction TB
+        subgraph VERTICAL["Vertical modules (own DB tables + contracts.py)"]
+            direction LR
+            AuthMod["<b>auth/</b><br/>UserDTO · AuthTokenDTO · SessionDTO<br/>OAuth 2.0 + PKCE · RBAC<br/><i>11 user-domain tables</i>"]
+            CaseMod["<b>case/</b><br/>CaseDTO · ICaseRepository<br/>Evidence · Hypotheses · Solutions<br/><i>case-domain tables (incl. reports)</i>"]
+            KnowledgeMod["<b>knowledge/</b><br/>KnowledgeService · Ingestion<br/>Conversion (doc/case → runbook)<br/><i>knowledge_items · conversion_drafts</i>"]
         end
-
-        subgraph "Middleware"
-            LoggingMW["logging.py"]
-            RateLimitMW["rate_limiting.py"]
-            ProtectionMW["protection.py"]
-            IdempotencyMW["idempotency.py"]
-            PerformanceMW["performance.py"]
-            SystemOptMW["system_optimization.py"]
+        subgraph DOMSVC["Domain services (business logic only, no data ownership)"]
+            direction LR
+            AgentMod["<b>agent/</b><br/>InvestigationService<br/>AgentToolRegistry"]
+            EvidenceMod["<b>evidence/</b><br/>EvidenceService<br/>FileStorageService"]
+            PreprocessMod["<b>preprocessing/</b><br/>DataClassifier<br/>11 extractors · ChunkingService"]
+            ReportMod["<b>report/</b><br/>ReportGenerationService<br/>ReportRecommendationService"]
         end
     end
 
-    %% Service Layer
-    subgraph "Service Layer"
-        BaseService["services/base.py<br/>BaseService"]
-
-        subgraph "Domain Services"
-            CaseService["services/domain/<br/>case_service.py"]
-            SessionService["services/domain/<br/>session_service.py"]
-            DataService["services/domain/<br/>data_service.py"]
-            KnowledgeService["services/domain/<br/>knowledge_service.py"]
-            PlanningService["services/domain/<br/>planning_service.py"]
+    %% ============================================================
+    %% INVESTIGATION ENGINE (the heart of the product)
+    %% ============================================================
+    subgraph ENGINE["🧠 Investigation Engine · faultmaven/core/investigation/"]
+        direction TB
+        Milestone["<b>milestone_engine.py</b><br/>process_turn(turn)<br/><i>INQUIRY → INVESTIGATING → TERMINAL</i>"]
+        subgraph ENG_INNER[" "]
+            direction LR
+            HypMgr["hypothesis_manager<br/>CAPTURED → ACTIVE<br/>→ VALIDATED / REFUTED<br/>· confidence decay"]
+            ProgMon["progress_monitor<br/>· turn history<br/>· repair-pattern detection<br/>· journal entries"]
+            IntentRes["intent_resolver<br/>bounded-choice matching<br/>confirmation routing"]
+            Prompts["prompts/<br/>INQUIRY · INVESTIGATING<br/>· TERMINAL templates<br/>+ context_builder"]
         end
+        Milestone --- HypMgr & ProgMon & IntentRes & Prompts
+    end
 
-        subgraph "Agentic Framework"
-            AgentService["services/agentic/<br/>orchestration/agent_service.py"]
+    %% ============================================================
+    %% AGENT TOOLS (reachable from the engine's DA tool loop)
+    %% ============================================================
+    subgraph TOOLS["🧰 Agent Tools · modules/agent/tools/"]
+        direction LR
+        KbQa["answer_from_kb<br/><i>(unified · all scopes)</i>"]
+        CaseEvQa["answer_from_case_evidence<br/><i>(case_evidence_search)</i>"]
+        SearchFile["search_file<br/>deep_analysis"]
+        ReadFile["read_file · list_evidence<br/>vectorize_file"]
+        WebSearchT["web_search"]
+    end
 
-            subgraph "Engines"
-                ClassificationEngine["services/agentic/<br/>engines/classification_engine.py"]
-                ResponseSynthesizer["services/agentic/<br/>engines/response_synthesizer.py"]
-                WorkflowEngine["services/agentic/<br/>engines/workflow_engine.py"]
-            end
-
-            subgraph "Management"
-                StateManager["services/agentic/<br/>management/state_manager.py"]
-                ToolBroker["services/agentic/<br/>management/tool_broker.py"]
-            end
-
-            subgraph "Safety"
-                ErrorManager["services/agentic/<br/>safety/error_manager.py"]
-                GuardrailsLayer["services/agentic/<br/>safety/guardrails_layer.py"]
-            end
+    %% ============================================================
+    %% INFRASTRUCTURE
+    %% ============================================================
+    subgraph INFRA["⚙️ Infrastructure · faultmaven/infrastructure/"]
+        direction TB
+        subgraph LLMSTACK["LLM"]
+            direction TB
+            LLMRouter["<b>llm/router.py — LLMRouter</b><br/>capability overrides · fallback chain<br/>@opik.track"]
+            LLMCache["llm/cache.py<br/><i>response cache</i>"]
+            LLMCache --> LLMRouter
         end
+        Sanitizer["security/redaction.py<br/>Presidio + regex (PII scrubbing)"]
+        TokenMgr["auth/token_manager.py<br/>JWT · JTI revocation"]
+        Observability["observability/<br/>tracing · metrics<br/>apm · sla"]
+    end
 
-        subgraph "Analytics Services"
-            AnalyticsDashboard["services/analytics/<br/>dashboard_service.py"]
-            ConfidenceService["services/analytics/<br/>confidence_service.py"]
+    %% ============================================================
+    %% STORAGE
+    %% ============================================================
+    subgraph STORAGE["💾 Storage Layer"]
+        direction LR
+        subgraph REL["Relational · SQLAlchemy + Alembic (33 tables)"]
+            direction TB
+            CaseRepo["SessionlessCaseRepository<br/><i>dialect auto-detect</i><br/>→ SQLite / PostgreSQLHybrid"]
+            SQLite[(SQLite<br/>data/faultmaven.db)]
+            Postgres[(PostgreSQL)]
+            CaseRepo -.-> SQLite
+            CaseRepo -.-> Postgres
+        end
+        subgraph VECTOR["Vector · ChromaDB (two instances, lifecycle-separated)"]
+            direction TB
+            KBStore["KnowledgeVectorStore<br/>(faultmaven_kb · scope filter enforced)"]
+            RunbookKB["RunbookKB<br/>(faultmaven_runbooks)"]
+            EvStore["CaseVectorStore<br/>(case_{case_id} · ephemeral)"]
+            KBClient["kb_chromadb_client<br/>data/chroma-kb/"]
+            EvClient["evidence_chromadb_client<br/>data/chroma-evidence/"]
+            KBStore -.-> KBClient
+            RunbookKB -.-> KBClient
+            EvStore -.-> EvClient
+        end
+        subgraph SESSION["Session / Cache"]
+            direction TB
+            SessionStore["RedisSessionStore"]
+            Redis[(Redis)]
+            FakeRedis[(FakeRedis<br/><i>in-process, full parity</i>)]
+            SessionStore -.-> Redis
+            SessionStore -.-> FakeRedis
+        end
+        subgraph BLOB["Artifacts · IStorageBackend"]
+            direction TB
+            LocalFS[(Local FS<br/>data/evidence/)]
+            S3Back[(S3 / Azure)]
         end
     end
 
-    %% Core Domain Layer
-    subgraph "Core Domain Layer"
-        subgraph "Processing"
-            LogAnalyzer["core/processing/<br/>log_analyzer.py"]
-            Classifier["core/processing/<br/>classifier.py"]
-            PatternLearner["core/processing/<br/>pattern_learner.py"]
-        end
-
-        subgraph "Knowledge"
-            AdvancedRetrieval["core/knowledge/<br/>advanced_retrieval.py"]
-            Ingestion["core/knowledge/<br/>ingestion.py"]
-        end
-
-        subgraph "Agent"
-            CoreAgent["core/agent/<br/>agent.py"]
-            Doctrine["core/agent/<br/>doctrine.py"]
-        end
-
-        subgraph "Orchestration"
-            TroubleshootingOrchestrator["core/orchestration/<br/>troubleshooting_orchestrator.py"]
-            Router["core/orchestrator/<br/>router.py"]
-            SkillRegistry["core/orchestrator/<br/>skill_registry.py"]
-        end
-
-        subgraph "Confidence"
-            Aggregator["core/confidence/<br/>aggregator.py"]
-        end
+    %% ============================================================
+    %% EXTERNAL SERVICES (right edge — outbound integrations)
+    %% ============================================================
+    subgraph EXTERNAL["🌐 External Services"]
+        direction TB
+        LLMs["<b>LLM Providers (9)</b><br/>Anthropic · OpenAI · Gemini<br/>Fireworks · Groq · Cohere<br/>HuggingFace · OpenRouter · Local (Ollama/vLLM)"]
+        Tavily["Tavily<br/>(web search API)"]
+        OpikExt["Opik<br/>(LLM tracing)"]
+        PromExt["Prometheus<br/>(metrics scrape)"]
+        ObjStore["S3 / Azure Blob"]
     end
 
-    %% Infrastructure Layer
-    subgraph "Infrastructure Layer"
-        subgraph "LLM Providers"
-            OpenAI["infrastructure/llm/<br/>providers/openai_provider.py"]
-            Anthropic["infrastructure/llm/<br/>providers/anthropic.py"]
-            Fireworks["infrastructure/llm/<br/>providers/fireworks_provider.py"]
-            Gemini["infrastructure/llm/<br/>providers/gemini.py"]
-            HuggingFace["infrastructure/llm/<br/>providers/huggingface.py"]
-            LocalProvider["infrastructure/llm/<br/>providers/local_provider.py"]
-        end
+    %% ============================================================
+    %% COMPOSITION ROOT — binds everything together at startup
+    %% ============================================================
+    Root["🔧 <b>Composition Root</b><br/>main.py lifespan<br/>+ container/_container_impl.py<br/>+ container/providers/{infrastructure, services, tools}<br/>+ bootstrap/ (auto-init · migrations · 59 built-in runbooks)<br/>→ app.state"]
 
-        subgraph "Persistence"
-            ChromaDB["infrastructure/persistence/<br/>chromadb_store.py"]
-            RedisCaseStore["infrastructure/persistence/<br/>redis_case_store.py"]
-            RedisSessionStore["infrastructure/persistence/<br/>redis_session_store.py"]
-        end
+    %% ============================================================
+    %% REQUEST & RUNTIME EDGES
+    %% ============================================================
+    User --> Dashboard & Copilot
+    User --> CLI
+    Dashboard & Copilot & CLI --> FastAPI
 
-        subgraph "Caching"
-            IntelligentCache["infrastructure/caching/<br/>intelligent_cache.py"]
-        end
+    Routers -->|auth| AuthMod
+    Routers -->|case CRUD| CaseMod
+    Routers -->|KB + conversion| KnowledgeMod
+    Routers -->|POST /execute| AgentMod
+    Routers -->|evidence upload| EvidenceMod
+    Routers -->|report read| ReportMod
 
-        subgraph "Monitoring"
-            MetricsCollector["infrastructure/monitoring/<br/>metrics_collector.py"]
-            HealthMonitor["infrastructure/health/<br/>component_monitor.py"]
-            SLATracker["infrastructure/health/<br/>sla_tracker.py"]
-        end
+    AgentMod -->|process_turn| Milestone
+    AgentMod -->|tool loop| TOOLS
+    EvidenceMod -->|preprocess| PreprocessMod
+    ReportMod -->|read/write cases| CaseMod
 
-        subgraph "Observability"
-            Tracing["infrastructure/observability/<br/>tracing.py"]
-            PerformanceMonitoring["infrastructure/observability/<br/>performance_monitoring.py"]
-        end
+    Milestone -->|chat / synthesis| LLMRouter
+    Milestone -->|load + save case| CaseRepo
+    Milestone -->|journal checkpoint| CaseRepo
+    Milestone -->|tool registry| TOOLS
 
-        subgraph "Protection"
-            RateLimiter["infrastructure/protection/<br/>rate_limiter.py"]
-            AnomalyDetector["infrastructure/protection/<br/>anomaly_detector.py"]
-            BehavioralAnalyzer["infrastructure/protection/<br/>behavioral_analyzer.py"]
-        end
+    KbQa --> KBStore
+    CaseEvQa --> EvStore
+    WebSearchT --> Tavily
+    KBStore & EvStore -.embedding model.-> LLMs
 
-        subgraph "Security"
-            SecurityAssessment["infrastructure/security/<br/>enhanced_security_assessment.py"]
-            Redaction["infrastructure/security/<br/>redaction.py"]
-        end
-    end
+    AuthMod --> SessionStore
+    AuthMod --> TokenMgr
+    TokenMgr --> SessionStore
+    VERTICAL --> CaseRepo
+    KnowledgeMod --> KBStore
+    KnowledgeMod --> RunbookKB
+    EvidenceMod --> BLOB
+    BLOB -->|cloud mode| ObjStore
 
-    %% Tools Layer
-    subgraph "Tools Layer"
-        ToolRegistry["tools/registry.py"]
-        KnowledgeBaseTool["tools/knowledge_base.py"]
-        WebSearchTool["tools/web_search.py"]
-        EnhancedKnowledgeTool["tools/enhanced_knowledge_tool.py"]
-    end
+    LLMRouter --> LLMs
+    LLMRouter -.traces.-> OpikExt
+    Observability -.traces.-> OpikExt
+    Observability -.metrics.-> PromExt
 
-    %% Supporting Layers
-    subgraph "Models Layer"
-        Interfaces["models/interfaces.py"]
-        CaseModels["models/case.py"]
-        AgenticModels["models/agentic.py"]
-        APIModels["models/api.py"]
-        BehavioralModels["models/behavioral.py"]
-        ProtectionModels["models/protection.py"]
-        MicroserviceContracts["models/microservice_contracts/"]
-    end
+    PreprocessMod --> Sanitizer
+    Milestone --> Sanitizer
 
-    subgraph "Configuration Layer"
-        Settings["config/settings.py"]
-        FeatureFlags["config/feature_flags.py"]
-        ProtectionConfig["config/protection.py"]
-    end
+    Root -.wires.-> MODULES
+    Root -.wires.-> ENGINE
+    Root -.wires.-> INFRA
+    Root -.wires.-> STORAGE
+    Root -.wires.-> TOOLS
 
-    %% Dependency Injection
-    subgraph "Dependency Injection"
-        Container["container.py<br/>DIContainer"]
-    end
+    %% ============================================================
+    %% STYLING
+    %% ============================================================
+    classDef actor fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1
+    classDef external fill:#fff3e0,stroke:#ef6c00,color:#e65100
+    classDef transport fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
+    classDef vertical fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20
+    classDef domain fill:#dcedc8,stroke:#558b2f,color:#33691e
+    classDef engine fill:#ffe0b2,stroke:#ef6c00,stroke-width:2px,color:#e65100
+    classDef tools fill:#fff9c4,stroke:#f9a825,color:#f57f17
+    classDef infra fill:#eceff1,stroke:#455a64,color:#263238
+    classDef storage fill:#ffccbc,stroke:#d84315,color:#bf360c
+    classDef root fill:#ffcdd2,stroke:#b71c1c,stroke-width:3px,color:#b71c1c
 
-    %% Request Flow
-    MainApp --> APIRoutes
-    APIRoutes --> Dependencies
-    Dependencies --> CaseService
-    Dependencies --> SessionService
-    Dependencies --> DataService
-    Dependencies --> KnowledgeService
-    Dependencies --> AgentService
-
-    %% Service Dependencies
-    CaseService --> BaseService
-    SessionService --> BaseService
-    DataService --> BaseService
-    KnowledgeService --> BaseService
-    PlanningService --> BaseService
-    AgentService --> BaseService
-
-    %% Agentic Framework Dependencies
-    AgentService --> ClassificationEngine
-    AgentService --> ResponseSynthesizer
-    AgentService --> WorkflowEngine
-    AgentService --> StateManager
-    AgentService --> ToolBroker
-    AgentService --> ErrorManager
-    AgentService --> GuardrailsLayer
-
-    %% Core Domain Dependencies
-    ClassificationEngine --> LogAnalyzer
-    ClassificationEngine --> Classifier
-    WorkflowEngine --> CoreAgent
-    WorkflowEngine --> TroubleshootingOrchestrator
-    ResponseSynthesizer --> AdvancedRetrieval
-
-    %% Infrastructure Dependencies
-    AgentService --> OpenAI
-    AgentService --> Anthropic
-    AgentService --> Fireworks
-    CaseService --> ChromaDB
-    CaseService --> RedisCaseStore
-    SessionService --> RedisSessionStore
-    KnowledgeService --> ChromaDB
-    KnowledgeService --> IntelligentCache
-
-    %% Tools Dependencies
-    ToolBroker --> ToolRegistry
-    ToolBroker --> KnowledgeBaseTool
-    ToolBroker --> WebSearchTool
-    ToolBroker --> EnhancedKnowledgeTool
-
-    %% DI Container Dependencies
-    Container --> Settings
-    Container --> OpenAI
-    Container --> Anthropic
-    Container --> Fireworks
-    Container --> ChromaDB
-    Container --> RedisCaseStore
-    Container --> RedisSessionStore
-    Container --> CaseService
-    Container --> SessionService
-    Container --> DataService
-    Container --> KnowledgeService
-    Container --> AgentService
-
-    %% Model Dependencies
-    CaseService --> CaseModels
-    AgentService --> AgenticModels
-    APIRoutes --> APIModels
-
-    %% Styling
-    classDef apiLayer fill:#e1f5fe
-    classDef serviceLayer fill:#f3e5f5
-    classDef coreLayer fill:#e8f5e8
-    classDef infraLayer fill:#fff3e0
-    classDef toolsLayer fill:#fce4ec
-    classDef modelsLayer fill:#f1f8e9
-    classDef configLayer fill:#e0f2f1
-    classDef diLayer fill:#fff8e1
-
-    class MainApp,APIRoutes,Dependencies,Middleware,DataRoute,KnowledgeRoute,SessionRoute,CaseRoute,AuthRoute,JobsRoute,LoggingMW,RateLimitMW,ProtectionMW,IdempotencyMW,PerformanceMW,SystemOptMW apiLayer
-    class BaseService,CaseService,SessionService,DataService,KnowledgeService,PlanningService,AgentService,ClassificationEngine,ResponseSynthesizer,WorkflowEngine,StateManager,ToolBroker,ErrorManager,GuardrailsLayer,AnalyticsDashboard,ConfidenceService serviceLayer
-    class LogAnalyzer,Classifier,PatternLearner,AdvancedRetrieval,Ingestion,CoreAgent,Doctrine,TroubleshootingOrchestrator,Router,SkillRegistry,Aggregator coreLayer
-    class OpenAI,Anthropic,Fireworks,Gemini,HuggingFace,LocalProvider,ChromaDB,RedisCaseStore,RedisSessionStore,IntelligentCache,MetricsCollector,HealthMonitor,SLATracker,Tracing,PerformanceMonitoring,RateLimiter,AnomalyDetector,BehavioralAnalyzer,SecurityAssessment,Redaction infraLayer
-    class ToolRegistry,KnowledgeBaseTool,WebSearchTool,EnhancedKnowledgeTool toolsLayer
-    class Interfaces,CaseModels,AgenticModels,APIModels,BehavioralModels,ProtectionModels,MicroserviceContracts modelsLayer
-    class Settings,FeatureFlags,ProtectionConfig configLayer
-    class Container diLayer
+    class User,Dashboard,Copilot,CLI actor
+    class LLMs,Tavily,OpikExt,PromExt,ObjStore external
+    class FastAPI,MW,Routers transport
+    class AuthMod,CaseMod,KnowledgeMod vertical
+    class AgentMod,EvidenceMod,PreprocessMod,ReportMod domain
+    class Milestone,HypMgr,ProgMon,IntentRes,Prompts engine
+    class KbQa,CaseEvQa,SearchFile,ReadFile,WebSearchT tools
+    class LLMRouter,LLMCache,Sanitizer,TokenMgr,Observability infra
+    class SQLite,Postgres,CaseRepo,KBClient,EvClient,KBStore,RunbookKB,EvStore,Redis,FakeRedis,SessionStore,LocalFS,S3Back storage
+    class Root root
