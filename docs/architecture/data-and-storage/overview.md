@@ -153,7 +153,7 @@ All storage follows the **Repository Pattern** with interface abstraction for te
 Full repository interface signatures live in **[repository-pattern.md](./repository-pattern.md)**:
 
 - `UserRepository` — §3
-- `CaseRepository` (13 methods) — §4.1
+- `CaseRepository` (>30 methods; §4.1 illustrates the core 11) — §4.1
 - `ISessionStore` — §3
 - `IVectorStore` — §3
 - `IJobService` — §3

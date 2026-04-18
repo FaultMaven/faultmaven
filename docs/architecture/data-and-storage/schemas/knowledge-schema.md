@@ -40,27 +40,30 @@ This document covers FaultMaven's two knowledge storage systems: the unified Kno
 
 ### 1.3 Document Structure
 
+> **Conceptual schema** — what a KB document logically contains at ingest. The on-disk representation is a markdown file under `data/knowledge/{scope}/`; the on-vector-store representation is per-chunk metadata in ChromaDB (see [vector-retrieval-architecture.md §4 "Metadata Per Chunk"](../../knowledge-and-ai/vector-retrieval-architecture.md#4-knowledge-base-retrieval) for the canonical chunk-level schema). The closest in-process Pydantic types are `KnowledgeBaseDocument` (`faultmaven/models/api.py`) and `KBDocument` (`faultmaven/models/interfaces_kb.py`).
+
 ```python
-class KnowledgeDocument(BaseModel):
+# Conceptual ingest-time document — not a single canonical Pydantic class.
+KnowledgeDocument:
     document_id: str
     title: str
     content: str
-    document_type: str  # troubleshooting, configuration, runbook
+    document_type: str   # troubleshooting | configuration | runbook
 
     # Scope metadata (required — enforced at ingest)
-    scope: str          # "global" | "personal" | "team"
-    owner_id: str | None  # user_id when scope == "personal"
-    team_id: str | None   # team_id when scope == "team"
+    scope: str           # "global" | "personal" | "team"
+    owner_id: str | None # user_id when scope == "personal"
+    team_id: str | None  # team_id when scope == "team"
 
-    metadata: Dict[str, Any] = {
-        "author": str,
-        "version": str,
-        "tags": List[str],
-        "source_url": str,
-        "last_updated": str,
-        "difficulty": str,  # beginner, intermediate, advanced
-        "category": str,
-    }
+    # Frontmatter-derived metadata
+    metadata:
+        author: str
+        version: str
+        tags: List[str]
+        source_url: str
+        last_updated: str
+        difficulty: str  # beginner | intermediate | advanced
+        category: str
 
     created_at: datetime
     updated_at: datetime
