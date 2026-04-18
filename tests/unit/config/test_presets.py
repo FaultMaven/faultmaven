@@ -48,9 +48,10 @@ class TestPresetDefinitions:
         local_preset = PRESETS[PresetName.LOCAL]
         defaults = local_preset.defaults
 
-        # Should use in-memory storage (sessions use FakeRedis — no config needed)
+        # Sessions use FakeRedis (no config needed); vectors use local
+        # ChromaDB PersistentClient (no external server needed).
         assert "SESSION_STORAGE_TYPE" not in defaults
-        assert defaults.get("VECTOR_STORAGE_TYPE") == "inmemory"
+        assert defaults.get("VECTOR_STORAGE_TYPE") == "chromadb"
         assert defaults.get("CASE_STORAGE_TYPE") == "inmemory"
 
         # Should use local LLM
@@ -163,7 +164,7 @@ class TestPresetApplication:
             apply_preset_defaults()
 
             # Check that preset values were applied
-            assert os.environ.get("VECTOR_STORAGE_TYPE") == "inmemory"
+            assert os.environ.get("VECTOR_STORAGE_TYPE") == "chromadb"
             # SESSION_STORAGE_TYPE no longer in presets (FakeRedis auto-selected)
             assert os.environ.get("SESSION_STORAGE_TYPE") is None
 
@@ -175,14 +176,14 @@ class TestPresetApplication:
             os.environ,
             {
                 "CONFIG_PRESET": "local",
-                "VECTOR_STORAGE_TYPE": "chromadb",  # User override
+                "VECTOR_STORAGE_TYPE": "inmemory",  # User override (non-default)
             },
             clear=True,
         ):
             apply_preset_defaults()
 
-            # User value should be preserved
-            assert os.environ.get("VECTOR_STORAGE_TYPE") == "chromadb"
+            # User value should be preserved (not overwritten by preset default)
+            assert os.environ.get("VECTOR_STORAGE_TYPE") == "inmemory"
 
     def test_apply_preset_defaults_no_op_without_preset(self):
         """Test that apply_preset_defaults is a no-op without preset."""

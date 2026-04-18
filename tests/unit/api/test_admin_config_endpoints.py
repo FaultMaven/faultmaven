@@ -469,7 +469,7 @@ class TestGetEnvConfigStatus:
         assert result.deployment == "local"
         assert result.db_backend == "sqlite"
         assert result.session_storage == "fakeredis (inmemory)"
-        assert result.vector_storage == "inmemory"
+        assert result.vector_storage == "chromadb"
         assert result.llm_provider == "anthropic"
         assert result.pii_redaction_enabled is False
         assert result.rate_limit_enabled is True
