@@ -1,7 +1,7 @@
 # Case and Session Concepts in FaultMaven
 
-**Version:** 2.0
-**Date:** 2025-10-11
+**Version:** 2.1
+**Last Updated:** 2026-04-18
 **Status:** Authoritative Specification
 **Purpose:** Define foundational concepts that both frontend and backend must understand identically
 
@@ -76,7 +76,7 @@ function getOrCreateClientId(): string {
 - **Identifier**: `session_id` (UUID v4)
 - **Formula**: `Session = User + Client + Authentication Context`
 - **Purpose**: Provides authentication and temporary state management
-- **Lifecycle**: Temporary (configurable TTL, typically 30 minutes to 24 hours)
+- **Lifecycle**: Temporary (configurable TTL via `SESSION_TIMEOUT_MINUTES`; default 30 minutes)
 - **Scope**: **Multiple concurrent sessions per user** (one per client/device)
 - **Persistence**: Redis-backed with multi-index: (user_id, client_id) → session_id
 
@@ -116,7 +116,7 @@ function getOrCreateClientId(): string {
 - **Identifier**: `case_id` (UUID v4)
 - **Purpose**: Long-term investigation tracking and conversation persistence
 - **Lifecycle**: Permanent (30+ days, until explicitly deleted or archived)
-- **Ownership**: Directly owned by users (`case.owner_id = user_id`)
+- **Ownership**: Directly owned by users (`case.user_id`)
 - **Scope**: Single troubleshooting investigation (independent of sessions)
 - **Persistence**: Independent database storage (not tied to session lifecycle)
 
@@ -159,7 +159,7 @@ graph TB
 **Relationship Details**:
 
 1. **User ↔ Case**: Direct ownership
-   - `case.owner_id = user_id`
+   - `case.user_id` references the owner (no separate `owner_id` field)
    - One user can have multiple cases
    - Cases persist beyond session lifecycle
    - Cases accessible from all user's sessions
@@ -194,7 +194,7 @@ graph TB
 - Sessions authenticate users
 - Authenticated users can access their cases
 - **Formula**: `Session → User → User's Cases`
-- Authorization: `session.user_id == case.owner_id`
+- Authorization: `session.user_id == case.user_id`
 
 ---
 
@@ -272,16 +272,15 @@ class SessionContext(BaseModel):
 
 class Case(BaseModel):
     """Independent case resource with complete lifecycle"""
-    id: str                            # Primary key - NOT nested under sessions
+    case_id: str                       # Primary key - NOT nested under sessions
     title: str                         # Generated or user-provided title
     user_id: str                       # Authorization reference (NOT FK to session)
-    status: Literal["active", "investigating", "solved", "stalled", "archived"]
-    priority: Literal["low", "medium", "high", "critical"]
+    status: CaseStatus                 # INQUIRY | INVESTIGATING | RESOLVED | CLOSED
+    severity: CaseSeverity             # LOW | MEDIUM | HIGH | CRITICAL
+    is_archived: bool                  # Independent of status; data-lifecycle flag
     created_at: str                    # UTC ISO 8601 format
     last_updated: str                  # UTC ISO 8601 format
-    conversation_count: int            # Number of query/response exchanges
-    data_count: int                    # Number of uploaded files
-    summary: str                       # Auto-generated case summary
+    # Illustrative subset — see modules/case/contracts.py for the canonical schema
 
 class QueryRequest(BaseModel):
     """Query within a specific case context"""
@@ -298,7 +297,7 @@ class ViewState(BaseModel):
     case_id: str                       # Current case being viewed
     user_id: str                       # Authorized user
     case_title: str                    # Display title for case
-    case_status: Literal["active", "investigating", "solved", "stalled", "archived"]
+    case_status: CaseStatus            # INQUIRY | INVESTIGATING | RESOLVED | CLOSED
     running_summary: str               # AI-generated case summary
     uploaded_data: List[UploadedData]  # Files uploaded to this case
     conversation_count: int            # Number of exchanges in this case
@@ -312,17 +311,16 @@ class ViewState(BaseModel):
 ### TypeScript Interface (Frontend)
 
 ```typescript
-// API Response Model (consistent across endpoints)
+// API Response Model (consistent across endpoints) — illustrative subset
 interface CaseAPI {
   case_id: string;
   title: string;
-  status: CaseStatus;
-  priority: CasePriority;
-  owner_id: string;           // User who owns the case
-  session_id: null;           // Always null - cases not bound to sessions
+  status: CaseStatus;         // 'inquiry' | 'investigating' | 'resolved' | 'closed'
+  severity: CaseSeverity;     // 'low' | 'medium' | 'high' | 'critical'
+  user_id: string;            // User who owns the case
+  is_archived: boolean;       // Independent of status; data-lifecycle flag
   created_at: string;         // ISO 8601 UTC
   updated_at: string;         // ISO 8601 UTC
-  message_count: number;
 }
 ```
 
@@ -360,8 +358,11 @@ DELETE /api/v1/cases/{case_id}/data/{data_id}  # Remove data from case
 
 **Key REST Principles**:
 - `case_id` always in URL path (resource identifier)
-- `session_id` always in header (authentication context)
+- **Authentication** is JWT Bearer (`Authorization: Bearer <token>`); the JWT carries `user_id`
+- `session_id` is an app-level concept (e.g., a field on `QueryRequest`) — not the auth credential
 - Cases are **never** nested under `/sessions/{session_id}/...`
+
+> The `X-Session-ID` header still appears in some legacy examples below. In the current implementation it is read by middleware (deduplication, rate limiting) only. Authentication is JWT Bearer; the auth-related examples below should be read with that in mind.
 
 ### API Consistency Requirements
 
@@ -436,7 +437,7 @@ class CaseService:
 
     async def get_case(self, case_id: str, user_id: str) -> Case:
         """Get specific case with authorization check"""
-        # Validate: case.owner_id == user_id
+        # Validate: case.user_id == user_id
 
     async def get_case_conversation_history(self, case_id: str, user_id: str) -> List[Dict]:
         """Get conversation history for case with auth check"""
@@ -492,7 +493,7 @@ async def create_session(user_id: str, client_id: str) -> Session:
 class Case:
     case_id: str
     title: str
-    owner_id: str                   # ✅ Direct user ownership
+    user_id: str                    # ✅ Direct user ownership (no separate owner_id)
     # No session-binding fields     # ✅ Clean architecture
 
 # CORRECT: Session-based case access (indirect via user)
@@ -563,7 +564,7 @@ session_cases = [
 ```python
 # ❌ WRONG: Cases that exist without user context
 class Case:
-    owner_id: Optional[str] = None  # ❌ Cases must have owners
+    user_id: Optional[str] = None   # ❌ Cases must have owners
 ```
 
 **Why Wrong**: Cases must always have an owner for authorization and access control.
@@ -613,7 +614,7 @@ async def create_session(user_id: str):
 2. Frontend sends: `POST /api/v1/cases/{case_id}/query` with `X-Session-ID: {session_id}` header
 3. Backend validates:
    - Session is valid and not expired
-   - User is authorized to access case (session.user_id == case.owner_id)
+   - User is authorized to access case (session.user_id == case.user_id)
 4. **Works across all user sessions**: Case accessible from any user's active session
 5. System retrieves conversation history from case record
 6. Injects full conversation context into LLM prompt
@@ -710,7 +711,7 @@ async def test_session_case_architecture():
     # Create case owned by user (not by session)
     case = await case_service.create_case(
         title="Test Case",
-        owner_id=user_id  # ✅ Direct ownership
+        user_id=user_id  # ✅ Direct ownership
     )
 
     # Both sessions should access the same user's cases
@@ -742,7 +743,7 @@ async def test_session_resumption():
 ### Example 1: Database Troubleshooting Case
 
 ```
-Authentication Session: session_abc123 (User: john@company.com, TTL: 24h)
+Authentication Session: session_abc123 (User: john@company.com, TTL: configurable, default 30m)
 │
 └── Case (Independent Resource): case_def456
     ├── Title: "Database Performance Issues"
@@ -770,21 +771,21 @@ API Flow:
 ### Example 2: Multi-Case User Workflow
 
 ```
-Authentication Session: session_xyz789 (User: mary@company.com, TTL: 24h)
+Authentication Session: session_xyz789 (User: mary@company.com, TTL: configurable, default 30m)
 │
-├── Case 1: case_ghi101 (Authentication Issues) [SOLVED]
+├── Case 1: case_ghi101 (Authentication Issues) [RESOLVED]
 │   ├── Title: "User Login Problems"
 │   ├── Owner: mary@company.com
 │   ├── Created: 2024-01-15T09:00:00Z
 │   ├── Conversation: 3 exchanges (login errors → LDAP config fix)
-│   └── Status: "solved"
+│   └── Status: "resolved"
 │
-├── Case 2: case_jkl202 (Performance Issues) [SOLVED]
+├── Case 2: case_jkl202 (Performance Issues) [RESOLVED]
 │   ├── Title: "Website Loading Slowly"
 │   ├── Owner: mary@company.com
 │   ├── Created: 2024-01-15T11:00:00Z
 │   ├── Conversation: 4 exchanges (response times → API bottleneck)
-│   └── Status: "solved"
+│   └── Status: "resolved"
 │
 └── Case 3: case_mno303 (Deployment Problems) [ACTIVE]
     ├── Title: "CI/CD Pipeline Failures"
@@ -802,7 +803,7 @@ API Flow:
 ### Example 3: Session Expiry and Case Persistence
 
 ```
-Day 1: session_abc123 expires after 24 hours
+Day 1: session_abc123 expires after the configured TTL (default 30 minutes)
 Day 2: User returns → new session_def456 created
 Day 2: GET /api/v1/cases (with X-Session-ID: session_def456)
        → Returns same cases (case_def456, case_ghi101, case_jkl202, case_mno303)
@@ -845,7 +846,7 @@ User can switch devices without losing access to any cases.
 ### 2. Clear Separation of Concerns
 - **User**: "Who owns the cases?"
 - **Client**: "Which device/browser?" (enables multi-device)
-- **Session**: "Who is authenticated and for how long?" (24h TTL)
+- **Session**: "Who is authenticated and for how long?" (TTL configurable via `SESSION_TIMEOUT_MINUTES`; default 30 min)
 - **Case**: "What specific problem needs solving?" (permanent record)
 - **Authorization**: user_id links cases to sessions for access control
 
@@ -1011,49 +1012,15 @@ The implementation provides a solid foundation for advanced features like case s
 
 ## Related Documentation
 
-- **[Session Management Specification](../specifications/SESSION_MANAGEMENT_SPEC.md)** - Technical implementation details for multi-session architecture
-- **[Architecture Overview](./architecture-overview.md)** - Overall system architecture
-- **[API Documentation](../api/)** - Complete API endpoint specifications
+- **[Architecture Overview](../architecture-overview.md)** - Overall system architecture
+- **[API & Integration](../api-and-integration/)** - API endpoint specifications
 
 ---
 
-**Document Status**: 🎯 Authoritative
-**Last Updated**: 2025-10-24
-**Version**: 2.0 (Consolidated from CASE_SESSION_CONCEPTS + CRITICAL_CONCEPTS_AND_RELATIONSHIPS)
-**Implementation Status**: ✅ **FULLY COMPLIANT** (as of 2025-10-24)
+**Document Status**: Authoritative Specification
+**Last Updated**: 2026-04-18
+**Version**: 2.1
 
----
-
-## Implementation Compliance Status
-
-**Compliance Audit Date**: 2025-10-23
-**Completion Date**: 2025-10-24
-**Status**: ✅ **100% SPEC-COMPLIANT**
-
-### Backend (FaultMaven API)
-- ✅ SessionContext model: Authentication only (no case data)
-- ✅ Multi-device support: client_id, session_resumed, expires_at implemented
-- ✅ Case model: owner_id required, no session_id binding
-- ✅ CaseMessage model: author_id required, no session_id
-- ✅ SessionService: Refactored to authentication-only (583 lines, down from 1777)
-- ✅ All case management removed from sessions
-- ✅ Proper user→case ownership enforced
-- ✅ API changes locked in openapi.locked.yaml
-
-### Frontend (faultmaven-copilot)
-- ✅ client_id generation and localStorage persistence
-- ✅ Session resumption support implemented
-- ✅ currentCaseId tracked in frontend state
-- ✅ TypeScript types updated for all API changes
-- ✅ Removed endpoints migrated to spec-compliant alternatives
-- ✅ All compilation errors resolved
-
-### Testing (Compliance Verification)
-- ✅ 17 integration tests validating spec compliance (tests/integration/test_architectural_compliance.py)
-- ✅ 14 unit tests for session service (tests/services/test_session_service.py)
-- ✅ Test coverage: Session resumption, multi-device support, forbidden fields validation
-- ✅ All legacy code and deprecated methods removed from tests
-
----
+This document defines the case-and-session model. Implementation compliance is verified by tests and `lint-imports` contracts, not asserted here.
 
 **This document is authoritative** - any implementation that deviates from these definitions should be considered incorrect and require refactoring.
