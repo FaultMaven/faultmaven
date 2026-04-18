@@ -1,6 +1,8 @@
-# Vertical vs Layer Structuring: Purpose and Implications
+# [ARCHIVED] Vertical vs Layer Structuring: Purpose and Implications
 
-**Version**: 1.0
+> **Archived 2026-04-18.** This document was a pre-decision design memo from the Domain Service reclassification. Its conclusions are now folded into [`docs/architecture/core-architecture/module-organization-design.md`](../../../architecture/core-architecture/module-organization-design.md), which is the schema-verified active recommendation. Several sections of this memo (Report ephemeral storage, "TD-001 future fix," restructuring framed as still pending) became factually stale once Phase 2.5 and TD-001 completed. Kept for historical context only — do not cite for current architecture decisions.
+
+**Version**: 1.0 (archived)
 **Date**: 2026-01-09
 **Purpose**: Clarify what "vertical" and "layer" structuring mean, their purposes, and whether restructuring Evidence/Agent/Report achieves the same goals
 

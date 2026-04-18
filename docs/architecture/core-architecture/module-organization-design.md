@@ -2,7 +2,7 @@
 
 **Version**: 2.2
 **Date**: 2026-04-18
-**Status**: Schema-Verified Recommendation
+**Status**: Schema-Verified Active Recommendation
 **Related**: [Architectural Design Principles](architectural-design-principles.md)
 
 **Schema Verification**: This document is verified against the live schema via [../data-and-storage/schemas/case-schema.md](../data-and-storage/schemas/case-schema.md), [../data-and-storage/er-diagram.md](../data-and-storage/er-diagram.md), and `faultmaven/infrastructure/persistence/models.py`.
@@ -36,9 +36,10 @@ A module is **VERTICAL** (business domain) if and only if it meets **ALL THREE**
 | **Knowledge** | Owns `knowledge_items` + `knowledge_suggestions` PostgreSQL tables + the unified `faultmaven_kb` ChromaDB collection | ✅ **VERTICAL** |
 | **Evidence** | Evidence table has FK to `cases` → part of Case module's schema | ❌ **DOMAIN SERVICE** |
 | **Agent** | No agent_* tables; `agent_tool_calls` is case audit data | ❌ **DOMAIN SERVICE** |
+| **Preprocessing** | No tables; data classification, extraction (11 extractors), and chunking that operate on Evidence data | ❌ **DOMAIN SERVICE** |
 | **Report** | Reports stored in Case module's `reports` table (FK to cases) - TD-001 complete | ❌ **DOMAIN SERVICE** |
 
-**Result**: Only **3 modules** are truly vertical (Case, Auth, Knowledge). Evidence, Agent, and Report are domain services that implement business logic but operate on data owned by other modules.
+**Result**: Only **3 modules** are truly vertical (Case, Auth, Knowledge). Evidence, Agent, Preprocessing, and Report are domain services that implement business logic but operate on data owned by other modules.
 
 ---
 
@@ -50,7 +51,7 @@ A module is **vertical** (business domain) if and only if it meets **ALL THREE**
 
 #### Criterion 1: Domain Data Ownership ✅
 - **Requirement**: Module owns database tables/entities that represent **business entities** (not just technical state)
-- **Test**: Does the module have tables prefixed with its name (e.g., `case_cases`, `auth_users`)?
+- **Test**: Does the module own one or more SQL tables for its core business entities (e.g., `cases`, `users`, `knowledge_items`)? Module-name prefixes are not required — semantic prefixes (`case_messages`, `oauth_revoked_tokens`) are used only to disambiguate sub-entities.
 - **Exclusion**: Technical state (sessions, caches, locks) does NOT count as domain data
 - **Stable**: Once a module owns domain data, this criterion remains true even if the schema evolves
 
@@ -97,8 +98,8 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 ### Example 1: `modules/auth/` - ✅ VERTICAL
 
 **Criterion 1: Domain Data Ownership** ✅
-- Owns tables: `auth_users`, `auth_sessions`, `auth_tokens`, `auth_organizations`, `auth_teams`
-- These represent business entities (users, organizations), not technical state
+- Owns tables: `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes` (session storage is in Redis/FakeRedis, not in a SQL table)
+- These represent business entities (users, organizations, RBAC), not technical state
 - **Result**: PASS
 
 **Criterion 2: Business Logic Implementation** ✅
@@ -370,7 +371,7 @@ Use this checklist to validate module categorization:
 
 ### For Vertical Modules
 
-- [ ] Module has database tables prefixed with module name (e.g., `case_cases`)
+- [ ] Module owns one or more database tables (named after the business entity, not necessarily prefixed by module name — e.g., `cases`, `users`, `knowledge_items`)
 - [ ] Tables represent business entities (not technical state)
 - [ ] Module contains business rules (not just technical integration)
 - [ ] Module can be described in business terms
@@ -424,7 +425,7 @@ Use this checklist to validate module categorization:
 
 **Answer**: ❌ **No, it remains vertical** because:
 
-1. ✅ **Meets All 3 Criteria**: Owns domain data (`auth_users`), implements business logic (authentication rules), represents domain capability (user management)
+1. ✅ **Meets All 3 Criteria**: Owns domain data (`users`, `organizations`, RBAC tables), implements business logic (authentication rules), represents domain capability (user management)
 2. ✅ **Business Dependency**: Other modules depend on auth for **business reasons** (access control, user identity), not technical reasons
 3. ✅ **Peer Status Maintained**: Auth is still a peer - it just happens to be used by others
 
@@ -556,7 +557,7 @@ Use domain services when:
 - ✅ Module implements complex business logic
 - ✅ Module represents a distinct capability
 - ❌ Module doesn't own domain data (data owned by another module)
-- ✅ Module operates on data through contracts (ICaseQuery, ICaseService)
+- ✅ Module operates on data through contracts (e.g., `ICaseRepository`)
 
 ### Structural Options for Domain Services
 
@@ -662,17 +663,17 @@ class EvidenceService:
 
 ```python
 # modules/agent/domain/agent_service.py
-from faultmaven.modules.case.contracts import ICaseService
+from faultmaven.modules.case.contracts import ICaseRepository
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
 
 class AgentService:
     def __init__(
         self,
-        case_service: ICaseService,
+        case_repo: ICaseRepository,
         knowledge_service: IKnowledgeService,
-        llm_provider: ILLMProvider
+        llm_provider: ILLMProvider,
     ):
-        self.case_service = case_service
+        self.case_repo = case_repo
         self.knowledge_service = knowledge_service
         self.llm_provider = llm_provider
 
@@ -680,37 +681,37 @@ class AgentService:
         # LangGraph orchestration (ephemeral state)
         result = await self.orchestrate_investigation(case_id, query)
 
-        # All persistent state via Case module
-        await self.case_service.add_investigation_result(case_id, result)
+        # All persistent state via Case module's contract
+        await self.case_repo.add_investigation_result(case_id, result)
 ```
 
 #### Report Service Pattern (TD-001 Complete)
 
 ```python
 # modules/report/domain/report_generation_service.py
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.modules.case.contracts import ICaseRepository
 
 class ReportGenerationService:
     def __init__(
         self,
         llm_router: Any,
-        case_repository: CaseRepository,  # TD-001: use Case repository for persistence
+        case_repo: ICaseRepository,  # TD-001: persist reports via Case contract
         runbook_kb: Optional[Any] = None,
         lock_manager: Optional[Any] = None,
-        pii_redactor: Optional[Any] = None
+        pii_redactor: Optional[Any] = None,
     ):
         self.llm_router = llm_router
-        self.case_repository = case_repository  # TD-001: reports stored via Case repository
+        self.case_repo = case_repo
         self.runbook_kb = runbook_kb
         self.lock_manager = lock_manager
         self.pii_redactor = pii_redactor
 
     async def generate_report(self, case_id: str, report_type: ReportType):
-        case = await self.case_repository.get(case_id)
+        case = await self.case_repo.get(case_id)
         report = await self._generate(case, report_type)
 
-        # TD-001 Complete: Persistent storage via Case repository
-        await self.case_repository.add_report(report)  # PostgreSQL reports table
+        # TD-001 complete: persistent storage in PostgreSQL `reports` table via Case contract
+        await self.case_repo.add_report(report)
         return report
 ```
 
@@ -859,7 +860,7 @@ These modules implement **business capabilities** and should have full vertical 
 - **Structure**:
   ```
   modules/case/
-  ├── contracts.py          # ICaseQuery, ICaseService, CaseDTO
+  ├── contracts.py          # ICaseRepository, CaseDTO, owned model re-exports
   ├── api/                  # Case endpoints
   ├── domain/               # Case business logic
   └── infrastructure/       # Case persistence (hybrid schema)
@@ -917,7 +918,20 @@ These modules implement **business logic** but **operate on data owned by other 
 
 **Note**: Agent's LangGraph state is ephemeral/in-memory. All persistent state (investigations, tool calls) is stored in Case module's tables.
 
-#### 3. **`modules/report/`** ❌ **DOMAIN SERVICE** (Schema-Verified, TD-001 Complete)
+#### 3. **`modules/preprocessing/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
+- **Business Logic**: Data classification, content extraction (11 extractors), structured chunking
+- **Data Ownership**: ❌ **NO** - operates on Evidence data owned by the Case module
+- **Schema Verification**: No `preprocessing_*` tables; outputs are written back to `evidence` and `evidence_artifacts`
+- **Rationale**: Preprocessing transforms raw uploaded files into searchable artifacts but never owns persistent state
+- **Structure**: Domain service (logic only, persistence via Case repository)
+  ```
+  modules/preprocessing/
+  ├── domain/               # Classifiers, extractors, chunker
+  └── api/                  # Preprocessing trigger endpoints
+  # NO infrastructure/      # Uses Case repository for persistence
+  ```
+
+#### 4. **`modules/report/`** ❌ **DOMAIN SERVICE** (Schema-Verified, TD-001 Complete)
 - **Business Logic**: Report generation, runbook creation, post-mortem generation
 - **Data Ownership**: ❌ **NO** - Reports stored in PostgreSQL `reports` table (owned by Case module, FK to cases)
 - **Schema Verification**: See `../data-and-storage/schemas/case-schema.md` Section 4.9 and `../data-and-storage/overview.md` Section 8 - "Storage: PostgreSQL (persistent, FK to cases)" - TD-001 migration complete
@@ -1003,7 +1017,7 @@ These components provide **technical capabilities** and should remain horizontal
   - **Note**: Each module's repository uses these connections but owns its tables
 - **Structure**: Keep as-is (connection management, session stores)
 
-#### 11. **`infrastructure/caching/`** ❌ **KEEP HORIZONTAL**
+#### 9. **`infrastructure/caching/`** ❌ **KEEP HORIZONTAL**
 - **Purpose**: Intelligent caching strategies
 - **Why Horizontal**:
   - Used by multiple modules
@@ -1011,7 +1025,7 @@ These components provide **technical capabilities** and should remain horizontal
   - No business logic
 - **Structure**: Keep as-is (intelligent_cache)
 
-#### 12. **`infrastructure/jobs/`** ❌ **KEEP HORIZONTAL**
+#### 10. **`infrastructure/jobs/`** ❌ **KEEP HORIZONTAL**
 - **Purpose**: Background job execution framework
 - **Why Horizontal**:
   - Used by multiple modules for async tasks
@@ -1019,7 +1033,7 @@ These components provide **technical capabilities** and should remain horizontal
   - No business logic
 - **Structure**: Keep as-is (job_service)
 
-#### 13. **`infrastructure/tasks/`** ❌ **KEEP HORIZONTAL**
+#### 11. **`infrastructure/tasks/`** ❌ **KEEP HORIZONTAL**
 - **Purpose**: Task queue and execution
 - **Why Horizontal**:
   - Used by multiple modules
@@ -1084,16 +1098,16 @@ faultmaven/
 │   │   └── infrastructure/           # users, organizations tables
 │   │
 │   ├── case/                         # ✅ Vertical (owns case-domain tables including evidence and reports)
-│   │   ├── contracts.py              # ICaseService, ICaseQuery, CaseDTO
+│   │   ├── contracts.py              # ICaseRepository, CaseDTO
 │   │   ├── api/
 │   │   ├── domain/
 │   │   └── infrastructure/           # cases, evidence, hypotheses, solutions, etc.
 │   │
-│   ├── knowledge/                    # ✅ Vertical (owns knowledge_items + faultmaven_kb)
+│   ├── knowledge/                    # ✅ Vertical (owns knowledge_items + knowledge_suggestions + faultmaven_kb)
 │   │   ├── contracts.py              # IKnowledgeService, IKnowledgeQuery
 │   │   ├── api/
 │   │   ├── domain/
-│   │   └── infrastructure/           # knowledge_items table + faultmaven_kb collection
+│   │   └── infrastructure/           # knowledge_items + knowledge_suggestions tables + faultmaven_kb collection
 │   │
 │   ├── evidence/                     # ❌ Domain Service (no data ownership)
 │   │   ├── domain/                   # Evidence collection, validation logic
@@ -1105,6 +1119,11 @@ faultmaven/
 │   │   ├── tools/                    # Agent tools (knowledge_base, web_search)
 │   │   └── api/                      # Orchestrates via Case contracts
 │   │   # NO infrastructure/          # All state flows through Case module
+│   │
+│   ├── preprocessing/                # ❌ Domain Service (no data ownership)
+│   │   ├── domain/                   # Data classification, extraction (11 extractors), chunking
+│   │   └── api/                      # Operates on Evidence data
+│   │   # NO infrastructure/          # Uses Case repository for persistence
 │   │
 │   └── report/                       # ❌ Domain Service (TD-001 complete)
 │       ├── domain/                   # Report generation logic
@@ -1214,7 +1233,7 @@ faultmaven/
 - ✅ Remove `contracts.py` from Evidence, Agent, Report modules (they don't own data)
 - ✅ Remove `infrastructure/` from Evidence, Agent modules (use Case repository)
 - ✅ Remove Report `infrastructure/` - TD-001 migration complete (now uses Case repository)
-- ✅ Update Evidence, Agent, Report to use Case module's contracts (`ICaseRepository`, `ICaseService`)
+- ✅ Update Evidence, Agent, Report to use Case module's `ICaseRepository` contract
 - ⏳ Add import-linter rules for Domain Service boundaries (prevent vertical modules from importing domain service internals)
 - ⏳ Update composition root (`main.py`) to wire Domain Services with Case contracts
 - ⏳ Update API routes to use injected Domain Service instances
@@ -1318,7 +1337,7 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 |-----------|-------------|--------|
 | `modules/auth/` | ✅ Vertical | Owns domain data (users, organizations tables) |
 | `modules/case/` | ✅ Vertical | Owns case-domain data (cases, evidence, hypotheses, solutions, messages, reports, and related tables) |
-| `modules/knowledge/` | ✅ Vertical | Owns domain data (knowledge_items + faultmaven_kb) |
+| `modules/knowledge/` | ✅ Vertical | Owns domain data (`knowledge_items` + `knowledge_suggestions` + the unified `faultmaven_kb` ChromaDB collection) |
 | `modules/evidence/` | ❌ Domain Service | Business logic only; data owned by Case module |
 | `modules/agent/` | ❌ Domain Service | Orchestration logic; no persistent state ownership |
 | `modules/preprocessing/` | ❌ Domain Service | Data classification, extraction, chunking; operates on Evidence data |
@@ -1347,6 +1366,7 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 | 1.0 | 2026-01-09 | Initial recommendations with 6 vertical modules |
 | 2.0 | 2026-01-09 | **Schema-verified revision** - Only 3 vertical modules (Case, Auth, Knowledge) after reviewing `../data-and-storage/schemas/case-schema.md` and `../data-and-storage/overview.md`. Evidence, Agent, and Report reclassified as Domain Services. |
 | 2.1 | 2026-01-10 | **Domain Service structural guidance** - Added detailed implementation patterns, structural options, boundary enforcement strategies, and migration steps (Phase 2.5) for Evidence, Agent, Report modules. Consolidated vertical-vs-layer structuring guidance into this document. |
+| 2.2 | 2026-04-18 | **Internal consistency pass** - Aligned table-naming examples with the live schema (unprefixed primary tables; semantic prefixes only for sub-entities). Standardized cross-module Case access on `ICaseRepository`. Made `modules/preprocessing/` first-class in the schema-verified classification table. Added `knowledge_suggestions` to the Knowledge row of every summary table. Fixed enumeration gap in horizontal-layer list. |
 
 ### Key Changes in v2.0
 
@@ -1415,5 +1435,5 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 
 **Document Owner**: Engineering Leadership
 **Status**: Schema-Verified Active Recommendation
-**Last Updated**: 2026-01-09
+**Last Updated**: 2026-04-18
 **Schema Verification**: Verified against the live schema via `../data-and-storage/schemas/case-schema.md`, `../data-and-storage/er-diagram.md`, and `faultmaven/infrastructure/persistence/models.py`.
