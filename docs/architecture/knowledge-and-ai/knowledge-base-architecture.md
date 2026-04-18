@@ -229,38 +229,36 @@ The taxonomy fields (`domain`, `service`, `symptom_class`) are defined in [runbo
 
 ### Implementation Status
 
-This section documents the **current implementation** and **planned improvements**. Features marked as **PLANNED** represent the target design; features marked as **CURRENT** describe what exists in code today.
+For the canonical implementation status of the retrieval pipeline (hybrid search, reranking, staleness, hard pre-filter, fast mode, scope tiebreaking), see [vector-retrieval-architecture.md §7](./vector-retrieval-architecture.md#7-implementation-status). This document covers KB-specific concerns only.
 
 | Feature | Status | Notes |
 | ------- | ------ | ----- |
-| Federated search | **Implemented** | Single `kb_qa` tool searches all scopes (global + personal + team) via `$or` filter |
-| Collection naming | **Implemented** | Single collection `faultmaven_kb` with metadata-based scope filtering |
-| Hybrid search | **PLANNED** | Metadata filtering (`domain_filter`/`service_filter`) from case context |
-| Staleness-aware synthesis | **PLANNED** | `last_updated`/`status` stored; injection logic pending |
-| Fast-track confidence | **Implemented** | `KB_FAST_TRACK_THRESHOLD = 0.7` in `milestone_engine.py` |
-| Tier-based reranking | **PLANNED** | Personal > Team > Global tiebreaker not yet applied |
+| Federated search across tiers | Implemented | Single `answer_from_kb` tool searches all scopes (global + personal + team) via `$or` filter |
+| Single-collection storage | Implemented | One `faultmaven_kb` collection with metadata-based scope filtering |
+| Scope safety invariant | Implemented | `_enforce_scope_invariant()` raises `ValueError` on unscoped queries |
+| Fast-track confidence | Implemented | `KB_FAST_TRACK_THRESHOLD = 0.7` in `milestone_engine.py` |
 
 #### Current Tool Architecture
 
-| Tool | Collection | Purpose |
-| ---- | ---------- | ------- |
-| `kb_qa` | `faultmaven_kb` | Unified KB Q&A (global + personal + team via `$or` filter) |
-| `case_evidence_search` | `case_{case_id}` | Case-scoped forensic Q&A on vectorized evidence |
+| Tool (registered name) | Class | File | Collection | Purpose |
+| ---------------------- | ----- | ---- | ---------- | ------- |
+| `answer_from_kb` | `AnswerFromKB` | `kb_qa.py` | `faultmaven_kb` | Unified KB Q&A (global + personal + team via `$or` filter) |
+| `answer_from_case_evidence` | `AnswerFromCaseEvidence` | `case_evidence_qa.py` | `case_{case_id}` | Case-scoped forensic Q&A on vectorized evidence |
 
-The old per-scope KB tool approach (`global_kb_qa`, `user_kb_qa`) has been replaced with the single unified `kb_qa` tool — scope filtering is automatic based on user context. Case evidence Q&A remains separate and is still exposed to agents as `case_evidence_search` (backed by the `answer_from_case_evidence` tool class via `kb_tool_adapter.py`).
+The old per-scope KB tools (`global_kb_qa`, `user_kb_qa`) and the alternate `answer_from_knowledge_base` name have been replaced with the single unified `answer_from_kb` tool — scope filtering is automatic based on user context resolved by `KBToolAdapter`.
 
 ### Design Principles
 
-Three principles govern the retrieval design:
+Three principles govern the retrieval design — all implemented (see [vector-retrieval-architecture.md](./vector-retrieval-architecture.md) for the pipeline):
 
-1. **Federated Search** — The agent calls one knowledge tool, not three. The backend searches all authorized tiers and merges results. **(Implemented)** — `AnswerFromKB` with `UnifiedKBConfig` and `$or` scope filter.
-2. **Hybrid Search** — Vector similarity augmented with metadata filtering (domain, service) derived from case context. **(PLANNED)** — metadata fields stored at ingestion; query path not yet using them.
-3. **Staleness-Aware Synthesis** — The synthesis LLM sees lifecycle warnings (stale, deprecated) injected into chunk context. **(PLANNED)** — `last_updated` and `status` stored; injection logic pending.
+1. **Federated Search** — The agent calls one knowledge tool, not three. The backend searches all authorized tiers and merges results. `AnswerFromKB` with `UnifiedKBConfig` and `$or` scope filter.
+2. **Hybrid Search** — Two-stage pipeline: parallel vector + keyword-constrained recall, then four-signal reranking (vector similarity, term overlap, metadata match, freshness). Optional `filter_mode="hard"` injects domain/service into the ChromaDB `where` clause for high-confidence pre-filtering.
+3. **Staleness-Aware Synthesis** — `UnifiedKBConfig.format_chunk_metadata()` injects age-based warnings into chunk context; the reranker's freshness signal applies a half-life decay on `last_updated`.
 
 ### Federated Search: Implementation
 
 ```text
-Agent calls: kb_qa(question)
+Agent calls: answer_from_kb(question)
   │
   ├── KBToolAdapter resolves user context (user_id, team_ids) from ToolContext
   │
@@ -276,96 +274,50 @@ Agent calls: kb_qa(question)
   └── Return answer to agent
 ```
 
-**Case evidence remains a separate tool.** `case_evidence_search` is not part of the federated search. Evidence uses a forensic synthesis prompt and serves a fundamentally different role (diagnose) than knowledge (remediate). This boundary is the evidence-vs-knowledge distinction established in the Purpose section.
+**Case evidence remains a separate tool.** `answer_from_case_evidence` is not part of the federated search. Evidence uses a forensic synthesis prompt and serves a fundamentally different role (diagnose) than knowledge (remediate). This boundary is the evidence-vs-knowledge distinction established in the Purpose section.
 
 **Tool interface (2 tools):**
 
 | Tool | Parameters | Purpose |
 | ---- | ---------- | ------- |
-| `kb_qa` | `question` | Remediation knowledge from all authorized KB scopes |
-| `case_evidence_search` | `case_id`, `question` | Forensic analysis of uploaded case evidence |
+| `answer_from_kb` | `question` | Remediation knowledge from all authorized KB scopes |
+| `answer_from_case_evidence` | `case_id`, `question` | Forensic analysis of uploaded case evidence |
 
 ### Strategy Pattern with KBConfig
 
-The `DocumentQATool` base class is KB-neutral — it queries via an injected `KBConfig` strategy. `UnifiedKBConfig` handles scope filtering via metadata `$or` conditions against a single collection. `CaseEvidenceConfig` handles case-scoped evidence with a forensic synthesis prompt.
+The `DocumentQATool` base class is KB-neutral — it queries via an injected `KBConfig` strategy. Two concrete configs exist:
+
+| Config Class | File | Collection | Scope handling | Synthesis prompt |
+|--------------|------|------------|----------------|------------------|
+| `UnifiedKBConfig` | `kb_configs/unified_kb_config.py` | `faultmaven_kb` | `$or` filter over `scope=global`, `(scope=personal, owner_id=…)`, `(scope=team, team_id ∈ …)` | Staleness-aware, prefers verified content |
+| `CaseEvidenceConfig` | `kb_configs/case_evidence_config.py` | `case_{case_id}` | Per-case isolation | Forensic — preserves chronological order, cites filename/line numbers |
 
 **KBConfig interface** (abstract base in `modules/agent/tools/kb_config.py`):
 
 | Method / Property | Purpose |
 |-------------------|---------|
-| `get_collection_name(scope_id)` | Returns ChromaDB collection name for this tier |
+| `get_collection_name(scope_id)` | Returns ChromaDB collection name |
 | `format_chunk_metadata(metadata, score)` | Formats chunk context — including staleness warnings |
-| `extract_source_name(metadata)` | Extracts source attribution with tier provenance |
+| `extract_source_name(metadata)` | Extracts source attribution with scope provenance |
 | `get_citation_format()` | Citation style guidance for synthesis LLM |
 | `format_response(answer, sources, chunk_count, confidence)` | Formats final response for agent |
 | `requires_scope_id` (property) | Whether this tier needs a scope parameter |
 | `cache_ttl` (property) | Cache duration in seconds |
 | `system_prompt` (property) | Synthesis LLM system prompt |
 
-**Tier configurations:**
+The earlier per-tier `GlobalKBConfig` / `TeamKBConfig` / `UserKBConfig` design (one config per ChromaDB collection) was replaced by the unified config — see [Storage Architecture](#single-collection-with-metadata-filtering-current) for the rationale.
 
-| Config Class | Collection | Scope | Cache | Citation Prefix |
-|-------------|------------|-------|-------|-----------------|
-| `GlobalKBConfig` | `global_kb` | none | 7 days | `[Global KB: ...]` |
-| `TeamKBConfig` | `team_{team_id}_kb` | team_id | 12 hours | `[Team KB: ...]` |
-| `UserKBConfig` | `user_{user_id}_kb` | user_id | 24 hours | `[Personal KB: ...]` |
+### Hybrid Search and Reranking
 
-### Hybrid Search: Metadata Filtering (PLANNED)
+The full hybrid pipeline (parallel vector + keyword recall, four-signal reranker, hard pre-filter mode, dynamic weights, scope tiebreaking) lives in `infrastructure/knowledge/knowledge_vector_store.py`. See [vector-retrieval-architecture.md §3](./vector-retrieval-architecture.md#3-two-stage-retrieval-and-reranking-pipeline) for the full pipeline definition. KB-specific behaviour worth flagging here:
 
-> **Implementation status:** The taxonomy metadata fields (`domain`, `service`, `symptom_class`) are stored in ChromaDB at ingestion time via the KB Toolkit pipeline. However, no query path currently uses them — all retrieval is pure vector similarity. This is the **single highest-value missing feature** for retrieval precision.
+- The taxonomy fields (`domain`, `service`, `symptom_class`, `severity`) propagated at ingestion drive the metadata-match signal in the reranker and the optional `filter_mode="hard"` pre-filter.
+- Filter values come from the case context (the investigation engine's `ProblemVerification` step identifies `affected_services`) — not from the user.
+- When no filter context is available (e.g., early INQUIRY phase), the search runs unfiltered.
 
-Pure vector similarity search has a precision problem: "connection pool exhausted" retrieves PostgreSQL, MySQL, and Redis runbooks with similar scores. The agent needs the PostgreSQL runbook — not all three.
+### Staleness-Aware Synthesis
 
-**The target design:** The federated search accepts optional `domain_filter` and `service_filter` parameters that are passed as ChromaDB `where` clauses, narrowing the search space before vector similarity runs.
-
-```text
-Agent calls: answer_from_knowledge_base(
-    question="How to fix connection pool exhaustion?",
-    domain_filter="database",
-    service_filter="postgresql"
-)
-
-Backend:
-  1. Build where_clause: {"domain": "database", "service": "postgresql"}
-  2. For each authorized collection:
-     collection.query(
-         query_embedding=embed(question),
-         where=where_clause,       # Metadata pre-filter
-         n_results=k * 2           # Oversample for reranking
-     )
-  3. Merge results across tiers, rerank by score
-  4. Return top-k chunks to synthesis LLM
-```
-
-**Where do the filters come from?** Not from the user — from the **case context**. The investigation engine already identifies the affected service during the `ProblemVerification` step (part of INQUIRY → INVESTIGATING transition). The agent can derive `domain_filter` and `service_filter` from the case's `affected_services` property without any user interaction.
-
-**Fallback:** If no filters are provided (e.g., early in investigation before problem verification), the search runs unfiltered across all chunks — same behavior as pure vector search.
-
-### Staleness-Aware Synthesis (PLANNED)
-
-The [Runbook Content Architecture](./runbook-content-architecture.md) defines lifecycle states (DRAFT, IN-REVIEW, VERIFIED, STALE, DEPRECATED) and staleness rules (>6 months since `last_updated`). The retrieval architecture must act on this at runtime.
-
-**The solution:** `KBConfig.format_chunk_metadata()` inspects the `last_updated` and `status` fields in each chunk's metadata. If the runbook is stale or deprecated, the formatter injects a warning directly into the context text that the synthesis LLM sees:
-
-```text
-Normal chunk context:
-  [Global KB: pg-connection-pool-runbook, section: Diagnostic Steps]
-  SELECT count(*), state FROM pg_stat_activity GROUP BY state;
-  ...
-
-Stale chunk context:
-  [Global KB: pg-connection-pool-runbook, section: Diagnostic Steps]
-  ⚠️ WARNING: This runbook was last updated on 2025-06-15 (>6 months ago).
-  Commands and procedures may be outdated. Verify before executing.
-  SELECT count(*), state FROM pg_stat_activity GROUP BY state;
-  ...
-```
-
-**Why inject into context, not handle in the agent?** The synthesis LLM naturally includes the warning in its answer because it's part of the retrieved text. No special agent logic needed — the warning propagates to the user as a natural part of the response. This is simpler and more reliable than conditional agent-side handling.
-
-**Deprecated content:** Chunks with `status: deprecated` are excluded from retrieval results entirely. They should not be in ChromaDB (deprecated runbooks are purged per lifecycle rules), but the filter provides defense in depth.
-
-**Staleness computation:** `format_chunk_metadata()` computes staleness on the fly from `last_updated`, independent of whether a background job has formally transitioned the runbook to STALE status. This means staleness warnings work even before the lifecycle state machine is fully implemented.
+`UnifiedKBConfig.format_chunk_metadata()` inspects `last_updated` and `status` per chunk and injects warnings directly into the context the synthesis LLM sees, so the warning propagates to the user without agent-side conditional handling. Chunks with `status: deprecated` are penalised by the reranker (-0.30); deprecated runbooks should also be purged from ChromaDB per lifecycle rules. See [vector-retrieval-architecture.md §4](./vector-retrieval-architecture.md#staleness-aware-synthesis) for the formatter behaviour.
 
 ### Fast-Track Confidence Threshold (CURRENT)
 
@@ -389,29 +341,9 @@ The investigation lifecycle defines a fast-track path: INQUIRY → RESOLVED when
 
 **Why 0.7?** Cosine similarity of 0.7 with BGE-M3 embeddings indicates strong semantic alignment — the query and the runbook are addressing the same failure mode. Below 0.7, the match is likely tangential (e.g., same technology but different failure mode). This threshold was tuned against real incident queries and may need adjustment as the KB grows.
 
-### Tier-Based Reranking (PLANNED)
+### Scope Tiebreaking
 
-When the federated search (once implemented) merges chunks from Global, Team, and Personal KBs, all tiers produce cosine similarity scores from the same embedding model — scores are directly comparable. However, **tier provenance should influence ranking** as a tiebreaker.
-
-**Rationale:** A personal runbook that says "our payment service fails when Redis is down due to misconfigured retry" is more specific and more valuable than a global runbook about generic Redis troubleshooting, even if both score similarly on "Redis connection failure."
-
-**Tiebreaker policy (applied when scores are within 0.05 of each other):**
-
-1. **Personal** — highest priority. User-authored content is the most specific to their environment.
-2. **Team** — second priority. Captures institutional memory specific to the organization.
-3. **Global** — lowest priority. Generic best practices, valuable but less specific.
-
-**Implementation approach:** After merging chunks from all tiers, apply a small score boost:
-
-```text
-adjusted_score = raw_score + tier_bonus
-  where tier_bonus:
-    Personal: +0.03
-    Team:     +0.02
-    Global:   +0.00
-```
-
-This ensures that when a personal runbook and a global runbook score within 0.05 of each other, the personal one surfaces first. At score gaps larger than 0.05, the raw relevance score dominates — a highly relevant global runbook still beats a weakly relevant personal one.
+When merged chunks have equal weighted scores, scope priority breaks the tie: **Personal > Team > Global**. Rationale: a personal runbook ("our payment service fails when Redis is down due to misconfigured retry") is more specific to the user's environment than a generic global runbook, even at similar relevance scores. Implemented in `_rerank()` via `SCOPE_PRIORITY = {"personal": 0, "team": 1, "global": 2}`.
 
 ### Extensibility
 
@@ -495,7 +427,7 @@ Team KB scope filtering is **implemented end-to-end**:
 - `team_members` junction table supports multi-team membership per user
 - `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs
 - Team IDs are wired into `ToolContext.team_ids` during agent execution (via `AgentOrchestrationService`)
-- The unified `kb_qa` tool builds a combined filter: `{"$and": [{"scope": "team"}, {"team_id": {"$in": team_ids}}]}`
+- The unified `answer_from_kb` tool builds a combined filter: `{"$and": [{"scope": "team"}, {"team_id": {"$in": team_ids}}]}`
 - ChromaDB metadata stores `scope` + `team_id` at ingestion time
 - API endpoints (`GET /knowledge/documents`) support `scope=team` filter with team membership check
 
@@ -503,7 +435,7 @@ Team KB scope filtering is **implemented end-to-end**:
 
 1. Team KB management API endpoints (upload, list, delete restricted to team admin role)
 2. Promotion workflow (personal → team: submit, review, approve/reject with team admin approval gate)
-3. `KBConfig` Strategy Pattern: add `TeamKBConfig(KBConfig)` for the federated search layer (optional — unified `kb_qa` already handles team scope via metadata filter)
+3. `KBConfig` Strategy Pattern: add `TeamKBConfig(KBConfig)` for the federated search layer (optional — unified `answer_from_kb` already handles team scope via metadata filter)
 
 ---
 
@@ -545,10 +477,13 @@ Managed through the Knowledge module (`/api/v1/knowledge/`):
 
 ### Personal KB Files
 
+Personal KB shares the same unified infrastructure as Global and Team — scope is metadata-only.
+
 | Component | Location |
 |-----------|----------|
-| Vector store | `infrastructure/persistence/user_kb_vector_store.py` |
-| KBConfig | `modules/agent/tools/kb_configs/user_kb_config.py` |
+| Vector store (all tiers) | `infrastructure/knowledge/knowledge_vector_store.py` |
+| Document inventory (SQLite) | `infrastructure/persistence/kb_document_repository.py` |
+| KBConfig (all tiers) | `modules/agent/tools/kb_configs/unified_kb_config.py` |
 | Knowledge service | `modules/knowledge/domain/services/knowledge_service.py` |
 | Knowledge routes | `modules/knowledge/api/routes.py` |
 | Domain model | `modules/knowledge/domain/models/knowledge_item.py` |
@@ -621,8 +556,8 @@ During investigation, the agent has two retrieval tools — one for knowledge, o
 
 | Question Type | Tool | Example |
 |---------------|------|---------|
-| Remediation knowledge | `answer_from_knowledge_base` | "How to fix PostgreSQL connection pool exhaustion?" |
-| Remediation with context | `answer_from_knowledge_base` (with filters) | Same question, but `domain_filter="database"`, `service_filter="postgresql"` derived from case context |
+| Remediation knowledge | `answer_from_kb` | "How to fix PostgreSQL connection pool exhaustion?" |
+| Remediation with context | `answer_from_kb` (with case context metadata) | Same question, but `context_metadata={"domain": "database", "service": "postgresql"}` derived from the case's `affected_services` |
 | Case-specific evidence | `answer_from_case_evidence` | "What errors are on line 1045 of the uploaded server.log?" |
 
 The agent does not decide which KB tier to search — the federated search layer handles that automatically based on the user's authorization context. The agent focuses on *what to ask*, not *where to look*.

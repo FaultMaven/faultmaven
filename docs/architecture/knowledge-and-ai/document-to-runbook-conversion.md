@@ -313,11 +313,11 @@ The `ConversionService` calls `DocumentPreprocessor.preprocess()` as the first s
 
 ## 3. KNOWLEDGE_PROVIDER Capability
 
-### 2.1 Definition
+### 3.1 Definition
 
 A new LLM capability for knowledge extraction and content transformation tasks. These tasks require strong instruction-following for structured output (template compliance), content analysis (failure mode detection), and technical writing (producing actionable runbook sections).
 
-### 2.2 Settings Integration
+### 3.2 Settings Integration
 
 Add to `LLMSettings` in `faultmaven/config/settings.py`:
 
@@ -344,7 +344,7 @@ def get_knowledge_provider(self) -> LLMProvider:
     return self.knowledge_provider or self.provider
 ```
 
-### 2.3 Model Selection per Provider
+### 3.3 Model Selection per Provider
 
 Add to the per-provider model fields in `LLMSettings`:
 
@@ -357,7 +357,7 @@ groq_knowledge_model: str = Field(default="llama-3.3-70b-versatile")
 gemini_knowledge_model: str = Field(default="gemini-2.0-flash")
 ```
 
-### 2.4 Routing Rationale
+### 3.4 Routing Rationale
 
 | Task | Why not reuse existing capability |
 |------|----------------------------------|
@@ -367,7 +367,7 @@ gemini_knowledge_model: str = Field(default="gemini-2.0-flash")
 
 The knowledge provider should default to a model with strong instruction-following (Anthropic Claude or OpenAI GPT-4o) because template compliance is the critical quality dimension. Cheaper models can be tested but are not recommended as defaults.
 
-### 2.5 Model Resolution in ConversionService
+### 3.5 Model Resolution in ConversionService
 
 The `ConversionService` calls `LLMRouter.route()` with the model resolved from `settings.llm.get_knowledge_model()`:
 
@@ -383,14 +383,14 @@ response = await self._llm_router.route(
 
 ---
 
-## 3. LLM Prompt Design
+## 4. LLM Prompt Design
 
 The conversion pipeline makes two distinct LLM calls per source document:
 
 1. **Analysis call** -- identify distinct failure modes in the source document
 2. **Conversion call** -- one per failure mode, producing a template-compliant runbook
 
-### 3.1 Analysis Prompt (Failure Mode Detection)
+### 4.1 Analysis Prompt (Failure Mode Detection)
 
 **System message:**
 
@@ -438,7 +438,7 @@ Rules:
 }
 ```
 
-### 3.2 Conversion Prompt (Per Failure Mode)
+### 4.2 Conversion Prompt (Per Failure Mode)
 
 **System message:**
 
@@ -552,7 +552,7 @@ TODAY: {iso_date}
 --- END SOURCE MATERIAL ---
 ```
 
-### 3.3 Prompt Design Decisions
+### 4.3 Prompt Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
@@ -564,11 +564,11 @@ TODAY: {iso_date}
 
 ---
 
-## 4. Multi-Runbook Splitting Logic
+## 5. Multi-Runbook Splitting Logic
 
-### 4.1 Detection Strategy
+### 5.1 Detection Strategy
 
-The analysis LLM call (Section 3.1) identifies failure modes. The splitting logic is:
+The analysis LLM call (Section 4.1) identifies failure modes. The splitting logic is:
 
 ```python
 async def _analyze_and_split(self, text: str, filename: str) -> AnalysisResult:
@@ -594,13 +594,13 @@ async def _analyze_and_split(self, text: str, filename: str) -> AnalysisResult:
     return AnalysisResult.model_validate_json(response.content)
 ```
 
-### 4.2 Text Routing for Multi-Mode Documents
+### 5.2 Text Routing for Multi-Mode Documents
 
 When multiple failure modes are detected, the conversion prompt receives the **full source text** for each failure mode, not a pre-extracted excerpt. The LLM is instructed to focus on the specified failure mode and extract only the relevant content. This avoids lossy heuristic text splitting.
 
 For very large documents (over 12,000 tokens after extraction), the text is chunked by section headers and the LLM receives only the sections relevant to each failure mode, as identified in the analysis response.
 
-### 4.3 ID Generation
+### 5.3 ID Generation
 
 Runbook IDs are generated deterministically from the failure mode analysis:
 
@@ -616,7 +616,7 @@ def _generate_runbook_id(self, failure_mode: FailureMode) -> str:
     return slug
 ```
 
-### 4.4 Handling Edge Cases
+### 5.4 Handling Edge Cases
 
 | Scenario | Behavior |
 |----------|----------|
@@ -628,20 +628,20 @@ def _generate_runbook_id(self, failure_mode: FailureMode) -> str:
 
 ---
 
-## 5. API Contract
+## 6. API Contract
 
-### 5.1 Endpoints
+### 6.1 Endpoints
 
 | Method | Path | Purpose | Auth |
 |--------|------|---------|------|
-| `POST` | `/api/v1/knowledge/convert` | Upload document and start conversion | Scoped (see 5.6) |
+| `POST` | `/api/v1/knowledge/convert` | Upload document and start conversion | Scoped (see 6.6) |
 | `GET` | `/api/v1/knowledge/conversions/{conversion_id}` | Get conversion job status and drafts | Owner only |
 | `GET` | `/api/v1/knowledge/conversions` | List user's conversion jobs | Owner only |
 | `PUT` | `/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}` | Edit draft content | Owner only |
-| `POST` | `/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify` | Promote draft to verified (triggers ingestion) | Scoped (see 5.6) |
+| `POST` | `/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify` | Promote draft to verified (triggers ingestion) | Scoped (see 6.6) |
 | `DELETE` | `/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}` | Delete a draft | Owner only |
 
-### 5.2 POST /api/v1/knowledge/convert -- Request
+### 6.2 POST /api/v1/knowledge/convert -- Request
 
 Multipart form data:
 
@@ -666,7 +666,7 @@ CONVERSION_ALLOWED_TYPES = {
 
 Max file size: Governed by existing `MAX_UPLOAD_SIZE_MB` setting (default 10 MB).
 
-### 5.3 POST /api/v1/knowledge/convert -- Response (201)
+### 6.3 POST /api/v1/knowledge/convert -- Response (201)
 
 ```json
 {
@@ -716,7 +716,7 @@ Max file size: Governed by existing `MAX_UPLOAD_SIZE_MB` setting (default 10 MB)
 }
 ```
 
-### 5.4 PUT /api/v1/knowledge/conversions/{id}/drafts/{draft_id} -- Request
+### 6.4 PUT /api/v1/knowledge/conversions/{id}/drafts/{draft_id} -- Request
 
 ```json
 {
@@ -726,7 +726,7 @@ Max file size: Governed by existing `MAX_UPLOAD_SIZE_MB` setting (default 10 MB)
 
 Response: Updated draft object with re-run validation and quality score.
 
-### 5.5 POST .../drafts/{draft_id}/verify -- Response (200)
+### 6.5 POST .../drafts/{draft_id}/verify -- Response (200)
 
 ```json
 {
@@ -748,7 +748,7 @@ This endpoint:
 
 **Frontmatter mutation implementation note:** The `.md` file on disk must be updated before ingestion. Use `python-frontmatter` (or `ruamel.yaml`) to parse the YAML frontmatter, mutate the `status` and `verified_by` fields, and write back the file preserving the markdown body. Do not use regex substitution — YAML has edge cases (quoted strings, multiline values) that regex cannot handle reliably. The `kb-ingest` pipeline reads frontmatter from the file, so the file must be correct on disk before ingestion runs.
 
-### 5.6 Access Control
+### 6.6 Access Control
 
 | Scope | Who can convert | Who can verify |
 |-------|----------------|----------------|
@@ -758,7 +758,7 @@ This endpoint:
 
 Implementation: Reuse existing `require_admin` dependency for global scope. Add `require_team_admin(team_id)` dependency for team scope. Personal scope uses standard auth with user ID scoping.
 
-### 5.7 Error Responses
+### 6.7 Error Responses
 
 | Status | Condition | Body |
 |--------|-----------|------|
@@ -774,9 +774,9 @@ Implementation: Reuse existing `require_admin` dependency for global scope. Add 
 
 ---
 
-## 6. Pydantic Models
+## 7. Pydantic Models
 
-### 6.1 Request/Response Models
+### 7.1 Request/Response Models
 
 Location: `faultmaven/modules/knowledge/domain/models/conversion.py`
 
@@ -900,13 +900,13 @@ class VerifyResponse(BaseModel):
 
 ---
 
-## 7. Dashboard UI Flow
+## 8. Dashboard UI Flow
 
-### 7.1 Entry Point
+### 8.1 Entry Point
 
 Add a "Convert Document" button to the existing KBPage, next to the existing upload functionality. The button is visible only when the user has write access to the current KB tier.
 
-### 7.2 Conversion Flow (Wireframe-Level)
+### 8.2 Conversion Flow (Wireframe-Level)
 
 **Step 1: Upload**
 
@@ -1001,7 +1001,7 @@ On save, the API re-runs validation and quality scoring. The results update in r
 +--------------------------------------------------+
 ```
 
-### 7.3 Dashboard Components
+### 8.3 Dashboard Components
 
 | Component | File | Purpose |
 |-----------|------|---------|
@@ -1010,7 +1010,7 @@ On save, the API re-runs validation and quality scoring. The results update in r
 | `DraftEditor` | `components/DraftEditor.tsx` | Markdown editor with live validation |
 | `VerifyConfirmDialog` | Reuse `ConfirmDialog.tsx` | Verification confirmation modal |
 
-### 7.4 API Client Functions
+### 8.4 API Client Functions
 
 Add to `faultmaven-dashboard/src/lib/knowledge/`:
 
@@ -1048,9 +1048,9 @@ export async function deleteDraft(
 
 ---
 
-## 8. Storage and Lifecycle
+## 9. Storage and Lifecycle
 
-### 8.1 File Storage Layout
+### 9.1 File Storage Layout
 
 ```
 data/knowledge/
@@ -1066,7 +1066,7 @@ data/knowledge/
         ...
 ```
 
-### 8.2 Database Schema
+### 9.2 Database Schema
 
 New table: `conversion_jobs`
 
@@ -1107,7 +1107,7 @@ New table: `conversion_drafts`
 | `verified_at` | `DATETIME` | When status changed to verified |
 | `verified_by` | `VARCHAR(36)` | User who verified |
 
-### 8.3 Lifecycle State Machine
+### 9.3 Lifecycle State Machine
 
 ```mermaid
 stateDiagram-v2
@@ -1125,7 +1125,7 @@ Key rules:
 - **Deleted**: File removed from disk. Database record marked as deleted (soft delete).
 - **No reverse transition**: Once verified, the runbook follows the standard KB lifecycle (verified -> stale -> deprecated) managed by the existing governance system. It is no longer a "conversion draft."
 
-### 8.4 Source File Retention
+### 9.4 Source File Retention
 
 Source files are retained indefinitely in `data/knowledge/sources/{conversion_id}/`. This provides:
 - **Provenance**: Users can reference the original document that produced the runbook.
@@ -1136,9 +1136,9 @@ Source files are excluded from ChromaDB indexing.
 
 ---
 
-## 9. Document Parsing
+## 10. Document Parsing
 
-### 9.1 Parser Implementation
+### 10.1 Parser Implementation
 
 Location: `faultmaven/modules/knowledge/domain/services/document_parser.py`
 
@@ -1152,7 +1152,7 @@ The parser extracts plain text from supported file formats. It does not interpre
 | Markdown | Built-in | Pass through as-is (already text). Strip HTML if embedded. |
 | HTML | `beautifulsoup4` | Extract text content. Preserve code block content from `<pre>` and `<code>` tags. Strip all other HTML. |
 
-### 9.2 Text Size Limits
+### 10.2 Text Size Limits
 
 | Limit | Value | Rationale |
 |-------|-------|-----------|
@@ -1160,7 +1160,7 @@ The parser extracts plain text from supported file formats. It does not interpre
 | Min extracted text | 200 characters | Below this, the source lacks sufficient content. Reject with 422. |
 | Target LLM input | 50,000 characters | For documents over this size, send summary + relevant sections per failure mode. |
 
-### 9.3 BeautifulSoup Dependency
+### 10.3 BeautifulSoup Dependency
 
 `beautifulsoup4` is required for HTML parsing. Add to `requirements/base.txt`:
 
@@ -1172,9 +1172,9 @@ This is the only new dependency. All other parsers use existing dependencies.
 
 ---
 
-## 10. Error Handling
+## 11. Error Handling
 
-### 10.1 Error Categories and Recovery
+### 11.1 Error Categories and Recovery
 
 | Error Category | Example | Recovery Strategy |
 |----------------|---------|-------------------|
@@ -1185,7 +1185,7 @@ This is the only new dependency. All other parsers use existing dependencies.
 | **Quality below threshold** | Score < 50 | Include warning in draft. Do not block -- user decides. |
 | **Storage failure** | Disk full, permission error | Return 500. No partial state -- transaction rolls back. |
 
-### 10.2 LLM Failure Handling
+### 11.2 LLM Failure Handling
 
 ```python
 async def _convert_failure_mode(
@@ -1213,15 +1213,15 @@ async def _convert_failure_mode(
         )
 ```
 
-### 10.3 Idempotency
+### 11.3 Idempotency
 
 The conversion endpoint is NOT idempotent -- each upload creates a new conversion job. To prevent accidental duplicate conversions, the Dashboard disables the "Convert" button after submission and shows the processing state.
 
 ---
 
-## 11. Integration with KB Toolkit Validation and Quality Scoring
+## 12. Integration with KB Toolkit Validation and Quality Scoring
 
-### 11.1 Validation Integration
+### 12.1 Validation Integration
 
 The `ConversionService` invokes the KB Toolkit's `RunbookValidator` programmatically. The toolkit is imported as a Python package, not called as a CLI subprocess.
 
@@ -1244,7 +1244,7 @@ class ConversionService:
         )
 ```
 
-### 11.2 Quality Scoring Integration
+### 12.2 Quality Scoring Integration
 
 ```python
 from kb_toolkit.core.quality import QualityScorer
@@ -1267,7 +1267,7 @@ class ConversionService:
         )
 ```
 
-### 11.3 Quality Warning Threshold
+### 12.3 Quality Warning Threshold
 
 If `quality_score.overall < 50`, the draft includes:
 
@@ -1279,7 +1279,7 @@ quality_warning = (
 )
 ```
 
-### 11.4 Re-Validation on Edit
+### 12.4 Re-Validation on Edit
 
 When a user edits a draft via `PUT .../drafts/{draft_id}`, the API:
 1. Writes the updated content to the file.
@@ -1291,7 +1291,7 @@ This provides a tight feedback loop: the user edits, saves, and immediately sees
 
 ---
 
-## 12. Implementation Phases
+## 13. Implementation Phases
 
 ### Phase 1: Core Pipeline (Estimated: 3-4 days)
 
@@ -1328,9 +1328,9 @@ This provides a tight feedback loop: the user edits, saves, and immediately sees
 
 ---
 
-## 13. Testing Strategy
+## 14. Testing Strategy
 
-### 13.1 Unit Tests
+### 14.1 Unit Tests
 
 | Component | Test File | Coverage Target |
 |-----------|-----------|-----------------|
@@ -1339,7 +1339,7 @@ This provides a tight feedback loop: the user edits, saves, and immediately sees
 | Pydantic models | `tests/unit/modules/knowledge/test_conversion_models.py` | 90%+ |
 | ID generation | Included in `test_conversion_service.py` | 100% |
 
-### 13.2 Integration Tests
+### 14.2 Integration Tests
 
 | Scenario | Test File |
 |----------|-----------|
@@ -1347,7 +1347,7 @@ This provides a tight feedback loop: the user edits, saves, and immediately sees
 | Access control (admin, team admin, user) | `tests/integration/modules/knowledge/test_conversion_auth.py` |
 | Edit and re-validate | `tests/integration/modules/knowledge/test_conversion_edit.py` |
 
-### 13.3 Test Fixtures
+### 14.3 Test Fixtures
 
 LLM responses are mocked using `AsyncMock` and `respx` (established pattern). Fixture files contain representative LLM analysis and conversion responses for deterministic testing.
 
@@ -1378,9 +1378,9 @@ def mock_analysis_response():
 
 ---
 
-## 14. Rollback Procedures
+## 15. Rollback Procedures
 
-### 14.1 Feature Flag
+### 15.1 Feature Flag
 
 Add to `faultmaven/config/feature_flags.py`:
 
@@ -1398,11 +1398,11 @@ if settings.features.enable_document_conversion:
     app.include_router(conversion_router, prefix="/api/v1")
 ```
 
-### 14.2 Database Rollback
+### 15.2 Database Rollback
 
 The Alembic migration for `conversion_jobs` and `conversion_drafts` includes a `downgrade()` that drops both tables. Existing data (knowledge items created via verification) persists in the standard `knowledge_items` table and ChromaDB -- those are not touched by rollback.
 
-### 14.3 Data Cleanup
+### 15.3 Data Cleanup
 
 If the feature is disabled after use:
 - Draft files in `data/knowledge/{scope}/` with `status: draft` can be safely deleted.
@@ -1411,9 +1411,9 @@ If the feature is disabled after use:
 
 ---
 
-## 15. Observability
+## 16. Observability
 
-### 15.1 Structured Logging
+### 16.1 Structured Logging
 
 ```python
 logger.info(
@@ -1440,11 +1440,11 @@ logger.info(
 )
 ```
 
-### 15.2 Opik Tracing
+### 16.2 Opik Tracing
 
 The conversion LLM calls are traced via the existing `@opik.track` decorator on `LLMRouter.route()`. No additional Opik instrumentation is needed for the conversion service itself -- the LLM calls are the unit of tracing interest.
 
-### 15.3 Metrics
+### 16.3 Metrics
 
 Add Prometheus counters:
 
@@ -1458,22 +1458,22 @@ Add Prometheus counters:
 
 ---
 
-## 16. Security Considerations
+## 17. Security Considerations
 
-### 16.1 File Upload Security
+### 17.1 File Upload Security
 
 - File type validation via MIME type AND file extension (defense in depth).
 - File size limit enforced by `MAX_UPLOAD_SIZE_MB`.
 - Filenames sanitized before storage (remove path traversal, special characters).
 - Uploaded files stored outside the web-accessible directory.
 
-### 16.2 LLM Security
+### 17.2 LLM Security
 
 - Source document content is passed to the LLM as user content, not system content. The system prompt is hardcoded and not influenced by the uploaded document.
 - Generated runbook content is validated by the deterministic `RunbookValidator` before being presented to the user. The LLM cannot inject arbitrary content that bypasses validation.
 - PII in source documents: The preprocessing pipeline (Section 2.4) runs Presidio + regex detection on the source document **before** sending to the LLM. Sensitive content (API keys, credentials, connection strings, private keys) is redacted and replaced with `[REDACTED:{type}]` markers. This is required because the KNOWLEDGE_PROVIDER may be a third-party LLM API — user-uploaded documents must be scrubbed before leaving the server. The redaction report is included in the `ConversionResponse` so the user knows what was removed and can fill in placeholders in the generated runbook.
 
-### 16.3 User Isolation
+### 17.3 User Isolation
 
 - Conversion jobs are scoped to the user who created them.
 - Users can only access their own conversion jobs and drafts.

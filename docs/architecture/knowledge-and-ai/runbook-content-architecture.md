@@ -70,6 +70,7 @@ Every runbook declares its classification in YAML frontmatter. These fields are 
 | `domain` | string | Yes | Engineering vertical: `database`, `networking`, `compute`, `application`, `security`, `storage`, `messaging` |
 | `service` | string | Yes | Specific technology: `postgresql`, `kubernetes`, `redis`, `nginx`, `kafka` |
 | `symptom_class` | list of strings | Yes | Failure modes addressed: `latency`, `oom`, `connection_refused`, `timeout`, `disk_full`, `crash_loop`, `auth_failure` |
+| `severity` | enum | Yes | Impact level: `critical`, `high`, `medium`, `low` |
 | `scope` | enum | Yes | KB tier: `global`, `team`, `personal` |
 | `tags` | list of strings | No | Additional search terms (e.g., `aws`, `gcp`, `linux`) |
 | `difficulty` | enum | No | `beginner`, `intermediate`, `advanced` |
@@ -87,6 +88,7 @@ title: "PostgreSQL Connection Pool Exhaustion"
 domain: database
 service: postgresql
 symptom_class: [latency, connection_refused]
+severity: high
 scope: global
 tags: [pgbouncer, aws-rds]
 difficulty: intermediate
@@ -111,7 +113,7 @@ Atomic runbooks produce better retrieval because the entire document is relevant
 
 **`service` is the technology, not the team.** Teams change; technologies are stable identifiers. Tag by what the runbook diagnoses, not who owns it.
 
-**Taxonomy fields depend on hybrid search filtering.** The `domain`, `service`, and `symptom_class` fields are stored in ChromaDB metadata at ingestion time but the query-side `domain_filter`/`service_filter` parameters are not yet implemented (see [knowledge-base-architecture.md](./knowledge-base-architecture.md), "Hybrid Search" section). Until the filtering query path is built, these fields provide documentation value and future-proof the metadata. Once implemented, they will narrow vector search to the relevant domain before similarity scoring runs.
+**Taxonomy fields drive hybrid search filtering.** The `domain`, `service`, `symptom_class`, and `severity` fields are stored in ChromaDB metadata at ingestion time and consumed at query time by the four-signal reranker (metadata-match signal) and by the optional hard pre-filter mode (`filter_mode="hard"` injects domain/service into the ChromaDB `where` clause). See [vector-retrieval-architecture.md §3](./vector-retrieval-architecture.md#3-two-stage-retrieval-and-reranking-pipeline) for the implementation.
 
 ---
 
@@ -345,21 +347,17 @@ This section tracks what is implemented versus planned.
 | Feature | Status | Location |
 |---------|--------|----------|
 | YAML frontmatter parsing | Implemented | `conversion_service.py` scan workflow |
-| Structural linting (required sections) | Implemented | `conversion_service.py` verify workflow |
-| Taxonomy fields stored in ChromaDB | **Partially implemented** | KB Toolkit's `kb-ingest` propagates `domain`, `service`, `symptom_class`, `scope`, `status`, `last_updated` as distinct ChromaDB metadata keys locally. FaultMaven API verify workflow not yet updated to propagate all taxonomy fields. |
-| `domain`/`service`/`symptom_class` filtering | **Designed, not implemented** | Federated search with `where` clause filtering designed in [knowledge-base-architecture.md](./knowledge-base-architecture.md). Requires API-side implementation. |
-| DRAFT/IN-REVIEW/VERIFIED/STALE/DEPRECATED lifecycle | **Partially implemented** | 5-state lifecycle defined. KB Toolkit enforces via `valid_statuses`. `KnowledgeItem` in FaultMaven API has `is_published` bool only — needs lifecycle enum. |
-| Staleness detection (6-month auto-transition) | **Implemented (toolkit)** | `kb-stale-check` CLI scans `last_updated`, reports stale runbooks, `--auto-tag` updates frontmatter. FaultMaven API has no background job for this yet. |
-| Staleness warning in retrieval context | **Designed, not implemented** | `KBConfig.format_chunk_metadata()` will inject warnings — see [knowledge-base-architecture.md](./knowledge-base-architecture.md) |
+| Structural linting (required sections) | Implemented | `RunbookValidator` in `runbook_validator.py` — all 11 required fields + 7 required H2 sections enforced |
+| Taxonomy fields stored in ChromaDB | Implemented | `domain`, `service`, `symptom_class`, `severity`, `scope`, `status`, `last_updated`, `tags`, `document_type` propagated per chunk in `ingestion.py:320-365` |
+| Domain/service hard pre-filter | Implemented | `filter_mode="hard"` injects `domain`/`service` into ChromaDB `where` clause — see [vector-retrieval-architecture.md §3](./vector-retrieval-architecture.md#3-two-stage-retrieval-and-reranking-pipeline) |
+| Verification-weighted retrieval | Implemented | Status bonuses in four-signal reranker: `verified` +0.40, `draft` -0.10, `deprecated` -0.30 |
+| Staleness warning in retrieval context | Implemented | `UnifiedKBConfig.format_chunk_metadata()` injects age-based warnings; reranker freshness signal applies half-life decay |
+| Staleness detection (6-month auto-transition) | **Implemented (toolkit only)** | `kb-stale-check` CLI scans `last_updated`. FaultMaven API has no background job for state transitions yet. |
 | Semantic density check (LLM-driven) | **Not implemented** | Planned for Gate 3 |
-| Verification-weighted retrieval | **Not implemented** | `KnowledgeItem.verification_level` exists but is not used in search ranking |
 | Usage tracking | Implemented | `KnowledgeItem.view_count`, `helpful_count`, `not_helpful_count` |
 | Ingestion pipeline with draft tracking | Implemented | `conversion_service.py` scan → verify workflow (`conversion_drafts` table) |
 
 ### Implementation Priority
 
-1. **Store taxonomy in ChromaDB metadata** — Unblocks filtered search. Moderate effort: extend `_process_and_store()` in `ingestion.py` to propagate frontmatter fields.
-2. **Lifecycle state enum on KnowledgeItem** — Replace `is_published` with a proper state field. Low effort, high value.
-3. **Staleness background job** — Compare `last_updated` against current date. Requires job scheduler integration.
-4. **Align validator section names** — Current structural validation checks don't match the canonical template. Quick fix.
-5. **Verification-weighted retrieval** — Boost `ADMIN_VERIFIED` items in search results. Requires ChromaDB metadata filter or post-retrieval reranking.
+1. **Semantic density check (Gate 3)** — Reject runbooks containing only architectural descriptions. Requires classifier-tier LLM integration.
+2. **Staleness background job** — Compare `last_updated` against current date and auto-transition `verified` → `stale` at the 6-month threshold. Requires job scheduler integration.
