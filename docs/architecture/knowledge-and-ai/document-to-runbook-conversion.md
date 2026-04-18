@@ -780,6 +780,8 @@ Implementation: Reuse existing `require_admin` dependency for global scope. Add 
 
 Location: `faultmaven/modules/knowledge/domain/models/conversion.py`
 
+> **Illustrative subset of the public conversion API surface** — see the canonical module for the complete set. Other types defined there but not reproduced here include `ConversionErrorCode`, `TriageResult`, `RedactionEntry`, `RedactionReport`, `PreprocessingResult`, and `ConversionError` (used by error handling and the §2.6 `DocumentPreprocessor.preprocess()` return value).
+
 ```python
 from datetime import datetime
 from enum import Enum
@@ -798,6 +800,22 @@ class DraftStatus(str, Enum):
     DRAFT = "draft"
     VERIFIED = "verified"
     DELETED = "deleted"
+
+
+class SourceType(str, Enum):
+    """Whether a draft was generated from an uploaded document or a resolved case."""
+    DOCUMENT = "document"
+    CASE = "case"
+
+
+class CaseConversionRequest(BaseModel):
+    """Carrier for the case-to-runbook flow (§1.4 'Case Source')."""
+    case_id: str
+    requested_by: str  # user_id
+
+    @classmethod
+    def from_case(cls, case_id: str, requested_by: str) -> "CaseConversionRequest":
+        return cls(case_id=case_id, requested_by=requested_by)
 
 
 class FailureModeAnalysis(BaseModel):
@@ -853,6 +871,9 @@ class ConversionDraft(BaseModel):
     title: str
     scope: str
     status: DraftStatus
+    source_type: SourceType = SourceType.DOCUMENT  # Distinguishes document- vs case-driven drafts
+    case_id: Optional[str] = None                  # Set when source_type == CASE; powers the
+                                                   # ?tab=runbook Dashboard link from a resolved case
     validation: ValidationResult
     quality_score: QualityScore
     file_path: str

@@ -110,20 +110,23 @@ class CaseStatus(str, Enum):
 ### 1.2 InvestigationProgress
 
 ```python
+# Illustrative subset — see faultmaven/modules/case/domain/models.py for the canonical
+# InvestigationProgress (additionally exposes verification_completed_at,
+# investigation_completed_at, resolution_completed_at timestamp fields).
 class InvestigationProgress(BaseModel):
     """
     Evidence-driven progress tracking with two distinct milestone types:
 
-    1. GATE MILESTONES (4): Drive stage transitions.
+    1. STAGE-GATE MILESTONES (4): Drive stage transitions.
        Set by the LLM in structured output when it detects user compliance
        with a ProposedAction (Framework §4.2). The LLM is the compliance
        detector — the user's action is the trigger; the LLM recognizes it.
-    2. PROGRESS MILESTONES (6): Provide LLM context and analytics.
+    2. PROGRESS INDICATORS (6): Provide LLM context and analytics.
        Set by LLM in structured output. Do NOT drive stage transitions.
     """
 
     # ============================================================
-    # GATE MILESTONES (drive stage transitions)
+    # STAGE-GATE MILESTONES (drive stage transitions)
     # Set by the LLM in structured output (Framework §4.2).
     # ============================================================
     mitigation_accepted: bool = Field(
@@ -160,7 +163,7 @@ class InvestigationProgress(BaseModel):
     )
 
     # ============================================================
-    # PROGRESS MILESTONES (LLM context, non-stage-driving)
+    # PROGRESS INDICATORS (LLM context, non-stage-driving)
     # Set by LLM in structured output. Advisory, not controlling.
     # ============================================================
     symptom_verified: bool = Field(
@@ -217,8 +220,8 @@ class InvestigationProgress(BaseModel):
     @property
     def current_stage(self) -> InvestigationStage:
         """
-        Compute investigation stage from GATE MILESTONES only.
-        Progress milestones do NOT affect stage computation.
+        Compute investigation stage from STAGE-GATE MILESTONES only.
+        Progress indicators do NOT affect stage computation.
 
         Returns one of 3 InvestigationStage enum values:
         - DIAGNOSIS: Understanding, diagnosing, proposing actions
@@ -463,6 +466,8 @@ class PathSelection(BaseModel):
 
 ### 1.5 Complete Case Model
 
+> **Illustrative subset** — this snippet covers the investigation-engine-facing fields. The canonical model in `faultmaven/modules/case/domain/models.py` additionally exposes `description`, `is_archived`, `archived_at`, `last_activity_at`, `pending_transition`, `last_suggestions`, `kb_context`, `messages`, `message_count`, and `investigation_journal`.
+
 ```python
 class Case(BaseModel):
     """Complete case model with evidence-driven investigation architecture"""
@@ -618,20 +623,22 @@ class ReportType(str, Enum):
     MITIGATION_PLAYBOOK = "mitigation_playbook"  # From CLOSED(mitigation_sufficient) cases
 
 
+# Illustrative subset — see faultmaven/modules/case/domain/owned_models/report.py for the canonical model.
 class CaseReport(BaseModel):
     """Case documentation report (stored in reports table)"""
 
     report_id: str
     case_id: str
     report_type: ReportType
-    title: str
+    title: str = Field(min_length=10, max_length=200)
     content: str                    # Markdown
     format: Literal["markdown"]
     generation_status: ReportStatus
     generated_at: str               # ISO 8601
-    generation_time_ms: int
+    updated_at: Optional[str] = None  # ISO 8601 — set on regeneration
+    generation_time_ms: int = Field(ge=0, le=120000)  # 2-minute hard ceiling
     is_current: bool = True
-    version: int = Field(default=1)
+    version: int = Field(default=1, ge=1, le=5)  # 5-version cap; drives remaining_regenerations
     linked_to_closure: bool = False
     auto_generated: bool = Field(
         default=False,
@@ -644,8 +651,8 @@ class CaseReport(BaseModel):
 
 - `auto_generated=True` — distinguishes from user-requested reports
 - `linked_to_closure=False` — auto-summaries do NOT freeze the case; only user-requested reports do
-- `version=1` — no versioning for auto-summaries (generated once)
-- `created_by="system"` — audit trail shows system origin
+- `version=1` — no versioning for auto-summaries (generated once); the `version` field caps at 5 for user-requested reports
+- The model has no `created_by` field; system vs user origin is inferred from `auto_generated`
 
 The content-focus table (which fields each summary type covers), the skip-if-trivial guardrail (≥4 messages + substance check, duplicate exclusion), the set of terminal transition paths that schedule generation, and the SYNTHESIS-capability generation path are canonical in:
 
@@ -655,26 +662,40 @@ See **[Investigation Lifecycle Logic §4.5.0](./investigation-lifecycle-logic.md
 
 Two validation checks gate the resolve and runbook generation flows. Both are in `terminal_transitions.py`.
 
-**ResolutionReadiness** (`assess_resolution_readiness(case)`) — minimum bar for marking a case as RESOLVED:
+**ResolutionReadiness** (`assess_resolution_readiness(case)`) — minimum bar for marking a case as RESOLVED.
+
+`ResolutionReadiness` is a **constructed class** (not an enum), defined in `faultmaven/core/investigation/terminal_transitions.py`. Verdict strings:
 
 ```python
+# Constructor: ResolutionReadiness(verdict, message, missing)
 class ResolutionReadiness:
-    READY = "ready"           # Root cause + solution present → propose transition
-    NEEDS_INFO = "needs_info" # One missing (e.g., root cause but no solution) → propose with needs_info=True
-    SUGGEST_CLOSE = "suggest_close"  # No root cause, no solution, no evidence → propose with needs_info=True
+    # Verdict values:
+    #   "ready"          — Root cause + solution present → propose transition
+    #   "needs_info"     — One missing (e.g., root cause but no solution) → propose with needs_info=True
+    #   "suggest_close"  — No root cause, no solution, no evidence → propose with needs_info=True
+    verdict: str
+    message: str        # Human-facing explanation
+    missing: List[str]  # Field names that need to be filled before READY
 ```
 
 Checks: `root_cause_conclusion` (or `working_conclusion` with likelihood ≥0.6), `solutions` list, `problem_verification`, `evidence` list.
 
 For `NEEDS_INFO` and `SUGGEST_CLOSE`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, `_check_automatic_transitions` re-evaluates readiness. When the case becomes READY, the LLM response is overridden with a deterministic confirmation prompt.
 
-**RunbookReadiness** (`assess_runbook_readiness(case)`) — higher bar for quality runbook generation:
+**RunbookReadiness** (`assess_runbook_readiness(case)`) — higher bar for quality runbook generation.
+
+Constructed class (not an enum):
 
 ```python
+# Constructor: RunbookReadiness(verdict, message, section_coverage)
 class RunbookReadiness:
-    READY = "ready"                    # Problem + root cause + actionable solution (commands/steps)
-    NEEDS_ENRICHMENT = "needs_enrichment"  # Critical sections OK, 2+ enrichment gaps
-    NOT_SUITABLE = "not_suitable"      # Missing problem definition or root cause with fix
+    # Verdict values:
+    #   "ready"             — Problem + root cause + actionable solution (commands/steps)
+    #   "needs_enrichment"  — Critical sections OK, 2+ enrichment gaps
+    #   "not_suitable"      — Missing problem definition or root cause with fix
+    verdict: str
+    message: str                   # Human-facing explanation
+    section_coverage: Dict[str, bool]  # Per-section presence map
 ```
 
 Maps case data to the 7 canonical runbook sections:
@@ -696,12 +717,18 @@ Maps case data to the 7 canonical runbook sections:
 
 If eligible, `ConversionService.convert_from_case()` runs as a fire-and-forget background task. The draft appears in Dashboard Knowledge > Drafts.
 
-**ClosureReadiness** (`assess_closure_readiness(case)`) — investigation summary for the CLOSED confirmation prompt:
+**ClosureReadiness** (`assess_closure_readiness(case)`) — investigation summary for the CLOSED confirmation prompt.
+
+Constructed class (not an enum):
 
 ```python
+# Constructor: ClosureReadiness(verdict, message)
 class ClosureReadiness:
-    HAS_SUBSTANCE = "has_substance"  # Investigation produced meaningful work → show summary
-    TRIVIAL = "trivial"              # Minimal data → warn user before closing
+    # Verdict values:
+    #   "has_substance"  — Investigation produced meaningful work → show summary
+    #   "trivial"        — Minimal data → warn user before closing
+    verdict: str
+    message: str  # Human-facing summary text
 ```
 
 Summarizes what was accomplished: evidence count, hypotheses explored, milestones completed, root cause (if identified), and solutions (if any). Used by both the dropdown and NLP CLOSED paths to show a meaningful confirmation prompt before the user commits to an irreversible closure. The actual CLOSURE_SUMMARY report is generated only after the user confirms.
@@ -913,6 +940,8 @@ class UrgencyLevel(str, Enum):
 
 ### 1.7 InquiryData
 
+> **Illustrative subset** — the canonical `InquiryData` in `faultmaven/modules/case/domain/models.py` additionally exposes `knowledge_matches: List[KnowledgeMatch]`, `knowledge_resolution: Optional[KnowledgeResolution]`, and `preliminary_urgency: Optional[PreliminaryUrgency]` (the KB-resolution sub-model).
+
 ```python
 class InquiryData(BaseModel):
     """
@@ -983,7 +1012,12 @@ class ProblemConfirmation(BaseModel):
         description="Category or type of problem"
     )
     severity_guess: str = Field(
-        description="Initial severity assessment: CRITICAL | HIGH | MEDIUM | LOW"
+        description=(
+            "Initial severity assessment: critical | high | medium | low | unknown. "
+            "NOTE: lowercase, 5 values. The downstream `ProblemVerification.severity` "
+            "field currently rejects 'unknown' and the impedance mismatch causes a 500 "
+            "on INQUIRY → INVESTIGATING transition when the LLM returns it."
+        )
     )
     preliminary_guidance: str = Field(
         description="Initial guidance or suggestions provided"
@@ -1214,10 +1248,15 @@ class RootCauseConclusion(BaseModel):
         description="Numeric confidence score (0.0-1.0)"
     )
 
-    @property
-    def confidence_level(self) -> ConfidenceLevel:
-        """Categorical confidence level derived from likelihood."""
-        return ConfidenceLevel.from_score(self.likelihood)
+    confidence_level: ConfidenceLevel = Field(
+        description=(
+            "Categorical confidence (stored field, not computed). "
+            "Cross-validated against `likelihood` by a model_validator: callers must "
+            "supply both, and the validator rejects mismatched pairs. Use "
+            "ConfidenceLevel.from_score(likelihood) when constructing if you want "
+            "the canonical mapping."
+        )
+    )
 
     mechanism: str = Field(
         description="How this root cause produced the symptom"
@@ -1590,7 +1629,6 @@ class HypothesisStatus(str, Enum):
     REFUTED = "refuted"         # likelihood ≤ 0.20 + 2+ refuting evidence
     INCONCLUSIVE = "inconclusive"  # likelihood 0.3–0.5 + stagnant 3+ turns (no evidence change)
     RETIRED = "retired"         # Confidence decayed below threshold
-    SUPERSEDED = "superseded"   # Replaced by another hypothesis
 
 class HypothesisGenerationMode(str, Enum):
     OPPORTUNISTIC = "opportunistic"

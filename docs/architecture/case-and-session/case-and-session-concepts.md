@@ -259,35 +259,43 @@ sequenceDiagram
 
 ```python
 class SessionContext(BaseModel):
-    """Multi-session authentication - DOES NOT contain case data"""
-    session_id: str                    # Unique session identifier
-    user_id: str                       # User this session belongs to
-    client_id: Optional[str]           # Client for session resumption
-    created_at: datetime               # Session creation time
-    last_activity: datetime            # Last activity timestamp
-    expires_at: datetime               # Session expiration time
-    session_resumed: bool = False      # Whether session was resumed
+    """Multi-session authentication - DOES NOT contain case data
+    Illustrative subset — see faultmaven/models/common.py for the canonical model."""
+    session_id: str                          # Unique session identifier
+    user_id: str                             # User this session belongs to
+    organization_id: Optional[str]           # Org context (set on login)
+    client_id: Optional[str]                 # Client for session resumption
+    created_at: datetime                     # Session creation time
+    updated_at: datetime                     # Last mutation timestamp
+    last_activity: datetime                  # Last activity timestamp
+    expires_at: Optional[datetime] = None    # Session expiration time
+    session_resumed: bool = False            # Whether session was resumed
+    metadata: Dict[str, Any] = {}            # Free-form session metadata
     # NO case_history, NO current_case_id - sessions are for auth only
     # Multiple concurrent sessions per user supported
 
 class Case(BaseModel):
-    """Independent case resource with complete lifecycle"""
+    """Independent case resource with complete lifecycle.
+    Illustrative subset — see modules/case/domain/models.py for the canonical model."""
     case_id: str                       # Primary key - NOT nested under sessions
     title: str                         # Generated or user-provided title
     user_id: str                       # Authorization reference (NOT FK to session)
     status: CaseStatus                 # INQUIRY | INVESTIGATING | RESOLVED | CLOSED
     severity: CaseSeverity             # LOW | MEDIUM | HIGH | CRITICAL
     is_archived: bool                  # Independent of status; data-lifecycle flag
-    created_at: str                    # UTC ISO 8601 format
-    last_updated: str                  # UTC ISO 8601 format
-    # Illustrative subset — see modules/case/contracts.py for the canonical schema
+    created_at: datetime               # UTC datetime
+    updated_at: datetime               # UTC datetime (note: field is `updated_at`, not `last_updated`)
 
 class QueryRequest(BaseModel):
-    """Query within a specific case context"""
-    session_id: str                    # For authentication (NOT case ownership)
-    query: str                         # User's question
+    """Query within a specific case context.
+    Illustrative subset — see faultmaven/models/api.py for the canonical model."""
+    session_id: str                    # App-level session context (NOT auth credential)
+    query: str = Field(min_length=1, max_length=200000)  # 200KB cap supports machine-data submissions
     context: Optional[Dict[str, Any]] = None
-    priority: Literal["low", "medium", "high", "critical"] = "medium"
+    priority: Optional[Literal["low", "normal", "medium", "high", "critical"]] = "normal"
+    query_type: Optional[str] = None       # Routing hint (v3.2+)
+    content_type: Optional[str] = None     # MIME hint for raw content (v3.2+)
+    is_raw_content: Optional[bool] = None  # Raw machine data vs natural-language query (v3.2+)
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + 'Z')
     # NOTE: case_id comes from URL path, not request body
 

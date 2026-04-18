@@ -233,6 +233,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 ### 3.1 Core Case Structure
 
 ```python
+# Illustrative subset — see faultmaven/modules/case/domain/models.py for the canonical model.
 class Case(BaseModel):
     """Root case entity."""
 
@@ -253,6 +254,8 @@ class Case(BaseModel):
     # case_actions table (Python alias: CaseStatusTransitionModel). When hydrating
     # a Case, the repository joins case_actions and projects the transitions.
     closure_reason: Optional[str]
+    is_archived: bool = False       # Data-lifecycle flag, independent of status
+    archived_at: Optional[datetime] # Set when is_archived flips to True
 
     # ============================================================
     # Turn Tracking
@@ -277,7 +280,6 @@ class Case(BaseModel):
     working_conclusion: Optional[WorkingConclusion]      # PostgreSQL: JSONB
     root_cause_conclusion: Optional[RootCauseConclusion]  # PostgreSQL: JSONB
     path_selection: Optional[PathSelection]  # PostgreSQL: JSONB
-    degraded_mode: Optional[DegradedMode]    # PostgreSQL: JSONB
     escalation_state: Optional[EscalationState]  # PostgreSQL: JSONB
     documentation: DocumentationData         # PostgreSQL: JSONB
     # investigation_journal is carried on the domain model as an append-only list;
@@ -376,7 +378,6 @@ CREATE TABLE cases (
     working_conclusion JSONB,
     root_cause_conclusion JSONB,
     path_selection JSONB,
-    degraded_mode JSONB,
     escalation_state JSONB,
     documentation JSONB NOT NULL DEFAULT '{}'::jsonb,
     progress JSONB NOT NULL DEFAULT '{}'::jsonb,

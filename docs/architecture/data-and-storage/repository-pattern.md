@@ -315,13 +315,16 @@ from faultmaven.models.case import Case, CaseStatus
 class CaseRepository(ABC):
     """
     Abstract repository for Case persistence.
+    SIMPLIFIED FOR ILLUSTRATION — see faultmaven/modules/case/infrastructure/case_repository.py
+    for the full interface (>30 methods spanning reports, checkpoints, standalone evidence,
+    agent executions, and tool calls).
 
     Technology: Relational database (PostgreSQL/SQLite)
 
     Implementations:
-    - InMemoryCaseRepository: RAM (development)
+    - SQLiteCaseRepository: Local file (single-node deployment, default)
     - PostgreSQLHybridCaseRepository: K8s PostgreSQL (production)
-    - SQLiteCaseRepository: Local file (single-node deployment)
+    - SessionlessCaseRepository: Sessionless variant
     """
 
     # Core CRUD (5 methods)
@@ -402,25 +405,20 @@ class CaseRepository(ABC):
         """Cleanup expired/inactive cases. Returns count of deleted cases."""
         ...
 
-    # Session Association (1 method)
-    @abstractmethod
-    async def find_by_session(
-        self,
-        session_id: str,
-        limit: int = 100,
-        offset: int = 0
-    ) -> tuple[List[Case], int]:
-        """Find cases associated with a session. Returns (cases, total_count)."""
-        ...
-
     # Transaction Support (1 method)
     @abstractmethod
     async def begin_transaction(self):
         """Begin a database transaction context. Returns transaction context manager."""
         ...
+
+    # NOT SHOWN (see canonical interface):
+    #   - Report ops: save_report, get_report, list_reports_for_case, ...
+    #   - Checkpoint ops: save_checkpoint, get_checkpoint, list_checkpoints, ...
+    #   - Standalone evidence ops
+    #   - Agent execution + tool-call ops
 ```
 
-**Total: 13 methods** (5 CRUD + 2 messages + 6 specialized)
+**Illustrated above: 11 methods** (5 CRUD + 2 messages + 4 specialized). The full interface adds report, checkpoint, evidence, and agent-execution operations — see the canonical `case_repository.py` for the complete contract.
 
 ---
 
@@ -1013,7 +1011,7 @@ class CaseRepositoryContractTests(ABC):
         retrieved = await repository.get(saved.case_id)
         assert retrieved.case_id == saved.case_id
 
-    # ... 13 methods × multiple test scenarios
+    # ... per-method tests for the full repository interface (see canonical case_repository.py)
 
 
 class TestInMemoryCaseRepository(CaseRepositoryContractTests):
@@ -1196,7 +1194,7 @@ CHROMADB_URL=http://chromadb.faultmaven.local:30080
 1. Implement `SQLiteCaseRepository` class:
    ```python
    class SQLiteCaseRepository(CaseRepository):
-       """Implement all 13 methods using SQLite."""
+       """Implement the full CaseRepository interface using SQLite."""
    ```
 
 2. Update `container.py`:

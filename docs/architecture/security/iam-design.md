@@ -628,7 +628,21 @@ Content-Type: application/json
 
 The backend validates redirect URIs using a pre-registered allowlist to prevent authorization code injection attacks.
 
-**Configuration:** `config/oauth_clients.yml`
+#### Current implementation (production)
+
+A flat allowlist driven by settings, plus a single global redirect-URI checker:
+
+- `settings.oauth_allowed_clients` — flat list of accepted `client_id` values.
+- `OAuthService._is_redirect_uri_allowed(redirect_uri)` — validates the redirect URI against the configured patterns (one global rule set; not per-client policy).
+- `OAuthService.create_authorization_code()` rejects any request whose `client_id` is absent from the allowlist (`INVALID_CLIENT`) or whose `redirect_uri` fails the global check (`INVALID_REDIRECT_URI`).
+
+This is sufficient for single-client (browser-extension) deployments today.
+
+#### Planned upgrade — per-client policy via `OAuthClientRegistry`
+
+> **Status: Planned (not yet implemented).** The registry below describes the target design — per-client `redirect_uris`, `allowed_scopes`, and `client_type` ("public" / "confidential"), loaded from `config/oauth_clients.yml`. None of these classes or that config file exist in the current code; the implementation will replace the flat allowlist when shipped.
+
+**Configuration (planned):** `config/oauth_clients.yml`
 
 ```yaml
 oauth_clients:
@@ -654,10 +668,10 @@ oauth_clients:
       - evidence:read
 ```
 
-**Implementation:**
+**Implementation (planned):**
 
 ```python
-# faultmaven/modules/auth/domain/services/oauth_client_registry.py
+# Planned location: faultmaven/modules/auth/domain/services/oauth_client_registry.py
 from typing import Dict, List
 import re
 from pydantic import BaseModel
@@ -701,11 +715,11 @@ class OAuthClientRegistry:
         return self.clients[client_id].allowed_scopes
 ```
 
-**Security Properties:**
+**Security Properties (target):**
 
-- Only pre-registered extension IDs can receive authorization codes
+- Only pre-registered extension IDs can receive authorization codes (per-client policy, not a single global rule set)
 - Prevents authorization code injection attacks
-- Supports multiple browser extension stores (Chrome, Firefox, Edge)
+- Supports multiple browser extension stores (Chrome, Firefox, Edge) with per-client allowed-scope governance
 - Wildcard patterns only allowed in development mode
 - Exact match required in production (no regex vulnerabilities)
 
@@ -878,20 +892,22 @@ Enhanced permissions:
 
 ### Role Implementation
 
-**User Model:**
+**User contract (`UserDTO`):**
+
+This is the public contract surface other modules consume. The internal domain entity (`User`, in `faultmaven/modules/auth/domain/models/user.py`) carries persistence-layer fields like `hashed_password`, `is_verified`, `updated_at`, `last_login_at`, and `metadata`; it should not be exported across module boundaries.
 
 ```python
-@dataclass
-class User:
+# faultmaven/modules/auth/contracts.py
+class UserDTO(BaseModel):
     user_id: str
-    username: str
     email: str
-    display_name: str
-    roles: List[str] = field(default_factory=lambda: ['user'])
-    auth_mode: str = "local"  # "local" or "oauth"
-    created_at: datetime
+    full_name: str
     is_active: bool = True
+    # Roles are not on UserDTO; they are loaded per-request from the RBAC system
+    # (role_permissions / user_roles tables) and attached to the request context.
 ```
+
+> **Auth mode** (`local` vs `oauth`) is a system-wide configuration setting (`AUTH_MODE`), not a per-user attribute — both modes operate on the same `UserDTO` shape.
 
 **Protected Endpoints:**
 

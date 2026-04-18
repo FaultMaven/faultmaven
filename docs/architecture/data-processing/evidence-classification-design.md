@@ -25,10 +25,11 @@ This document specifies the design for evidence classification in FaultMaven:
 
 The `evidence` table tracks two types of records:
 
-1. **Valid Evidence** (4 categories):
+1. **Valid Evidence** (5 categories):
    - SYMPTOM_EVIDENCE: Shows problem manifestation
    - CAUSAL_EVIDENCE: Points to root cause
-   - RESOLUTION_EVIDENCE: Validates fix effectiveness
+   - MITIGATION_EVIDENCE: Validates that a temporary mitigation reduced impact
+   - SOLUTION_EVIDENCE: Validates that the permanent fix resolved the root cause
    - CONTEXTUAL_EVIDENCE: Provides baseline/environmental context
 
 2. **Rejected Submissions** (1 category):
@@ -112,13 +113,13 @@ User submits → LLM evaluates → If relevant: Create Evidence(category)
 
 ### Decision 4: Evidence Categories
 
-**5 categories:**
+**6 categories:**
 
 ```python
 class EvidenceCategory(str, Enum):
     """Evidence classification by investigation purpose"""
 
-    # ===== RELEVANT EVIDENCE (4 categories) =====
+    # ===== RELEVANT EVIDENCE (5 categories) =====
 
     SYMPTOM_EVIDENCE = "symptom_evidence"
     """
@@ -156,17 +157,33 @@ class EvidenceCategory(str, Enum):
     Advances Milestones: root_cause_identified
     """
 
-    RESOLUTION_EVIDENCE = "resolution_evidence"
+    MITIGATION_EVIDENCE = "mitigation_evidence"
     """
-    Validates fix effectiveness.
+    Validates that a temporary mitigation reduced or contained impact while
+    the root cause is still being investigated or resolved.
 
-    Purpose: Prove that solution resolved the problem.
+    Purpose: Prove the mitigation is holding (the bleeding stopped) without
+    yet claiming root-cause resolution.
 
     Examples:
-    - Error rate after rollback (before/after comparison)
-    - Latency metrics after optimization
-    - Resource usage after scaling
-    - Success rate after config change
+    - Error rate after a feature-flag rollback
+    - Saturation drop after auto-scaling kicked in
+    - Latency restored after a traffic shift to a healthy region
+
+    Advances Milestones: mitigation_applied
+    """
+
+    SOLUTION_EVIDENCE = "solution_evidence"
+    """
+    Validates that the permanent fix resolved the problem at its root cause.
+
+    Purpose: Prove the solution worked end-to-end after the root cause was
+    addressed, not just that symptoms were temporarily masked.
+
+    Examples:
+    - Error rate after the fix shipped (before/after comparison)
+    - Latency metrics after the underlying optimization
+    - Resource usage after the corrected configuration is in place
 
     Advances Milestones: solution_verified
     """
@@ -237,9 +254,10 @@ When classifying evidence, ask:
 
 1. Does it show the PROBLEM happening? → SYMPTOM_EVIDENCE
 2. Does it point to the ROOT CAUSE? → CAUSAL_EVIDENCE
-3. Does it prove the FIX worked? → RESOLUTION_EVIDENCE
-4. Does it provide CONTEXT/BASELINE (but not problem/cause/fix)? → CONTEXTUAL_EVIDENCE
-5. Is it unrelated to this case? → REJECTED
+3. Does it prove a TEMPORARY MITIGATION held (root cause still open)? → MITIGATION_EVIDENCE
+4. Does it prove the PERMANENT FIX worked at the root cause? → SOLUTION_EVIDENCE
+5. Does it provide CONTEXT/BASELINE (but not problem/cause/fix)? → CONTEXTUAL_EVIDENCE
+6. Is it unrelated to this case? → REJECTED
 
 CRITICAL: Classify based on what the DATA CONTAINS, not the investigation phase.
 - Log file with errors = SYMPTOM_EVIDENCE (even in INQUIRY phase)
@@ -257,7 +275,7 @@ CRITICAL: Classify based on what the DATA CONTAINS, not the investigation phase.
 - Investigation audit trails require a stable classification record
 
 **Exception — Un-rejecting:** As noted in the `REJECTED` category definition, rejected submissions can be "un-rejected" if investigation context changes (e.g., previously unrelated data becomes relevant after a new hypothesis emerges). This is the **only** supported category transition:
-- `REJECTED` → one of the 4 valid categories (SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL)
+- `REJECTED` → one of the 5 valid categories (SYMPTOM, CAUSAL, MITIGATION, SOLUTION, CONTEXTUAL)
 - All other category transitions are not supported
 
 **When un-rejecting occurs**, the system must:
@@ -460,13 +478,14 @@ The category reflects data content, not user's investigation commitment.
 ## Complete Evidence Schema
 
 ```python
+# Illustrative subset — see faultmaven/modules/case/domain/models.py for the canonical Evidence model.
 class Evidence(BaseModel):
     """
     Investigation evidence and analyzed submissions.
 
     IMPORTANT SEMANTIC NOTE:
     This model tracks both:
-    1. Valid evidence (SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL)
+    1. Valid evidence (SYMPTOM, CAUSAL, MITIGATION, SOLUTION, CONTEXTUAL)
     2. Rejected submissions (REJECTED category)
 
     Rejected submissions are NOT evidence, but are tracked here for:
@@ -480,22 +499,30 @@ class Evidence(BaseModel):
 
     Or in SQL:
         SELECT * FROM evidence WHERE category != 'rejected';
+
+    Note: Evidence is owned via Case.evidence and does NOT carry its own case_id field.
+    The relationship to hypotheses is one-way through Hypothesis.evidence_links.
     """
 
     # Identity
     evidence_id: str = Field(pattern=r"^ev_[a-f0-9]{12}$")
-    case_id: str = Field(pattern=r"^case_[a-f0-9]{12}$")
 
     # Classification (assigned by LLM at creation time)
-    category: EvidenceCategory  # SYMPTOM/CAUSAL/RESOLUTION/CONTEXTUAL/REJECTED
-    data_type: DataType  # LOGS/METRICS/CONFIGURATION/CODE/TEXT/IMAGE (unified with preprocessing)
+    category: EvidenceCategory  # SYMPTOM/CAUSAL/MITIGATION/SOLUTION/CONTEXTUAL/REJECTED
+    data_type: Optional[str] = None  # Free-form string column (LOGS/METRICS/CONFIGURATION/CODE/TEXT/IMAGE)
     form: EvidenceForm  # DOCUMENT (attachments) or USER_TEXT (query-only) or SUBMITTED_DATA (agent tools)
+    source_type: Optional[str] = None  # e.g. "user_upload", "agent_extracted"
 
     # Content
     summary: str = Field(max_length=500)
     primary_purpose: str  # What this evidence shows, or why rejected if REJECTED
     content_ref: str  # storage reference (local path or S3 URI, depending on STORAGE_BACKEND)
-    original_filename: Optional[str] = None  # Display filename (e.g., "app.log"); set during _preprocess_attachment
+    preprocessed_content: Optional[str] = None  # Cleaned/normalized content
+    preprocessing_method: Optional[str] = None  # Pipeline stage that produced preprocessed_content
+    compression_ratio: Optional[float] = None
+    analysis: Optional[str] = None  # Free-form analytical notes
+    original_filename: Optional[str] = None  # Display filename (e.g., "app.log")
+    source_file_id: Optional[str] = None     # FK to uploaded_files when applicable
 
     # Metadata
     collected_at: datetime
@@ -517,7 +544,6 @@ class Evidence(BaseModel):
                                   # /turns path tracks failures via in-memory counters.
 
     # Investigation linkage
-    related_hypotheses: List[str] = []  # hypothesis_ids this evidence evaluates
     advances_milestones: List[str] = []  # milestones this evidence advances
 
 
@@ -744,8 +770,12 @@ CATEGORY_MILESTONE_MAP = {
         "root_cause_identified",
         "solution_proposed",
     ],
-    EvidenceCategory.RESOLUTION_EVIDENCE: [
+    EvidenceCategory.MITIGATION_EVIDENCE: [
+        "mitigation_applied",
+    ],
+    EvidenceCategory.SOLUTION_EVIDENCE: [
         "solution_applied",
+        "solution_verified",
     ],
     EvidenceCategory.CONTEXTUAL_EVIDENCE: [
         # Provides supporting context but doesn't directly advance milestones
@@ -790,10 +820,13 @@ Turn 5:
 The LLM can optionally specify `advances_milestones` explicitly when system inference would be incorrect (~10% of cases):
 
 ```python
+# Illustrative subset — see faultmaven/core/investigation/schemas.py for the canonical EvidenceToAdd.
 class EvidenceToAdd(BaseModel):
     summary: str
-    category: EvidenceCategory
-    data_type: DataType  # Unified with preprocessing
+    content_ref: str            # Storage reference for the evidence content
+    category: EvidenceCategory  # SYMPTOM/CAUSAL/MITIGATION/SOLUTION/CONTEXTUAL/REJECTED
+    source_type: str            # e.g. "user_upload", "agent_extracted"
+    likelihood: float           # LLM-assessed confidence (0.0-1.0)
 
     # OPTIONAL: Override system inference
     advances_milestones: Optional[List[str]] = Field(
@@ -805,6 +838,8 @@ class EvidenceToAdd(BaseModel):
         )
     )
 ```
+
+> **Note:** `EvidenceToAdd` does **not** carry `data_type` — that's classified downstream during preprocessing/storage. The structured-output schema the LLM produces is intentionally narrower than the persisted `Evidence` row.
 
 ### When LLM Should Override
 
