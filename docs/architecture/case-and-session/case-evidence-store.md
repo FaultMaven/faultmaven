@@ -1,8 +1,8 @@
 # Case Evidence Store: Case-Specific RAG
 
-**Version**: 2.0
+**Version**: 2.1
 **Status**: Implemented
-**Last Updated**: 2025-10-18
+**Last Updated**: 2026-04-18
 
 ---
 
@@ -10,7 +10,7 @@
 
 The **Case Evidence Store** implements Case-Specific RAG (Retrieval-Augmented Generation) for handling detailed follow-up questions about user-uploaded troubleshooting evidence (logs, configs, stack traces, etc.). It uses a dedicated QA sub-agent with a separate synthesis LLM to prevent context pollution in the main diagnostic agent.
 
-**Important**: The vector store is tied to the **case**, not the session. Documents uploaded to a case remain accessible across all sessions until the case is archived or closed (lifecycle-based cleanup).
+**Important**: The vector store is tied to the **case**, not the session. Documents uploaded to a case remain accessible across all sessions until the case is **deleted**. A background orphan-detection job (default 6h interval) sweeps any case collection without an active case as a safety net. Setting `is_archived=True` or transitioning to `RESOLVED`/`CLOSED` does **not** delete the collection — the case remains queryable.
 
 ---
 
@@ -27,7 +27,7 @@ ChromaDB Collection: case_{case_id}
     ↓ (stores chunks)
 Document Embeddings (BGE-M3)
     ↓
-[answer_from_document Tool]
+[answer_from_case_evidence Tool]
     ↓ (retrieves chunks)
 Semantic Search (top-k=5)
     ↓
@@ -43,17 +43,17 @@ Concise Answer with Citations
 1. **Separate Collections Per Case**
    - Each case gets its own ChromaDB collection: `case_{case_id}`
    - Isolated from global knowledge base and user knowledge bases
-   - Automatically cleaned up when case is archived or closed (lifecycle-based)
+   - Cleaned up only on case **deletion** (not on archival or status transition)
 
 2. **Dedicated Synthesis LLM**
    - Uses `SYNTHESIS_PROVIDER` config (separate from `CHAT_PROVIDER`)
    - Recommended: Fast, cost-effective models (gpt-4o-mini, claude-haiku, llama-3.1-8b)
    - Prevents pollution of main agent's context
 
-3. **Lifecycle-Based Cleanup**
-   - Collections deleted automatically when case is archived or closed
-   - Background scheduler runs every 6 hours as safety net (orphan detection)
-   - No manual cleanup required
+3. **Deletion-Triggered Cleanup + Orphan Sweep**
+   - `CaseService.delete_case()` calls `CaseVectorStore.delete_case_collection(case_id)` to remove the chunks
+   - A background orphan-detection job (default 6h interval) sweeps any case collection whose `case_id` is not in the active-cases set, as a safety net for missed deletions
+   - Archived or terminal-state cases retain their evidence and remain queryable
 
 ---
 
@@ -62,7 +62,7 @@ Concise Answer with Citations
 ### Environment Variables
 
 ```bash
-# Synthesis provider for QA sub-agent (answer_from_document tool)
+# Synthesis provider for QA sub-agent (answer_from_case_evidence tool)
 # Used for RAG-based question answering on uploaded documents
 # If not specified, falls back to CHAT_PROVIDER
 # Recommended: Fast, cost-effective models (gpt-4o-mini, claude-3-haiku, llama-3.1-8b)
@@ -76,7 +76,7 @@ CHROMADB_URL=http://chromadb.faultmaven.local:30080
 
 ### Code Configuration
 
-**Case Vector Store Initialization** (in [container.py](../../faultmaven/container.py)):
+**Case Vector Store Initialization** (wired in the DI container under [faultmaven/container/](../../faultmaven/container/)):
 ```python
 self.case_vector_store = CaseVectorStore()
 ```
@@ -103,7 +103,7 @@ case_cleanup_scheduler = start_case_cleanup_scheduler(
 # → Stores chunks with embeddings
 
 # User asks: "What error occurred at 10:45 AM?"
-result = await answer_from_document_tool.answer_question(
+result = await answer_from_case_evidence_tool.answer_question(
     case_id="abc123",
     question="What error occurred at 10:45 AM?",
     k=5  # Retrieve top 5 chunks
@@ -132,14 +132,15 @@ result = await answer_from_document_tool.answer_question(
 # → Synthesis LLM correlates information
 ```
 
-### 3. Case Closure
+### 3. Case Deletion
 
 ```python
-# When user archives or closes case:
-# → CaseService triggers cleanup
+# When user deletes a case:
+# → CaseService.delete_case() triggers cleanup
 # → Deletes ChromaDB collection: case_abc123
 # → Frees up storage space
-# → Evidence only lives as long as case is active
+# Archival or transition to RESOLVED/CLOSED does NOT delete evidence —
+# the case stays queryable until it is explicitly deleted.
 ```
 
 ---
@@ -148,7 +149,7 @@ result = await answer_from_document_tool.answer_question(
 
 ### CaseVectorStore
 
-**Location**: [faultmaven/infrastructure/persistence/case_vector_store.py](../../faultmaven/infrastructure/persistence/case_vector_store.py)
+**Location**: [faultmaven/infrastructure/persistence/case_vector_store.py](../../faultmaven/infrastructure/persistence/case_vector_store.py) (canonical path; verified)
 
 #### Methods
 
@@ -192,7 +193,7 @@ async def search(
     """
 
 async def delete_case_collection(case_id: str) -> None:
-    """Delete entire case collection when case closes/archives."""
+    """Delete entire case collection when the case is deleted."""
 
 async def cleanup_orphaned_collections(active_case_ids: List[str]) -> int:
     """
@@ -204,9 +205,10 @@ async def get_case_document_count(case_id: str) -> int:
     """Get number of documents in case collection."""
 ```
 
-### AnswerFromDocumentTool
+### AnswerFromCaseEvidence
 
-**Location**: [faultmaven/tools/answer_from_document.py](../../faultmaven/tools/answer_from_document.py)
+**Location**: [faultmaven/modules/agent/tools/case_evidence_qa.py](../../faultmaven/modules/agent/tools/case_evidence_qa.py)
+**Registered tool name**: `answer_from_case_evidence`
 
 #### Methods
 
@@ -235,7 +237,7 @@ async def answer_question(
 
 ### Background Tasks
 
-**Location**: [faultmaven/infrastructure/tasks/case_cleanup.py](../../faultmaven/infrastructure/tasks/case_cleanup.py)
+**Location**: [faultmaven/jobs/case_cleanup.py](../../faultmaven/jobs/case_cleanup.py)
 
 #### Functions
 
@@ -267,7 +269,7 @@ def stop_case_cleanup_scheduler(
 
 ## Integration with Main Agent
 
-The `answer_from_document` tool is available to the main diagnostic agent but is **not** automatically invoked. The agent should use it when:
+The `answer_from_case_evidence` tool is available to the main diagnostic agent but is **not** automatically invoked. The agent should use it when:
 
 1. User asks specific questions about uploaded files
 2. Question requires detailed document content (not just summaries)
@@ -313,9 +315,9 @@ Returns:
 ### Storage
 
 - **Per document**: ~100-500 chunks (depends on size)
-- **Per chunk**: ~256-dimensional embedding (BGE-M3)
+- **Per chunk**: 1024-dimensional embedding (BGE-M3)
 - **Collection overhead**: ~1-10 MB per case
-- **Automatic cleanup**: When case closes/archives
+- **Cleanup**: On case deletion (orphan-detection job as safety net)
 
 ---
 
@@ -344,8 +346,8 @@ INFO: Cleanup complete: deleted 3 orphaned case collections
 - `case_evidence_store_documents_total`: Total documents across all cases
 - `case_evidence_store_search_latency_ms`: Search operation latency
 - `case_cleanup_orphaned_total`: Total orphaned collections deleted
-- `case_cleanup_lifecycle_total`: Total collections deleted on case close
-- `answer_from_document_calls_total`: Total QA tool invocations
+- `case_cleanup_on_delete_total`: Total collections deleted on case deletion
+- `answer_from_case_evidence_calls_total`: Total QA tool invocations
 - `synthesis_llm_token_usage_total`: Token usage for synthesis calls
 
 ---
@@ -396,7 +398,7 @@ INFO: Cleanup complete: deleted 3 orphaned case collections
 pytest tests/infrastructure/persistence/test_case_vector_store.py -v
 
 # Test AnswerFromDocumentTool
-pytest tests/tools/test_answer_from_document.py -v
+pytest tests/unit/modules/agent/tools/test_case_evidence_qa.py -v
 
 # Test background cleanup
 pytest tests/infrastructure/tasks/test_case_cleanup.py -v
@@ -419,7 +421,7 @@ pytest tests/integration/test_working_memory.py -v
 curl -X POST http://localhost:8090/api/v1/case/abc123/upload \
   -F "file=@test_data/server.log"
 
-# Ask question via answer_from_document tool
+# Ask question via answer_from_case_evidence tool
 curl -X POST http://localhost:8090/api/v1/case/abc123/answer \
   -H "Content-Type: application/json" \
   -d '{"question": "What error occurred at 10:45?"}'
@@ -484,8 +486,8 @@ curl http://localhost:8090/api/v1/case/abc123/documents/count
 ### Case collection not found
 
 **Symptom**: Search returns 0 results even after upload
-**Cause**: Collection creation failed or case was archived/closed
-**Fix**: Check ChromaDB logs, verify connection settings, confirm case is still active
+**Cause**: Collection creation failed, or the case (or its collection) was deleted (e.g., by the orphan sweep)
+**Fix**: Check ChromaDB logs, verify connection settings, confirm the case still exists
 
 ### Synthesis LLM timeout
 
@@ -503,10 +505,10 @@ curl http://localhost:8090/api/v1/case/abc123/documents/count
 
 ## References
 
-- [Knowledge Base Architecture](../knowledge-and-ai/knowledge-base-architecture.md) - Three-tier RAG system overview
-- [Case Lifecycle Cleanup Implementation](../implementation/CASE_LIFECYCLE_CLEANUP_IMPLEMENTED.md) - Lifecycle-based cleanup details
+- [Knowledge Base Architecture](../knowledge-and-ai/knowledge-base-architecture.md) - 3-tier KB system overview
+- [Vector Retrieval Architecture](../knowledge-and-ai/vector-retrieval-architecture.md) - Shared embedding/retrieval pipeline (BGE-M3, 1024 dims)
 - [CaseVectorStore Implementation](../../faultmaven/infrastructure/persistence/case_vector_store.py)
-- [AnswerFromDocumentTool Implementation](../../faultmaven/tools/answer_from_document.py)
-- [Background Cleanup Task](../../faultmaven/infrastructure/tasks/case_cleanup.py)
-- [Container Integration](../../faultmaven/container.py)
+- [AnswerFromCaseEvidence Implementation](../../faultmaven/modules/agent/tools/case_evidence_qa.py)
+- [Background Cleanup Job](../../faultmaven/jobs/case_cleanup.py)
+- [Container Integration](../../faultmaven/container/)
 - [Main App Lifecycle](../../faultmaven/main.py)
