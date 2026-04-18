@@ -1,22 +1,25 @@
-# Database Abstraction Layer Specification v2.1
+# Database Abstraction Layer Specification v2.2
 
 **Document Purpose**: Define the pluggable storage architecture that enables FaultMaven to switch between storage backends via configuration without code changes, across multiple data types and storage technologies.
 
 **Status**: ✅ Production Implementation
-**Version**: 2.1.0
-**Last Updated**: 2026-01-26
+**Version**: 2.2.1
+**Last Updated**: 2026-03-18
 **Alignment**:
+
 - Investigation Architecture v2.0 (Milestone-Based)
 - Case Model Design v2.0
 - Current Implementation (faultmaven/infrastructure/persistence/)
 
-**Critical Updates in v2.1**:
+**Critical Updates**:
+
 - ✅ Two-dimensional storage architecture (backend × data type)
-- ✅ Multiple storage technologies (PostgreSQL, Redis, ChromaDB)
+- ✅ Multiple storage technologies (PostgreSQL/SQLite, Redis/FakeRedis, ChromaDB)
 - ✅ Pluggable adapters for each data type
 - ✅ Configuration-based backend selection per storage system
-- ✅ 13-method CaseRepository interface (not 7)
-- ✅ Accurate configuration variable names
+- ✅ 13-method `CaseRepository` interface
+- ✅ `PostgreSQLHybridCaseRepository` is the sole PostgreSQL case-repository implementation (legacy `PostgreSQLCaseRepository` class removed)
+- ✅ `InMemoryVectorStore` removed — ChromaDB `PersistentClient` is always available
 
 ---
 
@@ -28,9 +31,10 @@
 4. [Repository Pattern by Data Type](#4-repository-pattern-by-data-type)
 5. [Storage Backend Options](#5-storage-backend-options)
 6. [Configuration Management](#6-configuration-management)
-7. [Testing Strategy](#7-testing-strategy)
-8. [Performance Considerations](#8-performance-considerations)
-9. [Appendices](#9-appendices)
+7. [Error Handling Strategy](#7-error-handling-strategy)
+8. [Testing Strategy](#8-testing-strategy)
+9. [Performance Considerations](#9-performance-considerations)
+10. [Appendices](#10-appendices)
 
 ---
 
@@ -78,11 +82,11 @@ Cached         │ Python dict  │ File-based   │ Redis        │
 Technology:    │ InMemory     │ File         │ Redis        │
                │ SessionStore │ SessionStore │ SessionStore │
 ───────────────┼──────────────┼──────────────┼──────────────┤
-Vector         │ Python dict  │ ChromaDB     │ ChromaDB     │
-(Knowledge)    │ ✅ Impl.     │ ✅ Impl.     │ ✅ Impl.     │
+Vector         │     n/a      │ ChromaDB     │ ChromaDB     │
+(Knowledge)    │              │ ✅ Impl.     │ ✅ Impl.     │
                │              │              │              │
-Technology:    │ InMemory     │ ChromaDB     │ ChromaDB     │
-               │ VectorStore  │ (local)      │ (server)     │
+Technology:    │     n/a      │ ChromaDB     │ ChromaDB     │
+               │              │ (local)      │ (server)     │
 └──────────────┴──────────────┴──────────────┴──────────────┘
 
 Configuration Example:
@@ -93,8 +97,8 @@ Configuration Example:
   # Cached data storage (Redis or FakeRedis — auto-selected)
   # REDIS_HOST=redis.local        # set to use real Redis
 
-  # Vector data storage
-  VECTOR_STORAGE_TYPE=inmemory     # or: chromadb
+  # Vector data storage (ChromaDB only — PersistentClient or HttpClient)
+  VECTOR_STORAGE_TYPE=chromadb     # set CHROMADB_URL to use external server
 ```
 
 ### 1.4 Key Design Principles
@@ -240,8 +244,12 @@ REDIS_PORT=6379
 - Rate limiting data
 - Real-time message queues
 
-**TTL Strategy**:
-- Sessions: 30 days
+**TTL Strategy** (distinct concepts — do not conflate):
+
+- **JWT access token**: 60 min default (`JWT_ACCESS_TOKEN_EXPIRY`)
+- **JWT refresh token**: 7 days default (`JWT_REFRESH_TOKEN_EXPIRY`)
+- **Session record TTL (Redis)**: 24 h default (`SessionSettings.session_ttl_hours`)
+- **Session inactivity timeout**: 30 min default (`SessionSettings.timeout_minutes`)
 - Investigation state: 7 days
 - Temporary caches: 1 hour
 
@@ -250,8 +258,9 @@ REDIS_PORT=6379
 ### 3.3 Vector Embeddings Data (Knowledge Base, Semantic Search)
 
 **Requirements**:
+
 - Vector similarity search
-- Embedding storage (768-dim vectors)
+- Embedding storage (1024-dim vectors — BGE-M3)
 - Semantic queries
 - RAG (Retrieval-Augmented Generation) support
 
@@ -279,13 +288,14 @@ CHROMADB_COLLECTION=faultmaven_kb
 ```
 
 **Data Includes**:
+
 - Knowledge base documents
-- Document embeddings (BGE-M3, 768 dimensions)
+- Document embeddings (BGE-M3, 1024 dimensions, multilingual)
 - Evidence summaries (for semantic search)
 - Historical solution patterns
 - Troubleshooting playbooks
 
-**Note**: For production semantic search, use ChromaDB. For development/testing without external dependencies, use InMemory (simple word-based similarity).
+**Note**: ChromaDB is used for all deployments. `PersistentClient` runs in-process for local deployment; `HttpClient` connects to an external ChromaDB server for cloud/K8s. There is no in-memory alternative — `InMemoryVectorStore` was removed (see §3.3 note).
 
 ---
 
@@ -557,20 +567,22 @@ class VectorStore(ABC):
 > FakeRedis (local). This eliminates dual code paths across 9 Redis-dependent subsystems.
 
 **Configuration**:
+
 ```bash
 # .env.development
 CASE_STORAGE_TYPE=inmemory
 USER_STORAGE_TYPE=inmemory
 # No SESSION_STORAGE_TYPE needed — FakeRedis auto-selected when no Redis server available
-VECTOR_STORAGE_TYPE=inmemory
+VECTOR_STORAGE_TYPE=chromadb   # Local PersistentClient at data/chroma-kb/
 ```
 
 **Characteristics**:
-- ✅ Zero setup
-- ✅ Microsecond operations
+
+- ✅ Zero setup for SQL/cache dimensions
+- ✅ Microsecond operations for in-memory case/user repositories
 - ✅ Perfect for tests
 - ✅ 100% Redis API parity (FakeRedis supports Lua scripts, pipelines, sorted sets)
-- ❌ Data lost on restart
+- ❌ Case/user data lost on restart (vector data persists via ChromaDB PersistentClient)
 - ❌ Single process only
 
 ---
@@ -592,7 +604,7 @@ DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
 # Sessions: FakeRedis auto-selected (no config needed)
 # To use external Redis: set REDIS_HOST=redis.local
 
-VECTOR_STORAGE_TYPE=inmemory   # or: chromadb for persistence
+VECTOR_STORAGE_TYPE=chromadb   # PersistentClient on disk
 ```
 
 **Characteristics**:
@@ -709,15 +721,19 @@ REDIS_HOST=redis.faultmaven.local
 REDIS_PORT=6379
 REDIS_PASSWORD=secure_password
 REDIS_DB=0
-REDIS_TTL_SESSIONS=2592000          # 30 days
+
+# JWT lifetimes (minutes)
+JWT_ACCESS_TOKEN_EXPIRY=60            # Access token: 60 min (default)
+JWT_REFRESH_TOKEN_EXPIRY=10080        # Refresh token: 7 days
+# Session record TTL: 24h (SessionSettings.session_ttl_hours)
+# Session inactivity timeout: 30 min (SessionSettings.timeout_minutes)
 
 # ===========================================
 # VECTOR DATA (Knowledge Base, Embeddings)
 # ===========================================
-# Technology: ChromaDB (production) or InMemory (dev)
-# Options: inmemory, chromadb
+# Technology: ChromaDB (PersistentClient local, HttpClient external)
 
-VECTOR_STORAGE_TYPE=chromadb         # or: inmemory
+VECTOR_STORAGE_TYPE=chromadb         # set CHROMADB_URL for external server
 
 # ChromaDB Configuration (when TYPE=chromadb)
 CHROMADB_URL=http://chromadb.faultmaven.local:30080
@@ -728,12 +744,13 @@ CHROMADB_COLLECTION=faultmaven_kb
 ### 6.2 Environment-Specific Configurations
 
 **Development** (fast iteration, no setup):
+
 ```bash
 # .env.development
 CASE_STORAGE_TYPE=inmemory
 USER_STORAGE_TYPE=inmemory
 # Sessions: FakeRedis auto-selected (no config needed)
-VECTOR_STORAGE_TYPE=inmemory
+VECTOR_STORAGE_TYPE=chromadb     # Local PersistentClient
 ```
 
 **Production** (K8s microservices):
@@ -980,7 +997,7 @@ async def save(self, case: Case) -> Case:
 
 ## 8. Testing Strategy
 
-### 7.1 Contract Tests by Data Type
+### 8.1 Contract Tests by Data Type
 
 **Pattern**: All implementations of the same interface must pass identical tests.
 
@@ -1038,7 +1055,7 @@ class TestRealRedisSessionStore(SessionStoreContractTests):
         return RedisSessionStore(test_redis_client)
 ```
 
-### 7.2 Multi-Backend Integration Tests
+### 8.2 Multi-Backend Integration Tests
 
 Test that services work correctly with **any combination** of backends:
 
@@ -1065,9 +1082,9 @@ async def test_case_service_all_combinations(case_backend, session_backend):
 
 ---
 
-## 8. Performance Considerations
+## 9. Performance Considerations
 
-### 8.1 Performance by Data Type and Backend
+### 9.1 Performance by Data Type and Backend
 
 **Long-Term Data (Cases)** - PostgreSQL Technology:
 
@@ -1097,7 +1114,7 @@ async def test_case_service_all_combinations(case_backend, session_backend):
 | query(n=10) | 10-50 ms | 20-100 ms |
 | get() | 5-20 ms | 10-50 ms |
 
-### 8.2 Optimization Strategies
+### 9.2 Optimization Strategies
 
 **PostgreSQL (Long-Term Data)**:
 ```sql
@@ -1119,9 +1136,11 @@ redis_client = aioredis.from_url(
     max_connections=20
 )
 
-# TTL strategy
-sessions: 30 days
-temp_state: 1 hour
+# TTL strategy (see §3.2 for the full breakdown)
+session_record: 24 h      # SessionSettings.session_ttl_hours
+idle_timeout:   30 min    # SessionSettings.timeout_minutes
+jwt_refresh:    7 days    # JWT_REFRESH_TOKEN_EXPIRY
+temp_state:     1 hour
 ```
 
 **ChromaDB (Vector Data)**:
@@ -1135,7 +1154,7 @@ await vector_store.add_documents(
 
 ---
 
-## 9. Appendices
+## 10. Appendices
 
 ### Appendix A: Complete Storage Matrix
 
@@ -1145,8 +1164,8 @@ await vector_store.add_documents(
 |-----------|-----------|----------|---------------------|---------------------------|
 | **Cases** | PostgreSQL/SQLite | ✅ Impl. | ✅ Impl. | ✅ Impl. |
 | **Users** | PostgreSQL/SQLite | ✅ Impl. | ✅ Impl. | ✅ Impl. |
-| **Sessions** | Redis | ✅ Impl. | ⚠️ Future | ✅ Impl. |
-| **Knowledge** | InMemory/ChromaDB | ✅ Impl. | ✅ Impl. | ✅ Impl. |
+| **Sessions** | Redis / FakeRedis | ✅ Impl. (FakeRedis) | ✅ Impl. (FakeRedis) | ✅ Impl. (Redis) |
+| **Knowledge** | ChromaDB | n/a (removed) | ✅ Impl. (PersistentClient) | ✅ Impl. (HttpClient) |
 
 **Repository Selection Logic** (SessionlessCaseRepository):
 - Dialect detected at runtime from database session
@@ -1161,12 +1180,13 @@ await vector_store.add_documents(
 
 # FROM (Development — FakeRedis auto-selected for sessions):
 CASE_STORAGE_TYPE=inmemory
-VECTOR_STORAGE_TYPE=inmemory
+VECTOR_STORAGE_TYPE=chromadb     # Local PersistentClient
 
-# TO (Production — real Redis for sessions):
+# TO (Production — real Redis for sessions, external ChromaDB):
 CASE_STORAGE_TYPE=postgres
 REDIS_HOST=redis.faultmaven.local
 VECTOR_STORAGE_TYPE=chromadb
+CHROMADB_URL=http://chromadb.faultmaven.local:30080
 ```
 
 ### Appendix C: Adding New Storage Backend
@@ -1206,21 +1226,25 @@ VECTOR_STORAGE_TYPE=chromadb
 **FaultMaven Storage Architecture** = **Two Dimensions**:
 
 **Dimension 1 - Data Types** (3 types):
+
 - Long-term data → PostgreSQL or SQLite technology
-- Cached data → Redis technology (or in-memory)
-- Vector data → ChromaDB technology (or in-memory)
+- Cached data → Redis (real or FakeRedis)
+- Vector data → ChromaDB (`PersistentClient` local, `HttpClient` cloud)
 
 **Dimension 2 - Storage Backends** (3 options):
-- In-memory → Development/testing
-- Local files (SQLite) → Single-node, self-hosted deployment
-- Microservices (PostgreSQL) → Production K8s
+
+- In-memory → Development/testing (case/user repositories only)
+- Local files (SQLite + ChromaDB `PersistentClient` + FakeRedis) → Single-node, self-hosted deployment
+- Microservices (PostgreSQL + external Redis + external ChromaDB) → Production K8s
 
 **Current Status**:
-- ✅ InMemory backend implemented for all data types
+
+- ✅ InMemory backend implemented for case/user data types
 - ✅ SQLite backend implemented for Case Repository (local deployment)
 - ✅ PostgreSQL backend implemented for Case Repository (cloud deployment)
 - ✅ Automatic dialect detection in SessionlessCaseRepository
-- ✅ All three data types supported across all backends
+- ✅ ChromaDB is the sole vector backend (`InMemoryVectorStore` removed)
+- ✅ FakeRedis is the sole in-process session backend (no separate `InMemorySessionStore`)
 
 **Key Benefits**:
 - ✅ Technology-appropriate storage for each data type

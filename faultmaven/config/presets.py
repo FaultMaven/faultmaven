@@ -71,8 +71,8 @@ PRESETS: Dict[str, PresetDefinition] = {
             "PORT": "8000",
             "RELOAD": "true",
             "SKIP_SERVICE_CHECKS": "true",
-            # Storage - minimal external deps (FakeRedis for sessions)
-            "VECTOR_STORAGE_TYPE": "inmemory",
+            # Storage - minimal external deps (FakeRedis for sessions, local ChromaDB PersistentClient for vectors)
+            "VECTOR_STORAGE_TYPE": "chromadb",
             "CASE_STORAGE_TYPE": "inmemory",
             "USER_STORAGE_TYPE": "inmemory",
             # LLM - Default to local for true zero-config

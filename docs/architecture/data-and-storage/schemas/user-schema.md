@@ -1,41 +1,25 @@
 # User Storage Design - Enterprise SaaS
 
-**Version**: 2.0
-**Status**: Schema Implemented - Python Code Pending
-**Last Updated**: 2025-01-14
-**Implementation**: See `docs/reference/database/003_enterprise_user_schema.sql`
+**Version**: 3.0
+**Status**: ✅ Implemented (baseline migration `001_clean_baseline`)
+**Last Updated**: 2026-04-18
+**Implementation**: SQLAlchemy models at `faultmaven/infrastructure/persistence/models.py`; baseline migration at `alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py`
 
 ---
 
 ## Implementation Status
 
-**Current State** (as of 2026-02-07):
+All user-domain tables, repositories, services, and API endpoints are implemented and deployed via the baseline migration. This document describes the live schema.
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| ✅ Design | Approved | This document |
-| ✅ SQL Schema File | Available | `docs/reference/database/003_enterprise_user_schema.sql` (658 lines) |
-| ⚠️ Current Runtime | Development-only | Redis (DevUserStore) + InMemory |
-| ⏳ Database Deployment | Not deployed | Schema not applied to any environment |
-| ⏳ Repository Layer | Not implemented | Python PostgreSQL implementation needed |
-| ⏳ Service Layer | Not implemented | Team/org management services needed |
-| ⏳ API Endpoints | Not implemented | Team/org/role management endpoints needed |
+| ✅ Schema | Deployed | `alembic/versions/20260317_*_001_clean_baseline.py` |
+| ✅ SQLAlchemy models | Live | `faultmaven/infrastructure/persistence/models.py` |
+| ✅ Repositories | Live | `faultmaven/modules/auth/infrastructure/repositories/` |
+| ✅ Services | Live | `faultmaven/modules/auth/domain/services/` |
+| ✅ API endpoints | Live | `faultmaven/modules/auth/api/` (auth, oauth, organizations, teams, session) |
 
-**Implementation Progress**:
-- ✅ **Schema Design Complete** (v2.0): Full enterprise SaaS schema with organizations, teams, roles, permissions
-- ✅ **SQL Schema File Available**: `docs/reference/database/003_enterprise_user_schema.sql` (658 lines)
-  - 8 tables: organizations, organization_members, teams, team_members, roles, permissions, role_permissions, user_audit_log
-  - Row-Level Security (RLS) policies for multi-tenant isolation
-  - 7 system roles with permission mappings
-  - 19 core permissions across 5 resources
-  - Audit logging for compliance
-  - SQL function: `user_has_org_permission()` for permission checks
-- ⏳ **Implementation Pending**: Schema not deployed, repositories not implemented, APIs not built
-
-**Schema Extensions Created**:
-- `docs/reference/database/002_add_case_sharing.sql` - Case collaboration (case_participants table)
-- `docs/reference/database/003_enterprise_user_schema.sql` - **THIS SCHEMA** - Teams, orgs, RBAC
-- `docs/reference/database/004_kb_sharing_infrastructure.sql` - KB document sharing
+**Tables delivered by the user domain** (11 total): `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes`. Row-Level Security policies, seed roles/permissions, and the `user_has_org_permission()` helper are all installed by the baseline migration.
 
 ---
 
@@ -154,7 +138,11 @@ auth:email:{email} → user_id
 ```sql
 CREATE TABLE users (
     -- Primary Key
-    user_id VARCHAR(20) PRIMARY KEY DEFAULT ('user_' || gen_random_uuid()::text),
+    user_id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+
+    -- Denormalized role string (in addition to organization_members.role_id)
+    -- Used for simple local-auth deployments. Column width matches the live schema.
+    roles VARCHAR(500),
 
     -- Authentication
     email VARCHAR(255) NOT NULL UNIQUE,
@@ -208,7 +196,7 @@ COMMENT ON COLUMN users.sso_provider_id IS 'External user ID from SSO provider (
 ```sql
 CREATE TABLE organizations (
     -- Primary Key
-    organization_id VARCHAR(20) PRIMARY KEY DEFAULT ('org_' || gen_random_uuid()::text),
+    organization_id VARCHAR(64) PRIMARY KEY DEFAULT ('org_' || gen_random_uuid()::text),
 
     -- Organization Info
     name VARCHAR(200) NOT NULL,
@@ -216,9 +204,8 @@ CREATE TABLE organizations (
     domain VARCHAR(255),  -- Primary email domain (for auto-join)
 
     -- Subscription
-    plan VARCHAR(50) NOT NULL DEFAULT 'free',  -- 'free', 'pro', 'enterprise'
+    plan_tier VARCHAR(20) NOT NULL DEFAULT 'free',  -- 'free', 'pro', 'enterprise'
     max_users INTEGER NOT NULL DEFAULT 5,
-    subscription_status VARCHAR(20) DEFAULT 'active',  -- 'active', 'trialing', 'past_due', 'canceled'
 
     -- Billing
     stripe_customer_id VARCHAR(100),
@@ -237,7 +224,7 @@ CREATE TABLE organizations (
 
     -- Constraints
     CONSTRAINT organizations_slug_format CHECK (slug ~* '^[a-z0-9-]+$'),
-    CONSTRAINT organizations_plan_valid CHECK (plan IN ('free', 'pro', 'enterprise'))
+    CONSTRAINT organizations_plan_tier_valid CHECK (plan_tier IN ('free', 'pro', 'enterprise'))
 );
 
 -- Indexes
@@ -658,14 +645,20 @@ VALUES ('john@acme.com', 'google', 'google_user_12345');
 
 ### 5.3 Session Management
 
-**Storage**: Redis (see redis-usage-design.md)
+**Storage**: Redis (real or FakeRedis — see `faultmaven/modules/auth/infrastructure/stores/`).
 
 **Session Security**:
+
 - ✅ HTTP-only cookies
 - ✅ Secure flag (HTTPS only)
 - ✅ SameSite=Strict
-- ✅ 30-minute inactivity timeout
-- ✅ Absolute timeout: 24 hours
+
+**TTL concepts (distinct values — see `faultmaven/config/settings.py` and `auth_session_service.py`)**:
+
+- **JWT access token**: 60 min default (`JWT_ACCESS_TOKEN_EXPIRY`)
+- **JWT refresh token**: 7 days default (`JWT_REFRESH_TOKEN_EXPIRY`)
+- **Session record TTL (Redis)**: 24 h default (`SessionSettings.session_ttl_hours`)
+- **Session inactivity timeout**: 30 min default (`SessionSettings.timeout_minutes`)
 
 ---
 
@@ -717,36 +710,13 @@ HAVING COUNT(*) > 5;
 
 ## 7. Implementation Status
 
-### ✅ IMPLEMENTATION COMPLETE (2025-01-14)
+✅ **Implemented and deployed** — baseline migration `001_clean_baseline` (revision `424078e5aa04`) creates all 11 user-domain tables, 7 seed roles, and 19 seed permissions. The live source of truth is:
 
-All phases of the enterprise user schema have been successfully implemented:
-
-**Phase 1: Schema Creation** ✅
-- ✅ Created migration script: `docs/reference/database/003_enterprise_user_schema.sql` (494 lines)
-- ✅ Seeded 7 system roles and 19 permissions
-- ✅ Tested schema on development PostgreSQL
-- ✅ Verified foreign keys, constraints, and RLS policies
-
-**Phase 2: Repository Implementation** ✅
-- ✅ Created `PostgreSQLOrganizationRepository` (316 lines)
-- ✅ Created `PostgreSQLTeamRepository` (214 lines)
-- ✅ Implemented RBAC permission checks via SQL functions
-- ✅ Implemented organization scoping with Row-Level Security
-- ✅ Added audit logging infrastructure (audit_event_type, audit_category enums)
-
-**Phase 3: Service Layer** ✅
-- ✅ Implemented `OrganizationService` (417 lines) - Business logic for orgs and RBAC
-- ✅ Implemented `TeamService` (330 lines) - Team collaboration management
-- ✅ Enhanced `CaseService` with sharing methods (163 lines added)
-
-**Phase 4: API Layer** ✅
-- ✅ Added 15 organization management endpoints
-- ✅ Added 11 team management endpoints
-- ✅ Added 4 case sharing endpoints
-- ✅ Updated DI container wiring for new services
-- ✅ Registered all routers in main.py
-
-**Total Implementation**: 5,451+ lines of code across SQL schemas, repositories, services, and API routes
+- SQLAlchemy models: `faultmaven/infrastructure/persistence/models.py`
+- Repositories: `faultmaven/modules/auth/infrastructure/repositories/`
+- Services: `faultmaven/modules/auth/domain/services/`
+- API: `faultmaven/modules/auth/api/` (auth, oauth, organizations, teams, session, rate_limiting)
+- Row-Level Security and the `user_has_org_permission()` function are installed by the baseline migration
 
 ---
 
@@ -761,32 +731,21 @@ All phases of the enterprise user schema have been successfully implemented:
 ✅ **Audit Trail**: Comprehensive security logging
 ✅ **Scalable**: Normalized schema, Row-Level Security
 
-### Current vs Target
+### Deployment State
 
-| Aspect | Current (Dev) | Target (Production) |
-|--------|---------------|---------------------|
-| Storage | Redis | PostgreSQL |
-| Multi-tenancy | ❌ No | ✅ Organizations |
-| RBAC | ⚠️ Simple roles | ✅ Full RBAC |
-| Audit | ❌ No | ✅ Comprehensive |
-| SSO | ❌ No | ✅ Ready |
-| Teams | ❌ No | ✅ Yes |
-
-### Deployment
-
-**Status**: Ready for deployment
-
-1. ✅ **Design reviewed and approved**
-2. ✅ **Migration script created** (`docs/reference/database/003_enterprise_user_schema.sql`)
-3. ✅ **Repositories implemented** (PostgreSQLOrganizationRepository, PostgreSQLTeamRepository)
-4. ✅ **Services implemented** (OrganizationService, TeamService)
-5. ✅ **API endpoints implemented** (30 new REST endpoints)
-6. ⏳ **Deploy to K8s** (pending deployment)
+- ✅ Schema deployed via baseline migration (`alembic upgrade head`)
+- ✅ All repositories and services live
+- ✅ 30+ REST endpoints under `modules/auth/api/`
+- ✅ Multi-tenancy via `organizations` + `organization_members` + `teams`
+- ✅ Full RBAC via `roles`, `permissions`, `role_permissions`
+- ✅ Audit trail via `user_audit_log`
+- ✅ SSO via `sso_provider` / `sso_provider_id` columns; OAuth code flow via `oauth_authorization_codes` and `oauth_revoked_tokens`
 
 ---
 
 **References**:
-- Current Redis Implementation: [user_store.py](../../faultmaven/infrastructure/auth/user_store.py)
-- Simple PostgreSQL Implementation: [user_repository.py](../../faultmaven/infrastructure/persistence/user_repository.py)
-- Token Management: [token_manager.py](../../faultmaven/infrastructure/auth/token_manager.py)
-- Redis Usage: [redis-usage-design.md](./redis-usage-design.md)
+
+- SQLAlchemy models: [faultmaven/infrastructure/persistence/models.py](../../../../faultmaven/infrastructure/persistence/models.py)
+- Auth module: [faultmaven/modules/auth/](../../../../faultmaven/modules/auth/)
+- Baseline migration: [alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py](../../../../alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py)
+- Redis/FakeRedis session store: [faultmaven/modules/auth/infrastructure/stores/](../../../../faultmaven/modules/auth/infrastructure/stores/)

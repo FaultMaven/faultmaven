@@ -198,8 +198,17 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
     import chromadb
     from chromadb.config import Settings as ChromaSettings
 
+    # Dispatch: canonical value is "chromadb" (default). If the caller
+    # configures CHROMADB_URL, we probe it via HttpClient and fall back to
+    # local PersistentClient on failure. If CHROMADB_URL is unset (default
+    # empty), we skip the probe entirely and go straight to PersistentClient
+    # — no warning log, no network round-trip. Any legacy value (including
+    # "inmemory") is silently accepted as a synonym for "local PersistentClient".
+    # `InMemoryVectorStore` no longer exists — chromadb is a base dependency
+    # and PersistentClient is always available, same principle as FakeRedis.
     vector_storage_type = (settings.database.vector_storage_type or "").lower()
-    is_external_chroma = vector_storage_type in {
+    chromadb_url = (settings.database.chromadb_url or "").strip()
+    is_external_chroma = bool(chromadb_url) and vector_storage_type in {
         "chromadb",
         "chroma",
         "chroma_db",
@@ -210,7 +219,6 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
         # Cloud: external ChromaDB server via HTTP
         from urllib.parse import urlparse
 
-        chromadb_url = settings.database.chromadb_url
         chromadb_token = (
             settings.database.chromadb_api_key.get_secret_value()
             if settings.database.chromadb_api_key

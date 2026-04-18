@@ -32,20 +32,10 @@ FaultMaven's storage architecture supports **12 data categories** across primary
 
 ## Storage Technology Matrix
 
-| Data Category | Primary Storage | Secondary/Cache | Lifecycle | Scope |
-|--------------|----------------|-----------------|-----------|-------|
-| **User Information** | PostgreSQL | - | Indefinite (soft delete) | Per-user |
-| **Case Data** | PostgreSQL | Redis (state) | 1 year default | Per-case |
-| **Observability Data** | PostgreSQL + S3 | - | 90 days | Per-case |
-| **User Knowledge Base** | ChromaDB | PostgreSQL (metadata) | Indefinite | Per-user |
-| **Case Working Memory** | ChromaDB | - | Case lifetime + 7 days | Per-case |
-| **Global Knowledge Base** | ChromaDB | - | Indefinite | System-wide |
-| **Report & Analytics** | PostgreSQL | - | Persistent (linked to case lifecycle) | Per-case |
-| **Job Queue State** | Redis | - | 24 hours (TTL) | Per-job |
-| **ML Model Artifacts** | File system | PostgreSQL (metadata) | 3 versions retained | System-wide |
-| **Protection State** | Redis | PostgreSQL (archive) | Real-time + 30 days | Per-client |
-| **Cache Data** | Multi-tier | - | Minutes to hours (TTL) | Various |
-| **System Operational** | Time-series DB + S3 | - | 90 days - 1 year | System-wide |
+For the data-type × backend × deployment breakdown, see:
+
+- **[README.md](./README.md)** — index-level summary
+- **[repository-pattern.md](./repository-pattern.md)** §3 — full per-data-type detail
 
 ---
 
@@ -61,7 +51,7 @@ FaultMaven's storage architecture supports **12 data categories** across primary
              │    └──> PostgreSQL (auth_db.users)
              │
              ├──> CaseRepository Interface
-             │    └──> PostgreSQL (cases_db.* hybrid schema - 10 tables)
+             │    └──> PostgreSQL (cases_db.* hybrid schema)
              │
              ├──> ISessionStore Interface
              │    ├──> Redis (primary, TTL-based)
@@ -100,10 +90,10 @@ FaultMaven's storage architecture supports **12 data categories** across primary
 ├───────────────────────────────────────────────────────────────────────┤
 │ PostgreSQL Clusters:                                                  │
 │   - auth_db: User accounts, roles, SSO                                │
-│   - cases_db: Investigation data (10 tables), evidence, hypotheses    │
+│   - cases_db: Investigation data, evidence, hypotheses, reports       │
 │                                                                        │
 │ Redis (real or FakeRedis for local deployment):                        │
-│   - Session state (session:{id}, TTL: 30 min)                         │
+│   - Session state (session:{id}, idle timeout 30 min / record TTL 24h)│
 │   - Job queue (job:{id}, TTL: 24 hours)                               │
 │   - Report metadata now in PostgreSQL (reports table)                 │
 │   - Protection state (reputation, rate limits)                        │
@@ -131,14 +121,14 @@ FaultMaven's storage architecture supports **12 data categories** across primary
 │   - evidence_chromadb_client → data/chroma-evidence/ (ephemeral)     │
 │   Cloud: both use HttpClient to external ChromaDB server             │
 │                                                                        │
-│   Scope isolation on faultmaven_kb uses metadata filtering:          │
-│   - global_kb_qa tool: {"scope": "global"}                           │
-│   - user_kb_qa tool: {"scope": "personal", "owner_id": user_id}     │
-│   - Team KB: {"scope": "team", "team_id": {"$in": team_ids}}        │
+│   Scope isolation on faultmaven_kb uses metadata filtering. The      │
+│   unified `answer_from_kb` tool builds a per-caller filter:          │
+│   - Global content:  {"scope": "global"}                             │
+│   - Personal content: {"scope": "personal", "owner_id": user_id}    │
+│   - Team content:     {"scope": "team", "team_id": {"$in": team_ids}}│
 │                                                                        │
-│   KB config layer returns logical names (global_kb, user_{id}_kb)    │
-│   which map to faultmaven_kb with metadata filters, NOT separate     │
-│   collections.                                                        │
+│   KnowledgeVectorStore enforces a scope-invariant check — any        │
+│   faultmaven_kb query without a scope filter is rejected.            │
 │                                                                        │
 │ S3-Compatible Storage:                                                │
 │   - Raw uploaded files: artifacts/{case_id}/{file_id}                 │
@@ -160,47 +150,16 @@ All storage follows the **Repository Pattern** with interface abstraction for te
 
 ### Interface Summary
 
-```python
-# User storage
-class UserRepository(ABC):
-    async def save(self, user: User) -> User
-    async def get(self, user_id: str) -> Optional[User]
-    async def get_by_username(self, username: str) -> Optional[User]
+Full repository interface signatures live in **[repository-pattern.md](./repository-pattern.md)**:
 
-# Case storage
-class CaseRepository(ABC):
-    async def save(self, case: Case) -> Case
-    async def get(self, case_id: str) -> Optional[Case]
-    async def find_by_user(self, user_id: str) -> List[Case]
+- `UserRepository` — §3
+- `CaseRepository` (13 methods) — §4.1
+- `ISessionStore` — §3
+- `IVectorStore` — §3
+- `IJobService` — §3
+- `IGlobalConfidenceService` — §3
 
-# Session storage
-class ISessionStore(ABC):
-    async def get(self, key: str) -> Optional[Dict]
-    async def set(self, key: str, value: Dict, ttl: Optional[int]) -> None
-    async def exists(self, key: str) -> bool
-
-# Vector storage (ChromaDB — shared client, multiple collections)
-class IVectorStore(ABC):
-    async def add_documents(self, documents: List[Dict]) -> None
-    async def search(self, query: str, k: int) -> List[Dict]
-    async def delete_documents(self, ids: List[str]) -> None
-
-# Report storage (via Case repository - TD-001 migration)
-# Reports are now stored via ICaseRepository methods (see Case module contracts)
-# Legacy: IReportStore interface deprecated, use Case repository instead
-
-# Job queue
-class IJobService(ABC):
-    async def create_job(self, job_type: str, payload: Dict) -> str
-    async def get_job(self, job_id: str) -> Optional[JobStatus]
-    async def update_job_status(self, job_id: str, status: str) -> bool
-
-# ML models
-class IGlobalConfidenceService(ABC):
-    async def score_confidence(self, request: ConfidenceRequest) -> ConfidenceResponse
-    async def get_model_info(self) -> Dict[str, Any]
-    async def update_model(self, model_data: bytes, version: str) -> bool
-```
+Reports are persisted via the Case repository (see `modules/case/contracts.py` — the legacy `IReportStore` interface was removed when report storage migrated to PostgreSQL under TD-001).
 
 ### Dependency Injection
 
@@ -228,7 +187,7 @@ See [repository-pattern.md](./repository-pattern.md) for detailed abstraction la
 | **User Accounts** | Indefinite (soft delete) | Soft delete after 30 days inactive (configurable) |
 | **Active Cases** | Indefinite | User-controlled closure |
 | **Resolved Cases** | 1 year default | Archive to cold storage after 90 days |
-| **Session State** | 30 minutes (TTL) | Automatic Redis expiration |
+| **Session State** | 30 min idle / 24 h record TTL | Automatic Redis expiration |
 | **Raw Artifacts** | 90 days default | S3 lifecycle policy |
 | **User Knowledge Base** | Indefinite | User-controlled deletion |
 | **Case Working Memory** | Case lifetime + 7 days | TTL-based cleanup after case closure |
@@ -289,10 +248,10 @@ See [repository-pattern.md](./repository-pattern.md) for detailed abstraction la
 ### Audit Trail
 
 **Immutable Logs**:
-- `case_status_transitions`: All status changes
-- `agent_tool_calls`: All agent actions
-- `protection_events`: Security events
-- User authentication events
+
+- `case_actions`: All case-level actions and status changes (the Python `CaseStatusTransitionModel` alias points here for back-compat)
+- `agent_tool_calls` / `agent_tool_calls_v2`: All agent actions
+- `user_audit_log`: User authentication and administrative events
 
 **Compliance**:
 - GDPR: Right to deletion, data export
@@ -316,8 +275,9 @@ See [repository-pattern.md](./repository-pattern.md) for detailed abstraction la
 - Sentinel for automatic failover
 
 **ChromaDB**:
-- Per-user collections enable partitioning
-- Collection-level isolation prevents hotspots
+
+- Unified `faultmaven_kb` collection — isolation via scope/owner/team metadata filters (not per-user collections)
+- HNSW index per collection; external ChromaDB server supported for horizontal scale
 
 **S3**:
 - Infinite horizontal scalability
@@ -344,14 +304,13 @@ See [repository-pattern.md](./repository-pattern.md) for detailed abstraction la
 
 This overview provides the high-level architecture. For detailed schema specifications, see:
 
-- **[schemas/case-schema.md](./schemas/case-schema.md)** - Complete case data model (10 PostgreSQL tables)
-- **[schemas/user-schema.md](./schemas/user-schema.md)** - User accounts, roles, and SSO integration
-- **[schemas/knowledge-schema.md](./schemas/knowledge-schema.md)** - Vector storage for KB and working memory
-- **[vector-storage.md](./vector-storage.md)** - ChromaDB implementation and operations
-- **[repository-pattern.md](./repository-pattern.md)** - Storage abstraction layer specification
-- **[sqlmodel-analysis.md](./sqlmodel-analysis.md)** - SQLModel ORM usage and patterns
-
-For complete implementation details covering all 12 data categories, see [data-storage-design.md](./data-storage-design.md) (comprehensive reference).
+- **[README.md](./README.md)** — index of all storage docs with the storage-technology matrix
+- **[er-diagram.md](./er-diagram.md)** — auto-generated entity-relationship diagram (authoritative table enumeration)
+- **[schemas/case-schema.md](./schemas/case-schema.md)** — case data model, column-level detail
+- **[schemas/user-schema.md](./schemas/user-schema.md)** — user accounts, organizations, teams, SSO
+- **[schemas/knowledge-schema.md](./schemas/knowledge-schema.md)** — unified KB and case working memory schemas
+- **[vector-storage.md](./vector-storage.md)** — ChromaDB implementation and operations
+- **[repository-pattern.md](./repository-pattern.md)** — storage abstraction layer specification
 
 ---
 

@@ -482,13 +482,19 @@ alembic upgrade head
 
 ## Migration History
 
-| Version              | Revision       | Date       | Description                                                                     |
-|----------------------|----------------|------------|---------------------------------------------------------------------------------|
-| `001_clean_baseline` | `424078e5aa04` | 2026-03-17 | Clean baseline: all 30 tables (auth, case, knowledge, config) + RBAC seed data  |
+| Version                        | Revision       | Date       | Description                                                                     |
+|--------------------------------|----------------|------------|---------------------------------------------------------------------------------|
+| `001_clean_baseline`           | `424078e5aa04` | 2026-03-17 | Clean baseline: 30 tables (auth, case, knowledge, config) + RBAC seed data      |
+| `add_scope_isolation_...`      | `0a6eafc2e4cf` | 2026-03-24 | Add `scope_isolation` fields to `knowledge_items`                               |
+| `add_source_type_to_conversions` | —            | 2026-03-26 | Add `conversion_jobs` + `conversion_drafts` tables for document→runbook pipeline |
+| `add_reports_table`            | —              | 2026-03-29 | Add `reports` table (TD-001 migration)                                          |
+| `add_kb_metadata_to_drafts`    | —              | 2026-04-04 | Add KB metadata fields to `conversion_drafts`                                   |
+
+Current total: **33 tables**.
 
 ## Related Documentation
 
-- [System Architecture](../architecture/SYSTEM_ARCHITECTURE.md)
-- [Case Storage Design](../architecture/case-storage-design.md)
-- [User Storage Design](../architecture/user-storage-design.md)
-- [SQL Schema Files](../schema/)
+- [System Architecture](../architecture/architecture-overview.md)
+- [Case Schema](../architecture/data-and-storage/schemas/case-schema.md)
+- [User Schema](../architecture/data-and-storage/schemas/user-schema.md)
+- [ER Diagram](../architecture/data-and-storage/er-diagram.md)

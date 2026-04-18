@@ -245,9 +245,9 @@ This section documents the **current implementation** and **planned improvements
 | Tool | Collection | Purpose |
 | ---- | ---------- | ------- |
 | `kb_qa` | `faultmaven_kb` | Unified KB Q&A (global + personal + team via `$or` filter) |
-| `case_evidence_search` | `case_{case_id}_evidence` | Case-scoped forensic Q&A on vectorized evidence |
+| `case_evidence_search` | `case_{case_id}` | Case-scoped forensic Q&A on vectorized evidence |
 
-The old 3-tool approach (`global_kb_qa`, `user_kb_qa`, `answer_from_case_evidence`) has been replaced. The agent calls one `kb_qa` tool and scope filtering is automatic based on user context.
+The old per-scope KB tool approach (`global_kb_qa`, `user_kb_qa`) has been replaced with the single unified `kb_qa` tool — scope filtering is automatic based on user context. Case evidence Q&A remains separate and is still exposed to agents as `case_evidence_search` (backed by the `answer_from_case_evidence` tool class via `kb_tool_adapter.py`).
 
 ### Design Principles
 

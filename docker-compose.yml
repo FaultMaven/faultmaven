@@ -60,7 +60,7 @@ services:
     environment:
       - FAULTMAVEN_DEMO_MODE=true
       - DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
-      - VECTOR_STORAGE_TYPE=inmemory
+      - VECTOR_STORAGE_TYPE=chromadb
     env_file:
       - .env
     volumes:

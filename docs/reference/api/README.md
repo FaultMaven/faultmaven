@@ -5885,7 +5885,7 @@ Response for updating member role
 
 Message model for conversation endpoints.
 
-Schema matches case-storage-design.md Section 4.7 (case_messages table).
+Schema matches docs/architecture/data-and-storage/schemas/case-schema.md Section 4.7 (case_messages table).
 
 **Properties:**
 
@@ -7097,7 +7097,7 @@ Represents one complete troubleshooting investigation.
 - `messages` (array) ❌ -
         Complete conversation history (user queries + agent responses).
 
-        Per case-storage-design.md Section 4.7, each message contains:
+        Per docs/architecture/data-and-storage/schemas/case-schema.md Section 4.7, each message contains:
         - message_id: str - Unique identifier
         - case_id: str - Case this message belongs to
         - turn_number: int - Which turn this message belongs to

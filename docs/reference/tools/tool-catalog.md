@@ -246,7 +246,7 @@ k8s-deployment.yaml → config_file (confidence: 1.0)
 - Tier 1 structural index lacks detail for the user's question
 - Agent needs specific lines, values, or patterns from raw file
 - Re-running domain extractors with different parameters
-- Within the DA Tool Loop (`_tool_augmented_generate()`) during Directed Analysis turns — the LLM iterates up to 5 investigation tools (`search_file`, `deep_analysis`, `web_search`, `global_kb_qa`, `user_kb_qa`) + `schema_tool` for up to 4 iterations
+- Within the DA Tool Loop (`_tool_augmented_generate()`) during Directed Analysis turns — the LLM iterates the investigation tools (`search_file`, `deep_analysis`, `web_search`, `answer_from_kb` [unified — serves all scopes], `case_evidence_search`) + `schema_tool` for up to 4 iterations
 
 **Search Modes**:
 - **keyword** (default): Two-pass strategy. Pass 1 requires ALL keywords on same line (high relevance). Pass 2 falls back to individual keywords with `partial_match: True` (capped at 5 results).

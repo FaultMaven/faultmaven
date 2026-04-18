@@ -117,7 +117,7 @@ Structured output handling: [Structured Output Capability System](core-architect
 
 ## Data & Storage
 
-- **Relational (SQLAlchemy + Alembic)** — 30 tables across 3 domains (user, case, config). Schema: [data-and-storage/schemas/](data-and-storage/schemas/), ER diagram: [er-diagram.md](data-and-storage/er-diagram.md).
+- **Relational (SQLAlchemy + Alembic)** — 33 tables across 3 domains (user, case, config). Schema: [data-and-storage/schemas/](data-and-storage/schemas/), ER diagram: [er-diagram.md](data-and-storage/er-diagram.md).
 - **Vector (ChromaDB)** — knowledge base + per-case evidence collections. BGE-M3 embeddings (1024 dims). See [vector-retrieval-architecture.md](knowledge-and-ai/vector-retrieval-architecture.md).
 - **Sessions / cache (Redis or FakeRedis)** — FakeRedis is the default local-mode backend (full API parity, no external server).
 - **File storage (local filesystem, S3, Azure)** — pluggable backend via `IStorageBackend`.

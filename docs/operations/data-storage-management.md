@@ -12,7 +12,7 @@ All runtime data lives under `data/` relative to the project root. This director
 
 ```
 data/
-├── faultmaven.db              # SQLite — all relational data (32 tables)
+├── faultmaven.db              # SQLite — all relational data (33 tables; see er-diagram.md)
 │
 ├── chroma-kb/                 # ChromaDB instance — permanent KB vectors
 │   ├── chroma.sqlite3         #   Collection metadata, doc IDs, text, full-text index

@@ -561,7 +561,10 @@ class DatabaseSettings(BaseSettings):
     # ============================================
     chromadb_host: str = Field(default="chromadb.faultmaven.local")
     chromadb_port: int = Field(default=30080)
-    chromadb_url: str = Field(default="http://chromadb.faultmaven.local:30080")
+    # Empty default = no external ChromaDB server configured → go straight to
+    # local PersistentClient. Cloud deployments set CHROMADB_URL explicitly to
+    # opt in to HttpClient.
+    chromadb_url: str = Field(default="")
     chromadb_api_key: Optional[SecretStr] = Field(default=None)
 
     # ChromaDB Extended Configuration (merged from EnhancedDatabaseSettings)
@@ -643,7 +646,11 @@ class DatabaseSettings(BaseSettings):
     # ============================================
     # Vector Storage Adapter Configuration
     # ============================================
-    vector_storage_type: str = Field(default="inmemory")
+    # "chromadb" (default) uses local ChromaDB PersistentClient, or HttpClient
+    # when CHROMADB_URL is set. Legacy values ("inmemory", "") are silently
+    # accepted and resolve to the same local PersistentClient — there is no
+    # InMemoryVectorStore implementation anymore.
+    vector_storage_type: str = Field(default="chromadb")
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 

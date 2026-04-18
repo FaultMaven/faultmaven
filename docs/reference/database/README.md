@@ -1,6 +1,6 @@
 # Database Schema
 
-FaultMaven uses **Alembic** for database migrations. The current schema (30 tables across 3 domains) is created by a single clean baseline migration.
+FaultMaven uses **Alembic** for database migrations. The current schema (33 tables across 3 domains) is created by a clean baseline migration plus subsequent migrations for `reports`, `conversion_jobs`, and `conversion_drafts`.
 
 - **Authoritative source**: `alembic/versions/` in the repo root
 - **ER diagram**: [docs/architecture/data-and-storage/er-diagram.md](../../architecture/data-and-storage/er-diagram.md) (regenerate via `scripts/generate_er_diagram.py`)

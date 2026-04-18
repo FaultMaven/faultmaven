@@ -94,7 +94,8 @@ database_url = "sqlite:///./data/faultmaven.db"
 user_storage_type = "inmemory"
 case_storage_type = "database"
 # Sessions: FakeRedis (in-process, no external server needed)
-vector_storage_type = "inmemory"
+# Vectors: ChromaDB PersistentClient (local, no external server needed)
+vector_storage_type = "chromadb"
 
 # Enterprise features (disabled)
 opik_enabled = False

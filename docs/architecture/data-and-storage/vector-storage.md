@@ -38,7 +38,7 @@ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local,
 
 **Architecture**: Two ChromaDB clients created in the DI container — one for permanent KB collections (`kb_chromadb_client` at `data/chroma-kb/`), one for ephemeral case evidence (`evidence_chromadb_client` at `data/chroma-evidence/`). Local deployment uses `PersistentClient` (file-based), cloud uses `HttpClient` to external server. Separate instances ensure KB data is protected from evidence churn and can be backed up independently.
 
-**Scope Isolation**: The `faultmaven_kb` collection uses metadata filtering — NOT separate collections per user/team. Scope fields (`scope`, `owner_id`, `team_id`) are stored at ingestion time. The unified `kb_qa` tool builds a combined filter:
+**Scope Isolation**: The `faultmaven_kb` collection uses metadata filtering — NOT separate collections per user/team. Scope fields (`scope`, `owner_id`, `team_id`) are stored at ingestion time. `KnowledgeVectorStore` enforces a scope-invariant check that rejects any query to `faultmaven_kb` without a scope filter. The unified `answer_from_kb` tool (in `faultmaven/modules/agent/tools/kb_qa.py`) builds a combined filter:
 
 ```python
 {"$or": [
@@ -82,8 +82,8 @@ KnowledgeVectorStore(client=kb_client)     # permanent KB collections
 
 # Evidence client injected into ephemeral store
 CaseVectorStore(client=evidence_client)    # dynamic case_{id} collections
-client = chromadb.HttpClient(host="chromadb.faultmaven.local", port=30080)
-private_collection = client.get_or_create_collection(f"kb_private_{user_id}")
+```
+
 ---
 
 ## 2. Vector Storage Systems
@@ -95,14 +95,14 @@ private_collection = client.get_or_create_collection(f"kb_private_{user_id}")
 **Lifecycle**: Permanent (user/admin-controlled deletion)
 **Implementation**: `faultmaven/infrastructure/persistence/chromadb_store.py` (ChromaDBVectorStore)
 
-**Scope Isolation**: Metadata fields `scope`, `owner_id`, `team_id` stored at ingestion. The unified `kb_qa` tool automatically filters by the user's accessible scopes.
+**Scope Isolation**: Metadata fields `scope`, `owner_id`, `team_id` stored at ingestion. The unified `answer_from_kb` tool automatically filters by the user's accessible scopes.
 
 **Characteristics**:
 
 - Documents persist indefinitely (no TTL)
 - BGE-M3 embeddings for semantic search
 - Cross-scope relevance ranking (global and personal results compete on relevance)
-- Single tool (`kb_qa`) returns best results regardless of scope
+- Single tool (`answer_from_kb`) returns best results regardless of scope
 
 ### 2.2 Case Working Memory
 
@@ -116,7 +116,7 @@ private_collection = client.get_or_create_collection(f"kb_private_{user_id}")
 - Collections created on-demand when first document added
 - Deleted when case closes via `delete_case_collection()`
 - Case-scoped search (only within current case)
-- Used by `case_evidence_search` tool
+- Used by the `answer_from_case_evidence` tool
 
 ### 2.3 Additional Collections
 
@@ -239,24 +239,28 @@ await vector_store.delete_documents_by_parent_id(document_id)
 
 Redis is not used for KB document storage. Document metadata persists in SQLite across restarts.
 
-### 3.3 Global KB Administration
+### 3.3 Global-Scope Admin Ingestion
 
 **Batch Ingestion Flow**:
 
 ```python
-# Admin uploads curated content
-from faultmaven.tools.knowledge_ingester import KnowledgeIngester
+# Admin ingests curated global content into the unified KB
+from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 
-ingester = KnowledgeIngester()
-await ingester.ingest_directory("./knowledge_base_articles/")
+ingester = container.get_knowledge_ingester()
+await ingester.ingest_directory(
+    path="./resources/knowledge/builtin/",
+    scope="global",
+)
 
 # Steps:
-1. Parse markdown files
-2. Extract frontmatter metadata
-3. Generate embeddings (BGE-M3)
-4. Batch insert to global_kb collection
-5. Rebuild search index
+# 1. Parse markdown files
+# 2. Extract frontmatter metadata
+# 3. Generate embeddings (BGE-M3, 1024-dim)
+# 4. Batch insert to faultmaven_kb with scope="global"
 ```
+
+On first startup, FaultMaven auto-ingests 59 built-in runbooks from `resources/knowledge/builtin/` with `scope="global"`.
 
 ---
 
@@ -302,43 +306,28 @@ User Query: "How to diagnose PostgreSQL connection timeouts?"
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 Multi-Collection Search (User KB with Sharing)
+### 4.2 Scope-Filtered Search (Unified KB)
 
-**Hybrid Search Pattern**:
+**Single-collection pattern**: Every KB query runs against `faultmaven_kb` with a mandatory scope filter derived from the caller's identity. There is no multi-collection merge — ChromaDB's metadata pushdown + HNSW returns the top-K globally relevant results across all accessible scopes in one round-trip.
 
 ```python
 async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
-    results = []
-
-    # 1. Search user's private collection
-    private_results = await chromadb.query(
-        collection=f"kb_private_{user_id}",
-        query_texts=[query],
-        n_results=k
-    )
-    results.extend(private_results)
-
-    # 2. Search shared collection with metadata filter
     user_teams = await get_user_teams(user_id)
-    user_orgs = await get_user_orgs(user_id)
 
-    shared_results = await chromadb.query(
-        collection="kb_shared",
-        query_texts=[query],
-        where={
+    return await knowledge_vector_store.search(
+        query=query,
+        k=k,
+        scope_filter={
             "$or": [
-                {"allowed_users": {"$contains": user_id}},
-                {"allowed_teams": {"$in": user_teams}},
-                {"organization_id": {"$in": user_orgs}}
+                {"scope": "global"},
+                {"$and": [{"scope": "personal"}, {"owner_id": user_id}]},
+                {"$and": [{"scope": "team"}, {"team_id": {"$in": user_teams}}]},
             ]
         },
-        n_results=k
     )
-    results.extend(shared_results)
-
-    # 3. Merge and re-rank by score
-    return sorted(results, key=lambda x: x.score, reverse=True)[:k]
 ```
+
+`KnowledgeVectorStore` rejects any `faultmaven_kb` query missing the scope filter — cross-tenant isolation is infrastructure-enforced, not application-enforced.
 
 ### 4.3 Performance Characteristics
 
@@ -360,47 +349,30 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
 
 ## 5. Collection Lifecycle Management
 
-### 5.1 Global KB (global_kb)
+### 5.1 Unified KB Collection (`faultmaven_kb`)
 
-**Lifecycle**: Permanent (never deleted)
+**Lifecycle**: Permanent. Single collection created at deployment; never deleted as a whole. Individual documents are added, updated, or removed by users and admins. Global, personal, and team content coexist in this collection, distinguished by the `scope` metadata field.
 
 **Creation**:
+
 ```bash
-# Automatic on first document insert
-python -m faultmaven.tools.knowledge_ingester --init
+# Automatic at deployment. On first startup, FaultMaven auto-ingests the 59
+# built-in runbooks from resources/knowledge/builtin/ with scope="global".
 ```
 
 **Updates**:
-- Admin-only via `KnowledgeIngester`
-- Versioned updates (old docs archived)
-- Index rebuild after batch updates
+
+- Global-scope content: admin-only, ingested via the `KnowledgeIngester` service
+- Personal-scope content: added via `POST /api/v1/knowledge/documents` by the owner
+- Team-scope content: added via the same endpoint with `scope=team` and a `team_id`
+- Deletion of individual documents via `delete_documents_by_parent_id()`
 
 **Backup**:
-- Daily snapshot to S3
-- Point-in-time recovery available
 
-### 5.2 User KB Collections
+- Daily snapshot of the `data/chroma-kb/` directory (local) or of the external ChromaDB instance (cloud)
+- Point-in-time recovery from snapshots
 
-**Private Collections** (`kb_private_{user_id}`):
-- **Creation**: On-demand when user uploads first document
-- **Lifecycle**: Permanent (user-controlled deletion)
-- **Deletion**: When user deletes account (cascade delete)
-
-**Shared Collection** (`kb_shared`):
-- **Creation**: System-initialized on deployment
-- **Lifecycle**: Permanent
-- **Access Control**: Metadata-based filtering during queries
-
-**Management Operations**:
-```python
-# Create user KB collection
-await user_kb_store.create_collection(user_id)
-
-# Delete user KB (account deletion)
-await user_kb_store.delete_collection(f"kb_private_{user_id}")
-```
-
-### 5.3 Case Collections (case_{case_id})
+### 5.2 Case Collections (`case_{case_id}`)
 
 **Lifecycle**: Case lifetime + 7 days grace period
 
@@ -502,13 +474,13 @@ async def cleanup_expired_case_collections():
 }
 ```
 
-### 6.3 Global KB Query (via Tool)
+### 6.3 KB Query (via Tool)
 
-**Agent Tool**: `answer_from_global_kb`
+**Agent Tool**: `answer_from_kb` (unified — serves all scopes via metadata filter)
 
 ```python
 # Tool invocation (internal)
-result = await answer_from_global_kb.execute({
+result = await answer_from_kb.execute({
     "question": "How to analyze Java thread dumps?",
     "k": 5
 })
@@ -542,13 +514,12 @@ chromadb.embedding_generation_ms:
   - p95: 150ms
 
 chromadb.collection_count:
-  - global_kb: 1
-  - user_kb_*: ~1000 (per user)
+  - faultmaven_kb: 1 (plus faultmaven_runbooks, knowledge_items)
   - case_*: ~500 (active cases)
 
 chromadb.document_count:
-  - global_kb: ~5000 articles
-  - avg_per_user_kb: ~200 documents
+  - faultmaven_kb (global): ~5000 articles
+  - faultmaven_kb (personal): ~200 per user avg
   - avg_per_case: ~50 evidence items
 ```
 
@@ -560,31 +531,34 @@ chromadb.document_count:
 ### 7.2 Backup & Restore
 
 **Backup Strategy**:
+
 ```bash
 # Daily snapshot to S3
-chromadb-backup.sh --collection global_kb --destination s3://faultmaven-backups/chromadb/
+chromadb-backup.sh --collection faultmaven_kb --destination s3://faultmaven-backups/chromadb/
 
 # Retention: 30 days
 # Incremental: Yes (only changed documents)
 ```
 
 **Restore Procedure**:
+
 ```bash
 # Restore from snapshot
-chromadb-restore.sh --collection global_kb --source s3://faultmaven-backups/chromadb/2025-01-22/
+chromadb-restore.sh --collection faultmaven_kb --source s3://faultmaven-backups/chromadb/2025-01-22/
 
 # Verify integrity
-python -m faultmaven.tools.verify_collection --collection global_kb
+python scripts/verify_vector_storage.py --collection faultmaven_kb
 ```
 
 ### 7.3 Index Maintenance
 
 **Reindexing**:
+
 ```python
 # Rebuild index for performance
-from faultmaven.infrastructure.persistence.global_kb_vector_store import GlobalKBVectorStore
+from faultmaven.infrastructure.knowledge.knowledge_vector_store import KnowledgeVectorStore
 
-store = GlobalKBVectorStore()
+store: KnowledgeVectorStore = container.get_knowledge_vector_store()
 await store.rebuild_index()
 # Rebuilds HNSW index for faster similarity search
 ```
@@ -620,8 +594,8 @@ await store.rebuild_index()
 
 ## Related Documentation
 
-- **[schemas/knowledge-schema.md](./schemas/knowledge-schema.md)** - Complete schema for User KB, Case Working Memory, Global KB
-- **[../knowledge-and-ai/knowledge-base-architecture.md](../knowledge-and-ai/knowledge-base-architecture.md)** - 3-tier KB system, storage and retrieval architecture
+- **[schemas/knowledge-schema.md](./schemas/knowledge-schema.md)** - Schema for the unified KB and Case Working Memory
+- **[../knowledge-and-ai/knowledge-base-architecture.md](../knowledge-and-ai/knowledge-base-architecture.md)** - KB system architecture, storage, and retrieval
 - **[../knowledge-and-ai/runbook-content-architecture.md](../knowledge-and-ai/runbook-content-architecture.md)** - Runbook taxonomy, quality gates, lifecycle
 - **[overview.md](./overview.md)** - Complete storage architecture overview
 
@@ -630,15 +604,20 @@ await store.rebuild_index()
 ## Implementation Files
 
 **Repository Implementations**:
-- `faultmaven/infrastructure/persistence/user_kb_vector_store.py` - User KB storage
-- `faultmaven/infrastructure/persistence/case_vector_store.py` - Case Working Memory
-- `faultmaven/infrastructure/persistence/global_kb_vector_store.py` - Global KB storage
+
+- `faultmaven/infrastructure/knowledge/knowledge_vector_store.py` - Unified KB vector store (`faultmaven_kb`)
+- `faultmaven/infrastructure/persistence/chromadb_store.py` - Generic ChromaDB adapter (`ChromaDBVectorStore`)
+- `faultmaven/infrastructure/persistence/case_vector_store.py` - Case Working Memory (ephemeral `case_{id}` collections)
+- `faultmaven/infrastructure/knowledge/runbook_kb.py` - Runbook similarity KB (`faultmaven_runbooks`)
 
 **Ingestion & Query**:
-- `faultmaven/tools/knowledge_ingester.py` - Batch document ingestion (admin)
-- `faultmaven/tools/global_kb_qa.py` - Global KB Q&A tool
-- `faultmaven/modules/preprocessing_service.py` - Case evidence preprocessing
+
+- `faultmaven/modules/knowledge/domain/services/ingestion.py` - Batch document ingestion
+- `faultmaven/modules/agent/tools/kb_qa.py` - Unified `answer_from_kb` tool (all scopes)
+- `faultmaven/modules/agent/tools/case_evidence_qa.py` - `answer_from_case_evidence` tool
+- `faultmaven/modules/preprocessing/` - Case evidence preprocessing
 
 **API Endpoints**:
-- `faultmaven/api/v1/routes/case.py` - Evidence upload and search
-- `faultmaven/api/v1/routes/knowledge.py` - User KB management
+
+- `faultmaven/modules/case/api/` - Evidence upload and search
+- `faultmaven/modules/knowledge/api/routes.py` - KB management

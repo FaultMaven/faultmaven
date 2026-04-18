@@ -1,11 +1,11 @@
 # Module Organization Design: Vertical vs Horizontal
 
-**Version**: 2.1
-**Date**: 2026-01-10
+**Version**: 2.2
+**Date**: 2026-04-18
 **Status**: Schema-Verified Recommendation
 **Related**: [Architectural Design Principles](architectural-design-principles.md)
 
-**Schema Verification**: This document has been verified against `case-storage-design.md` and `data-storage-design.md` (2026-01-09).
+**Schema Verification**: This document is verified against the live schema via [../data-and-storage/schemas/case-schema.md](../data-and-storage/schemas/case-schema.md), [../data-and-storage/er-diagram.md](../data-and-storage/er-diagram.md), and `faultmaven/infrastructure/persistence/models.py`.
 
 ---
 
@@ -27,13 +27,13 @@ A module is **VERTICAL** (business domain) if and only if it meets **ALL THREE**
 
 ### Schema-Verified Classification (2026-01-09)
 
-**Based on review of `case-storage-design.md` and `data-storage-design.md`:**
+**Based on review of the live schema (see [../data-and-storage/er-diagram.md](../data-and-storage/er-diagram.md) for the authoritative table enumeration):**
 
 | Module | Schema Verification | Classification |
 |--------|-------------------|----------------|
-| **Case** | Owns 11 PostgreSQL tables (cases, evidence, hypotheses, solutions, messages, reports, etc.) | ✅ **VERTICAL** |
-| **Auth** | Owns `users` and `organizations` PostgreSQL tables | ✅ **VERTICAL** |
-| **Knowledge** | Owns `kb_documents` PostgreSQL table + ChromaDB collections | ✅ **VERTICAL** |
+| **Case** | Owns the case-domain tables (cases, evidence, hypotheses, solutions, case_messages, case_actions, uploaded_files, reports, and related high-cardinality tables) | ✅ **VERTICAL** |
+| **Auth** | Owns the 11 user-domain tables (`users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes`) | ✅ **VERTICAL** |
+| **Knowledge** | Owns `knowledge_items` + `knowledge_suggestions` PostgreSQL tables + the unified `faultmaven_kb` ChromaDB collection | ✅ **VERTICAL** |
 | **Evidence** | Evidence table has FK to `cases` → part of Case module's schema | ❌ **DOMAIN SERVICE** |
 | **Agent** | No agent_* tables; `agent_tool_calls` is case audit data | ❌ **DOMAIN SERVICE** |
 | **Report** | Reports stored in Case module's `reports` table (FK to cases) - TD-001 complete | ❌ **DOMAIN SERVICE** |
@@ -159,8 +159,8 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 ### Example 4: `modules/knowledge/` - ✅ VERTICAL
 
 **Criterion 1: Domain Data Ownership** ✅
-- Owns table: `kb_documents` (PostgreSQL) + ChromaDB collections (`user_kb_{user_id}`, `global_kb`, `kb_shared`)
-- Schema reference: `data-storage-design.md` Section 5.5.2 and `004_kb_sharing_infrastructure.sql`
+- Owns tables: `knowledge_items` + `knowledge_suggestions` (PostgreSQL) + the unified `faultmaven_kb` ChromaDB collection with metadata-based scope filtering (scope, owner_id, team_id)
+- Schema reference: `../data-and-storage/overview.md` Section 5.5.2 and `004_kb_sharing_infrastructure.sql`
 - These represent business entities (knowledge documents, runbooks)
 - **Result**: PASS
 
@@ -185,7 +185,7 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 **Criterion 1: Domain Data Ownership** ❌
 - **Does NOT own** the `evidence` table
 - Evidence table has `case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE`
-- Schema verification: `case-storage-design.md` Section 4.3 - evidence is part of Case module's 10-table schema
+- Schema verification: `../data-and-storage/schemas/case-schema.md` Section 4.3 - evidence is part of Case module's schema
 - Evidence is owned by Case module, not Evidence module
 - **Result**: FAIL
 
@@ -210,7 +210,7 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 **Criterion 1: Domain Data Ownership** ❌
 - **No `agent_*` tables** in the schema
 - Any `agent_tool_calls` table (if exists) stores case audit data, not agent state
-- Schema verification: `case-storage-design.md` Section 4.1 lists 10 tables, none are agent-owned
+- Schema verification: `../data-and-storage/schemas/case-schema.md` Section 4.1 lists only case-owned tables; none are agent-owned
 - Agent's LangGraph state is ephemeral/in-memory
 - **Result**: FAIL
 
@@ -235,7 +235,7 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 **Criterion 1: Domain Data Ownership** ❌
 - **Does NOT own** the `reports` table
 - Reports stored in Case module's `reports` table with FK to `cases(case_id) ON DELETE CASCADE`
-- Schema verification: `case-storage-design.md` Section 4.9 - `reports` table is part of Case module's 11-table schema
+- Schema verification: `../data-and-storage/schemas/case-schema.md` Section 4.9 - `reports` table is part of Case module's schema
 - Reports are owned by Case module, not Report module (same pattern as Evidence module)
 - **Result**: FAIL
 
@@ -798,13 +798,13 @@ from faultmaven.modules.agent.domain.orchestrator import InvestigationOrchestrat
 
 | Module | Domain Data? | Business Logic? | Domain Capability? | Category | Schema Verification |
 |--------|-------------|-----------------|-------------------|----------|---------------------|
-| `modules/auth/` | ✅ Yes (`users`, `organizations`) | ✅ Yes | ✅ Yes | ✅ **VERTICAL** | `case-storage-design.md` Section 4.9 |
-| `modules/case/` | ✅ Yes (10 tables including `evidence`) | ✅ Yes | ✅ Yes | ✅ **VERTICAL** | `case-storage-design.md` Section 4.1 |
-| `modules/knowledge/` | ✅ Yes (`kb_documents` + ChromaDB) | ✅ Yes | ✅ Yes | ✅ **VERTICAL** | `data-storage-design.md` Section 5.5.2 |
-| `modules/evidence/` | ❌ No (data in Case tables) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | `case-storage-design.md` Section 4.3 |
+| `modules/auth/` | ✅ Yes (`users`, `organizations`, RBAC, teams, OAuth) | ✅ Yes | ✅ Yes | ✅ **VERTICAL** | `../data-and-storage/schemas/user-schema.md` |
+| `modules/case/` | ✅ Yes (case-domain tables including `evidence` and `reports`) | ✅ Yes | ✅ Yes | ✅ **VERTICAL** | `../data-and-storage/schemas/case-schema.md` Section 4.1 |
+| `modules/knowledge/` | ✅ Yes (`knowledge_items` + unified `faultmaven_kb`) | ✅ Yes | ✅ Yes | ✅ **VERTICAL** | `../data-and-storage/overview.md` Section 5.5.2 |
+| `modules/evidence/` | ❌ No (data in Case tables) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | `../data-and-storage/schemas/case-schema.md` Section 4.3 |
 | `modules/agent/` | ❌ No (no agent tables) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | No agent tables in schema |
 | `modules/preprocessing/` | ❌ No (operates on Evidence data) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | Data classification, extraction, chunking |
-| `modules/report/` | ❌ No (data in Case `reports` table) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | `case-storage-design.md` Section 4.9, `data-storage-design.md` Section 8 (TD-001 complete) |
+| `modules/report/` | ❌ No (data in Case `reports` table) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | `../data-and-storage/schemas/case-schema.md` Section 4.9, `../data-and-storage/overview.md` Section 8 (TD-001 complete) |
 | `infrastructure/llm/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Provider abstraction |
 | `infrastructure/storage/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Provider abstraction |
 | `infrastructure/logging/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Cross-cutting concern |
@@ -836,7 +836,7 @@ These modules implement **business capabilities** and should have full vertical 
 
 #### 1. **`modules/auth/`** ✅ **VERTICAL** (Schema-Verified)
 - **Business Logic**: User authentication, authorization, RBAC, session management
-- **Owns Data**: `users` and `organizations` PostgreSQL tables (see `case-storage-design.md` Section 4.9)
+- **Owns Data**: `users` and `organizations` PostgreSQL tables (see `../data-and-storage/schemas/case-schema.md` Section 4.9)
 - **Schema Reference**: Core tables include `users`, `organizations`, `sessions`
 - **Cross-Module Usage**: All modules depend on auth for access control
 - **Future Extraction**: Could become identity microservice
@@ -851,8 +851,8 @@ These modules implement **business capabilities** and should have full vertical 
 
 #### 2. **`modules/case/`** ✅ **VERTICAL** (Schema-Verified)
 - **Business Logic**: Case lifecycle, investigation sessions, case status management
-- **Owns Data**: **10 PostgreSQL tables** - `cases`, `evidence`, `hypotheses`, `solutions`, `case_messages`, `uploaded_files`, `case_status_transitions`, etc.
-- **Schema Reference**: See `case-storage-design.md` Section 4.1 (10-table hybrid schema)
+- **Owns Data**: the case-domain PostgreSQL tables — `cases`, `evidence`, `hypotheses`, `solutions`, `case_messages`, `uploaded_files`, `case_actions` (audit table; Python alias `CaseStatusTransitionModel`), `case_checkpoints`, `reports`, and related high-cardinality tables
+- **Schema Reference**: See `../data-and-storage/schemas/case-schema.md` Section 4.1 (hybrid schema)
 - **Key Insight**: Evidence table has `FK → cases(case_id) ON DELETE CASCADE` - evidence is owned by Case module
 - **Cross-Module Usage**: Evidence, Agent, Report services operate on Case data
 - **Future Extraction**: Core case management microservice
@@ -862,13 +862,13 @@ These modules implement **business capabilities** and should have full vertical 
   ├── contracts.py          # ICaseQuery, ICaseService, CaseDTO
   ├── api/                  # Case endpoints
   ├── domain/               # Case business logic
-  └── infrastructure/       # Case persistence (10-table hybrid schema)
+  └── infrastructure/       # Case persistence (hybrid schema)
   ```
 
 #### 3. **`modules/knowledge/`** ✅ **VERTICAL** (Schema-Verified)
 - **Business Logic**: Knowledge base management, RAG operations, document indexing
-- **Owns Data**: `kb_documents` PostgreSQL table + ChromaDB collections (`user_kb_{user_id}`, `global_kb`, `kb_shared`)
-- **Schema Reference**: See `data-storage-design.md` Section 5.5.2 and `004_kb_sharing_infrastructure.sql`
+- **Owns Data**: `knowledge_items` + `knowledge_suggestions` PostgreSQL tables + the unified `faultmaven_kb` ChromaDB collection (scope/owner_id/team_id metadata filtering — no per-user collections)
+- **Schema Reference**: See `../data-and-storage/overview.md` Section 5.5.2 and `004_kb_sharing_infrastructure.sql`
 - **Cross-Module Usage**: Agent service uses knowledge for RAG
 - **Future Extraction**: Knowledge management microservice
 - **Structure**:
@@ -877,7 +877,7 @@ These modules implement **business capabilities** and should have full vertical 
   ├── contracts.py          # IKnowledgeService, IKnowledgeQuery
   ├── api/                  # Knowledge endpoints
   ├── domain/               # Knowledge business logic
-  └── infrastructure/       # Knowledge persistence (kb_documents + ChromaDB)
+  └── infrastructure/       # Knowledge persistence (knowledge_items + faultmaven_kb)
   ```
 
 ---
@@ -888,9 +888,9 @@ These modules implement **business logic** but **operate on data owned by other 
 
 #### 1. **`modules/evidence/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
 - **Business Logic**: Evidence collection, validation, artifact management, preprocessing
-- **Data Ownership**: ❌ **NO** - Evidence table is part of Case module's 10-table schema
+- **Data Ownership**: ❌ **NO** - Evidence table is part of Case module's schema
 - **Schema Verification**: `evidence` table has `case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE`
-- **Reference**: See `case-storage-design.md` Section 4.3
+- **Reference**: See `../data-and-storage/schemas/case-schema.md` Section 4.3
 - **Rationale**: Evidence provides collection logic but stores data in Case-owned tables
 - **Structure**: Keep as domain service (business logic only, no persistence ownership)
   ```
@@ -905,7 +905,7 @@ These modules implement **business logic** but **operate on data owned by other 
 - **Business Logic**: AI agent orchestration via LangGraph, investigation workflows, milestone-based orchestration
 - **Data Ownership**: ❌ **NO** - No `agent_*` tables in schema
 - **Schema Verification**: `agent_tool_calls` table (if exists) stores case audit data, not agent state
-- **Reference**: See `case-storage-design.md` Section 4.1 (no agent tables listed in 10-table schema)
+- **Reference**: See `../data-and-storage/schemas/case-schema.md` Section 4.1 (no agent-owned tables appear in the case schema)
 - **Rationale**: Agent orchestrates investigations but all persistent state flows through Case module
 - **Structure**: Keep as domain service (LangGraph orchestration, operates on Case data)
   ```
@@ -920,7 +920,7 @@ These modules implement **business logic** but **operate on data owned by other 
 #### 3. **`modules/report/`** ❌ **DOMAIN SERVICE** (Schema-Verified, TD-001 Complete)
 - **Business Logic**: Report generation, runbook creation, post-mortem generation
 - **Data Ownership**: ❌ **NO** - Reports stored in PostgreSQL `reports` table (owned by Case module, FK to cases)
-- **Schema Verification**: See `case-storage-design.md` Section 4.9 and `data-storage-design.md` Section 8 - "Storage: PostgreSQL (persistent, FK to cases)" - TD-001 migration complete
+- **Schema Verification**: See `../data-and-storage/schemas/case-schema.md` Section 4.9 and `../data-and-storage/overview.md` Section 8 - "Storage: PostgreSQL (persistent, FK to cases)" - TD-001 migration complete
 - **Rationale**: Report module generates reports but data is owned by Case module (same as Evidence module pattern)
 - **Retention**: Persistent for lifetime of case (symmetric to evidence, cascade delete with case)
 - **Structure**: Domain service (generates reports, delegates persistence to Case repository)
@@ -1083,17 +1083,17 @@ faultmaven/
 │   │   ├── domain/
 │   │   └── infrastructure/           # users, organizations tables
 │   │
-│   ├── case/                         # ✅ Vertical (owns 10 tables including evidence)
+│   ├── case/                         # ✅ Vertical (owns case-domain tables including evidence and reports)
 │   │   ├── contracts.py              # ICaseService, ICaseQuery, CaseDTO
 │   │   ├── api/
 │   │   ├── domain/
 │   │   └── infrastructure/           # cases, evidence, hypotheses, solutions, etc.
 │   │
-│   ├── knowledge/                    # ✅ Vertical (owns kb_documents + ChromaDB)
+│   ├── knowledge/                    # ✅ Vertical (owns knowledge_items + faultmaven_kb)
 │   │   ├── contracts.py              # IKnowledgeService, IKnowledgeQuery
 │   │   ├── api/
 │   │   ├── domain/
-│   │   └── infrastructure/           # kb_documents table + ChromaDB
+│   │   └── infrastructure/           # knowledge_items table + faultmaven_kb collection
 │   │
 │   ├── evidence/                     # ❌ Domain Service (no data ownership)
 │   │   ├── domain/                   # Evidence collection, validation logic
@@ -1317,8 +1317,8 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 | Component | Organization | Reason |
 |-----------|-------------|--------|
 | `modules/auth/` | ✅ Vertical | Owns domain data (users, organizations tables) |
-| `modules/case/` | ✅ Vertical | Owns domain data (11 tables including evidence and reports) |
-| `modules/knowledge/` | ✅ Vertical | Owns domain data (kb_documents + ChromaDB) |
+| `modules/case/` | ✅ Vertical | Owns case-domain data (cases, evidence, hypotheses, solutions, messages, reports, and related tables) |
+| `modules/knowledge/` | ✅ Vertical | Owns domain data (knowledge_items + faultmaven_kb) |
 | `modules/evidence/` | ❌ Domain Service | Business logic only; data owned by Case module |
 | `modules/agent/` | ❌ Domain Service | Orchestration logic; no persistent state ownership |
 | `modules/preprocessing/` | ❌ Domain Service | Data classification, extraction, chunking; operates on Evidence data |
@@ -1345,19 +1345,19 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-01-09 | Initial recommendations with 6 vertical modules |
-| 2.0 | 2026-01-09 | **Schema-verified revision** - Only 3 vertical modules (Case, Auth, Knowledge) after reviewing `case-storage-design.md` and `data-storage-design.md`. Evidence, Agent, and Report reclassified as Domain Services. |
+| 2.0 | 2026-01-09 | **Schema-verified revision** - Only 3 vertical modules (Case, Auth, Knowledge) after reviewing `../data-and-storage/schemas/case-schema.md` and `../data-and-storage/overview.md`. Evidence, Agent, and Report reclassified as Domain Services. |
 | 2.1 | 2026-01-10 | **Domain Service structural guidance** - Added detailed implementation patterns, structural options, boundary enforcement strategies, and migration steps (Phase 2.5) for Evidence, Agent, Report modules. Consolidated vertical-vs-layer structuring guidance into this document. |
 
 ### Key Changes in v2.0
 
 | Module | v1.0 Classification | v2.0 Classification | Reason |
 |--------|---------------------|---------------------|--------|
-| Evidence | ✅ Vertical | ❌ Domain Service | Evidence table has FK to cases - part of Case module's 11-table schema |
+| Evidence | ✅ Vertical | ❌ Domain Service | Evidence table has FK to cases - part of Case module's schema |
 | Agent | ✅ Vertical | ❌ Domain Service | No agent_* tables; agent_tool_calls is case audit data, not agent state |
-| Report | ✅ Vertical | ❌ Domain Service | Reports table has FK to cases - part of Case module's 11-table schema (TD-001 complete) |
-| Case | ✅ Vertical | ✅ Vertical | Owns 11 tables including evidence and reports (schema verified, TD-001 complete) |
+| Report | ✅ Vertical | ❌ Domain Service | Reports table has FK to cases - part of Case module's schema (TD-001 complete) |
+| Case | ✅ Vertical | ✅ Vertical | Owns case-domain tables including evidence and reports (schema verified, TD-001 complete) |
 | Auth | ✅ Vertical | ✅ Vertical | Owns users and organizations tables (schema verified) |
-| Knowledge | ✅ Vertical | ✅ Vertical | Owns kb_documents + ChromaDB collections (schema verified) |
+| Knowledge | ✅ Vertical | ✅ Vertical | Owns knowledge_items + faultmaven_kb collection (schema verified) |
 
 **Impact**: Document now accurately reflects actual schema ownership, not assumptions. This prevents architectural misalignment and clarifies that only 3 modules truly own domain data.
 
@@ -1385,9 +1385,9 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
    - ✅ Updated Case module table count from 10 to 11
 
 2. **Storage Design Update** ✅
-   - ✅ Updated Report storage section in `data-storage-design.md` to PostgreSQL (persistent)
+   - ✅ Updated Report storage section in `../data-and-storage/overview.md` to PostgreSQL (persistent)
    - ✅ Removed all TTL-based expiration references
-   - ✅ Updated `case-storage-design.md` with reports table schema
+   - ✅ Updated `../data-and-storage/schemas/case-schema.md` with reports table schema
 
 3. **Code Migration** ✅
    - ✅ Created `reports` table migration script (`005_add_reports_table.sql`)
@@ -1406,7 +1406,7 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 - ✅ Reports persist permanently (no TTL expiration)
 - ✅ Reports deleted when parent case is deleted (CASCADE)
 - ✅ Report service uses `CaseRepository` for all persistence
-- ✅ Schema documentation updated in `case-storage-design.md` and `data-storage-design.md`
+- ✅ Schema documentation updated in `../data-and-storage/schemas/case-schema.md` and `../data-and-storage/overview.md`
 - ✅ All legacy code removed (`IReportStore`, `RedisReportStore`)
 
 **Result**: Reports are now first-class persistent entities stored in PostgreSQL via Case module's repository, with the same lifecycle as evidence (investigation inputs). Report module remains a Domain Service that generates reports but delegates persistence to Case module.
@@ -1416,4 +1416,4 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 **Document Owner**: Engineering Leadership
 **Status**: Schema-Verified Active Recommendation
 **Last Updated**: 2026-01-09
-**Schema Verification**: Verified against `case-storage-design.md` v3.1 and `data-storage-design.md` v2.0
+**Schema Verification**: Verified against the live schema via `../data-and-storage/schemas/case-schema.md`, `../data-and-storage/er-diagram.md`, and `faultmaven/infrastructure/persistence/models.py`.

@@ -155,19 +155,20 @@ module/
 # Agent module tools (investigation capabilities)
 modules/agent/tools/
 ├── base.py                 # Base tool class
-├── knowledge_base.py       # KB interaction tool
+├── kb_qa.py                # Unified KB Q&A (answer_from_kb — all scopes via metadata filter)
+├── case_evidence_qa.py     # Case evidence queries (answer_from_case_evidence)
+├── knowledge_base.py       # Generic KB interaction tool
 ├── document_qa_tool.py     # Document Q&A
-├── global_kb_qa.py         # Global knowledge base queries
-├── user_kb_qa.py           # User-specific KB queries
-├── case_evidence_qa.py     # Case evidence queries
+├── kb_tool_adapter.py      # Adapter between unified kb_qa and downstream tools
+├── kb_config.py            # Shared KB tool configuration
 ├── list_evidence_tool.py   # List available evidence
 ├── read_file_tool.py       # File reading tool
 ├── search_file_tool.py     # Query strategy: keyword/regex/extractor search on raw files
 ├── deep_analysis_tool.py   # Query strategy: interpreted search (dedicated LLM call on file sections)
+├── vectorize_file_tool.py  # Vectorize a file into the case vector store
 ├── web_search.py           # Web search integration (Tavily)
 └── kb_configs/             # KB tool configurations
-    ├── global_kb_config.py
-    ├── user_kb_config.py
+    ├── unified_kb_config.py
     └── case_evidence_config.py
 ```
 
@@ -551,7 +552,7 @@ Key configuration in `.env`:
 | External Tools | `ENABLE_WEB_SEARCH`, `TAVILY_API_KEY` | Web search capability |
 | Database | `DATABASE_URL`, `DB_BACKEND` | SQLite (default) or PostgreSQL |
 | Sessions | `REDIS_HOST`, `REDIS_URL` | FakeRedis (default) or real Redis |
-| Vectors | `VECTOR_BACKEND`, `CHROMADB_URL` | `inmemory` or `chromadb` |
+| Vectors | `VECTOR_STORAGE_TYPE`, `CHROMADB_URL` | `chromadb` (local PersistentClient by default; external server via `CHROMADB_URL`) |
 | Auth | `AUTH_MODE`, `JWT_SECRET_KEY` | `local` or `oauth` |
 | OAuth | `OAUTH_ENABLED`, `JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH` | OAuth 2.0 settings |
 | JWT | `JWT_ACCESS_TOKEN_EXPIRY`, `JWT_REFRESH_TOKEN_EXPIRY` | Token lifetimes (minutes) |
@@ -588,11 +589,11 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
-### Key Tables (30 total, 3 domains)
+### Key Tables (33 total, 3 domains)
 
 **User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes`
 
-**Case domain:** `cases` (includes `is_archived` bool + `archived_at` for data lifecycle), `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `evidence`, `evidence_artifacts`, `hypotheses`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `agent_tool_calls_v2`, `standalone_evidence`, `knowledge_items`, `knowledge_suggestions`, `sessions`
+**Case domain:** `cases` (includes `is_archived` bool + `archived_at` for data lifecycle), `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `evidence`, `evidence_artifacts`, `hypotheses`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `agent_tool_calls_v2`, `standalone_evidence`, `knowledge_items`, `knowledge_suggestions`, `sessions`, `reports`, `conversion_jobs`, `conversion_drafts`
 
 **Config domain:** `llm_config_overrides` (dashboard-managed settings, hot-reloaded at runtime — cloud mode only; local mode uses .env as sole source of truth)
 
@@ -600,7 +601,7 @@ All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/
 
 ### Migration
 
-Single clean baseline: `001_clean_baseline` (revision `424078e5aa04`). Creates all 30 tables + RBAC seed data.
+Baseline `001_clean_baseline` (revision `424078e5aa04`) creates 30 tables + RBAC seed data. Subsequent migrations add `conversion_jobs`/`conversion_drafts` (20260326) and `reports` (20260329) for a current total of 33 tables.
 
 ## Key Patterns
 
@@ -721,7 +722,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `faultmaven/modules/knowledge/api/conversion_routes.py` | Conversion API endpoints (feature-flagged) |
 | `.env.example` | Configuration template |
 | `pyproject.toml` | Dependencies and tool config |
-| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 30 tables) |
+| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 33 tables) |
 | `faultmaven/config/llm_config_overrides.py` | Config override application + hot-reload (cloud mode only) |
 | `faultmaven/api/routes/admin_config.py` | Admin endpoints: LLM config, env status, features, connection test |
 | `.importlinter` | Architecture contracts (13 rules) |

@@ -1,9 +1,9 @@
 # FaultMaven Case Storage Design - Performant Production Standard
 
-**Version**: 3.3
+**Version**: 3.4
 **Status**: Authoritative Standard
 **Supersedes**: case-data-model-design.md, db-design-specifications.md
-**Last Updated**: 2026-02-07
+**Last Updated**: 2026-04-18
 
 > **IMPORTANT**: `organization_id` is **ONLY** stored on the `cases` table (top-level entity).
 > Child tables (evidence, hypotheses, solutions, etc.) do **NOT** have `organization_id` columns.
@@ -13,7 +13,7 @@
 
 ## Implementation Status
 
-**Current State** (as of 2026-01-26):
+**Current State** (as of 2026-04-18):
 
 | Component | Status | Location |
 |-----------|--------|----------|
@@ -195,10 +195,10 @@ class SQLiteCaseRepository(CaseRepository):
 
 ### 2.4 PostgreSQL Implementation (Production)
 
-**File**: `faultmaven/infrastructure/persistence/case_repository.py`
+**File**: `faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository.py`
 
 ```python
-class PostgreSQLCaseRepository(CaseRepository):
+class PostgreSQLHybridCaseRepository(CaseRepository):
     """Production repository using PostgreSQL-optimized SQL."""
 
     def __init__(self, db_session):
@@ -211,6 +211,8 @@ class PostgreSQLCaseRepository(CaseRepository):
         # - FILTER clauses for aggregates
         # - to_tsvector/ts_rank for full-text search
 ```
+
+> The legacy `PostgreSQLCaseRepository` class was replaced by `PostgreSQLHybridCaseRepository`; only the hybrid implementation exists in current code.
 
 **Characteristics**:
 
@@ -247,7 +249,9 @@ class Case(BaseModel):
     # Status & Lifecycle
     # ============================================================
     status: CaseStatus              # inquiry | investigating | resolved | closed
-    status_history: List[CaseStatusTransition]
+    # status_history is not an embedded column — transitions are persisted to the
+    # case_actions table (Python alias: CaseStatusTransitionModel). When hydrating
+    # a Case, the repository joins case_actions and projects the transitions.
     closure_reason: Optional[str]
 
     # ============================================================
@@ -276,7 +280,9 @@ class Case(BaseModel):
     degraded_mode: Optional[DegradedMode]    # PostgreSQL: JSONB
     escalation_state: Optional[EscalationState]  # PostgreSQL: JSONB
     documentation: DocumentationData         # PostgreSQL: JSONB
-    investigation_journal: List[JournalEntry]  # Metadata JSONB blob (append-only)
+    # investigation_journal is carried on the domain model as an append-only list;
+    # it is serialized into the cases.progress JSONB blob (field name: "journal").
+    # There is no dedicated column or table.
 
     # ============================================================
     # Progress Tracking
@@ -306,23 +312,26 @@ class Case(BaseModel):
 > fields in `cases_db` reference entities in `auth_db` but are enforced at the application layer,
 > not via database FK constraints.
 
-### 4.1 Table Design (10 Tables in cases_db)
+### 4.1 Table Design (10 case-domain tables in cases_db)
 
 ```
 Core Tables (2):
 ├── cases              -- Main case data + JSONB for low-cardinality items
-└── sessions           -- Session management (may move to auth_db)
+└── sessions           -- Session management
 
-High-Cardinality Tables (7):
+High-Cardinality Tables (8):
 ├── evidence           -- Investigation evidence (many per case)
 ├── hypotheses         -- Hypotheses being tested (many per case)
 ├── solutions          -- Proposed/verified solutions (few per case)
 ├── uploaded_files     -- File metadata (many per case)
 ├── case_messages      -- Turn-by-turn messages (very high volume)
-├── case_status_transitions  -- Audit trail (few per case)
+├── case_actions       -- Audit trail of actions & status transitions
+│                       -- (Python alias: CaseStatusTransitionModel)
 ├── case_checkpoints   -- State snapshots (one per turn)
 └── reports            -- Generated reports (few per case, versioned)
 ```
+
+The full live table count across user + case + knowledge + conversion + config domains is 33 — see `er-diagram.md` for the authoritative enumeration.
 
 ### 4.2 cases (Main Table)
 
@@ -444,7 +453,7 @@ CREATE TABLE evidence (
     -- ============================================================
     -- Classification
     -- ============================================================
-    category VARCHAR(30) NOT NULL,              -- observation | measurement | configuration | etc.
+    category VARCHAR(50) NOT NULL,              -- see EvidenceCategory enum below
     primary_purpose VARCHAR(100) NOT NULL,
 
     -- ============================================================
@@ -476,8 +485,14 @@ CREATE TABLE evidence (
 
     CONSTRAINT evidence_category_check
         CHECK (category IN (
-            'observation', 'measurement', 'configuration', 'timeline',
-            'third_party_report', 'code_artifact', 'communication'
+            -- EvidenceCategory enum (faultmaven/modules/case/domain/models.py)
+            'symptom_evidence',
+            'causal_evidence',
+            'mitigation_evidence',
+            'solution_evidence',
+            'resolution_evidence',    -- alias for solution_evidence
+            'contextual_evidence',
+            'rejected'
         )),
 
     CONSTRAINT evidence_source_check
@@ -486,6 +501,11 @@ CREATE TABLE evidence (
     CONSTRAINT evidence_form_check
         CHECK (form IN ('text', 'image', 'metric', 'structured'))
 );
+
+-- Note: EvidenceCategory describes the evidentiary role (why the artifact matters
+-- to the investigation). Data shape (LOGS, METRICS, CONFIGURATION, CODE, TEXT,
+-- IMAGE) is a separate enum — EvidenceSourceType — carried on the artifact row
+-- rather than on the evidence row.
 
 -- Indexes for evidence queries
 CREATE INDEX idx_evidence_case ON evidence(case_id);
@@ -703,10 +723,13 @@ CREATE INDEX idx_case_messages_created_at ON case_messages(created_at DESC);
 COMMENT ON TABLE case_messages IS 'Turn-by-turn conversation messages (high volume)';
 ```
 
-### 4.8 case_status_transitions (Audit Table)
+### 4.8 case_actions (Audit Table — Python alias: CaseStatusTransitionModel)
 
 ```sql
-CREATE TABLE case_status_transitions (
+-- The live table is case_actions. A Python-level alias (CaseStatusTransitionModel)
+-- points at this table for back-compat; there is no separate case_status_transitions
+-- table in the database.
+CREATE TABLE case_actions (
     transition_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
@@ -723,7 +746,7 @@ CREATE TABLE case_status_transitions (
     -- ============================================================
     transitioned_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT status_transitions_status_check
+    CONSTRAINT case_actions_status_check
         CHECK (
             from_status IN ('inquiry', 'investigating', 'resolved', 'closed') AND
             to_status IN ('inquiry', 'investigating', 'resolved', 'closed')
@@ -731,10 +754,10 @@ CREATE TABLE case_status_transitions (
 );
 
 -- Indexes
-CREATE INDEX idx_status_transitions_case ON case_status_transitions(case_id);
-CREATE INDEX idx_status_transitions_timestamp ON case_status_transitions(transitioned_at DESC);
+CREATE INDEX idx_case_actions_case ON case_actions(case_id);
+CREATE INDEX idx_case_actions_timestamp ON case_actions(transitioned_at DESC);
 
-COMMENT ON TABLE case_status_transitions IS 'Audit trail of status changes';
+COMMENT ON TABLE case_actions IS 'Audit trail of case actions and status transitions';
 ```
 
 ### 4.9 case_checkpoints (High-Cardinality Table)
@@ -851,48 +874,11 @@ COMMENT ON COLUMN reports.metadata IS 'Runbook-specific metadata: source (incide
 - Full-text search index on title and content for similarity queries
 - Cascade delete when parent case is deleted
 
-### 4.10 Supporting Tables (users, organizations, sessions)
+### 4.11 Supporting Tables
 
-```sql
-CREATE TABLE users (
-    user_id VARCHAR(255) PRIMARY KEY,
-    organization_id VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL UNIQUE,
-    display_name VARCHAR(200),
-    role VARCHAR(50) NOT NULL DEFAULT 'user',
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    last_active_at TIMESTAMP WITH TIME ZONE,
+`users`, `organizations`, and related auth/RBAC tables are defined in [user-schema.md](./user-schema.md) — that is the authoritative source for their DDL. They are not redefined here.
 
-    CONSTRAINT users_role_check
-        CHECK (role IN ('user', 'admin', 'system_admin'))
-);
-
-CREATE INDEX idx_users_org ON users(organization_id);
-CREATE INDEX idx_users_email ON users(email);
-
-CREATE TABLE organizations (
-    organization_id VARCHAR(255) PRIMARY KEY,
-    name VARCHAR(200) NOT NULL,
-    settings JSONB,
-    plan VARCHAR(50) DEFAULT 'free',
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT organizations_plan_check
-        CHECK (plan IN ('free', 'pro', 'enterprise'))
-);
-
-CREATE TABLE sessions (
-    session_id VARCHAR(50) PRIMARY KEY,
-    user_id VARCHAR(255),  -- No FK: users table in separate auth_db cluster
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    last_activity_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    metadata JSONB DEFAULT '{}'::jsonb
-);
-
-CREATE INDEX idx_sessions_user ON sessions(user_id);
-CREATE INDEX idx_sessions_expires ON sessions(expires_at);
-```
+`sessions` is a case-domain table and is documented in §4.1 above.
 
 ---
 
@@ -1013,7 +999,7 @@ WHERE e.case_id = :case_id
 - ❌ `solutions` - Inherit org via `cases.case_id` FK
 - ❌ `case_messages` - Inherit org via `cases.case_id` FK
 - ❌ `uploaded_files` - Inherit org via `cases.case_id` FK
-- ❌ `case_status_transitions` - Inherit org via `cases.case_id` FK
+- ❌ `case_actions` - Inherit org via `cases.case_id` FK
 - ❌ `case_checkpoints` - Inherit org via `cases.case_id` FK
 - ❌ `reports` - Inherit org via `cases.case_id` FK
 
@@ -1062,7 +1048,7 @@ GROUP BY c.case_id;
 -- Filter evidence by category (efficient)
 -- Target: ~5ms (indexed on case_id and category)
 SELECT * FROM evidence
-WHERE case_id = $1 AND category = 'observation'
+WHERE case_id = $1 AND category = 'symptom_evidence'
 ORDER BY collected_at DESC;
 
 -- Search cases (full-text + case ID)
@@ -1325,7 +1311,7 @@ DELETE FROM cases WHERE case_id = :case_id;
 -- - All solutions (ON DELETE CASCADE)
 -- - All case_messages (ON DELETE CASCADE)
 -- - All uploaded_files (ON DELETE CASCADE)
--- - All case_status_transitions (ON DELETE CASCADE)
+-- - All case_actions (ON DELETE CASCADE)
 -- - All case_checkpoints (ON DELETE CASCADE)
 -- - All reports (ON DELETE CASCADE)
 ```
@@ -1474,15 +1460,16 @@ psql -U faultmaven -d faultmaven_cases < migrations/001_initial_hybrid_schema.sq
 
 # Verify all tables created
 psql -U faultmaven -d faultmaven_cases -c "\dt"
-# Expected: 11 tables (cases, evidence, hypotheses, solutions, case_messages, uploaded_files, case_status_transitions, reports, plus system tables)
+# Expected case-domain tables: cases, sessions, evidence, hypotheses, solutions,
+# uploaded_files, case_messages, case_actions, case_checkpoints, reports
+# (see er-diagram.md for the full 33-table enumeration across all domains).
 
 # Verify indexes created
 psql -U faultmaven -d faultmaven_cases -c "\di"
 # Expected: ~25-30 indexes
-
-# Verify views created
-psql -U faultmaven -d faultmaven_cases -c "\dv"
-# Expected: case_overview, active_hypotheses, recent_evidence
+#
+# The schema does not ship any database views — all convenience queries are
+# implemented in the repository layer (see modules/case/infrastructure/).
 ```
 
 ### 8.2 Repository Integration Tests
@@ -1594,7 +1581,7 @@ python scripts/benchmark_queries.py
 
 ```sql
 EXPLAIN ANALYZE
-SELECT * FROM evidence WHERE case_id = 'case_123' AND category = 'LOGS_AND_ERRORS';
+SELECT * FROM evidence WHERE case_id = 'case_123' AND category = 'symptom_evidence';
 
 -- Expected plan: Index Scan using idx_evidence_case_id (NOT Seq Scan)
 ```
@@ -1673,8 +1660,9 @@ This design provides:
 ---
 
 **Document Control**:
+
 - **Author**: FaultMaven Team
 - **Created**: 2025-11-09
-- **Last Updated**: 2025-01-09
-- **Version**: 3.1 (Authoritative)
-- **Status**: Design Approved, Implementation Pending Testing
+- **Last Updated**: 2026-04-18
+- **Version**: 3.4 (Authoritative)
+- **Status**: ✅ Implemented — live schema (baseline migration `424078e5aa04`)

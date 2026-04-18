@@ -142,7 +142,8 @@ async def startup():
     except TimeoutError:
         raise StartupError(
             f"ChromaDB at {settings.chromadb_url} not reachable. "
-            "Start ChromaDB or set VECTOR_BACKEND=inmemory."
+            "Start an external ChromaDB server, or unset CHROMADB_URL "
+            "to fall back to the local PersistentClient."
         )
 ```
 

@@ -125,7 +125,7 @@ def mock_settings():
     settings.server.environment = MagicMock(value="development")
     settings.database.case_storage_type = "sqlite"
     settings.database.session_storage_type = "inmemory"
-    settings.database.vector_storage_type = "inmemory"
+    settings.database.vector_storage_type = "chromadb"
     settings.protection.protection_enabled = False
     settings.security.rate_limit_enabled = True
     return settings

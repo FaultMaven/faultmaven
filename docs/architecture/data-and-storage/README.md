@@ -29,7 +29,7 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 
 - **[schemas/user-schema.md](./schemas/user-schema.md)** - User accounts, roles, and SSO integration
   - Enterprise SaaS schema (organizations, teams, RBAC)
-  - 8 PostgreSQL tables with Row-Level Security
+  - 11 user-domain tables with Row-Level Security (`users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes`)
 
 - **[schemas/knowledge-schema.md](./schemas/knowledge-schema.md)** - Knowledge base storage
   - Unified KB collection (faultmaven_kb) with metadata-based scope filtering
@@ -48,7 +48,7 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
   - Repository interfaces and DI wiring
   - FakeRedis for sessions, ChromaDB PersistentClient for vectors
 
-- **[er-diagram.md](./er-diagram.md)** - Entity-relationship diagram for all 30 tables
+- **[er-diagram.md](./er-diagram.md)** - Entity-relationship diagram (auto-generated from SQLAlchemy models — authoritative table enumeration)
 
 ## Storage Technologies
 
@@ -81,7 +81,7 @@ data-and-storage/
 ├── overview.md              # High-level architecture + collection layout
 ├── vector-storage.md        # ChromaDB implementation guide
 ├── repository-pattern.md    # Database abstraction layer spec
-├── er-diagram.md            # ER diagram (all 30 tables)
+├── er-diagram.md            # ER diagram (auto-generated, authoritative table enumeration)
 └── schemas/
     ├── case-schema.md       # Case data model (hybrid normalized)
     ├── user-schema.md       # User/org/team/RBAC schema
