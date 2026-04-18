@@ -5,7 +5,7 @@
 **Date**: 2026-03-15
 **Purpose**: Define comprehensive classification rules, disambiguation strategies, and multi-level fallback for accurate data type detection
 
-**Role in Four-Tier Model**: This document specifies **Tier 0: Classification** — the first stage in the [Data Preprocessing v4.1](./data-preprocessing-design-specification.md) four-tier model. Tier 0 runs on every submission (file uploads and pasted text via `POST /cases/{id}/turns`), completes in <100ms with zero LLM calls, and produces a `DataType` enum + confidence score that determines which Tier 1 extractor runs next.
+**Role in Four-Tier Model**: This document specifies **Tier 0: Classification** — the first stage in the [Data Preprocessing](./data-preprocessing-design-specification.md) four-tier model. Tier 0 runs on every submission (file uploads and pasted text via `POST /cases/{id}/turns`), completes in <100ms with zero LLM calls, and produces a `DataType` enum + confidence score that determines which Tier 1 extractor runs next.
 
 **Scope**: This document addresses **data type classification** — determining what kind of data has been submitted (LOGS vs METRICS vs CONFIGURATION etc.). This is separate from **evidence classification** (SYMPTOM/CAUSAL/RESOLUTION/CONTEXTUAL/REJECTED) which is described in [evidence-classification-design.md](./evidence-classification-design.md).
 
@@ -42,7 +42,7 @@ Data submitted to FaultMaven can have:
 
 1. **Accuracy**: >95% correct classification on clear cases
 2. **Robustness**: Graceful degradation on ambiguous cases
-3. **Speed**: <100ms for heuristic classification, <2s for LLM fallback
+3. **Speed**: <100ms for Tier 0 heuristic classification (Levels 1-4, zero LLM). <2s for the optional Level 5 LLM fallback, which operates outside the Tier 0 zero-LLM guarantee.
 4. **Explainability**: Clear reasoning for classification decisions
 5. **Adaptability**: Learn from user corrections
 
@@ -60,7 +60,9 @@ class DataType(str, Enum):
     IMAGE = "image"                  # Visual content
 ```
 
-This is **Tier 0** in the [Data Preprocessing v4.1](./data-preprocessing-design-specification.md) four-tier model:
+> **Internal two-layer classifier:** Levels 1-5 below emit a unified `DataType` value. Internally, the preprocessing pipeline classifies each submission into one of **12 `DetailedDataType` values** (e.g., `LOGS_AND_ERRORS`, `ERROR_REPORT`, `TRACE_DATA`, `COMMAND_OUTPUT` — all of which unify to `LOGS`) for extractor dispatch. The 12→6 collapse is handled by `to_unified_data_type()`. For the detailed layer, see [Data Preprocessing §2.1 — Two-Layer Classification](./data-preprocessing-design-specification.md#21-two-layer-classification-12-detaileddatatypes--6-unifieddatatypes).
+
+This is **Tier 0** in the [Data Preprocessing](./data-preprocessing-design-specification.md) four-tier model:
 
 **Position in Pipeline**:
 ```
@@ -818,12 +820,19 @@ class ConfidenceScorer:
         3. Fallback tier used
         4. Disambiguation clarity
         """
-        # Base confidence from classification level
+        # Base confidence assigned when a level matches. Pattern bonuses
+        # (0-0.10) and strength bonuses (0-0.15) are added on top.
+        #
+        # These are the *starting* confidence values for each level — NOT the
+        # acceptance thresholds used by classify_with_fallback(). For example,
+        # Level 4 (Contextual) starts at 0.65 and must clear the 0.60 Level 4
+        # acceptance threshold in the dispatcher. See the comments in
+        # CONFIDENCE_THRESHOLDS below for the acceptance side.
         level_confidence = {
             1: 0.99,  # Definitive
             2: 0.90,  # Strong
             3: 0.70,  # Weak
-            4: 0.65,  # Contextual
+            4: 0.65,  # Contextual (starting value; dispatcher threshold is 0.60)
             5: 0.75,  # LLM (optional)
             6: 1.00,  # User confirmed
         }

@@ -13,7 +13,7 @@ This document specifies the design for evidence classification in FaultMaven:
 
 1. **Single-phase evidence creation** — evidence records created after LLM evaluation, not before
 2. **Payload-driven form determination** — evidence form set by ingestion pipeline (attachments -> DOCUMENT, agent findings -> SUBMITTED_DATA), not by LLM classification
-3. **Unified DataType taxonomy** — 6 types shared with preprocessing ([Data Preprocessing v4.1](./data-preprocessing-design-specification.md))
+3. **Unified DataType taxonomy** — 6 types shared with preprocessing ([Data Preprocessing](./data-preprocessing-design-specification.md))
 4. **5 evidence categories** — SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL, REJECTED
 5. **Comprehensive tracking** — all submissions tracked, including rejections
 
@@ -98,26 +98,15 @@ User submits → LLM evaluates → If relevant: Create Evidence(category)
 
 ---
 
-### Decision 3: Classification Types
+### Decision 3: Payload-Driven Evidence Form (supersedes `SubmissionClassification`)
 
-> **SUPERSEDED (2026-02-22)**: `SubmissionClassification` was removed as part of the
-> Unified Ingestion Pipeline (v4.1). Evidence form is now determined by payload context:
-> attachments present → `DOCUMENT`, query-only → `USER_TEXT`, agent tools → `SUBMITTED_DATA`.
-> See `docs/architecture/data-processing/data-preprocessing-design-specification.md` v4.1.
+> **Supersedes (2026-02-22)**: The older `SubmissionClassification` enum (USER_TEXT / SUBMITTED_DATA / MIXED) was removed as part of the Unified Ingestion Pipeline (v4.1). Evidence form is now determined by payload context, not by an LLM classifier. See [Data Preprocessing Design Specification](./data-preprocessing-design-specification.md) §2.4 and §8.
 
-~~Three submission types:~~
-```python
-# DELETED — replaced by payload-driven EvidenceForm determination
-# class SubmissionClassification(str, Enum):
-#     USER_TEXT = "user_text"
-#     SUBMITTED_DATA = "submitted_data"
-#     MIXED = "mixed"
-```
+**Current behavior (Unified Ingestion Pipeline):**
 
-**New behavior (Unified Ingestion Pipeline):**
 - Turn has attachments → `EvidenceForm.DOCUMENT` (set by `_preprocess_attachment()`)
-- Query-only turn → `EvidenceForm.USER_TEXT` (default)
-- Agent tool output → `EvidenceForm.SUBMITTED_DATA` (set by tool)
+- Query-only turn → `EvidenceForm.USER_TEXT` (default; typically no evidence is created)
+- Agent tool output → `EvidenceForm.SUBMITTED_DATA` (set by the milestone engine when applying `evidence_to_add`)
 
 ---
 
@@ -285,7 +274,7 @@ CRITICAL: Classify based on what the DATA CONTAINS, not the investigation phase.
 
 ### Decision 5: Unified DataType (Shared with Preprocessing)
 
-Evidence uses the same `DataType` enum as preprocessing ([Data Classification Strategy](./data-classification-strategy.md), [Data Preprocessing v3.0](./data-preprocessing-design-specification.md)). This eliminates the need for mapping between separate type systems.
+Evidence uses the same `DataType` enum as preprocessing. The canonical enum definition (including per-type description, detection rules, and confidence scoring) lives in [Data Classification Strategy → Unified DataType Enum](./data-classification-strategy.md#unified-datatype-enum-6-types). The version reproduced below is a reader-convenience copy with evidence-specific usage notes; the canonical doc governs additions, removals, and semantic changes.
 
 ```python
 class DataType(str, Enum):
@@ -505,7 +494,8 @@ class Evidence(BaseModel):
     # Content
     summary: str = Field(max_length=500)
     primary_purpose: str  # What this evidence shows, or why rejected if REJECTED
-    content_ref: str  # S3 URI, file_id, or turn reference
+    content_ref: str  # storage reference (local path or S3 URI, depending on STORAGE_BACKEND)
+    original_filename: Optional[str] = None  # Display filename (e.g., "app.log"); set during _preprocess_attachment
 
     # Metadata
     collected_at: datetime
@@ -515,9 +505,16 @@ class Evidence(BaseModel):
     # Processing (from PreprocessingResult)
     extraction_method: str  # Tier 1 method: "structural_index", "statistical_profile",
                             # "parse_and_sanitize", "ast_extraction", "structure_extraction",
-                            # "metadata_extraction", or "none" (for USER_INPUT form)
+                            # "metadata_extraction", "page_capture_passthrough", or "none"
     content_size_bytes: int
     content_hash: Optional[str] = None  # SHA-256 for deduplication
+
+    # Processing mode tracking (v5.0+)
+    processing_mode: Optional[str] = None  # triage | directed_analysis | knowledge_query | semantic_search
+    da_invocation_count: int = 0  # Cross-turn DA call counter; read by the secondary
+                                  # /sessions/execute path (agent_orchestration_service) to
+                                  # reconstruct EvidenceDAState across turns. The primary
+                                  # /turns path tracks failures via in-memory counters.
 
     # Investigation linkage
     related_hypotheses: List[str] = []  # hypothesis_ids this evidence evaluates
@@ -579,10 +576,15 @@ CREATE TABLE evidence (
     content_size_bytes INTEGER NOT NULL,
     content_hash VARCHAR(64),  -- SHA-256
 
-    -- Constraints
-    UNIQUE (case_id, turn_number),  -- UI constraint: one evidence per turn max
-    UNIQUE (case_id, content_hash)  -- Prevent duplicate uploads to same case
+    -- Processing mode tracking (v5.0+)
+    processing_mode VARCHAR(20),           -- triage | directed_analysis | knowledge_query | semantic_search
+    da_invocation_count INTEGER DEFAULT 0  -- Cross-turn DA call counter; read by agent_orchestration_service
+                                           -- to reconstruct EvidenceDAState on the secondary /sessions/execute path
 );
+
+-- NOTE (Gap #20): The previous `UNIQUE (case_id, collected_at_turn)` constraint was removed —
+-- multiple evidence items per turn are supported. Deduplication is done at the application
+-- layer via content_hash lookup before insert, not via a SQL UNIQUE constraint.
 
 CREATE INDEX idx_evidence_case_category ON evidence(case_id, category);
 CREATE INDEX idx_evidence_case_turn ON evidence(case_id, collected_at_turn);
@@ -844,8 +846,8 @@ The milestone advancement design uses a hybrid system-inferred approach with opt
 
 ## Related Documentation
 
-- [Data Preprocessing Design Specification v4.1](./data-preprocessing-design-specification.md) — Four-tier preprocessing model, unified ingestion pipeline, and shared DataType enum
-- [Data Classification Strategy v2.1](./data-classification-strategy.md) — Tier 0 classification rules for DataType detection
+- [Data Preprocessing Design Specification](./data-preprocessing-design-specification.md) — Four-tier preprocessing model, unified ingestion pipeline, and shared DataType enum
+- [Data Classification Strategy](./data-classification-strategy.md) — Tier 0 classification rules for DataType detection
 - [Evidence Flow Architecture](./evidence-flow-architecture.md) — End-to-end evidence pipeline diagrams
 - [Evidence Failure Modes](./evidence-failure-modes.md) — Failure handling design for single-phase creation
 

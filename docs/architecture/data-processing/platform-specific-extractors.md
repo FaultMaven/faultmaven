@@ -1,9 +1,9 @@
 # Platform-Specific Extractors
 
-**Status:** 🔮 Future Enhancement
+**Status:** Stages 1 and 2 Implemented. Stages 3 and 4 are future enhancements. See [Status](#status) at the bottom of this document.
 **Priority:** Medium
 **Category:** Data Ingestion
-**Related:** Page Injection, Evidence Collection, [Data Preprocessing v4.1 — Tier 3 Deep Analysis](./data-preprocessing-design-specification.md#6-tier-3-deep-analysis-service)
+**Related:** Page Injection, Evidence Collection, [Data Preprocessing — Tier 3 Deep LLM Analysis](./data-preprocessing-design-specification.md#4-tier-3-deep-llm-analysis-renamed-from-tier-2)
 
 ---
 
@@ -11,27 +11,21 @@
 
 Platform-specific extractors intelligently parse and structure content from popular SRE/DevOps platforms (Datadog, GitHub, PagerDuty, Grafana, etc.) instead of treating all web pages as generic HTML blobs.
 
-**Relationship to Four-Tier Model**: In the [Data Preprocessing v4.1](./data-preprocessing-design-specification.md) architecture, platform-specific extraction can operate at two levels:
+**Relationship to Four-Tier Model**: In the [Data Preprocessing](./data-preprocessing-design-specification.md) architecture, platform-specific extraction can operate at two levels:
 - **Tier 1 (frontend)**: Client-side platform detection and structured data extraction before upload
-- **Tier 3 (backend)**: Platform-aware deep analysis as a pluggable `ITier3AnalysisService` backend (invoked via `deep_analyze_file` agent tool)
+- **Tier 3 (backend)**: Platform-aware deep analysis as a pluggable backend behind the `ITier2AnalysisService` interface (the "Tier 3" label is a spec-level concept; in the code the service is still called `ITier2AnalysisService`). Invoked via the `deep_analyze_file` agent tool.
 
-This document primarily describes the Tier 1 (frontend) approach. For Tier 3 integration, see the [Tier 3 Service Interface](./data-preprocessing-design-specification.md#62-service-interface-contract).
+This document primarily describes the Tier 1 (frontend) approach. For the Tier 3 service, see [Data Preprocessing §4](./data-preprocessing-design-specification.md#4-tier-3-deep-llm-analysis-renamed-from-tier-2).
 
 ---
 
 ## Current Implementation
 
 ### What We Have Now (Stage 1 — Implemented)
-When a user captures a page via the copilot side panel:
-1. ✅ `htmlToStructuredText()` converts live DOM to structured markdown
-2. ✅ Error-first priority pass: sections with error keywords promoted to top
-3. ✅ `tryStatValue` heuristic: detects large-font stat panels (fontSize >= 24px) with monitoring units (`%`, `ms`, `req/s`, etc.)
-4. ✅ `tryKeyValue` heuristic: detects label + value patterns in child elements
-5. ✅ ARIA alert promotion: `role="alert"` elements wrapped in `## Alert` heading
-6. ✅ Form value extraction via `.value` property (not lost like with `outerHTML`)
-7. ✅ `[captured_at: ISO timestamp]` preamble for temporal context
-8. ✅ Backend pass-through: page captures skip UnstructuredTextExtractor entirely
-9. ✅ System prompt describes structured markdown format for LLM interpretation
+
+Stage 1 is the copilot extension's semantic DOM extraction (`htmlToStructuredText()`) paired with a backend pass-through branch (`page_capture_passthrough`) so page captures skip the `UnstructuredTextExtractor`. Features include error-first priority ordering, stat-panel detection (`tryStatValue`), label/value detection (`tryKeyValue`), ARIA-alert promotion, form-value extraction, and a `[captured_at: ISO timestamp]` preamble.
+
+For the canonical enumeration of Stage 1 behaviour and its interaction with Tier 0+1, see [Data Preprocessing §2.4 — Pasted Text and Page Capture Processing](./data-preprocessing-design-specification.md#24-pasted-text-and-page-capture-processing).
 
 ### What Remains (Limitations of Generic Extraction)
 - ❌ No platform-aware parsing (Grafana panel types, Datadog monitor states)
@@ -41,11 +35,11 @@ When a user captures a page via the copilot side panel:
 
 ---
 
-## Proposed Enhancement
+## Proposed Stage 3 Enhancement: Intelligent Platform Detection
 
-### Intelligent Platform Detection
+The sections below describe Stage 3 (platform-aware parsing). Stages 1 and 2 are already implemented — see the [Status](#status) section for the current state.
 
-When user injects a page, the system would:
+When user injects a page, the Stage 3 system would:
 
 **Step 1: Detect Platform**
 ```javascript
@@ -182,7 +176,7 @@ class EvidenceProcessor:
 
 ---
 
-## Implementation Complexity
+## Stage 3 Implementation Complexity (Future Work)
 
 ### Frontend Work (3-4 weeks)
 - **Week 1**: Platform detection framework
@@ -202,16 +196,16 @@ class EvidenceProcessor:
 
 ---
 
-## Decision: Why Future Enhancement?
+## Decision: Why Stage 3 is Deferred
 
 ### Reasons to Defer
-1. **Not MVP-critical**: Generic HTML extraction works for v1
+1. **Stages 1 and 2 cover most real use-cases**: Generic DOM extraction via `htmlToStructuredText()` + query-time section reranking already handles most dashboard patterns.
 2. **High maintenance**: Platform UIs change frequently
 3. **Backend-heavy**: Requires significant backend architecture
 4. **Testing complexity**: Need mock environments for each platform
 5. **Better alternatives**: Wait for platform APIs (webhooks, integrations)
 
-### When to Implement
+### When to Implement Stage 3
 - ✅ After MVP is validated with users
 - ✅ When we see specific platform patterns in usage data
 - ✅ If users explicitly request platform-specific features
@@ -255,9 +249,9 @@ structured = llm.extract_structured_data(prompt)
 
 ## References
 
-- [Data Preprocessing Architecture v4.1](./data-preprocessing-design-specification.md) — Four-tier model including Tier 3 pluggable backends
+- [Data Preprocessing Architecture](./data-preprocessing-design-specification.md) — Four-tier model including Tier 3 pluggable backends
 - [Evidence Classification Design](./evidence-classification-design.md) — Evidence classification, categories, and unified DataType
-- [Data Classification Strategy v2.1](./data-classification-strategy.md) — Tier 0 data type classification
+- [Data Classification Strategy](./data-classification-strategy.md) — Tier 0 data type classification
 
 ---
 

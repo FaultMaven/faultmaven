@@ -22,9 +22,9 @@ FaultMaven uses a **scenario-driven processing model** where a mechanical query 
 | Mode | When | System Prompt | Vectorization |
 |------|------|---------------|---------------|
 | **Triage** | Generic request ("analyze this") or file drop with no question | Structural index is the answer. Summarize findings. | Not triggered |
-| **Directed Analysis** | Specific question with entities (timestamps, error codes, services) | Tool loop with `search_file`, `deep_analysis`, `kb_qa`, `web_search`, `case_evidence_search`. `tool_choice="required"`. Type A/B/C question routing. | Auto-triggered on DA failure |
+| **Directed Analysis** | Specific question with entities (timestamps, error codes, services) | Tool loop with `search_file`, `deep_analysis`, `kb_qa`, `web_search`, `case_evidence_search`. `tool_choice="required"`. Type A/B/C question routing. | Proactive for qualifying large files at start of tool loop; reactive fallback on DA failure |
 | **Knowledge Query** | General knowledge question ("What is Opik?", "How does Redis work?") without case-specific entities or references | Tool loop with `tool_choice="auto"` — LLM can invoke `kb_qa` for runbook content or answer from built-in knowledge. Evidence-grounding relaxed via KNOWLEDGE QUERY OVERRIDE. | Not triggered |
-| **Semantic Search** | Auto-triggered when DA fails on qualifying large files | N/A (mechanical, not prompt-driven) | `vectorize_file` → `knowledge_base_search` |
+| **Semantic Search** | Fallback path after vectorization completes | N/A (mechanical, not prompt-driven) | `case_evidence_search` queries the vectorized file |
 
 All submissions are preprocessed through **Tier 0+1 (Structural Indexing)** — classification + type-specific extraction — before mode selection. The query classifier (`classify_query()`) uses regex entity detection, knowledge phrase detection, case reference detection, and phrasing analysis. No LLM call for routing.
 
@@ -32,7 +32,7 @@ All submissions are preprocessed through **Tier 0+1 (Structural Indexing)** — 
 
 ## Unified DataType Enum
 
-All documents in this section share a single DataType taxonomy:
+All documents in this section share a single DataType taxonomy. See [Data Classification Strategy → Unified DataType Enum](./data-classification-strategy.md#unified-datatype-enum-6-types) for the canonical definition; the table below is a quick reference.
 
 | DataType | Description |
 |----------|-------------|
@@ -49,9 +49,9 @@ All documents in this section share a single DataType taxonomy:
 
 ### Data Preprocessing
 
-- **[Data Preprocessing Design Specification v5.0](./data-preprocessing-design-specification.md)** — Core preprocessing architecture with scenario-driven processing modes. Defines Tier 0+1 structural indexing (12 detailed types → 6 unified types, 11 extractors with coverage metadata), mechanical query classifier (`classify_query()` — heuristic entity detection + phrasing analysis), mode-specific system prompts (Triage vs Directed Analysis), per-evidence DA failure tracking with auto-vectorization, small-file DA failure fallback, unified ingestion pipeline (`POST /cases/{id}/turns`), Context Sliding Window, evidence form determination, and orchestration hardening (R3 coverage gap detection, R4 per-evidence DA tracking with auto-vectorization, R5 context budgeting).
+- **[Data Preprocessing Design Specification](./data-preprocessing-design-specification.md)** (v5.2) — Core preprocessing architecture with scenario-driven processing modes. Defines Tier 0+1 structural indexing (12 detailed types → 6 unified types, 11 extractors with coverage metadata), mechanical query classifier (`classify_query()` — heuristic entity detection + phrasing analysis), mode-specific system prompts (Triage vs Directed Analysis), proactive + reactive vectorization with per-evidence DA failure tracking, small-file DA failure fallback, unified ingestion pipeline (`POST /cases/{id}/turns`), Context Sliding Window, evidence form determination, and orchestration hardening (R3 coverage gap detection, R4 vectorization with proactive + reactive paths, R5 context budgeting).
 
-- **[Data Classification Strategy v2.0](./data-classification-strategy.md)** — Tier 0 classification rules. Multi-level pattern matching (Level 1-3 heuristics, Level 4 contextual, optional Level 5 LLM), disambiguation strategies, confidence scoring, and command output detection.
+- **[Data Classification Strategy](./data-classification-strategy.md)** (v2.1) — Tier 0 classification rules. Multi-level pattern matching (Level 1-3 heuristics, Level 4 contextual, optional Level 5 LLM), disambiguation strategies, confidence scoring, and command output detection.
 
 - **[Platform-Specific Extractors](./platform-specific-extractors.md)** — Future enhancement: platform-aware extraction for SRE/DevOps tools (Datadog, Grafana, PagerDuty, etc.). Can integrate as Tier 1 frontend extractors or Tier 3 backends.
 
@@ -73,10 +73,10 @@ All documents in this section share a single DataType taxonomy:
 | Tier 0+1: Structural Indexing | **Implemented** | 12 detailed types, 11 extractors, best-effort fallback. Pasted text routed through same pipeline. |
 | Tier 2: Mechanical Search | **Implemented** | `search_file` agent tool — two-pass keyword search (ALL→partial fallback), regex, extractor re-run. Zero-result vocabulary recovery. |
 | Interpreted Search (formerly Tier 3) | **Implemented** | `deep_analysis` tool (to be merged into `search_file` as `interpret: true`). Default backend changed from `disabled` to `local` — uses configured CHAT_PROVIDER, no additional setup. |
-| Vectorization (auto-triggered) | **Implemented** | Auto-triggered on DA failure via per-evidence tracking. No user confirmation. Size gates enforced. |
+| Vectorization (auto-triggered) | **Implemented** | Proactive for DA-mode turns: background vectorization starts in `_tool_augmented_generate()` for qualifying large files (size ≥ min, ≤ 50MB, not already vectorized) before the tool loop begins. Reactive fallback triggers on the primary `/turns` path: tool timeout, 3+ consecutive empty `search_file` results, `deep_analysis` confidence < 0.2. `da_call_count >= 3` removed in v5.2. No user confirmation. Size gates enforced. |
 | Query Classifier | **Implemented** | `classify_query()` — heuristic entity detection + phrasing analysis. Routes to Triage, Knowledge Query, or Directed Analysis. Knowledge Query uses 3-gate detection (knowledge phrase + no hard entities + no case references). |
 | Mode-Specific System Prompts | **Implemented** | `DATA_ACCESS_TRIAGE` and `DATA_ACCESS_DIRECTED_ANALYSIS` injected via `{data_access_strategy}` placeholder. Knowledge Query appends `KNOWLEDGE QUERY OVERRIDE` escape clause. |
-| Per-Evidence DA Failure Tracking | **Implemented** | `EvidenceDAState` tracks empty searches, DA calls, confidence, timeouts per evidence. Cross-turn via `da_invocation_count`. |
+| Per-Evidence DA Failure Tracking | **Implemented** | Primary `/turns` path (`milestone_engine._tool_augmented_generate()`): simple per-evidence counters (`da_empty_search_counts`, `da_vectorized`) track empty searches, confidence, and timeouts. Secondary `/sessions/execute` path: `EvidenceDAState` retained. Cross-turn DA history reconstructed via persisted `da_invocation_count` on the Evidence model. |
 | DA Tool Loop | **Implemented** | Tool-augmented generation (`_tool_augmented_generate()`) for all turns when tools are registered. Tools: `search_file`, `deep_analysis`, `kb_qa`, `web_search`, `case_evidence_search` + schema tool, up to 4 iterations. DA turns use `tool_choice="required"`; other turns use `tool_choice="auto"`. Type A/B/C question routing + evidence-vs-knowledge rule in system instruction. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-tool-augmented-generation-v50--v60). |
 | Evidence `original_filename` | **Implemented** | Set during `_preprocess_attachment()`, displayed by `search_file` tool instead of opaque evidence ID. |
 | Diagnostic Reasoning Validator | **Implemented** | Validates agent responses for OBSERVATION + ANALYSIS structure, evidence grounding (≥2 of 4 categories), causal reasoning. Self-correction retry with single attempt. DA causal reasoning downgrade. Knowledge queries skip validation entirely. See [Error Handling §3.2](../investigation-engine/error-handling-and-recovery.md#32-reasoning-validation-with-self-correction). |

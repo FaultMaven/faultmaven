@@ -8,7 +8,7 @@
 
 ## Overview
 
-This document describes the complete evidence flow architecture in FaultMaven. All user turns arrive via a unified endpoint (`POST /cases/{id}/turns`) and are processed through a two-step pipeline: (1) preprocess attachments through Tier 0+1 before the LLM, (2) LLM inference with structural indexes in context. Evidence form is payload-driven (attachments → `DOCUMENT`, agent findings → `SUBMITTED_DATA`). File preprocessing follows the [scenario-driven processing model](./data-preprocessing-design-specification.md). A mechanical query classifier routes each turn to Triage or Directed Analysis mode, which determines the system prompt and tool selection strategy. Vectorization is auto-triggered when directed analysis fails on qualifying large files.
+This document describes the complete evidence flow architecture in FaultMaven. All user turns arrive via a unified endpoint (`POST /cases/{id}/turns`) and are processed through a two-step pipeline: (1) preprocess attachments through Tier 0+1 before the LLM, (2) LLM inference with structural indexes in context. Evidence form is payload-driven (attachments → `DOCUMENT`, agent findings → `SUBMITTED_DATA`). File preprocessing follows the [scenario-driven processing model](./data-preprocessing-design-specification.md). A mechanical query classifier routes each turn to Triage or Directed Analysis mode, which determines the system prompt and tool selection strategy. For DA-mode turns, vectorization is started proactively in the background for qualifying large files at the start of the tool loop; reactive fallback triggers remain for edge cases.
 
 ---
 
@@ -45,7 +45,8 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │    (also propagates source_type from source_metadata)             │ │
 │  │ 4. Tier 1: Type-specific mechanical extraction (structural index) │ │
 │  │    (page captures skip Tier 1 — pass-through as structured MD)   │ │
-│  │ 5. Upload raw file to S3 with TTL metadata (24h)                  │ │
+│  │ 5. Persist raw file via storage_service.upload                     │ │
+│  │    (local filesystem or S3 depending on STORAGE_BACKEND)          │ │
 │  │ 6. Generate PreprocessingResult (summary, structural_index, etc.) │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────┬───────────────────────────────────────────────────────────────────┘
@@ -134,9 +135,12 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │ - related_hypotheses, advances_milestones                         │ │
 │  │ - processing_mode, da_invocation_count                            │ │
 │  │                                                                     │ │
-│  │ Constraints:                                                        │ │
-│  │ - UNIQUE (case_id, collected_at_turn)                             │ │
-│  │ - UNIQUE (case_id, content_hash)                                  │ │
+│  │ Indices:                                                            │ │
+│  │ - INDEX (case_id, collected_at_turn)                              │ │
+│  │ - INDEX (case_id, content_hash)                                   │ │
+│  │ (No UNIQUE constraint on case+turn — multiple evidence            │ │
+│  │  items per turn are allowed; deduplication is done at the         │ │
+│  │  application layer via content_hash lookup.)                      │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
 
@@ -524,14 +528,14 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
  │              │                │             │             │             │
 ```
 
-**Key**: `search_file` and `deep_analysis` are invoked by the investigation agent as tool calls during `process_turn()`. The preprocessing service is NOT involved — it completed during Step 1 of the original turn. See [Data Preprocessing v5.0](./data-preprocessing-design-specification.md) Sections 3-4 for full invocation logic. Tool selection is guided by the processing mode (Triage vs Directed Analysis) set by the query classifier.
+**Key**: `search_file` and `deep_analysis` are invoked by the investigation agent as tool calls during `process_turn()`. The preprocessing service is NOT involved — it completed during Step 1 of the original turn. See [Data Preprocessing](./data-preprocessing-design-specification.md) Sections 3-4 for full invocation logic. Tool selection is guided by the processing mode (Triage vs Directed Analysis) set by the query classifier.
 
-**DA Tool Loop (v5.0)**: In Directed Analysis turns, the milestone engine routes inference through a bounded tool-calling loop (`_tool_augmented_generate()`) instead of single-shot generation. The LLM receives `search_file` and `schema_tool` as function-calling tools, iterating up to 4 times with an iteration-0 guardrail that forces at least one evidence search before generating a structured response. The `search_file` tool resolves evidence content through dual-path resolution (standalone via `evidence_artifacts` table or case-embedded via `case_repo`). The `Evidence.original_filename` field provides the display filename in search results. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling-v50) for full details.
+**DA Tool Loop (v5.0, updated v5.2)**: In Directed Analysis turns, the milestone engine routes inference through a bounded tool-calling loop (`_tool_augmented_generate()`) instead of single-shot generation. The LLM receives the investigation tools (`search_file`, `deep_analysis`, `kb_qa`, `web_search`, `case_evidence_search`) and the terminating `schema_tool`, iterating up to 4 times with an iteration-0 guardrail that forces at least one investigation-tool call before generating a structured response. The `search_file` tool resolves evidence content through dual-path resolution (standalone via `evidence_artifacts` table or case-embedded via `case_repo`). The `Evidence.original_filename` field provides the display filename in search results. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling-v50) for full details.
 
-**Orchestration Hardening (v4.2, updated v5.0)**: The orchestration layer adds three mechanical safety nets:
+**Orchestration Hardening (v4.2, updated v5.2)**: The orchestration layer adds three mechanical safety nets. See [Data Preprocessing §6.1](./data-preprocessing-design-specification.md#61-orchestration-hardening-mechanical-safety-nets-v42-updated-v52) for the canonical description.
 
 - **Coverage gap detection (R3)**: Extracts entities (timestamps, services, error codes, IPs) from user queries and compares against evidence coverage metadata. Injects advisories when query entities fall outside evidence coverage.
-- **Per-evidence DA failure tracking + auto-vectorization (R4, v5.0)**: Tracks DA failure signals independently per evidence file via `EvidenceDAState` (empty searches, DA invocations, confidence, timeouts). When any trigger fires on a qualifying large file, auto-vectorizes without user confirmation. For small files below the vectorization threshold, injects raw content into the LLM context. Replaces the v4.2 global `consecutive_empty_searches` counter.
+- **Vectorization — proactive + reactive (R4, v5.2)**: For DA-mode turns, `_start_proactive_vectorization()` kicks off background `asyncio` tasks for every qualifying evidence file (size ≥ configured minimum, ≤ 50MB, not already vectorized) before the tool loop begins — so semantic search becomes available as the tool loop runs. Reactive fallback triggers (tool timeout, 3+ consecutive empty `search_file` results on the same evidence, `deep_analysis` confidence < 0.2) remain for cases where the proactive path wasn't taken or the agent's approach indicates point queries are insufficient. The `da_call_count >= 3` trigger was removed in v5.2. For small files below the vectorization threshold, raw content is injected directly into the LLM context instead. The primary `/turns` path uses simple per-evidence counters (`da_empty_search_counts`, `da_vectorized`); the secondary `/sessions/execute` path retains the v5.0 `EvidenceDAState` structure. Cross-turn DA history is reconstructed via the persisted `da_invocation_count` field on the Evidence model.
 - **Context budget tracking (R5)**: Enforces a 30K character budget on tool results with standard/aggressive compression preserving high-signal lines (errors, exceptions, timeouts, crashes).
 
 ---
@@ -622,11 +626,7 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
                   └───────────────────────┘
 ```
 
-**Key Insights:**
-1. Evidence classified during INQUIRY based on content
-2. Milestones NOT validated during INQUIRY
-3. When investigation begins, existing evidence contributes to milestone advancement
-4. Evidence created in INQUIRY "sits inert" until INVESTIGATING status
+This diagram illustrates the retroactive milestone-advancement flow. The underlying rule (classify by content, not phase) is documented canonically in [Evidence Classification Design → INQUIRY Phase Classification](./evidence-classification-design.md#inquiry-phase-classification-first-class-scenario).
 
 ---
 
@@ -775,78 +775,12 @@ Return to User          Queue Retry Job
 
 ## Key Design Decisions
 
-### 1. Evidence Table Includes Rejected Submissions
+The design decisions that govern the taxonomy and classification semantics live in their canonical documents. Pointers:
 
-**Decision:** The `evidence` table tracks ALL file upload attempts, including rejected ones.
-
-**Rationale:**
-- Deduplication (prevent re-uploading same rejected file)
-- Audit trail (complete record of what was submitted)
-- Cost efficiency (avoid re-analyzing rejected files)
-- User feedback (explain why rejected)
-
-**Implementation:** Add `REJECTED` category to track rejected submissions.
-
-**Semantic Note:** The table is called `evidence` for historical reasons, but conceptually represents "analyzed submissions" (both accepted and rejected).
-
----
-
-### 2. Category Validation with Fallback
-
-**Decision:** Use `CONTEXTUAL_EVIDENCE` as fallback for unrecognized LLM-generated categories.
-
-**Rationale:**
-- Not REJECTED (user uploaded intentionally)
-- Not SYMPTOM/CAUSAL/RESOLUTION (avoid false positive milestone advancement)
-- CONTEXTUAL is neutral ("we have this data, classification unclear")
-
-**Implementation:**
-```python
-@validator('category', pre=True)
-def validate_category(cls, v):
-    if isinstance(v, str):
-        try:
-            return EvidenceCategory(v)
-        except ValueError:
-            logger.warning(f"LLM returned unrecognized category '{v}', falling back to CONTEXTUAL_EVIDENCE")
-            return EvidenceCategory.CONTEXTUAL_EVIDENCE
-    return v
-```
-
-See [Evidence Failure Modes - Scenario 3](./evidence-failure-modes.md) for full failure recovery details.
-
----
-
-### 3. Classification Based on Content, Not Phase
-
-**Decision:** Classify evidence based on what the data CONTAINS, not the investigation phase.
-
-**Rationale:**
-- Log file with errors = SYMPTOM_EVIDENCE (even during INQUIRY)
-- Clean logs = CONTEXTUAL_EVIDENCE (even during INQUIRY)
-- Milestone advancement happens later when investigation begins
-
-**Implementation:** LLM classifies content directly, milestone validation only runs during INVESTIGATING status.
-
----
-
-### 4. System-Inferred Milestone Advancement (Option 2.5)
-
-**Decision:** System infers `advances_milestones` by default, LLM can override.
-
-**Rationale:**
-- 90% of cases: System inference sufficient (category → milestones mapping)
-- 10% of cases: LLM can override when inference would be wrong
-- Zero token cost for common cases
-- Deterministic inference, no inconsistency risk
-
-**Implementation:**
-```python
-advances_milestones = intersection(
-    CATEGORY_MILESTONE_MAP[category],
-    milestones_completed_this_turn
-)
-```
+- **Evidence table includes REJECTED submissions** (deduplication, audit trail, cost efficiency, user feedback) — see [Evidence Classification Design → Evidence Table Semantics](./evidence-classification-design.md#evidence-table-semantics).
+- **Category validation with `CONTEXTUAL_EVIDENCE` fallback** for unrecognized LLM-generated categories — see [Evidence Failure Modes → Scenario 3](./evidence-failure-modes.md).
+- **Classification based on content, not phase** (INQUIRY-phase evidence contributes retroactively when investigation starts) — see [Evidence Classification Design → INQUIRY Phase Classification](./evidence-classification-design.md#inquiry-phase-classification-first-class-scenario).
+- **System-inferred milestone advancement (Option 2.5)** via `CATEGORY_MILESTONE_MAP` — see [Evidence Classification Design → Milestone Advancement Attribution](./evidence-classification-design.md#milestone-advancement-attribution).
 
 ---
 
@@ -892,13 +826,9 @@ evidence.storage_size_bytes
 
 ## Page Capture Pipeline (v2.6)
 
-Page captures from the FaultMaven Copilot browser extension follow a distinct path through the evidence pipeline:
+Page captures from the FaultMaven Copilot browser extension follow a distinct path: the extension pre-structures the live DOM into markdown (`htmlToStructuredText()`), the content is submitted via `POST /cases/{id}/turns` as `pasted_content` with `source_metadata.source_type = "page_capture"`, Tier 0 classifies it as `UNSTRUCTURED_TEXT`, Tier 1 is bypassed via the `page_capture_passthrough` branch, and the LLM system prompt contains page-capture format guidance.
 
-1. **Frontend**: The copilot extension's `htmlToStructuredText()` converts the live DOM into structured markdown with error-first priority ordering, stat panel detection (fontSize >= 24px), and ARIA alert promotion.
-2. **Submission**: Content is submitted via `POST /cases/{id}/turns` as `pasted_content` with `source_metadata.source_type = "page_capture"` and filename `page-capture-{ts}.txt`.
-3. **Tier 0**: Classified as `UNSTRUCTURED_TEXT` (rule-based). `source_type` is propagated from `source_metadata` onto `ClassificationResult`.
-4. **Tier 1**: **Bypassed**. The preprocessing service detects `source_type == "page_capture"` and uses a pass-through branch (`page_capture_passthrough`) instead of running the `UnstructuredTextExtractor`. The content is already structured markdown — running it through extraction would over-process it (re-parse headings, strip error lines, cap sections at 500 chars).
-5. **LLM context**: The system prompt includes guidance for interpreting page capture format (headings = sections, `Label: value` = metrics, error sections promoted to top, `[captured_at]` timestamp).
+For the canonical description of Stage 1 behaviour, pass-through branch, and format details, see [Data Preprocessing §2.4 — Pasted Text and Page Capture Processing](./data-preprocessing-design-specification.md#24-pasted-text-and-page-capture-processing).
 
 ---
 
@@ -906,11 +836,11 @@ Page captures from the FaultMaven Copilot browser extension follow a distinct pa
 
 - [Evidence Classification Design](./evidence-classification-design.md) — Evidence taxonomy, categories, and DataType enum
 - [Evidence Failure Modes](./evidence-failure-modes.md) — Failure handling for single-phase creation
-- [Data Preprocessing Design Specification v5.1](./data-preprocessing-design-specification.md) — Scenario-driven processing model, unified ingestion pipeline, query classifier, page capture pass-through, and orchestration hardening
-- [Data Classification Strategy v2.1](./data-classification-strategy.md) — Tier 0 classification rules, source_type propagation
+- [Data Preprocessing Design Specification](./data-preprocessing-design-specification.md) — Scenario-driven processing model, unified ingestion pipeline, query classifier, page capture pass-through, and orchestration hardening
+- [Data Classification Strategy](./data-classification-strategy.md) — Tier 0 classification rules, source_type propagation
 
 ---
 
-**Document Version:** 2.5
-**Last Updated:** 2026-03-06
+**Document Version:** 2.6
+**Last Updated:** 2026-03-15
 **Status:** Design Specification
