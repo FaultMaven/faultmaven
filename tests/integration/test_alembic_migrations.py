@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "7372cc0135c3"  # Phase 5 redesign migration (enum reconciliation)
+HEAD_REVISION = "f820958e06f2"  # Phase 6 redesign migration (Tier 1 column additions)
 
 
 @pytest.fixture(scope="function")

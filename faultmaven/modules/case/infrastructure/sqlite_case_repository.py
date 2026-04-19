@@ -70,6 +70,44 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _derive_evidence_form(evidence: Evidence) -> str:
+    """Heuristic mapping from domain Evidence to the persistence-side
+    ``evidence.form`` column (data-shape: text|image|metric|structured).
+
+    Distinct from the domain ``EvidenceForm`` enum (entry mechanism:
+    DOCUMENT|USER_TEXT|SUBMITTED_DATA). The persistence column is bound
+    to ``EvidenceFormEnum`` defined in
+    ``faultmaven/infrastructure/persistence/models.py``.
+
+    Heuristic order:
+    1. ``data_type`` (UnifiedDataType from preprocessing) — most reliable
+       signal: image/metrics/configuration/code/text/logs.
+    2. Fallback: filename extension on ``original_filename``.
+    3. Default: ``"text"`` (matches column ``server_default``).
+
+    TODO: replace with explicit producer once the upload/preprocessing
+    pipeline carries an authoritative form classification.
+    """
+    data_type = (getattr(evidence, "data_type", None) or "").lower()
+    if data_type == "image":
+        return "image"
+    if data_type in ("metrics", "metric"):
+        return "metric"
+    if data_type in ("configuration", "structured", "json", "yaml"):
+        return "structured"
+    if data_type in ("logs", "log", "text", "code"):
+        return "text"
+
+    filename = (getattr(evidence, "original_filename", None) or "").lower()
+    if filename:
+        if filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
+            return "image"
+        if filename.endswith((".json", ".yaml", ".yml", ".toml", ".xml")):
+            return "structured"
+
+    return "text"
+
+
 class SQLiteCaseRepository(CaseRepository):
     """
     SQLite repository using hybrid normalized schema.
@@ -980,12 +1018,23 @@ class SQLiteCaseRepository(CaseRepository):
     # ========================================================================
 
     async def _upsert_case_record(self, case: Case) -> None:
-        """Upsert main cases table (SQLite-compatible - no type casts)."""
+        """Upsert main cases table (SQLite-compatible - no type casts).
+
+        Phase 6 (storage redesign 2026-04): persists ``closure_reason``,
+        ``last_activity_at``, ``resolved_at`` and ``closed_at`` to first-class
+        columns instead of the ``metadata`` JSON blob. ``last_activity_at`` is
+        bumped to the current UTC time on every save so staleness queries
+        work without scanning JSON. The legacy ``metadata`` JSON keeps the
+        same fields for backward compatibility with rows that pre-date the
+        columns.
+        """
+        last_activity_at = datetime.now(UTC)
         query = text("""
             INSERT INTO cases (
                 case_id, user_id, organization_id, title,
                 status, created_at, updated_at,
                 is_archived, archived_at,
+                closure_reason, last_activity_at, resolved_at, closed_at,
                 inquiry, problem_verification, working_conclusion,
                 root_cause_conclusion, path_selection,
                 escalation_state, documentation, progress, metadata
@@ -993,6 +1042,7 @@ class SQLiteCaseRepository(CaseRepository):
                 :case_id, :user_id, :organization_id, :title,
                 :status, :created_at, :updated_at,
                 :is_archived, :archived_at,
+                :closure_reason, :last_activity_at, :resolved_at, :closed_at,
                 :inquiry, :problem_verification, :working_conclusion,
                 :root_cause_conclusion, :path_selection,
                 :escalation_state, :documentation, :progress, :metadata
@@ -1005,6 +1055,10 @@ class SQLiteCaseRepository(CaseRepository):
                 updated_at = EXCLUDED.updated_at,
                 is_archived = EXCLUDED.is_archived,
                 archived_at = EXCLUDED.archived_at,
+                closure_reason = EXCLUDED.closure_reason,
+                last_activity_at = EXCLUDED.last_activity_at,
+                resolved_at = EXCLUDED.resolved_at,
+                closed_at = EXCLUDED.closed_at,
                 inquiry = EXCLUDED.inquiry,
                 problem_verification = EXCLUDED.problem_verification,
                 working_conclusion = EXCLUDED.working_conclusion,
@@ -1032,6 +1086,11 @@ class SQLiteCaseRepository(CaseRepository):
                 "archived_at": (
                     case.archived_at if hasattr(case, "archived_at") else None
                 ),
+                # Phase 6 Tier 1 columns — populated from domain Case fields.
+                "closure_reason": getattr(case, "closure_reason", None),
+                "last_activity_at": last_activity_at,
+                "resolved_at": getattr(case, "resolved_at", None),
+                "closed_at": getattr(case, "closed_at", None),
                 "inquiry": json.dumps(to_json_compatible(case.inquiry.model_dump())),
                 "problem_verification": (
                     json.dumps(
@@ -1137,11 +1196,13 @@ class SQLiteCaseRepository(CaseRepository):
                 INSERT INTO evidence (
                     evidence_id, case_id, organization_id, category, summary, preprocessed_content,
                     content_ref, file_size, filename, upload_timestamp, metadata,
-                    source_type, content_hash, collected_at_turn, source_file_id
+                    source_type, content_hash, collected_at_turn, source_file_id,
+                    form, is_primary, content_type, reliability_score, tags
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :category, :summary, :preprocessed_content,
                     :content_ref, :file_size, :filename, :upload_timestamp, :metadata,
-                    :source_type, :content_hash, :collected_at_turn, :source_file_id
+                    :source_type, :content_hash, :collected_at_turn, :source_file_id,
+                    :form, :is_primary, :content_type, :reliability_score, :tags
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
                     category = EXCLUDED.category,
@@ -1153,7 +1214,12 @@ class SQLiteCaseRepository(CaseRepository):
                     content_hash = EXCLUDED.content_hash,
                     collected_at_turn = EXCLUDED.collected_at_turn,
                     source_file_id = EXCLUDED.source_file_id,
-                    filename = EXCLUDED.filename
+                    filename = EXCLUDED.filename,
+                    form = EXCLUDED.form,
+                    is_primary = EXCLUDED.is_primary,
+                    content_type = EXCLUDED.content_type,
+                    reliability_score = EXCLUDED.reliability_score,
+                    tags = EXCLUDED.tags
             """)
 
             source_type_val = (
@@ -1180,6 +1246,23 @@ class SQLiteCaseRepository(CaseRepository):
                     "content_hash": getattr(evidence, "content_hash", None) or "",
                     "collected_at_turn": evidence.collected_at_turn,
                     "source_file_id": getattr(evidence, "source_file_id", None),
+                    # Phase 6 Tier 1 columns. The persistence-side `form`
+                    # describes data SHAPE (text|image|metric|structured) —
+                    # distinct from domain `EvidenceForm` (entry mechanism).
+                    # Heuristic-derived from data_type / source_type;
+                    # defaults to "text" otherwise. TODO: explicit producer.
+                    "form": _derive_evidence_form(evidence),
+                    # TODO: setter API for is_primary deferred (Phase 6 task).
+                    # Default False until explicit producer wires it.
+                    "is_primary": False,
+                    # TODO: content_type wiring to Attachment.content_type
+                    # deferred — upload pipeline does not yet thread the MIME
+                    # type onto the Evidence object.
+                    "content_type": getattr(evidence, "content_type", None),
+                    # reliability_score / tags producers deferred. Columns
+                    # exist Tier 1; populated by future code.
+                    "reliability_score": getattr(evidence, "reliability_score", None),
+                    "tags": getattr(evidence, "tags", None),
                 },
             )
 
@@ -1303,14 +1386,14 @@ class SQLiteCaseRepository(CaseRepository):
                     description, status,
                     risk_level, estimated_effort, verification_result, verification_timestamp,
                     proposed_at, implemented_at, updated_at, metadata,
-                    created_by, updated_by
+                    created_by, updated_by, hypothesis_id
                 ) VALUES (
                     :solution_id, :case_id, :organization_id, :solution_type, :title, :immediate_action,
                     :longterm_fix, :implementation_steps, :commands, :risks,
                     :description, :status,
                     :risk_level, :estimated_effort, :verification_result, :verification_timestamp,
                     :proposed_at, :implemented_at, :updated_at, :metadata,
-                    :created_by, :updated_by
+                    :created_by, :updated_by, :hypothesis_id
                 )
                 ON CONFLICT (solution_id) DO UPDATE SET
                     solution_type = EXCLUDED.solution_type,
@@ -1328,7 +1411,8 @@ class SQLiteCaseRepository(CaseRepository):
                     verification_timestamp = EXCLUDED.verification_timestamp,
                     implemented_at = EXCLUDED.implemented_at,
                     updated_at = EXCLUDED.updated_at,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    hypothesis_id = EXCLUDED.hypothesis_id
             """)
 
             await self.db.execute(
@@ -1386,6 +1470,11 @@ class SQLiteCaseRepository(CaseRepository):
                     "metadata": json.dumps({}),
                     "created_by": "system",
                     "updated_by": None,
+                    # Phase 6 Tier 1: link solution to addressed hypothesis when known.
+                    # TODO: SolutionsToAdd schema does not yet carry hypothesis_id;
+                    # populate once the LLM update schema is extended. Nullable for
+                    # now (fast-track / pre-hypothesis solutions remain NULL).
+                    "hypothesis_id": getattr(solution, "hypothesis_id", None),
                 },
             )
 
@@ -1768,12 +1857,12 @@ class SQLiteCaseRepository(CaseRepository):
                 report_id, case_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
                 generation_status, generation_time_ms, metadata,
-                generated_at, updated_at
+                generated_at, updated_at, generated_by
             ) VALUES (
                 :report_id, :case_id, :report_type, :version, :is_current,
                 :linked_to_closure, :title, :content, :format,
                 :generation_status, :generation_time_ms, :metadata,
-                :generated_at, :updated_at
+                :generated_at, :updated_at, :generated_by
             )
             ON CONFLICT (report_id) DO UPDATE SET
                 version = EXCLUDED.version,
@@ -1785,7 +1874,8 @@ class SQLiteCaseRepository(CaseRepository):
                 generation_status = EXCLUDED.generation_status,
                 generation_time_ms = EXCLUDED.generation_time_ms,
                 metadata = EXCLUDED.metadata,
-                updated_at = EXCLUDED.updated_at
+                updated_at = EXCLUDED.updated_at,
+                generated_by = EXCLUDED.generated_by
         """)
 
         now = datetime.now(UTC)
@@ -1817,6 +1907,15 @@ class SQLiteCaseRepository(CaseRepository):
                 "metadata": metadata_json,
                 "generated_at": generated_at.isoformat(),
                 "updated_at": updated_at.isoformat(),
+                # Phase 6 Tier 1: track who triggered generation. "system"
+                # for auto-generated terminal summaries; explicit user_id
+                # may be threaded through later via add_report() callers.
+                # TODO: API routes can pass user_id via a new field on
+                # CaseReport / repository signature; for now derive from
+                # auto_generated flag.
+                "generated_by": (
+                    "system" if getattr(report, "auto_generated", False) else None
+                ),
             },
         )
 

@@ -110,7 +110,9 @@ async def async_engine():
                 generation_time_ms INTEGER NOT NULL,
                 metadata TEXT DEFAULT '{}',
                 generated_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                -- Phase 6 Tier 1 column addition (storage redesign 2026-04).
+                generated_by TEXT
             )
         """))
 
