@@ -374,40 +374,56 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
 
 ### 5.2 Case Collections (`case_{case_id}`)
 
-**Lifecycle**: Case lifetime + 7 days grace period
+**Lifecycle**: collections exist for as long as the case exists in the database. Cleanup is triggered by **case deletion** (immediate) and by a **scheduled background sweep** (every 6 hours, as a safety net for missed deletions). RESOLVED, CLOSED, and archived cases retain their evidence collections — they remain queryable via the `answer_from_case_evidence` tool.
 
 **Creation**:
+
 ```python
 # Automatic on first evidence upload
 await case_vector_store.add_documents(case_id, documents)
 # Creates case_{case_id} collection if not exists
 ```
 
-**TTL Management**:
-```python
-# Case lifecycle integration
-async def close_case(case_id: str):
-    case = await case_repository.get(case_id)
-    case.status = CaseStatus.RESOLVED
-    case.resolved_at = datetime.now(timezone.utc)
-    await case_repository.save(case)
+**Cleanup — two complementary mechanisms**:
 
-    # Mark case vector store for cleanup
-    cleanup_date = case.resolved_at + timedelta(days=7)
-    await case_vector_store.schedule_cleanup(case_id, cleanup_date)
+1. **Immediate deletion** when a case is explicitly deleted:
 
-# Cleanup job (runs daily)
-async def cleanup_expired_case_collections():
-    expired = await case_vector_store.get_expired_collections()
-    for collection_name in expired:
-        await case_vector_store.delete_collection(collection_name)
-        logger.info(f"Deleted expired collection: {collection_name}")
-```
+   ```python
+   # Called from CaseService.delete_case()
+   await case_vector_store.delete_case_collection(case_id)
+   ```
+
+2. **Scheduled orphan sweep** — a background job runs every 6 hours, comparing live ChromaDB collections against the active-case-ID set in the database. Any `case_*` collection without a matching active case is deleted as a safety net:
+
+   ```python
+   # faultmaven/jobs/case_cleanup.py
+   # Started in main.py lifespan with interval_hours=6
+   case_cleanup_scheduler = start_case_cleanup_scheduler(
+       case_vector_store=case_vector_store,
+       case_store=case_store,
+       interval_hours=6,
+   )
+
+   # Each sweep iteration calls:
+   active_case_ids = {c.case_id for c in await case_store.list_all()}
+   deleted = await case_vector_store.cleanup_orphaned_collections(active_case_ids)
+   ```
+
+**Collection metadata** is minimal: `case_id` + `created_at`. There is no `expiry_date`, `cleanup_after`, or `case_status` tracking in the collection metadata — the database is the authoritative source of case liveness.
+
+**Why this design (not a TTL/grace-period model)**:
+
+- The database is the single source of truth for case liveness. The vector store does not duplicate state.
+- Terminal cases (RESOLVED / CLOSED) and archived cases keep their vectors — users may still query the evidence via `answer_from_case_evidence`. Cleanup happens only when the case row is **deleted** (or has been deleted and the sweep catches an orphan collection).
+- The 6-hour sweep is a safety net for cases where `delete_case` ran but `delete_case_collection` failed (e.g., ChromaDB transient unavailability) or for cases deleted directly at the database level (admin action, test cleanup).
+
+**Configuration**: the sweep interval is set in [main.py](../../faultmaven/main.py) via `start_case_cleanup_scheduler(..., interval_hours=6)`. See [case-evidence-store.md](../case-and-session/case-evidence-store.md) for the full design.
 
 **Monitoring**:
-- Daily cleanup job logs to CloudWatch
-- Alert if cleanup fails 3 consecutive days
-- Metrics: `chromadb.collection_count`, `chromadb.expired_collections`
+
+- Logged: `Case cleanup scheduler started (interval: 6 hours, lifecycle-based)`
+- Logged per run: `Cleanup complete: deleted N orphaned case collections`
+- Metric (planned): `case_cleanup_orphaned_total`, `case_cleanup_on_delete_total`
 
 ---
 
@@ -552,21 +568,20 @@ python scripts/verify_vector_storage.py --collection faultmaven_kb
 
 ### 7.3 Index Maintenance
 
-**Reindexing**:
+**Reindexing is not implemented in-process.** Neither `ChromaDBVectorStore` (in `infrastructure/persistence/chromadb_store.py`) nor `KnowledgeVectorStore` exposes a `rebuild_index()` method. HNSW index rebuilds happen implicitly when ChromaDB is restored from a snapshot or when a collection is re-ingested from source.
 
-```python
-# Rebuild index for performance
-from faultmaven.infrastructure.knowledge.knowledge_vector_store import KnowledgeVectorStore
+**If a rebuild is needed** (performance degraded, corruption suspected):
 
-store: KnowledgeVectorStore = container.get_knowledge_vector_store()
-await store.rebuild_index()
-# Rebuilds HNSW index for faster similarity search
+```bash
+# Re-ingest from source files (the canonical path)
+python scripts/verify_vector_storage.py --rebuild --collection faultmaven_kb
 ```
 
+Source files live in `data/knowledge/` (markdown) and `data/evidence/` (raw uploads), so a full rebuild is always reconstructable.
+
 **Scheduled Maintenance**:
-- Weekly index optimization (Sunday 2 AM UTC)
-- Monthly full reindex (first Sunday)
-- Vacuum expired collections (daily)
+
+- No in-process scheduler. Operators who want periodic sweeps (for example, the orphan-collection sweep described in §5.2) should configure an external job runner (Kubernetes CronJob, systemd timer, etc.) that invokes the relevant entry point.
 
 ### 7.4 Disaster Recovery
 

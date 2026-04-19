@@ -1,13 +1,31 @@
 # FaultMaven Case Storage Design - Performant Production Standard
 
-**Version**: 3.4
+**Version**: 3.6
 **Status**: Authoritative Standard
 **Supersedes**: case-data-model-design.md, db-design-specifications.md
-**Last Updated**: 2026-04-18
+**Last Updated**: 2026-04-19
 
-> **IMPORTANT**: `organization_id` is **ONLY** stored on the `cases` table (top-level entity).
-> Child tables (evidence, hypotheses, solutions, etc.) do **NOT** have `organization_id` columns.
-> Organization filtering is achieved via JOIN to the `cases` table for data integrity and simplicity.
+> **NOTE on `organization_id` placement**: Per the v2.1 locked design in [deployment-schema-strategy.md](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) §10, all tenanted case-domain tables carry `organization_id` for RLS policy enforcement in PostgreSQL. The v2.0-era approach of placing `organization_id` only on `cases` and filtering child tables via JOIN is superseded. The per-table DDL below reflects the correct `organization_id NOT NULL FK` placement on each tenanted table.
+
+---
+
+## Deployment Applicability
+
+> **Read this before interpreting any DDL in this document.**
+
+The DDL definitions below represent the **logical schema**: both SQLite (Local Deployment) and PostgreSQL (Cloud Deployment) implement every table and column listed. This is the Tier 1 shape — dialect-neutral, enforced in both environments via SQLAlchemy ORM models at `faultmaven/infrastructure/persistence/models.py`.
+
+The following constructs are **Tier 2 (PostgreSQL-only)** augmentations. SQLite deployments omit them entirely by design — they are not regressions:
+
+- `CHECK` constraints involving regex patterns, cross-column predicates, or conditional logic that SQLite handles differently.
+- Partial indexes (`WHERE` clause on an index).
+- Expression indexes, GIN indexes, and GIST indexes (including `to_tsvector` full-text search indexes and JSONB path expression indexes).
+- Table partitioning by range.
+- `JSONB` merge operators (`||`) in application code paths that are cloud-only.
+
+Wherever a DDL element in this document is Tier 2, it is marked inline with **"Tier 2 (PostgreSQL-only)"**. All other DDL is Tier 1.
+
+For the complete policy on dialect tiering, the per-table deployment matrix, and enum governance, see the authoritative strategy document: [deployment-schema-strategy.md](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
 
 ---
 
@@ -16,7 +34,7 @@
 **Current State** (as of 2026-04-18):
 
 | Component | Status | Location |
-|-----------|--------|----------|
+| --- | --- | --- |
 | ✅ Design | Approved | This document |
 | ✅ PostgreSQL Schema | Complete | `docs/reference/database/001_initial_hybrid_schema.sql` |
 | ✅ SQLite Schema | Complete | Auto-created by `SQLiteCaseRepository` |
@@ -79,6 +97,7 @@ This document defines the **authoritative storage design** for FaultMaven case d
 5. [Normalization Decisions](#5-normalization-decisions)
 6. [Performance Characteristics](#6-performance-characteristics)
 7. [Concurrency Model](#7-concurrency-model)
+   - [7.5 Row-Level Security (RLS)](#75-row-level-security-postgresql-cloud--tier-2)
 8. [Testing Requirements](#8-testing-requirements)
 9. [Implementation Checklist](#9-implementation-checklist)
 
@@ -314,15 +333,16 @@ class Case(BaseModel):
 > fields in `cases_db` reference entities in `auth_db` but are enforced at the application layer,
 > not via database FK constraints.
 
-### 4.1 Table Design (10 case-domain tables in cases_db)
+### 4.1 Table Design (case-domain tables)
+
+> **Post-v2.1 table count**: 4 tables deleted from the v3.5 list (`sessions`, `evidence_artifacts`, `standalone_evidence`, `agent_tool_calls` v1); `agent_tool_calls_v2` renamed to canonical `agent_tool_calls`. See [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) for the full 29-table applicability matrix.
 
 ```
-Core Tables (2):
-├── cases              -- Main case data + JSONB for low-cardinality items
-└── sessions           -- Session management
+Core Table (1):
+└── cases              -- Main case data + JSONB for low-cardinality items
 
-High-Cardinality Tables (8):
-├── evidence           -- Investigation evidence (many per case)
+High-Cardinality Tables (7):
+├── evidence           -- Investigation evidence, single table, case_id NOT NULL FK
 ├── hypotheses         -- Hypotheses being tested (many per case)
 ├── solutions          -- Proposed/verified solutions (few per case)
 ├── uploaded_files     -- File metadata (many per case)
@@ -331,44 +351,91 @@ High-Cardinality Tables (8):
 │                       -- (Python alias: CaseStatusTransitionModel)
 ├── case_checkpoints   -- State snapshots (one per turn)
 └── reports            -- Generated reports (few per case, versioned)
+
+Agent Execution Cascade (3):
+├── investigation_sessions  -- Per-investigation agent context (case-owned)
+├── agent_executions        -- Per-turn agent run metadata
+└── agent_tool_calls        -- Tool-call log (renamed from agent_tool_calls_v2)
+
+DELETED tables (v2.1):
+├── sessions           -- DELETED: SQL sessions violate case-and-session-concepts.md v2.1.
+│                         Auth sessions live in Redis via RedisSessionStore only.
+├── evidence_artifacts -- DELETED: functionally dead (written by standalone API, never read by engine)
+├── standalone_evidence -- DELETED: same reason — standalone path removed entirely
+└── agent_tool_calls v1 -- DELETED: zero functional readers/writers in production code paths
 ```
 
-The full live table count across user + case + knowledge + conversion + config domains is 33 — see `er-diagram.md` for the authoritative enumeration.
+The full live table count across user + case + knowledge + conversion + config domains is **29** (post-v2.1 redesign) — see `er-diagram.md` for the authoritative enumeration.
 
 ### 4.2 cases (Main Table)
+
+> **v2.1 column status — what changed from v3.5.**
+>
+> **Columns DROPPED (v2.1 locked design)**:
+>
+> - `session_id` — **DROPPED ENTIRELY** (not just the FK constraint). Binding a case to an auth session is Anti-Pattern 1 per [case-and-session-concepts.md](../../case-and-session/case-and-session-concepts.md) v2.1. The `sessions` table itself is also deleted. See [deployment-schema-strategy.md §8.1](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+> - `degraded_mode TEXT` — **DELETED**. Deprecated column with backward-compat comment. Per project directive (no backward compatibility), removed from schema. See [deployment-schema-strategy.md §4.5](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+>
+> **Columns added (Tier 1, confirmed domain-backed)**:
+>
+> - `closure_reason VARCHAR(100)` — Tier 2 PG-only CHECK on valid values.
+> - `last_activity_at TIMESTAMPTZ NOT NULL` — domain model carries this field.
+> - `resolved_at TIMESTAMPTZ` — domain model carries this field.
+> - `closed_at TIMESTAMPTZ` — domain model carries this field.
+>
+> **Columns NOT added (stale design — no domain backing)**:
+>
+> - `description TEXT` — Removed from spec. Domain `Case` model has `title` only. No `description` field. See [deployment-schema-strategy.md §18](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+> - `investigation_strategy VARCHAR(20)` — Not in domain model; remains inside `cases.progress` JSONB blob.
+> - `current_turn INTEGER`, `turns_without_progress INTEGER` — Not first-class columns. Stored inside `cases.progress` JSON blob (Tier 1). The CHECK constraints below using these names are Tier 2 PG-only aspirational and remain aspirational since the fields are not promoted.
+>
+> **Other ORM columns** (still present):
+>
+> - `team_id VARCHAR(36)` (indexed) — team assignment for the case; FK to `teams.team_id`.
+> - `is_archived BOOLEAN`, `archived_at TIMESTAMPTZ` — data-lifecycle archival flags. Soft delete is stripped; `is_archived` + `archived_at` is the supported preservation pattern (see §7.3).
 
 ```sql
 CREATE TABLE cases (
     -- ============================================================
     -- Identity
     -- ============================================================
-    case_id VARCHAR(17) PRIMARY KEY,
-    user_id VARCHAR(255) NOT NULL,  -- No FK: users table in separate auth_db cluster
-    organization_id VARCHAR(20) NOT NULL,  -- No FK: organizations table in separate auth_db cluster
+    case_id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL REFERENCES users(user_id),
+    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id),
+    team_id VARCHAR(36) REFERENCES teams(team_id),
     title VARCHAR(200) NOT NULL,
-    description TEXT DEFAULT '',
+    -- NOTE: cases.description does NOT exist. Domain Case model has title only.
+    -- Removed from spec per deployment-schema-strategy.md §18.
 
     -- ============================================================
     -- Status & Lifecycle
     -- ============================================================
     status VARCHAR(20) NOT NULL DEFAULT 'inquiry',
     closure_reason VARCHAR(100),
-    investigation_strategy VARCHAR(20) DEFAULT 'post_mortem',
+    -- investigation_strategy: not a first-class column; stored in cases.progress JSONB blob.
 
     -- ============================================================
-    -- Turn Tracking
+    -- Turn Tracking (JSON blob fields — not first-class columns)
     -- ============================================================
-    current_turn INTEGER DEFAULT 0,
-    turns_without_progress INTEGER DEFAULT 0,
+    -- current_turn and turns_without_progress are stored inside the cases.progress
+    -- JSON blob, not as first-class SQL columns. The CHECK constraints below using
+    -- these names are Tier 2 (PostgreSQL-only) aspirational for if the fields are
+    -- ever promoted to dedicated columns; for now they remain inside the JSONB blob.
 
     -- ============================================================
-    -- Timestamps
+    -- Timestamps (Tier 1 — all confirmed domain-backed)
     -- ============================================================
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     last_activity_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     resolved_at TIMESTAMP WITH TIME ZONE,
     closed_at TIMESTAMP WITH TIME ZONE,
+
+    -- ============================================================
+    -- Archival (supported preservation pattern — soft delete stripped, see §7.3)
+    -- ============================================================
+    is_archived BOOLEAN NOT NULL DEFAULT false,
+    archived_at TIMESTAMP WITH TIME ZONE,
 
     -- ============================================================
     -- Low-Cardinality Complex Data (JSONB)
@@ -384,34 +451,43 @@ CREATE TABLE cases (
 
     -- ============================================================
     -- Constraints
+    -- Note: All CHECK constraints below are Tier 2 (PostgreSQL-only).
+    -- The ORM enforces enum membership at the application layer for both dialects.
+    -- SQLite deployments omit these constraints by design.
     -- ============================================================
+
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT cases_status_check
         CHECK (status IN ('inquiry', 'investigating', 'resolved', 'closed')),
 
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT cases_closure_reason_check
         CHECK (
             closure_reason IS NULL OR
             closure_reason IN ('resolved', 'abandoned', 'escalated', 'inquiry_only', 'duplicate', 'other')
         ),
 
-    CONSTRAINT cases_strategy_check
-        CHECK (investigation_strategy IN ('active_incident', 'post_mortem')),
+    -- NOTE: cases_strategy_check removed — investigation_strategy is not a first-class
+    -- column (lives in cases.progress JSONB blob). Removed from spec per strategy doc §18.
 
-    CONSTRAINT cases_turn_check
-        CHECK (current_turn >= 0 AND turns_without_progress >= 0),
+    -- NOTE: cases_turn_check removed — current_turn and turns_without_progress are not
+    -- first-class columns (live in cases.progress JSONB blob). Removed from spec.
 
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT cases_resolved_timestamp_check
         CHECK (
             (status = 'resolved' AND resolved_at IS NOT NULL) OR
             (status != 'resolved' AND resolved_at IS NULL)
         ),
 
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT cases_closed_timestamp_check
         CHECK (
             (status = 'closed' AND closed_at IS NOT NULL) OR
             (status != 'closed' AND closed_at IS NULL)
         ),
 
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT cases_timestamp_order_check
         CHECK (
             created_at <= updated_at AND
@@ -422,153 +498,253 @@ CREATE TABLE cases (
         )
 );
 
--- Indexes for common queries
+-- Tier 1 indexes (both dialects)
 CREATE INDEX idx_cases_user_status ON cases(user_id, status);
 CREATE INDEX idx_cases_org_status ON cases(organization_id, status);
 CREATE INDEX idx_cases_status ON cases(status);
 CREATE INDEX idx_cases_last_activity ON cases(last_activity_at DESC);
+
+-- Tier 2 (PostgreSQL-only) — partial index (WHERE clause)
 CREATE INDEX idx_cases_stuck ON cases(turns_without_progress)
     WHERE status = 'investigating' AND turns_without_progress >= 3;
 
--- JSONB indexes for filtered queries
+-- Tier 2 (PostgreSQL-only) — JSONB expression indexes
 CREATE INDEX idx_cases_path ON cases((path_selection->>'path'))
     WHERE path_selection IS NOT NULL;
 CREATE INDEX idx_cases_urgency ON cases((problem_verification->>'urgency_level'))
     WHERE problem_verification IS NOT NULL;
 
--- Full-text search
+-- Tier 2 (PostgreSQL-only) — GIN tsvector full-text search index (title only; description removed from spec)
 CREATE INDEX idx_cases_search ON cases USING gin(
-    to_tsvector('english', title || ' ' || description)
+    to_tsvector('english', title)
 );
 
 COMMENT ON TABLE cases IS 'Root case entity with embedded low-cardinality data in JSONB';
 ```
 
-### 4.3 evidence (High-Cardinality Table)
+### 4.3 evidence (Single-Table Design, v2.1 Locked — Audit-Pass Corrected)
+
+> **v2.1 design note**: The single-table evidence model with `case_id NOT NULL` FK is the **locked final design** per [deployment-schema-strategy.md §7 and §12 decision #11](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md). The v2.0-era proposal of "consolidated two-tables-plus-join" was rejected as scope creep. Every evidence record is a case-specific interpretation; there is no general "case-less evidence" concept.
+>
+> **Audit-pass correction (v2.2)**: bundled-in cosmetic column renames and speculative new columns were rolled back. Only the changes below remain.
+>
+> **Locked changes to the existing `evidence` table**:
+>
+> - **Rename** `source_type_new` → `source_type` (finishes the abandoned migration; ORM alias dropped) — [strategy doc §4.2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+> - **Type change** `file_size`: `Integer nullable` → `BIGINT NOT NULL`. **Column name unchanged**.
+> - **Width normalization**: id columns to `VARCHAR(36)` per [strategy doc §4.3](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+> - **Enum binding fix** for existing `category` column: previously held `EvidenceCategoryEnum` (LOGS_AND_ERRORS / STRUCTURED_CONFIG / …) which was a misleadingly-named data-form enum. The ORM enum class is deleted; the column now binds to domain `EvidenceCategory` directly (`symptom_evidence | causal_evidence | …`). **Column name unchanged**.
+>
+> **New columns added**:
+>
+> - `form VARCHAR(20) NOT NULL` — bound to the renamed `EvidenceForm` enum (`text|image|metric|structured`). The data-form vocabulary that previously lived in the misnamed `EvidenceCategoryEnum` now has its own column.
+> - `is_primary BOOLEAN NOT NULL DEFAULT FALSE` — preserves the "primary evidence per case" concept that was previously on the deleted `evidence_artifacts.is_primary`. Consumed by `list_evidence_tool` (the surviving agent tool path). Setter API is deferred — no current writer; the column stays at `FALSE` until a primary-evidence UI feature is wired.
+> - `content_type VARCHAR(100)` — MIME type. Already available from the upload `Attachment.content_type` field; previously discarded. Forward-looking consumers: agent-tool dispatch (decide whether to UTF-8-decode vs extract-image vs parse-JSON), UI rendering (image preview vs syntax-highlighted code vs PDF viewer), S3 presigned-URL `Content-Type` header.
+>
+> **Tier 2 PG-only enhancements (deferred — no current producer)**:
+>
+> - `reliability_score REAL` with PG-only CHECK (0..1).
+> - `tags TEXT` (comma-separated for SQLite parity; PG-only `TEXT[]` + GIN).
+>
+> **Bundled-in cosmetic changes ROLLED BACK** ([strategy doc §12.21](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md)):
+>
+> - ❌ Rename `file_size` → `content_size_bytes` (kept name, only changed type)
+> - ❌ Rename `upload_timestamp` → `collected_at` (kept name)
+> - ❌ Rename ORM `category` column → `primary_purpose` (kept name; only fixed enum binding)
+> - ❌ Rename `filename` → `original_filename` (kept name)
+> - ❌ Add `content_type` (MIME) — no reader
+> - ❌ Add `collected_by` — duplicates linkage via `source_file_id`
+> - ❌ Add `created_at` — redundant with `upload_timestamp`
+>
+> **Existing columns preserved** (the table extends, doesn't replace):
+>
+> - `evidence_id`, `case_id`, `organization_id`, `category`, `source_type`, `summary`, `preprocessed_content` (Text NOT NULL — used by agent tools), `content_ref`, `file_size` (now BIGINT NOT NULL), `filename`, `content_hash`, `collected_at_turn`, `source_file_id`, `upload_timestamp`, `metadata`.
 
 ```sql
 CREATE TABLE evidence (
-    evidence_id VARCHAR(15) PRIMARY KEY,
-    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    -- ============================================================
+    -- Existing columns (preserved — the table extends, doesn't replace)
+    -- ============================================================
+    evidence_id         VARCHAR(36) PRIMARY KEY,                 -- widened to VARCHAR(36)
+    case_id             VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    organization_id     VARCHAR(36) NOT NULL REFERENCES organizations(organization_id),
+
+    -- domain EvidenceCategory enum (symptom_evidence | causal_evidence | ...)
+    -- Was misnamed-bound to EvidenceCategoryEnum; now bound to domain EvidenceCategory.
+    category            VARCHAR(50) NOT NULL,
+
+    -- domain EvidenceSourceType enum (logs | metrics | configuration | visual | user_description)
+    -- Renamed from physical column source_type_new.
+    source_type         VARCHAR(50),
+
+    summary             VARCHAR(500) NOT NULL,
+    preprocessed_content TEXT NOT NULL,                          -- preserved: used by agent tools
+    content_ref         VARCHAR(1000),
+    filename            VARCHAR(255),
+    file_size           BIGINT NOT NULL,                         -- type change only: Integer nullable → BIGINT NOT NULL
+    content_hash        VARCHAR(64),
+    collected_at_turn   INTEGER,
+    source_file_id      VARCHAR(36),
+    upload_timestamp    TIMESTAMP WITH TIME ZONE NOT NULL,
+    metadata            JSON,                                    -- column name `metadata`, ORM attribute `evidence_metadata`
 
     -- ============================================================
-    -- Classification
+    -- New columns added by v2.1 redesign
     -- ============================================================
-    category VARCHAR(50) NOT NULL,              -- see EvidenceCategory enum below
-    primary_purpose VARCHAR(100) NOT NULL,
+    -- EvidenceForm enum (data-content type): text | image | metric | structured
+    -- Replaces the misnamed ORM EvidenceCategoryEnum.
+    form                VARCHAR(20) NOT NULL,
+
+    -- Preserves the "primary evidence per case" concept (was evidence_artifacts.is_primary).
+    -- Consumed by list_evidence_tool; setter API deferred.
+    is_primary          BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- MIME type from upload Attachment.content_type (already available; previously discarded).
+    -- Forward-looking consumers: agent-tool dispatch, UI rendering, S3 presigned-URL Content-Type.
+    content_type        VARCHAR(100),
 
     -- ============================================================
-    -- Content (Three-Tier Storage)
+    -- Tier 1 columns added (both dialects); Tier 2 enhancements + producers deferred
     -- ============================================================
-    summary VARCHAR(500) NOT NULL,              -- Quick preview
-    preprocessed_content TEXT NOT NULL,         -- Analyzed content (in DB)
-    content_ref VARCHAR(1000),                  -- S3 URI for raw content
-    content_size_bytes BIGINT NOT NULL,
-    preprocessing_method VARCHAR(50) NOT NULL,
+    -- Column added Tier 1 nullable; Tier 2 PG-only adds CHECK (0..1).
+    -- No current producer (agent does not yet compute scores).
+    reliability_score   REAL,
 
-    -- ============================================================
-    -- Source
-    -- ============================================================
-    source_type VARCHAR(50) NOT NULL,           -- user_upload | system_collected | agent_generated
-    form VARCHAR(20) NOT NULL,                  -- text | image | metric | structured
+    -- Column added Tier 1 as comma-separated string; Tier 2 PG-only switches to TEXT[] + GIN.
+    -- No current producer (no tag-writer UI yet).
+    tags                TEXT,
 
-    -- ============================================================
-    -- Metadata
-    -- ============================================================
-    collected_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    reliability_score REAL CHECK (reliability_score >= 0 AND reliability_score <= 1),
-    tags TEXT[],                                -- PostgreSQL array for efficient queries
+    -- Tier 2 (PostgreSQL-only)
+    CONSTRAINT evidence_form_check
+        CHECK (form IN ('text', 'image', 'metric', 'structured')),
 
-    -- ============================================================
-    -- Flexible Additional Data (JSONB)
-    -- ============================================================
-    metadata JSONB DEFAULT '{}'::jsonb,         -- Source-specific metadata
-
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT evidence_category_check
         CHECK (category IN (
-            -- EvidenceCategory enum (faultmaven/modules/case/domain/models.py)
             'symptom_evidence',
             'causal_evidence',
             'mitigation_evidence',
             'solution_evidence',
-            'resolution_evidence',    -- alias for solution_evidence
+            'resolution_evidence',
             'contextual_evidence',
             'rejected'
         )),
 
-    CONSTRAINT evidence_source_check
-        CHECK (source_type IN ('user_upload', 'system_collected', 'agent_generated')),
+    -- Tier 2 (PostgreSQL-only)
+    CONSTRAINT evidence_source_type_check
+        CHECK (source_type IS NULL OR source_type IN ('logs', 'metrics', 'configuration', 'visual', 'user_description')),
 
-    CONSTRAINT evidence_form_check
-        CHECK (form IN ('text', 'image', 'metric', 'structured'))
+    -- Tier 2 (PostgreSQL-only)
+    CONSTRAINT evidence_reliability_check
+        CHECK (reliability_score IS NULL OR (reliability_score BETWEEN 0 AND 1))
 );
 
--- Note: EvidenceCategory describes the evidentiary role (why the artifact matters
--- to the investigation). Data shape (LOGS, METRICS, CONFIGURATION, CODE, TEXT,
--- IMAGE) is a separate enum — EvidenceSourceType — carried on the artifact row
--- rather than on the evidence row.
-
--- Indexes for evidence queries
+-- Tier 1 indexes (both dialects)
 CREATE INDEX idx_evidence_case ON evidence(case_id);
 CREATE INDEX idx_evidence_category ON evidence(case_id, category);
-CREATE INDEX idx_evidence_collected_at ON evidence(collected_at DESC);
+CREATE INDEX idx_evidence_upload_timestamp ON evidence(upload_timestamp DESC);
+
+-- Tier 2 (PostgreSQL-only) — GIN array index (when tags is TEXT[] in PG)
 CREATE INDEX idx_evidence_tags ON evidence USING gin(tags);
 
-COMMENT ON TABLE evidence IS 'Investigation evidence - high cardinality, frequently queried/filtered';
+COMMENT ON TABLE evidence IS 'Investigation evidence — single table, case_id NOT NULL FK. Standalone evidence path deleted (v2.1).';
+COMMENT ON COLUMN evidence.category IS 'Domain EvidenceCategory enum (investigation role). ORM EvidenceCategoryEnum class deleted; column binds to domain enum directly.';
+COMMENT ON COLUMN evidence.source_type IS 'EvidenceSourceType enum. Physical column renamed from source_type_new (alias removed).';
+COMMENT ON COLUMN evidence.file_size IS 'Type changed Integer nullable → BIGINT NOT NULL. Column name unchanged.';
+COMMENT ON COLUMN evidence.form IS 'New: EvidenceForm enum (data-content type). Replaces the misnamed ORM EvidenceCategoryEnum.';
+COMMENT ON COLUMN evidence.is_primary IS 'New: preserves primary-evidence-per-case concept (was evidence_artifacts.is_primary). Consumed by list_evidence_tool; setter API deferred.';
+COMMENT ON COLUMN evidence.content_type IS 'New: MIME type from upload Attachment. Forward-looking consumers: agent-tool dispatch, UI rendering, S3 presigned-URL Content-Type.';
 ```
+
+### 4.3-bis evidence_artifacts — DELETED (v2.1)
+
+`evidence_artifacts` is **deleted** as of v2.1. It was functionally a black hole: the standalone API endpoint wrote rows to this table, but the investigation engine never read from it. The case-tied investigation flow reads exclusively from the `evidence` table.
+
+See [deployment-schema-strategy.md §7.2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) for the full deletion scope (services, endpoints, repository methods, agent-tool Path-1 fallback).
+
+No backward compatibility. No data migration.
+
+### 4.3-ter standalone_evidence — DELETED (v2.1)
+
+`standalone_evidence` is **deleted** as of v2.1 for the same reason as `evidence_artifacts`. The entire standalone evidence path is removed — `POST /api/v1/evidence`, `POST /api/v1/evidence/{id}/link`, the `EvidenceService` and `APIEvidenceArtifactService`, and six `ICaseRepository` methods (`create_standalone_evidence`, `get_standalone_evidence`, `list_standalone_evidence`, `delete_standalone_evidence`, `link_standalone_evidence_to_case`, `set_primary_evidence`).
+
+See [deployment-schema-strategy.md §7.2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) for the complete deletion list.
 
 ### 4.4 hypotheses (High-Cardinality Table)
 
+> **v2.1 enum and column status**:
+>
+> **HypothesisStatus — RESOLVED** ([strategy doc §3.3](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md)): Single enum; domain vocabulary wins. ORM `HypothesisStatusEnum` is **deleted**; ORM imports domain `HypothesisStatus` directly and binds it as `SQLEnum(HypothesisStatus, name="hypothesis_status")`. Final values: `captured | active | validated | refuted | inconclusive | retired`.
+>
+> **Stale columns removed from spec** ([strategy doc §18](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md)):
+>
+> - `test_plan`, `test_results` — not in domain model.
+> - `priority` — not in domain model.
+>
+> **Column notes** (live ORM reality):
+>
+> - `rationale TEXT` — nullable in live ORM.
+> - Live ORM uses `likelihood` and `initial_likelihood` columns (not `confidence`). Both are kept; `confidence` is not added.
+> - `evidence_links TEXT` JSON blob (Tier 1 reality) — used instead of Tier 2 TEXT[] arrays.
+
 ```sql
 CREATE TABLE hypotheses (
-    hypothesis_id VARCHAR(15) PRIMARY KEY,
-    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    hypothesis_id VARCHAR(36) PRIMARY KEY,
+    case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
     -- ============================================================
     -- Content
     -- ============================================================
-    statement TEXT NOT NULL,                    -- The hypothesis statement
-    rationale TEXT NOT NULL,                    -- Why we think this
+    statement TEXT NOT NULL,
+    rationale TEXT,                             -- nullable
 
     -- ============================================================
     -- Testing Status
+    -- HypothesisStatus (domain enum, authoritative):
+    -- captured | active | validated | refuted | inconclusive | retired
+    -- ORM HypothesisStatusEnum deleted; ORM imports domain enum directly.
     -- ============================================================
-    status VARCHAR(20) NOT NULL DEFAULT 'proposed',
-    confidence REAL CHECK (confidence >= 0 AND confidence <= 1),
+    status VARCHAR(20) NOT NULL DEFAULT 'captured',
+
+    -- Live ORM uses likelihood + initial_likelihood (not confidence).
+    likelihood REAL,
+    initial_likelihood REAL,
 
     -- ============================================================
     -- Evidence Links
     -- ============================================================
-    supporting_evidence_ids TEXT[],             -- Array of evidence IDs
-    contradicting_evidence_ids TEXT[],
-
-    -- ============================================================
-    -- Testing Plan
-    -- ============================================================
-    test_plan TEXT,
-    test_results TEXT,
+    -- Tier 1 reality: single JSON blob.
+    -- Tier 2 (PostgreSQL-only) aspirational: TEXT[] arrays (supporting_evidence_ids, contradicting_evidence_ids).
+    evidence_links TEXT,                        -- JSON blob
 
     -- ============================================================
     -- Metadata
     -- ============================================================
     proposed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     tested_at TIMESTAMP WITH TIME ZONE,
-    priority INTEGER DEFAULT 0,
 
+    -- NOTE: test_plan, test_results, priority removed from spec — no domain backing.
+    -- See deployment-schema-strategy.md §18.
+
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT hypotheses_status_check
-        CHECK (status IN ('proposed', 'testing', 'confirmed', 'rejected', 'inconclusive')),
+        CHECK (status IN ('captured', 'active', 'validated', 'refuted', 'inconclusive', 'retired')),
 
+    -- Tier 2 (PostgreSQL-only)
+    CONSTRAINT hypotheses_likelihood_check
+        CHECK (likelihood IS NULL OR (likelihood >= 0 AND likelihood <= 1)),
+
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT hypotheses_tested_timestamp_check
         CHECK (
-            (status IN ('confirmed', 'rejected', 'inconclusive') AND tested_at IS NOT NULL) OR
-            (status NOT IN ('confirmed', 'rejected', 'inconclusive') AND tested_at IS NULL)
+            (status IN ('validated', 'refuted', 'inconclusive') AND tested_at IS NOT NULL) OR
+            (status NOT IN ('validated', 'refuted', 'inconclusive') AND tested_at IS NULL)
         )
 );
 
--- Indexes for hypothesis queries
+-- Tier 1 indexes (both dialects)
 CREATE INDEX idx_hypotheses_case ON hypotheses(case_id);
 CREATE INDEX idx_hypotheses_status ON hypotheses(case_id, status);
-CREATE INDEX idx_hypotheses_priority ON hypotheses(case_id, priority DESC);
 CREATE INDEX idx_hypotheses_proposed_at ON hypotheses(proposed_at DESC);
 
 COMMENT ON TABLE hypotheses IS 'Investigation hypotheses - frequently filtered by status';
@@ -576,47 +752,61 @@ COMMENT ON TABLE hypotheses IS 'Investigation hypotheses - frequently filtered b
 
 ### 4.5 solutions (High-Cardinality Table)
 
+> **v2.1 column status**:
+>
+> - `hypothesis_id VARCHAR(36) FK → hypotheses(hypothesis_id)` — **ADDED** (Tier 1). Per [deployment-schema-strategy.md §19](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+> - `SolutionStatusEnum` — **DELETED**. ORM imports domain `SolutionStatus` directly. Final values (domain wins): `proposed | in_progress | implemented | verified | rejected`. See [strategy doc §3.3](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+> - `impact_scope VARCHAR(1000)` — **Removed from spec**. Not in domain model. See [strategy doc §18](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+> - `verification_plan TEXT` — **Removed from spec**. Not in domain model. Code uses `verification_result` + `verification_timestamp`.
+
 ```sql
 CREATE TABLE solutions (
-    solution_id VARCHAR(15) PRIMARY KEY,
-    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
-    hypothesis_id VARCHAR(15) REFERENCES hypotheses(hypothesis_id),
+    solution_id VARCHAR(36) PRIMARY KEY,
+    case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+
+    -- Added in v2.1: FK to the hypothesis this solution addresses
+    hypothesis_id VARCHAR(36) REFERENCES hypotheses(hypothesis_id),
 
     -- ============================================================
     -- Content
     -- ============================================================
     title VARCHAR(200) NOT NULL,
     description TEXT NOT NULL,
-    implementation_steps TEXT NOT NULL,         -- Newline-separated or JSON array
+    implementation_steps TEXT,
 
     -- ============================================================
     -- Status
+    -- SolutionStatus (domain enum, authoritative): proposed|in_progress|implemented|verified|rejected
+    -- ORM SolutionStatusEnum deleted; ORM imports domain enum directly.
     -- ============================================================
     status VARCHAR(20) NOT NULL DEFAULT 'proposed',
 
     -- ============================================================
-    -- Risk & Impact
+    -- Risk
     -- ============================================================
     risk_level VARCHAR(10) DEFAULT 'medium',
     estimated_effort VARCHAR(20),
-    impact_scope VARCHAR(1000),
+
+    -- NOTE: impact_scope and verification_plan removed from spec — no domain backing.
+    -- See deployment-schema-strategy.md §18.
 
     -- ============================================================
-    -- Verification
+    -- Verification (live ORM fields)
     -- ============================================================
-    verification_plan TEXT,
-    verification_results TEXT,
+    verification_result TEXT,
+    verification_timestamp TIMESTAMP WITH TIME ZONE,
 
     -- ============================================================
     -- Metadata
     -- ============================================================
     proposed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     implemented_at TIMESTAMP WITH TIME ZONE,
-    verified_at TIMESTAMP WITH TIME ZONE,
 
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT solutions_status_check
-        CHECK (status IN ('proposed', 'approved', 'implementing', 'implemented', 'verified', 'rejected')),
+        CHECK (status IN ('proposed', 'in_progress', 'implemented', 'verified', 'rejected')),
 
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT solutions_risk_check
         CHECK (risk_level IN ('low', 'medium', 'high', 'critical'))
 );
@@ -666,8 +856,10 @@ CREATE TABLE uploaded_files (
     CONSTRAINT uploaded_files_filename_not_empty CHECK (LENGTH(TRIM(filename)) > 0),
     CONSTRAINT uploaded_files_size_positive CHECK (size_bytes > 0),
     CONSTRAINT uploaded_files_turn_nonnegative CHECK (uploaded_at_turn >= 0),
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT uploaded_files_data_type_check
         CHECK (data_type IN ('log', 'metric', 'config', 'code', 'text', 'image', 'structured', 'other')),
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT uploaded_files_source_type_check
         CHECK (source_type IN ('file_upload', 'paste', 'screenshot', 'page_injection', 'agent_generated'))
 );
@@ -690,9 +882,17 @@ COMMENT ON COLUMN uploaded_files.content_ref IS 'Storage path - links to Evidenc
 
 ### 4.7 case_messages (High-Cardinality Table)
 
+> **Column discrepancies vs. live ORM**:
+>
+> - `message_id UUID PRIMARY KEY DEFAULT gen_random_uuid()` — live ORM uses `String(20)` as the primary key with no auto-generation. UUID PK with `gen_random_uuid()` is **Tier 2 (PostgreSQL-only)** (SQLite cannot express this natively). The Tier 1 reality is a VARCHAR(20) application-generated ID.
+> - `CONSTRAINT case_messages_role_check` — not present in live ORM; marking Tier 2 (PostgreSQL-only).
+
 ```sql
 CREATE TABLE case_messages (
-    message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- Live ORM: String(20) PK (application-generated). UUID + gen_random_uuid() is
+    -- Tier 2 (PostgreSQL-only) — aspirational for cloud deployment.
+    message_id VARCHAR(20) PRIMARY KEY,         -- Tier 1 reality (live ORM)
+    -- message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Tier 2 (PostgreSQL-only)
     case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
     turn_number INTEGER NOT NULL,
 
@@ -713,6 +913,7 @@ CREATE TABLE case_messages (
     -- ============================================================
     metadata JSONB DEFAULT '{}'::jsonb,         -- Sources, tools used, etc.
 
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT case_messages_role_check
         CHECK (role IN ('user', 'assistant', 'system'))
 );
@@ -726,27 +927,39 @@ COMMENT ON TABLE case_messages IS 'Turn-by-turn conversation messages (high volu
 
 ### 4.8 case_actions (Audit Table — Python alias: CaseStatusTransitionModel)
 
+> **Column discrepancies vs. live ORM**:
+>
+> - `transition_id UUID PRIMARY KEY DEFAULT gen_random_uuid()` — live ORM uses `Integer autoincrement` PK. UUID PK is Tier 2 (PostgreSQL-only) aspirational.
+> - `from_status VARCHAR(20) NOT NULL`, `to_status VARCHAR(20) NOT NULL` — live ORM uses `String(50)` and `from_status` is nullable.
+> - `triggered_by VARCHAR(255)` — not present in live ORM.
+> - `CONSTRAINT case_actions_status_check` — not present in live ORM; marking Tier 2 (PostgreSQL-only).
+
 ```sql
 -- The live table is case_actions. A Python-level alias (CaseStatusTransitionModel)
 -- points at this table for back-compat; there is no separate case_status_transitions
 -- table in the database.
 CREATE TABLE case_actions (
-    transition_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- Live ORM: Integer autoincrement PK.
+    -- UUID PK with gen_random_uuid() is Tier 2 (PostgreSQL-only) — aspirational.
+    transition_id INTEGER PRIMARY KEY,          -- Tier 1 reality (live ORM)
+    -- transition_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Tier 2 (PostgreSQL-only)
     case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
     -- ============================================================
     -- Transition Data
     -- ============================================================
-    from_status VARCHAR(20) NOT NULL,
-    to_status VARCHAR(20) NOT NULL,
+    from_status VARCHAR(50),                    -- nullable in live ORM; String(50)
+    to_status VARCHAR(50) NOT NULL,             -- String(50) in live ORM
     reason VARCHAR(500),
-    triggered_by VARCHAR(255),                  -- user_id or 'system'
+    -- triggered_by not present in live ORM (Proposed)
+    -- triggered_by VARCHAR(255),
 
     -- ============================================================
     -- Metadata
     -- ============================================================
     transitioned_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT case_actions_status_check
         CHECK (
             from_status IN ('inquiry', 'investigating', 'resolved', 'closed') AND
@@ -820,7 +1033,8 @@ CREATE TABLE reports (
     -- ============================================================
     generation_status VARCHAR(20) NOT NULL,        -- generating | completed | failed
     generation_time_ms INTEGER NOT NULL CHECK (generation_time_ms >= 0 AND generation_time_ms <= 120000),
-    generated_by VARCHAR(255),                     -- Optional: user_id who triggered generation (not in CaseReport model yet)
+    -- generated_by: added in v2.1 (strategy doc §19). VARCHAR(36) to match FK width policy.
+    generated_by VARCHAR(36),                      -- user_id who triggered generation
 
     -- ============================================================
     -- Runbook-Specific Metadata (JSONB for flexibility)
@@ -833,31 +1047,43 @@ CREATE TABLE reports (
     generated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT reports_type_check
         CHECK (report_type IN ('resolution_summary', 'closure_summary', 'runbook')),
 
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT reports_status_check
         CHECK (generation_status IN ('generating', 'completed', 'failed')),
 
+    -- Tier 2 (PostgreSQL-only)
     CONSTRAINT reports_format_check
         CHECK (format IN ('markdown')),
 
     CONSTRAINT reports_version_check
-        CHECK (version >= 1 AND version <= 5)
+        CHECK (version >= 1 AND version <= 5),
+
+    CONSTRAINT reports_gen_time_check
+        CHECK (generation_time_ms >= 0 AND generation_time_ms <= 120000)
 );
 
--- Ensure only one current version per report_type per case (partial unique index)
+-- Note: generated_by is confirmed in spec (v2.1, strategy doc §19). VARCHAR(36) per FK width policy.
+-- Note: live ORM ReportModel has only reports_version_check and reports_gen_time_check;
+-- reports_type_check, reports_status_check, reports_format_check are Tier 2 (PostgreSQL-only).
+
+-- Tier 1 index (both dialects — exists in live ORM)
+CREATE INDEX idx_reports_type_version ON reports(case_id, report_type);
+
+-- Tier 2 (PostgreSQL-only) — partial unique index
 CREATE UNIQUE INDEX idx_reports_current_unique
     ON reports(case_id, report_type)
     WHERE is_current = TRUE;
 
--- Additional indexes for report queries (current_unique index created above)
+-- Tier 2 (PostgreSQL-only) — partial index
 CREATE INDEX idx_reports_case ON reports(case_id);
-CREATE INDEX idx_reports_type_version ON reports(case_id, report_type, version DESC);
 CREATE INDEX idx_reports_closure ON reports(case_id) WHERE linked_to_closure = TRUE;
 CREATE INDEX idx_reports_generated_at ON reports(generated_at DESC);
 
--- Full-text search on report content
+-- Tier 2 (PostgreSQL-only) — GIN tsvector full-text search index
 CREATE INDEX idx_reports_content_search ON reports USING gin(
     to_tsvector('english', title || ' ' || content)
 );
@@ -875,11 +1101,85 @@ COMMENT ON COLUMN reports.metadata IS 'Runbook-specific metadata: source (incide
 - Full-text search index on title and content for similarity queries
 - Cascade delete when parent case is deleted
 
-### 4.11 Supporting Tables
+### 4.11 Agent Execution Cascade Tables
+
+The investigation engine records its runtime activity in a four-level cascade:
+
+```text
+Case → investigation_sessions → agent_executions → agent_tool_calls
+```
+
+All four levels delete by CASCADE from `cases`. Note: `investigation_sessions` is an agent-execution session (per-investigation context), **not** an auth session. Auth sessions live in Redis. See [deployment-schema-strategy.md §11.2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+
+#### investigation_sessions
+
+Top of the cascade. One session groups all agent executions that occur within a single user-initiated investigation run. This table is case-owned (lives under the case module), not auth-owned. See [strategy doc §11.2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+
+**When written**: Created when the user submits a turn and the milestone engine starts processing. A session spans multiple agent executions (one per LLM call iteration).
+
+**Key columns** (see `models.py:1475`):
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `session_id` | VARCHAR(36) PK | |
+| `case_id` | VARCHAR(36) FK → cases CASCADE | |
+| `user_id` | VARCHAR(36) | |
+| `organization_id` | VARCHAR(36) | |
+| `status` | VARCHAR(32) | `active\|paused\|completed\|abandoned` |
+| `started_at` | TIMESTAMPTZ | |
+| `ended_at` | TIMESTAMPTZ nullable | |
+| `last_activity_at` | TIMESTAMPTZ | |
+| `total_duration_ms` | INTEGER nullable | |
+| `session_goal` | TEXT nullable | |
+| `findings_summary` | TEXT nullable | |
+| `total_token_usage` | INTEGER | |
+| `total_agent_executions` | INTEGER | |
+| `token_budget_limit` | INTEGER nullable | |
+| `metadata` | TEXT (JSON) | stored as `session_metadata` Python attribute |
+
+**Applicability**: Both deployments.
+
+#### agent_executions
+
+Per-turn agent run metadata. One execution record per LLM call within a session.
+
+**When written**: Created at the start of each agent execution loop iteration by the milestone engine.
+
+**Key columns** (see `models.py:1262`):
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `execution_id` | VARCHAR(36) PK | |
+| `case_id` | VARCHAR(36) FK → cases CASCADE | |
+| `session_id` | VARCHAR(36) FK → investigation\_sessions SET NULL | nullable |
+| `organization_id` | VARCHAR(36) | |
+| `agent_type` | VARCHAR(64) | `investigator\|debugger\|researcher\|validator\|reporter\|custom` |
+| `agent_model` | VARCHAR(128) | LLM model name |
+| `status` | VARCHAR(32) | `queued\|running\|completed\|failed\|cancelled\|timeout` |
+| `started_at` | TIMESTAMPTZ nullable | |
+| `completed_at` | TIMESTAMPTZ nullable | |
+| `execution_duration_ms` | INTEGER nullable | |
+| `prompt` | TEXT nullable | Full prompt sent to LLM |
+| `response` | TEXT nullable | Raw LLM response |
+| `error_message` | TEXT nullable | |
+| `token_usage` | TEXT (JSON) | |
+| `metadata` | TEXT (JSON) | stored as `execution_metadata` Python attribute |
+
+**Applicability**: Both deployments.
+
+#### agent_tool_calls (canonical — renamed from agent_tool_calls_v2)
+
+Tool-call log per agent execution. **Renamed from `agent_tool_calls_v2`** in v2.1. FK: `execution_id → agent_executions`. Records each tool invocation made by the agent during an execution.
+
+**v2.1 change**: The prior `agent_tool_calls` v1 table is **deleted** (zero functional readers/writers in production code paths; only schema definition + unused `CaseModel.tool_calls` relationship). The v2 table is now canonical. See [deployment-schema-strategy.md §13](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+
+**Applicability**: Both deployments. Cross-reference `er-diagram.md` for full column list.
+
+### 4.12 Supporting Tables
 
 `users`, `organizations`, and related auth/RBAC tables are defined in [user-schema.md](./user-schema.md) — that is the authoritative source for their DDL. They are not redefined here.
 
-`sessions` is a case-domain table and is documented in §4.1 above.
+`sessions` (SQL auth sessions table) — **DELETED in v2.1**. Auth sessions are Redis-only. See §4.1 table overview and [deployment-schema-strategy.md §11.1](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
 
 ---
 
@@ -973,47 +1273,48 @@ SELECT * FROM cases WHERE case_id = 'case_123';
    - Denormalized: ~1.1ms per query (direct filter)
    - **Difference**: 1.4ms (< 3% of total 50-100ms query time)
 
-**Implementation Pattern**:
+**Implementation Pattern (v2.1)**:
+
+> **v2.1 design change**: The v2.0-era pattern of placing `organization_id` only on `cases` and filtering child tables via JOIN is superseded. Per [deployment-schema-strategy.md §10](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md), all tenanted tables carry `organization_id NOT NULL` to support PostgreSQL Row-Level Security (RLS). The repository layer filters by `organization_id` directly; RLS provides defense-in-depth. Note: `sessions` and `standalone_evidence` referenced below are deleted in v2.1.
 
 ```sql
--- ✅ CORRECT: Organization filter via JOIN to cases
+-- Repository layer: direct filter on organization_id (Tier 1, both dialects)
 SELECT e.* FROM evidence e
-JOIN cases c ON c.case_id = e.case_id
 WHERE e.case_id = :case_id
-  AND c.organization_id = :organization_id;  -- Security check via JOIN
+  AND e.organization_id = :organization_id;
 
--- ❌ INCORRECT: Don't add organization_id to child tables
--- ALTER TABLE evidence ADD COLUMN organization_id VARCHAR(20);  -- NO!
+-- PostgreSQL RLS also enforces this via SET LOCAL app.current_org_id (Tier 2, cloud only)
 ```
 
-**Tables WITH organization_id** (Top-level entities):
+**Tables WITH organization_id NOT NULL FK** (all tenanted tables, v2.1):
 
-- ✅ `cases` - Owns the organization relationship
-- ✅ `sessions` - Independent user sessions
-- ✅ `knowledge_items` - Organization knowledge base
-- ✅ `standalone_evidence` - Organization evidence library
+- ✅ `cases` — top-level tenant anchor
+- ✅ `evidence` — carries `organization_id` for RLS (v2.1 addition)
+- ✅ `hypotheses` — carries `organization_id` for RLS (if present in live ORM; confirm on migration)
+- ✅ `solutions` — same
+- ✅ `uploaded_files` — same
+- ✅ `case_messages` — same
+- ✅ `case_actions` — same
+- ✅ `case_checkpoints` — same
+- ✅ `reports` — same
+- ✅ `investigation_sessions` — carries `organization_id`
+- ✅ `agent_executions` — carries `organization_id`
+- ✅ `agent_tool_calls` — carries `organization_id` (confirm on migration)
+- ✅ `knowledge_items` — carries `organization_id`
 
-**Tables WITHOUT organization_id** (Case children):
+**Deleted tables** (no longer relevant):
 
-- ❌ `evidence` - Inherit org via `cases.case_id` FK
-- ❌ `hypotheses` - Inherit org via `cases.case_id` FK
-- ❌ `solutions` - Inherit org via `cases.case_id` FK
-- ❌ `case_messages` - Inherit org via `cases.case_id` FK
-- ❌ `uploaded_files` - Inherit org via `cases.case_id` FK
-- ❌ `case_actions` - Inherit org via `cases.case_id` FK
-- ❌ `case_checkpoints` - Inherit org via `cases.case_id` FK
-- ❌ `reports` - Inherit org via `cases.case_id` FK
+- `sessions` — DELETED in v2.1
+- `standalone_evidence` — DELETED in v2.1
 
-**Performance Optimization**:
+**Performance**:
 
 ```sql
--- Composite index on cases table for efficient org-scoped queries:
+-- Composite indexes on frequently filtered columns:
 CREATE INDEX idx_cases_org_id_case_id ON cases(organization_id, case_id);
 CREATE INDEX idx_cases_org_status ON cases(organization_id, status);
-
--- Child table indexes remain focused on case_id (no organization_id needed):
 CREATE INDEX idx_evidence_case ON evidence(case_id);
-CREATE INDEX idx_hypotheses_case ON hypotheses(case_id);
+CREATE INDEX idx_evidence_org ON evidence(organization_id, case_id);
 ```
 
 ---
@@ -1174,19 +1475,23 @@ await update_evidence(evi_id, status='verified')    # UPDATE evidence WHERE evid
 await update_evidence(evi_id, status='invalidated') # Waits for first to commit
 ```
 
-### 7.3 JSONB Field Concurrency (Remaining Fields in cases Table)
+### 7.3 JSONB Field Concurrency
+
+> **Decision (v2.1 locked)**: Optimistic locking (`version` column + retry/backoff) and the formal JSONB-merge operator (`||`) concurrency scheme described in the prior options below are **stripped from the design**. See [deployment-schema-strategy.md §5](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md). Realistic contention is narrow. The supported pattern is **scoped field-merge** in repository methods (`update_progress`, `update_working_conclusion`) — read-modify-write inside one transaction with row-level locking (SQLAlchemy session locking on SQLite; SELECT FOR UPDATE equivalent on PostgreSQL). Last-write-wins is the design until evidence shows otherwise.
+>
+> The options below are retained for historical reference only — they document what was considered and why not implemented.
 
 **Remaining JSONB fields** in `cases` table:
 
-- `inquiry` - Initial problem description (set once, rarely updated)
-- `problem_verification` - Problem validation data (set once per milestone)
-- `working_conclusion` - Temporary conclusion (updated during investigation)
-- `root_cause_conclusion` - Final root cause (set once at resolution)
-- `path_selection` - Investigation path choice (set once)
-- `progress` - Progress tracking data (updated frequently)
-- `documentation` - Case documentation (updated occasionally)
+- `inquiry` — set once at creation, immutable
+- `problem_verification` — set once per milestone
+- `working_conclusion` — updated during investigation
+- `root_cause_conclusion` — set once at resolution
+- `path_selection` — set once
+- `progress` — updated frequently (contains investigation journal)
+- `documentation` — updated occasionally
 
-**Concurrency Strategy** for JSONB updates:
+**Historical options considered (not implemented)**:
 
 **Option 1: Optimistic Locking with Version Field** (Recommended for frequent updates):
 
@@ -1300,7 +1605,11 @@ async def update_conclusion_safely(case_id: str, conclusion: dict):
 
 ### 7.4 Case Deletion Strategy
 
-**Current Implementation**: Hard delete with CASCADE
+> **Decision (v2.1 locked)**: Soft delete (`deleted_at`, `soft_delete/restore/purge_expired`, 90-day window) is **stripped from the design**. See [deployment-schema-strategy.md §5](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md). No compliance requirement drives soft delete. The supported preservation pattern is `is_archived` + `archived_at` (already in the domain model and schema). The extensive soft-delete implementation guide below is retained for historical reference only.
+>
+> **Supported preservation pattern**: Set `is_archived = true` and `archived_at = NOW()`. Cases keep all child data (evidence, hypotheses, messages, reports) through RESOLVED, CLOSED, and archived states. Case vector cleanup is scheduled (6h orphan sweep) + on-delete trigger. See [case-evidence-store.md](../../case-and-session/case-evidence-store.md).
+
+**Current live implementation**: Hard delete with CASCADE.
 
 ```sql
 -- Delete case (cascades to all child tables)
@@ -1315,134 +1624,43 @@ DELETE FROM cases WHERE case_id = :case_id;
 -- - All case_actions (ON DELETE CASCADE)
 -- - All case_checkpoints (ON DELETE CASCADE)
 -- - All reports (ON DELETE CASCADE)
+-- - All investigation_sessions (ON DELETE CASCADE)
+-- - All agent_executions (ON DELETE CASCADE)
+-- - All agent_tool_calls (ON DELETE CASCADE)
 ```
 
-#### Recommended: Soft Delete Implementation
+---
 
-Add soft delete support for case recovery and audit compliance:
+## 7.5 Row-Level Security (PostgreSQL, Cloud — Tier 2)
+
+All tenanted case-domain tables get RLS policies in PostgreSQL deployments per [deployment-schema-strategy.md §10](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md). SQLite (Local Deployment) has no equivalent — tenant isolation continues to be enforced at the repository layer.
+
+**Tenanted case-domain tables** covered by RLS:
+
+`cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `evidence`, `hypotheses`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `reports`, `conversion_jobs`, `conversion_drafts`
+
+**Policy pattern (Tier 2 — PostgreSQL-only)**:
 
 ```sql
--- Add deleted_at column to cases table
-ALTER TABLE cases ADD COLUMN deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL;
+ALTER TABLE cases ENABLE ROW LEVEL SECURITY;
 
--- Create index for active cases queries
-CREATE INDEX idx_cases_active ON cases(organization_id, status)
-WHERE deleted_at IS NULL;
+CREATE POLICY cases_tenant_isolation ON cases
+    USING (organization_id = current_setting('app.current_org_id', true));
 
--- Soft delete (mark as deleted, keep data)
-UPDATE cases
-SET
-    deleted_at = NOW(),
-    status = 'closed',
-    closure_reason = 'deleted',
-    updated_at = NOW()
-WHERE case_id = :case_id
-  AND deleted_at IS NULL;  -- Prevent double-delete
-
--- Query active cases only (exclude deleted)
-SELECT * FROM cases
-WHERE organization_id = :organization_id
-  AND deleted_at IS NULL;
-
--- Restore deleted case (within retention period)
-UPDATE cases
-SET
-    deleted_at = NULL,
-    status = 'investigating',  -- Or previous status
-    updated_at = NOW()
-WHERE case_id = :case_id
-  AND deleted_at IS NOT NULL
-  AND deleted_at > NOW() - INTERVAL '90 days';  -- 90-day recovery window
-
--- Permanent deletion (purge after retention period)
-DELETE FROM cases
-WHERE deleted_at IS NOT NULL
-  AND deleted_at < NOW() - INTERVAL '90 days';
+-- Repeat for each tenanted table above.
 ```
 
-**Soft Delete Benefits**:
-
-- ✅ **Recovery**: Users can restore accidentally deleted cases
-- ✅ **Audit Trail**: Deletion events are tracked (deleted_at timestamp)
-- ✅ **Compliance**: Meet regulatory requirements for data retention
-- ✅ **Analytics**: Deleted cases can be analyzed before purge
-
-**Implementation Pattern**:
+**Request middleware**: Every authenticated request sets the per-connection tenant context before any tenanted query. Planned in `faultmaven/api/middleware/tenant_isolation.py`:
 
 ```python
-class CaseRepository:
-    async def soft_delete(self, case_id: str) -> bool:
-        """Mark case as deleted (recoverable for 90 days)."""
-        result = await self.db.execute(
-            """
-            UPDATE cases
-            SET deleted_at = NOW(),
-                status = 'closed',
-                closure_reason = 'deleted',
-                updated_at = NOW()
-            WHERE case_id = :case_id AND deleted_at IS NULL
-            """,
-            {"case_id": case_id}
-        )
-        return result.rowcount > 0
-
-    async def restore(self, case_id: str) -> bool:
-        """Restore a soft-deleted case (within 90-day window)."""
-        result = await self.db.execute(
-            """
-            UPDATE cases
-            SET deleted_at = NULL, updated_at = NOW()
-            WHERE case_id = :case_id
-              AND deleted_at IS NOT NULL
-              AND deleted_at > NOW() - INTERVAL '90 days'
-            """,
-            {"case_id": case_id}
-        )
-        return result.rowcount > 0
-
-    async def list(
-        self,
-        organization_id: str,
-        include_deleted: bool = False,
-        ...
-    ) -> tuple[List[Case], int]:
-        """List cases, excluding deleted by default."""
-        query = "SELECT * FROM cases WHERE organization_id = :organization_id"
-
-        if not include_deleted:
-            query += " AND deleted_at IS NULL"
-
-        # ... rest of query
-        return await self.db.fetch_all(query, params)
-
-    async def purge_expired(self, days: int = 90) -> int:
-        """Permanently delete cases soft-deleted >90 days ago."""
-        result = await self.db.execute(
-            """
-            DELETE FROM cases
-            WHERE deleted_at IS NOT NULL
-              AND deleted_at < NOW() - INTERVAL ':days days'
-            """,
-            {"days": days}
-        )
-        return result.rowcount
+async def set_tenant_context(session: AsyncSession, organization_id: str):
+    await session.execute(
+        text("SET LOCAL app.current_org_id = :org_id"),
+        {"org_id": organization_id},
+    )
 ```
 
-**Migration Path**:
-
-1. Add `deleted_at` column (nullable, default NULL)
-2. Update all queries to filter `WHERE deleted_at IS NULL`
-3. Change `delete()` method to set `deleted_at` instead of DELETE
-4. Add `restore()` method for recovery
-5. Add scheduled job to purge cases after retention period
-
-**Retention Policy**:
-
-| Case Status | Retention After Deletion | Action |
-|-------------|--------------------------|-------- |
-| Any | 0-90 days | Soft deleted, recoverable |
-| Any | 90+ days | Permanently purged (hard delete) |
-| Compliance cases | Longer (configurable) | Per regulatory requirements |
+**Test requirement**: A test must demonstrate that an `AsyncSession` with `app.current_org_id` unset returns zero rows from any tenanted table. This proves RLS is enforced, not just advisory.
 
 ---
 
@@ -1461,9 +1679,10 @@ psql -U faultmaven -d faultmaven_cases < migrations/001_initial_hybrid_schema.sq
 
 # Verify all tables created
 psql -U faultmaven -d faultmaven_cases -c "\dt"
-# Expected case-domain tables: cases, sessions, evidence, hypotheses, solutions,
-# uploaded_files, case_messages, case_actions, case_checkpoints, reports
-# (see er-diagram.md for the full 33-table enumeration across all domains).
+# Expected case-domain tables: cases, evidence, hypotheses, solutions,
+# uploaded_files, case_messages, case_actions, case_checkpoints, reports,
+# investigation_sessions, agent_executions, agent_tool_calls
+# (sessions deleted; see er-diagram.md for the full 29-table enumeration across all domains).
 
 # Verify indexes created
 psql -U faultmaven -d faultmaven_cases -c "\di"
@@ -1664,6 +1883,14 @@ This design provides:
 
 - **Author**: FaultMaven Team
 - **Created**: 2025-11-09
-- **Last Updated**: 2026-04-18
-- **Version**: 3.4 (Authoritative)
+- **Last Updated**: 2026-04-19
+- **Version**: 3.6 (Authoritative)
 - **Status**: ✅ Implemented — live schema (baseline migration `424078e5aa04`)
+
+**Changelog**:
+
+| Version | Date | Changes |
+| --- | --- | --- |
+| 3.6 | 2026-04-19 | Aligned with deployment-schema-strategy.md v2.1 (locked design). Single-table evidence (reverted v2.0 consolidation) — §4.3 rewritten with column renames (`source_type_new`→`source_type`, `file_size`→`content_size_bytes`, `upload_timestamp`→`collected_at`, ORM `category`→`primary_purpose`) and new `form` column for `EvidenceForm` enum. evidence\_artifacts (§4.3-bis) and standalone\_evidence (§4.3-ter) marked DELETED — standalone path removed entirely. `cases.session_id` DROPPED ENTIRELY — Anti-Pattern 1 (case-session binding). `cases.degraded_mode` DELETED. `cases.description` removed from spec (no domain backing). `agent_tool_calls` v1 DELETED; `agent_tool_calls_v2` renamed to canonical `agent_tool_calls` (§4.11). `sessions` SQL table DELETED — auth sessions are Redis-only. `HypothesisStatus` enum unified to domain values (ORM `HypothesisStatusEnum` deleted). `SolutionStatus` enum unified. `solutions.hypothesis_id` FK added. `solutions.impact_scope` and `verification_plan` removed from spec. `hypotheses.test_plan`, `test_results`, `priority` removed from spec. `reports.generated_by VARCHAR(36)` confirmed. Aspirational §7.3 JSONB concurrency stripped; §7.4 soft delete stripped (replaced by `is_archived`+`archived_at` preservation pattern note). RLS section added (§7.5). All id column widths normalized to VARCHAR(36). §5.4 multi-tenancy section updated for v2.1 `organization_id` on all tenanted tables. Table count updated to 29. |
+| 3.5 | 2026-04-18 | Aligned with deployment-schema-strategy.md v1.0. Added Deployment Applicability banner. Marked all CHECK constraints and GIN/partial/expression indexes as Tier 2 (PostgreSQL-only). Documented previously-undocumented tables: evidence\_artifacts (§4.3-bis), standalone\_evidence (§4.3-ter), investigation\_sessions, agent\_executions, agent\_tool\_calls\_v2, agent\_tool\_calls deprecated (§4.11). Called out pending HypothesisStatus enum migration (§4.4), EvidenceCategory naming collision and EvidenceFormEnum rename (§4.3), SolutionStatus enum reconciliation (§4.5), evidence.source\_type\_new pending rename (§4.3), case\_messages UUID PK aspirational (§4.7), case\_actions Integer PK reality (§4.8). Flagged ORM-only cases columns (degraded\_mode, team\_id, session\_id). Marked §7.3 and §7.4 as aspirational (not implemented). |
+| 3.4 | 2026-04-18 | Previous version. |
