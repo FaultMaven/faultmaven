@@ -11,7 +11,7 @@ Run with:
 
 from __future__ import annotations
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 from uuid import uuid4
 
 import pytest

@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -177,7 +177,7 @@ class TestFileStorageServiceSidecar:
 class TestCleanupOrphanedFiles:
     @pytest.mark.asyncio
     async def test_deletes_only_unlinked_and_past_ttl(self, storage_root):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old = now - timedelta(hours=48)
         recent = now - timedelta(hours=1)
 
@@ -218,7 +218,7 @@ class TestCleanupOrphanedFiles:
 
     @pytest.mark.asyncio
     async def test_dry_run_does_not_delete(self, storage_root):
-        old = datetime.now(timezone.utc) - timedelta(hours=48)
+        old = datetime.now(UTC) - timedelta(hours=48)
         target = _write_file_with_sidecar(
             storage_root,
             relative_path="org/case/1/doomed.log",

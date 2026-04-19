@@ -38,9 +38,9 @@ logs, fix any unexpected entries in the `mark_linked` path, then flip
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from faultmaven.infrastructure.observability.evidence_metrics import (
     EVIDENCE_ORPHAN_FILES_DELETED_TOTAL,
@@ -61,7 +61,7 @@ async def cleanup_orphaned_files(
     storage_root: str,
     ttl_hours: int,
     dry_run: bool,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Sweep the storage root and delete orphaned files.
 
     Returns a stats dict with counts for observability / CLI output.
@@ -83,7 +83,7 @@ async def cleanup_orphaned_files(
         ``errors``.
     """
     root = Path(storage_root)
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "status": "completed",
         "storage_root": str(root),
         "ttl_hours": ttl_hours,
@@ -101,7 +101,7 @@ async def cleanup_orphaned_files(
         logger.info("Storage root %s does not exist — nothing to clean", root)
         return result
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=ttl_hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
 
     for sidecar_path in root.rglob(f"*{SIDECAR_SUFFIX}"):
         result["scanned"] += 1
@@ -191,10 +191,10 @@ async def cleanup_orphaned_files(
 async def run(
     settings: Any = None,
     container: Any = None,
-    ttl_hours: Optional[int] = None,
-    dry_run: Optional[bool] = None,
+    ttl_hours: int | None = None,
+    dry_run: bool | None = None,
     **kwargs: Any,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """CLI entry point invoked by ``faultmaven.jobs.run``.
 
     Args:
