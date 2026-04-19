@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -93,7 +94,7 @@ class OrganizationModel(Base):
 
     __tablename__ = "organizations"
 
-    organization_id = Column(String(64), primary_key=True)
+    organization_id = Column(String(36), primary_key=True)
     name = Column(String(255), nullable=False)
     slug = Column(String(100), nullable=False, unique=True)
     owner_id = Column(String(36), nullable=True)
@@ -128,7 +129,7 @@ class RoleModel(Base):
 
     __tablename__ = "roles"
 
-    role_id = Column(String(20), primary_key=True)
+    role_id = Column(String(36), primary_key=True)
     name = Column(String(100), nullable=False, unique=True)
     description = Column(Text, nullable=True)
     scope = Column(String(20), nullable=False, server_default="organization")
@@ -149,7 +150,7 @@ class PermissionModel(Base):
 
     __tablename__ = "permissions"
 
-    permission_id = Column(String(30), primary_key=True)
+    permission_id = Column(String(36), primary_key=True)
     resource = Column(String(50), nullable=False)
     action = Column(String(50), nullable=False)
     description = Column(Text, nullable=True)
@@ -170,12 +171,12 @@ class RolePermissionModel(Base):
     __tablename__ = "role_permissions"
 
     role_id = Column(
-        String(20),
+        String(36),
         ForeignKey("roles.role_id", ondelete="CASCADE"),
         primary_key=True,
     )
     permission_id = Column(
-        String(30),
+        String(36),
         ForeignKey("permissions.permission_id", ondelete="CASCADE"),
         primary_key=True,
     )
@@ -192,11 +193,11 @@ class OrganizationMemberModel(Base):
         primary_key=True,
     )
     organization_id = Column(
-        String(64),
+        String(36),
         ForeignKey("organizations.organization_id", ondelete="CASCADE"),
         primary_key=True,
     )
-    role_id = Column(String(20), ForeignKey("roles.role_id"), nullable=False)
+    role_id = Column(String(36), ForeignKey("roles.role_id"), nullable=False)
     invited_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
     invited_at = Column(DateTime(timezone=True), nullable=True)
     invitation_accepted_at = Column(DateTime(timezone=True), nullable=True)
@@ -221,7 +222,7 @@ class TeamModel(Base):
 
     team_id = Column(String(36), primary_key=True)
     organization_id = Column(
-        String(64),
+        String(36),
         ForeignKey("organizations.organization_id", ondelete="CASCADE"),
         nullable=False,
     )
@@ -279,7 +280,7 @@ class UserAuditLogModel(Base):
         String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
     )
     organization_id = Column(
-        String(64),
+        String(36),
         ForeignKey("organizations.organization_id", ondelete="SET NULL"),
         nullable=True,
     )
@@ -433,7 +434,7 @@ class CaseModel(Base):
     __tablename__ = "cases"
 
     # Primary Key
-    case_id = Column(String(17), primary_key=True)
+    case_id = Column(String(36), primary_key=True)
 
     # Required Fields
     user_id = Column(String(255), nullable=False, index=True)
@@ -466,8 +467,8 @@ class CaseModel(Base):
     case_metadata = Column("metadata", Text, default="{}")
 
     # Organization/Team
-    organization_id = Column(String(20), index=True)
-    team_id = Column(String(20), index=True)
+    organization_id = Column(String(36), index=True)
+    team_id = Column(String(36), index=True)
 
     # Archival (independent of case status)
     is_archived = Column(
@@ -533,15 +534,15 @@ class EvidenceModel(Base):
 
     __tablename__ = "evidence"
 
-    evidence_id = Column(String(15), primary_key=True)
+    evidence_id = Column(String(36), primary_key=True)
     case_id = Column(
-        String(17),
+        String(36),
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     organization_id = Column(
-        String(64),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -550,14 +551,13 @@ class EvidenceModel(Base):
     # Classification fields
     category = Column(String(50), nullable=False, index=True)
     # DataType field (simplified 5 values: logs, metrics, configuration, image, text)
-    # Note: Column name is 'source_type_new' in database
-    source_type = Column(String(50), name="source_type_new", nullable=True)
+    source_type = Column(String(50), nullable=True)
 
     # Content fields
     summary = Column(String(500), nullable=False)
     preprocessed_content = Column(Text, nullable=False)
     content_ref = Column(String(1000))
-    file_size = Column(Integer)
+    file_size = Column(BigInteger, nullable=False, server_default="0")
     filename = Column(String(255))
 
     # Deduplication and turn tracking (NEW in redesign)
@@ -565,7 +565,7 @@ class EvidenceModel(Base):
     collected_at_turn = Column(Integer, nullable=True, index=True)
 
     # Source file linkage (Gap #20: Unified Data Processing)
-    source_file_id = Column(String(20), nullable=True)
+    source_file_id = Column(String(36), nullable=True)
 
     # Timestamps
     upload_timestamp = Column(
@@ -608,9 +608,9 @@ class HypothesisModel(Base):
 
     __tablename__ = "hypotheses"
 
-    hypothesis_id = Column(String(15), primary_key=True)
+    hypothesis_id = Column(String(36), primary_key=True)
     case_id = Column(
-        String(17),
+        String(36),
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -654,7 +654,7 @@ class HypothesisModel(Base):
 
     # Multi-tenancy and audit fields (TASK-026)
     organization_id = Column(
-        String(20),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -689,9 +689,9 @@ class SolutionModel(Base):
 
     __tablename__ = "solutions"
 
-    solution_id = Column(String(15), primary_key=True)
+    solution_id = Column(String(36), primary_key=True)
     case_id = Column(
-        String(17),
+        String(36),
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -723,7 +723,7 @@ class SolutionModel(Base):
 
     # Multi-tenancy and audit fields (TASK-026)
     organization_id = Column(
-        String(20),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -762,15 +762,15 @@ class CaseMessageModel(Base):
 
     __tablename__ = "case_messages"
 
-    message_id = Column(String(20), primary_key=True)
+    message_id = Column(String(36), primary_key=True)
     case_id = Column(
-        String(17),
+        String(36),
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     organization_id = Column(
-        String(64),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -816,15 +816,15 @@ class UploadedFileModel(Base):
 
     __tablename__ = "uploaded_files"
 
-    file_id = Column(String(15), primary_key=True)
+    file_id = Column(String(36), primary_key=True)
     case_id = Column(
-        String(17),
+        String(36),
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     organization_id = Column(
-        String(64),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -870,13 +870,13 @@ class CaseActionModel(Base):
 
     transition_id = Column(Integer, primary_key=True, autoincrement=True)
     case_id = Column(
-        String(17),
+        String(36),
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     organization_id = Column(
-        String(64),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -912,13 +912,13 @@ class CaseTagModel(Base):
 
     tag_id = Column(Integer, primary_key=True, autoincrement=True)
     case_id = Column(
-        String(17),
+        String(36),
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     organization_id = Column(
-        String(64),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -981,18 +981,18 @@ class CaseCheckpointModel(Base):
     __tablename__ = "case_checkpoints"
 
     # Primary Key
-    checkpoint_id = Column(String(50), primary_key=True)
+    checkpoint_id = Column(String(36), primary_key=True)
 
     # Foreign Key to cases
     case_id = Column(
-        String(17),
+        String(36),
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
 
     organization_id = Column(
-        String(64),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -1050,11 +1050,11 @@ class AgentExecutionModel(Base):
     __tablename__ = "agent_executions"
 
     # Primary Key
-    execution_id = Column(String(64), primary_key=True)
+    execution_id = Column(String(36), primary_key=True)
 
     # Foreign Key to cases
     case_id = Column(
-        String(17),
+        String(36),
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -1062,7 +1062,7 @@ class AgentExecutionModel(Base):
 
     # Agent identification
     organization_id = Column(
-        String(64),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",  # Default org for single-tenant
@@ -1105,7 +1105,7 @@ class AgentExecutionModel(Base):
 
     # Optional: link execution to session (ON DELETE SET NULL)
     session_id = Column(
-        String(64),
+        String(36),
         ForeignKey("investigation_sessions.session_id", ondelete="SET NULL"),
         nullable=True,
         index=True,
@@ -1118,8 +1118,8 @@ class AgentExecutionModel(Base):
         back_populates="agent_executions",
         foreign_keys=[session_id],
     )
-    tool_calls_v2 = relationship(
-        "AgentToolCallV2Model",
+    tool_calls = relationship(
+        "AgentToolCallModel",
         back_populates="execution",
         cascade="all, delete-orphan",
     )
@@ -1149,32 +1149,26 @@ class AgentExecutionModel(Base):
 
 
 # ============================================================
-# Agent Tool Call V2 Model (Execution-level)
+# Agent Tool Call Model (Execution-level)
 # ============================================================
 
 
-class AgentToolCallV2Model(Base):
+class AgentToolCallModel(Base):
     """Tool call tracking for agent executions.
 
     Tracks individual tool invocations made during an agent execution,
     including input, output, status, and timing information. Linked to
     agent_executions via execution_id FK.
-
-    Note: in the locked storage redesign 2026-04 this table is renamed
-    to canonical `agent_tool_calls` (the prior v1 case-level table is
-    deleted as zero-functional-usage). Class name AgentToolCallV2Model
-    will be renamed to AgentToolCallModel in Phase 4 (renames). For now
-    the class keeps the V2 suffix.
     """
 
-    __tablename__ = "agent_tool_calls_v2"
+    __tablename__ = "agent_tool_calls"
 
     # Primary Key
-    tool_call_id = Column(String(64), primary_key=True)
+    tool_call_id = Column(String(36), primary_key=True)
 
     # Foreign Key to agent_executions
     execution_id = Column(
-        String(64),
+        String(36),
         ForeignKey("agent_executions.execution_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -1182,7 +1176,7 @@ class AgentToolCallV2Model(Base):
 
     # Tool information
     organization_id = Column(
-        String(64),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",  # Default org for single-tenant
@@ -1215,22 +1209,22 @@ class AgentToolCallV2Model(Base):
     )
 
     # Relationship to execution
-    execution = relationship("AgentExecutionModel", back_populates="tool_calls_v2")
+    execution = relationship("AgentExecutionModel", back_populates="tool_calls")
 
     __table_args__ = (
         CheckConstraint(
             "status IN ('pending', 'running', 'success', 'failed')",
-            name="agent_tool_calls_v2_status_check",
+            name="agent_tool_calls_status_check",
         ),
         CheckConstraint(
             "duration_ms IS NULL OR duration_ms >= 0",
-            name="agent_tool_calls_v2_duration_check",
+            name="agent_tool_calls_duration_check",
         ),
     )
 
     def __repr__(self) -> str:
         return (
-            f"<AgentToolCallV2Model(tool_call_id={self.tool_call_id}, "
+            f"<AgentToolCallModel(tool_call_id={self.tool_call_id}, "
             f"execution_id={self.execution_id}, "
             f"tool_name={self.tool_name}, "
             f"status={self.status})>"
@@ -1269,20 +1263,20 @@ class InvestigationSessionModel(Base):
     __tablename__ = "investigation_sessions"
 
     # Primary Key
-    session_id = Column(String(64), primary_key=True)
+    session_id = Column(String(36), primary_key=True)
 
     # Foreign Key to cases
     case_id = Column(
-        String(17),
+        String(36),
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
 
     # Ownership
-    user_id = Column(String(255), nullable=False, index=True)
+    user_id = Column(String(36), nullable=False, index=True)
     organization_id = Column(
-        String(64),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -1398,11 +1392,11 @@ class KnowledgeItemModel(Base):
     __tablename__ = "knowledge_items"
 
     # Primary Key
-    item_id = Column(String(64), primary_key=True)
+    item_id = Column(String(36), primary_key=True)
 
     # Organization scope (NO foreign key - items persist independently)
     organization_id = Column(
-        String(64),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -1439,7 +1433,7 @@ class KnowledgeItemModel(Base):
     verified_at = Column(DateTime(timezone=True), nullable=True)
 
     # Lineage tracking (for suggestions that became knowledge items)
-    source_suggestion_id = Column(String(64), nullable=True, index=True)
+    source_suggestion_id = Column(String(36), nullable=True, index=True)
 
     # Usage tracking
     view_count = Column(Integer, nullable=False, default=0)
@@ -1520,16 +1514,16 @@ class KnowledgeSuggestionModel(Base):
     __tablename__ = "knowledge_suggestions"
 
     # Primary Key
-    suggestion_id = Column(String(64), primary_key=True)
+    suggestion_id = Column(String(36), primary_key=True)
 
     # Organization and Case scope
     organization_id = Column(
-        String(64),
+        String(36),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
     )
-    case_id = Column(String(64), nullable=False, index=True)
+    case_id = Column(String(36), nullable=False, index=True)
 
     # Status
     status = Column(
@@ -1569,7 +1563,7 @@ class KnowledgeSuggestionModel(Base):
     rejection_reason = Column(Text, nullable=True)
 
     # Bidirectional link to KnowledgeItem (when approved)
-    knowledge_item_id = Column(String(64), nullable=True, index=True)
+    knowledge_item_id = Column(String(36), nullable=True, index=True)
 
     # Timestamps
     created_at = Column(
@@ -1706,7 +1700,7 @@ class ReportModel(Base):
 
     report_id = Column(String(36), primary_key=True)
     case_id = Column(
-        String(17),
+        String(36),
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,

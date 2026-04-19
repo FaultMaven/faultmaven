@@ -345,7 +345,7 @@ async def test_four_level_cascade_delete_chain(
 
     from faultmaven.infrastructure.persistence.models import (
         AgentExecutionModel,
-        AgentToolCallV2Model,
+        AgentToolCallModel,
     )
 
     # Create case
@@ -403,7 +403,7 @@ async def test_four_level_cascade_delete_chain(
     await test_session.commit()
 
     # Create tool calls directly using SQLAlchemy models
-    tc1 = AgentToolCallV2Model(
+    tc1 = AgentToolCallModel(
         tool_call_id=generate_tool_call_id(),
         execution_id=exec1_id,
         tool_name="web_search",
@@ -413,7 +413,7 @@ async def test_four_level_cascade_delete_chain(
         updated_at=datetime.now(timezone.utc),
     )
 
-    tc2 = AgentToolCallV2Model(
+    tc2 = AgentToolCallModel(
         tool_call_id=generate_tool_call_id(),
         execution_id=exec1_id,
         tool_name="file_read",
@@ -423,7 +423,7 @@ async def test_four_level_cascade_delete_chain(
         updated_at=datetime.now(timezone.utc),
     )
 
-    tc3 = AgentToolCallV2Model(
+    tc3 = AgentToolCallModel(
         tool_call_id=generate_tool_call_id(),
         execution_id=exec2_id,
         tool_name="code_exec",
@@ -450,9 +450,7 @@ async def test_four_level_cascade_delete_chain(
 
     # Verify tool calls exist
     result = await test_session.execute(
-        select(AgentToolCallV2Model).where(
-            AgentToolCallV2Model.execution_id == exec1_id
-        )
+        select(AgentToolCallModel).where(AgentToolCallModel.execution_id == exec1_id)
     )
     tool_calls = result.scalars().all()
     assert len(tool_calls) == 2
@@ -473,8 +471,8 @@ async def test_four_level_cascade_delete_chain(
 
     # 3. Tool calls should be gone (CASCADE from execution deletion)
     result = await test_session.execute(
-        select(AgentToolCallV2Model).where(
-            AgentToolCallV2Model.execution_id.in_([exec1_id, exec2_id])
+        select(AgentToolCallModel).where(
+            AgentToolCallModel.execution_id.in_([exec1_id, exec2_id])
         )
     )
     remaining_tool_calls = result.scalars().all()
