@@ -2058,53 +2058,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         )
 
     # ============================================================
-    # Standalone Evidence Operations (migrated from Evidence module)
-    # TODO: Implement these methods properly using standalone_evidence table
-    # ============================================================
-
-    async def create_standalone_evidence(
-        self,
-        filename: str,
-        content_type: str,
-        size_bytes: int,
-        storage_path: str,
-        uploaded_by: str,
-        description: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-    ) -> Any:
-        """Create standalone evidence record (PostgreSQL stub - needs implementation)."""
-        # TODO: Implement using standalone_evidence table
-        raise NotImplementedError(
-            "create_standalone_evidence not yet implemented in PostgreSQLHybridCaseRepository"
-        )
-
-    async def get_standalone_evidence(self, evidence_id: str) -> Optional[Any]:
-        """Get standalone evidence by ID (PostgreSQL stub)."""
-        raise NotImplementedError(
-            "get_standalone_evidence not yet implemented in PostgreSQLHybridCaseRepository"
-        )
-
-    async def list_standalone_evidence(self, filters: Any) -> tuple[List[Any], int]:
-        """List standalone evidence with filters (PostgreSQL stub)."""
-        raise NotImplementedError(
-            "list_standalone_evidence not yet implemented in PostgreSQLHybridCaseRepository"
-        )
-
-    async def delete_standalone_evidence(self, evidence_id: str) -> bool:
-        """Delete standalone evidence record (PostgreSQL stub)."""
-        raise NotImplementedError(
-            "delete_standalone_evidence not yet implemented in PostgreSQLHybridCaseRepository"
-        )
-
-    async def link_standalone_evidence_to_case(
-        self, evidence_id: str, case_id: str
-    ) -> Optional[Any]:
-        """Link standalone evidence to a case (PostgreSQL stub)."""
-        raise NotImplementedError(
-            "link_standalone_evidence_to_case not yet implemented in PostgreSQLHybridCaseRepository"
-        )
-
-    # ============================================================
     # Agent Execution Operations (migrated from Agent module)
     # TODO: Implement these methods properly using agent_executions/agent_tool_calls tables
     # ============================================================

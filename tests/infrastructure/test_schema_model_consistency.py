@@ -46,7 +46,6 @@ from faultmaven.infrastructure.persistence.models import (
     CaseMessageModel,
     CaseModel,
     CaseTagModel,
-    EvidenceArtifactModel,
     EvidenceModel,
     HypothesisModel,
     InvestigationSessionModel,
@@ -54,7 +53,6 @@ from faultmaven.infrastructure.persistence.models import (
     KnowledgeSuggestionModel,
     SessionModel,
     SolutionModel,
-    StandaloneEvidenceModel,
     UploadedFileModel,
 )
 
@@ -302,7 +300,6 @@ class TestSchemaModelConsistency:
             "sessions",
             "investigation_sessions",
             "agent_executions",
-            "evidence_artifacts",
         }
 
         missing_tables = critical_tables - tables
@@ -321,14 +318,12 @@ class TestSchemaModelConsistency:
             ("uploaded_files", UploadedFileModel),
             ("case_actions", CaseActionModel),
             ("case_tags", CaseTagModel),
-            ("evidence_artifacts", EvidenceArtifactModel),
             ("agent_executions", AgentExecutionModel),
             ("agent_tool_calls_v2", AgentToolCallV2Model),
             ("investigation_sessions", InvestigationSessionModel),
             ("case_checkpoints", CaseCheckpointModel),
             ("knowledge_items", KnowledgeItemModel),
             ("knowledge_suggestions", KnowledgeSuggestionModel),
-            ("standalone_evidence", StandaloneEvidenceModel),
         ],
     )
     def test_table_model_consistency(self, table_name: str, model_class, db_path):

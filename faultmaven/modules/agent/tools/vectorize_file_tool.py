@@ -78,11 +78,6 @@ class VectorizeFileTool(AgentTool):
         if not evidence_id:
             return ToolResult(success=False, data=None, error="evidence_id is required")
 
-        if not context.evidence_service:
-            return ToolResult(
-                success=False, data=None, error="Evidence service not available"
-            )
-
         if not self.case_vector_store:
             return ToolResult(
                 success=False,
@@ -91,26 +86,18 @@ class VectorizeFileTool(AgentTool):
             )
 
         try:
-            # Get evidence metadata (dual-path: standalone table → case-embedded)
-            evidence = await context.evidence_service.get_evidence(
-                evidence_id=evidence_id,
-            )
+            # Storage redesign 2026-04 phase 2: evidence is case-tied only and
+            # accessed via `case.evidence`.
+            case = getattr(context, "in_memory_case", None)
+            if case is None and context.case_repository is not None:
+                case = await context.case_repository.get(context.case_id)
 
-            # Fallback: case-embedded evidence (unified ingestion pipeline)
-            if not evidence:
-                case = getattr(context, "in_memory_case", None)
-                if not case:
-                    case_repo = getattr(
-                        context.evidence_service, "case_repository", None
-                    )
-                    if case_repo:
-                        case = await case_repo.get(context.case_id)
-
-                if case:
-                    for ev in getattr(case, "evidence", []):
-                        if getattr(ev, "evidence_id", None) == evidence_id:
-                            evidence = ev
-                            break
+            evidence = None
+            if case is not None:
+                for ev in getattr(case, "evidence", []) or []:
+                    if getattr(ev, "evidence_id", None) == evidence_id:
+                        evidence = ev
+                        break
 
             if not evidence:
                 return ToolResult(

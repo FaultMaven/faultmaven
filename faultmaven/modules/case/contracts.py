@@ -195,55 +195,10 @@ class ICaseRepository(Protocol):
         """Delete a report by ID."""
         ...
 
-    # Standalone Evidence Operations (migrated from Evidence module)
-    async def create_standalone_evidence(
-        self,
-        filename: str,
-        content_type: str,
-        size_bytes: int,
-        storage_path: str,
-        uploaded_by: UUID,
-        description: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-    ) -> EvidenceArtifact:
-        """Create standalone evidence record (can link to multiple cases)."""
-        ...
-
-    async def get_standalone_evidence(
-        self, evidence_id: UUID
-    ) -> Optional[EvidenceArtifact]:
-        """Get standalone evidence by ID."""
-        ...
-
-    async def list_standalone_evidence(
-        self, filters: EvidenceListFilter
-    ) -> tuple[List[EvidenceArtifact], int]:
-        """List standalone evidence with filters."""
-        ...
-
-    async def delete_standalone_evidence(self, evidence_id: UUID) -> bool:
-        """Delete standalone evidence record."""
-        ...
-
-    async def link_standalone_evidence_to_case(
-        self, evidence_id: UUID, case_id: UUID
-    ) -> Optional[EvidenceArtifact]:
-        """Link standalone evidence to a case."""
-        ...
-
-    async def update_standalone_evidence(
-        self, evidence: EvidenceArtifact
-    ) -> EvidenceArtifact:
-        """Update standalone evidence record."""
-        ...
-
-    async def set_primary_evidence(self, case_id: str, evidence_id: str) -> bool:
-        """Set evidence as primary for a case (unsets others for the same case)."""
-        ...
-
-    async def get_primary_evidence(self, case_id: str) -> Optional[EvidenceArtifact]:
-        """Get primary evidence for a case."""
-        ...
+    # Standalone evidence operations (create/get/list/delete/link/update,
+    # set/get primary) were removed in storage redesign 2026-04 phase 2.
+    # Standalone evidence path is deleted; evidence is case-tied only and
+    # accessed via `case.evidence` loaded by the case repository.
 
     # Agent Execution Operations (migrated from Agent module)
     async def create_agent_execution(self, execution: AgentExecution) -> AgentExecution:

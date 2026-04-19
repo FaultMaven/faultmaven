@@ -37,7 +37,6 @@ from faultmaven.infrastructure.persistence.models import (
     CaseMessageModel,
     CaseModel,
     CaseTagModel,
-    EvidenceArtifactModel,
     EvidenceModel,
     HypothesisModel,
     InvestigationSessionModel,
@@ -45,7 +44,6 @@ from faultmaven.infrastructure.persistence.models import (
     KnowledgeSuggestionModel,
     SessionModel,
     SolutionModel,
-    StandaloneEvidenceModel,
     UploadedFileModel,
 )
 
@@ -112,6 +110,8 @@ class SchemaValidator:
     }
 
     # All tables to validate (comprehensive)
+    # evidence_artifacts + standalone_evidence removed in storage redesign
+    # 2026-04 phase 2 (standalone evidence path deletion).
     ALL_TABLES = {
         "cases": CaseModel,
         "solutions": SolutionModel,
@@ -122,14 +122,12 @@ class SchemaValidator:
         "uploaded_files": UploadedFileModel,
         "case_actions": CaseActionModel,
         "case_tags": CaseTagModel,
-        "evidence_artifacts": EvidenceArtifactModel,
         "agent_executions": AgentExecutionModel,
         "agent_tool_calls_v2": AgentToolCallV2Model,
         "investigation_sessions": InvestigationSessionModel,
         "case_checkpoints": CaseCheckpointModel,
         "knowledge_items": KnowledgeItemModel,
         "knowledge_suggestions": KnowledgeSuggestionModel,
-        "standalone_evidence": StandaloneEvidenceModel,
     }
 
     # Critical columns that caused the P0 incident

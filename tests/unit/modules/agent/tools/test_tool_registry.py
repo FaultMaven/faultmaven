@@ -72,13 +72,17 @@ class MockTool(AgentTool):
 
 @pytest.fixture
 def sample_context():
-    """Create a sample tool context."""
+    """Create a sample tool context.
+
+    Storage redesign 2026-04 phase 2: ToolContext now carries
+    `case_repository` (replacing the deleted `evidence_service`).
+    """
     return ToolContext(
         session_id="session_test",
         case_id="case_test",
         organization_id="org_test",
         user_id="user_test",
-        evidence_service=AsyncMock(),
+        case_repository=AsyncMock(),
     )
 
 
@@ -109,24 +113,26 @@ class TestToolContext:
         assert context.case_id == "case_456"
         assert context.organization_id == "org_789"
         assert context.user_id == "user_abc"
-        assert context.evidence_service is None
+        # Storage redesign 2026-04 phase 2: evidence_service replaced by
+        # case_repository.
+        assert context.case_repository is None
         assert context.execution_id is None
         assert context.metadata == {}
 
     def test_tool_context_with_optional_fields(self):
         """Test ToolContext with optional fields."""
-        evidence_service = AsyncMock()
+        case_repository = AsyncMock()
         context = ToolContext(
             session_id="session_123",
             case_id="case_456",
             organization_id="org_789",
             user_id="user_abc",
-            evidence_service=evidence_service,
+            case_repository=case_repository,
             execution_id="exec_111",
             metadata={"key": "value"},
         )
 
-        assert context.evidence_service is evidence_service
+        assert context.case_repository is case_repository
         assert context.execution_id == "exec_111"
         assert context.metadata == {"key": "value"}
 

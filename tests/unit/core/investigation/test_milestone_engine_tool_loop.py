@@ -630,7 +630,12 @@ class TestBuildToolContext:
     """Tests for _build_tool_context()."""
 
     def test_creates_tool_context_with_case_fields(self):
-        """Verifies ToolContext created with correct case fields."""
+        """Verifies ToolContext created with correct case fields.
+
+        Storage redesign 2026-04 phase 2: ToolContext carries `case_repository`
+        instead of `evidence_service` — tools now read evidence from
+        `case.evidence` directly.
+        """
         engine = _make_engine(mock_evidence_service=MagicMock())
 
         mock_case = MagicMock()
@@ -645,7 +650,7 @@ class TestBuildToolContext:
         assert result.case_id == "case_001"
         assert result.organization_id == "org_123"
         assert result.user_id == "user_abc"
-        assert result.evidence_service is not None
+        assert result.case_repository is engine.repository
 
     def test_default_user_id_when_not_in_intent(self):
         """Uses 'system' as default user_id when not in intent_data."""

@@ -25,9 +25,8 @@ from faultmaven.modules.case.domain.services.api_case_service import APICaseServ
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
-from faultmaven.modules.evidence.domain.services.evidence_artifact_service import (
-    APIEvidenceArtifactService,
-)
+
+# APIEvidenceArtifactService import removed in storage redesign 2026-04 phase 2.
 from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
 )
@@ -363,100 +362,6 @@ class TestFileStorageServiceCreation:
         assert service1 is not service2
 
 
-# ============================================================
-# Evidence Artifact Service Creation Tests (TASK-013)
-# ============================================================
-
-
-class TestEvidenceArtifactServiceCreation:
-    """Test evidence artifact service creation methods."""
-
-    def test_create_evidence_service_returns_service(self, mock_session):
-        """Test that create_evidence_artifact_service returns APIEvidenceArtifactService."""
-        factory = ServiceFactory(mock_session)
-
-        service = factory.create_evidence_artifact_service()
-
-        assert service is not None
-        assert isinstance(service, APIEvidenceArtifactService)
-
-    # Note: evidence_repo removed - evidence now handled by case_repo (ICaseRepository)
-    # as part of TD-001 migration
-
-    def test_create_evidence_service_injects_case_repo(self, mock_session):
-        """Test that evidence service has case_repo injected."""
-        factory = ServiceFactory(mock_session)
-
-        service = factory.create_evidence_artifact_service()
-
-        assert service.case_repo is not None
-        assert service.case_repo is factory.case_repo
-
-    def test_create_evidence_service_injects_file_storage(self, mock_session):
-        """Test that evidence service has file_storage injected."""
-        factory = ServiceFactory(mock_session)
-
-        service = factory.create_evidence_artifact_service()
-
-        assert service.file_storage is not None
-        assert isinstance(service.file_storage, FileStorageService)
-
-    def test_create_evidence_service_with_custom_file_storage(self, mock_session):
-        """Test evidence service with custom file storage."""
-        factory = ServiceFactory(mock_session)
-        custom_storage = FileStorageService(
-            storage_root="/custom/path",
-            max_file_size_bytes=1024,
-        )
-
-        service = factory.create_evidence_artifact_service(file_storage=custom_storage)
-
-        assert service.file_storage is custom_storage
-
-    def test_create_evidence_service_multiple_instances(self, mock_session):
-        """Test that each call creates a new evidence service instance."""
-        factory = ServiceFactory(mock_session)
-
-        service1 = factory.create_evidence_artifact_service()
-        service2 = factory.create_evidence_artifact_service()
-
-        assert service1 is not service2
-
-    def test_create_evidence_service_shares_repos(self, mock_session):
-        """Test that multiple evidence services share the same repositories."""
-        factory = ServiceFactory(mock_session)
-
-        service1 = factory.create_evidence_artifact_service()
-        service2 = factory.create_evidence_artifact_service()
-
-        # Note: evidence_repo removed - evidence now handled by case_repo (TD-001)
-        assert service1.case_repo is service2.case_repo
-
-
-# ============================================================
-# Integration Tests for Evidence Service (TASK-013)
-# ============================================================
-
-
-class TestEvidenceServiceIntegration:
-    """Test evidence service with real database session."""
-
-    @pytest.mark.asyncio
-    async def test_evidence_service_with_real_session(self, async_session):
-        """Test evidence service works with real async session."""
-        factory = ServiceFactory(async_session)
-        service = factory.create_evidence_artifact_service()
-
-        assert service is not None
-        assert service.service_name == "api_evidence_artifact_service"
-
-    @pytest.mark.asyncio
-    async def test_evidence_service_health_check(self, async_session):
-        """Test evidence service health check."""
-        factory = ServiceFactory(async_session)
-        service = factory.create_evidence_artifact_service()
-
-        health = await service.health_check()
-
-        assert health is not None
-        assert "status" in health
+# Evidence Artifact Service tests removed in storage redesign 2026-04 phase 2.
+# APIEvidenceArtifactService and create_evidence_artifact_service are deleted;
+# evidence is case-tied only and accessed via case.evidence.

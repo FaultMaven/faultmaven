@@ -117,7 +117,7 @@ def register_services(redis_client=None) -> None:
 
     ServiceContainer.register_factory(VectorStoreService, create_vector_store_service)
 
-    # FileStorageService - Used by EvidenceArtifactService
+    # FileStorageService - Used by case-tied evidence flow (milestone engine)
     def create_file_storage_service():
         logger.debug("Creating FileStorageService via DI container")
         return FileStorageService(
@@ -139,14 +139,10 @@ def register_services(redis_client=None) -> None:
         STORAGE_TYPE_INMEMORY,
         get_agent_execution_repository,
         get_case_repository,
-        get_evidence_artifact_repository,
         get_investigation_session_repository,
     )
     from faultmaven.modules.case.domain.services.investigation_session_service import (
         APIInvestigationSessionService,
-    )
-    from faultmaven.modules.evidence.domain.services.evidence_artifact_service import (
-        APIEvidenceArtifactService,
     )
 
     # APIInvestigationSessionService - Used by AgentOrchestrationService
@@ -176,24 +172,11 @@ def register_services(redis_client=None) -> None:
         APIInvestigationSessionService, create_investigation_session_service
     )
 
-    # APIEvidenceArtifactService - Used by AgentOrchestrationService
-    def create_evidence_artifact_service():
-        logger.debug("Creating APIEvidenceArtifactService via DI container (in-memory)")
-        evidence_repo = get_evidence_artifact_repository(
-            storage_type=STORAGE_TYPE_INMEMORY
-        )
-        case_repo = get_case_repository(storage_type=STORAGE_TYPE_INMEMORY)
-
-        # FileStorageService will be injected via DI
-        return APIEvidenceArtifactService(
-            evidence_repo=evidence_repo,
-            case_repo=case_repo,
-            file_storage=None,  # Will be injected via DI
-        )
-
-    ServiceContainer.register_factory(
-        APIEvidenceArtifactService, create_evidence_artifact_service
-    )
+    # APIEvidenceArtifactService factory removed in storage redesign 2026-04 phase 2.
+    # The standalone evidence path (POST /api/v1/evidence + evidence_artifacts /
+    # standalone_evidence tables) is deleted. Evidence is now case-tied only,
+    # created by the milestone engine and persisted directly to the `evidence` table
+    # via the case repository.
 
     logger.info(f"Registered {len(ServiceContainer._factories)} service factories")
     logger.debug(

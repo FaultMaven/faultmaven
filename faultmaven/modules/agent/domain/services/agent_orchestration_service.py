@@ -275,7 +275,7 @@ class AgentOrchestrationService:
         self,
         case_repo: ICaseRepository,
         session_service: Any,
-        evidence_service: Any,
+        evidence_service: Any = None,
         tool_registry: AgentToolRegistry | None = None,
         llm_client: LLMClient | None = None,
         max_retries: int = 3,
@@ -288,9 +288,14 @@ class AgentOrchestrationService:
         """Initialize agent orchestration service.
 
         Args:
-            case_repo: Case repository (handles agent executions - migrated from AgentExecutionRepository)
+            case_repo: Case repository (handles agent executions and is also the
+                source of evidence via `case.evidence` after the storage redesign
+                2026-04 phase 2 standalone-evidence deletion)
             session_service: Investigation session service (required)
-            evidence_service: Evidence artifact service (required)
+            evidence_service: DEPRECATED — kept as a positional/keyword
+                placeholder for backward-compatible callers. Storage redesign
+                2026-04 phase 2 deleted the standalone evidence service; tools
+                now read evidence from `case.evidence` via `case_repo`.
             tool_registry: Registry of available tools (uses global if not provided)
             llm_client: LLM client (creates default if not provided)
             max_retries: Maximum retry attempts for LLM calls
@@ -309,12 +314,9 @@ class AgentOrchestrationService:
             raise ValueError(
                 "session_service is required for AgentOrchestrationService"
             )
-        if evidence_service is None:
-            raise ValueError(
-                "evidence_service is required for AgentOrchestrationService"
-            )
 
         self.session_service = session_service
+        # Retained for any in-flight callers; new code paths should use case_repo.
         self.evidence_service = evidence_service
 
         self.tool_registry = tool_registry or agent_tool_registry
@@ -452,7 +454,7 @@ class AgentOrchestrationService:
                 organization_id=organization_id,
                 user_id=session.user_id,
                 team_ids=team_ids,
-                evidence_service=self.evidence_service,
+                case_repository=self.case_repo,
                 execution_id=execution_id,
                 in_memory_case=case,
             )
@@ -1636,32 +1638,63 @@ class AgentOrchestrationService:
     async def _get_evidence_size(
         self, evidence_id: str, tool_context: ToolContext
     ) -> int:
-        """Get the file size in bytes for an evidence record."""
+        """Get the file size in bytes for an evidence record.
+
+        Reads from `case.evidence` (storage redesign 2026-04 phase 2: standalone
+        evidence path is deleted; evidence is case-tied only).
+        """
         try:
-            ev = await tool_context.evidence_service.get_evidence(
-                evidence_id, tool_context.organization_id
-            )
-            return (
-                getattr(ev, "file_size", 0) or getattr(ev, "content_size_bytes", 0) or 0
-            )
+            case = tool_context.in_memory_case
+            if case is None and tool_context.case_repository is not None:
+                case = await tool_context.case_repository.get(tool_context.case_id)
+            if case is None:
+                return 0
+            for ev in getattr(case, "evidence", []) or []:
+                if getattr(ev, "evidence_id", None) == evidence_id:
+                    return int(getattr(ev, "content_size_bytes", 0) or 0)
         except Exception:
             return 0
+        return 0
 
     async def _get_raw_file_content(
         self, evidence_id: str, tool_context: ToolContext
     ) -> str | None:
         """Retrieve raw file content for a small evidence file.
 
-        Uses evidence_service.download_evidence() directly (same pattern
-        as search_file_tool.py) rather than routing through the tool registry.
+        Uses `case.evidence` + `content_ref` via FileStorageService (storage
+        redesign 2026-04 phase 2 deleted the standalone evidence service).
+        Returns None if the case/evidence/file isn't accessible.
         """
         try:
-            file_data, _filename, _mime_type = (
-                await tool_context.evidence_service.download_evidence(
-                    evidence_id=evidence_id,
-                    organization_id=tool_context.organization_id,
-                )
+            case = tool_context.in_memory_case
+            if case is None and tool_context.case_repository is not None:
+                case = await tool_context.case_repository.get(tool_context.case_id)
+            if case is None:
+                return None
+
+            target = None
+            for ev in getattr(case, "evidence", []) or []:
+                if getattr(ev, "evidence_id", None) == evidence_id:
+                    target = ev
+                    break
+            if target is None:
+                return None
+
+            content_ref = getattr(target, "content_ref", None)
+            if not content_ref:
+                return None
+
+            from faultmaven.modules.evidence.domain.services.file_storage_service import (
+                FileStorageService,
             )
+
+            settings = get_settings()
+            storage = FileStorageService(
+                storage_root=getattr(
+                    settings, "evidence_storage_root", "./data/evidence"
+                ),
+            )
+            file_data = await storage.retrieve_file(content_ref)
             return file_data.decode("utf-8", errors="replace")
         except Exception:
             return None

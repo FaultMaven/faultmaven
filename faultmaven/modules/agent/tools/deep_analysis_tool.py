@@ -89,17 +89,24 @@ class DeepAnalysisTool(AgentTool):
             )
 
         try:
-            # Get evidence to find the file reference
-            evidence_service = context.evidence_service
-            if not evidence_service:
+            # Storage redesign 2026-04 phase 2: evidence lives on `case.evidence`
+            # (standalone evidence path deleted). Resolve via case_repository.
+            case = getattr(context, "in_memory_case", None)
+            if case is None and context.case_repository is not None:
+                case = await context.case_repository.get(context.case_id)
+            if case is None:
                 return ToolResult(
                     success=False,
                     data=None,
-                    error="Evidence service not available in context.",
+                    error=f"Case not found: {context.case_id}",
                 )
 
-            evidence = await evidence_service.get_evidence(evidence_id)
-            if not evidence:
+            evidence = None
+            for ev in getattr(case, "evidence", []) or []:
+                if getattr(ev, "evidence_id", None) == evidence_id:
+                    evidence = ev
+                    break
+            if evidence is None:
                 return ToolResult(
                     success=False,
                     data=None,

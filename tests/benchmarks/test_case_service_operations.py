@@ -23,9 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
-    InMemoryEvidenceArtifactRepository,
-)
+
+# InMemoryEvidenceArtifactRepository import removed in storage redesign
+# 2026-04 phase 2 (standalone evidence path deletion).
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InMemoryInvestigationSessionRepository,
 )

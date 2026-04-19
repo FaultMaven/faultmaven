@@ -98,9 +98,14 @@ class ReadFileTool(AgentTool):
     ) -> ToolResult:
         """Read an evidence file's contents.
 
+        Storage redesign 2026-04 phase 2: evidence is case-tied only. We look
+        it up on `case.evidence` (via `context.case_repository` /
+        `context.in_memory_case`) and read the raw file via FileStorageService
+        using `content_ref`.
+
         Args:
             params: Parameters including evidence_id, max_lines, offset
-            context: Execution context with evidence service
+            context: Execution context
 
         Returns:
             ToolResult with file contents or error
@@ -116,26 +121,34 @@ class ReadFileTool(AgentTool):
                 error="evidence_id is required",
             )
 
-        if not context.evidence_service:
-            return ToolResult(
-                success=False,
-                data=None,
-                error="Evidence service not available",
-            )
-
         try:
-            # Get evidence metadata first
-            evidence = await context.evidence_service.get_evidence(evidence_id)
+            case = context.in_memory_case
+            if case is None and context.case_repository is not None:
+                case = await context.case_repository.get(context.case_id)
+            if case is None:
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error=f"Case not found: {context.case_id}",
+                )
 
-            if not evidence:
+            evidence = None
+            for ev in getattr(case, "evidence", []) or []:
+                if getattr(ev, "evidence_id", None) == evidence_id:
+                    evidence = ev
+                    break
+
+            if evidence is None:
                 return ToolResult(
                     success=False,
                     data=None,
                     error=f"Evidence not found: {evidence_id}",
                 )
 
-            # Check if evidence belongs to the current case
-            if evidence.case_id != context.case_id:
+            # Domain Evidence sits on `case.evidence`, so case-scoping is
+            # already implicit. Belt-and-braces check kept for parity.
+            ev_case_id = getattr(evidence, "case_id", context.case_id)
+            if ev_case_id and ev_case_id != context.case_id:
                 return ToolResult(
                     success=False,
                     data=None,
@@ -145,19 +158,45 @@ class ReadFileTool(AgentTool):
                     ),
                 )
 
-            # Download file contents
-            download_result = await context.evidence_service.download_evidence(
-                evidence_id,
-            )
-            if not download_result:
+            content_ref = getattr(evidence, "content_ref", None)
+            filename = getattr(evidence, "original_filename", None) or evidence_id
+            if not content_ref:
                 return ToolResult(
                     success=False,
                     data=None,
-                    error=f"Could not download evidence file: {evidence_id}",
+                    error=(
+                        f"Evidence {evidence_id} has no content_ref "
+                        f"(raw file not stored)"
+                    ),
                 )
-            file_data, filename, mime_type = download_result
 
-            # Process based on file type
+            # Load via FileStorageService. We construct it on-demand using the
+            # configured storage root rather than plumbing a new dependency
+            # through ToolContext.
+            from faultmaven.config.settings import get_settings
+            from faultmaven.modules.evidence.domain.services.file_storage_service import (
+                FileStorageService,
+            )
+
+            settings = get_settings()
+            storage = FileStorageService(
+                storage_root=getattr(
+                    settings, "evidence_storage_root", "./data/evidence"
+                ),
+            )
+            try:
+                file_data = await storage.retrieve_file(content_ref)
+            except Exception as e:
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error=f"Could not read evidence file: {e}",
+                )
+
+            # Domain Evidence has no mime_type; infer a loose default so the
+            # text-vs-binary heuristics in _process_file_content keep working.
+            mime_type = "text/plain"
+
             content = self._process_file_content(
                 file_data=file_data,
                 filename=filename,
@@ -179,7 +218,7 @@ class ReadFileTool(AgentTool):
                     "mime_type": mime_type,
                     "file_size": len(file_data),
                     "evidence_id": evidence_id,
-                    "description": evidence.description,
+                    "description": getattr(evidence, "summary", None),
                 },
             )
 

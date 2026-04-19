@@ -3132,16 +3132,18 @@ class MilestoneEngine:
             VECTORIZATION_MAX_SIZE_BYTES,
         )
 
-        # Get evidence size for size gate check
+        # Storage redesign 2026-04 phase 2: resolve size from case.evidence
+        # (standalone evidence service deleted).
         ev_size = 0
         try:
-            ev = await tool_context.evidence_service.get_evidence(
-                evidence_id,
-                tool_context.organization_id,
-            )
-            ev_size = (
-                getattr(ev, "file_size", 0) or getattr(ev, "content_size_bytes", 0) or 0
-            )
+            case = getattr(tool_context, "in_memory_case", None)
+            if case is None and getattr(tool_context, "case_repository", None):
+                case = await tool_context.case_repository.get(tool_context.case_id)
+            if case is not None:
+                for ev in getattr(case, "evidence", []) or []:
+                    if getattr(ev, "evidence_id", None) == evidence_id:
+                        ev_size = int(getattr(ev, "content_size_bytes", 0) or 0)
+                        break
         except Exception:
             return result_text
 
@@ -3370,7 +3372,7 @@ class MilestoneEngine:
             case_id=case.case_id,
             organization_id=organization_id,
             user_id=user_id,
-            evidence_service=self.evidence_service,
+            case_repository=self.repository,
             metadata=metadata,
             in_memory_case=case,
         )
