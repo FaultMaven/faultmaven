@@ -14,7 +14,7 @@ This document specifies the design for evidence classification in FaultMaven:
 1. **Single-phase evidence creation** — evidence records created after LLM evaluation, not before
 2. **Payload-driven form determination** — evidence form set by ingestion pipeline (attachments -> DOCUMENT, agent findings -> SUBMITTED_DATA), not by LLM classification
 3. **Unified DataType taxonomy** — 6 types shared with preprocessing ([Data Preprocessing](./data-preprocessing-design-specification.md))
-4. **5 evidence categories** — SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL, REJECTED
+4. **6 evidence categories** — SYMPTOM, CAUSAL, MITIGATION, SOLUTION, CONTEXTUAL, REJECTED (5 valid + 1 rejected)
 5. **Comprehensive tracking** — all submissions tracked, including rejections
 
 ---
@@ -292,7 +292,7 @@ CRITICAL: Classify based on what the DATA CONTAINS, not the investigation phase.
 
 ### Decision 5: Unified DataType (Shared with Preprocessing)
 
-Evidence uses the same `DataType` enum as preprocessing. The canonical enum definition (including per-type description, detection rules, and confidence scoring) lives in [Data Classification Strategy → Unified DataType Enum](./data-classification-strategy.md#unified-datatype-enum-6-types). The version reproduced below is a reader-convenience copy with evidence-specific usage notes; the canonical doc governs additions, removals, and semantic changes.
+Evidence uses the same `DataType` enum as preprocessing. The canonical enum definition (including per-type description, detection rules, and confidence scoring) lives in [Data Classification Strategy → Two-Layer Data Type Enum](./data-classification-strategy.md#two-layer-data-type-enum). The version reproduced below is a reader-convenience copy with evidence-specific usage notes; the canonical doc governs additions, removals, and semantic changes.
 
 ```python
 class DataType(str, Enum):
@@ -581,7 +581,7 @@ CREATE TABLE evidence (
     case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
     -- Classification
-    category VARCHAR(50) NOT NULL,  -- symptom_evidence, causal_evidence, resolution_evidence, contextual_evidence, rejected
+    category VARCHAR(50) NOT NULL,  -- symptom_evidence, causal_evidence, mitigation_evidence, solution_evidence, contextual_evidence, rejected
     data_type VARCHAR(50) NOT NULL,  -- logs, metrics, configuration, code, text, image (unified DataType)
     form VARCHAR(20) NOT NULL,
 
@@ -628,11 +628,11 @@ SELECT COUNT(*) as total_submissions
 FROM evidence
 WHERE case_id = ?;
 
--- Relevant evidence only (4 categories)
+-- Relevant evidence only (5 categories)
 SELECT COUNT(*) as relevant_evidence
 FROM evidence
 WHERE case_id = ?
-  AND category IN ('symptom_evidence', 'causal_evidence', 'resolution_evidence', 'contextual_evidence');
+  AND category IN ('symptom_evidence', 'causal_evidence', 'mitigation_evidence', 'solution_evidence', 'contextual_evidence');
 
 -- Acceptance rate
 SELECT

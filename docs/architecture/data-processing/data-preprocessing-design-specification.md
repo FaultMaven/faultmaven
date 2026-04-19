@@ -1,12 +1,22 @@
-# Data Preprocessing Design Specification v5.2
+# Data Preprocessing Design Specification v5.3
 
 **Status**: FINAL
-**Date**: 2026-03-15
-**Supersedes**: v5.1
+**Date**: 2026-04-18
+**Supersedes**: v5.2
 
 ---
 
 ## Change Summary
+
+### v5.2 → v5.3 (Design/Code Drift Closure)
+
+| Area | v5.2 | v5.3 |
+|------|------|------|
+| **Entry point** | Multiple preprocessing entry paths (legacy `process_upload`, `ChunkingService`, `PreprocessingService.preprocess`) cohabited with `classify_and_extract` | Single entry point in §2.4: `PreprocessingService.classify_and_extract()`. Legacy paths deleted (violated Tier 0+1 zero-LLM guarantee or were unreachable). |
+| **Appendix B** | Stub / incomplete extractor reference | Rewritten: per-extractor `strategy_name` table, runtime markers (`page_capture_passthrough`, `structure_extraction`, `none`, `classification_failed`), uniform output budget (`MAX_STRUCTURAL_INDEX_TOKENS=2500`, `MAX_STRUCTURAL_INDEX_CHARS=10000`), shared utilities (`extract_timestamp`, `format_coverage_metadata`), 21 enumerated detect-secrets plugins as a security contract. |
+| **Tier-0 command detection** | Spec implied broad command coverage; code matched only 7 commands with single-pattern detection | Spec and code aligned on the 13-command `COMMAND_OUTPUTS` dict with ≥2-pattern requirement (top/ps/vmstat/iostat/netstat/free/df/lsof → COMMAND_OUTPUT; dmesg/journalctl/strace/ltrace → LOGS_AND_ERRORS; perf → PROFILING_DATA; lscpu → STRUCTURED_CONFIG). Documented in [data-classification-strategy.md v3.0](./data-classification-strategy.md#command-output-classification). |
+| **Companion: classification strategy** | Documented as 6-level cascade with `AdaptiveClassifier` / `PatternLearner` / `fallback_level` (none of which existed in code) | Rewritten as v3.0: 5-priority signal-source ordering (user_override / agent_hint / source_url / browser_context / rule_based), CSV/TSV structural gate, extension-sensitive LOGS thresholds, `_validate_hint` safety valve. |
+| **Removed dead fields** | `sanitization_applied`, `redactions_count`, `security_flags`, `EXTRACTION_VERSION`, `CONFIDENCE_HIGH/MEDIUM/LOW_THRESHOLD` referenced in spec | Removed — PII redaction runs at the LLM boundary, not at extraction time; replaced with `CONFIDENCE_THRESHOLDS` + `FILE_UPLOAD_CONFIDENCE_BOOST` constants. |
 
 ### v5.1 → v5.2 (Proactive Vectorization)
 
@@ -1181,7 +1191,7 @@ DEEP_ANALYSIS_TIMEOUT_SECONDS=30
 # NOTE: Old TIER2_* names are no longer supported (clean break in Phase 5)
 
 # ============================================================
-# VECTORIZATION (auto-triggered on DA failure)
+# VECTORIZATION (proactive primary, reactive fallback)
 # ============================================================
 # VECTORIZATION_MIN_SIZE_BYTES is now configurable via AgentSettings
 # (settings.agent.vectorization_min_size_bytes). Default: 50000 (50KB).
@@ -1271,4 +1281,4 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 **Document Version**: 5.3
 **Last Updated**: 2026-04-18
 **Status**: FINAL
-**Predecessor**: v5.1 (data-preprocessing-design-specification.md)
+**Predecessor**: v5.2 (data-preprocessing-design-specification.md)

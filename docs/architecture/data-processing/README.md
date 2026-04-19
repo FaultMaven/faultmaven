@@ -9,7 +9,7 @@ This section documents how FaultMaven ingests user-submitted data, preprocesses 
 Two distinct but related classification tasks are performed:
 
 1. **Data type classification** (Tier 0) — Rule-based detection producing a `DataType` enum value
-2. **Evidence classification** — LLM-based categorization into SYMPTOM/CAUSAL/RESOLUTION/CONTEXTUAL/REJECTED
+2. **Evidence classification** — LLM-based categorization into SYMPTOM/CAUSAL/MITIGATION/SOLUTION/CONTEXTUAL/REJECTED
 
 All user turns arrive via the **Unified Ingestion Pipeline** (`POST /cases/{id}/turns`). Attachments are preprocessed through Tier 0+1 **before** the LLM runs (Step 1), then the LLM performs inference with structural indexes included in context (Step 2). Evidence form is determined by payload context (attachments → `DOCUMENT`, agent findings → `SUBMITTED_DATA`), not by LLM classification.
 
@@ -32,7 +32,7 @@ All submissions are preprocessed through **Tier 0+1 (Structural Indexing)** — 
 
 ## Unified DataType Enum
 
-All documents in this section share a single DataType taxonomy. See [Data Classification Strategy → Unified DataType Enum](./data-classification-strategy.md#unified-datatype-enum-6-types) for the canonical definition; the table below is a quick reference.
+All documents in this section share a single DataType taxonomy. See [Data Classification Strategy → Two-Layer Data Type Enum](./data-classification-strategy.md#two-layer-data-type-enum) for the canonical definition; the table below is a quick reference.
 
 | DataType | Description |
 |----------|-------------|
@@ -49,15 +49,15 @@ All documents in this section share a single DataType taxonomy. See [Data Classi
 
 ### Data Preprocessing
 
-- **[Data Preprocessing Design Specification](./data-preprocessing-design-specification.md)** (v5.2) — Core preprocessing architecture with scenario-driven processing modes. Defines Tier 0+1 structural indexing (12 detailed types → 6 unified types, 11 extractors with coverage metadata), mechanical query classifier (`classify_query()` — heuristic entity detection + phrasing analysis), mode-specific system prompts (Triage vs Directed Analysis), proactive + reactive vectorization with per-evidence DA failure tracking, small-file DA failure fallback, unified ingestion pipeline (`POST /cases/{id}/turns`), Context Sliding Window, evidence form determination, and orchestration hardening (R3 coverage gap detection, R4 vectorization with proactive + reactive paths, R5 context budgeting).
+- **[Data Preprocessing Design Specification](./data-preprocessing-design-specification.md)** (v5.3) — Core preprocessing architecture with scenario-driven processing modes. Defines Tier 0+1 structural indexing (12 detailed types → 6 unified types, 11 extractors with coverage metadata), mechanical query classifier (`classify_query()` — heuristic entity detection + phrasing analysis), mode-specific system prompts (Triage vs Directed Analysis), proactive + reactive vectorization with per-evidence DA failure tracking, small-file DA failure fallback, unified ingestion pipeline (`POST /cases/{id}/turns`), Context Sliding Window, evidence form determination, and orchestration hardening (R3 coverage gap detection, R4 vectorization with proactive + reactive paths, R5 context budgeting).
 
-- **[Data Classification Strategy](./data-classification-strategy.md)** (v2.1) — Tier 0 classification rules. Multi-level pattern matching (Level 1-3 heuristics, Level 4 contextual, optional Level 5 LLM), disambiguation strategies, confidence scoring, and command output detection.
+- **[Data Classification Strategy](./data-classification-strategy.md)** (v3.0) — Tier 0 classification rules. 5-priority signal-source ordering (user_override / agent_hint / source_url / browser_context / rule_based), `_validate_hint` safety valve, CSV/TSV structural gate, extension-sensitive LOGS thresholds, command-output detection, and `classification_failed` cooperative-clarification path.
 
 - **[Platform-Specific Extractors](./platform-specific-extractors.md)** — Future enhancement: platform-aware extraction for SRE/DevOps tools (Datadog, Grafana, PagerDuty, etc.). Can integrate as Tier 1 frontend extractors or Tier 3 backends.
 
 ### Evidence Classification
 
-- **[Evidence Classification Design](./evidence-classification-design.md)** — Evidence taxonomy: 5 categories (SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL, REJECTED), unified DataType, payload-driven form determination (DOCUMENT/USER_TEXT/SUBMITTED_DATA), content-based classification, and milestone attribution (Option 2.5).
+- **[Evidence Classification Design](./evidence-classification-design.md)** — Evidence taxonomy: 6 categories (SYMPTOM, CAUSAL, MITIGATION, SOLUTION, CONTEXTUAL, REJECTED — 5 valid + 1 rejected), unified DataType, payload-driven form determination (DOCUMENT/USER_TEXT/SUBMITTED_DATA), content-based classification, and milestone attribution (Option 2.5).
 
 - **[Evidence Flow Architecture](./evidence-flow-architecture.md)** — System architecture and flow diagrams for the evidence pipeline. Covers the unified turn endpoint (`POST /cases/{id}/turns`) through two-step pipeline (preprocess attachments → LLM inference), to persistence, including sequence diagrams, state machines, and monitoring.
 

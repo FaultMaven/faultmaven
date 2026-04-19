@@ -137,7 +137,7 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │ evidence table:                                                     │ │
 │  │ - evidence_id (PK)                                                 │ │
 │  │ - case_id (FK → cases)                                             │ │
-│  │ - category (symptom/causal/resolution/contextual/rejected)        │ │
+│  │ - category (symptom/causal/mitigation/solution/contextual/rejected)│ │
 │  │ - data_type (logs/metrics/configuration/code/text/image)         │ │
 │  │ - summary, primary_purpose                                         │ │
 │  │ - content_ref, content_hash                                        │ │

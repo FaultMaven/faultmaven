@@ -275,7 +275,7 @@ class EvidenceToAdd(BaseModel):
 
 **Why CONTEXTUAL_EVIDENCE as fallback?**
 - Not REJECTED (user uploaded it intentionally)
-- Not SYMPTOM/CAUSAL/RESOLUTION (don't want false positives in investigation)
+- Not SYMPTOM/CAUSAL/MITIGATION/SOLUTION (don't want false positives in investigation)
 - CONTEXTUAL is neutral ("we have this data, not sure what it means yet")
 
 **Alternative: Log + Manual Review**
