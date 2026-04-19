@@ -23,7 +23,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "575bb832f512"  # Phase 3 redesign migration (drops sessions table + cases.session_id)
+HEAD_REVISION = (
+    "7b5962bf5e5d"  # Phase 4 redesign migration (renames + FK width normalization)
+)
 
 
 @pytest.fixture(scope="function")
@@ -97,7 +99,7 @@ def get_current_revision(database_url: str) -> str:
 #  evidence_artifacts + standalone_evidence removed in phase 2)
 EXPECTED_TABLES = [
     "agent_executions",
-    "agent_tool_calls_v2",
+    "agent_tool_calls",
     "alembic_version",
     "case_actions",
     "case_checkpoints",

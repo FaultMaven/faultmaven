@@ -1196,7 +1196,7 @@ class DatabaseCaseRepository(CaseRepository):
 
             from faultmaven.infrastructure.persistence.models import (
                 AgentExecutionModel,
-                AgentToolCallV2Model,
+                AgentToolCallModel,
             )
             from faultmaven.modules.case.domain.owned_models.agent_execution import (
                 AgentExecution,
@@ -1208,7 +1208,7 @@ class DatabaseCaseRepository(CaseRepository):
             # Query with eager loading of tool_calls relationship
             stmt = (
                 select(AgentExecutionModel)
-                .options(selectinload(AgentExecutionModel.tool_calls_v2))
+                .options(selectinload(AgentExecutionModel.tool_calls))
                 .where(AgentExecutionModel.execution_id == execution_id)
             )
 
@@ -1220,8 +1220,8 @@ class DatabaseCaseRepository(CaseRepository):
 
             # Convert ORM model to domain model
             tool_calls = []
-            if execution_model.tool_calls_v2:
-                for tc_model in execution_model.tool_calls_v2:
+            if execution_model.tool_calls:
+                for tc_model in execution_model.tool_calls:
                     tool_call = AgentToolCall(
                         tool_call_id=tc_model.tool_call_id,
                         execution_id=tc_model.execution_id,

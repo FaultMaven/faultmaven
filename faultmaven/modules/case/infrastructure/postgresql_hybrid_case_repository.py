@@ -280,7 +280,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     evidence_id, case_id, category, summary,
                     preprocessed_content, content_ref, file_size,
                     filename, upload_timestamp, metadata,
-                    source_type_new, content_hash, collected_at_turn,
+                    source_type, content_hash, collected_at_turn,
                     source_file_id
                 FROM evidence
                 WHERE case_id = :case_id
@@ -465,7 +465,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     evidence_id, case_id, category, summary,
                     preprocessed_content, content_ref, file_size,
                     filename, upload_timestamp, metadata,
-                    source_type_new, content_hash, collected_at_turn,
+                    source_type, content_hash, collected_at_turn,
                     source_file_id
                 FROM evidence
                 WHERE case_id = :case_id

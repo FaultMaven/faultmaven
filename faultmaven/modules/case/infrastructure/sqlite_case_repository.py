@@ -330,7 +330,7 @@ class SQLiteCaseRepository(CaseRepository):
                     evidence_id, case_id, category, summary,
                     preprocessed_content, content_ref, file_size,
                     filename, upload_timestamp, metadata,
-                    source_type_new, content_hash, collected_at_turn,
+                    source_type, content_hash, collected_at_turn,
                     source_file_id
                 FROM evidence
                 WHERE case_id = :case_id
@@ -499,7 +499,7 @@ class SQLiteCaseRepository(CaseRepository):
                     evidence_id, case_id, category, summary,
                     preprocessed_content, content_ref, file_size,
                     filename, upload_timestamp, metadata,
-                    source_type_new, content_hash, collected_at_turn,
+                    source_type, content_hash, collected_at_turn,
                     source_file_id
                 FROM evidence
                 WHERE case_id = :case_id
@@ -1137,11 +1137,11 @@ class SQLiteCaseRepository(CaseRepository):
                 INSERT INTO evidence (
                     evidence_id, case_id, organization_id, category, summary, preprocessed_content,
                     content_ref, file_size, filename, upload_timestamp, metadata,
-                    source_type_new, content_hash, collected_at_turn, source_file_id
+                    source_type, content_hash, collected_at_turn, source_file_id
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :category, :summary, :preprocessed_content,
                     :content_ref, :file_size, :filename, :upload_timestamp, :metadata,
-                    :source_type_new, :content_hash, :collected_at_turn, :source_file_id
+                    :source_type, :content_hash, :collected_at_turn, :source_file_id
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
                     category = EXCLUDED.category,
@@ -1149,7 +1149,7 @@ class SQLiteCaseRepository(CaseRepository):
                     preprocessed_content = EXCLUDED.preprocessed_content,
                     content_ref = EXCLUDED.content_ref,
                     metadata = EXCLUDED.metadata,
-                    source_type_new = EXCLUDED.source_type_new,
+                    source_type = EXCLUDED.source_type,
                     content_hash = EXCLUDED.content_hash,
                     collected_at_turn = EXCLUDED.collected_at_turn,
                     source_file_id = EXCLUDED.source_file_id,
@@ -1176,7 +1176,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "filename": getattr(evidence, "original_filename", None) or "",
                     "upload_timestamp": evidence.collected_at.isoformat(),
                     "metadata": json.dumps({}),
-                    "source_type_new": source_type_val,
+                    "source_type": source_type_val,
                     "content_hash": getattr(evidence, "content_hash", None) or "",
                     "collected_at_turn": evidence.collected_at_turn,
                     "source_file_id": getattr(evidence, "source_file_id", None),
