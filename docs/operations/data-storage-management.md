@@ -28,9 +28,10 @@ data/
 │       └── ...                #   Created on evidence upload, deleted on case closure
 │
 ├── evidence/                  # Raw uploaded files (not vectors)
-│   └── <user_id>/             #   Organized by uploading user
-│       └── case_<case_id>/    #     then by case
-│           └── <filename>     #       Original file as uploaded
+│   └── <organization_id>/     #   Organized by organization (tenant isolation)
+│       └── <case_id>/         #     then by case
+│           └── <YYYY-MM-DD>/  #       then by upload date
+│               └── <uuid>_<filename>  # UUID-prefixed to prevent collisions
 │
 └── knowledge/                 # Runbook source files (markdown, pre-ingestion)
     ├── global/                #   System-wide runbooks (admin-curated)
@@ -47,7 +48,7 @@ data/
 | `faultmaven.db` | SQLite | Cases, users, evidence metadata, hypotheses, solutions, messages, RBAC, audit logs, conversion jobs/drafts, knowledge items | Application-managed |
 | `chroma-kb/` | ChromaDB (permanent) | KB embeddings: `faultmaven_kb`, `faultmaven_runbooks`, `knowledge_items` collections. Backed up, never wiped. | Permanent |
 | `chroma-evidence/` | ChromaDB (ephemeral) | Case evidence embeddings: `case_{case_id}` collections (one per active case). Excluded from backups, safe to wipe. | Per-case lifecycle |
-| `evidence/<user_id>/case_*` | Filesystem | Raw uploaded files (logs, configs, CSVs, PDFs). Not vectors — original files only. | 90-day retention |
+| `evidence/<organization_id>/<case_id>/<YYYY-MM-DD>/` | Filesystem | Raw uploaded files (logs, configs, CSVs, PDFs). Not vectors — original files only. UUID-prefixed filenames prevent collisions. | 90-day retention |
 | `knowledge/global/` | Filesystem | Runbook markdown source files (global scope). Seeded from `faultmaven/knowledge/builtin/` on first startup (59 built-in runbooks). | Permanent |
 | `knowledge/personal_*/` | Filesystem | Runbook markdown from case-to-runbook conversion | User-controlled |
 | `knowledge/team_*/` | Filesystem | Team-scoped runbook files | Team-controlled |
@@ -70,7 +71,7 @@ Separating them into two ChromaDB instances (`chroma-kb/` and `chroma-evidence/`
 ```
 knowledge/*.md  →  Dashboard scan → activate  →  chroma-kb/ (faultmaven_kb collection)
 
-evidence/<user_id>/case_*/file  →  background vectorization  →  chroma-evidence/ (case_{id} collection)
+evidence/<organization_id>/<case_id>/<date>/<uuid>_<file>  →  background vectorization  →  chroma-evidence/ (case_{id} collection)
 ```
 
 - `knowledge/` holds **source markdown files**. The canonical ingestion path is: copy files here, open the Dashboard KB page (triggers automatic scan), then activate drafts. Activation triggers chunking, BGE-M3 embedding generation, and storage into the `faultmaven_kb` collection in `chroma-kb/`.
@@ -209,17 +210,26 @@ If the runbook was added via the scan workflow, delete the draft from the Dashbo
 
 ### Directory structure
 
-Evidence files are organized by user ID and case ID:
+Evidence files are organized by organization, case, and upload date. Filenames are UUID-prefixed to prevent collisions when the same filename is uploaded twice:
 
 ```
 data/evidence/
-└── 00000000-0000-0000-0000-000000000001/    # user_id
-    ├── case_01dfc7e3c882/
-    │   └── system-logs.txt                   # original uploaded file
-    ├── case_025d63119af9/
-    │   └── metrics-export.csv
+└── local-user-org/                          # organization_id
+    │                                         #   (default org in Local Deployment;
+    │                                         #    real org ID in Cloud Deployment)
+    ├── 01dfc7e3c882/                        # case_id (no "case_" prefix)
+    │   └── 2026-04-18/                      # YYYY-MM-DD of upload
+    │       ├── a1b2c3d4e5f6_system-logs.txt # UUID prefix + sanitized filename
+    │       └── ...
+    ├── 025d63119af9/
+    │   └── 2026-04-17/
+    │       └── f0e9d8c7b6a5_metrics-export.csv
     └── ...
 ```
+
+The layout is **per-organization**, not per-user — this aligns with FaultMaven's tenancy model (all data is scoped to an organization; Local Deployment uses a single default organization `local-user-org` created at startup).
+
+The path format is implemented in `_generate_storage_path` at [file_storage_service.py:475](../../faultmaven/modules/evidence/domain/services/file_storage_service.py#L475).
 
 ### Checking disk usage
 
@@ -227,18 +237,21 @@ data/evidence/
 # Total evidence storage
 du -sh data/evidence/
 
-# Per-case breakdown
-du -sh data/evidence/*/case_* | sort -rh | head -20
+# Per-case breakdown (Local deployment has a single org, so the glob is simpler)
+du -sh data/evidence/*/*/ | sort -rh | head -20
 
 # Find large files
 find data/evidence/ -type f -size +10M -exec ls -lh {} \;
+
+# Files uploaded in the last 7 days
+find data/evidence/ -type f -mtime -7
 ```
 
 ### Evidence triple storage
 
 Each uploaded evidence file is stored in three places:
 
-1. `data/evidence/<user_id>/case_<case_id>/` — the raw file (90-day retention)
+1. `data/evidence/<organization_id>/<case_id>/<YYYY-MM-DD>/<uuid>_<filename>` — the raw file (90-day retention)
 2. `data/faultmaven.db` — structured metadata in `evidence`, `evidence_artifacts`, and `uploaded_files` tables (evidence ID, category, summary, preprocessing result, file path reference)
 3. `data/chroma-evidence/` — vectorized chunks in a `case_{case_id}` collection for semantic search during investigation (ephemeral, cleaned up on case closure)
 
@@ -388,8 +401,9 @@ du -sh data/faultmaven.db data/chroma-kb/ data/chroma-evidence/ data/evidence/ d
 ```bash
 # List evidence directories for cases older than 90 days
 # (cross-reference with database to find resolved cases)
+# Paths look like: data/evidence/<organization_id>/<case_id>/
 sqlite3 data/faultmaven.db "
-  SELECT 'data/evidence/%/case_' || REPLACE(case_id, '-', '')
+  SELECT 'data/evidence/' || organization_id || '/' || case_id
   FROM cases
   WHERE status IN ('resolved', 'closed')
   AND resolved_at < datetime('now', '-90 days');

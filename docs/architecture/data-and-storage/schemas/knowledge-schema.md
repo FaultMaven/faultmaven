@@ -1,6 +1,23 @@
 # Knowledge Base Storage Schema
 
+**Last Updated**: 2026-04-19
+
 This document covers FaultMaven's two knowledge storage systems: the unified Knowledge Base (all scopes) and Case Working Memory.
+
+## Deployment Applicability
+
+> **Read this before interpreting any DDL in this document.**
+
+The relational tables in this document (`knowledge_items`, `knowledge_suggestions`, `conversion_jobs`, `conversion_drafts`) are **Tier 1 (logical schema)** — both SQLite (Local Deployment) and PostgreSQL (Cloud Deployment) implement all columns listed. The following are **Tier 2 (PostgreSQL-only)** augmentations:
+
+- `CHECK` constraints on `verification_level` (0–2 range) exist in the live ORM and apply to both dialects for simple integer range checks. The `embedding_vector` column type switch from `TEXT` to `vector(1024)` (pgvector) is Tier 2 (PostgreSQL-only).
+- `llm_config_overrides` — table exists in both schemas but is only populated in Cloud Deployment (`AUTH_MODE` environment, dashboard-managed config). Local Deployment reads from `.env` exclusively. See the per-table applicability matrix in [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+
+**Scope-isolation enforcement**: §1.1 states that `KnowledgeVectorStore` rejects any query to `faultmaven_kb` that lacks a scope filter. This enforcement lives in `faultmaven/infrastructure/knowledge/knowledge_vector_store.py` (the wrapper class), not in `faultmaven/infrastructure/persistence/chromadb_store.py`. The base `ChromaDBVectorStore` passes `filters` through verbatim without enforcing a scope filter. Cross-tenant isolation is guaranteed by `KnowledgeVectorStore`, not the base store.
+
+For the full policy, see [deployment-schema-strategy.md](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+
+---
 
 ## Table of Contents
 
@@ -23,7 +40,7 @@ This document covers FaultMaven's two knowledge storage systems: the unified Kno
 **Implementation**: `faultmaven/infrastructure/knowledge/knowledge_vector_store.py` (`KnowledgeVectorStore`)
 **Search Tool**: `faultmaven/modules/agent/tools/kb_qa.py` — the unified `answer_from_kb` tool serves all scopes
 
-**Scope-invariant enforcement**: `KnowledgeVectorStore` rejects any query to `faultmaven_kb` that lacks a scope filter. Cross-tenant isolation is enforced at the infrastructure layer — not just at the application layer.
+**Scope-invariant enforcement**: `KnowledgeVectorStore` rejects any query to `faultmaven_kb` that lacks a scope filter. Cross-tenant isolation is enforced by the `KnowledgeVectorStore` wrapper class in `faultmaven/infrastructure/knowledge/knowledge_vector_store.py` — not by the base `ChromaDBVectorStore` (which passes filters through verbatim). Application-layer callers must always provide a scope filter; the wrapper enforces this invariant at the infrastructure layer.
 
 ### 1.2 Storage Characteristics
 
@@ -116,10 +133,12 @@ results = await knowledge_vector_store.search(
 ### 2.2 Storage Characteristics
 
 **Ephemeral Storage**:
+
 - Collections created on-demand when first document added
-- Automatically deleted when case closes or archives
-- 7-day grace period after case closure for forensics
+- Deleted when case closes (immediate via `delete_case_collection`) or swept by `cleanup_orphaned_collections(active_case_ids)` (reactive pattern — not scheduled)
 - No cross-case sharing
+
+> **Note**: The 7-day grace period TTL, `schedule_cleanup`, `get_expired_collections`, and daily cleanup job described in §2.3–2.4 are **aspirational — not implemented**. The live `CaseVectorStore` uses immediate deletion (`delete_case_collection`) and a reactive orphan sweep (`cleanup_orphaned_collections(active_case_ids)`). Collection metadata carries only `case_id` + `created_at` — no `expiry_date` or `cleanup_after` fields. See [deployment-schema-strategy.md §5](../../../../../faultmaven-doc-internal/architecture/deployment-schema-strategy.md) for the open decision on whether to implement scheduled TTL cleanup.
 
 **Semantic Search**:
 
@@ -291,6 +310,15 @@ CREATE TABLE conversion_drafts (
     quality_score NUMERIC(5,1),
     quality_details JSON,
     knowledge_item_id VARCHAR(36),           -- set after verify & ingest
+
+    -- KB metadata — populated from runbook frontmatter during scan/verify
+    -- These columns exist in the live ORM (models.py:2069) and are documented here.
+    domain VARCHAR(50),                      -- e.g. 'databases', 'networking'
+    service VARCHAR(100),                    -- e.g. 'postgresql', 'redis'
+    severity VARCHAR(20),                    -- e.g. 'critical', 'warning'
+    tags TEXT,                               -- JSON array or comma-separated string
+    document_type VARCHAR(50) DEFAULT 'runbook',  -- document classification
+
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     verified_at TIMESTAMPTZ,
     verified_by VARCHAR(36)
@@ -325,9 +353,110 @@ The `VectorMetadata.to_chroma_metadata()` method handles this conversion. The `K
 
 ---
 
+## 5. Relational Knowledge Tables
+
+The ChromaDB vector store holds chunk embeddings for fast semantic search. The relational tables below hold the authoritative record of each knowledge item and its provenance, and support the human-in-the-loop (HITL) review pipeline.
+
+### 5.1 knowledge_items
+
+**Purpose**: The relational KB entry — one row per published or draft knowledge item. Stores full content, verification state, usage counters, and a stub for future pgvector embeddings. This table is the source of truth for item lifecycle; ChromaDB holds the chunked embeddings derived from `content`.
+
+**When written**: Populated by the conversion pipeline (`conversion_drafts` → verified → `knowledge_items`) or by direct admin ingestion. The `knowledge_item_id` FK on `conversion_drafts` and `knowledge_suggestions` links forward to the promoted item.
+
+**Key columns** (see `models.py:1679`, 29 columns total):
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `item_id` | VARCHAR(64) PK | |
+| `organization_id` | VARCHAR(64) | No FK — items persist independently of org lifecycle |
+| `scope` | VARCHAR(20) | `personal\|team\|global` — enforced by CHECK (Tier 1) |
+| `owner_id` | VARCHAR(36) nullable | Set when scope = personal |
+| `team_id` | VARCHAR(36) nullable | Set when scope = team |
+| `title` | VARCHAR(512) NOT NULL | |
+| `content` | TEXT NOT NULL | Full runbook/doc text |
+| `item_type` | VARCHAR(64) | `troubleshooting_guide\|error_pattern\|solution_template\|api_documentation\|configuration_guide\|best_practice\|faq\|runbook` |
+| `category` | VARCHAR(128) nullable | Free-text category label |
+| `tags` | TEXT (JSON array) | |
+| `embedding_model` | VARCHAR(128) | Default `bge-m3` |
+| `embedding_vector` | TEXT nullable | Stub for future pgvector — Tier 2 (PostgreSQL-only) will switch type to `vector(1024)` |
+| `embedding_version` | INTEGER | Monotonically increasing; CHECK >= 1 |
+| `source_url` | VARCHAR(2048) nullable | |
+| `author` | VARCHAR(255) nullable | |
+| `language` | VARCHAR(8) | Default `en` |
+| `verification_level` | INTEGER | 0 = experimental, 1 = community, 2 = admin\_verified; CHECK 0–2 (Tier 1) |
+| `verification_reason` | VARCHAR(512) nullable | |
+| `verified_by` | VARCHAR(64) nullable | |
+| `verified_at` | TIMESTAMPTZ nullable | |
+| `source_suggestion_id` | VARCHAR(64) nullable | FK (logical) to `knowledge_suggestions.suggestion_id` |
+| `view_count` | INTEGER | Usage counter; CHECK >= 0 |
+| `helpful_count` | INTEGER | Feedback counter; CHECK >= 0 |
+| `not_helpful_count` | INTEGER | Feedback counter; CHECK >= 0 |
+| `last_retrieved_at` | TIMESTAMPTZ nullable | Updated on each retrieval |
+| `is_published` | BOOLEAN | False = draft/hidden from search |
+| `metadata` | TEXT (JSON) | Stored as `knowledge_metadata` Python attribute |
+
+**Applicability**: Both deployments (✅ Both). Cross-reference the unified ChromaDB `faultmaven_kb` collection — chunk embeddings in ChromaDB are derived from `knowledge_items.content`; the `item_id` is stored in ChromaDB chunk metadata as the source document reference.
+
+### 5.2 knowledge_suggestions
+
+**Purpose**: HITL (human-in-the-loop) review pipeline for candidate runbooks extracted from resolved cases. A suggestion moves through PII scanning, human review, and then promotion to a published `knowledge_items` row (or rejection).
+
+**When written**: Created by the conversion service when a case is converted to a runbook draft. Also created by any pathway that surfaces a "candidate KB entry" for admin review.
+
+**PII scanning lifecycle**: `pii_scan_status` moves through `not_scanned` → `scanning` → `clean` (or `pii_detected` → `remediated` or `scan_failed`). Only `clean` or `remediated` suggestions may be reviewed by a human.
+
+**Key columns** (see `models.py:1801`, 26 columns total):
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `suggestion_id` | VARCHAR(64) PK | |
+| `organization_id` | VARCHAR(64) | |
+| `case_id` | VARCHAR(64) | Source case (logical FK — no DB constraint) |
+| `status` | VARCHAR(32) | `pending_review\|approved\|rejected\|draft` |
+| `suggested_title` | VARCHAR(512) NOT NULL | |
+| `suggested_content` | TEXT NOT NULL | |
+| `suggested_type` | VARCHAR(64) | Default `troubleshooting_guide` |
+| `extracted_by` | VARCHAR(64) | User or system that triggered extraction |
+| `extracted_at` | TIMESTAMPTZ | |
+| `include_messages` | BOOLEAN | Whether case messages were included in extraction |
+| `include_evidence` | BOOLEAN | Whether evidence was included |
+| `pii_scan_status` | VARCHAR(32) | `not_scanned\|scanning\|clean\|pii_detected\|remediated\|scan_failed` |
+| `pii_scan_result` | TEXT (JSON) nullable | Raw scan output |
+| `pii_remediated_by` | VARCHAR(64) nullable | |
+| `pii_remediated_at` | TIMESTAMPTZ nullable | |
+| `source_case_title` | VARCHAR(512) nullable | Denormalized for display in review inbox |
+| `message_count` | INTEGER | Lineage counter; CHECK >= 0 |
+| `evidence_count` | INTEGER | Lineage counter; CHECK >= 0 |
+| `reviewed_by` | VARCHAR(64) nullable | |
+| `reviewed_at` | TIMESTAMPTZ nullable | |
+| `review_notes` | TEXT nullable | |
+| `rejection_reason` | TEXT nullable | |
+| `knowledge_item_id` | VARCHAR(64) nullable | Set when suggestion is promoted to a published item |
+| `metadata` | TEXT (JSON) | Stored as `suggestion_metadata` Python attribute |
+
+**Applicability**: Both deployments (✅ Both). The conversion service runs in both Local and Cloud deployments.
+
+### 5.3 llm_config_overrides (Config Domain — Cloud-only behavior)
+
+`llm_config_overrides` is a Config-domain table (not Knowledge domain) included here for cross-reference completeness. It stores dashboard-applied key/value LLM configuration overrides that take precedence over environment variables.
+
+**Applicability**: Cloud-only behavior (🌐). The table exists in both schemas per the no-divergence rule, but Local Deployment reads from `.env` exclusively — the table is never populated in local mode. See [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) and `faultmaven/config/llm_config_overrides.py` for the hot-reload logic.
+
+---
+
 ## Related Documentation
 
 - **[vector-storage.md](../vector-storage.md)** - ChromaDB implementation details and operations
 - **[case-schema.md](./case-schema.md)** - Case data model and investigation storage
 - **[../knowledge-and-ai/knowledge-base-architecture.md](../../knowledge-and-ai/knowledge-base-architecture.md)** - RAG pipeline and embeddings
 - **[overview.md](../overview.md)** - Complete storage architecture overview
+- **[deployment-schema-strategy.md](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md)** - Tier 1/2 dialect policy and per-table applicability matrix
+
+---
+
+**Changelog**:
+
+| Version | Date | Changes |
+| --- | --- | --- |
+| 1.2 | 2026-04-19 | Aligned with deployment-schema-strategy.md v2.1 (no functional changes to knowledge domain). Consistency check pass: updated all deployment-schema-strategy.md links to GitHub URL format. Confirmed `knowledge_items.embedding_vector` TEXT stub (Tier 1) / `vector(1024)` (Tier 2 PG pgvector) — correct and unchanged. Confirmed `llm_config_overrides` as infrastructure layer (not knowledge domain) per strategy doc §11.3 — unchanged. |
+| 1.1 | 2026-04-18 | Aligned with deployment-schema-strategy.md v1.0. Added Deployment Applicability banner clarifying Tier 1/2 policy, scope-isolation enforcement location (KnowledgeVectorStore wrapper, not ChromaDBVectorStore base), and llm\_config\_overrides Cloud-only behavior. Corrected §1.1 scope-isolation description. Corrected §2.2 ephemeral storage — TTL/scheduled-cleanup is aspirational, not implemented; reactive orphan sweep is the live behavior. Added §4.2 undocumented conversion\_drafts columns (domain, service, severity, tags, document\_type). Added §5 with full narratives for knowledge\_items (29 cols, verification lifecycle, embedding\_vector pgvector stub) and knowledge\_suggestions (26 cols, 6-value pii\_scan\_status HITL pipeline). Added §5.3 llm\_config\_overrides cross-reference. |

@@ -83,7 +83,6 @@ async def async_engine():
                 problem_verification TEXT,
                 working_conclusion TEXT,
                 root_cause_conclusion TEXT,
-                degraded_mode TEXT,
                 escalation_state TEXT,
                 documentation TEXT DEFAULT '{}',
                 progress TEXT DEFAULT '{}',

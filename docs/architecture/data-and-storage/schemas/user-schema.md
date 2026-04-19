@@ -1,9 +1,37 @@
 # User Storage Design - Enterprise SaaS
 
-**Version**: 3.0
+**Version**: 3.2
 **Status**: ✅ Implemented (baseline migration `001_clean_baseline`)
-**Last Updated**: 2026-04-18
+**Last Updated**: 2026-04-19
 **Implementation**: SQLAlchemy models at `faultmaven/infrastructure/persistence/models.py`; baseline migration at `alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py`
+
+---
+
+## Deployment Applicability
+
+> **Read this before interpreting any DDL in this document.**
+
+The DDL definitions below represent the **logical schema** for the user domain: both SQLite (Local Deployment) and PostgreSQL (Cloud Deployment) implement every table and column listed. This is the Tier 1 shape — dialect-neutral, enforced in both environments via SQLAlchemy ORM models at `faultmaven/infrastructure/persistence/models.py`.
+
+The following constructs are **Tier 2 (PostgreSQL-only)** augmentations. SQLite deployments omit them by design:
+
+- `CHECK` constraints using regex patterns (e.g., `email ~*`), cross-column conditionals, or enum whitelists that PostgreSQL enforces but SQLite does not.
+- `UNIQUE` constraints on composite SSO columns not present in the live ORM.
+- Partial indexes with `WHERE deleted_at IS NULL` clauses.
+
+Wherever a DDL element in this document is Tier 2, it is marked inline with **"Tier 2 (PostgreSQL-only)"**. All other DDL is Tier 1.
+
+**FK width normalization (resolved)**: Per [deployment-schema-strategy.md §4.3](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md), all id columns and their referencing FKs are normalized to `VARCHAR(36)` (fits UUID with hyphens: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`). The prior inconsistency (`users.user_id VARCHAR(36)`, `organizations.organization_id VARCHAR(64)`, `cases.organization_id VARCHAR(20)`) is resolved as of v2.1. This spec reflects the target `VARCHAR(36)` throughout.
+
+**Tenancy context in Local Deployment**: In Local Deployment, `organizations` has exactly one row (`local-user-org`, created by the startup bootstrapper) and `organization_members` has exactly one entry (the default admin user). `teams` and `team_members` tables exist in both schemas (per the no-divergence rule) but remain empty in Local Deployment — team-management workflows are Cloud-only behavior. See the per-table applicability matrix in [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+
+**OAuth tables** (`oauth_revoked_tokens`, `oauth_authorization_codes`): These tables exist in both schemas but are only populated when `AUTH_MODE=oauth` (Cloud Deployment). Local Deployment uses `AUTH_MODE=local` (HS256 JWT) and never writes to these tables. They are marked Cloud-only behavior in the per-table matrix.
+
+**Session storage (v2.1)**: The SQL `sessions` table is **DELETED**. Auth sessions are Redis-only — see §5.3 below. There is no SQL session table in either deployment.
+
+**`investigation_sessions` table**: This is a **case-owned** table (lives in `case-schema.md`), not an auth-owned table. It tracks the per-investigation agent context (`Case → InvestigationSession → AgentExecution → AgentToolCall`) and is a completely different concept from auth sessions. See [deployment-schema-strategy.md §11.2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+
+For the full policy on dialect tiering, the per-table deployment matrix, and enum governance, see [deployment-schema-strategy.md](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
 
 ---
 
@@ -163,6 +191,7 @@ CREATE TABLE users (
     -- SSO Integration
     sso_provider VARCHAR(50),  -- 'google', 'okta', 'azure', etc.
     sso_provider_id VARCHAR(255),  -- External ID from SSO provider
+    -- Tier 2 (PostgreSQL-only) — composite UNIQUE not present in live ORM
     UNIQUE(sso_provider, sso_provider_id),
 
     -- Timestamps
@@ -175,15 +204,19 @@ CREATE TABLE users (
     deleted_at TIMESTAMPTZ,
 
     -- Constraints
+    -- Tier 2 (PostgreSQL-only) — regex CHECK not in live ORM
     CONSTRAINT users_email_format CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$'),
+    -- Tier 2 (PostgreSQL-only) — cross-column CHECK not in live ORM
     CONSTRAINT users_password_or_sso CHECK (
         (hashed_password IS NOT NULL) OR (sso_provider IS NOT NULL)
     )
 );
 
--- Indexes
+-- Tier 2 (PostgreSQL-only) — partial indexes (WHERE deleted_at IS NULL)
+-- Live ORM indexes exist but are non-partial (no WHERE clause)
 CREATE INDEX idx_users_email ON users(email) WHERE deleted_at IS NULL;
 CREATE INDEX idx_users_sso ON users(sso_provider, sso_provider_id) WHERE deleted_at IS NULL;
+-- Tier 1
 CREATE INDEX idx_users_created_at ON users(created_at DESC);
 
 COMMENT ON TABLE users IS 'User accounts with SSO support and soft delete';
@@ -193,23 +226,27 @@ COMMENT ON COLUMN users.sso_provider_id IS 'External user ID from SSO provider (
 
 #### Table: organizations
 
+> **Columns in doc but not in live ORM** (out of current scope):
+>
+> - `domain VARCHAR(255)` — primary email domain for auto-join; not in `models.py`.
+> - `stripe_customer_id VARCHAR(100)`, `stripe_subscription_id VARCHAR(100)`, `trial_ends_at TIMESTAMPTZ` — Stripe/billing columns; **out of current scope**. These columns are removed from the active design spec. If cloud billing integration is added in the future, they will be introduced via a migration at that time.
+>
+> The DDL below omits these columns. They are not targeted for the current redesign.
+
 ```sql
 CREATE TABLE organizations (
     -- Primary Key
-    organization_id VARCHAR(64) PRIMARY KEY DEFAULT ('org_' || gen_random_uuid()::text),
+    organization_id VARCHAR(36) PRIMARY KEY DEFAULT ('org_' || gen_random_uuid()::text),
 
     -- Organization Info
     name VARCHAR(200) NOT NULL,
     slug VARCHAR(100) UNIQUE NOT NULL,  -- URL-friendly identifier
-    domain VARCHAR(255),  -- Primary email domain (for auto-join)
+    -- domain, stripe_customer_id, stripe_subscription_id, trial_ends_at:
+    -- out of current scope (see note above). Not included in this spec.
 
     -- Subscription
     plan_tier VARCHAR(20) NOT NULL DEFAULT 'free',  -- 'free', 'pro', 'enterprise'
     max_users INTEGER NOT NULL DEFAULT 5,
-
-    -- Billing
-    stripe_customer_id VARCHAR(100),
-    stripe_subscription_id VARCHAR(100),
 
     -- Settings
     settings JSONB DEFAULT '{}'::jsonb,  -- Flexible org-specific settings
@@ -217,17 +254,19 @@ CREATE TABLE organizations (
     -- Timestamps
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    trial_ends_at TIMESTAMPTZ,
 
     -- Soft Delete
     deleted_at TIMESTAMPTZ,
 
     -- Constraints
+    -- Tier 2 (PostgreSQL-only) — regex CHECK not in live ORM
     CONSTRAINT organizations_slug_format CHECK (slug ~* '^[a-z0-9-]+$'),
+    -- Tier 2 (PostgreSQL-only) — enum CHECK not in live ORM
     CONSTRAINT organizations_plan_tier_valid CHECK (plan_tier IN ('free', 'pro', 'enterprise'))
 );
 
--- Indexes
+-- Tier 2 (PostgreSQL-only) — partial indexes (WHERE deleted_at IS NULL)
+-- Live ORM indexes exist but are non-partial
 CREATE INDEX idx_organizations_slug ON organizations(slug) WHERE deleted_at IS NULL;
 CREATE INDEX idx_organizations_domain ON organizations(domain) WHERE deleted_at IS NULL;
 
@@ -240,15 +279,15 @@ COMMENT ON COLUMN organizations.slug IS 'URL slug for organization (e.g., acme-c
 ```sql
 CREATE TABLE organization_members (
     -- Composite Primary Key
-    user_id VARCHAR(20) NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    organization_id VARCHAR(20) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    user_id VARCHAR(36) NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
     PRIMARY KEY (user_id, organization_id),
 
     -- Role in Organization
-    role_id VARCHAR(20) NOT NULL REFERENCES roles(role_id),
+    role_id VARCHAR(36) NOT NULL REFERENCES roles(role_id),
 
     -- Invitation
-    invited_by VARCHAR(20) REFERENCES users(user_id),
+    invited_by VARCHAR(36) REFERENCES users(user_id),
     invited_at TIMESTAMPTZ,
     invitation_accepted_at TIMESTAMPTZ,
 
@@ -256,13 +295,17 @@ CREATE TABLE organization_members (
     joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
+    -- Live ORM column not listed above (add):
+    last_active_at TIMESTAMPTZ,  -- tracks last member activity; nullable
+
     -- Constraints
+    -- Tier 2 (PostgreSQL-only) — cross-column CHECK not in live ORM
     CONSTRAINT org_members_accepted_after_invited CHECK (
         invitation_accepted_at IS NULL OR invitation_accepted_at >= invited_at
     )
 );
 
--- Indexes
+-- Tier 1
 CREATE INDEX idx_org_members_organization_id ON organization_members(organization_id);
 CREATE INDEX idx_org_members_role_id ON organization_members(role_id);
 
@@ -274,10 +317,10 @@ COMMENT ON TABLE organization_members IS 'User membership in organizations with 
 ```sql
 CREATE TABLE teams (
     -- Primary Key
-    team_id VARCHAR(20) PRIMARY KEY DEFAULT ('team_' || gen_random_uuid()::text),
+    team_id VARCHAR(36) PRIMARY KEY DEFAULT ('team_' || gen_random_uuid()::text),
 
     -- Parent Organization
-    organization_id VARCHAR(20) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
 
     -- Team Info
     name VARCHAR(200) NOT NULL,
@@ -294,7 +337,8 @@ CREATE TABLE teams (
     UNIQUE (organization_id, name)
 );
 
--- Indexes
+-- Tier 2 (PostgreSQL-only) — partial index (WHERE deleted_at IS NULL)
+-- Live ORM index exists but is non-partial
 CREATE INDEX idx_teams_organization_id ON teams(organization_id) WHERE deleted_at IS NULL;
 
 COMMENT ON TABLE teams IS 'Sub-organization groups for collaboration';
@@ -305,15 +349,18 @@ COMMENT ON TABLE teams IS 'Sub-organization groups for collaboration';
 ```sql
 CREATE TABLE team_members (
     -- Composite Primary Key
-    user_id VARCHAR(20) NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    team_id VARCHAR(20) NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+    user_id VARCHAR(36) NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    team_id VARCHAR(36) NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
     PRIMARY KEY (user_id, team_id),
+
+    -- Live ORM column not listed in original doc (add):
+    team_role VARCHAR(50),  -- nullable; role within the team (e.g., 'lead', 'member')
 
     -- Timestamps
     joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Indexes
+-- Tier 1
 CREATE INDEX idx_team_members_team_id ON team_members(team_id);
 
 COMMENT ON TABLE team_members IS 'User membership in teams';
@@ -324,7 +371,7 @@ COMMENT ON TABLE team_members IS 'User membership in teams';
 ```sql
 CREATE TABLE roles (
     -- Primary Key
-    role_id VARCHAR(20) PRIMARY KEY,
+    role_id VARCHAR(36) PRIMARY KEY,
 
     -- Role Info
     name VARCHAR(100) NOT NULL UNIQUE,
@@ -341,6 +388,7 @@ CREATE TABLE roles (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- Constraints
+    -- Tier 2 (PostgreSQL-only) — enum CHECK not in live ORM
     CONSTRAINT roles_scope_valid CHECK (scope IN ('system', 'organization', 'team'))
 );
 
@@ -410,8 +458,8 @@ COMMENT ON TABLE permissions IS 'Permission definitions for RBAC system';
 ```sql
 CREATE TABLE role_permissions (
     -- Composite Primary Key
-    role_id VARCHAR(20) NOT NULL REFERENCES roles(role_id) ON DELETE CASCADE,
-    permission_id VARCHAR(30) NOT NULL REFERENCES permissions(permission_id) ON DELETE CASCADE,
+    role_id VARCHAR(36) NOT NULL REFERENCES roles(role_id) ON DELETE CASCADE,
+    permission_id VARCHAR(36) NOT NULL REFERENCES permissions(permission_id) ON DELETE CASCADE,
     PRIMARY KEY (role_id, permission_id)
 );
 
@@ -440,11 +488,14 @@ COMMENT ON TABLE role_permissions IS 'Role-to-permission mappings for RBAC';
 ```sql
 CREATE TABLE user_audit_log (
     -- Primary Key
-    audit_id BIGSERIAL PRIMARY KEY,
+    -- Tier 1 reality: Integer autoincrement (live ORM).
+    -- BIGSERIAL is Tier 2 (PostgreSQL-only) — aspirational for high-volume tables.
+    audit_id INTEGER PRIMARY KEY,         -- Tier 1 (live ORM)
+    -- audit_id BIGSERIAL PRIMARY KEY,    -- Tier 2 (PostgreSQL-only)
 
     -- Actor
-    user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE SET NULL,
-    organization_id VARCHAR(20) REFERENCES organizations(organization_id) ON DELETE SET NULL,
+    user_id VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
+    organization_id VARCHAR(36) REFERENCES organizations(organization_id) ON DELETE SET NULL,
 
     -- Event
     event_type VARCHAR(100) NOT NULL,  -- 'user.login', 'user.password_change', 'role.assigned', etc.
@@ -456,7 +507,10 @@ CREATE TABLE user_audit_log (
     details JSONB,
 
     -- Context
-    ip_address INET,
+    -- Tier 1 reality: String(45) (live ORM — supports both IPv4 and IPv6 as text).
+    -- INET is Tier 2 (PostgreSQL-only) — provides native IP validation and operators.
+    ip_address VARCHAR(45),               -- Tier 1 (live ORM)
+    -- ip_address INET,                   -- Tier 2 (PostgreSQL-only)
     user_agent TEXT,
 
     -- Timestamp
@@ -645,7 +699,9 @@ VALUES ('john@acme.com', 'google', 'google_user_12345');
 
 ### 5.3 Session Management
 
-**Storage**: Redis (real or FakeRedis — see `faultmaven/modules/auth/infrastructure/stores/`).
+**Storage**: Redis-only — real Redis (Cloud Deployment) or FakeRedis (Local Deployment, full API parity, no external server). Implemented via `RedisSessionStore` in `faultmaven/modules/auth/infrastructure/stores/`. See [deployment-schema-strategy.md §11.1](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+
+> **No SQL sessions table.** The `sessions` SQL table is **deleted** in v2.1. Auth sessions have always been Redis-backed; the SQL table was an unused artifact. Sessions are multi-indexed in Redis as `(user_id, client_id) → session_id`. Cases are **not** bound to sessions — that is Anti-Pattern 1 per [case-and-session-concepts.md](../../case-and-session/case-and-session-concepts.md) v2.1.
 
 **Session Security**:
 
@@ -749,3 +805,14 @@ HAVING COUNT(*) > 5;
 - Auth module: [faultmaven/modules/auth/](../../../../faultmaven/modules/auth/)
 - Baseline migration: [alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py](../../../../alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py)
 - Redis/FakeRedis session store: [faultmaven/modules/auth/infrastructure/stores/](../../../../faultmaven/modules/auth/infrastructure/stores/)
+- Dialect/tier policy: [deployment-schema-strategy.md](../../../../../faultmaven-doc-internal/architecture/deployment-schema-strategy.md)
+
+---
+
+**Changelog**:
+
+| Version | Date | Changes |
+| --- | --- | --- |
+| 3.2 | 2026-04-19 | Aligned with deployment-schema-strategy.md v2.1 (locked design). Sessions are Redis-only (no SQL table) — §5.3 rewritten with explicit Redis-only statement and Anti-Pattern 1 callout. `investigation_sessions` clarified as case-owned (not auth-owned). FK widths normalized to VARCHAR(36) throughout all DDL (previously inconsistent at VARCHAR(20)/VARCHAR(36)/VARCHAR(64)). Stripe/billing columns (`stripe_customer_id`, `stripe_subscription_id`, `trial_ends_at`, `domain`) removed from organizations DDL — marked out of current scope rather than Proposed. Deployment Applicability banner updated with sessions deletion note and investigation\_sessions clarification. |
+| 3.1 | 2026-04-18 | Aligned with deployment-schema-strategy.md v1.0. Added Deployment Applicability banner covering Tier 1/2 policy, tenancy context in Local Deployment, and OAuth table Cloud-only behavior. Marked as Tier 2 (PostgreSQL-only): `users_email_format` regex CHECK, `users_password_or_sso` CHECK, `UNIQUE(sso_provider, sso_provider_id)`, `organizations_slug_format` CHECK, `organizations_plan_tier_valid` CHECK, `org_members_accepted_after_invited` CHECK, `roles_scope_valid` CHECK, all partial `WHERE deleted_at IS NULL` indexes. Fixed Tier 1 reality for `audit_id` (Integer, not BIGSERIAL) and `ip_address` (VARCHAR(45), not INET). Added undocumented ORM columns: `organization_members.last_active_at`, `team_members.team_role`. Added Known FK width inconsistency note (VARCHAR(36) vs VARCHAR(64) vs VARCHAR(20)). Marked `organizations.domain`, `stripe_customer_id`, `stripe_subscription_id`, `trial_ends_at` as Proposed (cloud billing integration — not in models.py). |
+| 3.0 | 2026-04-18 | Previous version. |

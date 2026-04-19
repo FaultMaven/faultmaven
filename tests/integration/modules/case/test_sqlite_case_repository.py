@@ -86,7 +86,6 @@ async def create_test_schema(session: AsyncSession):
             working_conclusion TEXT,
             root_cause_conclusion TEXT,
             path_selection TEXT,
-            degraded_mode TEXT,
             escalation_state TEXT,
             documentation TEXT,
             progress TEXT,

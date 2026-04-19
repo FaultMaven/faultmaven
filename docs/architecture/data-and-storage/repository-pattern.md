@@ -21,6 +21,25 @@
 - ✅ `PostgreSQLHybridCaseRepository` is the sole PostgreSQL case-repository implementation (legacy `PostgreSQLCaseRepository` class removed)
 - ✅ `InMemoryVectorStore` removed — ChromaDB `PersistentClient` is always available
 
+> **Reality check (2026-04-18)**: the examples below occasionally use values like `CASE_STORAGE_TYPE=postgres` or `CASE_STORAGE_TYPE=sqlite` as shorthand for deployment modes. **Those values are not recognized by the code.** The actual selector at [repository_factory.py:62-63](../../../faultmaven/infrastructure/persistence/repository_factory.py#L62-L63) accepts only `inmemory` or `database`. When `CASE_STORAGE_TYPE=database`, the SQL dialect (SQLite vs PostgreSQL) is determined by `DATABASE_URL` — see `sqlite+aiosqlite://...` vs `postgresql+asyncpg://...`. `SessionlessCaseRepository` detects the dialect at runtime and routes to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository` accordingly. For the schema-level policy that goes with this runtime routing, see [Deployment-Aware Schema Strategy](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) (internal) which defines Tier 1 (both dialects) vs Tier 2 (PostgreSQL augmentations).
+
+---
+
+> **v2.1 locked design (2026-04-19)**: the storage redesign removes several repositories and methods documented further down in this doc. Treat the list below as authoritative when there is a conflict with later sections (which will be brought into line as time permits):
+>
+> | Repository / method | Status | Reason |
+> | --- | --- | --- |
+> | `EvidenceService` (`modules/evidence/.../evidence_service.py`) | **DELETED** | Standalone-evidence path is functionally a black hole — accepts uploads, never read by the investigation engine. See [Deployment-Aware Schema Strategy](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) §7.2. |
+> | `APIEvidenceArtifactService` (`modules/evidence/.../evidence_artifact_service.py`) | **DELETED** | Same. Wrote to `evidence_artifacts` (now deleted). |
+> | `EvidenceArtifactRepository` (`infrastructure/persistence/evidence_artifact_repository.py`) | **DELETED** | Targets the deleted `evidence_artifacts` table. |
+> | `ICaseRepository` methods: `create_standalone_evidence`, `get_standalone_evidence`, `list_standalone_evidence`, `delete_standalone_evidence`, `link_standalone_evidence_to_case`, `set_primary_evidence` | **REMOVED from contract** | The single-table evidence model has `case_id NOT NULL` FK. There is no "standalone" concept — evidence is always created in a case context. New methods: `add_evidence(case_id, evidence)`, `get_evidence(case_id, evidence_id)`, `list_evidence_for_case(case_id)`, `delete_evidence(case_id, evidence_id)`. |
+> | `SessionRepository` / `DatabaseSessionRepository` (auth `sessions` SQL table) | **DELETED** | Per [case-and-session-concepts.md](../case-and-session/case-and-session-concepts.md) v2.1, sessions are Redis-only. The SQL `sessions` table is anti-pattern. Auth sessions live in `RedisSessionStore` (FakeRedis local, real Redis cloud). |
+> | `PostgreSQLKBDocumentRepository` (`infrastructure/persistence/kb_document_repository.py`) | **DELETED** | Orphan — queries `kb_documents`, `kb_document_shares`, `kb_document_team_shares` tables that never existed in `models.py` or migrations. |
+> | `agent_tool_calls` v1 ORM model (`AgentToolCallModel`) and `CaseModel.tool_calls` relationship | **DELETED** | Zero functional usage. v2 (`agent_tool_calls_v2`) is renamed to canonical `agent_tool_calls`. |
+> | `EvidenceStorageAdapter.store_file()` fake-`standalone-{uuid}` case_id path | **DELETED** | Was scaffolding for the deleted standalone API. |
+>
+> **What stays**: the case-tied data submission path (`POST /api/v1/cases/{case_id}/turns`) is unaffected. It writes through the milestone engine to the `evidence` table directly via `case.evidence` (no `EvidenceService` involvement). Agent tools (`search_file`, `read_file`, `list_evidence`, `vectorize_file`) keep their **Path 2** code (case-embedded evidence lookup); the **Path 1** standalone fallback is removed.
+
 ---
 
 ## Table of Contents
@@ -90,9 +109,13 @@ Technology:    │     n/a      │ ChromaDB     │ ChromaDB     │
 └──────────────┴──────────────┴──────────────┴──────────────┘
 
 Configuration Example:
-  # Long-term data storage
-  CASE_STORAGE_TYPE=inmemory       # or: postgres
-  USER_STORAGE_TYPE=inmemory       # or: postgres
+  # Long-term data storage — actual selector values: "inmemory" | "database"
+  CASE_STORAGE_TYPE=database       # "inmemory" for dev/tests
+  USER_STORAGE_TYPE=database       # "inmemory" for dev/tests
+
+  # SQL dialect (SQLite vs PostgreSQL) is routed from DATABASE_URL:
+  # DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db        # local
+  # DATABASE_URL=postgresql+asyncpg://user:pass@host/faultmaven  # cloud
 
   # Cached data storage (Redis or FakeRedis — auto-selected)
   # REDIS_HOST=redis.local        # set to use real Redis
@@ -193,11 +216,12 @@ But session data (cached) should use Redis technology regardless of backend.
 | Local Files | `SQLiteCaseRepository` | ✅ Implemented | Single-node, local deployment |
 | Microservices | `PostgreSQLHybridCaseRepository` | ✅ Implemented | Production K8s |
 
-**Configuration**:
+**Configuration** (`inmemory` and `database` are the only supported values):
 ```bash
-CASE_STORAGE_TYPE=inmemory   # Development
-CASE_STORAGE_TYPE=sqlite     # Future: single-node
-CASE_STORAGE_TYPE=postgres   # Production
+CASE_STORAGE_TYPE=inmemory   # Development / unit tests (process-local dict)
+CASE_STORAGE_TYPE=database   # Local or Cloud — dialect routed from DATABASE_URL
+#   DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db        → SQLiteCaseRepository
+#   DATABASE_URL=postgresql+asyncpg://user:pass@host/faultmaven  → PostgreSQLHybridCaseRepository
 ```
 
 **Data Includes**:
@@ -316,8 +340,10 @@ class CaseRepository(ABC):
     """
     Abstract repository for Case persistence.
     SIMPLIFIED FOR ILLUSTRATION — see faultmaven/modules/case/infrastructure/case_repository.py
-    for the full interface (>30 methods spanning reports, checkpoints, standalone evidence,
+    for the full interface (>30 methods spanning reports, checkpoints, evidence,
     agent executions, and tool calls).
+    Note (v2.1): the prior "standalone evidence" methods (create/get/list/delete/link)
+    are removed in the locked design — evidence is always created in a case context.
 
     Technology: Relational database (PostgreSQL/SQLite)
 
@@ -653,7 +679,9 @@ VECTOR_STORAGE_TYPE=chromadb   # PersistentClient on disk
 **Configuration**:
 ```bash
 # .env.production
-CASE_STORAGE_TYPE=postgres
+CASE_STORAGE_TYPE=database
+DATABASE_URL=postgresql+asyncpg://case_service:${DB_PASSWORD}@postgres.faultmaven.local:30432/cases_db
+# (Legacy per-service vars retained for backwards compatibility)
 CASES_DB_HOST=postgres.faultmaven.local
 CASES_DB_PORT=30432
 CASES_DB_NAME=cases_db
@@ -689,13 +717,18 @@ CHROMADB_COLLECTION=faultmaven_kb
 # ===========================================
 # LONG-TERM DATA (Cases, Users, Evidence)
 # ===========================================
-# Technology: PostgreSQL/SQLite
-# Options: inmemory, sqlite (future), postgres
+# Technology: PostgreSQL (cloud) / SQLite (local) — routed from DATABASE_URL
+# Selector values: "inmemory" | "database"
 
-CASE_STORAGE_TYPE=postgres           # or: inmemory
-USER_STORAGE_TYPE=postgres           # or: inmemory
+CASE_STORAGE_TYPE=database           # or: inmemory
+USER_STORAGE_TYPE=database           # or: inmemory
 
-# PostgreSQL Configuration (when TYPE=postgres)
+# DATABASE_URL determines SQL dialect at runtime:
+DATABASE_URL=postgresql+asyncpg://case_service:${DB_PASSWORD}@postgres.faultmaven.local:30432/cases_db
+# For local:
+# DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
+
+# (Legacy per-service DB vars still read by some code paths)
 CASES_DB_HOST=postgres.faultmaven.local
 CASES_DB_PORT=30432
 CASES_DB_NAME=cases_db
@@ -751,25 +784,27 @@ USER_STORAGE_TYPE=inmemory
 VECTOR_STORAGE_TYPE=chromadb     # Local PersistentClient
 ```
 
-**Production** (K8s microservices):
+**Production / Cloud** (K8s microservices):
 ```bash
 # .env.production
-CASE_STORAGE_TYPE=postgres
-USER_STORAGE_TYPE=postgres
+CASE_STORAGE_TYPE=database
+USER_STORAGE_TYPE=database
+DATABASE_URL=postgresql+asyncpg://user:pass@postgres.faultmaven.local/faultmaven
 SESSION_STORAGE_TYPE=redis
 VECTOR_STORAGE_TYPE=chromadb
-
+CHROMADB_URL=http://chromadb.faultmaven.local:30080
 # All connection details from K8s ConfigMaps/Secrets
 ```
 
-**Single-Node** (future - persistent local):
+**Local / Single-Node** (persistent local — SQLite + FakeRedis):
 ```bash
-# .env.singlenode (future)
-CASE_STORAGE_TYPE=sqlite
-USER_STORAGE_TYPE=sqlite
-SESSION_STORAGE_TYPE=file
-VECTOR_STORAGE_TYPE=chromadb
-CHROMADB_URL=http://localhost:8090
+# .env.local
+CASE_STORAGE_TYPE=database
+USER_STORAGE_TYPE=database
+DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
+# SESSION_STORAGE_TYPE unset → FakeRedis auto-selected (no external Redis required)
+VECTOR_STORAGE_TYPE=chromadb                # Local ChromaDB PersistentClient at data/chroma-kb/
+# CHROMADB_URL unset → PersistentClient mode
 ```
 
 ### 6.3 Dependency Injection (container.py)
@@ -788,18 +823,19 @@ class Container:
         # ==========================================
         case_storage_type = settings.database.case_storage_type.lower()
 
-        if case_storage_type == "postgres":
-            # PostgreSQL backend (production)
-            cases_engine = create_async_engine(
-                settings.database.cases_db_url,
+        if case_storage_type == "database":
+            # Database backend — dialect (SQLite / PostgreSQL) is routed from DATABASE_URL
+            # by SessionlessCaseRepository at request time. No explicit dialect branch here.
+            engine = create_async_engine(
+                settings.database.database_url,
                 pool_size=10,
-                max_overflow=20
+                max_overflow=20,
             )
-            session_factory = sessionmaker(cases_engine, class_=AsyncSession)
-            self.case_repository = PostgreSQLHybridCaseRepository(session_factory())
+            session_factory = sessionmaker(engine, class_=AsyncSession)
+            self.case_repository = SessionlessCaseRepository(session_factory)
 
-        else:
-            # In-memory backend (development)
+        else:  # "inmemory"
+            # In-memory backend (development / unit tests)
             self.case_repository = InMemoryCaseRepository()
 
         # ==========================================
@@ -1181,32 +1217,33 @@ CASE_STORAGE_TYPE=inmemory
 VECTOR_STORAGE_TYPE=chromadb     # Local PersistentClient
 
 # TO (Production — real Redis for sessions, external ChromaDB):
-CASE_STORAGE_TYPE=postgres
+CASE_STORAGE_TYPE=database
+DATABASE_URL=postgresql+asyncpg://user:pass@postgres.faultmaven.local/faultmaven
 REDIS_HOST=redis.faultmaven.local
 VECTOR_STORAGE_TYPE=chromadb
 CHROMADB_URL=http://chromadb.faultmaven.local:30080
 ```
 
-### Appendix C: Adding New Storage Backend
+### Appendix C: Adding a New SQL Dialect
 
-**Example**: Adding SQLite backend for cases
+The repository layer already supports SQLite and PostgreSQL via runtime dialect detection — there is **no separate selector value** to add. To support a third dialect (e.g., MySQL):
 
-1. Implement `SQLiteCaseRepository` class:
+1. Implement `<Dialect>CaseRepository` class with dialect-appropriate SQL:
    ```python
-   class SQLiteCaseRepository(CaseRepository):
-       """Implement the full CaseRepository interface using SQLite."""
+   class MySQLCaseRepository(CaseRepository):
+       """Implement the full CaseRepository interface using MySQL-compatible SQL."""
    ```
 
-2. Update `container.py`:
+2. Update `SessionlessCaseRepository` to route the new dialect:
    ```python
-   elif case_storage_type == "sqlite":
-       self.case_repository = SQLiteCaseRepository(db_path)
+   if dialect_name == "mysql":
+       return MySQLCaseRepository(session)
    ```
 
-3. Add configuration:
+3. Configuration uses the same selector; the dialect is selected by `DATABASE_URL`:
    ```bash
-   CASE_STORAGE_TYPE=sqlite
-   SQLITE_DB_PATH=data/faultmaven.db
+   CASE_STORAGE_TYPE=database
+   DATABASE_URL=mysql+aiomysql://user:pass@host/faultmaven
    ```
 
 4. Pass contract tests:

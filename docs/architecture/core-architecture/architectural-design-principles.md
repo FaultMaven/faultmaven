@@ -313,18 +313,23 @@ Tables are named after the business entity they store. Module-name prefixes are 
 users, organizations, organization_members, roles, permissions,
 role_permissions, teams, team_members, user_audit_log,
 oauth_revoked_tokens, oauth_authorization_codes
+-- Note: auth sessions live in Redis (FakeRedis local, real Redis cloud)
+-- via RedisSessionStore — there is no SQL `sessions` table.
 
--- Case module (case domain — owns evidence, reports, sessions, agent audit data)
+-- Case module (case domain — owns evidence, reports, agent audit data)
 cases, case_messages, case_actions, case_tags, case_checkpoints,
-evidence, evidence_artifacts, hypotheses, solutions, uploaded_files,
+evidence, hypotheses, solutions, uploaded_files,
 investigation_sessions, agent_executions, agent_tool_calls,
-agent_tool_calls_v2, standalone_evidence, sessions, reports
+reports, conversion_jobs, conversion_drafts
 
 -- Knowledge module
 knowledge_items, knowledge_suggestions
+
+-- Infrastructure-layer (not a domain module)
+llm_config_overrides
 ```
 
-**Source of truth:** `faultmaven/infrastructure/persistence/models.py`. The ER diagram (`docs/architecture/data-and-storage/er-diagram.md`) is regenerated from these models.
+**Source of truth:** `faultmaven/infrastructure/persistence/models.py`. The ER diagram (`docs/architecture/data-and-storage/er-diagram.md`) is regenerated from these models. See [Deployment-Aware Schema Strategy](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) for the per-table applicability matrix and dialect policy.
 
 ### Cross-Module Data Access
 
@@ -933,6 +938,7 @@ def check_exceptions():
 | 1.0 | 2026-01-05 | Original 7 principles |
 | 2.0 | 2026-01-09 | Consolidated to 10 principles with enforcement mechanisms |
 | 2.1 | 2026-04-16 | P8: dead code intolerance. P11: "Clean Moves, Not Rewrites" with pre/post-launch distinction. P12: pre-launch cleanup rule. |
+| 2.2 | 2026-04-19 | P3 table lists synchronized with the storage redesign: removed `sessions` (auth sessions are Redis-only per `case-and-session-concepts.md`), `evidence_artifacts` and `standalone_evidence` (deleted dead-path tables), `agent_tool_calls` v1 (deleted; v2 renamed to canonical `agent_tool_calls`). Added `conversion_jobs` and `conversion_drafts` to case module list. Added `llm_config_overrides` as infrastructure-layer (not a domain module). Cross-reference to `deployment-schema-strategy.md` for the per-table applicability matrix. |
 
 ### Key Changes Across Versions
 
