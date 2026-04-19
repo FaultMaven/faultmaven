@@ -42,11 +42,6 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     InMemoryInvestigationSessionRepository,
     InvestigationSessionRepository,
 )
-from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
-    DatabaseSessionRepository,
-    InMemorySessionRepository,
-    SessionRepository,
-)
 
 # Knowledge repository imports moved inside factory functions to avoid circular dependencies
 
@@ -59,7 +54,13 @@ STORAGE_TYPE_DATABASE = "database"
 
 # Singleton in-memory repositories (for consistency across calls)
 _inmemory_repository: InMemoryCaseRepository | None = None
-_inmemory_session_repository: InMemorySessionRepository | None = None
+# `_inmemory_session_repository` and the SQL session-repository factory
+# (`get_session_repository*`, `get_session_storage_type`,
+# `get_inmemory_session_repository`, `reset_inmemory_session_repository`,
+# `get_session_repository_dependency`) were removed in storage redesign
+# 2026-04 phase 3. Auth sessions are Redis-only (RedisSessionStore over
+# real Redis cloud, FakeRedis local). See deployment-schema-strategy.md
+# §11.1.
 _inmemory_investigation_session_repository: (
     InMemoryInvestigationSessionRepository | None
 ) = None
@@ -94,36 +95,6 @@ def get_storage_type() -> str:
             "Settings unavailable, falling back to os.getenv() for storage type"
         )
         return os.getenv("CASE_STORAGE_TYPE", STORAGE_TYPE_DATABASE)
-
-
-def get_session_storage_type() -> str:
-    """
-    Get configured session storage type from settings (deployment-agnostic).
-
-    Uses settings.database.session_storage_type (env: SESSION_STORAGE_TYPE)
-    Default: Falls back to case_storage_type, then "database"
-
-    Returns:
-        Storage type string ("inmemory" or "database")
-
-    Design Notes:
-        - Always attempts to use settings first (deployment-agnostic)
-        - Falls back to os.getenv() only if settings unavailable (backward compatibility)
-        - This fallback should rarely occur in normal operation
-    """
-    from faultmaven.config.settings import get_settings
-
-    try:
-        settings = get_settings()
-        return settings.database.session_storage_type
-    except Exception:
-        # Fallback for early initialization before settings are available
-        # NOTE: os.getenv() usage here is intentional for backward compatibility
-        # when settings are unavailable during early initialization
-        logger.debug(
-            "Settings unavailable, falling back to os.getenv() for session storage type"
-        )
-        return os.getenv("SESSION_STORAGE_TYPE", get_storage_type())
 
 
 def get_case_repository(
@@ -291,127 +262,14 @@ def get_inmemory_repository() -> InMemoryCaseRepository:
 
 
 # ============================================================
-# Session Repository Factory
+# Session Repository Factory: REMOVED in storage redesign 2026-04 phase 3.
 # ============================================================
-
-
-def get_session_repository(
-    storage_type: str | None = None,
-    session: AsyncSession | None = None,
-) -> SessionRepository:
-    """
-    Get a session repository instance based on configuration.
-
-    Args:
-        storage_type: Optional override for storage type.
-                     If None, uses SESSION_STORAGE_TYPE env var.
-        session: Optional database session for database storage.
-                Required for database storage type.
-
-    Returns:
-        SessionRepository implementation
-
-    Raises:
-        ValueError: If storage type is unknown
-        RuntimeError: If database session is required but not provided
-    """
-    global _inmemory_session_repository
-
-    effective_type = storage_type or get_session_storage_type()
-    logger.debug(f"Creating session repository with storage type: {effective_type}")
-
-    if effective_type == STORAGE_TYPE_INMEMORY:
-        # Return singleton in-memory repository
-        if _inmemory_session_repository is None:
-            _inmemory_session_repository = InMemorySessionRepository()
-            logger.info("Created InMemorySessionRepository (singleton)")
-        return _inmemory_session_repository
-
-    elif effective_type == STORAGE_TYPE_DATABASE:
-        if session is None:
-            raise RuntimeError(
-                "Database session is required for database storage type. "
-                "Use get_session_repository_async() or provide a session."
-            )
-        logger.debug("Created DatabaseSessionRepository")
-        return DatabaseSessionRepository(session)
-
-    else:
-        raise ValueError(f"Unknown storage type: {effective_type}")
-
-
-@asynccontextmanager
-async def get_session_repository_async(
-    storage_type: str | None = None,
-) -> AsyncGenerator[SessionRepository, None]:
-    """
-    Get a session repository with automatic session management.
-
-    This is the recommended way to obtain a session repository in async contexts.
-    It automatically handles database session lifecycle.
-
-    Args:
-        storage_type: Optional override for storage type.
-                     If None, uses SESSION_STORAGE_TYPE env var.
-
-    Yields:
-        SessionRepository implementation
-
-    Raises:
-        ValueError: If storage type is unknown
-
-    Example:
-        async with get_session_repository_async() as repo:
-            session = await repo.get_session("session_123")
-    """
-    global _inmemory_session_repository
-
-    effective_type = storage_type or get_session_storage_type()
-
-    if effective_type == STORAGE_TYPE_INMEMORY:
-        # Return singleton in-memory repository
-        if _inmemory_session_repository is None:
-            _inmemory_session_repository = InMemorySessionRepository()
-            logger.info("Created InMemorySessionRepository (singleton)")
-        yield _inmemory_session_repository
-
-    elif effective_type == STORAGE_TYPE_DATABASE:
-        # Create database repository with session
-        async with get_db_session() as db_session:
-            repo = DatabaseSessionRepository(db_session)
-            yield repo
-
-    else:
-        raise ValueError(f"Unknown storage type: {effective_type}")
-
-
-def reset_inmemory_session_repository() -> None:
-    """
-    Reset the singleton in-memory session repository.
-
-    Useful for testing to ensure clean state between tests.
-    """
-    global _inmemory_session_repository
-    if _inmemory_session_repository is not None:
-        _inmemory_session_repository.clear()
-        _inmemory_session_repository = None
-        logger.debug("Reset in-memory session repository singleton")
-
-
-def get_inmemory_session_repository() -> InMemorySessionRepository:
-    """
-    Get or create the singleton in-memory session repository.
-
-    Useful when you specifically need in-memory storage.
-
-    Returns:
-        InMemorySessionRepository singleton instance
-    """
-    global _inmemory_session_repository
-    if _inmemory_session_repository is None:
-        _inmemory_session_repository = InMemorySessionRepository()
-    return _inmemory_session_repository
-
+# The SQL session repository (DatabaseSessionRepository /
+# InMemorySessionRepository) and its factory functions were removed.
+# Auth sessions live in Redis only via RedisSessionStore (real Redis in
+# cloud, FakeRedis in local). The SQL `sessions` table itself was dropped
+# at the same time. See deployment-schema-strategy.md §11.1 + §12 decisions
+# #14, #15.
 
 # Evidence Artifact Repository Factory was removed in storage redesign 2026-04 phase 2.
 # The standalone evidence path (POST /api/v1/evidence + evidence_artifacts /
@@ -444,28 +302,8 @@ async def get_repository_dependency() -> AsyncGenerator[CaseRepository, None]:
         yield repo
 
 
-async def get_session_repository_dependency() -> (
-    AsyncGenerator[SessionRepository, None]
-):
-    """
-    FastAPI dependency for obtaining a session repository.
-
-    Use this in FastAPI route dependencies:
-
-        @app.get("/sessions/{session_id}")
-        async def get_session(
-            session_id: str,
-            repo: SessionRepository = Depends(get_session_repository_dependency)
-        ):
-            return await repo.get_session(session_id)
-
-    Yields:
-        SessionRepository instance
-    """
-    async with get_session_repository_async() as repo:
-        yield repo
-
-
+# get_session_repository_dependency was removed in storage redesign
+# 2026-04 phase 3 (auth sessions are Redis-only via RedisSessionStore).
 # get_evidence_artifact_repository_dependency was removed in storage redesign
 # 2026-04 phase 2 alongside the rest of the evidence artifact repository code.
 

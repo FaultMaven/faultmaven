@@ -133,7 +133,8 @@ layers =
     faultmaven.modules.auth.domain
     faultmaven.modules.auth.infrastructure
 ignore_imports =
-    faultmaven.modules.auth.infrastructure.repositories.session_repository -> faultmaven.modules.auth.domain.models.session
+    # session_repository ignore removed in storage redesign 2026-04 phase 3 —
+    # the SQL session repository was deleted (auth sessions are Redis-only).
     faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository -> faultmaven.modules.auth.contracts
     faultmaven.modules.auth.infrastructure.stores.user_store -> faultmaven.modules.auth.domain.models.auth
     # ITokenRevocationStore interface defined in jwt_token_generator (should be in contracts)

@@ -51,10 +51,12 @@ from faultmaven.infrastructure.persistence.models import (
     InvestigationSessionModel,
     KnowledgeItemModel,
     KnowledgeSuggestionModel,
-    SessionModel,
     SolutionModel,
     UploadedFileModel,
 )
+
+# SessionModel was removed in storage redesign 2026-04 phase 3 (the SQL
+# `sessions` table was dropped). Auth sessions are Redis-only.
 
 
 @pytest.fixture(scope="module")
@@ -297,7 +299,6 @@ class TestSchemaModelConsistency:
             "hypotheses",
             "case_messages",
             "evidence",
-            "sessions",
             "investigation_sessions",
             "agent_executions",
         }
@@ -314,7 +315,6 @@ class TestSchemaModelConsistency:
         [
             ("cases", CaseModel),
             ("evidence", EvidenceModel),
-            ("sessions", SessionModel),
             ("uploaded_files", UploadedFileModel),
             ("case_actions", CaseActionModel),
             ("case_tags", CaseTagModel),

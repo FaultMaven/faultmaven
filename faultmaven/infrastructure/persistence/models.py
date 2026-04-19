@@ -333,55 +333,16 @@ class OAuthAuthorizationCodeModel(Base):
 
 
 # ============================================================
-# Session Model
+# Session Model: REMOVED in storage redesign 2026-04 phase 3.
+#
+# Per case-and-session-concepts.md v2.1, sessions are Redis-only
+# (RedisSessionStore over real Redis in cloud and FakeRedis in
+# local). The SQL `sessions` table was an unused artifact and a
+# documented anti-pattern. The corresponding cases.session_id FK
+# column was deleted at the same time (Anti-Pattern 1: cases must
+# not bind to sessions). See deployment-schema-strategy.md §11.1
+# + §8.1 + §12 decisions #14, #15.
 # ============================================================
-
-
-class SessionModel(Base):
-    """
-    User session entity for tracking session-case relationships.
-
-    Sessions enable context continuity across user interactions
-    and support session-based case creation and retrieval.
-    """
-
-    __tablename__ = "sessions"
-
-    # Primary Key - UUID format
-    session_id = Column(String(36), primary_key=True)
-
-    # Required Fields
-    user_id = Column(String(255), nullable=False, index=True)
-    organization_id = Column(
-        String(64),
-        nullable=False,
-        index=True,
-        default="00000000-0000-0000-0000-000000000001",
-    )
-
-    # Timestamps
-    created_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    last_accessed = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    expires_at = Column(DateTime(timezone=True), nullable=True)
-
-    # Session context metadata (JSON)
-    session_metadata = Column("metadata", Text, nullable=True, default="{}")
-
-    # Relationship to cases
-    cases = relationship(
-        "CaseModel", back_populates="session", foreign_keys="CaseModel.session_id"
-    )
-
-    __table_args__ = (
-        CheckConstraint("LENGTH(TRIM(user_id)) > 0", name="sessions_user_id_not_empty"),
-    )
-
-    def __repr__(self) -> str:
-        return f"<SessionModel(session_id={self.session_id}, user_id={self.user_id})>"
 
 
 # ============================================================
@@ -514,18 +475,12 @@ class CaseModel(Base):
     )
     archived_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Session link (optional - cases can exist without sessions)
-    session_id = Column(
-        String(36),
-        ForeignKey("sessions.session_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
+    # cases.session_id (and the related `session` relationship) was removed
+    # in storage redesign 2026-04 phase 3. Per case-and-session-concepts.md
+    # v2.1, cases do not bind to sessions (Anti-Pattern 1). Sessions are
+    # Redis-only. See deployment-schema-strategy.md §8.1 / §12 decision #15.
 
     # Relationships
-    session = relationship(
-        "SessionModel", back_populates="cases", foreign_keys=[session_id]
-    )
     evidence = relationship(
         "EvidenceModel", back_populates="case", cascade="all, delete-orphan"
     )

@@ -297,16 +297,20 @@ class TestSettingsPurity:
     def test_repository_factory_uses_settings_not_env(
         self, clean_env, reset_settings_cache
     ):
-        """Test that repository factory reads from settings, not os.getenv directly."""
+        """Test that repository factory reads from settings, not os.getenv directly.
+
+        Note: `get_session_storage_type` was removed in storage redesign
+        2026-04 phase 3 along with the SQL session repository factory.
+        Auth sessions live in Redis only via `RedisSessionStore`. Only the
+        case-storage selector remains here.
+        """
         from faultmaven.infrastructure.persistence.repository_factory import (
-            get_session_storage_type,
             get_storage_type,
         )
 
-        # Check that functions use settings (with fallback for early init)
+        # Check that the case storage type selector uses settings
+        # (with fallback for early init).
         source1 = inspect.getsource(get_storage_type)
-        source2 = inspect.getsource(get_session_storage_type)
 
         # Should reference settings
         assert "get_settings" in source1
-        assert "get_settings" in source2
