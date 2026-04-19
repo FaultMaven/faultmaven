@@ -360,36 +360,36 @@ class CaseStatusEnum(str, enum.Enum):
     CLOSED = "closed"
 
 
-class EvidenceCategoryEnum(str, enum.Enum):
-    """Evidence category classification."""
-
-    LOGS_AND_ERRORS = "LOGS_AND_ERRORS"
-    STRUCTURED_CONFIG = "STRUCTURED_CONFIG"
-    METRICS_AND_PERFORMANCE = "METRICS_AND_PERFORMANCE"
-    UNSTRUCTURED_TEXT = "UNSTRUCTURED_TEXT"
-    SOURCE_CODE = "SOURCE_CODE"
-    VISUAL_EVIDENCE = "VISUAL_EVIDENCE"
-    UNKNOWN = "UNKNOWN"
-
-
-class HypothesisStatusEnum(str, enum.Enum):
-    """Hypothesis lifecycle status."""
-
-    PROPOSED = "proposed"
-    TESTING = "testing"
-    VALIDATED = "validated"
-    INVALIDATED = "invalidated"
-    DEFERRED = "deferred"
-
-
-class SolutionStatusEnum(str, enum.Enum):
-    """Solution lifecycle status."""
-
-    PROPOSED = "proposed"
-    IN_PROGRESS = "in_progress"
-    IMPLEMENTED = "implemented"
-    VERIFIED = "verified"
-    REJECTED = "rejected"
+# ------------------------------------------------------------------
+# Storage redesign 2026-04 — Phase 5: enum reconciliation.
+#
+# The following ORM enum classes were deleted because they duplicated or
+# collided with domain enums. Per deployment-schema-strategy.md §3.3 +
+# §12 decision #20, there is one authoritative enum per concept and the
+# domain enum wins.
+#
+# - EvidenceCategoryEnum  → was misleadingly named (its values described
+#                           data form, not investigation category).
+#                           The evidence.category column already stores
+#                           domain EvidenceCategory string values
+#                           (symptom_evidence | causal_evidence | …).
+#                           A separate evidence.form column bound to a
+#                           renamed EvidenceFormEnum is planned for
+#                           Phase 6.
+# - HypothesisStatusEnum  → had drifted values
+#                           (proposed/testing/validated/invalidated/deferred);
+#                           domain HypothesisStatus
+#                           (captured/active/validated/refuted/inconclusive/
+#                           retired) is now authoritative.
+# - SolutionStatusEnum    → identical value set to domain SolutionStatus;
+#                           was redundant.
+#
+# The columns that previously bound to these classes
+# (evidence.category, hypotheses.status, solutions.status) remain plain
+# String columns and store the corresponding domain enum string values.
+# No native PG enum types are used (Tier 2 decision: enum binding via
+# CHECK + String is dialect-agnostic).
+# ------------------------------------------------------------------
 
 
 class MessageRoleEnum(str, enum.Enum):
