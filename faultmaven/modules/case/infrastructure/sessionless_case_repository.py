@@ -291,78 +291,8 @@ class SessionlessCaseRepository(CaseRepository):
             repo = _get_repository_for_session(session)
             return await repo.delete_report(report_id)
 
-    # ============================================================
-    # Standalone Evidence Operations (migrated from Evidence module)
-    # ============================================================
-
-    async def create_standalone_evidence(
-        self,
-        filename: str,
-        content_type: str,
-        size_bytes: int,
-        storage_path: str,
-        uploaded_by: str,
-        description: str | None = None,
-        tags: builtins.list[str] | None = None,
-    ) -> Any:
-        """Create standalone evidence record."""
-        async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
-            return await repo.create_standalone_evidence(
-                filename,
-                content_type,
-                size_bytes,
-                storage_path,
-                uploaded_by,
-                description,
-                tags,
-            )
-
-    async def get_standalone_evidence(self, evidence_id: str) -> Any | None:
-        """Get standalone evidence by ID."""
-        async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
-            return await repo.get_standalone_evidence(evidence_id)
-
-    async def list_standalone_evidence(
-        self, filters: Any
-    ) -> tuple[builtins.list[Any], int]:
-        """List standalone evidence with filters."""
-        async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
-            return await repo.list_standalone_evidence(filters)
-
-    async def delete_standalone_evidence(self, evidence_id: str) -> bool:
-        """Delete standalone evidence record."""
-        async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
-            return await repo.delete_standalone_evidence(evidence_id)
-
-    async def link_standalone_evidence_to_case(
-        self, evidence_id: str, case_id: str
-    ) -> Any | None:
-        """Link standalone evidence to a case."""
-        async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
-            return await repo.link_standalone_evidence_to_case(evidence_id, case_id)
-
-    async def update_standalone_evidence(self, evidence: Any) -> Any:
-        """Update standalone evidence record."""
-        async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
-            return await repo.update_standalone_evidence(evidence)
-
-    async def set_primary_evidence(self, case_id: str, evidence_id: str) -> bool:
-        """Set evidence as primary for a case (unsets others)."""
-        async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
-            return await repo.set_primary_evidence(case_id, evidence_id)
-
-    async def get_primary_evidence(self, case_id: str) -> Any | None:
-        """Get primary evidence for a case."""
-        async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
-            return await repo.get_primary_evidence(case_id)
+    # Standalone evidence operations were removed in storage redesign 2026-04
+    # phase 2. Evidence is case-tied only, accessed via `case.evidence`.
 
     # ============================================================
     # Agent Execution Operations (migrated from Agent module)

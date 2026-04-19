@@ -589,9 +589,13 @@ class TestGetCaseWithDetails:
     async def test_get_case_with_details_includes_evidence(
         self, case_service, mock_case_repo, sample_case
     ):
-        """Test that get_case_with_details includes evidence when requested."""
+        """Test that get_case_with_details surfaces case.evidence when requested.
+
+        Storage redesign 2026-04 phase 2: standalone evidence is gone; the
+        method now reads `case.evidence` directly off the loaded case rather
+        than calling a separate repository method.
+        """
         mock_case_repo.get.return_value = sample_case
-        mock_case_repo.list_standalone_evidence.return_value = ([], 0)
 
         result = await case_service.get_case_with_details(
             sample_case.case_id,
@@ -600,7 +604,8 @@ class TestGetCaseWithDetails:
         )
 
         assert "evidence" in result
-        mock_case_repo.list_standalone_evidence.assert_called_once()
+        # The result should mirror whatever sample_case.evidence contains.
+        assert result["evidence"] == list(getattr(sample_case, "evidence", []) or [])
 
     @pytest.mark.asyncio
     async def test_get_case_with_details_includes_executions(

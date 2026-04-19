@@ -241,7 +241,6 @@ from .modules.auth.api.organizations import router as organizations_router
 from .modules.auth.api.session import router as session_router
 from .modules.auth.api.teams import router as teams_router
 from .modules.case.api.routes import router as case_router
-from .modules.evidence.api.routes import router as evidence_router
 from .modules.knowledge.api.conversion_routes import router as conversion_router
 from .modules.knowledge.api.routes import router as knowledge_router
 from .modules.report.api.routes import router as report_router
@@ -1129,9 +1128,6 @@ app.include_router(
     investigation_sessions_router
 )  # No prefix - router already has /api/v1/cases/{case_id}/sessions
 logger.info("✅ Investigation session endpoints added")
-
-app.include_router(evidence_router, prefix="/api/v1")
-logger.info("✅ Evidence endpoints added")
 
 app.include_router(knowledge_router, prefix="/api/v1")
 logger.info("✅ Knowledge endpoints added")

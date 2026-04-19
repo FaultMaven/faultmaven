@@ -547,9 +547,8 @@ class CaseModel(Base):
     tags = relationship(
         "CaseTagModel", back_populates="case", cascade="all, delete-orphan"
     )
-    evidence_artifacts = relationship(
-        "EvidenceArtifactModel", back_populates="case", cascade="all, delete-orphan"
-    )
+    # evidence_artifacts relationship removed in storage redesign 2026-04
+    # phase 2 (standalone evidence path deletion).
 
     __table_args__ = (
         CheckConstraint("LENGTH(TRIM(title)) > 0", name="cases_title_not_empty"),
@@ -984,121 +983,6 @@ class CaseTagModel(Base):
 
     def __repr__(self) -> str:
         return f"<CaseTagModel(case_id={self.case_id}, tag={self.tag})>"
-
-
-# ============================================================
-# Evidence Artifact Model
-# ============================================================
-
-
-class EvidenceArtifactTypeEnum(str, enum.Enum):
-    """Evidence artifact type classification."""
-
-    SCREENSHOT = "screenshot"
-    LOG_FILE = "log_file"
-    NETWORK_TRACE = "network_trace"
-    CODE_SNIPPET = "code_snippet"
-    CONFIGURATION = "configuration"
-    VIDEO_RECORDING = "video_recording"
-    HAR_FILE = "har_file"
-    CRASH_DUMP = "crash_dump"
-    HEAP_DUMP = "heap_dump"
-    THREAD_DUMP = "thread_dump"
-    METRICS_EXPORT = "metrics_export"
-    OTHER = "other"
-
-
-class StorageBackendEnum(str, enum.Enum):
-    """Storage backend type."""
-
-    LOCAL_FILESYSTEM = "local_filesystem"
-    S3 = "s3"
-    AZURE_BLOB = "azure_blob"
-    GCS = "gcs"
-
-
-class EvidenceArtifactModel(Base):
-    """Evidence artifact file metadata linked to cases.
-
-    Represents files (screenshots, logs, traces, etc.) collected as
-    evidence during case investigation. Supports multiple storage backends.
-    """
-
-    __tablename__ = "evidence_artifacts"
-
-    # Primary Key
-    evidence_id = Column(String(64), primary_key=True)
-
-    # Foreign Key to cases
-    case_id = Column(
-        String(17),
-        ForeignKey("cases.case_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    # Ownership
-    user_id = Column(String(255), nullable=False, index=True)
-    organization_id = Column(
-        String(64),
-        nullable=False,
-        index=True,
-        default="00000000-0000-0000-0000-000000000001",
-    )
-
-    # File metadata
-    original_filename = Column(String(512), nullable=False)
-    stored_filename = Column(String(512), nullable=False)
-    file_path = Column(String(2048), nullable=False)
-    evidence_type = Column(String(64), nullable=False, index=True)
-    mime_type = Column(String(256), nullable=False)
-    file_size = Column(
-        Integer, nullable=False
-    )  # BigInteger in migration, Integer for ORM compat
-    storage_backend = Column(String(64), nullable=False, default="local_filesystem")
-
-    # Timestamps
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        index=True,
-    )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    # Optional fields
-    artifact_metadata = Column("metadata", Text, default="{}")
-    description = Column(Text, nullable=True)
-    is_primary = Column(Boolean, nullable=False, default=False)
-
-    # Relationship to case
-    case = relationship("CaseModel", back_populates="evidence_artifacts")
-
-    __table_args__ = (
-        CheckConstraint(
-            "LENGTH(TRIM(original_filename)) > 0",
-            name="evidence_artifacts_filename_not_empty",
-        ),
-        CheckConstraint(
-            "LENGTH(TRIM(file_path)) > 0", name="evidence_artifacts_file_path_not_empty"
-        ),
-        CheckConstraint(
-            "file_size >= 0", name="evidence_artifacts_file_size_non_negative"
-        ),
-    )
-
-    def __repr__(self) -> str:
-        return (
-            f"<EvidenceArtifactModel(evidence_id={self.evidence_id}, "
-            f"case_id={self.case_id}, "
-            f"original_filename={self.original_filename}, "
-            f"evidence_type={self.evidence_type})>"
-        )
 
 
 # ============================================================
@@ -1539,81 +1423,6 @@ class KnowledgeItemTypeEnum(str, enum.Enum):
     BEST_PRACTICE = "best_practice"
     FAQ = "faq"
     RUNBOOK = "runbook"
-
-
-# ============================================================
-# Standalone Evidence Model (PR #46b)
-# ============================================================
-
-
-class StandaloneEvidenceModel(Base):
-    """Standalone evidence file metadata for Evidence module (PR #46b).
-
-    Unlike EvidenceModel (which is case-scoped), this model supports
-    standalone evidence files that can be linked to multiple cases.
-
-    Used by the Evidence Service API endpoints:
-    - POST /api/v1/evidence (upload)
-    - GET /api/v1/evidence/{id} (get details)
-    - DELETE /api/v1/evidence/{id} (delete)
-    - POST /api/v1/evidence/{id}/link (link to case)
-    """
-
-    __tablename__ = "standalone_evidence"
-
-    # Primary Key (UUID)
-    id = Column(String(36), primary_key=True)
-
-    # File metadata
-    filename = Column(String(512), nullable=False)
-    content_type = Column(String(256), nullable=False)
-    size_bytes = Column(Integer, nullable=False)
-    storage_path = Column(String(2048), nullable=False)
-
-    # Ownership
-    uploaded_by = Column(String(36), nullable=False, index=True)
-    organization_id = Column(
-        String(64),
-        nullable=False,
-        index=True,
-        default="00000000-0000-0000-0000-000000000001",
-    )
-
-    # Timestamps
-    uploaded_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        index=True,
-    )
-
-    # Optional fields
-    description = Column(Text, nullable=True)
-    tags = Column(Text, nullable=False, default="[]")  # JSON array as TEXT
-    linked_cases = Column(Text, nullable=False, default="[]")  # JSON array of case IDs
-
-    # Metadata (JSON)
-    evidence_metadata = Column("metadata", Text, default="{}")
-
-    __table_args__ = (
-        CheckConstraint(
-            "LENGTH(TRIM(filename)) > 0", name="standalone_evidence_filename_not_empty"
-        ),
-        CheckConstraint(
-            "LENGTH(TRIM(storage_path)) > 0",
-            name="standalone_evidence_storage_path_not_empty",
-        ),
-        CheckConstraint(
-            "size_bytes >= 0", name="standalone_evidence_size_non_negative"
-        ),
-    )
-
-    def __repr__(self) -> str:
-        return (
-            f"<StandaloneEvidenceModel(id={self.id}, "
-            f"filename={self.filename}, "
-            f"size_bytes={self.size_bytes})>"
-        )
 
 
 # ============================================================

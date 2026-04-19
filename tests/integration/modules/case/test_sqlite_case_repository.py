@@ -226,27 +226,9 @@ async def create_test_schema(session: AsyncSession):
         )
     """))
 
-    # Create evidence_artifacts table (matches production schema — no tags column)
-    await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS evidence_artifacts (
-            evidence_id TEXT PRIMARY KEY,
-            case_id TEXT,
-            user_id TEXT,
-            organization_id TEXT,
-            original_filename TEXT,
-            stored_filename TEXT,
-            file_path TEXT,
-            evidence_type TEXT,
-            mime_type TEXT,
-            file_size INTEGER,
-            storage_backend TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP,
-            metadata TEXT,
-            description TEXT,
-            is_primary INTEGER DEFAULT 0
-        )
-    """))
+    # evidence_artifacts table dropped in storage redesign 2026-04 phase 2
+    # (standalone evidence path deletion). Evidence is case-tied only and lives
+    # in the existing `evidence` table.
 
     # Create reports table
     await session.execute(text("""

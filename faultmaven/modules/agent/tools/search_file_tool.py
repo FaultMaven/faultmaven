@@ -147,13 +147,9 @@ class SearchFileTool(AgentTool):
         if not query:
             return ToolResult(success=False, data=None, error="query is required")
 
-        if not context.evidence_service:
-            return ToolResult(
-                success=False, data=None, error="Evidence service not available"
-            )
-
         try:
-            # Resolve evidence content (standalone table → case-embedded fallback)
+            # Resolve evidence content from case.evidence (storage redesign
+            # 2026-04 phase 2: standalone evidence path deleted)
             resolved = await self._resolve_evidence_content(
                 evidence_id,
                 context,
@@ -376,73 +372,44 @@ class SearchFileTool(AgentTool):
         evidence_id: str,
         context: ToolContext,
     ) -> tuple[str, str, Any] | None:
-        """Resolve evidence content, trying standalone table then case-embedded.
+        """Resolve evidence content from the case-embedded evidence list.
 
-        The unified ingestion pipeline creates Evidence objects embedded in the
-        Case document (not in the standalone evidence_artifacts table). This
-        method tries both paths:
-        1. Standalone evidence_artifacts table (legacy / standalone uploads)
-        2. Case-embedded evidence list (unified pipeline)
+        Storage redesign 2026-04 phase 2 deleted the standalone
+        `evidence_artifacts` table and its service. Evidence is case-tied only:
+        the unified ingestion pipeline creates Evidence objects embedded in the
+        Case (`case.evidence`) with `content_ref` pointing to the stored file.
 
         Returns:
             (content_str, filename, evidence_obj) or None if not found
         """
-        ev_service = context.evidence_service
-
-        # Path 1: Standalone evidence table
-        evidence = await ev_service.get_evidence(evidence_id)
-        if evidence:
-            # Verify case access
-            if hasattr(evidence, "case_id") and evidence.case_id != context.case_id:
-                logger.warning(
-                    "search_file: evidence %s belongs to case %s, not %s",
-                    evidence_id,
-                    evidence.case_id,
-                    context.case_id,
-                )
-                return None
-
-            download_result = await ev_service.download_evidence(evidence_id)
-            if download_result:
-                file_data, filename, _mime = download_result
-                content = file_data.decode("utf-8", errors="replace")
-                return content, filename, evidence
-
-        # Path 2: Case-embedded evidence (unified ingestion pipeline)
-        # Evidence is stored in case.evidence[] with content_ref pointing to file
-        logger.debug(
-            "search_file: evidence %s not in standalone table, trying case-embedded",
-            evidence_id,
-        )
         case = getattr(context, "in_memory_case", None)
-        if not case:
-            case_repo = getattr(ev_service, "case_repository", None)
-            if not case_repo:
-                logger.warning("search_file: no case_repository on evidence_service")
+        if case is None:
+            case_repo = getattr(context, "case_repository", None)
+            if case_repo is None:
+                logger.warning("search_file: no case_repository on tool context")
                 return None
-
             case = await case_repo.get(context.case_id)
-            if not case:
+            if case is None:
                 logger.warning("search_file: case %s not found", context.case_id)
                 return None
 
-        # Find evidence in case's embedded list
+        # Find evidence in the case's embedded list
         case_evidence = None
-        for ev in getattr(case, "evidence", []):
+        for ev in getattr(case, "evidence", []) or []:
             if getattr(ev, "evidence_id", None) == evidence_id:
                 case_evidence = ev
                 break
 
-        if not case_evidence:
+        if case_evidence is None:
             logger.warning(
                 "search_file: evidence %s not found in case %s (has %d evidence items)",
                 evidence_id,
                 context.case_id,
-                len(getattr(case, "evidence", [])),
+                len(getattr(case, "evidence", []) or []),
             )
             return None
 
-        # Read file via content_ref
+        # Read raw file via content_ref
         content_ref = getattr(case_evidence, "content_ref", None)
         if not content_ref:
             logger.warning(
@@ -451,19 +418,9 @@ class SearchFileTool(AgentTool):
             )
             return None
 
-        # Try storage adapter on evidence service (EvidenceStorageAdapter)
-        storage = getattr(ev_service, "storage", None)
-        if storage and hasattr(storage, "get_file_content"):
-            file_data = await storage.get_file_content(content_ref)
-            if file_data:
-                filename = (
-                    getattr(case_evidence, "original_filename", None) or evidence_id
-                )
-                content = file_data.decode("utf-8", errors="replace")
-                return content, filename, case_evidence
-
-        # Try direct FileStorageService on the tool (injected at construction)
-        if self.storage_service and hasattr(self.storage_service, "retrieve_file"):
+        if self.storage_service is not None and hasattr(
+            self.storage_service, "retrieve_file"
+        ):
             try:
                 file_data = await self.storage_service.retrieve_file(content_ref)
                 filename = (
@@ -477,9 +434,11 @@ class SearchFileTool(AgentTool):
                     content_ref,
                     e,
                 )
+                return None
 
         logger.warning(
-            "search_file: evidence %s found in case but file not accessible (content_ref=%s)",
+            "search_file: storage_service unavailable; cannot read evidence %s "
+            "(content_ref=%s)",
             evidence_id,
             content_ref,
         )

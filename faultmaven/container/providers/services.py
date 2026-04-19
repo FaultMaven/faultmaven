@@ -214,55 +214,6 @@ def create_investigation_orchestrator(
         return None
 
 
-def create_evidence_service(
-    case_repository: Any | None,
-    settings: FaultMavenSettings,
-) -> Any | None:
-    """Create evidence service for evidence management (migrated to use Case repository).
-
-    Args:
-        case_repository: Case repository (now handles standalone evidence)
-        settings: Application settings
-
-    Returns:
-        EvidenceService or None if dependencies unavailable
-    """
-    if not case_repository:
-        logger.debug("EvidenceService skipped (no Case repository)")
-        return None
-
-    try:
-        from faultmaven.modules.evidence.domain.adapters import EvidenceStorageAdapter
-        from faultmaven.modules.evidence.domain.services import EvidenceService
-        from faultmaven.modules.evidence.domain.services.file_storage_service import (
-            FileStorageService,
-        )
-
-        # Create file storage service
-        file_storage = FileStorageService(
-            storage_root=settings.evidence_storage_root,
-            max_file_size_bytes=settings.max_evidence_file_size,
-        )
-
-        # Create storage adapter
-        base_url = f"http://{settings.server.host}:{settings.server.port}"
-        storage_adapter = EvidenceStorageAdapter(
-            file_storage=file_storage,
-            base_url=base_url,
-        )
-
-        # Create service with Case repository (migrated from EvidenceRepository)
-        service = EvidenceService(
-            storage_provider=storage_adapter,
-            case_repository=case_repository,
-        )
-        logger.info("✅ EvidenceService initialized (using Case repository)")
-        return service
-    except Exception as e:
-        logger.warning(f"EvidenceService initialization failed: {e}")
-        return None
-
-
 def create_session_service(
     session_store: Any | None,
     settings: FaultMavenSettings,
@@ -796,11 +747,11 @@ def register_services(container: BaseDIContainer) -> None:
     )
     container._register_service("case_service", case_service)
 
-    # Evidence Service (create before MilestoneEngine — engine needs it for tool context)
-    evidence_service = create_evidence_service(case_repository, settings)
-    container.evidence_service = evidence_service
-    if evidence_service:
-        container._register_service("evidence_service", evidence_service)
+    # Evidence service removed in storage redesign 2026-04 phase 2 (standalone path deletion).
+    # Agent tools that previously used evidence_service.list_evidence_by_case now read
+    # evidence directly from case.evidence via case_repository (Path 2 / case-embedded).
+    evidence_service = None
+    container.evidence_service = None
 
     # Milestone Engine (with investigation tools for evidence searching)
     llm_provider = container.get_service("llm_provider")

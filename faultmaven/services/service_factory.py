@@ -21,25 +21,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
-from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
-    EvidenceArtifactRepository,
-)
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.repository_factory import (
     STORAGE_TYPE_DATABASE,
     get_case_repository,
-    get_evidence_artifact_repository,
     get_investigation_session_repository,
     get_knowledge_item_repository,
 )
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
-)
-from faultmaven.modules.evidence.domain.services.evidence_artifact_service import (
-    APIEvidenceArtifactService,
 )
 from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
@@ -101,12 +94,9 @@ class ServiceFactory:
                 session=db_session,
             )
         )
-        self.evidence_repo: EvidenceArtifactRepository = (
-            get_evidence_artifact_repository(
-                storage_type=STORAGE_TYPE_DATABASE,
-                session=db_session,
-            )
-        )
+        # evidence_repo removed in storage redesign 2026-04 phase 2
+        # (standalone evidence path deletion). Evidence is now case-tied,
+        # accessed via case_repo.
         self.knowledge_repo: KnowledgeItemRepository = get_knowledge_item_repository(
             storage_type=STORAGE_TYPE_DATABASE,
             session=db_session,
@@ -162,25 +152,11 @@ class ServiceFactory:
             or getattr(settings, "allowed_evidence_mime_types", []),
         )
 
-    def create_evidence_artifact_service(
-        self,
-        file_storage: Optional[FileStorageService] = None,
-    ) -> APIEvidenceArtifactService:
-        """Create evidence artifact service with dependencies.
-
-        Args:
-            file_storage: Optional file storage service (creates default if not provided)
-
-        Returns:
-            APIEvidenceArtifactService instance with injected dependencies
-        """
-        if file_storage is None:
-            file_storage = self.create_file_storage_service()
-
-        return APIEvidenceArtifactService(
-            case_repo=self.case_repo,
-            file_storage=file_storage,
-        )
+    # create_evidence_artifact_service was removed in storage redesign 2026-04 phase 2.
+    # The standalone evidence path (POST /api/v1/evidence + evidence_artifacts /
+    # standalone_evidence tables) is deleted. Evidence is now case-tied only.
+    # Agent tools that previously used the evidence service now access case.evidence
+    # directly via self.case_repo.
 
     def create_agent_orchestration_service(
         self,
@@ -204,7 +180,7 @@ class ServiceFactory:
         return AgentOrchestrationService(
             case_repo=self.case_repo,
             session_service=self.create_investigation_session_service(),
-            evidence_service=self.create_evidence_artifact_service(),
+            evidence_service=None,  # Standalone evidence service removed in storage redesign phase 2
             tool_registry=agent_tool_registry,
             team_service=team_service,
             # LLM client will be created lazily by the service

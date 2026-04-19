@@ -1,42 +1,22 @@
-"""Evidence Module - Vertical Slice
+"""Evidence Module - Domain Service.
 
-Manages evidence upload, storage, linking, and retrieval across cases.
+Case-tied evidence is created by the milestone engine via the case
+turn endpoint (POST /api/v1/cases/{case_id}/turns) and persisted into
+the `evidence` table directly. The previous standalone-evidence path
+(EvidenceService, APIEvidenceArtifactService, evidence_artifacts /
+standalone_evidence tables, POST /api/v1/evidence and related endpoints)
+was deleted in storage redesign 2026-04 phase 2 — see
+deployment-schema-strategy.md §7.2.
 
-Public API:
-    From domain.models:
-        - EvidenceArtifact, EvidenceArtifactType, StorageBackend
-        - EvidenceUploadRequest, EvidenceLinkRequest, EvidenceListFilter
-
-    From domain.services:
-        - EvidenceService
-
-Structure:
-- domain/: Evidence domain models and business logic
-- infrastructure/: File storage and database repositories
-- api/: FastAPI routes for evidence endpoints
+Surviving public API:
+    From domain.services.file_storage_service:
+        - FileStorageService (used by the case-tied turn flow)
 """
 
-# Domain models
-from faultmaven.modules.evidence.domain.models import (
-    EvidenceArtifact,
-    EvidenceArtifactType,
-    EvidenceLinkRequest,
-    EvidenceListFilter,
-    EvidenceUploadRequest,
-    StorageBackend,
+from faultmaven.modules.evidence.domain.services.file_storage_service import (
+    FileStorageService,
 )
 
-# Domain services
-from faultmaven.modules.evidence.domain.services import EvidenceService
-
 __all__ = [
-    # Models
-    "EvidenceArtifact",
-    "EvidenceArtifactType",
-    "StorageBackend",
-    "EvidenceUploadRequest",
-    "EvidenceLinkRequest",
-    "EvidenceListFilter",
-    # Services
-    "EvidenceService",
+    "FileStorageService",
 ]

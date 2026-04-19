@@ -6,7 +6,7 @@ This module provides dependency injection functions for FastAPI endpoints,
 integrating with the service factory and database session management.
 
 Usage:
-    from faultmaven.api.dependencies import get_api_case_service, get_evidence_artifact_service
+    from faultmaven.api.dependencies import get_api_case_service
 
     @app.get("/cases/{case_id}")
     async def get_case(
@@ -15,12 +15,9 @@ Usage:
     ):
         return await case_service.get_case(case_id, organization_id)
 
-    @app.post("/evidence")
-    async def upload_evidence(
-        file: UploadFile,
-        evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service)
-    ):
-        return await evidence_service.upload_evidence(...)
+Note: get_evidence_artifact_service was removed in storage redesign 2026-04
+phase 2 along with the standalone evidence path. Evidence is now created
+case-tied via the milestone engine; no separate evidence service needed.
 """
 
 from typing import AsyncGenerator
@@ -39,9 +36,6 @@ from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
-)
-from faultmaven.modules.evidence.domain.services.evidence_artifact_service import (
-    APIEvidenceArtifactService,
 )
 from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
@@ -65,7 +59,6 @@ __all__ = [
     "get_api_case_service",
     "get_investigation_session_service",
     "get_file_storage_service",
-    "get_evidence_artifact_service",
     "get_agent_orchestration_service",
     # Re-exported from v1.dependencies (legacy)
     "get_current_user",
@@ -223,41 +216,6 @@ async def get_file_storage_service(
             return await file_storage.get_storage_stats()
     """
     return factory.create_file_storage_service()
-
-
-async def get_evidence_artifact_service(
-    factory: ServiceFactory = Depends(get_service_factory),
-) -> APIEvidenceArtifactService:
-    """Get evidence artifact service for request.
-
-    Creates an APIEvidenceArtifactService with all required dependencies
-    from the service factory.
-
-    Args:
-        factory: Service factory from get_service_factory
-
-    Returns:
-        APIEvidenceArtifactService instance
-
-    Example:
-        @app.post("/cases/{case_id}/evidence")
-        async def upload_evidence(
-            case_id: str,
-            file: UploadFile,
-            evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service)
-        ):
-            file_data = await file.read()
-            return await evidence_service.upload_evidence(
-                case_id=case_id,
-                organization_id=organization_id,
-                user_id=user_id,
-                file_data=file_data,
-                original_filename=file.filename,
-                mime_type=file.content_type,
-                evidence_type=EvidenceArtifactType.OTHER,
-            )
-    """
-    return factory.create_evidence_artifact_service()
 
 
 async def get_agent_orchestration_service(

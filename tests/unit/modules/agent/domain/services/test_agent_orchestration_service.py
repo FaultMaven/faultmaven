@@ -816,7 +816,7 @@ class TestToolCallHandling:
             case_id=sample_session.case_id,
             organization_id=sample_session.organization_id,
             user_id=sample_session.user_id,
-            evidence_service=mock_evidence_service,
+            case_repository=mock_case_repo,
         )
 
         results = await orchestration_service._handle_tool_calls(
@@ -861,7 +861,7 @@ class TestToolCallHandling:
             case_id=sample_session.case_id,
             organization_id=sample_session.organization_id,
             user_id=sample_session.user_id,
-            evidence_service=mock_evidence_service,
+            case_repository=mock_case_repo,
         )
 
         results = await orchestration_service._handle_tool_calls(
@@ -909,7 +909,7 @@ class TestToolCallHandling:
             case_id=sample_session.case_id,
             organization_id=sample_session.organization_id,
             user_id=sample_session.user_id,
-            evidence_service=mock_evidence_service,
+            case_repository=mock_case_repo,
         )
 
         await orchestration_service._handle_tool_calls(
@@ -950,7 +950,7 @@ class TestToolCallHandling:
             case_id=sample_session.case_id,
             organization_id=sample_session.organization_id,
             user_id=sample_session.user_id,
-            evidence_service=mock_evidence_service,
+            case_repository=mock_case_repo,
         )
 
         results = await orchestration_service._handle_tool_calls(
@@ -993,7 +993,7 @@ class TestToolCallHandling:
             case_id=sample_session.case_id,
             organization_id=sample_session.organization_id,
             user_id=sample_session.user_id,
-            evidence_service=mock_evidence_service,
+            case_repository=mock_case_repo,
         )
 
         await orchestration_service._handle_tool_calls(
@@ -1033,7 +1033,7 @@ class TestToolCallHandling:
             case_id=sample_session.case_id,
             organization_id=sample_session.organization_id,
             user_id=sample_session.user_id,
-            evidence_service=mock_evidence_service,
+            case_repository=mock_case_repo,
         )
 
         results = await orchestration_service._handle_tool_calls(
@@ -2041,56 +2041,55 @@ class TestGetEvidenceSize:
 
     @pytest.fixture
     def tool_context(self):
-        ctx = MagicMock(spec=ToolContext)
-        ctx.evidence_service = AsyncMock()
-        ctx.organization_id = "org_test"
+        """ToolContext carrying an in-memory case (storage redesign 2026-04
+        phase 2: evidence is read from case.evidence, not the deleted
+        evidence_service).
+        """
+        case = MagicMock()
+        case.case_id = "case_test"
+        case.evidence = []
+        ctx = ToolContext(
+            session_id="s",
+            case_id="case_test",
+            organization_id="org_test",
+            user_id="u",
+            in_memory_case=case,
+        )
         return ctx
 
     @pytest.mark.asyncio
-    async def test_reads_file_size_from_evidence_artifact(self, service, tool_context):
-        """EvidenceArtifact has file_size, not content_size_bytes."""
+    async def test_reads_size_from_case_evidence(self, service, tool_context):
+        """_get_evidence_size reads content_size_bytes from case.evidence."""
         ev = MagicMock()
-        ev.file_size = 196268
-        del ev.content_size_bytes  # ensure attribute doesn't exist
-        tool_context.evidence_service.get_evidence.return_value = ev
+        ev.evidence_id = "ev_test"
+        ev.content_size_bytes = 196268
+        tool_context.in_memory_case.evidence = [ev]
 
         size = await service._get_evidence_size("ev_test", tool_context)
         assert size == 196268
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_content_size_bytes(self, service, tool_context):
-        """Case-embedded Evidence has content_size_bytes, not file_size."""
+    async def test_returns_zero_when_no_size_attribute(self, service, tool_context):
+        """Returns 0 when evidence has no content_size_bytes."""
         ev = MagicMock()
-        ev.file_size = 0
-        ev.content_size_bytes = 150000
-        tool_context.evidence_service.get_evidence.return_value = ev
-
-        size = await service._get_evidence_size("ev_test", tool_context)
-        assert size == 150000
-
-    @pytest.mark.asyncio
-    async def test_returns_zero_when_no_size_attributes(self, service, tool_context):
-        """Returns 0 when evidence has neither size attribute."""
-        ev = MagicMock()
-        ev.file_size = 0
-        del ev.content_size_bytes
-        tool_context.evidence_service.get_evidence.return_value = ev
+        ev.evidence_id = "ev_test"
+        ev.content_size_bytes = 0
+        tool_context.in_memory_case.evidence = [ev]
 
         size = await service._get_evidence_size("ev_test", tool_context)
         assert size == 0
 
     @pytest.mark.asyncio
-    async def test_returns_zero_on_exception(self, service, tool_context):
-        """Returns 0 when evidence service raises."""
-        tool_context.evidence_service.get_evidence.side_effect = Exception("not found")
-
+    async def test_returns_zero_when_case_is_none(self, service, tool_context):
+        """Returns 0 when no case is available on the context."""
+        tool_context.in_memory_case = None
+        # case_repository is also None on this context -> nothing to query.
         size = await service._get_evidence_size("ev_test", tool_context)
         assert size == 0
 
     @pytest.mark.asyncio
-    async def test_returns_zero_when_evidence_is_none(self, service, tool_context):
-        """Returns 0 when evidence service returns None."""
-        tool_context.evidence_service.get_evidence.return_value = None
-
+    async def test_returns_zero_when_evidence_not_on_case(self, service, tool_context):
+        """Returns 0 when the requested evidence is not on the case."""
+        tool_context.in_memory_case.evidence = []
         size = await service._get_evidence_size("ev_test", tool_context)
         assert size == 0

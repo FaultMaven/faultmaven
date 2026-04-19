@@ -22,8 +22,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
-# Current head revision (conversion tables with source_type)
-HEAD_REVISION = "eb98f7b39fbc"  # Phase 1 redesign migration (drops agent_tool_calls v1, cases.degraded_mode)
+# Current head revision
+HEAD_REVISION = "7a2da68429da"  # Phase 2 redesign migration (drops evidence_artifacts, standalone_evidence)
 
 
 @pytest.fixture(scope="function")
@@ -91,8 +91,10 @@ def get_current_revision(database_url: str) -> str:
 
 
 # Expected tables from all migrations
-# 18 domain tables + 11 auth/RBAC tables + 2 conversion tables + alembic_version = 32
-# (agent_tool_calls v1 removed in storage redesign 2026-04 phase 1)
+# 16 domain tables + 11 auth/RBAC tables + 1 config table + 2 conversion tables
+# + 1 reports table + alembic_version = 31
+# (agent_tool_calls v1 removed in storage redesign 2026-04 phase 1;
+#  evidence_artifacts + standalone_evidence removed in phase 2)
 EXPECTED_TABLES = [
     "agent_executions",
     "agent_tool_calls_v2",
@@ -105,7 +107,6 @@ EXPECTED_TABLES = [
     "conversion_drafts",
     "conversion_jobs",
     "evidence",
-    "evidence_artifacts",
     "hypotheses",
     "investigation_sessions",
     "knowledge_items",
@@ -121,7 +122,6 @@ EXPECTED_TABLES = [
     "roles",
     "sessions",
     "solutions",
-    "standalone_evidence",
     "team_members",
     "teams",
     "uploaded_files",

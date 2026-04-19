@@ -113,7 +113,9 @@ ignore_imports =
     faultmaven.modules.case.infrastructure.database_case_repository -> faultmaven.modules.case.domain.owned_models.*
     faultmaven.modules.case.infrastructure.investigation_session_repository -> faultmaven.modules.case.domain.investigation_session
     faultmaven.modules.case.infrastructure.sqlite_case_repository -> faultmaven.modules.case.contracts
-    faultmaven.modules.case.infrastructure.sqlite_case_repository -> faultmaven.modules.case.domain.owned_models.*
+    # sqlite_case_repository -> owned_models.* ignore removed in storage redesign
+    # 2026-04 phase 2: the standalone evidence path was deleted and those imports
+    # no longer exist, so import-linter flags the ignore entry itself.
     faultmaven.modules.case.infrastructure.sessionless_case_repository -> faultmaven.modules.case.contracts
     faultmaven.modules.case.contracts -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.contracts -> faultmaven.modules.case.domain.owned_models.*
@@ -159,15 +161,21 @@ ignore_imports =
     faultmaven.modules.agent.tools.base -> faultmaven.modules.agent.domain.events.execution_events
 
 # ============================================================================
-# CONTRACT 8: Evidence Module Layer Boundaries
+# CONTRACT 8: Evidence Module Boundaries (storage redesign 2026-04 phase 2)
 # ============================================================================
-# Enforce clean architecture within the Evidence module vertical slice
+# The standalone evidence path was deleted in phase 2 — the Evidence module's
+# api/ package is gone entirely, and domain/ now contains only the
+# FileStorageService plus compatibility re-exports. Evidence itself is
+# case-tied and owned by the Case module. The original layer contract
+# (api → domain) is therefore moot; we keep a forbidden-import contract to
+# prevent Evidence from importing from Case infrastructure directly.
 [importlinter:contract:8]
-name = Evidence module layer boundaries
-type = layers
-layers =
-    faultmaven.modules.evidence.api
-    faultmaven.modules.evidence.domain
+name = Evidence module must not import Case infrastructure
+type = forbidden
+source_modules =
+    faultmaven.modules.evidence
+forbidden_modules =
+    faultmaven.modules.case.infrastructure
 
 # ============================================================================
 # CONTRACT 9: Report Module Layer Boundaries

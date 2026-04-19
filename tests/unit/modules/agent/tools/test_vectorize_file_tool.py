@@ -1,15 +1,49 @@
-"""Tests for VectorizeFileTool — on-demand vectorization for semantic search."""
+"""Tests for VectorizeFileTool — on-demand vectorization for semantic search.
 
+Storage redesign 2026-04 phase 2: VectorizeFileTool reads evidence from
+`case.evidence` (via `context.in_memory_case` / `context.case_repository`)
+instead of the deleted standalone evidence service.
+"""
+
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
     VECTORIZATION_MAX_SIZE_BYTES,
     VectorizeFileTool,
 )
+
+
+def _make_evidence(
+    evidence_id: str = "ev_abc",
+    case_id: str = "case_123",
+    content_size_bytes: int = 100_000,
+    preprocessed_content: Optional[str] = "Structural index content here...",
+    data_type: str = "logs",
+):
+    ev = MagicMock()
+    ev.evidence_id = evidence_id
+    ev.case_id = case_id
+    ev.content_size_bytes = content_size_bytes
+    ev.preprocessed_content = preprocessed_content
+    ev.data_type = data_type
+    return ev
+
+
+def _make_context(case_id: str = "case_123", evidence_items=None):
+    case = MagicMock()
+    case.case_id = case_id
+    case.evidence = evidence_items if evidence_items is not None else [_make_evidence()]
+    return ToolContext(
+        session_id="sess_1",
+        case_id=case_id,
+        organization_id="org_1",
+        user_id="user_1",
+        in_memory_case=case,
+    )
 
 
 @pytest.fixture
@@ -20,7 +54,7 @@ def mock_settings():
     with patch(
         "faultmaven.modules.agent.tools.vectorize_file_tool.get_settings",
         return_value=settings,
-    ) as mock:
+    ):
         yield settings
 
 
@@ -34,33 +68,17 @@ def tool():
 
 @pytest.fixture
 def context():
-    evidence = MagicMock()
-    evidence.case_id = "case_123"
-    evidence.content_size_bytes = 100_000  # 100KB — above minimum
-    evidence.preprocessed_content = "Structural index content here..."
-    evidence.data_type = "logs"
-
-    evidence_service = AsyncMock()
-    evidence_service.get_evidence.return_value = evidence
-
-    return ToolContext(
-        session_id="sess_1",
-        case_id="case_123",
-        organization_id="org_1",
-        user_id="user_1",
-        evidence_service=evidence_service,
-    )
+    return _make_context()
 
 
 class TestSizeGates:
     @pytest.mark.asyncio
-    async def test_rejects_file_below_minimum(self, tool, context, mock_settings):
-        """Files below the configured minimum should be rejected."""
-        evidence = context.evidence_service.get_evidence.return_value
-        evidence.content_size_bytes = 10_000  # 10KB
+    async def test_rejects_file_below_minimum(self, tool, mock_settings):
+        ev = _make_evidence(content_size_bytes=10_000)
+        context = _make_context(evidence_items=[ev])
 
         result = await tool.execute_with_context(
-            params={"evidence_id": "ev_small"},
+            params={"evidence_id": "ev_abc"},
             context=context,
         )
 
@@ -69,13 +87,12 @@ class TestSizeGates:
         assert str(mock_settings.agent.vectorization_min_size_bytes) in result.error
 
     @pytest.mark.asyncio
-    async def test_rejects_file_above_maximum(self, tool, context, mock_settings):
-        """Files above 50MB should be rejected."""
-        evidence = context.evidence_service.get_evidence.return_value
-        evidence.content_size_bytes = 60_000_000  # 60MB
+    async def test_rejects_file_above_maximum(self, tool, mock_settings):
+        ev = _make_evidence(content_size_bytes=60_000_000)
+        context = _make_context(evidence_items=[ev])
 
         result = await tool.execute_with_context(
-            params={"evidence_id": "ev_huge"},
+            params={"evidence_id": "ev_abc"},
             context=context,
         )
 
@@ -85,13 +102,12 @@ class TestSizeGates:
 
     @pytest.mark.asyncio
     async def test_accepts_file_within_range(self, tool, context, mock_settings):
-        """Files between configured minimum and 50MB should be accepted."""
         with patch(
             "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
             new_callable=AsyncMock,
         ) as mock_store:
             result = await tool.execute_with_context(
-                params={"evidence_id": "ev_good"},
+                params={"evidence_id": "ev_abc"},
                 context=context,
             )
 
@@ -100,15 +116,13 @@ class TestSizeGates:
         mock_store.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_custom_min_size_threshold(self, tool, context, mock_settings):
-        """Minimum size threshold should be configurable via settings."""
-        mock_settings.agent.vectorization_min_size_bytes = 200_000  # 200KB
-
-        evidence = context.evidence_service.get_evidence.return_value
-        evidence.content_size_bytes = 100_000  # 100KB — below new threshold
+    async def test_custom_min_size_threshold(self, tool, mock_settings):
+        mock_settings.agent.vectorization_min_size_bytes = 200_000
+        ev = _make_evidence(content_size_bytes=100_000)
+        context = _make_context(evidence_items=[ev])
 
         result = await tool.execute_with_context(
-            params={"evidence_id": "ev_under_custom"},
+            params={"evidence_id": "ev_abc"},
             context=context,
         )
 
@@ -120,7 +134,6 @@ class TestSizeGates:
 class TestVectorization:
     @pytest.mark.asyncio
     async def test_calls_store_function(self, tool, context, mock_settings):
-        """Should call store_in_vector_db_background with correct params."""
         with patch(
             "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
             new_callable=AsyncMock,
@@ -137,13 +150,12 @@ class TestVectorization:
         assert "Structural index" in call_kwargs["structural_index"]
 
     @pytest.mark.asyncio
-    async def test_no_preprocessed_content(self, tool, context, mock_settings):
-        """Should fail if evidence has no preprocessed content."""
-        evidence = context.evidence_service.get_evidence.return_value
-        evidence.preprocessed_content = None
+    async def test_no_preprocessed_content(self, tool, mock_settings):
+        ev = _make_evidence(preprocessed_content=None)
+        context = _make_context(evidence_items=[ev])
 
         result = await tool.execute_with_context(
-            params={"evidence_id": "ev_empty"},
+            params={"evidence_id": "ev_abc"},
             context=context,
         )
 
@@ -172,8 +184,9 @@ class TestValidation:
         assert "not available" in result.error
 
     @pytest.mark.asyncio
-    async def test_evidence_not_found(self, tool, context, mock_settings):
-        context.evidence_service.get_evidence.return_value = None
+    async def test_evidence_not_found(self, tool, mock_settings):
+        # No evidence on the case at all.
+        context = _make_context(evidence_items=[])
         result = await tool.execute_with_context(
             params={"evidence_id": "ev_missing"},
             context=context,

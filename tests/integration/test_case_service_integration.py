@@ -27,10 +27,6 @@ from faultmaven.exceptions import (
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
-    DatabaseEvidenceArtifactRepository,
-    InMemoryEvidenceArtifactRepository,
-)
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
@@ -44,11 +40,6 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
 )
 from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseStatus
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
-from faultmaven.modules.evidence.domain.models import (
-    EvidenceArtifact,
-    EvidenceArtifactType,
-    StorageBackend,
-)
 from faultmaven.services.service_factory import ServiceFactory
 
 # ============================================================
@@ -97,11 +88,9 @@ def session_repo() -> InMemoryInvestigationSessionRepository:
     return InMemoryInvestigationSessionRepository()
 
 
-@pytest.fixture
-def evidence_repo() -> InMemoryEvidenceArtifactRepository:
-    """Create in-memory evidence artifact repository."""
-    return InMemoryEvidenceArtifactRepository()
-
+# evidence_repo fixture removed in storage redesign 2026-04 phase 2
+# (standalone evidence path deletion). Evidence is case-tied only and
+# accessed via case.evidence loaded by the case repository.
 
 # execution_repo removed - APICaseService now uses case_repo for agent executions
 
@@ -629,14 +618,15 @@ class TestCaseDetails:
         assert len(details["sessions"]) >= 0  # May be 0 if not persisted
 
     @pytest.mark.asyncio
-    async def test_get_case_with_details_includes_evidence(
-        self, case_service, evidence_repo
-    ):
-        """Test that details include evidence artifacts."""
+    async def test_get_case_with_details_includes_evidence(self, case_service):
+        """Test that details include the case-embedded evidence list.
+
+        Storage redesign 2026-04 phase 2: evidence is case-tied only, surfaced
+        from `case.evidence` rather than via a separate evidence repository.
+        """
         organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
-        # Create case
         case = await case_service.create_case(
             user_id=user_id,
             organization_id=organization_id,
@@ -645,13 +635,14 @@ class TestCaseDetails:
             severity=CaseSeverity.LOW,
         )
 
-        # Get details
         details = await case_service.get_case_with_details(
             case.case_id, organization_id, include_evidence=True
         )
 
         assert details is not None
         assert "evidence" in details
+        # New cases have no embedded evidence yet.
+        assert details["evidence"] == []
 
 
 # ============================================================

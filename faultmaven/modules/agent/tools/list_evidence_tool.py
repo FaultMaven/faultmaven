@@ -7,7 +7,7 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_registry
@@ -78,9 +78,14 @@ class ListEvidenceTool(AgentTool):
     ) -> ToolResult:
         """List evidence artifacts for the current case.
 
+        Storage redesign 2026-04 phase 2: evidence is case-tied only and
+        accessed via `case.evidence`. The standalone evidence service was
+        deleted; this tool reads through `context.case_repository` (with
+        `context.in_memory_case` as a turn-scoped optimization).
+
         Args:
             params: Parameters including optional evidence_type filter and limit
-            context: Execution context with evidence service
+            context: Execution context with case_repository / in_memory_case
 
         Returns:
             ToolResult with list of evidence metadata or error
@@ -88,37 +93,38 @@ class ListEvidenceTool(AgentTool):
         evidence_type_str = params.get("evidence_type")
         limit = params.get("limit", 50)
 
-        if not context.evidence_service:
-            return ToolResult(
-                success=False,
-                data=None,
-                error="Evidence service not available",
-            )
-
         try:
-            # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-            from faultmaven.modules.case.contracts import EvidenceArtifactType
+            case = context.in_memory_case
+            if case is None and context.case_repository is not None:
+                case = await context.case_repository.get(context.case_id)
+            if case is None:
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error=f"Case not found: {context.case_id}",
+                )
 
-            # Parse evidence type filter if provided
-            evidence_type = None
+            evidence_list: List[Any] = list(getattr(case, "evidence", []) or [])
+
+            # Optional evidence_type filter — match against the domain Evidence
+            # model's `source_type` (or `category`) string value when present.
             if evidence_type_str:
-                try:
-                    evidence_type = EvidenceArtifactType(evidence_type_str)
-                except ValueError:
-                    return ToolResult(
-                        success=False,
-                        data=None,
-                        error=f"Invalid evidence_type: {evidence_type_str}",
+                filtered: List[Any] = []
+                for ev in evidence_list:
+                    type_attr = getattr(ev, "source_type", None) or getattr(
+                        ev, "category", None
                     )
+                    type_value = (
+                        type_attr.value if hasattr(type_attr, "value") else type_attr
+                    )
+                    if type_value == evidence_type_str:
+                        filtered.append(ev)
+                evidence_list = filtered
 
-            # List evidence for the case
-            evidence_list = await context.evidence_service.list_evidence_by_case(
-                case_id=context.case_id,
-                evidence_type=evidence_type,
-                limit=limit,
-            )
+            # Apply limit (after filtering to keep semantics intuitive)
+            if isinstance(limit, int) and limit > 0:
+                evidence_list = evidence_list[:limit]
 
-            # Format evidence for response
             formatted_evidence = self._format_evidence_list(evidence_list)
 
             logger.info(
@@ -149,31 +155,51 @@ class ListEvidenceTool(AgentTool):
     ) -> List[Dict[str, Any]]:
         """Format evidence list for LLM consumption.
 
+        Accepts the domain `Evidence` model (which lives on `case.evidence`
+        after the storage redesign 2026-04 phase 2). Falls back gracefully for
+        fields the domain model does not carry (mime_type, description).
+
         Args:
-            evidence_list: List of evidence artifacts
+            evidence_list: List of domain Evidence records
 
         Returns:
             List of formatted evidence dictionaries
         """
-        formatted = []
+        formatted: List[Dict[str, Any]] = []
         for evidence in evidence_list:
+            # Evidence source type / category (either is fine for LLM display)
+            type_attr = getattr(evidence, "source_type", None) or getattr(
+                evidence, "category", None
+            )
+            type_value = type_attr.value if hasattr(type_attr, "value") else type_attr
+
+            # Size: domain Evidence uses content_size_bytes
+            size_bytes = int(getattr(evidence, "content_size_bytes", 0) or 0)
+
+            # Timestamp: domain Evidence uses collected_at
+            collected_at = getattr(evidence, "collected_at", None)
+            collected_iso = (
+                collected_at.isoformat() if hasattr(collected_at, "isoformat") else None
+            )
+
             formatted.append(
                 {
-                    "evidence_id": evidence.evidence_id,
-                    "filename": evidence.original_filename,
-                    "type": (
-                        evidence.evidence_type.value
-                        if hasattr(evidence.evidence_type, "value")
-                        else str(evidence.evidence_type)
-                    ),
-                    "mime_type": evidence.mime_type,
-                    "file_size_bytes": evidence.file_size,
-                    "file_size_human": self._format_file_size(evidence.file_size),
-                    "description": evidence.description,
-                    "is_primary": evidence.is_primary,
-                    "created_at": (
-                        evidence.created_at.isoformat() if evidence.created_at else None
-                    ),
+                    "evidence_id": getattr(evidence, "evidence_id", None),
+                    "filename": getattr(evidence, "original_filename", None),
+                    "type": type_value,
+                    # mime_type is not on the domain Evidence model; the future
+                    # normalized evidence table will reintroduce it (see
+                    # deployment-schema-strategy.md §11, Phase 6).
+                    "mime_type": None,
+                    "file_size_bytes": size_bytes,
+                    "file_size_human": self._format_file_size(size_bytes),
+                    # Use the evidence summary as a description proxy — the
+                    # domain model does not carry a separate description.
+                    "description": getattr(evidence, "summary", None),
+                    # is_primary is a Phase 6 column; default False for now so
+                    # the LLM-facing contract stays stable.
+                    "is_primary": bool(getattr(evidence, "is_primary", False)),
+                    "created_at": collected_iso,
                 }
             )
         return formatted

@@ -12,34 +12,68 @@ from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
 
 @pytest.fixture
 def tool():
+    """SearchFileTool with a mock storage_service that returns canned bytes.
+
+    Storage redesign 2026-04 phase 2: SearchFileTool reads raw file content via
+    `self.storage_service.retrieve_file(content_ref)` instead of the deleted
+    evidence_service.
+    """
+    storage = AsyncMock()
+    storage.retrieve_file = AsyncMock(
+        return_value=b"line 1\nline 2 ERROR timeout\nline 3\nline 4 ERROR connection\nline 5\n"
+    )
     return SearchFileTool(
-        storage_service=MagicMock(),
+        storage_service=storage,
         preprocessing_service=MagicMock(),
         context_lines=5,
         max_results=3,
     )
 
 
+def _make_search_tool_with_storage(
+    content: bytes, context_lines: int = 5, max_results: int = 3
+):
+    """Build a SearchFileTool wired to a mock storage_service returning *content*.
+
+    Storage redesign 2026-04 phase 2: tests need to inject the storage_service
+    directly because the tool resolves evidence content through it (no longer
+    via the deleted evidence_service path).
+    """
+    storage = AsyncMock()
+    storage.retrieve_file = AsyncMock(return_value=content)
+    return SearchFileTool(
+        storage_service=storage,
+        preprocessing_service=MagicMock(),
+        context_lines=context_lines,
+        max_results=max_results,
+    )
+
+
+def _make_evidence(evidence_id="ev_abc", content_ref="evidence/case_123/app.log"):
+    """Build a minimal Evidence-shaped object for case-embedded lookup."""
+    ev = MagicMock()
+    ev.evidence_id = evidence_id
+    ev.case_id = "case_123"
+    ev.data_type = "logs"
+    ev.content_ref = content_ref
+    ev.original_filename = "app.log"
+    ev.content_size_bytes = 100
+    return ev
+
+
 @pytest.fixture
 def context():
-    evidence = MagicMock()
-    evidence.case_id = "case_123"
-    evidence.data_type = "logs"
-
-    evidence_service = AsyncMock()
-    evidence_service.get_evidence.return_value = evidence
-    evidence_service.download_evidence.return_value = (
-        b"line 1\nline 2 ERROR timeout\nline 3\nline 4 ERROR connection\nline 5\n",
-        "app.log",
-        "text/plain",
-    )
+    """ToolContext with an in-memory case carrying the test evidence record."""
+    case = MagicMock()
+    case.case_id = "case_123"
+    case.evidence = [_make_evidence()]
 
     return ToolContext(
         session_id="sess_1",
         case_id="case_123",
         organization_id="org_1",
         user_id="user_1",
-        evidence_service=evidence_service,
+        in_memory_case=case,
     )
 
 
@@ -143,21 +177,24 @@ class TestValidation:
 
     @pytest.mark.asyncio
     async def test_evidence_not_found(self, tool, context):
-        context.evidence_service.get_evidence.return_value = None
+        # No evidence with the requested id is on the case.
         result = await tool.execute_with_context(
             params={"evidence_id": "ev_missing", "query": "test"},
             context=context,
         )
         assert result.success is False
-        assert "not found" in result.error
+        assert (
+            "not found" in result.error.lower()
+            or "not accessible" in result.error.lower()
+        )
 
     @pytest.mark.asyncio
     async def test_wrong_case_id(self, tool, context):
-        evidence = MagicMock()
-        evidence.case_id = "case_other"
-        context.evidence_service.get_evidence.return_value = evidence
-        # download_evidence should not be attempted for wrong-case evidence
-        context.evidence_service.download_evidence.return_value = None
+        # When the evidence has no content_ref, the resolver returns None and
+        # the tool reports the file is not accessible (storage redesign 2026-04
+        # phase 2 — case-scoping is implicit since we read from case.evidence).
+        ev = _make_evidence(content_ref=None)
+        context.in_memory_case.evidence = [ev]
         result = await tool.execute_with_context(
             params={"evidence_id": "ev_abc", "query": "test"},
             context=context,
@@ -173,28 +210,31 @@ class TestPartialMatchFallback:
     """Tests for partial match fallback when full-keyword search returns nothing."""
 
     @pytest.fixture
-    def multi_keyword_context(self):
-        """Context where only one keyword matches."""
-        evidence = MagicMock()
-        evidence.case_id = "case_123"
-        evidence.data_type = "logs"
+    def multi_keyword_context(self, tool):
+        """Context where only one keyword matches.
 
-        evidence_service = AsyncMock()
-        evidence_service.get_evidence.return_value = evidence
-        evidence_service.download_evidence.return_value = (
-            b"2024-01-15 server started\nprocessing request from 10.0.0.1\n"
-            b"connection timeout to database\nretrying connection\n"
-            b"query executed successfully\nresponse sent 200 OK\n",
-            "app.log",
-            "text/plain",
+        Storage redesign 2026-04 phase 2: file content is sourced from
+        `tool.storage_service.retrieve_file`, not the deleted evidence_service.
+        We mutate the canned content for this fixture's scenario.
+        """
+        tool.storage_service.retrieve_file = AsyncMock(
+            return_value=(
+                b"2024-01-15 server started\nprocessing request from 10.0.0.1\n"
+                b"connection timeout to database\nretrying connection\n"
+                b"query executed successfully\nresponse sent 200 OK\n"
+            )
         )
+
+        case = MagicMock()
+        case.case_id = "case_123"
+        case.evidence = [_make_evidence()]
 
         return ToolContext(
             session_id="sess_1",
             case_id="case_123",
             organization_id="org_1",
             user_id="user_1",
-            evidence_service=evidence_service,
+            in_memory_case=case,
         )
 
     @pytest.mark.asyncio
@@ -254,7 +294,7 @@ class TestVocabularyExtraction:
     """Tests for vocabulary extraction on zero-result searches."""
 
     @pytest.fixture
-    def vocab_context(self):
+    def vocab_context(self, tool):
         """Context with content rich in extractable patterns."""
         evidence = MagicMock()
         evidence.case_id = "case_123"
@@ -268,20 +308,22 @@ class TestVocabularyExtraction:
             "2024-01-15 10:30:04 DEBUG processing batch from kafka-consumer:9092\n"
         )
 
-        evidence_service = AsyncMock()
-        evidence_service.get_evidence.return_value = evidence
-        evidence_service.download_evidence.return_value = (
-            log_content.encode(),
-            "app.log",
-            "text/plain",
+        # Storage redesign 2026-04 phase 2: tool reads file via
+        # storage_service.retrieve_file (case-embedded path).
+        tool.storage_service.retrieve_file = AsyncMock(
+            return_value=log_content.encode()
         )
+
+        case = MagicMock()
+        case.case_id = "case_123"
+        case.evidence = [_make_evidence(content_ref="evidence/case_123/app.log")]
 
         return ToolContext(
             session_id="sess_1",
             case_id="case_123",
             organization_id="org_1",
             user_id="user_1",
-            evidence_service=evidence_service,
+            in_memory_case=case,
         )
 
     @pytest.mark.asyncio
@@ -396,7 +438,7 @@ class TestTruncationReporting:
     """Tests for result truncation transparency."""
 
     @pytest.fixture
-    def many_matches_context(self):
+    def many_matches_context(self, tool):
         """Context with content that produces many non-overlapping matches."""
         evidence = MagicMock()
         evidence.case_id = "case_123"
@@ -412,20 +454,20 @@ class TestTruncationReporting:
                 lines.append(f"2024-01-15 10:{i:04d} INFO normal operation")
         content = "\n".join(lines)
 
-        evidence_service = AsyncMock()
-        evidence_service.get_evidence.return_value = evidence
-        evidence_service.download_evidence.return_value = (
-            content.encode(),
-            "app.log",
-            "text/plain",
-        )
+        # Storage redesign 2026-04 phase 2: tool reads file via
+        # storage_service.retrieve_file (case-embedded path).
+        tool.storage_service.retrieve_file = AsyncMock(return_value=content.encode())
+
+        case = MagicMock()
+        case.case_id = "case_123"
+        case.evidence = [_make_evidence(content_ref="evidence/case_123/app.log")]
 
         return ToolContext(
             session_id="sess_1",
             case_id="case_123",
             organization_id="org_1",
             user_id="user_1",
-            evidence_service=evidence_service,
+            in_memory_case=case,
         )
 
     @pytest.mark.asyncio
@@ -488,7 +530,7 @@ class TestMaxResultsOverride:
     """Tests for LLM-requested max_results parameter."""
 
     @pytest.fixture
-    def many_lines_context(self):
+    def many_lines_context(self, tool):
         """Context with many matching lines."""
         evidence = MagicMock()
         evidence.case_id = "case_123"
@@ -499,26 +541,29 @@ class TestMaxResultsOverride:
         ]
         content = "\n".join(lines)
 
-        evidence_service = AsyncMock()
-        evidence_service.get_evidence.return_value = evidence
-        evidence_service.download_evidence.return_value = (
-            content.encode(),
-            "app.log",
-            "text/plain",
-        )
+        # Storage redesign 2026-04 phase 2: tool reads file via
+        # storage_service.retrieve_file (case-embedded path).
+        tool.storage_service.retrieve_file = AsyncMock(return_value=content.encode())
+
+        case = MagicMock()
+        case.case_id = "case_123"
+        case.evidence = [_make_evidence(content_ref="evidence/case_123/app.log")]
 
         return ToolContext(
             session_id="sess_1",
             case_id="case_123",
             organization_id="org_1",
             user_id="user_1",
-            evidence_service=evidence_service,
+            in_memory_case=case,
         )
 
     @pytest.mark.asyncio
     async def test_max_results_override_increases_limit(self, many_lines_context):
         """LLM can request more results via max_results parameter."""
-        tool = SearchFileTool(context_lines=0, max_results=3)
+        content = "\n".join(
+            f"2024-01-15 10:30:{i % 60:02d} ERROR failure #{i}" for i in range(100)
+        ).encode()
+        tool = _make_search_tool_with_storage(content, context_lines=0, max_results=3)
         result = await tool.execute_with_context(
             params={"evidence_id": "ev_abc", "query": "ERROR", "max_results": 50},
             context=many_lines_context,
@@ -530,7 +575,10 @@ class TestMaxResultsOverride:
     @pytest.mark.asyncio
     async def test_max_results_capped_at_ceiling(self, many_lines_context):
         """max_results is capped at MAX_RESULTS_CEILING (200)."""
-        tool = SearchFileTool(context_lines=0, max_results=3)
+        content = "\n".join(
+            f"2024-01-15 10:30:{i % 60:02d} ERROR failure #{i}" for i in range(100)
+        ).encode()
+        tool = _make_search_tool_with_storage(content, context_lines=0, max_results=3)
         result = await tool.execute_with_context(
             params={"evidence_id": "ev_abc", "query": "ERROR", "max_results": 999},
             context=many_lines_context,
@@ -544,7 +592,10 @@ class TestMaxResultsOverride:
     @pytest.mark.asyncio
     async def test_default_max_results_when_not_specified(self, many_lines_context):
         """Without max_results param, uses the tool's default."""
-        tool = SearchFileTool(context_lines=0, max_results=5)
+        content = "\n".join(
+            f"2024-01-15 10:30:{i % 60:02d} ERROR failure #{i}" for i in range(100)
+        ).encode()
+        tool = _make_search_tool_with_storage(content, context_lines=0, max_results=5)
         result = await tool.execute_with_context(
             params={"evidence_id": "ev_abc", "query": "ERROR"},
             context=many_lines_context,
@@ -560,7 +611,7 @@ class TestCountOutputFormat:
     """Tests for output_format='count' — compact results for aggregation."""
 
     @pytest.fixture
-    def ip_log_context(self):
+    def ip_log_context(self, tool):
         """Context simulating HDFS log with many IPs."""
         evidence = MagicMock()
         evidence.case_id = "case_123"
@@ -581,20 +632,20 @@ class TestCountOutputFormat:
                 )
         content = "\n".join(lines)
 
-        evidence_service = AsyncMock()
-        evidence_service.get_evidence.return_value = evidence
-        evidence_service.download_evidence.return_value = (
-            content.encode(),
-            "hdfs.log",
-            "text/plain",
-        )
+        # Storage redesign 2026-04 phase 2: tool reads file via
+        # storage_service.retrieve_file (case-embedded path).
+        tool.storage_service.retrieve_file = AsyncMock(return_value=content.encode())
+
+        case = MagicMock()
+        case.case_id = "case_123"
+        case.evidence = [_make_evidence(content_ref="evidence/case_123/hdfs.log")]
 
         return ToolContext(
             session_id="sess_1",
             case_id="case_123",
             organization_id="org_1",
             user_id="user_1",
-            evidence_service=evidence_service,
+            in_memory_case=case,
         )
 
     @pytest.mark.asyncio
@@ -650,7 +701,20 @@ class TestCountOutputFormat:
     @pytest.mark.asyncio
     async def test_count_defaults_to_high_max_results(self, ip_log_context):
         """Count mode defaults to MAX_RESULTS_CEILING, not the tool's default."""
-        tool = SearchFileTool(max_results=3)  # Low default for excerpts
+        # Build matching content (must mirror ip_log_context fixture).
+        lines = []
+        for i in range(200):
+            if i % 4 == 0:
+                lines.append(
+                    f"081109 2035{i:02d} INFO dfs.DataNode: "
+                    f"Receiving block from /10.251.{i % 256}.{(i * 7) % 256}:50010"
+                )
+            else:
+                lines.append(
+                    f"081109 2035{i:02d} INFO dfs.NameSystem: "
+                    f"addStoredBlock: blockMap updated"
+                )
+        tool = _make_search_tool_with_storage("\n".join(lines).encode(), max_results=3)
         result = await tool.execute_with_context(
             params={
                 "evidence_id": "ev_abc",
@@ -704,7 +768,22 @@ class TestCountOutputFormat:
         This is the key advantage: for 'how many unique IPs?' the LLM gets
         all 50 matched lines individually, not merged into a few context blobs.
         """
-        tool = SearchFileTool(context_lines=3, max_results=200)
+        # Build matching content (must mirror ip_log_context fixture).
+        lines = []
+        for i in range(200):
+            if i % 4 == 0:
+                lines.append(
+                    f"081109 2035{i:02d} INFO dfs.DataNode: "
+                    f"Receiving block from /10.251.{i % 256}.{(i * 7) % 256}:50010"
+                )
+            else:
+                lines.append(
+                    f"081109 2035{i:02d} INFO dfs.NameSystem: "
+                    f"addStoredBlock: blockMap updated"
+                )
+        tool = _make_search_tool_with_storage(
+            "\n".join(lines).encode(), context_lines=3, max_results=200
+        )
 
         # Excerpts mode: adjacent matches merge into fewer windows
         excerpts_result = await tool.execute_with_context(

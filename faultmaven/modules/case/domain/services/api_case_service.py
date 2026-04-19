@@ -43,7 +43,6 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
     CaseStatus,
-    EvidenceListFilter,
     ICaseRepository,
     InvestigationStrategy,
 )
@@ -563,16 +562,10 @@ class APICaseService(BaseService):
                     result["sessions"] = []
 
             if include_evidence:
-                try:
-                    # EvidenceListFilter imported from contracts at module level
-                    filters = EvidenceListFilter(case_id=case_id, limit=100, offset=0)
-                    evidence_list, _ = await self.case_repo.list_standalone_evidence(
-                        filters
-                    )
-                    result["evidence"] = evidence_list
-                except Exception as e:
-                    self.log_error("get_case_evidence", e, case_id=case_id)
-                    result["evidence"] = []
+                # Storage redesign 2026-04 phase 2: standalone evidence path is
+                # deleted. Evidence is case-tied only and lives on `case.evidence`,
+                # which the case repository loads via `_load_evidence_for_case`.
+                result["evidence"] = list(getattr(case, "evidence", []) or [])
 
             if include_executions:
                 try:

@@ -13,10 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
-    DatabaseEvidenceArtifactRepository,
-)
 
+# DatabaseEvidenceArtifactRepository removed in storage redesign 2026-04
+# phase 2 (standalone evidence path deletion).
 # AgentExecutionRepository removed - agent executions now handled by ICaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
@@ -93,13 +92,8 @@ async def session_repository(benchmark_session) -> DatabaseSessionRepository:
     return DatabaseSessionRepository(benchmark_session)
 
 
-@pytest.fixture
-async def evidence_artifact_repository(
-    benchmark_session,
-) -> DatabaseEvidenceArtifactRepository:
-    """Create evidence artifact repository for benchmarks."""
-    return DatabaseEvidenceArtifactRepository(benchmark_session)
-
+# evidence_artifact_repository fixture removed in storage redesign 2026-04
+# phase 2 (standalone evidence path deletion). Evidence is case-tied only.
 
 # agent_execution_repository fixture removed - no longer needed
 

@@ -30,9 +30,15 @@ class ToolContext:
         case_id: Case ID the session belongs to
         organization_id: Organization ID for authorization
         user_id: User ID making the request
-        evidence_service: Service for accessing evidence artifacts
+        case_repository: Case repository for loading case + embedded evidence
+            (Optional[Any] to avoid an import-linter violation against the
+            case module's infrastructure layer; the orchestrator passes its
+            ICaseRepository in directly).
         execution_id: Current agent execution ID
         metadata: Additional context metadata
+        in_memory_case: Snapshot of the case at turn start (avoids re-fetching
+            and works around races where evidence persisted earlier this turn
+            isn't yet visible to a fresh repository read).
     """
 
     session_id: str
@@ -40,9 +46,7 @@ class ToolContext:
     organization_id: str
     user_id: str
     team_ids: List[str] = field(default_factory=list)
-    evidence_service: Optional[Any] = (
-        None  # APIEvidenceArtifactService (avoid import violation)
-    )
+    case_repository: Optional[Any] = None
     execution_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     in_memory_case: Optional[Any] = None
@@ -55,7 +59,7 @@ class ToolContext:
             organization_id=self.organization_id,
             user_id=self.user_id,
             team_ids=self.team_ids,
-            evidence_service=self.evidence_service,
+            case_repository=self.case_repository,
             execution_id=execution_id,
             metadata=self.metadata,
             in_memory_case=self.in_memory_case,
