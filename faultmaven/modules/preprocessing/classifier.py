@@ -114,6 +114,21 @@ FILE_UPLOAD_CONFIDENCE_BOOST = 0.03
 PAGE_CAPTURE_CONFIDENCE_BOOST = 0.02
 
 
+def _top_suggested_types(scores: dict, n: int = 3) -> List[DataType]:
+    """Top N data types by score, excluding UNANALYZABLE.
+
+    Used on classification_failed paths to surface candidate types for the
+    cooperative-clarification UX. Empty scores or all-zero scores return [].
+    """
+    filtered = [
+        (dt, s) for dt, s in scores.items() if dt != DataType.UNANALYZABLE and s > 0
+    ]
+    if not filtered:
+        return []
+    filtered.sort(key=lambda kv: -kv[1])
+    return [dt for dt, _ in filtered[:n]]
+
+
 # =============================================================================
 # Linux/Unix command-output signatures (Tier 0 command detection).
 #
@@ -906,6 +921,10 @@ class DataClassifier:
                     confidence=0.55,
                     source="rule_based",
                     classification_failed=True,
+                    suggested_types=[
+                        DataType.METRICS_AND_PERFORMANCE,
+                        DataType.STRUCTURED_CONFIG,
+                    ],
                 )
 
             return ClassificationResult(
@@ -913,16 +932,30 @@ class DataClassifier:
                 confidence=0.45,
                 source="rule_based",
                 classification_failed=True,
+                suggested_types=[
+                    DataType.UNSTRUCTURED_TEXT,
+                    DataType.DOCUMENTATION,
+                ],
             )
 
         best_type, best_score = max(scores.items(), key=lambda x: x[1])
 
         if best_score >= 1:
+            # Score-based path: surface the top-3 candidates from the scoring
+            # pass so the cooperative-clarification UX can offer them as
+            # clickable choices.
+            scored_suggestions = _top_suggested_types(scores, n=3)
+            # Ensure the chosen best_type is first — _top_suggested_types
+            # sorts by score which already places it first, but guard against
+            # ties.
+            if best_type not in scored_suggestions:
+                scored_suggestions = [best_type] + scored_suggestions[:2]
             return ClassificationResult(
                 data_type=best_type,
                 confidence=0.50,
                 source="rule_based_best_effort",
                 classification_failed=True,
+                suggested_types=scored_suggestions,
             )
 
         # 8. True fallback: nothing matched at all
@@ -931,6 +964,10 @@ class DataClassifier:
             confidence=0.30,
             source="rule_based",
             classification_failed=True,
+            suggested_types=[
+                DataType.UNSTRUCTURED_TEXT,
+                DataType.DOCUMENTATION,
+            ],
         )
 
     # =========================================================================

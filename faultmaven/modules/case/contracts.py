@@ -148,6 +148,26 @@ class ICaseRepository(Protocol):
         """Clean up expired/old cases."""
         ...
 
+    async def find_by_content_hash(
+        self, case_id: str, content_hash: str
+    ) -> Optional["Evidence"]:
+        """Return the oldest Evidence in this case whose content_hash matches.
+
+        Used for per-case content-based deduplication: an attachment whose
+        SHA-256 content hash already exists on the same case returns the
+        existing Evidence instead of creating a new row.
+
+        Args:
+            case_id: Case to search within (scope is per-case, not global).
+            content_hash: SHA-256 hex of UTF-8 text (as produced by
+                PreprocessingService.classify_and_extract).
+
+        Returns:
+            The oldest matching Evidence (by collection timestamp) if found,
+            None otherwise. NULL content_hash rows are never matched.
+        """
+        ...
+
     # Report operations (TD-001: reports stored via Case repository)
     async def add_report(self, report: CaseReport) -> CaseReport:
         """Save report to persistence layer."""

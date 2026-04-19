@@ -132,6 +132,14 @@ class SessionlessCaseRepository(CaseRepository):
             repo = _get_repository_for_session(session)
             return await repo.delete(case_id)
 
+    async def find_by_content_hash(
+        self, case_id: str, content_hash: str
+    ) -> Evidence | None:
+        """Find oldest Evidence in a case whose content_hash matches."""
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            return await repo.find_by_content_hash(case_id, content_hash)
+
     async def search_by_keyword(
         self, user_id: str, keyword: str, limit: int = 50
     ) -> list[Case]:

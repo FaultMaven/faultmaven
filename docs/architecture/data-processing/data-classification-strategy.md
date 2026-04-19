@@ -24,7 +24,7 @@
 9. [Command-Output Classification](#command-output-classification)
 10. [Disambiguation Helpers](#disambiguation-helpers)
 11. [Confidence Thresholds](#confidence-thresholds)
-12. [`classification_failed` Path (User Modal)](#classification_failed-path-user-modal)
+12. [`classification_failed` Path (Cooperative Clarification)](#classification_failed-path-cooperative-clarification)
 13. [Telemetry](#telemetry)
 14. [Future Work](#future-work)
 
@@ -42,7 +42,7 @@ Submitted content can have overlapping characteristics (logs contain errors, met
 2. **Robustness** — graceful degradation on ambiguous cases.
 3. **Speed** — <100 ms, zero LLM calls in Tier 0.
 4. **Explainability** — every decision carries a `source` tag (user_override / agent_hint / source_url / browser_context / rule_based / rule_based_best_effort).
-5. **Frontend fallback** — when confidence falls below 0.50 the classifier sets `classification_failed=True`, and the frontend prompts the user to pick the type.
+5. **Cooperative-clarification fallback** — when confidence falls below 0.50 the classifier sets `classification_failed=True` and populates `suggested_types`. The agent still runs the turn best-effort on the raw file; after the turn, `InvestigationService` injects COOPERATIVE suggestions the user can click to re-prompt with the correct type.
 
 ### Architectural Position
 
@@ -110,8 +110,8 @@ class ClassificationResult(BaseModel):
         "rule_based",
         "rule_based_best_effort",
     ]
-    classification_failed: bool    # True when confidence < 0.50 (triggers user modal)
-    suggested_types: Optional[List[DataType]]  # Shown in modal
+    classification_failed: bool    # True when confidence < 0.50 (triggers cooperative-clarification suggestions)
+    suggested_types: Optional[List[DataType]]  # Populated on every classification_failed path; drives cooperative-clarification COOPERATIVE suggestions
     source_type: Optional[str]     # page_capture / user_paste / file_upload
                                    # (propagated from source_metadata)
 ```
@@ -320,7 +320,7 @@ A CSV/TSV file is classified as `METRICS_AND_PERFORMANCE` (at 0.55, `classificat
 2. **Data density**: ≥10 data rows in the sample (a real dataset, not a stub).
 3. **Numeric/metric evidence**: numeric-cell ratio ≥10% OR ≥1 metrics-vocabulary keyword matched.
 
-Otherwise the file falls back to `UNSTRUCTURED_TEXT` at 0.45, also with `classification_failed=True`. Both paths surface the frontend modal so the user can correct.
+Otherwise the file falls back to `UNSTRUCTURED_TEXT` at 0.45, also with `classification_failed=True`. Both paths populate `suggested_types` and surface cooperative-clarification suggestions so the user can re-prompt with the correct type.
 
 ---
 
@@ -330,24 +330,31 @@ Named in `CONFIDENCE_THRESHOLDS` (classifier.py):
 
 ```python
 CONFIDENCE_THRESHOLDS = {
-    "classification_failed": 0.50,   # below → classification_failed=True → user modal
+    "classification_failed": 0.50,   # below → classification_failed=True → cooperative-clarification suggestions
     "auto_accept": 0.85,             # at/above → auto-accept in downstream UX
 }
 ```
 
-Thresholds are named so downstream UX (frontend modal, agent tools) can reason about confidence bands symbolically.
+Thresholds are named so downstream UX (cooperative-clarification injector, agent tools) can reason about confidence bands symbolically.
 
 ---
 
-## `classification_failed` Path (User Modal)
+## `classification_failed` Path (Cooperative Clarification)
 
-When classification produces `confidence < 0.50`, or when the CSV/TSV structural gate yields low-confidence results, `classification_failed=True`. The service then short-circuits extraction and returns a placeholder `PreprocessingResult` with:
+When classification produces `confidence < 0.50`, or when the CSV/TSV structural gate yields low-confidence results, `classification_failed=True`. Every such path populates `ClassificationResult.suggested_types` with 2–3 candidate DataTypes from the scoring pass. The service short-circuits extraction and returns a placeholder `PreprocessingResult` with:
 
 - `extraction_method = "classification_failed"`
 - Content: a user-facing text like `[Classification uncertain for 'foo.csv' — requesting user input] Suggested types: metrics_and_performance, unstructured_text`
-- `extraction_metadata.suggested_types`: list of candidate types
+- `extraction_metadata.suggested_types`: list of candidate DataType values (as strings)
 
-The frontend detects the marker, renders a modal listing `suggested_types`, and re-submits the attachment with `user_override` set. That goes through Priority 1 (confidence 1.0, no further inference).
+The agent still runs the turn using its file-reading tools (`search_file`, `deep_analysis`), producing a best-effort answer from the raw bytes. After the turn runs, `InvestigationService._build_classification_clarification_suggestions` injects **COOPERATIVE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
+
+- Up to 3 pre-composed `query_submit` messages, one per suggested type: *"Treat the previously uploaded file ('foo.csv') as metrics or performance data and analyze it."*
+- Plus a **"Something else"** fallback that submits *"Treat the previously uploaded file as unstructured text and try to analyze it."*
+
+When the user clicks a card, the next turn runs normally with the pre-composed message. The agent reads the raw file again with the user-provided type hint in its context. No re-classification at the classifier layer, no Evidence mutation, no new LLM integration — deterministic post-turn injection using the existing COOPERATIVE suggestion plumbing.
+
+A rejected alternative: an "LLM rescue" pass that would auto-classify ambiguous files via a cheap LLM call. Rejected because COOPERATIVE suggestions are zero-cost, user-authoritative (ground truth), and have no telemetry prerequisite. See [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §2.5.
 
 A parallel path exists for `UNANALYZABLE`:
 
@@ -374,5 +381,5 @@ This lets us query classification distributions (e.g., "what fraction of turns h
 
 ## Future Work
 
-- **LLM rescue for `classification_failed=True`.** Today these inputs go straight to a user modal. A rescue pass — calling `CLASSIFIER_PROVIDER` (Groq / Fireworks tier) on the ambiguous ~5% before asking the user — would remove friction for common cases (short snippets, ambiguous CSVs) at a ~400 ms latency cost on the slow path only. Gate behind a settings flag; measure hit rate and accuracy before defaulting on.
 - **Classification telemetry dashboard.** Use the Opik tags above to visualise classification outcomes over time and flag pattern drift (e.g., new URL patterns that should be added, command-output variants that are being missed).
+- **Cooperative-clarification "pick one" visual grouping** (frontend UX polish). Today 3–4 clarification suggestions render as a flat list of clickable bullets — functionally correct but not visually framed as mutually-exclusive alternatives. A dedicated `<ClarificationGroup>` component with a "Is this …?" header would improve discoverability. Tracked as a Dashboard/Copilot frontend task; not blocking any backend behavior.

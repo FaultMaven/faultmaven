@@ -417,6 +417,18 @@ class AttachmentResult(BaseModel):
         default="file_upload",
         description="Input origin: file_upload | text_paste | page_capture",
     )
+    duplicate_of: Optional[str] = Field(
+        default=None,
+        description=(
+            "If set, this attachment was a per-case content-hash duplicate of an "
+            "earlier upload. No new Evidence was created; this field carries the "
+            "existing evidence_id. Frontend should render a non-blocking toast."
+        ),
+    )
+    duplicate_turn: Optional[int] = Field(
+        default=None,
+        description="Turn number where the original was uploaded (for toast text).",
+    )
 
 
 class SuggestedActionResponse(BaseModel):

@@ -149,6 +149,31 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
+    async def find_by_content_hash(
+        self, case_id: str, content_hash: str
+    ) -> Optional[Evidence]:
+        """
+        Return the oldest Evidence in this case whose content_hash matches.
+
+        Used for per-case content-based deduplication: an attachment whose
+        SHA-256 content hash already exists on the same case returns the
+        existing Evidence instead of creating a new row.
+
+        Args:
+            case_id: Case to search within (scope is per-case, not global).
+            content_hash: SHA-256 hex of UTF-8 text (as produced by
+                PreprocessingService.classify_and_extract).
+
+        Returns:
+            The oldest matching Evidence (by collection timestamp) if found,
+            None otherwise. NULL content_hash rows are never matched.
+
+        Raises:
+            RepositoryException: If lookup fails
+        """
+        pass
+
+    @abstractmethod
     async def search(
         self,
         query: str,
@@ -538,6 +563,25 @@ class InMemoryCaseRepository(CaseRepository):
             del self._cases[case_id]
             return True
         return False
+
+    async def find_by_content_hash(
+        self, case_id: str, content_hash: str
+    ) -> Optional[Evidence]:
+        """Find oldest Evidence matching content_hash within a single case."""
+        if not content_hash:
+            return None
+        case = self._cases.get(case_id)
+        if case is None:
+            return None
+        matches = [
+            ev
+            for ev in case.evidence
+            if getattr(ev, "content_hash", None) == content_hash
+        ]
+        if not matches:
+            return None
+        matches.sort(key=lambda ev: getattr(ev, "collected_at_turn", 0) or 0)
+        return matches[0]
 
     async def search(
         self,

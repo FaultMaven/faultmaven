@@ -292,9 +292,9 @@ Coverage metadata is additive — appended after the separator, never modifying 
 
 When the classifier has low confidence (< 0.60), it still has partial pattern scores from its rule-based analysis. Instead of always falling back to `UNSTRUCTURED_TEXT`, v4.0 uses the highest-scoring candidate type.
 
-**v3.2 behavior**: Low confidence → `UNSTRUCTURED_TEXT` with `classification_failed=True` → user modal for file uploads, no modal for pasted text → TEXT extractor (headings + key sentences — minimal value).
+**v3.2 behavior**: Low confidence → `UNSTRUCTURED_TEXT` with `classification_failed=True` → TEXT extractor (headings + key sentences — minimal value).
 
-**v4.0 behavior**: Low confidence → highest-scoring candidate type → that type's extractor gets a chance → if the extractor produces useful output, we keep it; if not, the extractor's own fallback degrades gracefully.
+**v4.0+ behavior**: Low confidence → highest-scoring candidate type → that type's extractor gets a chance → if the extractor produces useful output, we keep it; if not, the extractor's own fallback degrades gracefully. Every `classification_failed=True` path also populates `suggested_types` to drive the cooperative-clarification UX described in §2.5.
 
 ```python
 # In DataClassifier._classify_with_rules(), before the final fallback:
@@ -308,11 +308,13 @@ scores = {
 best_type, best_score = max(scores.items(), key=lambda x: x[1])
 
 if best_score >= 1:  # At least one pattern matched something
+    scored_suggestions = _top_suggested_types(scores, n=3)
     return ClassificationResult(
         data_type=best_type,
         confidence=0.50,
         source="rule_based_best_effort",
         classification_failed=True,  # Still flagged as uncertain
+        suggested_types=scored_suggestions,  # Drives cooperative clarification
     )
 
 # True fallback: nothing matched at all → UNSTRUCTURED_TEXT
@@ -321,6 +323,7 @@ return ClassificationResult(
     confidence=0.30,
     source="rule_based",
     classification_failed=True,
+    suggested_types=[DataType.UNSTRUCTURED_TEXT, DataType.DOCUMENTATION],
 )
 ```
 
@@ -390,11 +393,24 @@ investigation_service.process_turn(payload: TurnPayload)
 
 - `source_type == "page_capture"` → `page_capture_passthrough` (copilot already produced structured markdown).
 - `data_type == UNANALYZABLE` → placeholder with `extraction_method="none"`.
-- `classification_failed=True` (confidence < 0.50) → placeholder with `extraction_method="classification_failed"` plus `suggested_types` in `extraction_metadata` for the frontend modal.
+- `classification_failed=True` (confidence < 0.50) → placeholder with `extraction_method="classification_failed"` plus `suggested_types` in `extraction_metadata` for the cooperative-clarification UX (see §2.5 below).
 
 Otherwise the type-specific extractor runs under a 2-second timeout (see §4.9). Output is a `PreprocessingResult` — see §7.1 for the full field list.
 
-**Deduplication** is a known gap: `PreprocessingResult.content_hash` is computed but not consulted by any repository today. Adding dedup requires a `find_by_content_hash()` method on the case/evidence repository plus a short-circuit in `_preprocess_attachment`. Tracked as future work in [evidence-failure-modes.md](./evidence-failure-modes.md).
+**Deduplication is live.** Per-case content-hash deduplication short-circuits duplicate uploads: before creating a new `Evidence` row, `_preprocess_attachment` calls `ICaseRepository.find_by_content_hash(case_id, content_hash)`. A match returns the existing `Evidence` and skips storage (no re-write of the raw file). The per-attachment turn response carries `duplicate_of` and `duplicate_turn` so the frontend can render a non-blocking toast. Scope is per-case only — the same content can be uploaded to different cases without interference. Implementation: `ICaseRepository.find_by_content_hash` contract with implementations on `SessionlessCaseRepository` (production), `SQLiteCaseRepository`, `PostgreSQLHybridCaseRepository`, and `InMemoryCaseRepository`.
+
+### 2.5 Cooperative Clarification on Low-Confidence Classification
+
+When the heuristic classifier returns `classification_failed=True`, every failure path populates `ClassificationResult.suggested_types` with up to 3 candidate types from its scoring pass. `PreprocessingService` forwards these via `extraction_metadata["suggested_types"]`.
+
+The agent still attempts the investigation in the same turn — classification uncertainty is not a hard block. After the turn runs, `InvestigationService` injects **COOPERATIVE clarification suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
+
+- Up to 3 pre-composed `query_submit` messages like *"Treat the previously uploaded file (`foo.txt`) as application logs and analyze it."* — one per suggested type.
+- Plus a **"Something else"** fallback that submits *"Treat the previously uploaded file as unstructured text and try to analyze it."*
+
+The user clicks a card; the next turn runs normally with the pre-composed message. The agent reads the raw file via its existing tools (`search_file`, `deep_analysis`) using the user-provided type hint. There is no re-classification at the classifier layer, no evidence mutation, no new LLM integration — just the existing COOPERATIVE suggestion plumbing driving a deterministic post-turn injector in `InvestigationService`.
+
+Supersedes the rejected **Classifier LLM rescue** proposal (cheaper, user-authoritative, no telemetry prerequisite).
 
 ---
 
@@ -1110,9 +1126,9 @@ These items are out of scope for the initial v4.0 implementation but are documen
 | **Cross-file correlation** | Tier 3 analysis across multiple files simultaneously | Requires multi-file context windowing |
 | **Vectorization cost tracking** | Track per-case vectorization costs for billing | Enterprise feature |
 | **Deep analysis file size cap** | `DEEP_ANALYSIS_MAX_FILE_SIZE_MB` config to reject oversized files before sending to Tier 3 backend | When large file uploads are common |
-| **Content-hash deduplication** | `PreprocessingResult.content_hash` is computed but never consulted. Closing this requires `find_by_content_hash()` on the case/evidence repository + a short-circuit in `_preprocess_attachment`. Design decisions are finalised (per-case scope, text-hash equality, toast UX). | Implementation plan: [`docs/working/PLAN-content-hash-deduplication.md`](../../working/PLAN-content-hash-deduplication.md) |
-| **Classifier LLM rescue** | Route `classification_failed=True` inputs through `CLASSIFIER_PROVIDER` before the user modal (~5% of inputs, ~400 ms added latency on slow path only). Behind settings flag, default off. | Implementation plan: [`docs/working/PLAN-classifier-llm-rescue.md`](../../working/PLAN-classifier-llm-rescue.md) (after telemetry baseline) |
-| **Evidence failure modes (orphan cleanup, async retry, monitoring)** | Scenario 3 (category fallback) and content-hash consistency are done. Remaining milestones: TTL-based orphan cleanup, async LLM timeout recovery at turn processing, failure-mode dashboards. TTL approach chosen over reference counting. | Implementation plan: [`docs/working/PLAN-evidence-failure-modes-implementation.md`](../../working/PLAN-evidence-failure-modes-implementation.md) |
+| ~~**Content-hash deduplication**~~ | **Done.** Per-case dedup via `ICaseRepository.find_by_content_hash()` short-circuits duplicate uploads. Turn response carries `duplicate_of` + `duplicate_turn`. See §2.4. | Done |
+| ~~**Classifier cooperative clarification**~~ | **Done.** On `classification_failed=True`, `_build_classification_clarification_suggestions` in `InvestigationService` injects COOPERATIVE choices built from the classifier's `suggested_types` + a "Something else" fallback. No LLM call. See §2.5. | Done |
+| **Evidence failure modes** | Orphan-file cleanup (M1) and monitoring scaffolding (M2) **done**. Scenario 2 (async LLM timeout recovery at turn processing) **deferred** — current error-path UX already provides specific error codes + `Retry-After` headers; revisit only if production telemetry shows user harm. See [evidence-failure-modes.md](./evidence-failure-modes.md). | Partial done / revisit on telemetry signal |
 | **DIFF_PATCH extractor** | Parse unified diffs / git patches — files changed, lines added/removed | When deployment-change investigations are common |
 | **THREAD_DUMP extractor** | JVM thread dump parsing — deadlock detection, lock contention | When Java-heavy user base emerges |
 | ~~**Page Capture Stage 2: Query-Time Reranking**~~ | **Implemented in v5.2.** `_rerank_page_capture_sections()` in `context_builder.py` splits page capture structural indexes on `\n##` headings, scores each section against user query via normalised keyword overlap (stopwords excluded), reorders so query-relevant content appears first. Preamble (`[captured_at: …]` + page title) pinned at position 0. Runs before per-item char cap so relevant sections survive truncation. Triggered only for `extraction_method="page_capture_passthrough"` evidence. | ~~Post-v5.1~~ Done |

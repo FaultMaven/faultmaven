@@ -1,402 +1,251 @@
-"""Storage Cleanup Job for Orphaned Files
+"""Storage Cleanup Job — TTL-Based Orphan File Removal
 
-This module implements garbage collection for orphaned files in storage that
-were uploaded but never linked to evidence records due to processing failures.
+Implements per PLAN-evidence-failure-modes-implementation.md §M1. Deletes
+files whose sidecar metadata shows `linked=False` AND whose `uploaded_at`
+is older than `orphan_file_ttl_hours`. Files without sidecars are skipped
+(unknown state is not a license to delete).
 
-Design Reference:
-- docs/architecture/data-processing/EVIDENCE-CREATION-FAILURE-MODES.md
-- Storage Cleanup Strategy (Approach 1: TTL-Based Cleanup)
+## Sidecar pairing
 
-Key Features:
-- TTL-based cleanup (files >24h old with no evidence)
-- Batch processing to avoid overwhelming storage API
-- Metrics tracking for orphaned file rate
-- Safe deletion with existence checks
-- Scheduled daily execution (2 AM)
+Every file stored via `FileStorageService.store_file()` gets a companion
+`{filename}.meta.json` sidecar with:
 
-Scheduling:
-- Run daily at 2 AM via cron or job scheduler
-- Usage: python -m faultmaven.jobs.run storage_cleanup
+    {
+        "case_id": "case_abc",
+        "organization_id": "org_xyz",
+        "uploaded_at": "2026-04-18T10:00:00+00:00",
+        "linked": false,
+        "schema_version": 1
+    }
+
+`FileStorageService.mark_linked()` flips `linked=true` once an Evidence row
+is created referencing the file (called from
+`InvestigationService._preprocess_attachment`).
+
+## Safety protocol
+
+This job ships with `orphan_cleanup_enabled=False` and `dry_run=True` by
+default. Per the M1 canary protocol: run dry-run for ≥48 hours, eyeball
+logs, fix any unexpected entries in the `mark_linked` path, then flip
+`dry_run=False`.
+
+## Usage
+
+    python -m faultmaven.jobs.run storage_cleanup
+    python -m faultmaven.jobs.run storage_cleanup --dry-run
 """
 
+import json
 import logging
-from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-from faultmaven.container import container
-from faultmaven.infrastructure.storage.base import IFileStorageBackend, StoredFile
+from faultmaven.infrastructure.observability.evidence_metrics import (
+    EVIDENCE_ORPHAN_FILES_DELETED_TOTAL,
+    EVIDENCE_ORPHAN_FILES_FOUND_TOTAL,
+)
 
 logger = logging.getLogger(__name__)
 
-# Job metadata for CLI runner
-JOB_DESCRIPTION = "Clean up orphaned files in storage (>24h old with no evidence)"
+JOB_DESCRIPTION = (
+    "Delete stored files whose sidecar metadata shows linked=False and "
+    "uploaded_at older than the TTL (PLAN-evidence-failure-modes M1)."
+)
 
-# Configuration
-DEFAULT_TTL_HOURS = 24
-DEFAULT_BATCH_SIZE = 100
-EVIDENCE_PREFIX = "evidence/"
+SIDECAR_SUFFIX = ".meta.json"
 
 
 async def cleanup_orphaned_files(
-    ttl_hours: int = DEFAULT_TTL_HOURS,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    dry_run: bool = False,
+    storage_root: str,
+    ttl_hours: int,
+    dry_run: bool,
 ) -> Dict[str, Any]:
-    """
-    Delete orphaned files uploaded >TTL hours ago with no evidence record.
+    """Sweep the storage root and delete orphaned files.
 
-    This job scans the evidence storage bucket for files that:
-    1. Were uploaded more than ttl_hours ago (based on metadata)
-    2. Have no corresponding evidence record in the database
-
-    These files are "orphaned" - they were uploaded successfully but the
-    subsequent LLM analysis or database insert failed, and all retries
-    were exhausted or timed out.
+    Returns a stats dict with counts for observability / CLI output.
+    Emits two Prometheus counters per run:
+      - ``faultmaven_evidence_orphan_files_found_total`` (+= found count)
+      - ``faultmaven_evidence_orphan_files_deleted_total`` (+= deleted count;
+        not incremented when dry_run is True)
 
     Args:
-        ttl_hours: Delete files older than this many hours (default: 24)
-        batch_size: Maximum files to process per run (default: 100)
-        dry_run: If True, log actions without deleting (default: False)
+        storage_root: Absolute path to the FileStorageService storage root.
+        ttl_hours: Delete only files whose sidecar `uploaded_at` is older
+            than this many hours. Younger files are always safe.
+        dry_run: When True, log `would delete` without deleting.
 
     Returns:
-        Result dictionary with cleanup statistics
-
-    Metrics:
-        - evidence.orphaned_files_found (gauge)
-        - evidence.orphaned_files_cleaned (gauge)
-        - evidence.orphaned_files_failed (counter)
+        Dict with keys: ``status``, ``storage_root``, ``ttl_hours``,
+        ``dry_run``, ``scanned``, ``skipped_no_sidecar``,
+        ``skipped_linked``, ``skipped_within_ttl``, ``found``, ``deleted``,
+        ``errors``.
     """
-    logger.info(
-        f"Starting storage cleanup job (TTL: {ttl_hours}h, "
-        f"batch: {batch_size}, dry_run: {dry_run})"
-    )
+    root = Path(storage_root)
+    result: Dict[str, Any] = {
+        "status": "completed",
+        "storage_root": str(root),
+        "ttl_hours": ttl_hours,
+        "dry_run": dry_run,
+        "scanned": 0,
+        "skipped_no_sidecar": 0,
+        "skipped_linked": 0,
+        "skipped_within_ttl": 0,
+        "found": 0,
+        "deleted": 0,
+        "errors": 0,
+    }
 
-    start_time = datetime.now(UTC)
-
-    try:
-        # Get storage backend and case repository
-        storage_backend = container.get_storage_backend()
-        case_repository = container.get_case_repository()
-        metrics_collector = container.get_metrics_collector()
-
-        # Calculate cutoff time
-        cutoff_time = datetime.now(UTC) - timedelta(hours=ttl_hours)
-        logger.info(f"Cutoff time: {cutoff_time.isoformat()}")
-
-        # List files in evidence storage
-        files = await _list_evidence_files(
-            storage_backend=storage_backend,
-            prefix=EVIDENCE_PREFIX,
-        )
-
-        logger.info(f"Found {len(files)} total files in evidence storage")
-
-        # Filter files older than cutoff
-        old_files = []
-        for file_info in files:
-            if file_info.created_at < cutoff_time:
-                old_files.append(file_info)
-
-        logger.info(f"Found {len(old_files)} files older than {ttl_hours}h cutoff")
-
-        # Record total old files metric
-        try:
-            await metrics_collector.gauge(
-                "evidence.orphaned_files_found", len(old_files)
-            )
-        except Exception as e:
-            logger.warning(f"Failed to record metric: {e}")
-
-        # Check each file for evidence record
-        orphaned_files = []
-        checked_files = 0
-
-        for file_info in old_files[:batch_size]:  # Process in batches
-            checked_files += 1
-
-            # Check if evidence record exists for this file
-            evidence_exists = await _evidence_exists_for_file(
-                case_repository=case_repository, content_ref=file_info.key
-            )
-
-            if not evidence_exists:
-                orphaned_files.append(file_info)
-
-            # Log progress every 10 files
-            if checked_files % 10 == 0:
-                logger.info(f"Checked {checked_files}/{len(old_files)} files...")
-
-        logger.info(
-            f"Found {len(orphaned_files)} orphaned files "
-            f"(files without evidence records)"
-        )
-
-        # Delete orphaned files
-        deleted_count = 0
-        failed_deletes = []
-
-        for file_info in orphaned_files:
-            try:
-                if dry_run:
-                    logger.info(
-                        f"[DRY RUN] Would delete orphaned file: {file_info.key}"
-                    )
-                    deleted_count += 1
-                else:
-                    # Delete the file
-                    success = await storage_backend.delete_file(file_info.key)
-
-                    if success:
-                        logger.info(f"Deleted orphaned file: {file_info.key}")
-                        deleted_count += 1
-                    else:
-                        logger.warning(f"Failed to delete (not found): {file_info.key}")
-                        failed_deletes.append(
-                            {
-                                "key": file_info.key,
-                                "reason": "File not found during delete",
-                            }
-                        )
-
-            except Exception as e:
-                logger.error(f"Error deleting file {file_info.key}: {e}")
-                failed_deletes.append({"key": file_info.key, "error": str(e)})
-
-                # Record failure metric
-                try:
-                    await metrics_collector.increment("evidence.orphaned_files_failed")
-                except Exception:
-                    pass
-
-        # Record cleanup metrics
-        try:
-            await metrics_collector.gauge(
-                "evidence.orphaned_files_cleaned", deleted_count
-            )
-        except Exception as e:
-            logger.warning(f"Failed to record metric: {e}")
-
-        # Calculate duration
-        duration_seconds = (datetime.now(UTC) - start_time).total_seconds()
-
-        result = {
-            "status": "completed",
-            "ttl_hours": ttl_hours,
-            "batch_size": batch_size,
-            "dry_run": dry_run,
-            "total_files": len(files),
-            "old_files": len(old_files),
-            "checked_files": checked_files,
-            "orphaned_files": len(orphaned_files),
-            "deleted_count": deleted_count,
-            "failed_deletes": len(failed_deletes),
-            "failed_details": failed_deletes if failed_deletes else None,
-            "duration_seconds": duration_seconds,
-            "completed_at": datetime.now(UTC).isoformat(),
-        }
-
-        logger.info(
-            f"Storage cleanup completed: "
-            f"deleted {deleted_count} orphaned files "
-            f"in {duration_seconds:.2f}s"
-        )
-
+    if not root.exists():
+        logger.info("Storage root %s does not exist — nothing to clean", root)
         return result
 
-    except Exception as e:
-        logger.exception(f"Storage cleanup job failed: {e}")
-        return {
-            "status": "failed",
-            "error": str(e),
-            "duration_seconds": (datetime.now(UTC) - start_time).total_seconds(),
-        }
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=ttl_hours)
 
+    for sidecar_path in root.rglob(f"*{SIDECAR_SUFFIX}"):
+        result["scanned"] += 1
+        file_path = Path(str(sidecar_path)[: -len(SIDECAR_SUFFIX)])
 
-async def _list_evidence_files(
-    storage_backend: IFileStorageBackend,
-    prefix: str,
-) -> List[StoredFile]:
-    """
-    List all files in evidence storage with prefix.
+        try:
+            payload = json.loads(sidecar_path.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("Corrupt sidecar %s — skipping: %s", sidecar_path, e)
+            result["errors"] += 1
+            continue
 
-    Note: This is a simplified implementation. For production with S3,
-    implement pagination using list_objects_v2 with continuation tokens
-    to handle buckets with >1000 files.
-    """
-    files: List[StoredFile] = []
+        if payload.get("linked") is True:
+            result["skipped_linked"] += 1
+            continue
 
-    try:
-        # For filesystem backend, list directory
-        if storage_backend.get_storage_type().value == "filesystem":
-            files = await _list_filesystem_files(storage_backend, prefix)
+        uploaded_at_str = payload.get("uploaded_at")
+        if not uploaded_at_str:
+            logger.warning("Sidecar %s missing uploaded_at — skipping", sidecar_path)
+            result["errors"] += 1
+            continue
 
-        # For S3 backend, use list_objects
-        elif storage_backend.get_storage_type().value == "s3":
-            files = await _list_s3_files(storage_backend, prefix)
-
-        else:
+        try:
+            uploaded_at = datetime.fromisoformat(uploaded_at_str)
+        except ValueError:
             logger.warning(
-                f"Unsupported storage backend: {storage_backend.get_storage_type()}"
+                "Sidecar %s has unparseable uploaded_at=%r — skipping",
+                sidecar_path,
+                uploaded_at_str,
             )
+            result["errors"] += 1
+            continue
 
-    except Exception as e:
-        logger.error(f"Failed to list files with prefix {prefix}: {e}")
+        if uploaded_at > cutoff:
+            result["skipped_within_ttl"] += 1
+            continue
 
-    return files
+        # Candidate for deletion: unlinked AND past TTL.
+        result["found"] += 1
+        try:
+            EVIDENCE_ORPHAN_FILES_FOUND_TOTAL.inc()
+        except Exception:
+            pass
 
+        if dry_run:
+            logger.info(
+                "[DRY RUN] would delete orphan: %s (uploaded=%s, linked=False)",
+                file_path,
+                uploaded_at_str,
+            )
+            continue
 
-async def _list_filesystem_files(
-    storage_backend: IFileStorageBackend, prefix: str
-) -> List[StoredFile]:
-    """List files from filesystem storage backend."""
-    import os
-    from pathlib import Path
+        # Actually delete.
+        try:
+            if file_path.exists():
+                file_path.unlink()
+            sidecar_path.unlink()
+            result["deleted"] += 1
+            try:
+                EVIDENCE_ORPHAN_FILES_DELETED_TOTAL.inc()
+            except Exception:
+                pass
+            logger.info(
+                "Deleted orphan: %s (uploaded=%s)",
+                file_path,
+                uploaded_at_str,
+            )
+        except OSError as e:
+            logger.error("Failed to delete orphan %s: %s", file_path, e)
+            result["errors"] += 1
 
-    files: List[StoredFile] = []
-
-    try:
-        # Get storage root from backend
-        # Assuming filesystem backend has a root_path attribute
-        if hasattr(storage_backend, "root_path"):
-            root_path = Path(storage_backend.root_path)
-            evidence_path = root_path / prefix.rstrip("/")
-
-            if evidence_path.exists() and evidence_path.is_dir():
-                for file_path in evidence_path.rglob("*"):
-                    if file_path.is_file():
-                        # Get file metadata
-                        stat = file_path.stat()
-                        relative_key = str(file_path.relative_to(root_path))
-
-                        file_info = StoredFile(
-                            key=relative_key,
-                            size_bytes=stat.st_size,
-                            content_type="application/octet-stream",
-                            created_at=datetime.fromtimestamp(stat.st_ctime, tz=UTC),
-                            metadata=None,
-                        )
-                        files.append(file_info)
-
-    except Exception as e:
-        logger.error(f"Failed to list filesystem files: {e}")
-
-    return files
-
-
-async def _list_s3_files(
-    storage_backend: IFileStorageBackend, prefix: str
-) -> List[StoredFile]:
-    """
-    List files from S3 storage backend.
-
-    Note: For production, implement pagination to handle large buckets.
-    """
-    files: List[StoredFile] = []
-
-    try:
-        # S3 backend should have a method to list objects
-        # This is a placeholder - actual implementation depends on S3 backend
-        if hasattr(storage_backend, "list_objects"):
-            objects = await storage_backend.list_objects(prefix=prefix)
-
-            for obj in objects:
-                file_info = StoredFile(
-                    key=obj.get("Key", ""),
-                    size_bytes=obj.get("Size", 0),
-                    content_type=obj.get("ContentType", "application/octet-stream"),
-                    created_at=obj.get("LastModified", datetime.now(UTC)),
-                    metadata=obj.get("Metadata"),
-                )
-                files.append(file_info)
-
-    except Exception as e:
-        logger.error(f"Failed to list S3 files: {e}")
-
-    return files
-
-
-async def _evidence_exists_for_file(case_repository: Any, content_ref: str) -> bool:
-    """
-    Check if evidence record exists for the given content_ref.
-
-    This performs a database query to find any evidence with matching content_ref.
-
-    Returns:
-        True if evidence exists, False otherwise
-    """
-    try:
-        # Query all cases for evidence with matching content_ref
-        # This is expensive for large databases - consider adding an index on content_ref
-
-        # For now, check if repository has a method to query by content_ref
-        if hasattr(case_repository, "find_evidence_by_content_ref"):
-            evidence = await case_repository.find_evidence_by_content_ref(content_ref)
-            return evidence is not None
-
-        # Fallback: Query all cases (not recommended for production)
-        logger.warning(
-            "No efficient content_ref query method - falling back to full scan"
-        )
-
-        # Get all cases (limit to recent cases for performance)
-        # This is a placeholder - actual implementation depends on repository
-        all_cases = await case_repository.list_cases(limit=1000)
-
-        for case in all_cases:
-            if not hasattr(case, "evidence"):
-                continue
-
-            for evidence in case.evidence:
-                if evidence.content_ref == content_ref:
-                    return True
-
-        return False
-
-    except Exception as e:
-        logger.error(f"Failed to check evidence existence for {content_ref}: {e}")
-        # Err on the side of caution - assume evidence exists if check fails
-        return True
-
-
-# =============================================================================
-# Job Runner Integration
-# =============================================================================
+    logger.info(
+        "Storage cleanup %s — scanned=%d, found=%d, deleted=%d, "
+        "skipped_linked=%d, skipped_within_ttl=%d, skipped_no_sidecar=%d, errors=%d",
+        "DRY RUN" if dry_run else "live",
+        result["scanned"],
+        result["found"],
+        result["deleted"],
+        result["skipped_linked"],
+        result["skipped_within_ttl"],
+        result["skipped_no_sidecar"],
+        result["errors"],
+    )
+    return result
 
 
 async def run(
     settings: Any = None,
     container: Any = None,
-    ttl_hours: int = DEFAULT_TTL_HOURS,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    dry_run: bool = False,
+    ttl_hours: Optional[int] = None,
+    dry_run: Optional[bool] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """
-    Job runner entry point for CLI execution.
-
-    This function is called by faultmaven.jobs.run CLI runner.
+    """CLI entry point invoked by ``faultmaven.jobs.run``.
 
     Args:
-        settings: Application settings (injected by runner)
-        container: DI container (injected by runner)
-        ttl_hours: File age threshold for deletion
-        batch_size: Maximum files to process
-        dry_run: Preview mode without actual deletion
-        **kwargs: Additional arguments
+        settings: ``FaultMavenSettings`` injected by the runner.
+        container: DI container injected by the runner.
+        ttl_hours: Override for ``evidence_storage.orphan_file_ttl_hours``.
+        dry_run: Override for ``evidence_storage.orphan_cleanup_dry_run``.
+            Caller-supplied overrides win over settings — useful for manual
+            testing / one-shot invocations.
 
-    Returns:
-        Job result dictionary
+    The gate is:
+      1. ``evidence_storage.orphan_cleanup_enabled`` must be True, OR
+      2. caller must pass ``dry_run=True`` explicitly (safe to run anyway).
 
-    Usage:
-        python -m faultmaven.jobs.run storage_cleanup
-        python -m faultmaven.jobs.run storage_cleanup --dry-run
+    Otherwise the job exits with status="skipped" and no side effects.
     """
-    logger.info("Storage cleanup job started via CLI runner")
+    if settings is None:
+        from faultmaven.config.settings import get_settings
 
-    result = await cleanup_orphaned_files(
-        ttl_hours=ttl_hours, batch_size=batch_size, dry_run=dry_run
+        settings = get_settings()
+
+    ev_settings = settings.evidence_storage
+    effective_dry_run = (
+        ev_settings.orphan_cleanup_dry_run if dry_run is None else dry_run
+    )
+    effective_ttl_hours = (
+        ev_settings.orphan_file_ttl_hours if ttl_hours is None else ttl_hours
     )
 
-    logger.info(f"Storage cleanup job result: {result['status']}")
+    if not ev_settings.orphan_cleanup_enabled and not effective_dry_run:
+        logger.info(
+            "Storage cleanup skipped: orphan_cleanup_enabled=False and "
+            "dry_run=False. Set ORPHAN_CLEANUP_ENABLED=true or run with "
+            "--dry-run."
+        )
+        return {
+            "status": "skipped",
+            "reason": "orphan_cleanup_disabled",
+        }
 
-    return result
+    storage_root = os.path.abspath(ev_settings.evidence_storage_root)
+    logger.info(
+        "Storage cleanup starting (root=%s, ttl_hours=%d, dry_run=%s, " "enabled=%s)",
+        storage_root,
+        effective_ttl_hours,
+        effective_dry_run,
+        ev_settings.orphan_cleanup_enabled,
+    )
+
+    return await cleanup_orphaned_files(
+        storage_root=storage_root,
+        ttl_hours=effective_ttl_hours,
+        dry_run=effective_dry_run,
+    )
