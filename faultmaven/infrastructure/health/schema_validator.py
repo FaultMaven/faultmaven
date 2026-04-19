@@ -30,7 +30,6 @@ from sqlalchemy.orm import Session
 
 from faultmaven.infrastructure.persistence.models import (
     AgentExecutionModel,
-    AgentToolCallModel,
     AgentToolCallV2Model,
     Base,
     CaseActionModel,
@@ -123,7 +122,6 @@ class SchemaValidator:
         "uploaded_files": UploadedFileModel,
         "case_actions": CaseActionModel,
         "case_tags": CaseTagModel,
-        "agent_tool_calls": AgentToolCallModel,
         "evidence_artifacts": EvidenceArtifactModel,
         "agent_executions": AgentExecutionModel,
         "agent_tool_calls_v2": AgentToolCallV2Model,

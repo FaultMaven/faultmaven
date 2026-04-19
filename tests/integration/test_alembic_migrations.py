@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision (conversion tables with source_type)
-HEAD_REVISION = "d9e5f3a2b4c8"
+HEAD_REVISION = "eb98f7b39fbc"  # Phase 1 redesign migration (drops agent_tool_calls v1, cases.degraded_mode)
 
 
 @pytest.fixture(scope="function")
@@ -91,10 +91,10 @@ def get_current_revision(database_url: str) -> str:
 
 
 # Expected tables from all migrations
-# 19 domain tables + 11 auth/RBAC tables + 2 conversion tables + alembic_version = 33
+# 18 domain tables + 11 auth/RBAC tables + 2 conversion tables + alembic_version = 32
+# (agent_tool_calls v1 removed in storage redesign 2026-04 phase 1)
 EXPECTED_TABLES = [
     "agent_executions",
-    "agent_tool_calls",
     "agent_tool_calls_v2",
     "alembic_version",
     "case_actions",

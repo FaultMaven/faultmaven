@@ -16,7 +16,6 @@ Models:
 - UploadedFileModel: Files uploaded to cases
 - CaseActionModel: Case action (phase transition / disposition) audit trail
 - CaseTagModel: Case tagging
-- AgentToolCallModel: Agent tool execution tracking
 """
 
 import enum
@@ -499,8 +498,6 @@ class CaseModel(Base):
     working_conclusion = Column(Text)
     root_cause_conclusion = Column(Text)
     path_selection = Column(Text)
-    # Deprecated: DegradedMode removed from domain model. Column retained for backward compatibility.
-    degraded_mode = Column(Text)
     escalation_state = Column(Text)
     documentation = Column(Text, default="{}")
     progress = Column(Text, default="{}")
@@ -549,9 +546,6 @@ class CaseModel(Base):
     )
     tags = relationship(
         "CaseTagModel", back_populates="case", cascade="all, delete-orphan"
-    )
-    tool_calls = relationship(
-        "AgentToolCallModel", back_populates="case", cascade="all, delete-orphan"
     )
     evidence_artifacts = relationship(
         "EvidenceArtifactModel", back_populates="case", cascade="all, delete-orphan"
@@ -993,58 +987,6 @@ class CaseTagModel(Base):
 
 
 # ============================================================
-# Agent Tool Call Model
-# ============================================================
-
-
-class AgentToolCallModel(Base):
-    """Agent tool execution tracking."""
-
-    __tablename__ = "agent_tool_calls"
-
-    call_id = Column(String(20), primary_key=True)
-    case_id = Column(
-        String(17),
-        ForeignKey("cases.case_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    organization_id = Column(
-        String(64),
-        nullable=False,
-        index=True,
-        default="00000000-0000-0000-0000-000000000001",
-    )
-    tool_name = Column(String(100), nullable=False, index=True)
-    tool_input = Column(Text, nullable=False)  # JSON as TEXT
-    tool_output = Column(Text)  # JSON as TEXT
-    status = Column(String(20), nullable=False, default="pending", index=True)
-    error_message = Column(Text)
-    duration_ms = Column(Integer)
-    started_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    completed_at = Column(DateTime(timezone=True))
-    tool_metadata = Column("metadata", Text, default="{}")
-
-    # Relationship
-    case = relationship("CaseModel", back_populates="tool_calls")
-
-    __table_args__ = (
-        CheckConstraint(
-            "LENGTH(TRIM(tool_name)) > 0", name="agent_tool_calls_tool_name_not_empty"
-        ),
-        CheckConstraint(
-            "status IN ('pending', 'running', 'success', 'error')",
-            name="agent_tool_calls_status_valid",
-        ),
-    )
-
-    def __repr__(self) -> str:
-        return f"<AgentToolCallModel(call_id={self.call_id}, tool_name={self.tool_name}, status={self.status})>"
-
-
-# ============================================================
 # Evidence Artifact Model
 # ============================================================
 
@@ -1376,11 +1318,14 @@ class AgentToolCallV2Model(Base):
     """Tool call tracking for agent executions.
 
     Tracks individual tool invocations made during an agent execution,
-    including input, output, status, and timing information.
+    including input, output, status, and timing information. Linked to
+    agent_executions via execution_id FK.
 
-    Note: This is separate from AgentToolCallModel which tracks
-    tool calls at the case level. This model tracks tool calls
-    within a specific agent execution context.
+    Note: in the locked storage redesign 2026-04 this table is renamed
+    to canonical `agent_tool_calls` (the prior v1 case-level table is
+    deleted as zero-functional-usage). Class name AgentToolCallV2Model
+    will be renamed to AgentToolCallModel in Phase 4 (renames). For now
+    the class keeps the V2 suffix.
     """
 
     __tablename__ = "agent_tool_calls_v2"
