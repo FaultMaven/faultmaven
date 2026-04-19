@@ -81,6 +81,8 @@ async def create_test_schema(session: AsyncSession):
             last_activity_at TIMESTAMP,
             resolved_at TIMESTAMP,
             closed_at TIMESTAMP,
+            -- Phase 6 Tier 1 column addition (storage redesign 2026-04).
+            closure_reason TEXT,
             inquiry TEXT,
             problem_verification TEXT,
             working_conclusion TEXT,
@@ -113,6 +115,12 @@ async def create_test_schema(session: AsyncSession):
             content_hash TEXT,
             collected_at_turn INTEGER,
             source_file_id TEXT,
+            -- Phase 6 Tier 1 column additions (storage redesign 2026-04).
+            form TEXT NOT NULL DEFAULT 'text',
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            content_type TEXT,
+            reliability_score REAL,
+            tags TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
     """))
@@ -172,7 +180,10 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT,
             created_by TEXT NOT NULL DEFAULT 'system',
             updated_by TEXT,
-            FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
+            -- Phase 6 Tier 1 column addition (storage redesign 2026-04).
+            hypothesis_id TEXT,
+            FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE,
+            FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(hypothesis_id) ON DELETE SET NULL
         )
     """))
 
@@ -247,6 +258,8 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT,
             generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP,
+            -- Phase 6 Tier 1 column addition (storage redesign 2026-04).
+            generated_by TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
     """))

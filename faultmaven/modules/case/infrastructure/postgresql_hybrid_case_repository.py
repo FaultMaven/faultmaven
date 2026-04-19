@@ -55,6 +55,9 @@ from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoin
 # Case-owned models (per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    _derive_evidence_form,
+)
 
 # TYPE_CHECKING imports not needed - models imported directly above
 
@@ -1142,17 +1145,24 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text("""
                 INSERT INTO evidence (
                     evidence_id, case_id, organization_id, category, summary, preprocessed_content,
-                    content_ref, file_size, filename, upload_timestamp, metadata
+                    content_ref, file_size, filename, upload_timestamp, metadata,
+                    form, is_primary, content_type, reliability_score, tags
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :category, :summary, :preprocessed_content,
-                    :content_ref, :file_size, :filename, :upload_timestamp, :metadata::jsonb
+                    :content_ref, :file_size, :filename, :upload_timestamp, :metadata::jsonb,
+                    :form, :is_primary, :content_type, :reliability_score, :tags
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
                     category = EXCLUDED.category,
                     summary = EXCLUDED.summary,
                     preprocessed_content = EXCLUDED.preprocessed_content,
                     content_ref = EXCLUDED.content_ref,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    form = EXCLUDED.form,
+                    is_primary = EXCLUDED.is_primary,
+                    content_type = EXCLUDED.content_type,
+                    reliability_score = EXCLUDED.reliability_score,
+                    tags = EXCLUDED.tags
             """)
 
             await self.db.execute(
@@ -1169,6 +1179,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "filename": "",  # Evidence doesn't have filename - would come from source
                     "upload_timestamp": evidence.collected_at.isoformat(),
                     "metadata": json.dumps({}),  # Reserved
+                    # Phase 6 Tier 1 columns. The persistence-side `form`
+                    # describes data SHAPE — distinct from domain
+                    # `EvidenceForm` (entry mechanism). See sqlite_case_repository
+                    # _derive_evidence_form() for heuristic. Other columns
+                    # default NULL/False until explicit producers exist.
+                    "form": _derive_evidence_form(evidence),
+                    "is_primary": False,
+                    "content_type": getattr(evidence, "content_type", None),
+                    "reliability_score": getattr(evidence, "reliability_score", None),
+                    "tags": getattr(evidence, "tags", None),
                 },
             )
 
@@ -1289,14 +1309,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     description, status,
                     risk_level, estimated_effort, verification_result, verification_timestamp,
                     proposed_at, implemented_at, updated_at, metadata,
-                    created_by, updated_by
+                    created_by, updated_by, hypothesis_id
                 ) VALUES (
                     :solution_id, :case_id, :organization_id, :solution_type, :title, :immediate_action,
                     :longterm_fix, :implementation_steps, :commands::jsonb, :risks::jsonb,
                     :description, :status,
                     :risk_level, :estimated_effort, :verification_result, :verification_timestamp,
                     :proposed_at, :implemented_at, :updated_at, :metadata::jsonb,
-                    :created_by, :updated_by
+                    :created_by, :updated_by, :hypothesis_id
                 )
                 ON CONFLICT (solution_id) DO UPDATE SET
                     solution_type = EXCLUDED.solution_type,
@@ -1314,7 +1334,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     verification_timestamp = EXCLUDED.verification_timestamp,
                     implemented_at = EXCLUDED.implemented_at,
                     updated_at = EXCLUDED.updated_at,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    hypothesis_id = EXCLUDED.hypothesis_id
             """)
 
             await self.db.execute(
@@ -1372,6 +1393,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "metadata": json.dumps({}),
                     "created_by": "system",
                     "updated_by": None,
+                    # Phase 6 Tier 1: optional FK to addressed hypothesis.
+                    # TODO: SolutionsToAdd schema does not yet carry
+                    # hypothesis_id; populate once the LLM update schema is
+                    # extended. Nullable for now (fast-track / pre-hypothesis
+                    # solutions remain NULL).
+                    "hypothesis_id": getattr(solution, "hypothesis_id", None),
                 },
             )
 
@@ -1762,12 +1789,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 report_id, case_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
                 generation_status, generation_time_ms, metadata,
-                generated_at, updated_at
+                generated_at, updated_at, generated_by
             ) VALUES (
                 :report_id, :case_id, :report_type, :version, :is_current,
                 :linked_to_closure, :title, :content, :format,
                 :generation_status, :generation_time_ms, :metadata::jsonb,
-                :generated_at::timestamptz, :updated_at::timestamptz
+                :generated_at::timestamptz, :updated_at::timestamptz, :generated_by
             )
             ON CONFLICT (report_id) DO UPDATE SET
                 version = EXCLUDED.version,
@@ -1779,7 +1806,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 generation_status = EXCLUDED.generation_status,
                 generation_time_ms = EXCLUDED.generation_time_ms,
                 metadata = EXCLUDED.metadata,
-                updated_at = EXCLUDED.updated_at
+                updated_at = EXCLUDED.updated_at,
+                generated_by = EXCLUDED.generated_by
         """)
 
         now = datetime.now(timezone.utc)
@@ -1815,6 +1843,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 "metadata": metadata_json,
                 "generated_at": generated_at,
                 "updated_at": updated_at,
+                # Phase 6 Tier 1: track who triggered generation. "system"
+                # for auto-generated terminal summaries; explicit user_id
+                # threading via API routes deferred (TODO).
+                "generated_by": (
+                    "system" if getattr(report, "auto_generated", False) else None
+                ),
             },
         )
 

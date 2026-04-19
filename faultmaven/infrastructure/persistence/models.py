@@ -29,6 +29,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -392,6 +393,21 @@ class CaseStatusEnum(str, enum.Enum):
 # ------------------------------------------------------------------
 
 
+class EvidenceFormEnum(str, enum.Enum):
+    """Data-form classification for uploaded evidence content.
+
+    Replaces the old (misnamed) EvidenceCategoryEnum which was deleted
+    in Phase 5. Values describe what the file CONTAINS (data shape),
+    not the investigation role (which is `evidence.category` bound to
+    domain `EvidenceCategory`).
+    """
+
+    TEXT = "text"
+    IMAGE = "image"
+    METRIC = "metric"
+    STRUCTURED = "structured"
+
+
 class MessageRoleEnum(str, enum.Enum):
     """Message role in conversation."""
 
@@ -475,6 +491,17 @@ class CaseModel(Base):
         Boolean, nullable=False, default=False, server_default="0", index=True
     )
     archived_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Storage redesign 2026-04 — Phase 6 Tier 1 column additions.
+    # Per deployment-schema-strategy.md §7.1 + §12 decision #19: lift terminal
+    # state metadata out of the JSON `metadata` blob into first-class columns.
+    # Domain `Case` already exposes these fields; the writers (postgresql/sqlite
+    # repos) populate them directly when the case transitions to a terminal
+    # status. `last_activity_at` is updated on every save.
+    closure_reason = Column(String(100), nullable=True)
+    last_activity_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    closed_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
     # cases.session_id (and the related `session` relationship) was removed
     # in storage redesign 2026-04 phase 3. Per case-and-session-concepts.md
@@ -573,6 +600,16 @@ class EvidenceModel(Base):
     )
     evidence_metadata = Column("metadata", Text, default="{}")
 
+    # Storage redesign 2026-04 — Phase 6 Tier 1 column additions.
+    # Per deployment-schema-strategy.md §7.1 (evidence target shape) +
+    # §12 decision #19. Tier 2 PG-only enhancements (CHECK on
+    # reliability_score, TEXT[]+GIN on tags) are deferred to Phase 7.
+    form = Column(String(20), nullable=False, server_default="text")
+    is_primary = Column(Boolean, nullable=False, server_default="0")
+    content_type = Column(String(100), nullable=True)
+    reliability_score = Column(Float, nullable=True)
+    tags = Column(Text, nullable=True)
+
     # Relationship
     case = relationship("CaseModel", back_populates="evidence")
 
@@ -582,6 +619,9 @@ class EvidenceModel(Base):
         CheckConstraint(
             "LENGTH(TRIM(preprocessed_content)) > 0", name="evidence_content_not_empty"
         ),
+        # Composite index for "primary evidence per case" lookups
+        # (consumed by list_evidence_tool). Added Phase 6 Tier 1.
+        Index("ix_evidence_case_is_primary", "case_id", "is_primary"),
         # Unique constraints (via indexes for SQLite compatibility)
         # Note: These are implemented as unique indexes in the migration
         # uq_evidence_case_hash - no duplicate uploads per case
@@ -730,6 +770,17 @@ class SolutionModel(Base):
     )
     created_by = Column(String(255), nullable=False, index=True)
     updated_by = Column(String(255), nullable=True)
+
+    # Storage redesign 2026-04 — Phase 6 Tier 1.
+    # Optional link to the hypothesis this solution was generated to address.
+    # Nullable: fast-track resolutions skip hypothesis formulation entirely,
+    # so not every solution has a parent hypothesis.
+    hypothesis_id = Column(
+        String(36),
+        ForeignKey("hypotheses.hypothesis_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Relationship
     case = relationship("CaseModel", back_populates="solutions")
@@ -1725,6 +1776,11 @@ class ReportModel(Base):
     updated_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+    # Storage redesign 2026-04 — Phase 6 Tier 1.
+    # Stores user_id of the user who triggered report generation, or "system"
+    # for auto-generated reports (e.g., on case resolution / closure).
+    generated_by = Column(String(36), nullable=True)
 
     # Relationships
     case = relationship("CaseModel", backref="reports")
