@@ -1832,6 +1832,38 @@ class EvidenceStorageSettings(BaseSettings):
     # azure_container: Optional[str] = Field(default=None)
     # gcs_bucket: Optional[str] = Field(default=None)
 
+    # Orphan-file cleanup (PLAN-evidence-failure-modes-implementation.md §M1)
+    orphan_cleanup_enabled: bool = Field(
+        default=False,
+        validation_alias="ORPHAN_CLEANUP_ENABLED",
+        description=(
+            "When True, the storage_cleanup job deletes stored files whose "
+            "sidecar metadata shows linked=False and uploaded_at older than "
+            "orphan_file_ttl_hours. Default False — opt in explicitly after "
+            "a 48h dry-run canary."
+        ),
+    )
+    orphan_file_ttl_hours: int = Field(
+        default=24,
+        ge=1,
+        le=720,  # 30 days max
+        validation_alias="ORPHAN_FILE_TTL_HOURS",
+        description=(
+            "Age threshold in hours for orphan-file deletion. Files younger "
+            "than this are never deleted, even if linked=False (they may be "
+            "in-flight uploads)."
+        ),
+    )
+    orphan_cleanup_dry_run: bool = Field(
+        default=True,
+        validation_alias="ORPHAN_CLEANUP_DRY_RUN",
+        description=(
+            "When True (default), cleanup logs 'would delete' without "
+            "deleting. Flip to False only after a clean 48h dry-run period "
+            "per the M1 canary protocol."
+        ),
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 

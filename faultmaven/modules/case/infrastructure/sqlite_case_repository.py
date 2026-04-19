@@ -487,6 +487,68 @@ class SQLiteCaseRepository(CaseRepository):
             await self.db.rollback()
             raise RepositoryException(f"Failed to delete case {case_id}: {e}") from e
 
+    async def find_by_content_hash(
+        self, case_id: str, content_hash: str
+    ) -> Optional[Evidence]:
+        """Find oldest Evidence in a case whose content_hash matches."""
+        if not content_hash:
+            return None
+        try:
+            query = text("""
+                SELECT
+                    evidence_id, case_id, category, summary,
+                    preprocessed_content, content_ref, file_size,
+                    filename, upload_timestamp, metadata,
+                    source_type_new, content_hash, collected_at_turn,
+                    source_file_id
+                FROM evidence
+                WHERE case_id = :case_id
+                  AND content_hash = :content_hash
+                  AND content_hash IS NOT NULL
+                ORDER BY upload_timestamp ASC
+                LIMIT 1
+            """)
+            result = await self.db.execute(
+                query, {"case_id": case_id, "content_hash": content_hash}
+            )
+            row = result.fetchone()
+            if row is None:
+                return None
+
+            category_str = row[2] or "contextual_evidence"
+            try:
+                category = EvidenceCategory(category_str)
+            except ValueError:
+                category = EvidenceCategory.CONTEXTUAL_EVIDENCE
+
+            source_type_str = row[10] or "logs"
+            try:
+                source_type = EvidenceSourceType(source_type_str)
+            except ValueError:
+                source_type = EvidenceSourceType.LOGS
+
+            return Evidence(
+                evidence_id=str(row[0]),
+                category=category,
+                primary_purpose="loaded_evidence",
+                summary=row[3] if row[3] else "Evidence",
+                preprocessed_content=row[4] if row[4] else "",
+                content_ref=row[5],
+                content_size_bytes=row[6] if row[6] else 0,
+                original_filename=row[7],
+                preprocessing_method="loaded",
+                source_type=source_type,
+                form=EvidenceForm.DOCUMENT,
+                collected_by="user",
+                collected_at_turn=row[12] if row[12] else 0,
+                content_hash=row[11],
+                source_file_id=row[13],
+            )
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to find evidence by content_hash for case {case_id}: {e}"
+            ) from e
+
     async def search(
         self,
         query: str,

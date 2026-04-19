@@ -12,6 +12,7 @@ This service wraps the MilestoneEngine and provides:
 
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +24,9 @@ from faultmaven.exceptions import (
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
+)
+from faultmaven.infrastructure.observability.evidence_metrics import (
+    EVIDENCE_DEDUP_HITS_TOTAL,
 )
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
@@ -66,6 +70,123 @@ _DATA_TYPE_TO_SOURCE_TYPE: dict[DataType, EvidenceSourceType] = {
 
 def _infer_source_type(data_type: DataType) -> EvidenceSourceType:
     return _DATA_TYPE_TO_SOURCE_TYPE.get(data_type, EvidenceSourceType.TEXT)
+
+
+# DataType string value → human-friendly phrasing for cooperative clarification
+# suggestions. Users see `label` on the suggestion card; `long` goes into the
+# pre-composed query_submit payload. UNANALYZABLE is intentionally omitted —
+# not a choice users can meaningfully select. UNSTRUCTURED_TEXT is handled as
+# the "Something else" fallback separately to avoid duplicate suggestions.
+_CLARIFICATION_FRIENDLY_NAMES: Dict[str, Dict[str, str]] = {
+    "logs_and_errors": {"label": "Application logs", "long": "application logs"},
+    "error_report": {
+        "label": "Error report",
+        "long": "an error report or stack trace",
+    },
+    "trace_data": {"label": "Trace data", "long": "trace data"},
+    "metrics_and_performance": {
+        "label": "Metrics",
+        "long": "metrics or performance data",
+    },
+    "profiling_data": {"label": "Profiling data", "long": "profiling data"},
+    "command_output": {"label": "Command output", "long": "command output"},
+    "structured_config": {"label": "Configuration", "long": "configuration"},
+    "source_code": {"label": "Source code", "long": "source code"},
+    "documentation": {"label": "Documentation", "long": "documentation or notes"},
+    "visual_evidence": {"label": "Screenshot", "long": "a screenshot or image"},
+}
+
+# Fallback phrasing used for the "Something else" option and applied when the
+# classifier's only suggested type is UNSTRUCTURED_TEXT.
+_CLARIFICATION_FALLBACK_LABEL = "Something else"
+_CLARIFICATION_FALLBACK_LONG = "unstructured text"
+
+
+def _build_classification_clarification_suggestions(
+    preprocess_results: List["_PreprocessedAttachment"],
+) -> List[SuggestedActionResponse]:
+    """Emit COOPERATIVE suggestions when an attachment hit classification_failed.
+
+    Per-turn file limit is 1, so we expect at most one classification_failed
+    result. Generates up to 3 type-specific suggestions from the classifier's
+    `suggested_types` plus a "Something else" fallback. Always emits at least
+    the fallback when any classification_failed is present.
+
+    Returns an empty list when no classification failure occurred this turn.
+    """
+    failed = [r for r in preprocess_results if r.classification_failed]
+    if not failed:
+        return []
+
+    target = failed[0]
+    filename = target.attachment_filename or "the uploaded file"
+
+    suggestions: List[SuggestedActionResponse] = []
+    seen: set = set()
+
+    for dt_value in target.suggested_types or []:
+        if dt_value in seen:
+            continue
+        seen.add(dt_value)
+        # unstructured_text collapses into the fallback — don't surface twice
+        if dt_value == "unstructured_text":
+            continue
+        friendly = _CLARIFICATION_FRIENDLY_NAMES.get(dt_value)
+        if friendly is None:
+            continue
+        suggestions.append(
+            SuggestedActionResponse(
+                label=friendly["label"],
+                type="COOPERATIVE",
+                cooperative_action="query_submit",
+                payload=(
+                    f'Treat the previously uploaded file ("{filename}") as '
+                    f'{friendly["long"]} and analyze it.'
+                ),
+                body=f'Treat as {friendly["long"]}.',
+            )
+        )
+        if len(suggestions) >= 3:
+            break
+
+    # Always include the "Something else" fallback — last position.
+    suggestions.append(
+        SuggestedActionResponse(
+            label=_CLARIFICATION_FALLBACK_LABEL,
+            type="COOPERATIVE",
+            cooperative_action="query_submit",
+            payload=(
+                f'Treat the previously uploaded file ("{filename}") as '
+                f"{_CLARIFICATION_FALLBACK_LONG} and try to analyze it."
+            ),
+            body=f"Treat as {_CLARIFICATION_FALLBACK_LONG}.",
+        )
+    )
+
+    return suggestions
+
+
+@dataclass
+class _PreprocessedAttachment:
+    """Internal result of `_preprocess_attachment`.
+
+    Carries both the Evidence (new or existing-on-duplicate) and dedup signals
+    the caller needs to decide whether to append to `case.evidence` and how to
+    populate `AttachmentResult.duplicate_of`. Also carries classification
+    clarification hints when the heuristic classifier couldn't confidently
+    classify the attachment — see `_build_classification_clarification_suggestions`.
+    """
+
+    evidence: Evidence
+    duplicate_of: Optional[str] = None
+    duplicate_turn: Optional[int] = None
+    # Classification clarification — populated only when the preprocessing
+    # result had extraction_method="classification_failed". Contains 0–3
+    # DataType enum values (as strings) suggested by the classifier for
+    # cooperative-clarification UX. Empty/None when classification succeeded.
+    classification_failed: bool = False
+    suggested_types: Optional[List[str]] = None
+    attachment_filename: Optional[str] = None
 
 
 class InvestigationService:
@@ -152,17 +273,22 @@ class InvestigationService:
             processing_mode = classification.mode.value
 
             evidence_created: List["Evidence"] = []
+            preprocess_results: List[_PreprocessedAttachment] = []
             if payload.has_attachments:
                 for attachment in payload.attachments:
-                    evidence = await self._preprocess_attachment(
+                    result = await self._preprocess_attachment(
                         case,
                         attachment,
                         user_id,
                         next_turn,
                         processing_mode=processing_mode,
                     )
-                    evidence_created.append(evidence)
-                    case.evidence.append(evidence)
+                    preprocess_results.append(result)
+                    evidence_created.append(result.evidence)
+                    # On dedup, the existing Evidence is already on `case.evidence`
+                    # from the DB load — don't double-append.
+                    if result.duplicate_of is None:
+                        case.evidence.append(result.evidence)
 
             # Determine query (explicit or implicit)
             query = payload.query
@@ -355,6 +481,15 @@ class InvestigationService:
                 for f in raw_follow_ups
             ]
 
+            # Prepend classification-clarification suggestions when this turn's
+            # attachment hit classification_failed. User-in-the-loop guidance
+            # takes priority over generic follow-up suggestions from the engine.
+            clarification = _build_classification_clarification_suggestions(
+                preprocess_results
+            )
+            if clarification:
+                suggested_actions = clarification + suggested_actions
+
             response = TurnResponse(
                 agent_response=agent_response_text,
                 turn_number=updated_case.current_turn,
@@ -365,19 +500,23 @@ class InvestigationService:
                 progress_made=result.get("metadata", {}).get("progress_made", False),
                 attachments_processed=[
                     AttachmentResult(
-                        evidence_id=ev.evidence_id,
+                        evidence_id=res.evidence.evidence_id,
                         filename=att.filename,
-                        data_type=ev.data_type or "",
-                        file_size=ev.content_size_bytes,
-                        processing_status="completed",
+                        data_type=res.evidence.data_type or "",
+                        file_size=res.evidence.content_size_bytes,
+                        processing_status=(
+                            "duplicate" if res.duplicate_of else "completed"
+                        ),
                         uploaded_at=datetime.now(timezone.utc).isoformat(),
                         source_type=(
                             att.source_metadata.get("source_type", "file_upload")
                             if att.source_metadata
                             else "file_upload"
                         ),
+                        duplicate_of=res.duplicate_of,
+                        duplicate_turn=res.duplicate_turn,
                     )
-                    for att, ev in zip(payload.attachments, evidence_created)
+                    for att, res in zip(payload.attachments, preprocess_results)
                 ],
                 suggested_actions=suggested_actions,
                 progress_transparency=self._build_progress_transparency(
@@ -462,7 +601,7 @@ class InvestigationService:
         user_id: str,
         turn_number: int,
         processing_mode: str = "triage",
-    ) -> Evidence:
+    ) -> _PreprocessedAttachment:
         """Preprocess a single attachment through classification and extraction.
 
         Args:
@@ -474,7 +613,11 @@ class InvestigationService:
                 (triage or directed_analysis)
 
         Returns:
-            Evidence record with preprocessed content
+            `_PreprocessedAttachment` wrapping the Evidence plus optional
+            dedup metadata. On content-hash duplicate within the same case,
+            the returned Evidence is the existing row and `duplicate_of` /
+            `duplicate_turn` are populated; no new Evidence is created and
+            no raw file is re-stored.
 
         Raises:
             ServiceException: If preprocessing or storage fails
@@ -503,6 +646,37 @@ class InvestigationService:
             filename=attachment.filename,
             source_metadata=source_meta,
         )
+
+        # Per-case content-hash dedup short-circuit.
+        # An attachment whose content_hash already exists on this case returns
+        # the existing Evidence instead of creating a new row. No raw file
+        # re-storage either — storage already has the bytes under the original
+        # content_ref.
+        existing = None
+        if preprocessing_result.content_hash:
+            try:
+                existing = await self.repository.find_by_content_hash(
+                    case.case_id, preprocessing_result.content_hash
+                )
+            except AttributeError:
+                # Repository doesn't implement dedup lookup — graceful fallback.
+                # Happens in legacy test doubles. Silently skip dedup.
+                existing = None
+        if existing is not None:
+            logger.info(
+                "Duplicate upload detected: file '%s' matches %s (turn %s) "
+                "in case %s — reusing existing evidence",
+                attachment.filename,
+                existing.evidence_id,
+                existing.collected_at_turn,
+                case.case_id,
+            )
+            EVIDENCE_DEDUP_HITS_TOTAL.inc()
+            return _PreprocessedAttachment(
+                evidence=existing,
+                duplicate_of=existing.evidence_id,
+                duplicate_turn=existing.collected_at_turn,
+            )
 
         # Create evidence record (form=DOCUMENT for all turn attachments)
         evidence = Evidence(
@@ -535,7 +709,41 @@ class InvestigationService:
             )
             evidence.content_ref = storage_result.get("file_path")
 
-        return evidence
+            # Flip the sidecar `linked` flag so the orphan-cleanup job knows
+            # this file has an Evidence row referencing it. Best-effort —
+            # `mark_linked` swallows failures and returns False. Legacy
+            # storage services without this method are handled gracefully.
+            mark_linked = getattr(self.file_storage_service, "mark_linked", None)
+            if mark_linked is not None and evidence.content_ref:
+                try:
+                    await mark_linked(evidence.content_ref)
+                except Exception as e:
+                    logger.warning(
+                        "mark_linked failed for %s (non-fatal, file stays "
+                        "as orphan candidate until TTL): %s",
+                        evidence.content_ref,
+                        e,
+                    )
+
+        # Surface classification clarification hints when the heuristic
+        # classifier produced a low-confidence result. Suggested types are
+        # propagated by PreprocessingService via extraction_metadata as a
+        # list of DataType string values.
+        is_classification_failed = (
+            preprocessing_result.extraction_method == "classification_failed"
+        )
+        suggested_types: Optional[List[str]] = None
+        if is_classification_failed:
+            suggested_types = (
+                preprocessing_result.extraction_metadata.get("suggested_types") or []
+            )
+
+        return _PreprocessedAttachment(
+            evidence=evidence,
+            classification_failed=is_classification_failed,
+            suggested_types=suggested_types,
+            attachment_filename=attachment.filename,
+        )
 
     # ============================================================
     # Intent-Based Query Handlers

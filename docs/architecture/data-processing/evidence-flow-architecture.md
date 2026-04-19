@@ -46,16 +46,19 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │    (propagates source_type from source_metadata)                  │ │
 │  │ 2. Short-circuits:                                                 │ │
 │  │      - UNANALYZABLE → placeholder (extraction_method=none)        │ │
-│  │      - classification_failed → placeholder (user modal)            │ │
+│  │      - classification_failed → placeholder +                       │ │
+│  │        suggested_types for cooperative-clarification UX           │ │
 │  │      - source_type=page_capture → pass-through as structured MD   │ │
 │  │ 3. Tier 1: Type-specific mechanical extraction (structural index) │ │
 │  │    under 2s timeout; on timeout/error falls back to TEXT preview  │ │
 │  │ 4. Compute content_hash (SHA-256 of UTF-8 text)                    │ │
 │  │ 5. Return PreprocessingResult                                      │ │
 │  │                                                                    │ │
-│  │ Raw file persistence (storage_service.store_file) happens at the  │ │
-│  │ evidence-creation layer, not here. Dedup via content_hash is      │ │
-│  │ not yet wired — see Deferred Items in the preprocessing spec.     │ │
+│  │ Raw file persistence (storage_service.store_file) + per-case      │ │
+│  │ content-hash dedup short-circuit happen at the evidence-creation  │ │
+│  │ layer (_preprocess_attachment in InvestigationService). Dedup     │ │
+│  │ calls ICaseRepository.find_by_content_hash before creating any    │ │
+│  │ new Evidence row.                                                  │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────┬───────────────────────────────────────────────────────────────────┘
       │
@@ -155,39 +158,47 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                      Async Failure Handling Layer                        │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ Celery Background Jobs (Retry Infrastructure)                      │ │
+│  │ Background Jobs                                                    │ │
 │  │                                                                     │ │
-│  │ retry_evidence_analysis:                                           │ │
-│  │   - Retry LLM call on timeout (exponential backoff: 1m, 2m, 4m)  │ │
-│  │   - Max 3 retries, then create REJECTED                           │ │
+│  │ storage_cleanup (faultmaven.modules.agent.jobs.storage_cleanup):  │ │
+│  │   - TTL-based orphan-file sweep (default 24h)                     │ │
+│  │   - Sidecar-driven: every stored file has a {name}.meta.json     │ │
+│  │     sidecar; mark_linked() flips linked=true after Evidence       │ │
+│  │     creation. Sweep deletes files whose sidecar says linked=false │ │
+│  │     AND uploaded_at > TTL ago.                                    │ │
+│  │   - Gated on orphan_cleanup_enabled + orphan_cleanup_dry_run      │ │
+│  │     (default dry_run=True — 48h canary protocol required before   │ │
+│  │     enabling real deletes in production)                          │ │
+│  │   - CLI: python -m faultmaven.jobs.run storage_cleanup            │ │
 │  │                                                                     │ │
-│  │ retry_evidence_creation:                                           │ │
-│  │   - Retry DB insert on failure (exponential backoff: 10s-160s)   │ │
-│  │   - Max 5 retries, then alert ops                                 │ │
-│  │   - Idempotency via content_hash check                            │ │
-│  │                                                                     │ │
-│  │ cleanup_orphaned_files:                                            │ │
-│  │   - Daily job (2 AM UTC)                                           │ │
-│  │   - Delete files >24h old with no evidence record                 │ │
+│  │ Turn-level LLM failure handling is synchronous today — the API    │ │
+│  │ endpoint returns specific error codes (LLM_OVER_CAPACITY,         │ │
+│  │ RATE_LIMIT_EXCEEDED, LLM_TIMEOUT) with Retry-After headers. Async │ │
+│  │ turn retry was considered and deferred — see evidence-failure-    │ │
+│  │ modes.md for rationale.                                            │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                     Monitoring & Observability Layer                     │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ Metrics (Prometheus):                                              │ │
-│  │ - evidence.created.total                                           │ │
-│  │ - evidence.created.by_category{category}                          │ │
-│  │ - evidence.rejected.total                                          │ │
-│  │ - evidence.rejection_rate                                          │ │
-│  │ - evidence.llm_timeouts                                            │ │
-│  │ - evidence.retry_successes                                         │ │
-│  │ - evidence.orphaned_files_cleaned                                  │ │
+│  │ Prometheus metrics (infrastructure/observability/                  │ │
+│  │                     evidence_metrics.py):                          │ │
 │  │                                                                     │ │
-│  │ Alerts (Alertmanager):                                             │ │
-│  │ - High LLM timeout rate (>5%)                                      │ │
-│  │ - Permanent retry failures (>0)                                    │ │
-│  │ - High rejection rate (>20%)                                       │ │
+│  │ Live (emit sites active):                                          │ │
+│  │   faultmaven_evidence_dedup_hits_total                             │ │
+│  │     — per-case content-hash dedup short-circuits                   │ │
+│  │   faultmaven_evidence_orphan_files_found_total                     │ │
+│  │   faultmaven_evidence_orphan_files_deleted_total                   │ │
+│  │     — emitted by the storage_cleanup sweep                         │ │
+│  │                                                                     │ │
+│  │ Scaffolded (registered; emit sites deferred until async-retry     │ │
+│  │  plan is justified by telemetry):                                  │ │
+│  │   faultmaven_evidence_turn_async_retry_{enqueued,outcome}_total    │ │
+│  │   faultmaven_evidence_turn_async_retry_latency_seconds             │ │
+│  │                                                                     │ │
+│  │ Canonical alert definitions live in                                │ │
+│  │ docs/operations/monitoring/evidence-metrics.md.                    │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -289,14 +300,12 @@ User          API(/turns)    Investigation    LLM         Database
 
 ---
 
-## Sequence Diagram: Duplicate Upload (Deferred)
+## Sequence Diagram: Duplicate Upload
 
-> **Status:** Duplicate detection is **not currently wired up**. `PreprocessingResult.content_hash` is computed for every attachment, but no repository consults it before evidence creation. Re-uploading the same file today produces a second Evidence row. Closing this requires `find_by_content_hash()` on the case/evidence repository plus a short-circuit in `_preprocess_attachment`. Tracked as a Deferred Item in the preprocessing spec; related failure-mode design in [evidence-failure-modes.md](./evidence-failure-modes.md).
-
-The target flow, once dedup is implemented, looks like this:
+Per-case content-hash deduplication is live. Before creating a new Evidence row, `_preprocess_attachment` calls `ICaseRepository.find_by_content_hash(case_id, content_hash)`. A match returns the existing Evidence and skips raw-file re-storage (no new write to the storage backend). The per-attachment `AttachmentResult` carries `duplicate_of` + `duplicate_turn` so the frontend can render a toast. Scope is per-case; same content uploaded to a different case proceeds as new Evidence.
 
 ```
-User          API(/turns)    Investigation    Preprocessing    Evidence Repo
+User          API(/turns)    Investigation    Preprocessing    Case Repository
  │              │                │                │             │
  │─POST turn───>│                │                │             │
  │ {files:      │                │                │             │
@@ -316,11 +325,15 @@ User          API(/turns)    Investigation    Preprocessing    Evidence Repo
  │              │                │  MATCH ev_xyz (turn 5)        │
  │              │                │                              │
  │              │                │  (skip Evidence creation,    │
- │              │                │   return existing ev_xyz     │
- │              │                │   with status=duplicate)     │
+ │              │                │   skip storage.store_file,   │
+ │              │                │   emit metric                │
+ │              │                │   evidence_dedup_hits_total) │
  │              │<─TurnResponse──│                              │
- │              │ {status:       │                              │
- │              │  duplicate}    │                              │
+ │              │ AttachmentResult{                             │
+ │              │  evidence_id=ev_xyz,                          │
+ │              │  processing_status="duplicate",               │
+ │              │  duplicate_of=ev_xyz,                         │
+ │              │  duplicate_turn=5 }                           │
  │              │                │                              │
  │<─200 OK─────│                │                              │
  │ TurnResponse │                │                              │
@@ -328,47 +341,67 @@ User          API(/turns)    Investigation    Preprocessing    Evidence Repo
 
 ---
 
-## Sequence Diagram: Classification Failed → User Modal
+## Sequence Diagram: Classification Failed → Cooperative Clarification
 
-Triggered when Tier 0 classification produces `confidence < 0.50` — the file cannot be routed to an extractor with enough certainty to auto-accept. The frontend shows a modal for user selection, then resubmits with `user_override` set (Priority 1 of the 5-priority classifier, confidence 1.0).
+Triggered when Tier 0 classification produces `confidence < 0.50` — the file cannot be routed to an extractor with enough certainty to auto-accept. The agent still attempts to answer the user's query using its file-reading tools. After the turn runs, `InvestigationService._build_classification_clarification_suggestions` injects COOPERATIVE suggestions (pre-composed `query_submit` payloads) so the user can re-prompt the agent with the correct type using a single click. No frontend modal, no re-classification — just additional follow-up suggestions ahead of the engine's own follow-ups.
 
 ```
-User          API(/turns)    Investigation    Preprocessing    Frontend
- │              │                │                │             │
- │─POST turn───>│                │                │             │
- │ {ambiguous.  │                │                │             │
- │  csv}        │                │                │             │
- │              │─process_turn──>│                │             │
- │              │                │─classify_and──>│             │
- │              │                │  _extract      │             │
- │              │                │                │ conf=0.45   │
- │              │                │                │ failed=True │
- │              │                │<───────────────│             │
- │              │                │  PreprocessingResult         │
- │              │                │  extraction_method=          │
- │              │                │    "classification_failed"   │
- │              │                │  metadata.suggested_types=   │
- │              │                │    [metrics, text]           │
- │              │<─TurnResponse──│                │             │
- │              │ (placeholder   │                │             │
- │              │  evidence)     │                │             │
- │<─200 OK─────│                │                │             │
- │              │                │                │             │
- │──────────────┼────────────────┼────────────────┼────────────>│
- │              │                │                │  detect     │
- │              │                │                │  marker,    │
- │              │                │                │  show modal │
- │              │<───user picks──┼────────────────┼─────────────│
- │              │  type          │                │             │
- │─POST turn───>│ (same file +   │                │             │
- │              │  user_override)│                │             │
- │              │─process_turn──>│                │             │
- │              │                │─classify_and──>│             │
- │              │                │                │ Priority 1: │
- │              │                │                │ user_override│
- │              │                │                │ conf=1.0    │
- │              │                │<───────────────│ extractor   │
- │              │                │  success       │ runs        │
+User          API(/turns)    Investigation    Preprocessing    Agent LLM
+ │              │                │                │              │
+ │─POST turn───>│                │                │              │
+ │ {ambiguous.  │                │                │              │
+ │  csv,        │                │                │              │
+ │  query: "?"} │                │                │              │
+ │              │─process_turn──>│                │              │
+ │              │                │─classify_and──>│              │
+ │              │                │  _extract      │              │
+ │              │                │                │ conf=0.45    │
+ │              │                │                │ failed=True  │
+ │              │                │                │ suggested_   │
+ │              │                │                │  types=      │
+ │              │                │                │  [metrics,   │
+ │              │                │                │   text]      │
+ │              │                │<───────────────│              │
+ │              │                │  PreprocessingResult          │
+ │              │                │  extraction_method=           │
+ │              │                │    "classification_failed"    │
+ │              │                │  metadata.suggested_types=    │
+ │              │                │    ["metrics_and_performance",│
+ │              │                │     "unstructured_text"]      │
+ │              │                │                               │
+ │              │                │  (agent still runs — uses     │
+ │              │                │   search_file/deep_analysis   │
+ │              │                │   on raw bytes; produces      │
+ │              │                │   best-effort answer)         │
+ │              │                │─────────────────────────────> │
+ │              │                │<──────────────────────────────│
+ │              │                │                               │
+ │              │                │ (post-turn injector builds    │
+ │              │                │  COOPERATIVE suggestions from │
+ │              │                │  suggested_types + "Something │
+ │              │                │  else" fallback; prepends to  │
+ │              │                │  suggested_actions)           │
+ │              │<─TurnResponse──│                               │
+ │              │  {                                              │
+ │              │    suggested_actions: [                         │
+ │              │      {type:"COOPERATIVE",                       │
+ │              │       label:"Metrics",                          │
+ │              │       payload:"Treat file as metrics..."},      │
+ │              │      {type:"COOPERATIVE",                       │
+ │              │       label:"Something else",                   │
+ │              │       payload:"Treat as unstructured text..."}, │
+ │              │      ...engine follow-ups                       │
+ │              │    ]                                            │
+ │              │  }                                              │
+ │<─200 OK─────│                │                │               │
+ │              │                                                 │
+ │ (user clicks "Metrics" — frontend submits the suggestion's     │
+ │  query_submit payload as the next user turn)                   │
+ │─POST turn───>│                                                 │
+ │ {query:"Treat the previously uploaded file as metrics..."}    │
+ │              │─process_turn──>│ (normal turn, agent uses the  │
+ │              │                │  type hint while reading the  │
+ │              │                │  raw file via search_file)    │
 ```
 
 ---

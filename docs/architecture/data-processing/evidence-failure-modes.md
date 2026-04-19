@@ -1,27 +1,28 @@
 # Evidence Creation Failure Modes and Recovery
 
-**Version:** 1.3
-**Date:** 2026-04-18
-**Status:** Design Specification — partial implementation; remainder deferred post-MVP
+**Version:** 1.4
+**Date:** 2026-04-19
+**Status:** Design Specification — implemented (dedup, orphan cleanup, monitoring); Scenario 2 async retry deferred pending telemetry signal
 **Context:** Failure analysis and recovery strategies for single-phase evidence creation
 
 ---
 
-## Current Implementation Status (validated 2026-04-18)
+## Current Implementation Status (validated 2026-04-19)
 
 | Area | Status | Notes |
 | --- | --- | --- |
 | Scenario 1 — File upload fails | Implicit (no code change needed) | Storage failures raise before any evidence object exists. No orphan state. |
-| Scenario 2 — LLM call timeout | **Partial** | Tier 0+1 is zero-LLM (classification + extraction), so the legacy "LLM timeout at ingest" path in this doc no longer applies. A separate timeout exists for Tier 1 extractors (2 s) with a TEXT-preview fallback — not the LLM-timeout failure mode this doc was originally written for. Turn-time LLM calls in `milestone_engine.py` can still time out; async-retry is not yet wired. |
+| Scenario 2 — LLM call timeout | **Deferred** | Current turn-submission path (`modules/case/api/routes.py:2234-2269`) already returns specific error codes (`LLM_OVER_CAPACITY`, `RATE_LIMIT_EXCEEDED`, `LLM_TIMEOUT`) with `Retry-After` headers and in-process synchronous retries via `BaseExternalClient`. An async-retry path was designed and discarded (see former `PLAN-async-turn-retry.md`, deleted 2026-04-19) — the additional machinery (forward-only schema migration, 202 polling, cancellation semantics) isn't justified without production evidence that the current error-path UX harms users. Revisit on telemetry signal. |
 | Scenario 3 — LLM returns invalid category | **Done** | `EvidenceToAdd.validate_category` in `core/investigation/schemas.py:306` falls back to `CONTEXTUAL_EVIDENCE` with a warning log. |
-| Scenario 4 — DB insert fails after LLM / storage | Deferred | No idempotency key, no orphan cleanup. Orphan files can accumulate in storage if DB writes fail after `store_file` succeeds. |
+| Scenario 4 — DB insert fails after LLM / storage | **Partial** | Orphan-file cleanup (below) handles the "storage succeeded, evidence didn't persist" case. Idempotency on evidence creation itself is not implemented. |
 | Content-hash deduplication — hash consistency | **Done** | `PreprocessingService.classify_and_extract` computes `SHA-256(UTF-8 text)` uniformly for file uploads and pasted content. Both paths produce the same hash for the same content. |
-| Content-hash deduplication — repository lookup | **Deferred** | `PreprocessingResult.content_hash` is computed but no repository consults it. `find_by_content_hash()` is not implemented. Re-uploading the same file today produces a second Evidence row. |
-| Storage cleanup (TTL / reference counting) | Deferred | Neither approach below is implemented. |
-| Retry infrastructure (async retry job) | Deferred | No `retry_evidence_analysis` / `retry_evidence_creation` tasks exist. |
-| `file_references` table | Deferred | Not created. |
+| Content-hash deduplication — repository lookup | **Done** | `ICaseRepository.find_by_content_hash()` live on all bound implementations (`SessionlessCaseRepository`, `SQLiteCaseRepository`, `PostgreSQLHybridCaseRepository`, `InMemoryCaseRepository`). `_preprocess_attachment` short-circuits on match, skipping storage write and evidence creation. See [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §2.4. Emits `faultmaven_evidence_dedup_hits_total`. |
+| Storage cleanup — TTL-based orphan sweep | **Done** | `faultmaven.modules.agent.jobs.storage_cleanup` with sidecar-metadata approach: `FileStorageService.store_file()` writes `{filename}.meta.json` with `{case_id, uploaded_at, linked=false}`; `mark_linked()` flips `linked=true` after Evidence creation; sweep deletes files whose sidecar says `linked=false` AND `uploaded_at` past the TTL. Gated on `ORPHAN_CLEANUP_ENABLED` + `ORPHAN_CLEANUP_DRY_RUN` (default dry-run=true). 48h dry-run canary required before enabling real deletes. |
+| Storage cleanup — Reference counting | **Rejected** | Approach 2 (below) was considered and rejected: reference counting requires a `file_references` table + maintaining the reference graph on every evidence create/delete, a meaningful surface area for bugs. TTL was chosen for simplicity and because orphan rate is near-zero by design. |
+| Monitoring + alerts | **Done** | Six Prometheus metrics defined in `infrastructure/observability/evidence_metrics.py`: `evidence_dedup_hits_total`, `evidence_orphan_files_{found,deleted}_total`, `evidence_turn_async_retry_{enqueued,outcome}_total`, `evidence_turn_async_retry_latency_seconds`. Live emitters: dedup + orphan cleanup. Scaffolded emitters: async retry (will emit if that plan is ever justified). Canonical alert definitions in [docs/operations/monitoring/evidence-metrics.md](../../operations/monitoring/evidence-metrics.md). |
+| `file_references` table | **Rejected** | Would be needed only for Approach 2 (reference counting) which was rejected. |
 
-The rest of the document describes the **target** failure-handling design. Treat scenarios marked "Deferred" as design commitments, not current behavior; scenarios marked "Done"/"Partial" have code references above.
+The scenario descriptions below remain largely as originally written, but treat them as historical context — the Status table above is the authoritative current state.
 
 ---
 
@@ -75,7 +76,15 @@ async def process_turn_with_attachment(case_id, user_message, file):
 
 ### Scenario 2: LLM Call Timeout
 
-**Failure Point:** LLM call times out or fails after file uploaded to S3
+> **Current implementation (2026-04-19):** This scenario's "LLM timeout at ingest" framing is obsolete — Tier 0+1 is zero-LLM, so file upload no longer depends on an LLM call. The real remaining failure surface is **LLM calls during turn processing** in `milestone_engine.py`. Current handling:
+>
+> - `BaseExternalClient.call_external` retries `retryable=True` errors synchronously within the request.
+> - On terminal failure, `modules/case/api/routes.py:2234-2269` returns specific error codes (`LLM_OVER_CAPACITY` / `RATE_LIMIT_EXCEEDED` / `LLM_TIMEOUT` / `SERVICE_ERROR`) with appropriate `Retry-After` headers and actionable user-facing messages.
+> - Orphan files from failed turns are collected by the TTL-based orphan-cleanup job (see §Storage Cleanup Strategy).
+>
+> An async-retry path was designed and deferred — see the Status table at the top of this document. The Options A/B below remain as historical design context.
+
+**Failure Point (legacy framing):** LLM call times out or fails after file uploaded to S3
 
 **State:**
 - ✅ File in S3
@@ -83,10 +92,12 @@ async def process_turn_with_attachment(case_id, user_message, file):
 - ❌ LLM tokens spent (partial)
 
 **Problem:**
-- **Orphaned file** in S3 (storage cost, clutter)
-- User doesn't know what happened
+
+- **Orphaned file** in S3 (storage cost, clutter) — addressed by TTL-based orphan cleanup
+- User doesn't know what happened — addressed by specific error codes + `Retry-After` in the turn-submission endpoint
 
 **User Experience:**
+
 - Error message: "Analysis timed out. Your file was saved and will be analyzed shortly."
 - Or: "Analysis failed. Please try again."
 
@@ -524,97 +535,66 @@ async def compute_file_hash(file: UploadFile) -> str:
 
 ## Storage Cleanup Strategy
 
-**Problem:** Files can be orphaned in S3 if:
-- LLM analysis never completes (timeouts, retries exhausted)
-- Evidence record deleted but file remains
+**Problem:** Files can be orphaned in storage if the evidence creation path fails after `store_file` succeeds.
 
-**Solution: Garbage Collection**
+**Implementation: TTL-Based Sidecar Cleanup** (reference counting was considered and rejected — see below).
 
-### Approach 1: TTL-Based Cleanup (Simple)
+### Design
+
+Every file stored via `FileStorageService.store_file()` gets a companion `{filename}.meta.json` sidecar with stable schema:
+
+```json
+{
+    "case_id": "case_abc123def456",
+    "organization_id": "org_xyz",
+    "uploaded_at": "2026-04-19T10:00:00+00:00",
+    "linked": false,
+    "schema_version": 1
+}
+```
+
+`FileStorageService.mark_linked(file_path)` flips `linked=true` once an Evidence row references the file. Called from `InvestigationService._preprocess_attachment` after `store_file` returns.
+
+The sweep (`faultmaven.modules.agent.jobs.storage_cleanup`) walks the storage root, reads each sidecar, and deletes any file where `linked=false` AND `uploaded_at` is older than `ORPHAN_FILE_TTL_HOURS` (default 24). Files without sidecars are skipped (unknown state is not license to delete). Corrupt sidecars count as errors and their files stay.
 
 ```python
-async def upload_with_ttl(file, ttl_hours=24):
-    """Upload file with TTL metadata"""
-    content_ref = await s3.upload(
-        file,
-        metadata={
-            "uploaded_at": datetime.now(UTC).isoformat(),
-            "ttl_hours": ttl_hours
-        }
-    )
-    return content_ref
-
-# Daily cleanup job
-async def cleanup_orphaned_files():
-    """Delete files uploaded >24h ago with no evidence record"""
-    cutoff = datetime.now(UTC) - timedelta(hours=24)
-
-    # List all files in evidence bucket
-    files = await s3.list_objects(prefix="evidence/")
-
-    for file in files:
-        uploaded_at = file.metadata.get("uploaded_at")
-        if not uploaded_at:
+# Simplified sweep — full implementation in faultmaven/modules/agent/jobs/storage_cleanup.py
+async def cleanup_orphaned_files(storage_root, ttl_hours, dry_run):
+    cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
+    for sidecar in Path(storage_root).rglob("*.meta.json"):
+        payload = json.loads(sidecar.read_text())
+        if payload["linked"] is True:
             continue
-
-        if datetime.fromisoformat(uploaded_at) < cutoff:
-            # Check if evidence record exists
-            content_ref = file.key
-            evidence_exists = await evidence_repo.exists_by_content_ref(content_ref)
-
-            if not evidence_exists:
-                logger.info(f"Deleting orphaned file: {content_ref}")
-                await s3.delete(content_ref)
+        uploaded_at = datetime.fromisoformat(payload["uploaded_at"])
+        if uploaded_at > cutoff:
+            continue  # within TTL — might still be in-flight
+        if dry_run:
+            logger.info(f"would delete: {file_path}")
+        else:
+            file_path.unlink()
+            sidecar.unlink()
+            EVIDENCE_ORPHAN_FILES_DELETED_TOTAL.inc()
 ```
 
-### Approach 2: Reference Counting (Accurate)
+### Safety protocol
 
-```python
-# Track file references in separate table
-CREATE TABLE file_references (
-    content_ref VARCHAR(500) PRIMARY KEY,
-    uploaded_at TIMESTAMP NOT NULL,
-    case_id VARCHAR(17) NOT NULL,
-    status VARCHAR(20) NOT NULL,  -- 'pending', 'referenced', 'orphaned'
-    created_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);
+Ships with `ORPHAN_CLEANUP_ENABLED=False` and `ORPHAN_CLEANUP_DRY_RUN=True`. Mandatory canary before enabling real deletes in production:
 
-# On file upload
-async def register_file_upload(content_ref, case_id):
-    await file_refs.create(
-        content_ref=content_ref,
-        case_id=case_id,
-        status='pending',
-        uploaded_at=datetime.now(UTC)
-    )
+1. Run with `ORPHAN_CLEANUP_DRY_RUN=true` for ≥48 hours. Job logs `would delete: {path}` without deleting.
+2. Eyeball the dry-run log. If unexpected files appear (anything currently referenced by an Evidence row, or recently uploaded), fix the `mark_linked` path before enabling real deletes.
+3. Only after a clean 48-hour dry run, set `ORPHAN_CLEANUP_DRY_RUN=false`.
 
-# On evidence creation
-async def create_evidence(evidence):
-    await evidence_repo.create(evidence)
-    # Mark file as referenced
-    await file_refs.update(evidence.content_ref, status='referenced')
+CLI: `python -m faultmaven.jobs.run storage_cleanup`. Invoke from cron, Kubernetes CronJob, or any external scheduler.
 
-# Cleanup job
-async def cleanup_orphaned_files():
-    """Delete files pending >24h with no evidence"""
-    cutoff = datetime.now(UTC) - timedelta(hours=24)
+### Why not reference counting?
 
-    orphaned = await file_refs.find(
-        status='pending',
-        uploaded_at__lt=cutoff
-    )
+Considered and rejected. Reference counting would require:
 
-    for ref in orphaned:
-        logger.info(f"Deleting orphaned file: {ref.content_ref}")
-        await s3.delete(ref.content_ref)
-        await file_refs.update(ref.content_ref, status='orphaned')
-```
+- A `file_references` table tracking per-file state (`pending | referenced | orphaned`).
+- Maintaining the reference graph on every evidence create AND delete path.
+- Recovery logic if the reference-counting writes fail between file-store and evidence-persist.
 
-**Recommended:** Approach 1 (simpler, good enough)
-- Approach 2 is more accurate but adds complexity
-- 24h TTL is generous enough for retries
-- Orphaned files are edge case (LLM usually succeeds)
+That's a meaningful surface area for bugs, and the orphan rate in practice is near zero (evidence is written immediately after file storage; only crashes between the two produce orphans). TTL is a safety net, not a correctness mechanism — which makes the simpler approach the correct one.
 
 ---
 
@@ -771,7 +751,7 @@ async def process_turn_with_attachment(
 
 ## Implementation status
 
-Current state is summarised in the "Current Implementation Status" table at the top of this document. The detailed step-by-step plan for closing the remaining items (orphan cleanup, async LLM timeout recovery, monitoring) lives in a temporary working doc: [`docs/working/PLAN-evidence-failure-modes-implementation.md`](../../working/PLAN-evidence-failure-modes-implementation.md). That plan will be deleted and this design doc will be updated once the milestones land.
+Current state is summarised in the "Current Implementation Status" table at the top of this document. All items other than Scenario 2 async retry are implemented. Scenario 2 async retry was designed (as the former `PLAN-async-turn-retry.md`) and deferred on 2026-04-19 — the current synchronous error-path UX (specific error codes + `Retry-After` headers + in-process retries) is already polished enough that the additional machinery isn't justified without production evidence of user harm.
 
 ---
 
@@ -783,6 +763,6 @@ Current state is summarised in the "Current Implementation Status" table at the 
 
 ---
 
-**Document Version:** 1.3
-**Last Updated:** 2026-04-18
-**Status:** Design Specification — partial implementation; see "Current Implementation Status" table above.
+**Document Version:** 1.4
+**Last Updated:** 2026-04-19
+**Status:** Design Specification — implemented (dedup, orphan cleanup, monitoring); Scenario 2 async retry deferred. See "Current Implementation Status" table above.

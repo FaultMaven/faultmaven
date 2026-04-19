@@ -14,6 +14,7 @@ Architecture:
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
+import json
 import os
 import re
 import uuid
@@ -26,6 +27,12 @@ import aiofiles.os
 
 from faultmaven.exceptions import ServiceError, ValidationException
 from faultmaven.services.base import BaseService
+
+# Sidecar metadata suffix for orphan-file tracking
+# (PLAN-evidence-failure-modes-implementation.md §M1).
+# Written alongside each stored file; the orphan-cleanup job reads these
+# to decide what's safe to delete.
+SIDECAR_SUFFIX = ".meta.json"
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
@@ -141,6 +148,15 @@ class FileStorageService(BaseService):
             async with aiofiles.open(full_path, "wb") as f:
                 await f.write(file_data)
 
+            # Write orphan-tracking sidecar alongside the file.
+            # Cleanup job reads these to decide what's safe to delete.
+            await self._write_sidecar(
+                full_path=full_path,
+                case_id=case_id,
+                organization_id=organization_id,
+                linked=False,
+            )
+
             file_size = len(file_data)
 
             self.log_operation(
@@ -164,6 +180,106 @@ class FileStorageService(BaseService):
         except Exception as e:
             self.log_error("store_file", e, original_filename=original_filename)
             raise ServiceError(f"Failed to store file: {e}")
+
+    async def _write_sidecar(
+        self,
+        *,
+        full_path: str,
+        case_id: str,
+        organization_id: str,
+        linked: bool,
+    ) -> None:
+        """Write the sidecar metadata JSON next to a stored file.
+
+        Sidecar format (stable schema — read by the orphan-cleanup job):
+            {
+                "case_id": "case_abc",
+                "organization_id": "org_xyz",
+                "uploaded_at": "2026-04-18T10:00:00+00:00",
+                "linked": false,
+                "schema_version": 1
+            }
+
+        Write failures are logged but non-fatal — the file itself stored
+        successfully, and worst-case the cleanup job won't know this file
+        is linked. Safer to have a file without a sidecar than to fail the
+        upload.
+        """
+        sidecar_path = f"{full_path}{SIDECAR_SUFFIX}"
+        payload = {
+            "case_id": case_id,
+            "organization_id": organization_id,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "linked": linked,
+            "schema_version": 1,
+        }
+        try:
+            async with aiofiles.open(sidecar_path, "w") as f:
+                await f.write(json.dumps(payload))
+        except OSError as e:
+            self.log_error("write_sidecar", e, sidecar_path=sidecar_path)
+
+    async def mark_linked(self, file_path: str) -> bool:
+        """Flip a stored file's sidecar `linked` flag to True.
+
+        Called after Evidence is created referencing this file so the
+        orphan-cleanup job knows not to delete it.
+
+        Args:
+            file_path: Relative path from storage_root (as returned by
+                `store_file` in the `file_path` field).
+
+        Returns:
+            True if the sidecar was successfully updated, False if no
+            sidecar was found or the update failed. Non-fatal — callers
+            shouldn't depend on the return value.
+        """
+        try:
+            self._validate_path(file_path)
+            full_path = os.path.join(self.storage_root, file_path)
+            sidecar_path = f"{full_path}{SIDECAR_SUFFIX}"
+
+            if not await aiofiles.os.path.exists(sidecar_path):
+                # No sidecar — file was stored before the M1 sidecar path
+                # landed, or the sidecar write failed at store time.
+                # Either way: nothing to update. Not an error.
+                self.log_operation("mark_linked_no_sidecar", file_path=file_path)
+                return False
+
+            async with aiofiles.open(sidecar_path, "r") as f:
+                payload = json.loads(await f.read())
+
+            if payload.get("linked") is True:
+                return True  # already linked — idempotent
+
+            payload["linked"] = True
+            async with aiofiles.open(sidecar_path, "w") as f:
+                await f.write(json.dumps(payload))
+
+            self.log_operation("mark_linked_success", file_path=file_path)
+            return True
+        except Exception as e:
+            self.log_error("mark_linked", e, file_path=file_path)
+            return False
+
+    async def read_sidecar(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """Read a stored file's sidecar metadata.
+
+        Used by the orphan-cleanup job. Returns None if the sidecar is
+        missing or unreadable — treat a missing sidecar as 'unknown state'
+        and skip the file rather than deleting it.
+        """
+        try:
+            self._validate_path(file_path)
+            full_path = os.path.join(self.storage_root, file_path)
+            sidecar_path = f"{full_path}{SIDECAR_SUFFIX}"
+            if not await aiofiles.os.path.exists(sidecar_path):
+                return None
+            async with aiofiles.open(sidecar_path, "r") as f:
+                return json.loads(await f.read())
+        except Exception as e:
+            self.log_error("read_sidecar", e, file_path=file_path)
+            return None
 
     async def retrieve_file(self, file_path: str) -> bytes:
         """Retrieve file from storage.
@@ -234,6 +350,16 @@ class FileStorageService(BaseService):
 
             # Delete file
             await aiofiles.os.remove(full_path)
+
+            # Delete companion sidecar if present. Best-effort: a leftover
+            # sidecar is inert (cleanup job will read it and find the file
+            # missing).
+            sidecar_path = f"{full_path}{SIDECAR_SUFFIX}"
+            try:
+                if await aiofiles.os.path.exists(sidecar_path):
+                    await aiofiles.os.remove(sidecar_path)
+            except OSError:
+                pass
 
             self.log_operation("delete_file_success", file_path=file_path)
 
@@ -492,6 +618,10 @@ class FileStorageService(BaseService):
             # Walk through storage directory
             for root, dirs, files in os.walk(self.storage_root):
                 for file in files:
+                    # Sidecars are internal tracking metadata, not user-stored
+                    # content — exclude from stats.
+                    if file.endswith(SIDECAR_SUFFIX):
+                        continue
                     file_path = os.path.join(root, file)
                     try:
                         stat = os.stat(file_path)
