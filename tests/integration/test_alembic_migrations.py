@@ -23,9 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = (
-    "5a127abe7e28"  # Phase 7 redesign migration (Tier 2 PG-only augmentations)
-)
+HEAD_REVISION = "729d00ba9049"  # Phase 8 redesign migration (PG RLS policies)
 
 
 @pytest.fixture(scope="function")
