@@ -14,8 +14,8 @@ from __future__ import annotations
 import pytest
 
 from faultmaven.modules.agent.domain.services.investigation_service import (
-    _PreprocessedAttachment,
     _build_classification_clarification_suggestions,
+    _PreprocessedAttachment,
 )
 from faultmaven.modules.case.domain.models import (
     Evidence,

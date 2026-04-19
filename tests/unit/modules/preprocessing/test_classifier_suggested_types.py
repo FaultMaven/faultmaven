@@ -117,7 +117,7 @@ class TestClassificationFailedPopulatesSuggestedTypes:
         """CSV/TSV structured-data path (line ~903) → METRICS + CONFIG."""
         # Build a CSV that scores as structured (5+ cols, 10+ rows, numeric)
         header = "col1,col2,col3,col4,col5"
-        rows = "\n".join(f"1,2,3,4,5" for _ in range(15))
+        rows = "\n".join("1,2,3,4,5" for _ in range(15))
         content = f"{header}\n{rows}"
         result = classifier.classify("data.csv", content)
 
