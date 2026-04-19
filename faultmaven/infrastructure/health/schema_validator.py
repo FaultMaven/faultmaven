@@ -42,10 +42,12 @@ from faultmaven.infrastructure.persistence.models import (
     InvestigationSessionModel,
     KnowledgeItemModel,
     KnowledgeSuggestionModel,
-    SessionModel,
     SolutionModel,
     UploadedFileModel,
 )
+
+# SessionModel was removed in storage redesign 2026-04 phase 3 (the SQL
+# `sessions` table was dropped). Auth sessions are Redis-only.
 
 logger = logging.getLogger(__name__)
 
@@ -112,13 +114,14 @@ class SchemaValidator:
     # All tables to validate (comprehensive)
     # evidence_artifacts + standalone_evidence removed in storage redesign
     # 2026-04 phase 2 (standalone evidence path deletion).
+    # `sessions` removed in storage redesign 2026-04 phase 3 (auth sessions
+    # are Redis-only via RedisSessionStore).
     ALL_TABLES = {
         "cases": CaseModel,
         "solutions": SolutionModel,
         "hypotheses": HypothesisModel,
         "case_messages": CaseMessageModel,
         "evidence": EvidenceModel,
-        "sessions": SessionModel,
         "uploaded_files": UploadedFileModel,
         "case_actions": CaseActionModel,
         "case_tags": CaseTagModel,

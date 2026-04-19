@@ -21,9 +21,9 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     DatabaseInvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
-    DatabaseSessionRepository,
-)
+
+# DatabaseSessionRepository (SQL auth session repo) removed in storage
+# redesign 2026-04 phase 3 — auth sessions are Redis-only.
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
 )
@@ -86,11 +86,9 @@ async def case_repository(benchmark_session) -> DatabaseCaseRepository:
     return DatabaseCaseRepository(benchmark_session)
 
 
-@pytest.fixture
-async def session_repository(benchmark_session) -> DatabaseSessionRepository:
-    """Create session repository for benchmarks."""
-    return DatabaseSessionRepository(benchmark_session)
-
+# session_repository (SQL auth session repo) fixture removed in storage
+# redesign 2026-04 phase 3 — auth sessions are Redis-only via
+# RedisSessionStore.
 
 # evidence_artifact_repository fixture removed in storage redesign 2026-04
 # phase 2 (standalone evidence path deletion). Evidence is case-tied only.

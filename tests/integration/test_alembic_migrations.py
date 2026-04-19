@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "7a2da68429da"  # Phase 2 redesign migration (drops evidence_artifacts, standalone_evidence)
+HEAD_REVISION = "575bb832f512"  # Phase 3 redesign migration (drops sessions table + cases.session_id)
 
 
 @pytest.fixture(scope="function")
@@ -120,7 +120,6 @@ EXPECTED_TABLES = [
     "reports",
     "role_permissions",
     "roles",
-    "sessions",
     "solutions",
     "team_members",
     "teams",
