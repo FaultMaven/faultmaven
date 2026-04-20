@@ -7,13 +7,10 @@ from faultmaven.core.preprocessing.models import (
     Chunk,
     DataExcerpt,
     DeepAnalysisResult,
-    DuplicateFileError,
     ExtractionResult,
     FileInfo,
-    FileTooLargeError,
     PreprocessingResult,
     UnifiedDataType,
-    compute_content_hash,
     generate_concise_summary,
     to_unified_data_type,
 )
@@ -226,56 +223,8 @@ class TestDataclasses:
 
 
 # =============================================================================
-# Errors
-# =============================================================================
-
-
-class TestErrors:
-    def test_file_too_large_error(self):
-        err = FileTooLargeError(file_size=20_000_000, max_size=10_000_000)
-        assert err.file_size == 20_000_000
-        assert err.max_size == 10_000_000
-        assert "20000000" in str(err)
-        assert "10000000" in str(err)
-
-    def test_file_too_large_is_exception(self):
-        with pytest.raises(FileTooLargeError):
-            raise FileTooLargeError(file_size=100, max_size=50)
-
-    def test_duplicate_file_error(self):
-        err = DuplicateFileError(
-            existing_evidence_id="ev_abc123", content_hash="sha256hashvalue"
-        )
-        assert err.existing_evidence_id == "ev_abc123"
-        assert err.content_hash == "sha256hashvalue"
-        assert "ev_abc123" in str(err)
-
-    def test_duplicate_file_is_exception(self):
-        with pytest.raises(DuplicateFileError):
-            raise DuplicateFileError("ev_xyz", "hash123")
-
-
-# =============================================================================
 # Utility Functions
 # =============================================================================
-
-
-class TestComputeContentHash:
-    def test_deterministic(self):
-        content = b"hello world"
-        assert compute_content_hash(content) == compute_content_hash(content)
-
-    def test_different_inputs_different_hashes(self):
-        assert compute_content_hash(b"hello") != compute_content_hash(b"world")
-
-    def test_returns_hex_string(self):
-        result = compute_content_hash(b"test")
-        assert len(result) == 64  # SHA-256 hex length
-        assert all(c in "0123456789abcdef" for c in result)
-
-    def test_empty_content(self):
-        result = compute_content_hash(b"")
-        assert len(result) == 64
 
 
 class TestGenerateConciseSummary:

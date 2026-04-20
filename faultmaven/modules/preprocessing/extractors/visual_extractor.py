@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Optional
 
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    format_coverage_metadata,
     has_content,
 )
 
@@ -70,7 +71,7 @@ class VisualEvidenceExtractor:
             file_ext = filename.split(".")[-1].lower()
 
         # Phase 2: Return placeholder
-        return f"""=== VISUAL EVIDENCE ANALYSIS ===
+        placeholder = f"""=== VISUAL EVIDENCE ANALYSIS ===
 
 ⚠️  Vision processing not yet implemented (Phase 3)
 
@@ -103,3 +104,12 @@ Recommendation:
 For now, please provide textual description of the visual evidence alongside
 the image file, or extract text from screenshots manually.
 """
+        # Minimal coverage metadata so R3 gap detection sees *something* for
+        # visual evidence instead of skipping it. Phase 3 multimodal vision
+        # will extend this dict with entity-level fields (Vision model,
+        # Entities detected, …) without changing the schema.
+        return placeholder + format_coverage_metadata(
+            Format=file_ext or "unknown",
+            Filename=filename,
+            **{"Size bytes": len(content)},
+        )

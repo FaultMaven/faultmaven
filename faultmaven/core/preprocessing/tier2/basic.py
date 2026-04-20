@@ -5,7 +5,7 @@ Returns raw excerpts matching the query keywords for the agent to interpret.
 Lowest cost, always available, no external dependencies.
 
 Design Reference:
-    docs/architecture/data-processing/data-preprocessing-design-specification.md Section 6.3
+    docs/architecture/data-processing/data-preprocessing-design-specification.md §4
 """
 
 import logging

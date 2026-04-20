@@ -19,13 +19,11 @@ import time
 from typing import TYPE_CHECKING, Dict, Optional
 
 from faultmaven.core.preprocessing.models import (
-    DuplicateFileError,
     ExtractionResult,
     PreprocessingResult,
     generate_concise_summary,
     to_unified_data_type,
 )
-from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
@@ -49,7 +47,6 @@ class PreprocessingService:
     def __init__(
         self,
         classifier: DataClassifier,
-        sanitizer: DataSanitizer,
         logs_extractor: LogsAndErrorsExtractor,
         config_extractor: Optional["StructuredConfigExtractor"] = None,  # noqa: F821
         metrics_extractor: Optional[
@@ -73,7 +70,6 @@ class PreprocessingService:
 
         Args:
             classifier: Data classification service
-            sanitizer: PII/secret redaction service (redaction applied at LLM boundary, not here)
             logs_extractor: LOGS_AND_ERRORS extractor
             config_extractor: STRUCTURED_CONFIG extractor (optional)
             metrics_extractor: METRICS_AND_PERFORMANCE extractor (optional)
@@ -85,9 +81,12 @@ class PreprocessingService:
             error_report_extractor: ERROR_REPORT extractor (optional)
             documentation_extractor: DOCUMENTATION extractor (optional)
             command_output_extractor: COMMAND_OUTPUT extractor (optional)
+
+        Note:
+            PII/secret redaction is applied at the LLM boundary, not here,
+            so no sanitizer is needed in this pipeline.
         """
         self.classifier = classifier
-        self.sanitizer = sanitizer
 
         # Extractor registry — unavailable types fall through to direct truncation.
         self.extractors: Dict[DataType, Extractor] = {

@@ -374,31 +374,40 @@ class DataClassifier:
 
         # Check for obvious contradictions
         if hint == DataType.VISUAL_EVIDENCE:
-            # Must be image file
+            # Must be image file — must match rule-path set at line 578
             ext = Path(filename).suffix.lower()
-            return ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+            return ext in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]
 
         if hint == DataType.STRUCTURED_CONFIG:
-            # Should have config-like patterns
+            # Should have config-like patterns — ext set must match rule-path set at line 726
             ext = Path(filename).suffix.lower()
-            if ext in [".yaml", ".yml", ".json", ".toml", ".ini", ".env"]:
+            if ext in [".yaml", ".yml", ".json", ".toml", ".ini", ".env", ".config"]:
                 return True
             # Check content for config patterns
             return bool(re.search(r"[a-z_]+\s*[:=]", sample, re.MULTILINE))
 
         if hint == DataType.SOURCE_CODE:
-            # Should have code-like patterns
+            # Should have code-like patterns — ext set must match rule-path set at line 754
             ext = Path(filename).suffix.lower()
             code_exts = [
                 ".py",
                 ".js",
                 ".ts",
+                ".jsx",
+                ".tsx",
                 ".java",
                 ".go",
                 ".rs",
                 ".cpp",
                 ".c",
+                ".h",
                 ".rb",
+                ".php",
+                ".swift",
+                ".kt",
+                ".scala",
+                ".sh",
+                ".bash",
             ]
             if ext in code_exts:
                 return True
@@ -919,7 +928,7 @@ class DataClassifier:
                 return ClassificationResult(
                     data_type=DataType.METRICS_AND_PERFORMANCE,
                     confidence=0.55,
-                    source="rule_based",
+                    source="rule_based_best_effort",
                     classification_failed=True,
                     suggested_types=[
                         DataType.METRICS_AND_PERFORMANCE,
@@ -930,7 +939,7 @@ class DataClassifier:
             return ClassificationResult(
                 data_type=DataType.UNSTRUCTURED_TEXT,
                 confidence=0.45,
-                source="rule_based",
+                source="rule_based_best_effort",
                 classification_failed=True,
                 suggested_types=[
                     DataType.UNSTRUCTURED_TEXT,

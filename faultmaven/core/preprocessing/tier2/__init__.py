@@ -1,8 +1,10 @@
 """
-Tier 2: Deep Analysis Service
+Tier 3 Deep LLM Analysis backends (legacy package name `tier2`).
 
-On-demand LLM-powered analysis of raw data. Invoked by the investigation
-agent, NOT during upload preprocessing.
+On-demand interpreted analysis of raw data, invoked by the investigation
+agent's `deep_analysis` tool — NOT during upload preprocessing. The
+package is named `tier2` for historical reasons (pre-v5.0 naming); the
+current spec places this capability at Tier 3.
 
 Backends:
 - external: HTTP call to cloud microservice (Gemini, OpenAI, custom)
@@ -11,7 +13,7 @@ Backends:
 - disabled: Agent works from Tier 1 index only
 
 Design Reference:
-    docs/architecture/data-processing/data-preprocessing-design-specification.md Section 6
+    docs/architecture/data-processing/data-preprocessing-design-specification.md §4
 """
 
 from faultmaven.core.preprocessing.tier2.basic import BasicTier2Service

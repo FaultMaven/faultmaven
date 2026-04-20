@@ -24,13 +24,6 @@ def mock_classifier():
 
 
 @pytest.fixture
-def mock_sanitizer():
-    sanitizer = MagicMock()
-    sanitizer.sanitize.side_effect = lambda x: x
-    return sanitizer
-
-
-@pytest.fixture
 def mock_logs_extractor():
     extractor = MagicMock()
     extractor.strategy_name = "crime_scene"
@@ -44,10 +37,9 @@ def mock_logs_extractor():
 
 
 @pytest.fixture
-def service(mock_classifier, mock_sanitizer, mock_logs_extractor):
+def service(mock_classifier, mock_logs_extractor):
     return PreprocessingService(
         classifier=mock_classifier,
-        sanitizer=mock_sanitizer,
         logs_extractor=mock_logs_extractor,
     )
 
@@ -84,12 +76,6 @@ class TestClassifyAndExtract:
         )
         call_args = mock_classifier.classify.call_args
         assert call_args[0][0] == "user_paste.log"
-
-    @pytest.mark.asyncio
-    async def test_no_sanitization_at_extraction_layer(self, service, mock_sanitizer):
-        """Extraction never sanitizes — PII redaction happens at the LLM boundary."""
-        await service.classify_and_extract(content="data with password=secret")
-        mock_sanitizer.sanitize.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_content_hash_computed_from_text(self, service):

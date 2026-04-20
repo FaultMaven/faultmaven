@@ -130,8 +130,8 @@ async def store_in_vector_db_background(
     data_type: UnifiedDataType,
     metadata: Dict[str, Any],
     case_vector_store: Any,
-    max_chunk_tokens: int = 500,
-    overlap_tokens: int = 50,
+    max_chunk_tokens: Optional[int] = None,
+    overlap_tokens: Optional[int] = None,
 ) -> None:
     """
     Background task: Chunk and store structural index in ChromaDB.
@@ -146,12 +146,23 @@ async def store_in_vector_db_background(
         data_type: Unified data type
         metadata: Additional metadata to store with each chunk
         case_vector_store: ChromaDB vector store instance
-        max_chunk_tokens: Maximum tokens per chunk
-        overlap_tokens: Overlap between chunks
+        max_chunk_tokens: Maximum tokens per chunk. When None, read from
+            settings (VECTOR_CHUNK_SIZE_TOKENS, default 500).
+        overlap_tokens: Overlap between chunks. When None, read from
+            settings (VECTOR_CHUNK_OVERLAP_TOKENS, default 50).
 
     Design Reference:
         data-preprocessing-design-specification.md Section 5.3
     """
+    if max_chunk_tokens is None or overlap_tokens is None:
+        from faultmaven.config.settings import get_settings
+
+        settings = get_settings()
+        if max_chunk_tokens is None:
+            max_chunk_tokens = settings.database.vector_chunk_size_tokens
+        if overlap_tokens is None:
+            overlap_tokens = settings.database.vector_chunk_overlap_tokens
+
     try:
         # 1. Chunk the structural index
         chunks = chunk_structural_index(

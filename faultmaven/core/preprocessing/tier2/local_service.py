@@ -1,11 +1,12 @@
 """
-LocalTier2Service — In-process Tier 2 using local LLM (Ollama/vLLM).
+LocalTier2Service — In-process Tier 3 deep analysis using local LLM (Ollama/vLLM).
 
-Reads raw file from local storage, finds relevant sections via keyword
-search, then sends them to a local LLM for analysis.
+Reads raw file from local storage, finds relevant sections via single-pass
+keyword search (ANY-match, no Pass-2 fallback), then sends them to a local
+LLM for analysis.
 
 Design Reference:
-    docs/architecture/data-processing/data-preprocessing-design-specification.md Section 6.3
+    docs/architecture/data-processing/data-preprocessing-design-specification.md §4
 """
 
 import logging
