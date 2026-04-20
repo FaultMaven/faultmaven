@@ -219,6 +219,12 @@ class EvidenceProcessor:
 
 ---
 
+## Stage 4 (Deferred): Viewport Sync / Real-Time Capture
+
+Stage 4 would add live-dashboard capture for platforms that auto-refresh (Grafana, Datadog live mode) so evidence reflects the state the user is actually looking at, not a stale snapshot. Options under consideration: periodic re-capture, `MutationObserver`-driven diffing, or an explicit "refresh capture" button in the copilot. Deferred for the same reasons as Stage 3 — Stages 1+2 cover the common case, and viewport sync adds meaningful frontend complexity without a validated user need.
+
+---
+
 ## Alternative Approaches
 
 ### 1. Browser Extension Integrations
@@ -263,10 +269,9 @@ structured = llm.extract_structured_data(prompt)
 
 ## Status
 
-**Current (Stage 1 — Implemented):** Semantic DOM extraction via `htmlToStructuredText()` converts pages to structured markdown with error-first priority ordering, stat panel detection, and ARIA alert promotion. Backend passes content through without re-processing. The generic extraction handles most dashboard patterns via `tryKeyValue` and `tryStatValue` heuristics.
-
-**Stage 2 (Implemented):** Query-time section reranking via `_rerank_page_capture_sections()` in `context_builder.py`. When assembling Tier A evidence for an LLM call, page capture structural indexes are split on `\n##` headings, each section scored against the user's query by normalised keyword overlap (stopwords excluded), and reassembled in descending relevance order. Preamble pinned at position 0. Runs before per-item char cap so query-relevant sections survive truncation.
-
-**Stage 3 (Future):** Platform-specific extractors would add precision on top of the generic extraction. CSS-in-JS makes CSS-selector-based extraction fragile — prefer DOM structure + ARIA attribute heuristics. Consider implementing as Tier 1 frontend extractors or Tier 3 backends.
-
-**Stage 4 (Future):** Viewport sync / real-time capture for live dashboards (Grafana auto-refresh, Datadog live mode). Options: periodic re-capture, MutationObserver, or explicit "refresh capture" button.
+| Stage | State | Summary |
+| --- | --- | --- |
+| Stage 1 — Semantic DOM extraction | **Implemented** | `htmlToStructuredText()` with error-first ordering, stat/label/value detection, ARIA alert promotion, `[captured_at]` preamble. Backend pass-through via `page_capture_passthrough`. See §"What We Have Now". |
+| Stage 2 — Query-time section reranking | **Implemented** | `_rerank_page_capture_sections()` in `context_builder.py`. Preamble pinned at position 0; runs before per-item char cap. See §"Stage 2 — Implemented". |
+| Stage 3 — Platform-aware parsing | **Deferred** | Precision extractors per platform (Datadog, Grafana, PagerDuty, GitHub, …). See §"Proposed Stage 3 Enhancement" and §"Decision: Why Stage 3 is Deferred". |
+| Stage 4 — Viewport sync / real-time capture | **Deferred** | Live-dashboard capture for auto-refreshing platforms. See §"Stage 4 (Deferred)". |
