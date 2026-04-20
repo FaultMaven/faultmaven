@@ -2,7 +2,6 @@
 
 **Version**: 3.6
 **Status**: Authoritative Standard
-**Supersedes**: case-data-model-design.md, db-design-specifications.md
 **Last Updated**: 2026-04-19
 
 > **NOTE on `organization_id` placement**: Per the v2.1 locked design in [deployment-schema-strategy.md](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) §10, all tenanted case-domain tables carry `organization_id` for RLS policy enforcement in PostgreSQL. The v2.0-era approach of placing `organization_id` only on `cases` and filtering child tables via JOIN is superseded. The per-table DDL below reflects the correct `organization_id NOT NULL FK` placement on each tenanted table.
@@ -36,9 +35,9 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | Component | Status | Location |
 | --- | --- | --- |
 | ✅ Design | Approved | This document |
-| ✅ PostgreSQL Schema | Complete | `docs/reference/database/001_initial_hybrid_schema.sql` |
+| ✅ PostgreSQL Schema | Complete | `alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py` |
 | ✅ SQLite Schema | Complete | Auto-created by `SQLiteCaseRepository` |
-| ✅ Reports Migration | Complete | `docs/reference/database/005_add_reports_table.sql` (TD-001) |
+| ✅ Reports Migration | Complete | `alembic/versions/20260329_1200_add_reports_table.py` (TD-001) |
 | ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository.py` |
 | ✅ SQLite Repository | Complete | `sqlite_case_repository.py` (PR #120) |
 | ✅ SQLite Integration Tests | Complete | 8 tests passing with real SQLite database |
@@ -263,7 +262,7 @@ class Case(BaseModel):
     user_id: str                    # FK to users
     organization_id: str            # FK to organizations
     title: str                      # Max 200 chars
-    description: str                # Max 2000 chars
+    # NOTE: cases has no description column. Domain Case model has title only.
 
     # ============================================================
     # Status & Lifecycle
@@ -277,11 +276,10 @@ class Case(BaseModel):
     archived_at: Optional[datetime] # Set when is_archived flips to True
 
     # ============================================================
-    # Turn Tracking
+    # Turn Tracking (stored inside cases.progress JSONB blob — not first-class columns)
     # ============================================================
-    current_turn: int
-    turns_without_progress: int
     turn_history: List[TurnProgress]
+    # current_turn and turns_without_progress live in the cases.progress JSONB blob.
 
     # ============================================================
     # Investigation Data (HIGH CARDINALITY - Separate Storage)
@@ -309,7 +307,7 @@ class Case(BaseModel):
     # Progress Tracking
     # ============================================================
     progress: InvestigationProgress  # PostgreSQL: JSONB
-    investigation_strategy: InvestigationStrategy
+    # investigation_strategy is not a first-class column; stored in cases.progress JSONB blob.
 
     # ============================================================
     # Timestamps
@@ -823,10 +821,9 @@ COMMENT ON TABLE solutions IS 'Proposed and verified solutions';
 
 ```sql
 CREATE TABLE uploaded_files (
-    -- Using VARCHAR for file_id to match Pydantic model (file_abc123xyz pattern)
-    -- More human-readable in logs than UUID
-    file_id VARCHAR(15) PRIMARY KEY,
-    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    -- file_id normalized to VARCHAR(36) per v2.1 FK width policy
+    file_id VARCHAR(36) PRIMARY KEY,
+    case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
     -- ============================================================
     -- File Metadata (MATCHES UploadedFile Pydantic model)
@@ -875,7 +872,7 @@ COMMENT ON COLUMN uploaded_files.content_ref IS 'Storage path - links to Evidenc
 ```
 
 **Design Notes**:
-- Uses `VARCHAR(15)` for `file_id` (not UUID) to match Pydantic model pattern `file_abc123xyz`
+- Uses `VARCHAR(36)` for `file_id` per v2.1 entity-id width normalization policy
 - Schema exactly mirrors `UploadedFile` Pydantic model fields for zero-mapping repositories
 - `content_ref` links to `Evidence.content_ref` for evidence→file traceability
 - No processing status tracking (moved to separate processing pipeline if needed)
@@ -884,16 +881,16 @@ COMMENT ON COLUMN uploaded_files.content_ref IS 'Storage path - links to Evidenc
 
 > **Column discrepancies vs. live ORM**:
 >
-> - `message_id UUID PRIMARY KEY DEFAULT gen_random_uuid()` — live ORM uses `String(20)` as the primary key with no auto-generation. UUID PK with `gen_random_uuid()` is **Tier 2 (PostgreSQL-only)** (SQLite cannot express this natively). The Tier 1 reality is a VARCHAR(20) application-generated ID.
+> - `message_id UUID PRIMARY KEY DEFAULT gen_random_uuid()` — live ORM uses `String(36)` as the primary key with no auto-generation (post-Phase 4 width normalization). UUID PK with `gen_random_uuid()` is **Tier 2 (PostgreSQL-only)** (SQLite cannot express this natively). The Tier 1 reality is a VARCHAR(36) application-generated ID.
 > - `CONSTRAINT case_messages_role_check` — not present in live ORM; marking Tier 2 (PostgreSQL-only).
 
 ```sql
 CREATE TABLE case_messages (
-    -- Live ORM: String(20) PK (application-generated). UUID + gen_random_uuid() is
+    -- Live ORM: String(36) PK (application-generated). UUID + gen_random_uuid() is
     -- Tier 2 (PostgreSQL-only) — aspirational for cloud deployment.
-    message_id VARCHAR(20) PRIMARY KEY,         -- Tier 1 reality (live ORM)
+    message_id VARCHAR(36) PRIMARY KEY,         -- Tier 1 reality (live ORM)
     -- message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Tier 2 (PostgreSQL-only)
-    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
     turn_number INTEGER NOT NULL,
 
     -- ============================================================
@@ -943,7 +940,7 @@ CREATE TABLE case_actions (
     -- UUID PK with gen_random_uuid() is Tier 2 (PostgreSQL-only) — aspirational.
     transition_id INTEGER PRIMARY KEY,          -- Tier 1 reality (live ORM)
     -- transition_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Tier 2 (PostgreSQL-only)
-    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
     -- ============================================================
     -- Transition Data
@@ -978,8 +975,8 @@ COMMENT ON TABLE case_actions IS 'Audit trail of case actions and status transit
 
 ```sql
 CREATE TABLE case_checkpoints (
-    checkpoint_id VARCHAR(50) PRIMARY KEY,      -- Format: {case_id}:turn:{turn_number}
-    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    checkpoint_id VARCHAR(36) PRIMARY KEY,      -- Format: {case_id}:turn:{turn_number} (Phase 4 normalized 50→36)
+    case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
     turn_number INTEGER NOT NULL,
 
     -- ============================================================
@@ -1011,7 +1008,7 @@ COMMENT ON TABLE case_checkpoints IS 'Immutable snapshots of case state per turn
 ```sql
 CREATE TABLE reports (
     report_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
     -- ============================================================
     -- Report Type & Versioning
@@ -1356,7 +1353,7 @@ ORDER BY collected_at DESC;
 -- Search cases (full-text + case ID)
 -- Target: ~15ms (GIN index on tsvector, ILIKE fallback for case ID)
 SELECT * FROM cases
-WHERE to_tsvector('english', title || ' ' || description) @@ to_tsquery('api performance')
+WHERE to_tsvector('english', title) @@ to_tsquery('api performance')
    OR case_id ILIKE '%search_term%'
 ORDER BY last_activity_at DESC
 LIMIT 20;
@@ -1674,8 +1671,8 @@ Before deploying PostgreSQLHybridCaseRepository to production, validate the foll
 # Deploy PostgreSQL to K8s (if not already running)
 kubectl apply -f faultmaven-k8s-infra/applications/postgresql/
 
-# Apply migration script
-psql -U faultmaven -d faultmaven_cases < migrations/001_initial_hybrid_schema.sql
+# Apply migrations via alembic (see alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py)
+alembic upgrade head
 
 # Verify all tables created
 psql -U faultmaven -d faultmaven_cases -c "\dt"
@@ -1811,8 +1808,8 @@ SELECT * FROM evidence WHERE case_id = 'case_123' AND category = 'symptom_eviden
 **Test end-to-end with FaultMaven API**:
 
 ```bash
-# Start API with postgres_hybrid config
-CASE_STORAGE_TYPE=postgres_hybrid python -m faultmaven.main
+# Start API with database config
+CASE_STORAGE_TYPE=database python -m faultmaven.main
 
 # Create case via API
 curl -X POST http://localhost:8090/api/v1/cases \
@@ -1837,20 +1834,20 @@ psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM evidence WHERE case_id 
 
 ### ✅ Completed
 - [x] Design approved (this document)
-- [x] Migration script created (`docs/reference/database/001_initial_hybrid_schema.sql`)
-- [x] Reports migration script created (`docs/reference/database/005_add_reports_table.sql`) - TD-001
+- [x] Baseline migration: `alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py`
+- [x] Reports migration: `alembic/versions/20260329_1200_add_reports_table.py` (TD-001)
 - [x] Repository implementation (`postgresql_hybrid_case_repository.py`)
-- [x] Container.py wiring (`CASE_STORAGE_TYPE=postgres_hybrid`)
+- [x] Container.py wiring (`CASE_STORAGE_TYPE=database`)
 
 ### ⏳ Pending (Before Production)
 
 - [ ] Deploy PostgreSQL to K8s cluster (if not running)
-- [ ] Apply migration script (`migrations/001_initial_hybrid_schema.sql`)
+- [ ] Apply alembic migrations (`alembic upgrade head`)
 - [ ] Run integration tests (Section 8.2)
 - [ ] Run performance benchmarks (Section 8.3)
 - [ ] Run API integration tests (Section 8.4)
 - [ ] Verify all indexes are used (EXPLAIN ANALYZE)
-- [ ] Update `.env` to use `CASE_STORAGE_TYPE=postgres_hybrid`
+- [ ] Update `.env` to use `CASE_STORAGE_TYPE=database`
 - [ ] Deploy FaultMaven API with hybrid repository
 - [ ] Monitor production metrics (query performance, error rates)
 

@@ -12,7 +12,7 @@ All runtime data lives under `data/` relative to the project root. This director
 
 ```
 data/
-├── faultmaven.db              # SQLite — all relational data (33 tables; see er-diagram.md)
+├── faultmaven.db              # SQLite — all relational data (29 tables; see er-diagram.md)
 │
 ├── chroma-kb/                 # ChromaDB instance — permanent KB vectors
 │   ├── chroma.sqlite3         #   Collection metadata, doc IDs, text, full-text index
@@ -49,7 +49,7 @@ data/
 | `chroma-kb/` | ChromaDB (permanent) | KB embeddings: `faultmaven_kb`, `faultmaven_runbooks`, `knowledge_items` collections. Backed up, never wiped. | Permanent |
 | `chroma-evidence/` | ChromaDB (ephemeral) | Case evidence embeddings: `case_{case_id}` collections (one per active case). Excluded from backups, safe to wipe. | Per-case lifecycle |
 | `evidence/<organization_id>/<case_id>/<YYYY-MM-DD>/` | Filesystem | Raw uploaded files (logs, configs, CSVs, PDFs). Not vectors — original files only. UUID-prefixed filenames prevent collisions. | 90-day retention |
-| `knowledge/global/` | Filesystem | Runbook markdown source files (global scope). Seeded from `faultmaven/knowledge/builtin/` on first startup (59 built-in runbooks). | Permanent |
+| `knowledge/global/` | Filesystem | Runbook markdown source files (global scope). Seeded from `resources/knowledge/builtin/` on first startup (59 built-in runbooks). | Permanent |
 | `knowledge/personal_*/` | Filesystem | Runbook markdown from case-to-runbook conversion | User-controlled |
 | `knowledge/team_*/` | Filesystem | Team-scoped runbook files | Team-controlled |
 
@@ -247,15 +247,14 @@ find data/evidence/ -type f -size +10M -exec ls -lh {} \;
 find data/evidence/ -type f -mtime -7
 ```
 
-### Evidence triple storage
+### Evidence dual storage
 
-Each uploaded evidence file is stored in three places:
+Each uploaded evidence file is stored in two places:
 
 1. `data/evidence/<organization_id>/<case_id>/<YYYY-MM-DD>/<uuid>_<filename>` — the raw file (90-day retention)
-2. `data/faultmaven.db` — structured metadata in `evidence`, `evidence_artifacts`, and `uploaded_files` tables (evidence ID, category, summary, preprocessing result, file path reference)
-3. `data/chroma-evidence/` — vectorized chunks in a `case_{case_id}` collection for semantic search during investigation (ephemeral, cleaned up on case closure)
+2. `data/faultmaven.db` — structured metadata in the `evidence` table (evidence ID, category, summary, preprocessing result) and the `uploaded_files` table (file path reference, upload metadata)
 
-The raw file and relational metadata are written synchronously during upload. The vector embedding is a background task that runs after the API response — it may silently fail without affecting the upload.
+After upload, a background task vectorizes the content into `data/chroma-evidence/` — a `case_{case_id}` collection for semantic search during investigation (ephemeral, cleaned up on case closure). The raw file and relational metadata are written synchronously during upload. The vector embedding is a background task that runs after the API response — it may silently fail without affecting the upload.
 
 ---
 
@@ -341,6 +340,8 @@ for col in client.list_collections():
 ```
 
 ### Expected collections
+
+The table below is the operational expected-state checklist. For collection design, scope-filter implementation, and embedding model details see [docs/architecture/data-and-storage/vector-storage.md](../architecture/data-and-storage/vector-storage.md).
 
 | Instance | Collection | Purpose |
 | --- | --- | --- |

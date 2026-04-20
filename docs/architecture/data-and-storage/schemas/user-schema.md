@@ -67,8 +67,8 @@ This document defines the **authoritative user storage design** for FaultMaven a
 - ✅ Account lifecycle management
 
 **Storage Strategy**:
-- **Development**: Redis (DevUserStore) - simple, fast
-- **Production**: PostgreSQL - normalized, scalable, ACID guarantees
+- **Local Deployment**: SQLite via SQLAlchemy ORM — persistent, no external server required
+- **Cloud Deployment**: PostgreSQL — normalized, scalable, ACID guarantees
 
 ---
 
@@ -89,31 +89,13 @@ This document defines the **authoritative user storage design** for FaultMaven a
 
 ### 1.1 Current Implementation (Development)
 
-**Storage**: Redis via `DevUserStore`
+In development, the same SQLite-backed user store is used as in local deployment — there is no separate `DevUserStore`. The `auth:user:*` Redis keys belong to the session/cache layer (see §5.3), not user storage. All organization, team, and SSO features are live.
 
-**Schema** (Redis keys):
-```
-auth:user:{user_id} → {
-  user_id, username, email, display_name,
-  hashed_password, created_at, last_login, roles
-}
-auth:username:{username} → user_id
-auth:email:{email} → user_id
-```
+### 1.2 Current State (All Deployments)
 
-**Limitations**:
-- ❌ No organization/workspace support
-- ❌ No team management
-- ❌ No granular permissions
-- ❌ No audit trail
-- ❌ No SSO integration
-- ❌ Roles as simple strings (not relational)
+**Storage**: SQLite (Local Deployment) or PostgreSQL (Cloud Deployment) via SQLAlchemy ORM
 
-### 1.2 Target State (Production PostgreSQL)
-
-**Storage**: PostgreSQL with normalized enterprise schema
-
-**Tables**: 8 core tables
+**Tables**: 11 tables (user domain)
 - `users` - User accounts
 - `organizations` - Tenant workspaces
 - `organization_members` - User-organization mapping
@@ -123,6 +105,8 @@ auth:email:{email} → user_id
 - `permissions` - Permission definitions
 - `role_permissions` - Role-permission mapping
 - `user_audit_log` - Security audit trail
+- `oauth_revoked_tokens` - Revoked OAuth tokens
+- `oauth_authorization_codes` - OAuth PKCE authorization codes
 
 ---
 
@@ -246,7 +230,8 @@ CREATE TABLE organizations (
 
     -- Subscription
     plan_tier VARCHAR(20) NOT NULL DEFAULT 'free',  -- 'free', 'pro', 'enterprise'
-    max_users INTEGER NOT NULL DEFAULT 5,
+    max_members INTEGER NOT NULL DEFAULT 5,
+    max_cases INTEGER,
 
     -- Settings
     settings JSONB DEFAULT '{}'::jsonb,  -- Flexible org-specific settings
@@ -268,7 +253,6 @@ CREATE TABLE organizations (
 -- Tier 2 (PostgreSQL-only) — partial indexes (WHERE deleted_at IS NULL)
 -- Live ORM indexes exist but are non-partial
 CREATE INDEX idx_organizations_slug ON organizations(slug) WHERE deleted_at IS NULL;
-CREATE INDEX idx_organizations_domain ON organizations(domain) WHERE deleted_at IS NULL;
 
 COMMENT ON TABLE organizations IS 'Tenant organizations (workspaces) for multi-tenancy';
 COMMENT ON COLUMN organizations.slug IS 'URL slug for organization (e.g., acme-corp)';
@@ -411,7 +395,7 @@ COMMENT ON COLUMN roles.is_system_role IS 'System roles cannot be deleted or mod
 ```sql
 CREATE TABLE permissions (
     -- Primary Key
-    permission_id VARCHAR(30) PRIMARY KEY,
+    permission_id VARCHAR(36) PRIMARY KEY,
 
     -- Permission Definition
     resource VARCHAR(50) NOT NULL,  -- 'cases', 'knowledge_base', 'settings', etc.

@@ -95,11 +95,12 @@ Long-term      │ Python dict  │ SQLite file  │ PostgreSQL   │
 Technology:    │ InMemory     │ SQLite       │ PostgreSQL   │
                │ Repository   │ Repository   │ Repository   │
 ───────────────┼──────────────┼──────────────┼──────────────┤
-Cached         │ Python dict  │ File-based   │ Redis        │
-(Sessions)     │ ✅ Impl.     │ ⚠️ Future    │ ✅ Impl.     │
+Cached         │ FakeRedis    │ FakeRedis    │ Redis        │
+(Sessions)     │ ✅ Impl.     │ ✅ Impl.     │ ✅ Impl.     │
                │              │              │              │
-Technology:    │ InMemory     │ File         │ Redis        │
+Technology:    │ Redis        │ Redis        │ Redis        │
                │ SessionStore │ SessionStore │ SessionStore │
+               │ (FakeRedis)  │ (FakeRedis)  │ (real Redis) │
 ───────────────┼──────────────┼──────────────┼──────────────┤
 Vector         │     n/a      │ ChromaDB     │ ChromaDB     │
 (Knowledge)    │              │ ✅ Impl.     │ ✅ Impl.     │
@@ -268,7 +269,7 @@ REDIS_PORT=6379
 - Rate limiting data
 - Real-time message queues
 
-**TTL Strategy** (distinct concepts — do not conflate):
+**TTL Strategy** (distinct concepts — do not conflate; see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-ttl-strategy) for the canonical auth/session domain reference):
 
 - **JWT access token**: 60 min default (`JWT_ACCESS_TOKEN_EXPIRY`)
 - **JWT refresh token**: 7 days default (`JWT_REFRESH_TOKEN_EXPIRY`)
@@ -596,7 +597,7 @@ class VectorStore(ABC):
 # .env.development
 CASE_STORAGE_TYPE=inmemory
 USER_STORAGE_TYPE=inmemory
-# No SESSION_STORAGE_TYPE needed — FakeRedis auto-selected when no Redis server available
+# Sessions: FakeRedis auto-selected when REDIS_HOST is unset (no config needed)
 VECTOR_STORAGE_TYPE=chromadb   # Local PersistentClient at data/chroma-kb/
 ```
 
@@ -617,7 +618,7 @@ VECTOR_STORAGE_TYPE=chromadb   # Local PersistentClient at data/chroma-kb/
 
 **Implementations**:
 - ✅ `SQLiteCaseRepository` - Cases in SQLite file (SQLite-compatible SQL)
-- ⚠️ `FileSessionStore` - Sessions in local files (future)
+- ✅ `RedisSessionStore` + FakeRedis - Sessions (in-process, no external server required)
 - ✅ ChromaDB local mode - Vector storage with persistence
 
 **Configuration**:
@@ -688,9 +689,10 @@ CASES_DB_NAME=cases_db
 CASES_DB_USER=case_service
 CASES_DB_PASSWORD=${DB_PASSWORD}
 
-SESSION_STORAGE_TYPE=redis
 REDIS_HOST=redis.faultmaven.local
 REDIS_PORT=6379
+# Note: sessions are always Redis-backed. There is no SESSION_STORAGE_TYPE selector.
+# REDIS_HOST / REDIS_URL configures the Redis backend; FakeRedis is used in-process when REDIS_HOST is unset.
 
 VECTOR_STORAGE_TYPE=chromadb
 CHROMADB_URL=http://chromadb.faultmaven.local:30080
@@ -790,7 +792,7 @@ VECTOR_STORAGE_TYPE=chromadb     # Local PersistentClient
 CASE_STORAGE_TYPE=database
 USER_STORAGE_TYPE=database
 DATABASE_URL=postgresql+asyncpg://user:pass@postgres.faultmaven.local/faultmaven
-SESSION_STORAGE_TYPE=redis
+REDIS_HOST=redis.faultmaven.local   # triggers real Redis; omit for FakeRedis
 VECTOR_STORAGE_TYPE=chromadb
 CHROMADB_URL=http://chromadb.faultmaven.local:30080
 # All connection details from K8s ConfigMaps/Secrets
@@ -802,7 +804,7 @@ CHROMADB_URL=http://chromadb.faultmaven.local:30080
 CASE_STORAGE_TYPE=database
 USER_STORAGE_TYPE=database
 DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
-# SESSION_STORAGE_TYPE unset → FakeRedis auto-selected (no external Redis required)
+# Sessions: FakeRedis auto-selected when REDIS_HOST is unset (no external Redis required)
 VECTOR_STORAGE_TYPE=chromadb                # Local ChromaDB PersistentClient at data/chroma-kb/
 # CHROMADB_URL unset → PersistentClient mode
 ```
@@ -851,19 +853,12 @@ class Container:
         self.session_store = RedisSessionStore(redis_client)
 
         # ==========================================
-        # VECTOR DATA: Vector Store (InMemory or ChromaDB)
+        # VECTOR DATA: Vector Store (ChromaDB only)
         # ==========================================
-        vector_storage_type = settings.database.vector_storage_type.lower()
-
-        if vector_storage_type == "chromadb":
-            # ChromaDB backend (production)
-            from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
-            self.vector_store = ChromaDBVectorStore()
-
-        else:
-            # ChromaDB always available (PersistentClient for local, HttpClient for cloud)
-            # Client created by DI container via create_kb_chromadb_client() or create_evidence_chromadb_client()
-            self.vector_store = ChromaDBVectorStore(client=chromadb_client)
+        # InMemoryVectorStore is removed — ChromaDB PersistentClient is always available.
+        # Client created by DI container via create_kb_chromadb_client() or create_evidence_chromadb_client().
+        from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+        self.vector_store = ChromaDBVectorStore(client=chromadb_client)
 ```
 
 **Key Points**:

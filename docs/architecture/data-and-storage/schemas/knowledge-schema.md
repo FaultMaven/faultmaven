@@ -138,7 +138,7 @@ results = await knowledge_vector_store.search(
 - Deleted when case closes (immediate via `delete_case_collection`) or swept by `cleanup_orphaned_collections(active_case_ids)` (reactive pattern — not scheduled)
 - No cross-case sharing
 
-> **Note**: The 7-day grace period TTL, `schedule_cleanup`, `get_expired_collections`, and daily cleanup job described in §2.3–2.4 are **aspirational — not implemented**. The live `CaseVectorStore` uses immediate deletion (`delete_case_collection`) and a reactive orphan sweep (`cleanup_orphaned_collections(active_case_ids)`). Collection metadata carries only `case_id` + `created_at` — no `expiry_date` or `cleanup_after` fields. See [deployment-schema-strategy.md §5](../../../../../faultmaven-doc-internal/architecture/deployment-schema-strategy.md) for the open decision on whether to implement scheduled TTL cleanup.
+> **Note**: The 7-day grace period TTL, `schedule_cleanup`, `get_expired_collections`, and daily cleanup job described below in "Future / Not Implemented" are **aspirational — not implemented**. The live `CaseVectorStore` uses immediate deletion (`delete_case_collection`) and a reactive orphan sweep (`cleanup_orphaned_collections(active_case_ids)`). Collection metadata carries only `case_id` + `created_at` — no `expiry_date` or `cleanup_after` fields. See [deployment-schema-strategy.md §5](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) for the open decision on whether to implement scheduled TTL cleanup.
 
 **Semantic Search**:
 
@@ -149,38 +149,51 @@ results = await knowledge_vector_store.search(
 ### 2.3 Collection Metadata
 
 ```python
-# Collection metadata with TTL tracking
+# Collection metadata — only case_id and created_at are stored (live implementation)
 {
     "case_id": "case_abc123",
     "created_at": "2025-01-15T10:30:00Z",
     "type": "case_working_memory",
-    "case_status": "investigating",  # Updated on case status change
-    "expiry_date": None,  # Set when case closes
-    "cleanup_after": "2025-02-01T10:30:00Z"  # case_closed_at + 7 days
 }
 ```
 
 ### 2.4 Lifecycle Management
 
 ```python
-# Case lifecycle integration
+# Case lifecycle integration — live implementation
 async def close_case(case_id: str):
     case = await case_repository.get(case_id)
     case.status = CaseStatus.RESOLVED
     case.resolved_at = datetime.now(timezone.utc)
     await case_repository.save(case)
 
-    # Mark case vector store for cleanup
-    cleanup_date = case.resolved_at + timedelta(days=7)
-    await case_vector_store.schedule_cleanup(case_id, cleanup_date)
+    # Immediately delete the case vector collection on close
+    await case_vector_store.delete_case_collection(case_id)
 
-# Cleanup job (runs daily)
-async def cleanup_expired_case_collections():
-    expired = await case_vector_store.get_expired_collections()
-    for collection_name in expired:
-        await case_vector_store.delete_collection(collection_name)
-        logger.info(f"Deleted expired collection: {collection_name}")
+# Orphan sweep (reactive — not scheduled; called when active case list is known)
+async def sweep_orphaned_collections(active_case_ids: list[str]):
+    await case_vector_store.cleanup_orphaned_collections(active_case_ids)
 ```
+
+### 2.4.1 Future / Not Implemented
+
+The following TTL-based cleanup design is **not implemented**. Retained here for reference if a scheduled cleanup job is added in the future (see [deployment-schema-strategy.md §5](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md)).
+
+```python
+# NOT IMPLEMENTED — aspirational TTL-based cleanup
+async def close_case_with_ttl(case_id: str):
+    # ...
+    cleanup_date = case.resolved_at + timedelta(days=7)
+    await case_vector_store.schedule_cleanup(case_id, cleanup_date)  # method does not exist
+
+# NOT IMPLEMENTED — daily scheduled job
+async def cleanup_expired_case_collections():
+    expired = await case_vector_store.get_expired_collections()  # method does not exist
+    for collection_name in expired:
+        await case_vector_store.delete_case_collection(collection_name)
+```
+
+The metadata fields `expiry_date`, `cleanup_after`, and `case_status` are not stored in live collection metadata.
 
 ### 2.5 Access Patterns
 
@@ -196,7 +209,7 @@ results = await case_vector_store.search(
 )
 
 # Delete collection when case closes
-await case_vector_store.delete_collection(case_id)
+await case_vector_store.delete_case_collection(case_id)
 ```
 
 ---

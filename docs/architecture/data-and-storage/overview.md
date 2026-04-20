@@ -65,7 +65,6 @@ For the data-type × backend × deployment breakdown, see:
              │
              ├──> ICaseRepository Interface (Report methods)
              │    └──> PostgreSQL (reports table, FK to cases)
-             │         # TD-001: Migrated from Redis + ChromaDB (ephemeral)
              │
              ├──> IJobService Interface
              │    └──> Redis (job:{job_id})
@@ -121,14 +120,9 @@ For the data-type × backend × deployment breakdown, see:
 │   - evidence_chromadb_client → data/chroma-evidence/ (ephemeral)     │
 │   Cloud: both use HttpClient to external ChromaDB server             │
 │                                                                        │
-│   Scope isolation on faultmaven_kb uses metadata filtering. The      │
-│   unified `answer_from_kb` tool builds a per-caller filter:          │
-│   - Global content:  {"scope": "global"}                             │
-│   - Personal content: {"scope": "personal", "owner_id": user_id}    │
-│   - Team content:     {"scope": "team", "team_id": {"$in": team_ids}}│
-│                                                                        │
-│   KnowledgeVectorStore enforces a scope-invariant check — any        │
-│   faultmaven_kb query without a scope filter is rejected.            │
+│   Scope isolation: faultmaven_kb queries use metadata filters        │
+│   (scope/owner_id/team_id). See vector-storage.md §1.1, §4.2, §1.3  │
+│   for collection design, scope-filter examples, and ingestion detail.│
 │                                                                        │
 │ S3-Compatible Storage:                                                │
 │   - Raw uploaded files: artifacts/{case_id}/{file_id}                 │
@@ -150,14 +144,13 @@ All storage follows the **Repository Pattern** with interface abstraction for te
 
 ### Interface Summary
 
-Full repository interface signatures live in **[repository-pattern.md](./repository-pattern.md)**:
+Core repository interface signatures live in **[repository-pattern.md](./repository-pattern.md)**:
 
-- `UserRepository` — §3
 - `CaseRepository` (>30 methods; §4.1 illustrates the core 11) — §4.1
-- `ISessionStore` — §3
-- `IVectorStore` — §3
-- `IJobService` — §3
-- `IGlobalConfidenceService` — §3
+- `ISessionStore` — §4.2
+- `IVectorStore` — §4.3
+
+`UserRepository` is defined in `faultmaven/infrastructure/persistence/user_repository.py`. `IJobService` and `IGlobalConfidenceService` are defined in `faultmaven/models/interfaces.py`. These interfaces are not documented separately in repository-pattern.md.
 
 Reports are persisted via the Case repository (see `modules/case/contracts.py` — the legacy `IReportStore` interface was removed when report storage migrated to PostgreSQL under TD-001).
 
@@ -181,6 +174,8 @@ See [repository-pattern.md](./repository-pattern.md) for detailed abstraction la
 ---
 
 ## Data Retention & Lifecycle
+
+For auth/session TTL detail (JWT lifetimes, session record TTL, inactivity timeout) see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-ttl-strategy).
 
 | Data Category | Retention Period | Cleanup Strategy |
 |---------------|------------------|------------------|
@@ -285,6 +280,8 @@ See [repository-pattern.md](./repository-pattern.md) for detailed abstraction la
 
 ### Performance Targets
 
+Summary targets below; per-backend latency breakdown is in [repository-pattern.md §9.1](./repository-pattern.md#91-performance-by-data-type-and-backend).
+
 | Operation | Target | Measured |
 |-----------|--------|----------|
 | User authentication | < 50ms | 30ms avg |
@@ -302,15 +299,7 @@ See [repository-pattern.md](./repository-pattern.md) for detailed abstraction la
 
 ## Documentation Structure
 
-This overview provides the high-level architecture. For detailed schema specifications, see:
-
-- **[README.md](./README.md)** — index of all storage docs with the storage-technology matrix
-- **[er-diagram.md](./er-diagram.md)** — auto-generated entity-relationship diagram (authoritative table enumeration)
-- **[schemas/case-schema.md](./schemas/case-schema.md)** — case data model, column-level detail
-- **[schemas/user-schema.md](./schemas/user-schema.md)** — user accounts, organizations, teams, SSO
-- **[schemas/knowledge-schema.md](./schemas/knowledge-schema.md)** — unified KB and case working memory schemas
-- **[vector-storage.md](./vector-storage.md)** — ChromaDB implementation and operations
-- **[repository-pattern.md](./repository-pattern.md)** — storage abstraction layer specification
+This overview provides the high-level architecture story. See **[README.md](./README.md)** for the navigation index of all storage docs.
 
 ---
 

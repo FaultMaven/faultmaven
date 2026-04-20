@@ -1,5 +1,7 @@
 # Data and Storage
 
+This README is the canonical entry point for the data-and-storage doc set; `overview.md` covers the high-level architecture story.
+
 Documentation for FaultMaven's persistence layer, database design, and storage architecture.
 
 ## Quick Start
@@ -51,6 +53,8 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 - **[er-diagram.md](./er-diagram.md)** - Entity-relationship diagram (auto-generated from SQLAlchemy models — authoritative table enumeration)
 
 ## Storage Technologies
+
+High-level summary below. For the full per-data-type detail (data type × storage backend × deployment), see [repository-pattern.md §3](./repository-pattern.md#3-storage-technologies-by-data-type).
 
 | Layer | Local Deployment | Cloud Deployment |
 |-------|-----------------|------------------|

@@ -1,27 +1,25 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-04-18 10:00 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-04-20 00:10 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**33 tables** in the schema.
+**29 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
 | `agent_executions` | 17 | `execution_id` | cases, investigation_sessions |
-| `agent_tool_calls` | 12 | `call_id` | cases |
-| `agent_tool_calls_v2` | 13 | `tool_call_id` | agent_executions |
+| `agent_tool_calls` | 13 | `tool_call_id` | agent_executions |
 | `case_actions` | 8 | `transition_id` | cases |
 | `case_checkpoints` | 9 | `checkpoint_id` | cases |
 | `case_messages` | 9 | `message_id` | cases |
 | `case_tags` | 5 | `tag_id` | cases |
-| `cases` | 21 | `case_id` | sessions |
+| `cases` | 23 | `case_id` | — |
 | `conversion_drafts` | 21 | `id` | conversion_jobs |
 | `conversion_jobs` | 16 | `id` | — |
-| `evidence` | 15 | `evidence_id` | cases |
-| `evidence_artifacts` | 16 | `evidence_id` | cases |
+| `evidence` | 20 | `evidence_id` | cases |
 | `hypotheses` | 23 | `hypothesis_id` | cases |
 | `investigation_sessions` | 17 | `session_id` | cases |
 | `knowledge_items` | 29 | `item_id` | — |
@@ -32,12 +30,10 @@
 | `organization_members` | 9 | `user_id, organization_id` | organizations, roles, users |
 | `organizations` | 14 | `organization_id` | — |
 | `permissions` | 4 | `permission_id` | — |
-| `reports` | 14 | `report_id` | cases |
+| `reports` | 15 | `report_id` | cases |
 | `role_permissions` | 2 | `role_id, permission_id` | permissions, roles |
 | `roles` | 7 | `role_id` | — |
-| `sessions` | 7 | `session_id` | — |
-| `solutions` | 22 | `solution_id` | cases |
-| `standalone_evidence` | 12 | `id` | — |
+| `solutions` | 23 | `solution_id` | cases, hypotheses |
 | `team_members` | 4 | `user_id, team_id` | teams, users |
 | `teams` | 7 | `team_id` | organizations |
 | `uploaded_files` | 12 | `file_id` | cases |
@@ -68,20 +64,6 @@ erDiagram
         VARCHAR session_id FK
     }
     agent_tool_calls {
-        VARCHAR call_id PK
-        VARCHAR case_id FK
-        VARCHAR organization_id
-        VARCHAR tool_name
-        TEXT tool_input
-        TEXT tool_output
-        VARCHAR status
-        TEXT error_message
-        INTEGER duration_ms
-        DATETIME started_at
-        DATETIME completed_at
-        TEXT metadata
-    }
-    agent_tool_calls_v2 {
         VARCHAR tool_call_id PK
         VARCHAR execution_id FK
         VARCHAR organization_id
@@ -147,7 +129,6 @@ erDiagram
         TEXT working_conclusion
         TEXT root_cause_conclusion
         TEXT path_selection
-        TEXT degraded_mode
         TEXT escalation_state
         TEXT documentation
         TEXT progress
@@ -156,7 +137,10 @@ erDiagram
         VARCHAR team_id
         BOOLEAN is_archived
         DATETIME archived_at
-        VARCHAR session_id FK
+        VARCHAR closure_reason
+        DATETIME last_activity_at
+        DATETIME resolved_at
+        DATETIME closed_at
     }
     conversion_drafts {
         VARCHAR id PK
@@ -204,35 +188,22 @@ erDiagram
         VARCHAR case_id FK
         VARCHAR organization_id
         VARCHAR category
-        VARCHAR source_type_new
+        VARCHAR source_type
         VARCHAR summary
         TEXT preprocessed_content
         VARCHAR content_ref
-        INTEGER file_size
+        BIGINT file_size
         VARCHAR filename
         VARCHAR content_hash
         INTEGER collected_at_turn
         VARCHAR source_file_id
         DATETIME upload_timestamp
         TEXT metadata
-    }
-    evidence_artifacts {
-        VARCHAR evidence_id PK
-        VARCHAR case_id FK
-        VARCHAR user_id
-        VARCHAR organization_id
-        VARCHAR original_filename
-        VARCHAR stored_filename
-        VARCHAR file_path
-        VARCHAR evidence_type
-        VARCHAR mime_type
-        INTEGER file_size
-        VARCHAR storage_backend
-        DATETIME created_at
-        DATETIME updated_at
-        TEXT metadata
-        TEXT description
+        VARCHAR form
         BOOLEAN is_primary
+        VARCHAR content_type
+        FLOAT reliability_score
+        TEXT tags
     }
     hypotheses {
         VARCHAR hypothesis_id PK
@@ -405,6 +376,7 @@ erDiagram
         JSON metadata
         DATETIME generated_at
         DATETIME updated_at
+        VARCHAR generated_by
     }
     role_permissions {
         VARCHAR role_id PK
@@ -418,15 +390,6 @@ erDiagram
         BOOLEAN is_system_role
         DATETIME created_at
         DATETIME updated_at
-    }
-    sessions {
-        VARCHAR session_id PK
-        VARCHAR user_id
-        VARCHAR organization_id
-        DATETIME created_at
-        DATETIME last_accessed
-        DATETIME expires_at
-        TEXT metadata
     }
     solutions {
         VARCHAR solution_id PK
@@ -451,20 +414,7 @@ erDiagram
         VARCHAR organization_id
         VARCHAR created_by
         VARCHAR updated_by
-    }
-    standalone_evidence {
-        VARCHAR id PK
-        VARCHAR filename
-        VARCHAR content_type
-        INTEGER size_bytes
-        VARCHAR storage_path
-        VARCHAR uploaded_by
-        VARCHAR organization_id
-        DATETIME uploaded_at
-        TEXT description
-        TEXT tags
-        TEXT linked_cases
-        TEXT metadata
+        VARCHAR hypothesis_id FK
     }
     team_members {
         VARCHAR user_id PK
@@ -529,21 +479,20 @@ erDiagram
         DATETIME deleted_at
         VARCHAR roles
     }
-    agent_executions ||--o{ agent_tool_calls_v2 : ""
+    agent_executions ||--o{ agent_tool_calls : ""
     cases ||--o{ agent_executions : ""
-    cases ||--o{ agent_tool_calls : ""
     cases ||--o{ case_actions : ""
     cases ||--o{ case_checkpoints : ""
     cases ||--o{ case_messages : ""
     cases ||--o{ case_tags : ""
     cases ||--o{ evidence : ""
-    cases ||--o{ evidence_artifacts : ""
     cases ||--o{ hypotheses : ""
     cases ||--o{ investigation_sessions : ""
     cases ||--o{ reports : ""
     cases ||--o{ solutions : ""
     cases ||--o{ uploaded_files : ""
     conversion_jobs ||--o{ conversion_drafts : ""
+    hypotheses ||--o{ solutions : ""
     investigation_sessions ||--o{ agent_executions : ""
     organizations ||--o{ organization_members : ""
     organizations ||--o{ teams : ""
@@ -551,7 +500,6 @@ erDiagram
     permissions ||--o{ role_permissions : ""
     roles ||--o{ organization_members : ""
     roles ||--o{ role_permissions : ""
-    sessions ||--o{ cases : ""
     teams ||--o{ team_members : ""
     users ||--o{ organization_members : ""
     users ||--o{ team_members : ""
