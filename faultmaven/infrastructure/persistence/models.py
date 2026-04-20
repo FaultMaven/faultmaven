@@ -322,7 +322,8 @@ class OAuthAuthorizationCodeModel(Base):
     __tablename__ = "oauth_authorization_codes"
 
     code = Column(String(64), primary_key=True)
-    user_id = Column(String(255), nullable=False)
+    # Phase 9 audit fix: width normalization VARCHAR(255)→VARCHAR(36) per Phase 4 policy.
+    user_id = Column(String(36), nullable=False)
     redirect_uri = Column(Text, nullable=False)
     code_challenge = Column(String(64), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
@@ -416,13 +417,12 @@ class MessageRoleEnum(str, enum.Enum):
     SYSTEM = "system"
 
 
-class ToolCallStatusEnum(str, enum.Enum):
-    """Tool call execution status."""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    SUCCESS = "success"
-    ERROR = "error"
+# ToolCallStatusEnum was deleted in storage redesign 2026-04 phase 9 (audit fixes).
+# It had zero callers outside its own definition AND its values disagreed with the
+# CHECK constraint on agent_tool_calls.status (which uses domain values:
+# pending|running|success|failed; old enum had ERROR="error" which the CHECK rejected).
+# Tool call status values come from the domain layer (modules/case/domain/owned_models/
+# agent_execution.py uses "success"/"failed"); the CHECK constraint enforces them.
 
 
 class RiskLevelEnum(str, enum.Enum):
@@ -482,9 +482,25 @@ class CaseModel(Base):
     # Use case_metadata as attribute to avoid conflict with SQLAlchemy Base.metadata
     case_metadata = Column("metadata", Text, default="{}")
 
-    # Organization/Team
-    organization_id = Column(String(36), index=True)
-    team_id = Column(String(36), index=True)
+    # Organization/Team — tenant scoping (Phase 9 audit fix: NOT NULL + FK).
+    # organization_id is the basis for Phase 8 RLS (PG); RLS cannot enforce on
+    # a nullable, unconstrained column. Default value is the single-org
+    # local-deployment org id (matches startup bootstrap).
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.organization_id"),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
+    # team_id is optional (cases need not be team-scoped) but if set must
+    # reference a real team.
+    team_id = Column(
+        String(36),
+        ForeignKey("teams.team_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Archival (independent of case status)
     is_archived = Column(
@@ -570,6 +586,7 @@ class EvidenceModel(Base):
     )
     organization_id = Column(
         String(36),
+        ForeignKey("organizations.organization_id"),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -604,7 +621,21 @@ class EvidenceModel(Base):
     # Per deployment-schema-strategy.md §7.1 (evidence target shape) +
     # §12 decision #19. Tier 2 PG-only enhancements (CHECK on
     # reliability_score, TEXT[]+GIN on tags) are deferred to Phase 7.
-    form = Column(String(20), nullable=False, server_default="text")
+    # Phase 9 audit fix: bind to EvidenceFormEnum via SQLAlchemy Enum so the
+    # value space is enforced cross-dialect (native_enum=False emits a CHECK
+    # constraint that works on both SQLite and PostgreSQL — complements the
+    # Phase 7 PG-only CHECK).
+    form = Column(
+        Enum(
+            EvidenceFormEnum,
+            name="evidence_form",
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        server_default="text",
+    )
     is_primary = Column(Boolean, nullable=False, server_default="0")
     content_type = Column(String(100), nullable=True)
     reliability_score = Column(Float, nullable=True)
@@ -695,6 +726,7 @@ class HypothesisModel(Base):
     # Multi-tenancy and audit fields (TASK-026)
     organization_id = Column(
         String(36),
+        ForeignKey("organizations.organization_id"),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -764,6 +796,7 @@ class SolutionModel(Base):
     # Multi-tenancy and audit fields (TASK-026)
     organization_id = Column(
         String(36),
+        ForeignKey("organizations.organization_id"),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -822,6 +855,7 @@ class CaseMessageModel(Base):
     )
     organization_id = Column(
         String(36),
+        ForeignKey("organizations.organization_id"),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -876,6 +910,7 @@ class UploadedFileModel(Base):
     )
     organization_id = Column(
         String(36),
+        ForeignKey("organizations.organization_id"),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -928,6 +963,7 @@ class CaseActionModel(Base):
     )
     organization_id = Column(
         String(36),
+        ForeignKey("organizations.organization_id"),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -970,6 +1006,7 @@ class CaseTagModel(Base):
     )
     organization_id = Column(
         String(36),
+        ForeignKey("organizations.organization_id"),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -1044,6 +1081,7 @@ class CaseCheckpointModel(Base):
 
     organization_id = Column(
         String(36),
+        ForeignKey("organizations.organization_id"),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -1328,6 +1366,7 @@ class InvestigationSessionModel(Base):
     user_id = Column(String(36), nullable=False, index=True)
     organization_id = Column(
         String(36),
+        ForeignKey("organizations.organization_id"),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -1448,6 +1487,7 @@ class KnowledgeItemModel(Base):
     # Organization scope (NO foreign key - items persist independently)
     organization_id = Column(
         String(36),
+        ForeignKey("organizations.organization_id"),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -1480,7 +1520,8 @@ class KnowledgeItemModel(Base):
     # Verification status (0=experimental, 1=community, 2=admin_verified)
     verification_level = Column(Integer, nullable=False, default=0, index=True)
     verification_reason = Column(String(512), nullable=True)
-    verified_by = Column(String(64), nullable=True)
+    # Phase 9 audit fix: VARCHAR(64)→VARCHAR(36) per Phase 4 width policy.
+    verified_by = Column(String(36), nullable=True)
     verified_at = Column(DateTime(timezone=True), nullable=True)
 
     # Lineage tracking (for suggestions that became knowledge items)
@@ -1570,6 +1611,7 @@ class KnowledgeSuggestionModel(Base):
     # Organization and Case scope
     organization_id = Column(
         String(36),
+        ForeignKey("organizations.organization_id"),
         nullable=False,
         index=True,
         default="00000000-0000-0000-0000-000000000001",
@@ -1586,8 +1628,9 @@ class KnowledgeSuggestionModel(Base):
     suggested_content = Column(Text, nullable=False)
     suggested_type = Column(String(64), nullable=False, default="troubleshooting_guide")
 
-    # Extraction metadata
-    extracted_by = Column(String(64), nullable=False, index=True)
+    # Extraction metadata. Phase 9 audit fix: VARCHAR(64)→VARCHAR(36) per Phase 4
+    # policy (entity user_id reference).
+    extracted_by = Column(String(36), nullable=False, index=True)
     extracted_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -1599,7 +1642,8 @@ class KnowledgeSuggestionModel(Base):
         String(32), nullable=False, default="not_scanned", index=True
     )  # not_scanned, scanning, clean, pii_detected, remediated, scan_failed
     pii_scan_result = Column(Text, nullable=True)  # JSON
-    pii_remediated_by = Column(String(64), nullable=True)
+    # Phase 9 audit fix: VARCHAR(64)→VARCHAR(36) per Phase 4 width policy.
+    pii_remediated_by = Column(String(36), nullable=True)
     pii_remediated_at = Column(DateTime(timezone=True), nullable=True)
 
     # Lineage (for Review Inbox footer)
@@ -1608,7 +1652,8 @@ class KnowledgeSuggestionModel(Base):
     evidence_count = Column(Integer, nullable=False, default=0)
 
     # Review metadata
-    reviewed_by = Column(String(64), nullable=True)
+    # Phase 9 audit fix: VARCHAR(64)→VARCHAR(36) per Phase 4 width policy.
+    reviewed_by = Column(String(36), nullable=True)
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
     review_notes = Column(Text, nullable=True)
     rejection_reason = Column(Text, nullable=True)
@@ -1709,9 +1754,20 @@ class ConversionJobModel(Base):
 
     id = Column(String(36), primary_key=True)
     user_id = Column(String(36), nullable=False, index=True)
-    organization_id = Column(String(36), nullable=True)
+    # Phase 9 audit fix: NOT NULL + FK + default for tenant scoping.
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.organization_id"),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
     scope = Column(String(20), nullable=False)
-    team_id = Column(String(36), nullable=True)
+    team_id = Column(
+        String(36),
+        ForeignKey("teams.team_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     status = Column(String(20), nullable=False, server_default="processing")
     source_filename = Column(String(255), nullable=False)
     source_content_type = Column(String(100), nullable=False)

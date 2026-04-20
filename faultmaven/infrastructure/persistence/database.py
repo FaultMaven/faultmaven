@@ -25,6 +25,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -208,10 +209,18 @@ async def get_db_session(
 
 async def init_database(database_url: Optional[str] = None) -> None:
     """
-    Initialize database tables.
+    Initialize database tables via SQLAlchemy `Base.metadata.create_all`.
 
-    Creates all tables defined in SQLAlchemy models if they don't exist.
-    For production, use Alembic migrations instead.
+    **TEST/DEV ONLY.** Production must always use Alembic migrations
+    (`alembic upgrade head`). This function emits the *current ORM-model
+    view* of the schema, which omits Tier 2 PostgreSQL augmentations
+    (CHECK constraints, GIN/partial/expression indexes, JSONB column
+    types, RLS policies) that live exclusively in Alembic migrations
+    per the deployment-aware schema strategy.
+
+    Calling this on a running production database WILL produce a
+    schema that lacks the integrity / performance / security guarantees
+    the migrations install.
 
     Args:
         database_url: Optional database URL override
@@ -219,7 +228,7 @@ async def init_database(database_url: Optional[str] = None) -> None:
     engine = get_engine(database_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables initialized")
+    logger.info("Database tables initialized (test/dev only — production uses Alembic)")
 
 
 async def drop_database(database_url: Optional[str] = None) -> None:
@@ -282,8 +291,9 @@ async def check_database_health(database_url: Optional[str] = None) -> dict:
     """
     try:
         async with get_db_session(database_url) as session:
-            # Execute a simple query to test connection
-            result = await session.execute("SELECT 1")
+            # Execute a simple query to test connection.
+            # SQLAlchemy 2.0 async API requires text() wrapper for raw SQL.
+            result = await session.execute(text("SELECT 1"))
             result.fetchone()
 
         return {

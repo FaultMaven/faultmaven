@@ -572,17 +572,15 @@ class DatabaseCaseRepository(CaseRepository):
         try:
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
-            # Find expired cases
-            # Note: cleanup_expired checks updated_at, but for closed cases we want to check closed_at
-            # Since closed_at is in JSON metadata, we'll use a simpler approach:
-            # Check updated_at for now (assuming save preserves closed_at time in updated_at when closing)
-            # The save method should preserve updated_at when closing a case
+            # Phase 9 audit fix: closed_at is now a first-class column (Phase 6).
+            # Filter on it directly instead of falling back to updated_at.
             stmt = (
                 select(CaseModel.case_id)
                 .where(
                     and_(
                         CaseModel.status == "closed",
-                        CaseModel.updated_at < cutoff_date,
+                        CaseModel.closed_at.is_not(None),
+                        CaseModel.closed_at < cutoff_date,
                     )
                 )
                 .limit(batch_size)
@@ -747,6 +745,10 @@ class DatabaseCaseRepository(CaseRepository):
             ),
         }
 
+        # Phase 9 audit fix: populate Phase-6 first-class columns directly
+        # (closure_reason, last_activity_at, resolved_at, closed_at). Previously
+        # these were only written into case_metadata JSON and read back from
+        # there — meaning the first-class columns were dead-letter.
         return CaseModel(
             case_id=case.case_id,
             user_id=case.user_id,
@@ -764,6 +766,10 @@ class DatabaseCaseRepository(CaseRepository):
             progress=progress_json,
             case_metadata=json.dumps(metadata),
             organization_id=case.organization_id,
+            closure_reason=case.closure_reason,
+            last_activity_at=case.last_activity_at,
+            resolved_at=case.resolved_at,
+            closed_at=case.closed_at,
         )
 
     # ========================================================================
@@ -797,7 +803,11 @@ class DatabaseCaseRepository(CaseRepository):
         current_turn = metadata.get("current_turn", 0)
         turns_without_progress = metadata.get("turns_without_progress", 0)
         message_count = metadata.get("message_count", 0)
-        closure_reason = metadata.get("closure_reason")
+        # Phase 9 audit fix: closure_reason is a first-class column (Phase 6).
+        # Read from column; fall back to legacy metadata for old rows.
+        closure_reason = getattr(model, "closure_reason", None) or metadata.get(
+            "closure_reason"
+        )
 
         # Parse complex lists from metadata
         turn_history = self._parse_turn_history(metadata.get("turn_history", []))
@@ -844,12 +854,19 @@ class DatabaseCaseRepository(CaseRepository):
                 except Exception:
                     pass  # Skip invalid actions
 
-        # Parse timestamps from metadata
-        resolved_at = self._parse_datetime(metadata.get("resolved_at"))
-        closed_at = self._parse_datetime(metadata.get("closed_at"))
-        last_activity_at = self._parse_datetime(
-            metadata.get("last_activity_at")
-        ) or self._ensure_tz_aware(model.updated_at)
+        # Parse timestamps. Phase 9 audit fix: first-class columns (Phase 6).
+        # Read from columns; fall back to legacy metadata for old rows.
+        resolved_at = self._ensure_tz_aware(
+            getattr(model, "resolved_at", None)
+        ) or self._parse_datetime(metadata.get("resolved_at"))
+        closed_at = self._ensure_tz_aware(
+            getattr(model, "closed_at", None)
+        ) or self._parse_datetime(metadata.get("closed_at"))
+        last_activity_at = (
+            self._ensure_tz_aware(getattr(model, "last_activity_at", None))
+            or self._parse_datetime(metadata.get("last_activity_at"))
+            or self._ensure_tz_aware(model.updated_at)
+        )
 
         return Case(
             case_id=model.case_id,

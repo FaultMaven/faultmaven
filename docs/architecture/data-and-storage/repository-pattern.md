@@ -201,6 +201,8 @@ But session data (cached) should use Redis technology regardless of backend.
 
 ### 3.1 Long-Term Persistent Data (Cases, Users, Evidence)
 
+> **Current implementation vs target design**: The `SessionlessCaseRepository` with runtime dialect routing described below (and in §5.2, §6.3, and Appendix A) is the **target design**. The current wiring in `container.py` and `repository_factory.py` uses `DatabaseCaseRepository` — a generic ORM-backed repository that works on both SQLite and PostgreSQL via portable SQLAlchemy queries, with no dialect-specific code paths. The `RepositoryRegistry` consolidation (which would wire `SessionlessCaseRepository` end-to-end) was deferred as scope creep in the locked storage redesign 2026-04 (per strategy doc §12 decision #14). Readers should treat the "Runtime Dialect Detection" and `SessionlessCaseRepository` passages as documentation of the target state, not the live wiring.
+
 **Requirements**:
 - Permanent storage
 - ACID transactions
@@ -669,6 +671,8 @@ VECTOR_STORAGE_TYPE=chromadb   # PersistentClient on disk
 ---
 
 ### 5.3 Microservices Backend (Kubernetes)
+
+> **Current implementation vs target design**: The `SessionlessCaseRepository` wiring shown in §6.3 is the target design. The current live container wires `DatabaseCaseRepository` directly — a generic ORM repository that handles both SQLite and PostgreSQL without dialect-specific code paths. Dialect routing via `SessionlessCaseRepository` is deferred (strategy doc §12 #14). The production PostgreSQL path works correctly in both the current and target configurations.
 
 **Use Case**: Production deployment, high availability
 
