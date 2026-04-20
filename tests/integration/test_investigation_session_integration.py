@@ -39,7 +39,7 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     ExecutionStatus,
 )
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InquiryData
-from tests.utils import generate_case_id, generate_session_id
+from tests.utils import generate_case_id, generate_session_id, install_org_autoseed
 
 # ============================================================
 # Test Fixtures
@@ -95,6 +95,7 @@ async def test_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
         expire_on_commit=False,
     )
     async with session_factory() as session:
+        install_org_autoseed(session.sync_session)
         yield session
 
 

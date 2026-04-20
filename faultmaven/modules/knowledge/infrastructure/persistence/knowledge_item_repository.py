@@ -331,6 +331,13 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except IntegrityError as e:
             await self.db.rollback()
+            msg = str(e.orig if e.orig is not None else e).lower()
+            if "foreign key" in msg or "violates foreign key" in msg:
+                logger.error(f"Knowledge item {item.item_id} FK violation: {e.orig}")
+                raise KnowledgeItemRepositoryException(
+                    f"Failed to create knowledge item {item.item_id}: "
+                    f"foreign key violation ({e.orig})"
+                ) from e
             logger.error(f"Knowledge item {item.item_id} already exists")
             raise ValueError(f"Knowledge item {item.item_id} already exists") from e
 
