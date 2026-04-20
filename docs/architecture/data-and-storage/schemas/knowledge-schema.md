@@ -380,8 +380,8 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `item_id` | VARCHAR(64) PK | |
-| `organization_id` | VARCHAR(64) | No FK — items persist independently of org lifecycle |
+| `item_id` | VARCHAR(36) PK | Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
+| `organization_id` | VARCHAR(36) | No FK — items persist independently of org lifecycle. Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
 | `scope` | VARCHAR(20) | `personal\|team\|global` — enforced by CHECK (Tier 1) |
 | `owner_id` | VARCHAR(36) nullable | Set when scope = personal |
 | `team_id` | VARCHAR(36) nullable | Set when scope = team |
@@ -398,9 +398,9 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 | `language` | VARCHAR(8) | Default `en` |
 | `verification_level` | INTEGER | 0 = experimental, 1 = community, 2 = admin\_verified; CHECK 0–2 (Tier 1) |
 | `verification_reason` | VARCHAR(512) nullable | |
-| `verified_by` | VARCHAR(64) nullable | |
+| `verified_by` | VARCHAR(36) nullable | Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
 | `verified_at` | TIMESTAMPTZ nullable | |
-| `source_suggestion_id` | VARCHAR(64) nullable | FK (logical) to `knowledge_suggestions.suggestion_id` |
+| `source_suggestion_id` | VARCHAR(36) nullable | FK (logical) to `knowledge_suggestions.suggestion_id`. Width updated in storage redesign 2026-04 Phase 4 |
 | `view_count` | INTEGER | Usage counter; CHECK >= 0 |
 | `helpful_count` | INTEGER | Feedback counter; CHECK >= 0 |
 | `not_helpful_count` | INTEGER | Feedback counter; CHECK >= 0 |
@@ -422,29 +422,29 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `suggestion_id` | VARCHAR(64) PK | |
-| `organization_id` | VARCHAR(64) | |
-| `case_id` | VARCHAR(64) | Source case (logical FK — no DB constraint) |
+| `suggestion_id` | VARCHAR(36) PK | Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
+| `organization_id` | VARCHAR(36) | Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
+| `case_id` | VARCHAR(36) | Source case (logical FK — no DB constraint). Width updated in storage redesign 2026-04 Phase 4 |
 | `status` | VARCHAR(32) | `pending_review\|approved\|rejected\|draft` |
 | `suggested_title` | VARCHAR(512) NOT NULL | |
 | `suggested_content` | TEXT NOT NULL | |
 | `suggested_type` | VARCHAR(64) | Default `troubleshooting_guide` |
-| `extracted_by` | VARCHAR(64) | User or system that triggered extraction |
+| `extracted_by` | VARCHAR(36) | User or system that triggered extraction. Width updated in storage redesign 2026-04 Phase 4 |
 | `extracted_at` | TIMESTAMPTZ | |
 | `include_messages` | BOOLEAN | Whether case messages were included in extraction |
 | `include_evidence` | BOOLEAN | Whether evidence was included |
 | `pii_scan_status` | VARCHAR(32) | `not_scanned\|scanning\|clean\|pii_detected\|remediated\|scan_failed` |
 | `pii_scan_result` | TEXT (JSON) nullable | Raw scan output |
-| `pii_remediated_by` | VARCHAR(64) nullable | |
+| `pii_remediated_by` | VARCHAR(36) nullable | Width updated in storage redesign 2026-04 Phase 4 |
 | `pii_remediated_at` | TIMESTAMPTZ nullable | |
 | `source_case_title` | VARCHAR(512) nullable | Denormalized for display in review inbox |
 | `message_count` | INTEGER | Lineage counter; CHECK >= 0 |
 | `evidence_count` | INTEGER | Lineage counter; CHECK >= 0 |
-| `reviewed_by` | VARCHAR(64) nullable | |
+| `reviewed_by` | VARCHAR(36) nullable | Width updated in storage redesign 2026-04 Phase 4 |
 | `reviewed_at` | TIMESTAMPTZ nullable | |
 | `review_notes` | TEXT nullable | |
 | `rejection_reason` | TEXT nullable | |
-| `knowledge_item_id` | VARCHAR(64) nullable | Set when suggestion is promoted to a published item |
+| `knowledge_item_id` | VARCHAR(36) nullable | Set when suggestion is promoted to a published item. Width updated in storage redesign 2026-04 Phase 4 |
 | `metadata` | TEXT (JSON) | Stored as `suggestion_metadata` Python attribute |
 
 **Applicability**: Both deployments (✅ Both). The conversion service runs in both Local and Cloud deployments.
@@ -471,5 +471,6 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 1.3 | 2026-04-19 | Audit fix (storage redesign Phase 9): normalized entity-ID column widths from VARCHAR(64) to VARCHAR(36) throughout §5.1 (`knowledge_items`: item\_id, organization\_id, verified\_by, source\_suggestion\_id) and §5.2 (`knowledge_suggestions`: suggestion\_id, organization\_id, case\_id, extracted\_by, pii\_remediated\_by, reviewed\_by, knowledge\_item\_id). Reflects Phase 4 FK width normalization. Non-entity VARCHAR(64) columns (item\_type, suggested\_type) are unchanged. |
 | 1.2 | 2026-04-19 | Aligned with deployment-schema-strategy.md v2.1 (no functional changes to knowledge domain). Consistency check pass: updated all deployment-schema-strategy.md links to GitHub URL format. Confirmed `knowledge_items.embedding_vector` TEXT stub (Tier 1) / `vector(1024)` (Tier 2 PG pgvector) — correct and unchanged. Confirmed `llm_config_overrides` as infrastructure layer (not knowledge domain) per strategy doc §11.3 — unchanged. |
 | 1.1 | 2026-04-18 | Aligned with deployment-schema-strategy.md v1.0. Added Deployment Applicability banner clarifying Tier 1/2 policy, scope-isolation enforcement location (KnowledgeVectorStore wrapper, not ChromaDBVectorStore base), and llm\_config\_overrides Cloud-only behavior. Corrected §1.1 scope-isolation description. Corrected §2.2 ephemeral storage — TTL/scheduled-cleanup is aspirational, not implemented; reactive orphan sweep is the live behavior. Added §4.2 undocumented conversion\_drafts columns (domain, service, severity, tags, document\_type). Added §5 with full narratives for knowledge\_items (29 cols, verification lifecycle, embedding\_vector pgvector stub) and knowledge\_suggestions (26 cols, 6-value pii\_scan\_status HITL pipeline). Added §5.3 llm\_config\_overrides cross-reference. |

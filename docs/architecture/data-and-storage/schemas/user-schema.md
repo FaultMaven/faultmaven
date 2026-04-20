@@ -228,6 +228,12 @@ CREATE TABLE organizations (
     -- domain, stripe_customer_id, stripe_subscription_id, trial_ends_at:
     -- out of current scope (see note above). Not included in this spec.
 
+    -- Ownership & Lifecycle (aligned with ORM OrganizationModel and ER diagram — audit fix, storage redesign Phase 9)
+    owner_id VARCHAR(36) NULL,          -- the user who owns the organization (informational; no FK enforced today)
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,  -- soft-disable an organization without deleting
+    description TEXT NULL,              -- free-form description
+    metadata TEXT NULL,                 -- ORM attribute is `metadata_` to avoid SQLAlchemy Base.metadata collision; physical column name is `metadata`
+
     -- Subscription
     plan_tier VARCHAR(20) NOT NULL DEFAULT 'free',  -- 'free', 'pro', 'enterprise'
     max_members INTEGER NOT NULL DEFAULT 5,
@@ -797,6 +803,7 @@ HAVING COUNT(*) > 5;
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 3.3 | 2026-04-19 | Audit fix (storage redesign Phase 9): §2.2 organizations DDL updated to include four columns present in the live ORM `OrganizationModel` and ER diagram but missing from the DDL: `owner_id VARCHAR(36) NULL`, `is_active BOOLEAN NOT NULL DEFAULT TRUE`, `description TEXT NULL`, `metadata TEXT NULL` (ORM attribute `metadata_` to avoid SQLAlchemy collision; physical column is `metadata`). This resolves the internal doc conflict between user-schema.md §2.2 and er-diagram.md (Audit Issue 9). |
 | 3.2 | 2026-04-19 | Aligned with deployment-schema-strategy.md v2.1 (locked design). Sessions are Redis-only (no SQL table) — §5.3 rewritten with explicit Redis-only statement and Anti-Pattern 1 callout. `investigation_sessions` clarified as case-owned (not auth-owned). FK widths normalized to VARCHAR(36) throughout all DDL (previously inconsistent at VARCHAR(20)/VARCHAR(36)/VARCHAR(64)). Stripe/billing columns (`stripe_customer_id`, `stripe_subscription_id`, `trial_ends_at`, `domain`) removed from organizations DDL — marked out of current scope rather than Proposed. Deployment Applicability banner updated with sessions deletion note and investigation\_sessions clarification. |
 | 3.1 | 2026-04-18 | Aligned with deployment-schema-strategy.md v1.0. Added Deployment Applicability banner covering Tier 1/2 policy, tenancy context in Local Deployment, and OAuth table Cloud-only behavior. Marked as Tier 2 (PostgreSQL-only): `users_email_format` regex CHECK, `users_password_or_sso` CHECK, `UNIQUE(sso_provider, sso_provider_id)`, `organizations_slug_format` CHECK, `organizations_plan_tier_valid` CHECK, `org_members_accepted_after_invited` CHECK, `roles_scope_valid` CHECK, all partial `WHERE deleted_at IS NULL` indexes. Fixed Tier 1 reality for `audit_id` (Integer, not BIGSERIAL) and `ip_address` (VARCHAR(45), not INET). Added undocumented ORM columns: `organization_members.last_active_at`, `team_members.team_role`. Added Known FK width inconsistency note (VARCHAR(36) vs VARCHAR(64) vs VARCHAR(20)). Marked `organizations.domain`, `stripe_customer_id`, `stripe_subscription_id`, `trial_ends_at` as Proposed (cloud billing integration — not in models.py). |
 | 3.0 | 2026-04-18 | Previous version. |

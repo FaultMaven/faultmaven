@@ -575,29 +575,21 @@ class DatabaseCaseRepository(CaseRepository):
         try:
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
-            # Find expired cases - use closed_at from metadata
-            # Need to extract closed_at from JSONB metadata column
+            # Phase 9 audit fix: read closed_at from the first-class column
+            # (added in Phase 6) instead of from the cases.metadata JSON blob.
+            # The DB-side WHERE filter is more efficient than fetching all
+            # closed cases and filtering in Python; batch_size now caps the
+            # actual deletion set, not the fetch.
             stmt = (
-                select(CaseModel.case_id, CaseModel.case_metadata)
+                select(CaseModel.case_id)
                 .where(CaseModel.status == "closed")
-                .limit(batch_size * 2)  # Fetch more to filter by closed_at in Python
+                .where(CaseModel.closed_at.is_not(None))
+                .where(CaseModel.closed_at < cutoff_date)
+                .limit(batch_size)
             )
 
             result = await self.db.execute(stmt)
-            rows = result.fetchall()
-
-            # Filter cases by closed_at timestamp from metadata
-            expired_case_ids = []
-            for row in rows:
-                case_id = row[0]
-                metadata = self._parse_json(row[1], {})
-                closed_at_str = metadata.get("closed_at")
-                if closed_at_str:
-                    closed_at = self._parse_datetime(closed_at_str)
-                    if closed_at and closed_at < cutoff_date:
-                        expired_case_ids.append(case_id)
-                        if len(expired_case_ids) >= batch_size:
-                            break
+            expired_case_ids = [row[0] for row in result.fetchall()]
 
             if not expired_case_ids:
                 return 0
@@ -760,6 +752,12 @@ class DatabaseCaseRepository(CaseRepository):
             ),
         }
 
+        # Phase 9 audit fix: populate Phase-6 first-class columns directly
+        # (closure_reason, last_activity_at, resolved_at, closed_at). Previously
+        # these were only written into the case_metadata JSON blob and read back
+        # from there — meaning the first-class columns were dead-letter. Now
+        # they are populated as the source of truth; metadata still carries
+        # them as defensive compat for any reader that hasn't migrated.
         return CaseModel(
             case_id=case.case_id,
             user_id=case.user_id,
@@ -777,6 +775,11 @@ class DatabaseCaseRepository(CaseRepository):
             progress=progress_json,
             case_metadata=json.dumps(metadata),
             organization_id=case.organization_id,
+            # Phase 6 first-class columns — now populated.
+            closure_reason=case.closure_reason,
+            last_activity_at=case.last_activity_at,
+            resolved_at=case.resolved_at,
+            closed_at=case.closed_at,
         )
 
     # ========================================================================
@@ -826,7 +829,11 @@ class DatabaseCaseRepository(CaseRepository):
         current_turn = metadata.get("current_turn", 0)
         turns_without_progress = metadata.get("turns_without_progress", 0)
         message_count = metadata.get("message_count", 0)
-        closure_reason = metadata.get("closure_reason")
+        # Phase 9 audit fix: closure_reason is now a first-class column (Phase 6).
+        # Read from the column; fall back to legacy metadata for old rows.
+        closure_reason = getattr(model, "closure_reason", None) or metadata.get(
+            "closure_reason"
+        )
 
         # Parse complex lists from metadata
         turn_history = self._parse_turn_history(metadata.get("turn_history", []))
@@ -878,12 +885,19 @@ class DatabaseCaseRepository(CaseRepository):
                 except Exception:
                     pass  # Skip invalid actions
 
-        # Parse timestamps from metadata
-        resolved_at = self._parse_datetime(metadata.get("resolved_at"))
-        closed_at = self._parse_datetime(metadata.get("closed_at"))
-        last_activity_at = self._parse_datetime(
-            metadata.get("last_activity_at")
-        ) or self._ensure_tz_aware(model.updated_at)
+        # Parse timestamps. Phase 9 audit fix: these are first-class columns
+        # (Phase 6). Read from columns; fall back to legacy metadata for old rows.
+        resolved_at = self._ensure_tz_aware(
+            getattr(model, "resolved_at", None)
+        ) or self._parse_datetime(metadata.get("resolved_at"))
+        closed_at = self._ensure_tz_aware(
+            getattr(model, "closed_at", None)
+        ) or self._parse_datetime(metadata.get("closed_at"))
+        last_activity_at = (
+            self._ensure_tz_aware(getattr(model, "last_activity_at", None))
+            or self._parse_datetime(metadata.get("last_activity_at"))
+            or self._ensure_tz_aware(model.updated_at)
+        )
 
         return Case(
             case_id=model.case_id,

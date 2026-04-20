@@ -1,6 +1,6 @@
 # FaultMaven Case Storage Design - Performant Production Standard
 
-**Version**: 3.6
+**Version**: 3.7
 **Status**: Authoritative Standard
 **Last Updated**: 2026-04-19
 
@@ -503,14 +503,34 @@ CREATE INDEX idx_cases_status ON cases(status);
 CREATE INDEX idx_cases_last_activity ON cases(last_activity_at DESC);
 
 -- Tier 2 (PostgreSQL-only) — partial index (WHERE clause)
-CREATE INDEX idx_cases_stuck ON cases(turns_without_progress)
-    WHERE status = 'investigating' AND turns_without_progress >= 3;
+--
+-- DEFERRED — not in current schema (audit fix, storage redesign Phase 9):
+-- `turns_without_progress` is NOT a first-class column. It lives inside the
+-- `cases.progress` JSONB blob (confirmed above — see §4.2 DDL note and strategy doc §18).
+-- This index as written references a non-existent column and cannot be created.
+-- To make it feasible post-Phase 7 (JSONB columns), rewrite as a JSONB expression index:
+--   CREATE INDEX idx_cases_stuck ON cases(((progress->>'turns_without_progress')::int))
+--       WHERE status = 'investigating'
+--         AND (progress->>'turns_without_progress')::int >= 3;
+-- The rewritten form is feasible now that `progress` is JSONB (Phase 7), but is NOT
+-- implemented — no migration has created it. Document accordingly.
+-- Original (unsatisfiable) form retained for reference only:
+-- CREATE INDEX idx_cases_stuck ON cases(turns_without_progress)
+--     WHERE status = 'investigating' AND turns_without_progress >= 3;
 
 -- Tier 2 (PostgreSQL-only) — JSONB expression indexes
+--
+-- NOTE (audit fix, storage redesign Phase 9): Phase 7 converted `path_selection` and
+-- `problem_verification` to JSONB columns, so JSONB expression indexes ARE now feasible.
+-- However, the `->>` operator syntax below (used directly on column names) is correct for
+-- JSONB in PostgreSQL — these indexes are syntactically valid post-Phase 7 and represent
+-- the intended implementation. They are documented as deferred because no migration has
+-- created them yet. The DDL below reflects the correct PG-on-JSONB form:
 CREATE INDEX idx_cases_path ON cases((path_selection->>'path'))
     WHERE path_selection IS NOT NULL;
 CREATE INDEX idx_cases_urgency ON cases((problem_verification->>'urgency_level'))
     WHERE problem_verification IS NOT NULL;
+-- TODO: create these indexes in a follow-up migration once production PostgreSQL is deployed.
 
 -- Tier 2 (PostgreSQL-only) — GIN tsvector full-text search index (title only; description removed from spec)
 CREATE INDEX idx_cases_search ON cases USING gin(
@@ -1881,13 +1901,14 @@ This design provides:
 - **Author**: FaultMaven Team
 - **Created**: 2025-11-09
 - **Last Updated**: 2026-04-19
-- **Version**: 3.6 (Authoritative)
+- **Version**: 3.7 (Authoritative)
 - **Status**: ✅ Implemented — live schema (baseline migration `424078e5aa04`)
 
 **Changelog**:
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 3.7 | 2026-04-19 | Audit fix (storage redesign Phase 9): §4.2 Tier-2 index DDL annotated. `idx_cases_stuck` — flagged as deferred/unsatisfiable as written because `turns_without_progress` is not a first-class column (it lives in the `progress` JSONB blob); provided corrected JSONB expression index form feasible post-Phase 7. `idx_cases_path` and `idx_cases_urgency` — confirmed syntactically valid for JSONB columns post-Phase 7 (the `->>` operator works on JSONB); annotated as deferred (no migration created them yet) and marked with a TODO for a follow-up migration. |
 | 3.6 | 2026-04-19 | Aligned with deployment-schema-strategy.md v2.1 (locked design). Single-table evidence (reverted v2.0 consolidation) — §4.3 rewritten with column renames (`source_type_new`→`source_type`, `file_size`→`content_size_bytes`, `upload_timestamp`→`collected_at`, ORM `category`→`primary_purpose`) and new `form` column for `EvidenceForm` enum. evidence\_artifacts (§4.3-bis) and standalone\_evidence (§4.3-ter) marked DELETED — standalone path removed entirely. `cases.session_id` DROPPED ENTIRELY — Anti-Pattern 1 (case-session binding). `cases.degraded_mode` DELETED. `cases.description` removed from spec (no domain backing). `agent_tool_calls` v1 DELETED; `agent_tool_calls_v2` renamed to canonical `agent_tool_calls` (§4.11). `sessions` SQL table DELETED — auth sessions are Redis-only. `HypothesisStatus` enum unified to domain values (ORM `HypothesisStatusEnum` deleted). `SolutionStatus` enum unified. `solutions.hypothesis_id` FK added. `solutions.impact_scope` and `verification_plan` removed from spec. `hypotheses.test_plan`, `test_results`, `priority` removed from spec. `reports.generated_by VARCHAR(36)` confirmed. Aspirational §7.3 JSONB concurrency stripped; §7.4 soft delete stripped (replaced by `is_archived`+`archived_at` preservation pattern note). RLS section added (§7.5). All id column widths normalized to VARCHAR(36). §5.4 multi-tenancy section updated for v2.1 `organization_id` on all tenanted tables. Table count updated to 29. |
 | 3.5 | 2026-04-18 | Aligned with deployment-schema-strategy.md v1.0. Added Deployment Applicability banner. Marked all CHECK constraints and GIN/partial/expression indexes as Tier 2 (PostgreSQL-only). Documented previously-undocumented tables: evidence\_artifacts (§4.3-bis), standalone\_evidence (§4.3-ter), investigation\_sessions, agent\_executions, agent\_tool\_calls\_v2, agent\_tool\_calls deprecated (§4.11). Called out pending HypothesisStatus enum migration (§4.4), EvidenceCategory naming collision and EvidenceFormEnum rename (§4.3), SolutionStatus enum reconciliation (§4.5), evidence.source\_type\_new pending rename (§4.3), case\_messages UUID PK aspirational (§4.7), case\_actions Integer PK reality (§4.8). Flagged ORM-only cases columns (degraded\_mode, team\_id, session\_id). Marked §7.3 and §7.4 as aspirational (not implemented). |
 | 3.4 | 2026-04-18 | Previous version. |
