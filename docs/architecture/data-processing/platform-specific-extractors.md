@@ -1,6 +1,6 @@
 # Platform-Specific Extractors
 
-**Status:** Stages 1 and 2 Implemented. Stages 3 and 4 are future enhancements. See [Status](#status) at the bottom of this document.
+**Status:** Stages 1 and 2 implemented. Stages 3 and 4 are deferred (future enhancements) — see [Status](#status) at the bottom of this document and [Decision: Why Stage 3 is Deferred](#decision-why-stage-3-is-deferred).
 **Priority:** Medium
 **Category:** Data Ingestion
 **Related:** Page Injection, Evidence Collection, [Data Preprocessing — Tier 3 Deep LLM Analysis](./data-preprocessing-design-specification.md#4-tier-3-deep-llm-analysis-renamed-from-tier-2)
@@ -13,7 +13,7 @@ Platform-specific extractors intelligently parse and structure content from popu
 
 **Relationship to Four-Tier Model**: In the [Data Preprocessing](./data-preprocessing-design-specification.md) architecture, platform-specific extraction can operate at two levels:
 - **Tier 1 (frontend)**: Client-side platform detection and structured data extraction before upload
-- **Tier 3 (backend)**: Platform-aware deep analysis as a pluggable backend behind the `ITier2AnalysisService` interface (the "Tier 3" label is a spec-level concept; in the code the service is still called `ITier2AnalysisService`). Invoked via the `deep_analyze_file` agent tool.
+- **Tier 3 (backend)**: Platform-aware deep analysis as a pluggable backend behind the `ITier2AnalysisService` interface (the "Tier 3" label is a spec-level concept; in the code the service is still called `ITier2AnalysisService`). Invoked via the `deep_analysis` agent tool.
 
 This document primarily describes the Tier 1 (frontend) approach. For the Tier 3 service, see [Data Preprocessing §4](./data-preprocessing-design-specification.md#4-tier-3-deep-llm-analysis-renamed-from-tier-2).
 
@@ -26,6 +26,12 @@ This document primarily describes the Tier 1 (frontend) approach. For the Tier 3
 Stage 1 is the copilot extension's semantic DOM extraction (`htmlToStructuredText()`) paired with a backend pass-through branch (`page_capture_passthrough`) so page captures skip the `UnstructuredTextExtractor`. Features include error-first priority ordering, stat-panel detection (`tryStatValue`), label/value detection (`tryKeyValue`), ARIA-alert promotion, form-value extraction, and a `[captured_at: ISO timestamp]` preamble.
 
 For the canonical enumeration of Stage 1 behaviour and its interaction with Tier 0+1, see [Data Preprocessing §2.4 — Pasted Text and Page Capture Processing](./data-preprocessing-design-specification.md#24-pasted-text-and-page-capture-processing).
+
+### Stage 2 — Implemented: Query-Time Section Reranking
+
+Stage 2 is backend query-time reranking of page-capture sections against the user's query, implemented in `_rerank_page_capture_sections()` (`faultmaven/core/investigation/prompts/context_builder.py`). When assembling Tier A evidence for an LLM call, page-capture structural indexes are split on `\n##` headings, each section scored by normalised keyword overlap against the user's query (stopwords excluded), and reassembled in descending relevance order. The `[captured_at: …]` preamble is pinned at position 0. Reranking runs **before** the per-item character cap so query-relevant sections survive truncation.
+
+Stage 2 complements Stage 1 by surfacing the most relevant portion of a long page capture within the evidence budget, without changing the frontend extractor.
 
 ### What Remains (Limitations of Generic Extraction)
 - ❌ No platform-aware parsing (Grafana panel types, Datadog monitor states)

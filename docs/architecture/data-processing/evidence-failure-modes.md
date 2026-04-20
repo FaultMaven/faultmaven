@@ -228,7 +228,7 @@ async def retry_evidence_analysis(case_id, content_ref, content_hash, user_messa
 - ❌ More complex (background job queue)
 - ❌ Temporary inconsistency (file exists, no evidence yet)
 
-**Recommended:** Option B for production (better UX, resilient)
+**Historical recommendation (now deferred):** Option B was originally recommended for production UX. This recommendation was reconsidered on 2026-04-19 — see the Status table at the top of this document. The async-retry machinery (forward-only schema migration, 202 polling, cancellation semantics) is not justified without production evidence that the current synchronous error-path UX harms users. The synchronous path (specific error codes + `Retry-After` headers + in-process retries via `BaseExternalClient`) is the current behaviour.
 
 ---
 
@@ -741,7 +741,8 @@ async def process_turn_with_attachment(
 | Failure Point | State | Recovery Strategy | User Experience |
 |--------------|-------|-------------------|-----------------|
 | **File upload fails** | Clean (nothing persisted) | None needed (user retries) | "Failed to upload. Try again." |
-| **LLM timeout** | File in S3, no DB record | Async retry (3x) with exponential backoff | "Analyzing... check back shortly." |
+| **LLM timeout** (current) | In-process, synchronous | Synchronous retries via `BaseExternalClient`; on terminal failure returns `LLM_TIMEOUT` / `LLM_OVER_CAPACITY` / `RATE_LIMIT_EXCEEDED` with `Retry-After` header | Specific error code with actionable message and retry hint |
+| **LLM timeout** (deferred async design) | File in S3, no DB record | Async retry (3x) with exponential backoff | "Analyzing... check back shortly." |
 | **LLM error** | File in S3, no DB record | Delete file, user retries | "Analysis failed. Try again." |
 | **LLM invalid category** | File in S3, LLM done | Fallback to CONTEXTUAL_EVIDENCE | "Evidence saved successfully." (transparent) |
 | **DB insert fails** | File in S3, LLM done | Async retry (5x), preserve LLM result | "Processing... evidence will appear shortly." |

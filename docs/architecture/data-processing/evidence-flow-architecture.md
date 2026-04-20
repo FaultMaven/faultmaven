@@ -436,7 +436,9 @@ User          API(/turns)    Investigation    Preprocessing
 
 ---
 
-## Sequence Diagram: LLM Timeout → Async Retry
+## Sequence Diagram: LLM Timeout → Async Retry (Deferred Design)
+
+> **Status (2026-04-19):** The async-retry flow depicted below is a **deferred design**, not current behaviour. Current turn-level LLM failure handling is synchronous — `BaseExternalClient` retries in-process and the API returns `LLM_TIMEOUT` / `LLM_OVER_CAPACITY` / `RATE_LIMIT_EXCEEDED` with `Retry-After` on terminal failure. See [evidence-failure-modes.md](./evidence-failure-modes.md) for the rationale. The diagram is kept for historical design context; revisit on telemetry signal that synchronous UX harms users.
 
 ```
 User          API          Investigation    LLM         Job Queue       Worker
@@ -618,7 +620,7 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
  │              │                │  but not the actual stack  │             │
  │              │                │  trace. Need Tier 3.")     │             │
  │              │                │             │             │             │
- │              │                │─deep_analyze_file(─────────>│             │
+ │              │                │─deep_analysis(─────────>│             │
  │              │                │  ev_abc,    │             │             │
  │              │                │  "extract   │             │             │
  │              │                │   stack     │             │             │
@@ -647,7 +649,7 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
 
 **Key**: `search_file` and `deep_analysis` are invoked by the investigation agent as tool calls during `process_turn()`. The preprocessing service is NOT involved — it completed during Step 1 of the original turn. See [Data Preprocessing](./data-preprocessing-design-specification.md) Sections 3-4 for full invocation logic. Tool selection is guided by the processing mode (Triage vs Directed Analysis) set by the query classifier.
 
-**DA Tool Loop (v5.0, updated v5.2)**: In Directed Analysis turns, the milestone engine routes inference through a bounded tool-calling loop (`_tool_augmented_generate()`) instead of single-shot generation. The LLM receives the investigation tools (`search_file`, `deep_analysis`, `kb_qa`, `web_search`, `case_evidence_search`) and the terminating `schema_tool`, iterating up to 4 times with an iteration-0 guardrail that forces at least one investigation-tool call before generating a structured response. The `search_file` tool resolves evidence content through dual-path resolution (standalone via `evidence_artifacts` table or case-embedded via `case_repo`). The `Evidence.original_filename` field provides the display filename in search results. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling-v50) for full details.
+**DA Tool Loop (v5.0, updated v5.2)**: In Directed Analysis turns, the milestone engine routes inference through a bounded tool-calling loop (`_tool_augmented_generate()`) instead of single-shot generation. The LLM receives the investigation tools (`search_file`, `deep_analysis`, `kb_qa`, `web_search`, `case_evidence_search`) and the terminating `schema_tool`, iterating up to 4 times with an iteration-0 guardrail that forces at least one investigation-tool call before generating a structured response. The `search_file` tool resolves evidence content through dual-path resolution (standalone via `evidence_artifacts` table or case-embedded via `case_repo`). The `Evidence.original_filename` field provides the display filename in search results. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-tool-augmented-generation-v50--v60) for full details.
 
 **Orchestration Hardening (v4.2, updated v5.2)**: The orchestration layer adds three mechanical safety nets. See [Data Preprocessing §6.1](./data-preprocessing-design-specification.md#61-orchestration-hardening-mechanical-safety-nets-v42-updated-v52) for the canonical description.
 
@@ -749,7 +751,9 @@ This diagram illustrates the retroactive milestone-advancement flow. The underly
 
 ## Failure Handling Flow
 
-### LLM Timeout Scenario
+### LLM Timeout Scenario (Deferred Async-Retry Design)
+
+> **Status (2026-04-19):** Same deferred-design caveat as the sequence diagram above — the async-retry flow below is **not implemented**. Current behaviour is synchronous in-process retry + specific error codes with `Retry-After` headers. Canonical status: [evidence-failure-modes.md → Current Implementation Status](./evidence-failure-modes.md#current-implementation-status-validated-2026-04-19).
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

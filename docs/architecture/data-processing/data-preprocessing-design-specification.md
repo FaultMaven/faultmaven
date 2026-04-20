@@ -245,6 +245,8 @@ The classification system has two layers. The **detailed layer** (12 types) driv
 
 ### 2.2 Detailed Classification → Extractor Mapping
 
+The table below lists the **12 DetailedDataTypes** (rows 1–12) that drive Tier 0→Tier 1 extractor dispatch, followed by a **runtime marker row** (row 13, italicised) which is **not** a DetailedDataType — it's the pass-through branch the preprocessing orchestrator selects when a page capture arrives pre-structured from the browser extension. The §2.1 diagram still shows "12 types" as the Tier 0 output because the pass-through is an orchestrator runtime choice, not a classification result.
+
 | # | DetailedDataType | Extractor | Strategy | What It Produces | Unified |
 |---|---|---|---|---|---|
 | 1 | `LOGS_AND_ERRORS` | `LogsAndErrorsExtractor` | `crime_scene` | Severity-weighted error clusters, crime scene window (±200 lines around highest-severity error), burst detection (10+ errors in 50-line window), state transitions, timeline | **LOGS** |
@@ -452,7 +454,7 @@ async def search_file(
     Do NOT use this tool when:
     - The evidence summary already contains the answer
     - The question is about investigation strategy, not file content
-    - You need LLM interpretation (use deep_analyze_file instead)
+    - You need LLM interpretation (use deep_analysis instead)
 
     search_type options:
     - "keyword": Split query into keywords, find matching lines with context
@@ -472,7 +474,7 @@ The `Evidence.original_filename` field (set during `_preprocess_attachment()`) p
 
 #### DA Tool Loop Integration
 
-In Directed Analysis turns, `search_file` is available inside the bounded DA Tool Loop (`_tool_augmented_generate()` in `milestone_engine.py`) alongside the other investigation tools (`deep_analysis`, `kb_qa`, `web_search`, `case_evidence_search`) and the terminating `schema_tool`. The LLM iterates up to 4 times with an iteration-0 guardrail that forces at least one investigation-tool call before the structured response is generated. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling-v50) for full details.
+In Directed Analysis turns, `search_file` is available inside the bounded DA Tool Loop (`_tool_augmented_generate()` in `milestone_engine.py`) alongside the other investigation tools (`deep_analysis`, `kb_qa`, `web_search`, `case_evidence_search`) and the terminating `schema_tool`. The LLM iterates up to 4 times with an iteration-0 guardrail that forces at least one investigation-tool call before the structured response is generated. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-tool-augmented-generation-v50--v60) for full details.
 
 ### 3.3 Search Modes
 
@@ -607,15 +609,15 @@ The `search_file` tool consolidates functionality that partially exists today:
 | Domain extractors (Tier 1) | Single-use at upload | Made re-runnable via `search_file` extractor mode |
 | `DeepAnalysisTool` (`deep_analysis`) | LLM-powered analysis | Moves to Tier 3 (unchanged) |
 
-### 3.6 When to Use `search_file` vs `deep_analyze_file`
+### 3.6 When to Use `search_file` vs `deep_analysis`
 
 | Scenario | Tool | Why |
 |----------|------|-----|
 | "Find all lines containing 'timeout'" | `search_file` (keyword) | Pure text match, no interpretation needed |
 | "Show me errors between 14:00-14:15" | `search_file` (regex: `14:0[0-9].*ERROR\|14:1[0-5].*ERROR`) | Pattern matching on timestamps |
 | "What anomalies are there at z>2?" | `search_file` (extractor, `z_score_threshold=2.0`) | Re-run extractor with different params |
-| "What's causing the connection timeouts?" | `deep_analyze_file` | Needs LLM interpretation |
-| "Summarize the error patterns after the deployment" | `deep_analyze_file` | Needs LLM synthesis |
+| "What's causing the connection timeouts?" | `deep_analysis` | Needs LLM interpretation |
+| "Summarize the error patterns after the deployment" | `deep_analysis` | Needs LLM synthesis |
 
 ---
 
@@ -623,7 +625,7 @@ The `search_file` tool consolidates functionality that partially exists today:
 
 > **Functionally unchanged from v3.2 Section 6.** Renumbered from Tier 2 → Tier 3.
 
-The agent tool is `deep_analyze_file` (was already defined in v3.2). It calls `ITier2AnalysisService.analyze()` with one of the pluggable backends (external, local LLM, or basic search).
+The agent tool is `deep_analysis` (was already defined in v3.2). It calls `ITier2AnalysisService.analyze()` with one of the pluggable backends (external, local LLM, or basic search).
 
 **Key distinction from v4.0 Tier 2**: Tier 3 uses an LLM to *interpret* the data and generate an answer. Tier 2 returns raw excerpts for the agent to interpret itself.
 
@@ -997,7 +999,7 @@ The agent creates evidence from search/analysis results when:
 
 **System prompt guidance for agent:**
 ```
-After using search_file or deep_analyze_file, create evidence ONLY when
+After using search_file or deep_analysis, create evidence ONLY when
 you've found something new, specific, and investigation-advancing.
 
 DO NOT create evidence for:
@@ -1024,7 +1026,7 @@ When the agent creates evidence from mechanical search results:
 | `preprocessing_method` | `"search_file_keyword"` or `"search_file_regex"` or `"search_file_extractor"` | Search mode used |
 | `primary_purpose` | LLM-generated description | Why this finding matters |
 
-#### From Tier 3 (`deep_analyze_file`) Results
+#### From Tier 3 (`deep_analysis`) Results
 
 | Evidence Field | Value | Source |
 |----------------|-------|--------|
@@ -1070,7 +1072,7 @@ class EvidenceForm(str, Enum):
     """Query-only turn with no attachments (questions, descriptions, observations)."""
 
     SUBMITTED_DATA = "submitted_data"
-    """Evidence derived from agent tool use (search_file, deep_analyze_file results).
+    """Evidence derived from agent tool use (search_file, deep_analysis results).
     Not used for direct user submissions — those are DOCUMENT."""
 ```
 
@@ -1114,7 +1116,7 @@ Evidence form is assigned deterministically based on how evidence enters the sys
 
 ### 9.2 Backward Compatibility
 
-- Existing `deep_analyze_file` tool continues to work unchanged (renamed conceptually to Tier 3)
+- Existing `deep_analysis` tool continues to work unchanged (renamed conceptually to Tier 3)
 - `TIER2_*` config keys renamed to `DEEP_ANALYSIS_*` (clean break, no backward compat)
 - Existing vectorized data in ChromaDB remains searchable
 - No database migration needed (Tier 4 uses same ChromaDB schema)

@@ -1437,7 +1437,7 @@ class EvidenceForm(str, Enum):
     Form is determined by payload context:
     - DOCUMENT: Turn had attachments (file upload or pasted data)
     - USER_TEXT: Query-only turn, no attachments
-    - SUBMITTED_DATA: Evidence created by agent tools (search_file, deep_analyze_file)
+    - SUBMITTED_DATA: Evidence created by agent tools (search_file, deep_analysis)
     """
 
     DOCUMENT = "document"
@@ -1447,7 +1447,7 @@ class EvidenceForm(str, Enum):
     """Query-only turn with no attachments (questions, descriptions, observations)."""
 
     SUBMITTED_DATA = "submitted_data"
-    """Evidence derived from agent tool use (search_file, deep_analyze_file results)."""
+    """Evidence derived from agent tool use (search_file, deep_analysis results)."""
 
 
 class EvidenceStance(str, Enum):

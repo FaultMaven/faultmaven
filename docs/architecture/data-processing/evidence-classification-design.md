@@ -286,7 +286,7 @@ CRITICAL: Classify based on what the DATA CONTAINS, not the investigation phase.
 **For non-REJECTED misclassifications**, the intended remediation path is:
 1. The user or agent acknowledges the misclassification in the conversation
 2. A new submission with corrected context can be provided if needed
-3. The LLM accounts for the misclassified evidence when reasoning about hypotheses (e.g., "Evidence ev_abc was classified as SYMPTOM but appears to be baseline context")
+3. The LLM accounts for the misclassified evidence when reasoning about hypotheses (e.g., "Evidence ev_abc123def456 was classified as SYMPTOM but appears to be baseline context")
 
 ---
 
@@ -431,7 +431,7 @@ LLM Classification:
 - primary_purpose: "Shows repeated connection timeout errors during peak hours"
 
 Evidence Created:
-- evidence_id: ev_abc123
+- evidence_id: ev_abc123def456
 - category: SYMPTOM_EVIDENCE
 - collected_at_turn: 1
 - advances_milestones: []  ← Empty during INQUIRY (no milestone validation)
@@ -446,7 +446,7 @@ User uploads additional evidence showing connection pool exhausted
 
 LLM Processing:
 - MilestoneUpdates: {symptom_verified: true, scope_assessed: true}
-- System infers: ev_abc123.advances_milestones = ["symptom_verified", "scope_assessed"]
+- System infers: ev_abc123def456.advances_milestones = ["symptom_verified", "scope_assessed"]
   (Evidence from turn 1 now contributes to milestones completed in turn 3)
 ```
 
@@ -530,9 +530,14 @@ class Evidence(BaseModel):
     collected_at_turn: int
 
     # Processing (from PreprocessingResult)
-    extraction_method: str  # Tier 1 method: "structural_index", "statistical_profile",
-                            # "parse_and_sanitize", "ast_extraction", "structure_extraction",
-                            # "metadata_extraction", "page_capture_passthrough", or "none"
+    extraction_method: str  # Tier 1 strategy_name or runtime marker. Canonical enum in
+                            # core/preprocessing/models.py → ExtractionMethod.
+                            # Domain strategies: "crime_scene", "exception_context",
+                            #   "trace_correlation", "command_parsing", "statistical",
+                            #   "profiling_hotspot", "ast_parse", "documentation_structure",
+                            #   "vision", "direct".
+                            # Runtime markers: "page_capture_passthrough", "structure_extraction",
+                            #   "none", "classification_failed".
     content_size_bytes: int
     content_hash: Optional[str] = None  # SHA-256 for deduplication
 
@@ -598,7 +603,7 @@ CREATE TABLE evidence (
     collected_at_turn INTEGER NOT NULL,
 
     -- Processing (from PreprocessingResult)
-    extraction_method VARCHAR(50) NOT NULL,  -- structural_index, statistical_profile, etc.
+    extraction_method VARCHAR(50) NOT NULL,  -- strategy_name (crime_scene, statistical, …) or runtime marker
     content_size_bytes INTEGER NOT NULL,
     content_hash VARCHAR(64),  -- SHA-256
 
