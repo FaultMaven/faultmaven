@@ -9423,7 +9423,7 @@ components:
 
         - USER_TEXT: Query-only turn, no attachments
 
-        - SUBMITTED_DATA: Evidence created by agent tools (search_file, deep_analyze_file)'
+        - SUBMITTED_DATA: Evidence created by agent tools (search_file, deep_analysis)'
     EvidenceLinkRequest:
       properties:
         case_id:
