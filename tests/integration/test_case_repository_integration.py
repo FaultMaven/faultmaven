@@ -62,6 +62,21 @@ from faultmaven.modules.case.domain.models import (
     Solution,
     SolutionType,
 )
+from tests.utils import seed_organizations
+
+# Hardcoded org IDs referenced by tests below — seeded once per test_engine
+# so FK constraints on cases.organization_id (Phase 9) are satisfied.
+TEST_ORG_IDS = (
+    "integration-test-org",
+    "lifecycle-test-org",
+    "evidence-test-org",
+    "hypothesis-test-org",
+    "factory-test-org",
+    "factory-db-test-org",
+    "concurrent-test-org",
+    "concurrent-msg-org",
+    "complex-test-org",
+)
 
 # ============================================================
 # Test Fixtures
@@ -91,6 +106,13 @@ async def test_engine():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Seed organizations referenced by tests so cases.organization_id FK is satisfied.
+    seed_factory = async_sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with seed_factory() as seed_session:
+        await seed_organizations(seed_session, TEST_ORG_IDS)
 
     yield engine
 

@@ -117,9 +117,11 @@ class DatabaseCaseRepository(CaseRepository):
             merged = await self.db.merge(case_model)
             await self.db.flush()
 
-            # Handle related entities
-            await self._sync_messages(case.case_id, case.messages)
-            await self._sync_case_actions(case.case_id, case.action_history)
+            # Handle related entities (propagate organization_id for tenant FK)
+            await self._sync_messages(case.case_id, case.organization_id, case.messages)
+            await self._sync_case_actions(
+                case.case_id, case.organization_id, case.action_history
+            )
 
             await self.db.commit()
 
@@ -368,12 +370,16 @@ class DatabaseCaseRepository(CaseRepository):
             RepositoryException: If add fails
         """
         try:
-            # Check if case exists
-            case_exists = await self.db.execute(
-                select(CaseModel.case_id).where(CaseModel.case_id == case_id)
+            # Look up case to inherit organization_id (tenant isolation).
+            case_row = await self.db.execute(
+                select(CaseModel.case_id, CaseModel.organization_id).where(
+                    CaseModel.case_id == case_id
+                )
             )
-            if case_exists.scalar_one_or_none() is None:
+            row = case_row.one_or_none()
+            if row is None:
                 return False
+            organization_id = row.organization_id
 
             # Create message model
             # Accept both 'timestamp' (legacy) and 'created_at' (design spec)
@@ -386,6 +392,7 @@ class DatabaseCaseRepository(CaseRepository):
             message_model = CaseMessageModel(
                 message_id=message_id,
                 case_id=case_id,
+                organization_id=organization_id,
                 turn_number=message_dict.get("turn_number", 0),
                 role=message_dict.get("role", "user"),
                 content=message_dict.get("content", ""),
@@ -625,7 +632,10 @@ class DatabaseCaseRepository(CaseRepository):
     # ========================================================================
 
     async def _sync_messages(
-        self, case_id: str, messages: List[Dict[str, Any]]
+        self,
+        case_id: str,
+        organization_id: str,
+        messages: List[Dict[str, Any]],
     ) -> None:
         """Sync messages for a case (append-only)."""
         if not messages:
@@ -645,6 +655,7 @@ class DatabaseCaseRepository(CaseRepository):
                 message_model = CaseMessageModel(
                     message_id=msg_id,
                     case_id=case_id,
+                    organization_id=organization_id,
                     turn_number=msg.get("turn_number", 0),
                     role=msg.get("role", "user"),
                     content=msg.get("content", ""),
@@ -654,7 +665,12 @@ class DatabaseCaseRepository(CaseRepository):
                 )
                 self.db.add(message_model)
 
-    async def _sync_case_actions(self, case_id: str, actions: List[CaseAction]) -> None:
+    async def _sync_case_actions(
+        self,
+        case_id: str,
+        organization_id: str,
+        actions: List[CaseAction],
+    ) -> None:
         """Sync case actions for a case (append-only)."""
         if not actions:
             return
@@ -673,6 +689,7 @@ class DatabaseCaseRepository(CaseRepository):
             if i >= existing_count:
                 action_model = CaseActionModel(
                     case_id=case_id,
+                    organization_id=organization_id,
                     from_status=t.from_status.value,
                     to_status=t.to_status.value,
                     reason=t.reason,

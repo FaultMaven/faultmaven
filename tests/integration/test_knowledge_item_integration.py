@@ -31,7 +31,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
     DatabaseKnowledgeItemRepository,
     InMemoryKnowledgeItemRepository,
 )
-from tests.utils import generate_item_id, generate_org_id
+from tests.utils import generate_item_id, generate_org_id, install_org_autoseed
 
 # ============================================================
 # Test Fixtures
@@ -82,6 +82,7 @@ async def test_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
         expire_on_commit=False,
     )
     async with session_factory() as session:
+        install_org_autoseed(session.sync_session)
         yield session
 
 
