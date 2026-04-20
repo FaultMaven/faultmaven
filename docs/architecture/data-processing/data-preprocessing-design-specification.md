@@ -245,7 +245,9 @@ The classification system has two layers. The **detailed layer** (12 types) driv
 
 ### 2.2 Detailed Classification → Extractor Mapping
 
-The table below lists the **12 DetailedDataTypes** (rows 1–12) that drive Tier 0→Tier 1 extractor dispatch, followed by a **runtime marker row** (row 13, italicised) which is **not** a DetailedDataType — it's the pass-through branch the preprocessing orchestrator selects when a page capture arrives pre-structured from the browser extension. The §2.1 diagram still shows "12 types" as the Tier 0 output because the pass-through is an orchestrator runtime choice, not a classification result.
+The first table below lists the **12 DetailedDataTypes** that drive Tier 0→Tier 1 extractor dispatch. The second table lists **orchestrator runtime markers** that bypass the standard Tier 0→Tier 1 path — these are **not** DetailedDataTypes and they do not appear in the §2.1 diagram's Tier 0 output (they are set downstream by the preprocessing orchestrator).
+
+**Table A — 12 DetailedDataTypes (classifier → extractor dispatch):**
 
 | # | DetailedDataType | Extractor | Strategy | What It Produces | Unified |
 |---|---|---|---|---|---|
@@ -261,7 +263,14 @@ The table below lists the **12 DetailedDataTypes** (rows 1–12) that drive Tier
 | 10 | `DOCUMENTATION` | `DocumentationExtractor` | `documentation_structure` | Section classification (troubleshooting/procedure/configuration), operational command filtering (kubectl, docker, systemctl, etc.), TOC generation | **TEXT** |
 | 11 | `VISUAL_EVIDENCE` | `VisualEvidenceExtractor` | `vision` | Metadata only: format, dimensions, byte size (placeholder for Phase 3 multimodal LLM vision analysis) | **IMAGE** |
 | 12 | `UNANALYZABLE` | *(none — fallback)* | — | Truncation to 10,000 chars | **TEXT** |
-| 13 | *(page capture pass-through)* | *(none)* | `page_capture_passthrough` | Pre-structured markdown from frontend (htmlToStructuredText): headings, tables, lists, code blocks, forms, stat panels, ARIA alerts, error-first priority ordering, `[captured_at]` timestamp | **TEXT** |
+
+**Table B — Orchestrator runtime markers (not DetailedDataTypes):**
+
+| Marker                     | Triggered when                                                                                        | Extractor   | What It Produces                                                                                                                                                                                             | Unified  |
+|----------------------------|-------------------------------------------------------------------------------------------------------|-------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|
+| `page_capture_passthrough` | `source_metadata.source_type == "page_capture"` — content is already structured markdown from copilot | *(skipped)* | Pre-structured markdown from frontend (htmlToStructuredText): headings, tables, lists, code blocks, forms, stat panels, ARIA alerts, error-first priority ordering, `[captured_at]` timestamp                | **TEXT** |
+
+For the full runtime-marker vocabulary (including `structure_extraction`, `none`, `classification_failed`), see [Appendix B — Strategy names](#appendix-b-extractor-reference).
 
 **Page Capture Pass-Through:** When `source_metadata.source_type` = `"page_capture"`, the preprocessing service bypasses the UnstructuredTextExtractor entirely. The content arrives as structured markdown from the browser extension's `htmlToStructuredText()` function (semantic DOM extraction with visibility checks, stat panel detection, ARIA alert promotion, and error-first static priority pass), so no additional extraction is needed. The pass-through branch sets `method="page_capture_passthrough"` and preserves the structured markdown output.
 
