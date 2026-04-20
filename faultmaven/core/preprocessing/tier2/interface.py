@@ -1,8 +1,9 @@
 """
-ITier2AnalysisService — Abstract interface for Tier 2 deep analysis.
+ITier2AnalysisService — Abstract interface for Tier 3 deep analysis
+(legacy class name; the current spec places deep analysis at Tier 3).
 
 Design Reference:
-    docs/architecture/data-processing/data-preprocessing-design-specification.md Section 6.2
+    docs/architecture/data-processing/data-preprocessing-design-specification.md §4
 """
 
 from abc import ABC, abstractmethod

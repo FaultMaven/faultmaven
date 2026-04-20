@@ -58,11 +58,18 @@ class ProfilingDataExtractor:
         }
 
         parser = parsers.get(prof_format, self._fallback_extraction)
-        result = parser(content)
+        result, metadata = parser(content)
 
-        # Coverage metadata
+        # Coverage metadata — Format is always present. Per-format parsers
+        # populate "Functions profiled" + "Top function" when they have that
+        # signal; perf-stat and unknown-fallback omit them (format_coverage_metadata
+        # drops None-valued keys). See design-check 2026-04-20 resolution.
         result += format_coverage_metadata(
             Format=prof_format,
+            **{
+                "Functions profiled": metadata.get("functions_profiled"),
+                "Top function": metadata.get("top_function"),
+            },
         )
         return result
 
@@ -84,8 +91,13 @@ class ProfilingDataExtractor:
 
         return self.FORMAT_UNKNOWN
 
-    def _extract_cprofile(self, content: str) -> str:
-        """Extract insights from Python cProfile output"""
+    def _extract_cprofile(self, content: str) -> tuple[str, dict]:
+        """Extract insights from Python cProfile output.
+
+        Returns:
+            (summary, metadata) where metadata carries
+            ``functions_profiled`` and ``top_function`` when available.
+        """
         lines = content.split("\n")
 
         # Find the header line
@@ -141,8 +153,22 @@ class ProfilingDataExtractor:
         # Sort by cumulative time
         hotspots.sort(key=lambda x: x["cumtime"], reverse=True)
 
-        # Generate summary
-        return self._generate_cprofile_summary(functions, hotspots, total_time)
+        summary = self._generate_cprofile_summary(functions, hotspots, total_time)
+        metadata = {
+            "functions_profiled": len(functions),
+            "top_function": (
+                self._simplify_function_name(functions[0]["location"])
+                if functions
+                else None
+            ),
+        }
+        # Reorder: when hotspots exist, top function is the highest-cumtime one,
+        # not just the first parsed entry.
+        if hotspots:
+            metadata["top_function"] = self._simplify_function_name(
+                hotspots[0]["location"]
+            )
+        return summary, metadata
 
     def _generate_cprofile_summary(
         self, functions: list[dict], hotspots: list[dict], total_time: float
@@ -210,8 +236,15 @@ class ProfilingDataExtractor:
 
         return "\n".join(lines)
 
-    def _extract_flame_graph(self, content: str) -> str:
-        """Extract insights from flame graph format"""
+    def _extract_flame_graph(self, content: str) -> tuple[str, dict]:
+        """Extract insights from flame graph format.
+
+        Returns:
+            (summary, metadata). ``functions_profiled`` counts unique leaf
+            frames (what CPU was executing when sampled — the R3-useful
+            signal for "is function X present in this profile"). ``top_function``
+            is the leaf of the highest-sampled stack.
+        """
         lines = content.split("\n")
 
         # Parse flame graph entries: function;call;stack 123
@@ -247,20 +280,30 @@ class ProfilingDataExtractor:
             lines.append(f"{i}. {call_chain}")
             lines.append(f"   - {stack['samples']} samples ({pct:.1f}% of total)")
 
-        return "\n".join(lines)
+        # Metadata: unique leaf frames across all stacks
+        unique_leaves = {s["stack"].split(";")[-1] for s in stacks}
+        metadata = {
+            "functions_profiled": len(unique_leaves),
+            "top_function": stacks[0]["stack"].split(";")[-1],
+        }
+        return "\n".join(lines), metadata
 
-    def _extract_perf(self, content: str) -> str:
+    def _extract_perf(self, content: str) -> tuple[str, dict]:
         """Extract insights from perf stat and perf report output.
 
-        perf stat: Parses counter lines, calculates IPC.
-        perf report: Parses overhead table for top functions.
+        perf stat: Parses counter lines, calculates IPC. Not function-level,
+          so the returned metadata is empty — callers relying on
+          ``functions_profiled`` / ``top_function`` will simply not see
+          those fields in coverage metadata.
+        perf report: Parses overhead table for top functions; metadata
+          carries ``functions_profiled`` + ``top_function``.
         """
         if "Performance counter stats" in content:
-            return self._extract_perf_stat(content)
+            return self._extract_perf_stat(content), {}
         elif re.search(r"Overhead\s+Command\s+Shared Object\s+Symbol", content):
             return self._extract_perf_report(content)
         else:
-            # Fallback to basic extraction
+            # Fallback to basic extraction — no function-level data
             lines = content.split("\n")
             summary = ["Profiling Analysis (perf format)", "", "Performance Counters:"]
             for line in lines:
@@ -270,7 +313,7 @@ class ProfilingDataExtractor:
                     or "seconds time elapsed" in line
                 ):
                     summary.append(f"  - {line.strip()}")
-            return "\n".join(summary)
+            return "\n".join(summary), {}
 
     def _extract_perf_stat(self, content: str) -> str:
         """Parse perf stat output with IPC calculation."""
@@ -331,8 +374,13 @@ class ProfilingDataExtractor:
 
         return "\n".join(summary)
 
-    def _extract_perf_report(self, content: str) -> str:
-        """Parse perf report output for top functions by overhead."""
+    def _extract_perf_report(self, content: str) -> tuple[str, dict]:
+        """Parse perf report output for top functions by overhead.
+
+        Returns:
+            (summary, metadata). Metadata carries ``functions_profiled``
+            (symbol count) and ``top_function`` (highest-overhead symbol).
+        """
         lines = content.split("\n")
         summary = ["Profiling Analysis (perf report)", ""]
 
@@ -345,7 +393,7 @@ class ProfilingDataExtractor:
 
         if header_idx is None:
             summary.append("Unable to parse perf report header")
-            return "\n".join(summary)
+            return "\n".join(summary), {}
 
         # Parse function entries
         functions = []
@@ -367,14 +415,18 @@ class ProfilingDataExtractor:
 
         if not functions:
             summary.append("No function entries found")
-            return "\n".join(summary)
+            return "\n".join(summary), {}
 
         summary.append(f"Top Functions by Overhead ({len(functions)} total):")
         for i, fn in enumerate(functions[:10], 1):
             summary.append(f"  {i}. {fn['symbol']} ({fn['overhead']:.1f}%)")
             summary.append(f"     {fn['shared_object']} [{fn['command']}]")
 
-        return "\n".join(summary)
+        metadata = {
+            "functions_profiled": len(functions),
+            "top_function": functions[0]["symbol"],
+        }
+        return "\n".join(summary), metadata
 
     def _simplify_function_name(self, location: str) -> str:
         """Simplify function location for readability"""
@@ -396,8 +448,9 @@ class ProfilingDataExtractor:
         io_keywords = ["read", "write", "file", "socket", "request", "fetch", "query"]
         return any(keyword in location.lower() for keyword in io_keywords)
 
-    def _fallback_extraction(self, content: str) -> str:
-        """Fallback for unknown profiling formats"""
+    def _fallback_extraction(self, content: str) -> tuple[str, dict]:
+        """Fallback for unknown profiling formats. No function-level data,
+        so metadata is empty."""
         lines = content.split("\n")[:30]  # First 30 lines
 
         summary = [
@@ -414,4 +467,4 @@ class ProfilingDataExtractor:
             "\nNote: Unable to fully parse profiling data. Supported formats: cProfile, flame graphs, perf."
         )
 
-        return "\n".join(summary)
+        return "\n".join(summary), {}

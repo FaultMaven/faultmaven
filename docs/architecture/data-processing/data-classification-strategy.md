@@ -112,7 +112,7 @@ class ClassificationResult(BaseModel):
     ]
     classification_failed: bool    # True when confidence < 0.50 (triggers cooperative-clarification suggestions)
     suggested_types: Optional[List[DataType]]  # Populated on every classification_failed path; drives cooperative-clarification COOPERATIVE suggestions
-    source_type: Optional[str]     # page_capture / user_paste / file_upload
+    source_type: Optional[str]     # page_capture / text_paste / file_upload
                                    # (propagated from source_metadata)
 ```
 
@@ -242,7 +242,7 @@ This encodes the intuition that `.log` is itself strong evidence, `.txt` is ambi
 
 ## Command-Output Classification
 
-Tier 0 recognizes **13 Linux/Unix commands** via `COMMAND_OUTPUTS` (classifier.py). Each command requires **≥2 pattern matches** to classify — this limits false positives from content that incidentally contains a single header-like line.
+Tier 0 recognizes **14 Linux/Unix commands** via `COMMAND_OUTPUTS` (classifier.py). Each command requires **≥2 pattern matches** to classify — this limits false positives from content that incidentally contains a single header-like line.
 
 Commands route to the detailed `DataType` whose extractor produces the best structural index:
 

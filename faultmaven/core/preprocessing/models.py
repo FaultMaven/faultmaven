@@ -1,12 +1,12 @@
 """
-Preprocessing Models — Design Specification v3.0
+Preprocessing Models
 
-Defines the core types for the three-tier preprocessing pipeline:
+Defines the core types for the four-tier preprocessing pipeline:
 - Tier 0: Classification (DataType, ClassificationResult)
 - Tier 1: Mechanical Extraction (ExtractionResult, PreprocessingResult)
-- Tier 2: Deep Analysis (DeepAnalysisResult, AnalysisContext, DataExcerpt)
+- Tier 2: Mechanical Search (search_file agent tool + BasicTier2Service backends)
+- Tier 3: Interpreted Search / Deep Analysis (DeepAnalysisResult, AnalysisContext, DataExcerpt)
 - Vector DB: Chunk model for structural index storage
-- Errors: FileTooLargeError, DuplicateFileError
 
 Design Reference:
     docs/architecture/data-processing/data-preprocessing-design-specification.md
@@ -14,7 +14,6 @@ Design Reference:
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
@@ -263,44 +262,6 @@ class FileInfo:
     raw_content: bytes
     extension: str = ""
     processing_time_ms: float = 0.0
-
-
-# =============================================================================
-# Errors
-# =============================================================================
-
-
-class FileTooLargeError(Exception):
-    """Raised when an uploaded file exceeds the size limit."""
-
-    def __init__(self, file_size: int, max_size: int):
-        self.file_size = file_size
-        self.max_size = max_size
-        super().__init__(
-            f"File size {file_size} bytes exceeds limit of {max_size} bytes"
-        )
-
-
-class DuplicateFileError(Exception):
-    """Raised when the same file content already exists for a case."""
-
-    def __init__(self, existing_evidence_id: str, content_hash: str):
-        self.existing_evidence_id = existing_evidence_id
-        self.content_hash = content_hash
-        super().__init__(
-            f"Duplicate file (hash={content_hash[:16]}...) "
-            f"already exists as {existing_evidence_id}"
-        )
-
-
-# =============================================================================
-# Utility Functions
-# =============================================================================
-
-
-def compute_content_hash(raw_content: bytes) -> str:
-    """Compute SHA-256 hash of raw file content for deduplication."""
-    return hashlib.sha256(raw_content).hexdigest()
 
 
 def generate_concise_summary(text: str, max_length: int = 500) -> str:

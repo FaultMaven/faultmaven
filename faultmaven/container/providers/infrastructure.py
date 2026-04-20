@@ -136,7 +136,6 @@ def create_extractors() -> dict[str, Any]:
 
 def create_preprocessing_service(
     data_classifier: Any,
-    data_sanitizer: Any,
     extractors: dict[str, Any],
     settings: FaultMavenSettings,
 ) -> Any:
@@ -147,7 +146,6 @@ def create_preprocessing_service(
 
     return PreprocessingService(
         classifier=data_classifier,
-        sanitizer=data_sanitizer,
         logs_extractor=extractors["logs_extractor"],
         config_extractor=extractors["config_extractor"],
         metrics_extractor=extractors["metrics_extractor"],
@@ -578,7 +576,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
 
     # Preprocessing service
     preprocessing_service = create_preprocessing_service(
-        data_classifier, data_sanitizer, extractors, settings
+        data_classifier, extractors, settings
     )
     container._register_service(
         "preprocessing_service",

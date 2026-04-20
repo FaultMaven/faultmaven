@@ -1,13 +1,15 @@
 """
-ExternalTier2Client — HTTP call to a cloud Tier 2 microservice.
+ExternalTier2Client — HTTP call to a cloud Tier 3 deep-analysis microservice.
 
-Supports lazy file staging: raw files are uploaded to the backend only
-when the first deep query arrives, then cached for subsequent queries.
+Supports lazy file staging via POST `/stage` (raw files uploaded to the
+backend only on the first deep query, then cached per-process in
+`self._staged_files`). On staging failure, silently falls back to passing
+the raw `file_ref`.
 
 Backends: Gemini file search, OpenAI assistants, or custom service.
 
 Design Reference:
-    docs/architecture/data-processing/data-preprocessing-design-specification.md Section 6.3
+    docs/architecture/data-processing/data-preprocessing-design-specification.md §4
 """
 
 import logging

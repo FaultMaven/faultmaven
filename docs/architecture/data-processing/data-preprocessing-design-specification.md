@@ -292,20 +292,29 @@ Time range: 2024-01-15T10:30:00 to 2024-01-15T10:45:23
 Severity distribution: ERROR=23, WARN=45, CRITICAL=2
 ```
 
-**Per-extractor metadata fields:**
+**Per-extractor metadata fields (as actually emitted by current code):**
 
 | Extractor | Coverage Fields |
-|-----------|----------------|
-| LogsAndErrors | Lines processed/total, severity distribution, time range |
-| ErrorReport | Language, stack frames count, exception type |
-| TraceData | Spans count, unique services, critical path duration |
-| CommandOutput | Command type, lines count |
-| MetricsAndPerformance | Format detected, metric families/columns, anomalies found |
-| ProfilingData | Format, functions profiled, top function |
-| StructuredConfig | Format, top-level keys, secrets redacted count |
-| SourceCode | Language, functions/classes/error handlers count, lines |
-| UnstructuredText | Lines, structure type, error mentions count |
-| Documentation | Format, sections/code blocks/commands count |
+| --- | --- |
+| `LogsAndErrorsExtractor` | `Lines` processed/total, severity distribution, time range |
+| `ErrorReportExtractor` | `Language`, `Exception`, `Stack frames`, `Root cause` |
+| `TraceDataExtractor` | `Spans`, `Services`, `Error spans`, `Total duration ms` |
+| `CommandOutputExtractor` | `Command`, `Lines` |
+| `MetricsAndPerformanceExtractor` | `Format`, `Metrics` (count), `Metric names`, `Anomalies found` |
+| `ProfilingDataExtractor` | `Format`, `Functions profiled`, `Top function` (per-format — see note below) |
+| `StructuredConfigExtractor` | `Format`, top-level keys, secrets redacted count |
+| `SourceCodeExtractor` (Python path) | `Language`, `Lines`, `Functions`, `Classes`, `Error handlers` |
+| `SourceCodeExtractor` (fallback path, non-Python) | `Language`, `Lines` |
+| `UnstructuredTextExtractor` | `Lines`, `Structure`, `Error mentions`, `Code blocks` |
+| `DocumentationExtractor` | `Format`, `Sections`, `Code blocks`, `Commands` |
+| `VisualEvidenceExtractor` | `Format`, `Filename`, `Size bytes` (metadata-only placeholder until Phase 3 multimodal vision) |
+
+> **`ProfilingDataExtractor` — what the per-format fields mean:**
+>
+> - **cProfile**: `Functions profiled` = count of parsed call sites; `Top function` = highest-cumtime location.
+> - **Flame graph**: `Functions profiled` = count of unique leaf frames (the functions on CPU when sampled — the R3-useful signal for "is function X present?"); `Top function` = leaf of the highest-sampled stack.
+> - **perf report**: `Functions profiled` = count of parsed symbols; `Top function` = highest-overhead symbol.
+> - **perf stat** and **unknown-format fallback**: neither field is emitted, because these formats carry no function-level data. `format_coverage_metadata` drops `None`-valued keys, so the absence is genuine (not a lie by omission).
 
 Coverage metadata is additive — appended after the separator, never modifying existing output. Utility functions in `faultmaven/modules/preprocessing/extractors/utils.py` provide `COVERAGE_SEPARATOR`, `format_coverage_metadata()`, `extract_timestamp()`, and `extract_time_range()`.
 
@@ -489,6 +498,8 @@ In Directed Analysis turns, `search_file` is available inside the bounded DA Too
 
 #### A. Keyword Search (Two-Pass Strategy — v4.2)
 
+The two-pass strategy described here is implemented in the **`search_file` agent tool** (`faultmaven/modules/agent/tools/search_file_tool.py`), not in `BasicTier2Service._keyword_search` — which is the in-process Tier 3 backend and implements a simpler single-pass partial-match scorer (see §3.5 and §4). Callers that go through `search_file` get the two-pass behaviour; `BasicTier2Service` invoked directly does not.
+
 Tokenizes the query into keywords (>2 chars), then uses a two-pass strategy for high-precision results with partial-match recovery:
 
 **Pass 1 — Full match (high relevance):** Find lines matching ALL keywords. Returns results with `relevance: 1.0`. Merge overlapping windows, cap at `max_results`.
@@ -578,7 +589,7 @@ async def _rerun_extractor(
 
 ### 3.4 Zero-Result Recovery: Vocabulary Extraction (v4.2)
 
-When any search mode returns 0 results, the tool extracts vocabulary from the file to help the agent reformulate its query. The response includes a `vocabulary` object and a `suggestion` string.
+Implemented in the **`search_file` agent tool**, not in `BasicTier2Service`. When any search mode exposed by `search_file` returns 0 results, the tool extracts vocabulary from the file to help the agent reformulate its query. The response includes a `vocabulary` object and a `suggestion` string. `BasicTier2Service` directly returns a plain `"No matching sections found for the query."` message without vocabulary — callers wanting vocabulary recovery must go through `search_file`.
 
 **Three-pass heuristic (on first 100KB of content):**
 
@@ -609,14 +620,14 @@ When any search mode returns 0 results, the tool extracts vocabulary from the fi
 
 ### 3.5 Relationship to Existing Services
 
-The `search_file` tool consolidates functionality that partially exists today:
+The `search_file` agent tool is a standalone implementation that coexists with other components; it does **not** replace or wrap `BasicTier2Service`:
 
-| Existing Component | Role | In v4.0 |
-|-------------------|------|---------|
-| `BasicTier2Service._keyword_search()` | Keyword search on raw content | Promoted to `search_file` keyword mode |
+| Existing Component | Role | Relationship to `search_file` |
+| --- | --- | --- |
+| `BasicTier2Service._keyword_search()` | Single-pass partial-match scorer, returned to the agent via the Tier 3 `deep_analysis` tool when backend is `basic` | Independent; neither two-pass nor vocabulary-recovery. `search_file` reimplements the richer two-pass + vocab-recovery flow directly on raw file content. |
 | `ReadFileTool` (`read_file`) | Read file content by evidence ID | Remains for reading; `search_file` adds search |
 | Domain extractors (Tier 1) | Single-use at upload | Made re-runnable via `search_file` extractor mode |
-| `DeepAnalysisTool` (`deep_analysis`) | LLM-powered analysis | Moves to Tier 3 (unchanged) |
+| `DeepAnalysisTool` (`deep_analysis`) | LLM-powered analysis (backed by `ITier2AnalysisService` — basic / local / external / disabled) | Tier 3 interpreted search; orthogonal to `search_file` |
 
 ### 3.6 When to Use `search_file` vs `deep_analysis`
 
@@ -810,7 +821,40 @@ The Tier 1 **structural index** — not the raw file content. This is unchanged 
 - 5MB metrics CSV → Statistical profile (~30KB) → ~60 chunks
 - 5KB config → Full parsed config → skipped (below size minimum)
 
-**Chunking strategy**: Section-aware splitting (unchanged from v3.2 Section 5.2).
+#### 5.6.1 Chunking Algorithm (`chunk_structural_index`)
+
+Implemented in `faultmaven/core/preprocessing/vector_storage.py`. Section-aware splitter:
+
+1. **Split on section headers.** The input is split on the regex `===\s+.+?\s+===` which preserves section headers as separator tokens. Text before the first header is attributed to a default section named `HEADER`.
+2. **Whole sections first.** If a section fits under `max_chunk_tokens`, it becomes a single chunk with `metadata["section"]` set to the section name.
+3. **Oversize sections split on paragraph boundaries.** For sections larger than `max_chunk_tokens`, the text is split on `\n\n` and accumulated into a running buffer. When adding the next paragraph would overflow the budget, the buffer is emitted as a chunk and the next buffer is seeded with the **last `overlap_tokens` worth** of the previous chunk (`_get_last_n_tokens`) to preserve cross-chunk context.
+4. **Never split mid-line.**
+
+Token counts are estimated via `_estimate_tokens(text) = len(text) // 4` — a heuristic that avoids a per-chunk tokenizer call.
+
+#### 5.6.2 Per-Chunk Metadata Schema
+
+Each chunk stored in ChromaDB carries:
+
+| Key | Source | Purpose |
+| --- | --- | --- |
+| `evidence_id` | Caller-provided | Links the chunk back to its Evidence row |
+| `case_id` | Caller-provided | Scoping for per-case retrieval |
+| `data_type` | `UnifiedDataType.value` | Filtering by logs/metrics/text/etc. |
+| `section` | Section-header text (or `HEADER`) | Retrieval context |
+| `chunk_index` | 0-based position | Deterministic ordering within evidence |
+| `total_chunks` | Total emitted for this evidence | Completeness signals |
+| `upload_timestamp` | `datetime.now(timezone.utc).isoformat()` at store-time | Temporal filtering / TTL |
+
+Any additional scalar keys passed in `metadata=…` by the caller are forwarded as-is.
+
+#### 5.6.3 Embedding Fallback
+
+Embeddings are produced by the in-process BGE-M3 model via `model_cache.get_bge_m3_model()`. If the model is unavailable at call time (model load failure, missing weights), `store_in_vector_db_background` **logs a warning and falls back to ChromaDB's default embedding function** rather than failing the store — so vectorization always succeeds, at reduced retrieval quality.
+
+#### 5.6.4 Silent-Failure Semantics
+
+`store_in_vector_db_background` catches all exceptions from chunking, embedding, and Chroma upsert, logs them, and returns silently. Rationale: vectorization is a background task run after the user has already received their turn response, and the raw Evidence object is always retrievable from the Case repository regardless of vector-index state. See also [Evidence Failure Modes](./evidence-failure-modes.md) for adjacent failure handling.
 
 ### 5.7 Configuration
 
@@ -822,10 +866,12 @@ CHROMADB_HOST=localhost
 CHROMADB_PORT=8000
 CHROMADB_COLLECTION_PREFIX=case_
 
-# Chunking
+# Chunking (read at startup via faultmaven/config/settings.py)
 VECTOR_CHUNK_SIZE_TOKENS=500
 VECTOR_CHUNK_OVERLAP_TOKENS=50
 ```
+
+> **One-shot deployment knobs.** `VECTOR_CHUNK_SIZE_TOKENS` and `VECTOR_CHUNK_OVERLAP_TOKENS` are read at startup via `get_settings()` and threaded into `store_in_vector_db_background`. Changing either of them **after** the vector DB has been populated requires deleting the ChromaDB collection and re-ingesting all evidence + KB content from source — mixing chunk sizes in the same collection silently degrades retrieval quality (embeddings computed at different chunk sizes are not directly comparable). FaultMaven retains raw evidence + runbooks on disk, so re-indexing is a mechanical rebuild, never data recovery.
 
 ### 5.8 Migration from v3.2
 
@@ -1270,7 +1316,9 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 
 - `MAX_STRUCTURAL_INDEX_TOKENS = 2500`
 - `MAX_STRUCTURAL_INDEX_CHARS = 10000`
-- When output exceeds the cap, `truncate_output()` preserves the first 40 % + last 40 % so both file headers and tails remain visible.
+- **Two truncation strategies, applied at different stages:**
+  - `truncate_output()` (extractors, `extractors/utils.py`) — preserves the first 40 % + last 40 % of the produced structural index so both file headers and tails remain visible. Applied when an extractor's output exceeds the cap.
+  - `_fallback_direct_extraction()` (`PreprocessingService`, `preprocessing_service.py`) — **head-only** cap at `max_chars=10000` with a trailing `... [Truncated N chars]` marker. Used by the orchestrator when no extractor runs (`page_capture_passthrough`, `UNANALYZABLE`, `classification_failed`, Tier 1 timeout/error `structure_extraction` fallback) — there's no extractor output to preserve a tail from, just raw content.
 
 ### Shared utilities (`extractors/utils.py`)
 

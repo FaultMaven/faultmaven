@@ -580,6 +580,22 @@ class DatabaseSettings(BaseSettings):
     similarity_threshold: float = Field(default=0.7)
     max_search_results: int = Field(default=10)
 
+    # Vector chunking — one-shot deployment knobs.
+    # Changing these AFTER the vector DB has been populated requires deleting
+    # the existing ChromaDB collection(s) and re-ingesting all evidence + KB
+    # content from source. Mixing chunk sizes in one collection silently
+    # degrades retrieval quality. Leave at defaults unless you have a reason.
+    vector_chunk_size_tokens: int = Field(
+        default=500,
+        validation_alias="VECTOR_CHUNK_SIZE_TOKENS",
+        description="Max tokens per chunk when embedding structural indexes",
+    )
+    vector_chunk_overlap_tokens: int = Field(
+        default=50,
+        validation_alias="VECTOR_CHUNK_OVERLAP_TOKENS",
+        description="Token overlap between adjacent chunks",
+    )
+
     # ============================================
     # Pinecone Configuration (Optional Vector Backend)
     # ============================================
