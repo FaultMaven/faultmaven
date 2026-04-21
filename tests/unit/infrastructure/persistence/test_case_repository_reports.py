@@ -66,9 +66,7 @@ async def async_engine():
     # Create tables (simplified schema for SQLite testing)
     async with engine.begin() as conn:
         # Create cases table first (reports has FK to cases)
-        await conn.execute(
-            text(
-                """
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS cases (
                 case_id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
@@ -94,14 +92,10 @@ async def async_engine():
                 closure_reason TEXT,
                 path_selection TEXT
             )
-        """
-            )
-        )
+        """))
 
         # Create reports table
-        await conn.execute(
-            text(
-                """
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS reports (
                 report_id TEXT PRIMARY KEY,
                 case_id TEXT NOT NULL,
@@ -120,9 +114,7 @@ async def async_engine():
                 -- Phase 6 Tier 1 column addition (storage redesign 2026-04).
                 generated_by TEXT
             )
-        """
-            )
-        )
+        """))
 
         await conn.commit()
 

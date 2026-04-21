@@ -87,12 +87,10 @@ async def seeded_cases(pg_session):
     # this fixture must be expanded.
     for case_id, org in [(case_a, org_a), (case_b, org_b)]:
         await pg_session.execute(
-            text(
-                """
+            text("""
                 INSERT INTO cases (case_id, organization_id, status, title, created_at, updated_at)
                 VALUES (:case_id, :org_id, 'inquiry', 'rls test case', NOW(), NOW())
-                """
-            ),
+                """),
             {"case_id": case_id, "org_id": org},
         )
     await pg_session.commit()
@@ -199,13 +197,11 @@ async def test_rls_enabled_on_all_tenanted_tables(pg_session):
     }
 
     result = await pg_session.execute(
-        text(
-            """
+        text("""
             SELECT relname
             FROM pg_class
             WHERE relname = ANY(:tables) AND relrowsecurity = true
-            """
-        ),
+            """),
         {"tables": list(expected_tables)},
     )
     rls_enabled = {row[0] for row in result.fetchall()}
