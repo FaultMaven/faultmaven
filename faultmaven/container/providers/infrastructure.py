@@ -584,6 +584,37 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         dependencies=["data_classifier"],
     )
 
+    # File storage service — must be registered BEFORE the Tier 2 deep
+    # analysis service below, because create_tier2_service reads it via
+    # getattr(container, "file_storage_service", None). The canonical
+    # registration name is "file_storage_service"; downstream consumers in
+    # infrastructure.py (here), tools.py (via get_service), and services.py
+    # (via container.file_storage_service) must all agree on this name.
+    # Moved here from services.py in 2026-04 to repair an init-order bug
+    # where register_services ran after register_infrastructure, so Tier 2
+    # was always built with storage_service=None. See also
+    # tests/unit/container/test_file_storage_service_wiring.py.
+    try:
+        from faultmaven.modules.evidence.domain.services.file_storage_service import (
+            FileStorageService,
+        )
+
+        file_storage_service = FileStorageService(
+            storage_root=settings.evidence_storage_root,
+            max_file_size_bytes=settings.max_evidence_file_size,
+        )
+        container._register_service("file_storage_service", file_storage_service)
+        logger.info(
+            f"✅ File storage service registered: {type(file_storage_service).__name__}"
+        )
+    except Exception as e:
+        # Fail-soft with loud logging so operators see misconfiguration at
+        # startup. Non-storage code paths (auth, KB-only queries) still work;
+        # deep_analysis and search_file will surface "unavailable" to the
+        # agent rather than crashing mid-turn.
+        logger.error(f"❌ Failed to create file storage service: {e}", exc_info=True)
+        container._register_failed("file_storage_service", str(e))
+
     # Deep analysis service (Tier 3 deep LLM analysis)
     from faultmaven.core.preprocessing.tier2.factory import create_tier2_service
 
