@@ -2701,8 +2701,14 @@ class MilestoneEngine:
         # Proactive vectorization: start background tasks for large evidence
         # files before the tool loop begins. Runs concurrently so semantic
         # search is available by the time the agent needs it.
+        # Gated on force_tool_use=True (Directed Analysis). Triage and
+        # Knowledge Query turns don't consult case evidence via semantic
+        # search, so preemptive embedding would be wasted work — and on a
+        # cold-cached model it can dominate the turn budget. See
+        # data-preprocessing-design-specification.md §5 (vectorization is
+        # scoped to DA-mode turns).
         proactive_tasks: dict[str, asyncio.Task] = {}
-        if case:
+        if case and force_tool_use:
             proactive_tasks = await self._start_proactive_vectorization(
                 case, tool_context
             )

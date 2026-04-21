@@ -169,13 +169,28 @@ class TestLazyLoadingConfiguration:
             settings = EmbeddingSettings()
             assert settings.lazy_load_ml_models is False
 
-    def test_preload_models_default_empty(self):
-        """Test that preload_models defaults to empty list."""
+    def test_preload_models_default_includes_bge_m3(self):
+        """preload_models defaults to ['BAAI/bge-m3'] so the embedding model
+        warms at startup instead of stalling the first request path.
+
+        Opting out requires an explicit PRELOAD_MODELS='' env var. See
+        data-preprocessing-design-specification.md §5.7.
+        """
         from faultmaven.config.settings import EmbeddingSettings
 
         settings = EmbeddingSettings()
 
-        assert settings.preload_models == []
+        assert settings.preload_models == ["BAAI/bge-m3"]
+
+    def test_preload_models_opt_out_via_env(self):
+        """Operators can opt out of preload by setting PRELOAD_MODELS=''."""
+        import os
+
+        from faultmaven.config.settings import EmbeddingSettings
+
+        with patch.dict(os.environ, {"PRELOAD_MODELS": "[]"}):
+            settings = EmbeddingSettings()
+            assert settings.preload_models == []
 
 
 class TestModelLoadInfo:

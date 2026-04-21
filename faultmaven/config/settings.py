@@ -1264,9 +1264,12 @@ class EmbeddingSettings(BaseSettings):
         "Lazy loading improves startup time but first request may be slower.",
     )
     preload_models: list = Field(
-        default_factory=list,
+        default_factory=lambda: ["BAAI/bge-m3"],
         description="List of model names to pre-load at startup even with lazy_load_ml_models=True. "
-        "Example: ['BAAI/bge-m3'] to pre-load only BGE-M3.",
+        "Default: ['BAAI/bge-m3'] — preloaded so the first request path does not pay a "
+        "cold-load penalty (see data-preprocessing-design-specification.md §5.7). "
+        "Set to [] (via PRELOAD_MODELS='') to opt out for faster startup, accepting "
+        "~60–120s first-request latency while the model loads.",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
