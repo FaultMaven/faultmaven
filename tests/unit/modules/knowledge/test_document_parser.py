@@ -214,7 +214,8 @@ class TestMarkdownExtraction:
     def test_extract_markdown_strips_multiline_comment(self, parser, tmp_path):
         """Multi-line HTML comments are removed."""
         # Arrange
-        content = textwrap.dedent("""\
+        content = textwrap.dedent(
+            """\
             # Title
 
             <!-- TODO:
@@ -222,7 +223,8 @@ class TestMarkdownExtraction:
             spanning multiple lines
             -->
 
-            Real content here.""")
+            Real content here."""
+        )
         md_file = tmp_path / "draft.md"
         md_file.write_text(content, encoding="utf-8")
 
@@ -283,7 +285,8 @@ class TestHtmlExtraction:
     def test_extract_html_strips_nav_footer_script(self, parser, tmp_path):
         """nav, footer, script, style, aside, header tags are removed."""
         # Arrange
-        html = textwrap.dedent("""\
+        html = textwrap.dedent(
+            """\
             <html><body>
             <nav><a href="/">Home</a></nav>
             <header>Site Header</header>
@@ -292,7 +295,8 @@ class TestHtmlExtraction:
             <script>alert('xss')</script>
             <style>body { color: red; }</style>
             <footer>Copyright 2026</footer>
-            </body></html>""")
+            </body></html>"""
+        )
         html_file = tmp_path / "full.html"
         html_file.write_text(html, encoding="utf-8")
 
@@ -327,14 +331,16 @@ class TestHtmlExtraction:
     def test_extract_html_preserves_tables(self, parser, tmp_path):
         """HTML tables are converted to markdown table syntax."""
         # Arrange
-        html = textwrap.dedent("""\
+        html = textwrap.dedent(
+            """\
             <html><body>
             <table>
             <tr><th>Name</th><th>Value</th></tr>
             <tr><td>CPU</td><td>85%</td></tr>
             <tr><td>Memory</td><td>72%</td></tr>
             </table>
-            </body></html>""")
+            </body></html>"""
+        )
         html_file = tmp_path / "table.html"
         html_file.write_text(html, encoding="utf-8")
 
