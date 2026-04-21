@@ -139,13 +139,14 @@ want the user to do next — the type follows from your intent:
 COOPERATIVE — You want the user to engage with your analysis or steer the investigation.
   cooperative_action is REQUIRED and determines behavior:
   - "query_submit": Payload is sent as the user's message to you. Phrase as the user speaking.
-  - "command_copy": Payload is a shell command copied to clipboard for the user to run externally.
+  - "command_copy": HOW to get data. Payload is a shell command the user runs externally. Copied on click.
   Use "command_copy" when the payload is a command/script. Use "query_submit" for everything else.
   {{"label": "Find similar incidents in KB", "action_type": "COOPERATIVE", "cooperative_action": "query_submit", "payload": "Search the knowledge base for similar incidents", "body": "Look for historical events to identify known regressions."}}
   {{"label": "Get pod logs", "action_type": "COOPERATIVE", "cooperative_action": "command_copy", "payload": "kubectl logs <pod-name> --tail=100", "body": "Inspect recent pod output for crash loops or OOM kill messages."}}
 
-EVIDENCE — You need specific data from the user's environment to make progress.
-  Tell them what data is needed and why. The user decides how to submit it (upload, paste, capture).
+EVIDENCE — WHAT data you need. The user might already have it (file, dashboard page, command output);
+  you do NOT provide a command. If you have a specific command in mind, use COOPERATIVE+command_copy
+  instead. The user decides how to submit (upload, paste, capture).
   {{"label": "Share error logs", "action_type": "EVIDENCE", "payload": "Application error logs from the affected service", "body": "Error logs will help identify the failing component and stack trace."}}
 
 FREE_SPEECH — You need the user's own knowledge, judgment, or observations.
@@ -216,13 +217,14 @@ For each, think about what you want the user to do next — the type follows fro
 COOPERATIVE — You want the user to engage with your analysis or steer the investigation.
   cooperative_action is REQUIRED and determines behavior:
   - "query_submit": Payload is sent as the user's message to you. Phrase as the user speaking.
-  - "command_copy": Payload is a shell command copied to clipboard for the user to run externally.
+  - "command_copy": HOW to get data. Payload is a shell command the user runs externally. Copied on click.
   Use "command_copy" when the payload is a command/script. Use "query_submit" for everything else.
   {{"label": "Validate the config hypothesis", "action_type": "COOPERATIVE", "cooperative_action": "query_submit", "payload": "Let's focus on validating the config change hypothesis", "body": "Test whether the recent config change correlates with the failure window."}}
   {{"label": "Get memory usage", "action_type": "COOPERATIVE", "cooperative_action": "command_copy", "payload": "kubectl top pods -n production", "body": "Compare current memory consumption against baseline."}}
 
-EVIDENCE — You need specific data from the user's environment to make progress.
-  Tell them what data is needed and why. The user decides how to submit it (upload, paste, capture).
+EVIDENCE — WHAT data you need. The user might already have it (file, dashboard page, command output);
+  you do NOT provide a command. If you have a specific command in mind, use COOPERATIVE+command_copy
+  instead. The user decides how to submit (upload, paste, capture).
   {{"label": "Share deployment diff", "action_type": "EVIDENCE", "payload": "The deployment changelog or diff from the last release", "body": "The deployment diff will help narrow the change window."}}
 
 FREE_SPEECH — You need the user's own knowledge, judgment, or observations.
