@@ -116,7 +116,7 @@ class ExternalTier2Client(ITier2AnalysisService):
             return file_ref
 
         try:
-            raw_content = await self.storage_service.retrieve(file_ref)
+            raw_content = await self.storage_service.retrieve_file(file_ref)
             staged_id = await self._upload_to_backend(raw_content, file_ref)
             self._staged_files[file_ref] = staged_id
             return staged_id

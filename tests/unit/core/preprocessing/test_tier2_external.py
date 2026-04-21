@@ -23,7 +23,7 @@ def context():
 @pytest.fixture
 def mock_storage():
     storage = AsyncMock()
-    storage.retrieve = AsyncMock(return_value=b"raw file content")
+    storage.retrieve_file = AsyncMock(return_value=b"raw file content")
     return storage
 
 
@@ -198,7 +198,7 @@ class TestEnsureStaged:
 
         result = await client._ensure_staged("ref_1")
         assert result == "staged_abc"
-        mock_storage.retrieve.assert_not_called()
+        mock_storage.retrieve_file.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_storage_returns_file_ref(self):
@@ -208,7 +208,7 @@ class TestEnsureStaged:
 
     @pytest.mark.asyncio
     async def test_staging_failure_returns_file_ref(self, mock_storage):
-        mock_storage.retrieve.side_effect = RuntimeError("Storage error")
+        mock_storage.retrieve_file.side_effect = RuntimeError("Storage error")
         client = ExternalTier2Client(
             base_url="http://tier2.example.com",
             storage_service=mock_storage,

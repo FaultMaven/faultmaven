@@ -1169,3 +1169,162 @@ class TestVectorizedFlagPersistence:
         assert (
             "ev_new" in tasks
         ), "Gate must still enqueue evidence where vectorized=False"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestInflightVectorizeDedup:
+    """Cross-turn deduplication of proactive vectorization tasks.
+
+    The persistent Evidence.vectorized flag flips only on completion,
+    so it doesn't help a turn whose predecessor is still running.
+    Without an in-flight registry, turn N+1 sees vectorized=False and
+    starts a second concurrent encode that contends for CPU with turn
+    N's task — the stacking pattern that drove every task past the
+    60s wait_for bound on 2026-04-21.
+
+    MilestoneEngine is a DI singleton, so self._inflight_vectorize
+    survives across turns and lets turn N+1 reuse turn N's task.
+    """
+
+    def _make_engine(self):
+        provider = AsyncMock()
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        mock_registry = MagicMock()
+        engine = MilestoneEngine(
+            llm_provider=provider,
+            repository=repo,
+            investigation_tools=mock_registry,
+            evidence_service=None,
+        )
+        assert engine._inflight_vectorize == {}
+        return engine
+
+    @staticmethod
+    def _case_with(evidence_id: str, vectorized: bool, size: int = 1_000_000):
+        class _Ev:
+            def __init__(self, ev_id, sz, vec):
+                self.evidence_id = ev_id
+                self.content_size_bytes = sz
+                self.vectorized = vec
+
+        case = MagicMock()
+        case.evidence = [_Ev(evidence_id, size, vectorized)]
+        return case
+
+    async def test_second_call_reuses_inflight_task(self):
+        """Second call with the same evidence_id must reuse the task
+        from the first call — creating a second concurrent task is the
+        stacking bug this guards against."""
+        import asyncio
+
+        engine = self._make_engine()
+        gate = asyncio.Event()
+
+        async def _never_finishes(_ev_id, _ctx):
+            await gate.wait()
+            return True
+
+        engine._vectorize_evidence = _never_finishes
+
+        case = self._case_with("ev_pending", vectorized=False)
+        tasks_turn_1 = await engine._start_proactive_vectorization(case, MagicMock())
+        tasks_turn_2 = await engine._start_proactive_vectorization(case, MagicMock())
+
+        try:
+            assert "ev_pending" in tasks_turn_1
+            assert "ev_pending" in tasks_turn_2
+            assert (
+                tasks_turn_2["ev_pending"] is tasks_turn_1["ev_pending"]
+            ), "Second turn must reuse the first turn's task"
+            assert len(engine._inflight_vectorize) == 1
+        finally:
+            gate.set()
+            await tasks_turn_1["ev_pending"]
+
+    async def test_registry_cleaned_up_on_completion(self):
+        """After the task settles, the registry entry must be removed
+        so a later turn can retry cleanly if persistence didn't land."""
+        import asyncio
+
+        engine = self._make_engine()
+        engine._vectorize_evidence = AsyncMock(return_value=True)
+
+        case = self._case_with("ev_x", vectorized=False)
+        tasks = await engine._start_proactive_vectorization(case, MagicMock())
+        await tasks["ev_x"]
+        # done_callback runs on the event loop; yield so it fires.
+        await asyncio.sleep(0)
+
+        assert (
+            "ev_x" not in engine._inflight_vectorize
+        ), "Registry must be cleaned up after task settles"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestReactiveVectorizeTimeout:
+    """Reactive vectorization must respect
+    AgentSettings.vectorization_reactive_timeout_seconds and fall
+    through (no advisory appended) on timeout, leaving the agent to
+    continue with whatever evidence it already has. Guards the
+    proactive-vs-reactive time-bound split: proactive runs unbounded
+    as a background task, reactive bounds synchronously inside the
+    tool loop where it's blocking the agent.
+    """
+
+    async def test_reactive_times_out_without_appending_advisory(self, monkeypatch):
+        import asyncio
+
+        from faultmaven.config.settings import get_settings
+
+        provider = AsyncMock()
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        mock_registry = MagicMock()
+        engine = MilestoneEngine(
+            llm_provider=provider,
+            repository=repo,
+            investigation_tools=mock_registry,
+            evidence_service=None,
+        )
+
+        # Simulate an encode that runs far longer than the reactive
+        # bound. _vectorize_evidence itself no longer wraps wait_for;
+        # the bound lives at the _reactive_vectorize caller.
+        async def _slow(_ev_id, _ctx):
+            await asyncio.sleep(10)
+            return True
+
+        engine._vectorize_evidence = _slow
+
+        # Force a very small reactive timeout so the test is fast.
+        settings = get_settings()
+        monkeypatch.setattr(
+            settings.agent,
+            "vectorization_reactive_timeout_seconds",
+            1,
+        )
+
+        # Evidence large enough to pass the size gate.
+        ev = MagicMock()
+        ev.evidence_id = "ev_slow"
+        ev.content_size_bytes = 1_000_000
+        ev.vectorized = False
+        case = MagicMock()
+        case.evidence = [ev]
+        ctx = MagicMock()
+        ctx.in_memory_case = case
+        ctx.case_id = "case_test"
+        ctx.case_repository = None
+
+        result_text = await engine._reactive_vectorize(
+            "ev_slow", ctx, "before", "low_confidence"
+        )
+
+        assert result_text == "before", (
+            "On reactive timeout, the [SYSTEM] advisory must NOT be "
+            "appended — the agent continues without claiming a "
+            "vectorize happened."
+        )

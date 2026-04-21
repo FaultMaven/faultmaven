@@ -309,6 +309,13 @@ class AgentOrchestrationService:
         """
         self.case_repo = case_repo
 
+        # Cross-turn in-flight proactive vectorization registry.
+        # AgentOrchestrationService is a DI singleton, so this dict
+        # survives across turns. See MilestoneEngine._inflight_vectorize
+        # for rationale — persistent Evidence.vectorized covers completed
+        # state, this registry covers in-flight state.
+        self._inflight_vectorize: dict[str, asyncio.Task] = {}
+
         # Require explicit dependency injection
         if session_service is None:
             raise ValueError(
@@ -1393,11 +1400,28 @@ class AgentOrchestrationService:
                     ):
                         state.has_timed_out = True
 
-                    # Check auto-vectorization trigger
+                    # Check auto-vectorization trigger. Reactive path:
+                    # wrap with the configurable reactive bound. Proactive
+                    # kicks are elsewhere (_start_proactive_vectorization)
+                    # and intentionally unbounded.
                     if not state.vectorized and self._should_auto_vectorize(state):
-                        vectorized = await self._auto_vectorize(
-                            evidence_id, tool_context
+                        reactive_timeout = float(
+                            get_settings().agent.vectorization_reactive_timeout_seconds
                         )
+                        try:
+                            vectorized = await asyncio.wait_for(
+                                self._auto_vectorize(evidence_id, tool_context),
+                                timeout=reactive_timeout,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "Reactive auto-vectorization timed out for "
+                                "%s after %ss; agent proceeds without "
+                                "semantic search results for this turn",
+                                evidence_id,
+                                reactive_timeout,
+                            )
+                            vectorized = False
                         if vectorized:
                             state.vectorized = True
                             content_for_context += (
@@ -1758,22 +1782,38 @@ class AgentOrchestrationService:
         tasks: dict[str, asyncio.Task] = {}
         for ev in case.evidence:
             size = getattr(ev, "content_size_bytes", 0) or 0
-            if (
+            if not (
                 size >= settings.agent.vectorization_min_size_bytes
                 and size <= VECTORIZATION_MAX_SIZE_BYTES
                 and not ev.vectorized
             ):
-                tasks[ev.evidence_id] = asyncio.create_task(
-                    self._auto_vectorize(ev.evidence_id, tool_context)
+                continue
+
+            existing = self._inflight_vectorize.get(ev.evidence_id)
+            if existing is not None and not existing.done():
+                tasks[ev.evidence_id] = existing
+                logger.debug(
+                    "proactive_vectorization_reused_inflight",
+                    extra={"evidence_id": ev.evidence_id, "case_id": case_id},
                 )
-                logger.info(
-                    "proactive_vectorization_started",
-                    extra={
-                        "evidence_id": ev.evidence_id,
-                        "content_size_bytes": size,
-                        "case_id": case_id,
-                    },
-                )
+                continue
+
+            task = asyncio.create_task(
+                self._auto_vectorize(ev.evidence_id, tool_context)
+            )
+            self._inflight_vectorize[ev.evidence_id] = task
+            task.add_done_callback(
+                lambda t, eid=ev.evidence_id: self._inflight_vectorize.pop(eid, None)
+            )
+            tasks[ev.evidence_id] = task
+            logger.info(
+                "proactive_vectorization_started",
+                extra={
+                    "evidence_id": ev.evidence_id,
+                    "content_size_bytes": size,
+                    "case_id": case_id,
+                },
+            )
         return tasks
 
     async def _get_persisted_da_count(
@@ -1797,18 +1837,26 @@ class AgentOrchestrationService:
     async def _auto_vectorize(
         self, evidence_id: str, tool_context: ToolContext
     ) -> bool:
-        """Auto-vectorize an evidence file. No user confirmation needed."""
+        """Auto-vectorize an evidence file. No user confirmation needed.
+
+        No internal ``asyncio.wait_for``: time-bound policy belongs at
+        the caller. Proactive callers (_start_proactive_vectorization)
+        run this unbounded as a background task — time-bounding a
+        fire-and-forget task only guarantees wasted CPU when encode
+        outlasts the bound. Reactive callers (tool-loop fallback path)
+        wrap this with ``asyncio.wait_for`` using
+        ``AgentSettings.vectorization_reactive_timeout_seconds``
+        because they block the agent. Mirrors the split in
+        MilestoneEngine._vectorize_evidence.
+        """
         try:
-            result = await asyncio.wait_for(
-                self.tool_registry.execute_tool(
-                    tool_name="vectorize_file",
-                    params={"evidence_id": evidence_id},
-                    context=tool_context,
-                ),
-                timeout=60,
+            result = await self.tool_registry.execute_tool(
+                tool_name="vectorize_file",
+                params={"evidence_id": evidence_id},
+                context=tool_context,
             )
             return result.success
-        except (TimeoutError, Exception) as e:
+        except Exception as e:
             logger.warning("Auto-vectorization failed for %s: %s", evidence_id, e)
             return False
 
