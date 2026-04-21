@@ -3014,20 +3014,25 @@ class MilestoneEngine:
         reactive gates skip this evidence on subsequent turns. The flag is
         the single source of truth for "is this evidence already in the
         case vector store"; without persistence the gate re-fires every
-        turn and stacks concurrent BGE-M3 encodes (see 2026-04-21 incident).
+        turn and stacks concurrent BGE-M3 encodes (2026-04-21 incident).
+
+        No internal ``asyncio.wait_for``: time-bound policy belongs at the
+        caller. Proactive callers run this unbounded as a background task
+        — the in-flight registry prevents duplicates, and bounding a
+        background task that the caller never synchronously awaits only
+        guarantees wasted CPU when ``asyncio.wait_for`` cancels the
+        asyncio Future while the thread-pool worker (which can't be
+        safely killed) continues to completion. Reactive callers wrap
+        this with ``asyncio.wait_for`` using
+        ``AgentSettings.vectorization_reactive_timeout_seconds`` because
+        they do block the agent.
         """
         try:
-            result = await asyncio.wait_for(
-                self.investigation_tools.execute_tool(
-                    "vectorize_file",
-                    {"evidence_id": evidence_id},
-                    tool_context,
-                ),
-                timeout=60,
+            result = await self.investigation_tools.execute_tool(
+                "vectorize_file",
+                {"evidence_id": evidence_id},
+                tool_context,
             )
-        except asyncio.TimeoutError:
-            logger.warning("Vectorization timed out for %s after 60s", evidence_id)
-            return False
         except Exception as e:
             logger.warning(
                 "Vectorization failed for %s: %s",
@@ -3271,7 +3276,28 @@ class MilestoneEngine:
         if ev_size > VECTORIZATION_MAX_SIZE_BYTES:
             return result_text
 
-        success = await self._vectorize_evidence(evidence_id, tool_context)
+        # Reactive vectorization blocks the agent inside the tool loop;
+        # bound it by the configurable reactive budget so a slow encode
+        # can't eat the turn timeout. Proactive is unbounded elsewhere —
+        # see _vectorize_evidence docstring for the split rationale.
+        reactive_timeout = float(settings.agent.vectorization_reactive_timeout_seconds)
+        try:
+            success = await asyncio.wait_for(
+                self._vectorize_evidence(evidence_id, tool_context),
+                timeout=reactive_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Reactive vectorization timed out for %s after %ss "
+                "(trigger=%s). Agent proceeds without semantic search "
+                "results for this turn; a proactive task for the same "
+                "evidence may still be in flight.",
+                evidence_id,
+                reactive_timeout,
+                trigger,
+            )
+            return result_text
+
         if success:
             result_text += self._VECTORIZED_SYSTEM_MESSAGE
             logger.info(

@@ -1735,6 +1735,25 @@ class AgentSettings(BaseSettings):
         description="Minimum file size in bytes for auto-vectorization eligibility",
     )
 
+    vectorization_reactive_timeout_seconds: int = Field(
+        default=180,
+        ge=30,
+        le=600,
+        description=(
+            "Upper bound for synchronous reactive vectorization inside a "
+            "DA tool loop. Reactive vectorize is triggered on tool failure "
+            "signals (timeout, repeated empty searches, low confidence); "
+            "the agent waits for it before continuing. BGE-M3 encode on "
+            "CPU for large structural indexes can take 120-180 s, so the "
+            "default is sized generously but still below agent_request_timeout "
+            "(120 s → note: operators on CPU-only hardware may need to raise "
+            "both settings together). Proactive vectorization is "
+            "intentionally UNBOUNDED at this layer — it's a background task "
+            "and time-bounding it only guarantees wasted work when encode "
+            "outlasts the bound (see _vectorize_evidence comment)."
+        ),
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 

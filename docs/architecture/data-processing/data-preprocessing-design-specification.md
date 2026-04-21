@@ -1,4 +1,4 @@
-# Data Preprocessing Design Specification v5.4
+# Data Preprocessing Design Specification v5.5
 
 **Status**: FINAL
 **Date**: 2026-04-18
@@ -7,6 +7,17 @@
 ---
 
 ## Change Summary
+
+### v5.4 → v5.5 (Vectorization Time-Bound Split)
+
+Closes the last failure mode from the 2026-04-21 proactive-redundancy incident chain. `_vectorize_evidence` previously wrapped every call in a hardcoded `asyncio.wait_for(..., timeout=60)`, but 60 s is too tight for BGE-M3 CPU encodes on realistic log files (observed 135 s for OpenSSH_2k.log's structural index). The 60 s bound cancelled the asyncio Future while the thread-pool worker kept running to completion, so the post-encode ChromaDB store never executed and `Evidence.vectorized` never flipped — the flag stayed False, proactive fired on every subsequent turn, and the cycle only ended when the test session did.
+
+The systemic fix separates proactive and reactive time-bound policies:
+
+- **Proactive path is now unbounded** at `_vectorize_evidence`. Background tasks run to natural completion; the in-flight registry prevents duplicate tasks, and `Evidence.vectorized` captures success. Time-bounding fire-and-forget work only guarantees wasted CPU.
+- **Reactive path is bounded by a configurable setting**: `AgentSettings.vectorization_reactive_timeout_seconds` (default 180 s). Reactive vectorization blocks the agent inside the tool loop, so it genuinely needs a bound; but the bound is sized to real CPU workloads and is exposed for operator tuning.
+
+See §5.3 for the full semantics and §5.7 for the setting.
 
 ### v5.3 → v5.4 (Embedding Hot-Path Hardening)
 
@@ -771,7 +782,9 @@ Three independent fallback trigger signals remain for cases where proactive vect
 
 **Cross-turn persistence**: `da_invocation_count` is stored on the Evidence model and persisted via `repository.save(case)` after each `deep_analysis` call. The persisted counter is **not** itself a vectorization trigger in v5.2 — it exists so the secondary `/sessions/execute` path (`agent_orchestration_service._get_persisted_da_call_count()`) can reconstruct per-evidence DA history across turns for its `EvidenceDAState` tracking.
 
-**Reactive vectorization** calls `_reactive_vectorize()` which checks the size gate, calls `_vectorize_evidence()`, and injects the `[SYSTEM]` message on success. Each trigger fires independently — whichever fires first vectorizes the file.
+**Reactive vectorization** calls `_reactive_vectorize()` which checks the size gate, calls `_vectorize_evidence()` wrapped with `asyncio.wait_for(..., timeout=settings.agent.vectorization_reactive_timeout_seconds)`, and injects the `[SYSTEM]` message on success. Each trigger fires independently — whichever fires first vectorizes the file. On reactive timeout, no advisory is appended and the agent proceeds without semantic-search results for that turn; a proactive task for the same evidence may still be in flight and can benefit later turns.
+
+**Time-bound semantics — proactive vs. reactive (v5.5)**: the two paths have intentionally different timeout policies. Proactive tasks are fire-and-forget background work that the tool loop never synchronously awaits, so time-bounding them via `asyncio.wait_for` only guarantees wasted CPU when the encode outlasts the bound (asyncio cancels the Future but cannot stop the thread-pool worker, which runs to completion anyway — but the post-encode `add_documents(...)` call never runs because the await was cancelled). Proactive therefore runs **unbounded** at the `_vectorize_evidence` layer; the in-flight registry (`MilestoneEngine._inflight_vectorize`) prevents duplicate tasks, and the persistent `Evidence.vectorized` flag captures completion for future turns. Reactive, by contrast, blocks the agent inside the tool loop, so it **must** be bounded — the bound lives at the caller (`_reactive_vectorize`) via the configurable `vectorization_reactive_timeout_seconds` setting (default 180 s). This split was introduced after the 2026-04-21 incident where a hardcoded 60 s `wait_for` inside `_vectorize_evidence` made BGE-M3 CPU encodes (observed ~135 s for OpenSSH_2k.log) always fail the persistence path, leaving `Evidence.vectorized = False` and re-triggering proactive on every subsequent turn.
 
 When auto-vectorization fires (proactive or reactive), a `[SYSTEM]` message is injected into the tool result context:
 
@@ -873,6 +886,7 @@ Embeddings are produced by the in-process BGE-M3 model via `model_cache.get_bge_
 # Tier 4: Vectorization (on-demand)
 VECTORIZATION_MIN_SIZE_BYTES=50000       # Skip files smaller than this
 VECTORIZATION_MAX_SIZE_BYTES=50000000    # Skip files larger than this
+VECTORIZATION_REACTIVE_TIMEOUT_SECONDS=180  # Reactive bound (proactive unbounded)
 CHROMADB_HOST=localhost
 CHROMADB_PORT=8000
 CHROMADB_COLLECTION_PREFIX=case_

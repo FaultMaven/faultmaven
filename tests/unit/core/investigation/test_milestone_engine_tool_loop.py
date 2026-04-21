@@ -1260,3 +1260,71 @@ class TestInflightVectorizeDedup:
         assert (
             "ev_x" not in engine._inflight_vectorize
         ), "Registry must be cleaned up after task settles"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestReactiveVectorizeTimeout:
+    """Reactive vectorization must respect
+    AgentSettings.vectorization_reactive_timeout_seconds and fall
+    through (no advisory appended) on timeout, leaving the agent to
+    continue with whatever evidence it already has. Guards the
+    proactive-vs-reactive time-bound split: proactive runs unbounded
+    as a background task, reactive bounds synchronously inside the
+    tool loop where it's blocking the agent.
+    """
+
+    async def test_reactive_times_out_without_appending_advisory(self, monkeypatch):
+        import asyncio
+
+        from faultmaven.config.settings import get_settings
+
+        provider = AsyncMock()
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        mock_registry = MagicMock()
+        engine = MilestoneEngine(
+            llm_provider=provider,
+            repository=repo,
+            investigation_tools=mock_registry,
+            evidence_service=None,
+        )
+
+        # Simulate an encode that runs far longer than the reactive
+        # bound. _vectorize_evidence itself no longer wraps wait_for;
+        # the bound lives at the _reactive_vectorize caller.
+        async def _slow(_ev_id, _ctx):
+            await asyncio.sleep(10)
+            return True
+
+        engine._vectorize_evidence = _slow
+
+        # Force a very small reactive timeout so the test is fast.
+        settings = get_settings()
+        monkeypatch.setattr(
+            settings.agent,
+            "vectorization_reactive_timeout_seconds",
+            1,
+        )
+
+        # Evidence large enough to pass the size gate.
+        ev = MagicMock()
+        ev.evidence_id = "ev_slow"
+        ev.content_size_bytes = 1_000_000
+        ev.vectorized = False
+        case = MagicMock()
+        case.evidence = [ev]
+        ctx = MagicMock()
+        ctx.in_memory_case = case
+        ctx.case_id = "case_test"
+        ctx.case_repository = None
+
+        result_text = await engine._reactive_vectorize(
+            "ev_slow", ctx, "before", "low_confidence"
+        )
+
+        assert result_text == "before", (
+            "On reactive timeout, the [SYSTEM] advisory must NOT be "
+            "appended — the agent continues without claiming a "
+            "vectorize happened."
+        )
