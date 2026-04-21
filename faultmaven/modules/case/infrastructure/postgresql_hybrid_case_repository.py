@@ -284,7 +284,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     preprocessed_content, content_ref, file_size,
                     filename, upload_timestamp, metadata,
                     source_type, content_hash, collected_at_turn,
-                    source_file_id
+                    source_file_id, vectorized
                 FROM evidence
                 WHERE case_id = :case_id
                 ORDER BY upload_timestamp DESC
@@ -325,6 +325,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             collected_at_turn=row[12] if row[12] else 0,
                             content_hash=row[11],
                             source_file_id=row[13],
+                            vectorized=bool(row[14]),
                         )
                     )
                 except Exception as ev_err:
@@ -1146,11 +1147,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 INSERT INTO evidence (
                     evidence_id, case_id, organization_id, category, summary, preprocessed_content,
                     content_ref, file_size, filename, upload_timestamp, metadata,
-                    form, is_primary, content_type, reliability_score, tags
+                    form, is_primary, content_type, reliability_score, tags, vectorized
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :category, :summary, :preprocessed_content,
                     :content_ref, :file_size, :filename, :upload_timestamp, :metadata::jsonb,
-                    :form, :is_primary, :content_type, :reliability_score, :tags
+                    :form, :is_primary, :content_type, :reliability_score, :tags, :vectorized
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
                     category = EXCLUDED.category,
@@ -1162,7 +1163,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     is_primary = EXCLUDED.is_primary,
                     content_type = EXCLUDED.content_type,
                     reliability_score = EXCLUDED.reliability_score,
-                    tags = EXCLUDED.tags
+                    tags = EXCLUDED.tags,
+                    vectorized = EXCLUDED.vectorized
             """)
 
             await self.db.execute(
@@ -1189,6 +1191,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "content_type": getattr(evidence, "content_type", None),
                     "reliability_score": getattr(evidence, "reliability_score", None),
                     "tags": getattr(evidence, "tags", None),
+                    "vectorized": evidence.vectorized,
                 },
             )
 

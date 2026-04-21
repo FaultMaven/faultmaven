@@ -1697,6 +1697,17 @@ class Evidence(BaseModel):
         max_length=512,
     )
 
+    vectorized: bool = Field(
+        default=False,
+        description=(
+            "Whether this evidence's structural index has been persisted into "
+            "the case vector store. Set to True by the investigation engine "
+            "after a successful vectorize_file run; persisted across turns so "
+            "proactive and reactive vectorization paths skip already-indexed "
+            "evidence instead of re-embedding on every turn."
+        ),
+    )
+
     # ============================================================
     # Milestone Advancement
     # ============================================================
