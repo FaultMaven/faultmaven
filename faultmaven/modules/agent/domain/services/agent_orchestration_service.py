@@ -309,6 +309,13 @@ class AgentOrchestrationService:
         """
         self.case_repo = case_repo
 
+        # Cross-turn in-flight proactive vectorization registry.
+        # AgentOrchestrationService is a DI singleton, so this dict
+        # survives across turns. See MilestoneEngine._inflight_vectorize
+        # for rationale — persistent Evidence.vectorized covers completed
+        # state, this registry covers in-flight state.
+        self._inflight_vectorize: dict[str, asyncio.Task] = {}
+
         # Require explicit dependency injection
         if session_service is None:
             raise ValueError(
@@ -1758,22 +1765,38 @@ class AgentOrchestrationService:
         tasks: dict[str, asyncio.Task] = {}
         for ev in case.evidence:
             size = getattr(ev, "content_size_bytes", 0) or 0
-            if (
+            if not (
                 size >= settings.agent.vectorization_min_size_bytes
                 and size <= VECTORIZATION_MAX_SIZE_BYTES
                 and not ev.vectorized
             ):
-                tasks[ev.evidence_id] = asyncio.create_task(
-                    self._auto_vectorize(ev.evidence_id, tool_context)
+                continue
+
+            existing = self._inflight_vectorize.get(ev.evidence_id)
+            if existing is not None and not existing.done():
+                tasks[ev.evidence_id] = existing
+                logger.debug(
+                    "proactive_vectorization_reused_inflight",
+                    extra={"evidence_id": ev.evidence_id, "case_id": case_id},
                 )
-                logger.info(
-                    "proactive_vectorization_started",
-                    extra={
-                        "evidence_id": ev.evidence_id,
-                        "content_size_bytes": size,
-                        "case_id": case_id,
-                    },
-                )
+                continue
+
+            task = asyncio.create_task(
+                self._auto_vectorize(ev.evidence_id, tool_context)
+            )
+            self._inflight_vectorize[ev.evidence_id] = task
+            task.add_done_callback(
+                lambda t, eid=ev.evidence_id: self._inflight_vectorize.pop(eid, None)
+            )
+            tasks[ev.evidence_id] = task
+            logger.info(
+                "proactive_vectorization_started",
+                extra={
+                    "evidence_id": ev.evidence_id,
+                    "content_size_bytes": size,
+                    "case_id": case_id,
+                },
+            )
         return tasks
 
     async def _get_persisted_da_count(

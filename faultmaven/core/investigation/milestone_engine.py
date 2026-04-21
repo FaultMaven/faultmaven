@@ -867,6 +867,17 @@ class MilestoneEngine:
         # calls on the same case from interleaving and corrupting state
         self._case_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
+        # In-flight proactive vectorization tasks, keyed by evidence_id.
+        # MilestoneEngine is a DI singleton, so this dict survives across
+        # turns. The persistent Evidence.vectorized flag covers the
+        # "already completed" state; this dict covers the "currently
+        # running" window between start and completion. Without it, turn
+        # N+1 sees vectorized=False (still running) and starts a second
+        # concurrent task for the same evidence — the stacking pattern
+        # that drove every task past the 60s wait_for bound in the
+        # 2026-04-21 test run.
+        self._inflight_vectorize: dict[str, asyncio.Task] = {}
+
         logger.info("MilestoneEngine initialized with structured output engine")
 
     async def _auto_generate_report(self, case: "Case") -> None:
@@ -2930,9 +2941,16 @@ class MilestoneEngine:
     ) -> dict[str, asyncio.Task]:
         """Start background vectorization for qualifying DA-mode evidence.
 
-        Runs concurrently with the tool loop so case_evidence_search
-        is available by the time the agent needs it. Only vectorizes
-        files above the size threshold that haven't been vectorized yet.
+        Runs concurrently with the tool loop so case_evidence_search is
+        available by the time the agent needs it. Only vectorizes files
+        above the size threshold that haven't already been vectorized.
+
+        Uses ``self._inflight_vectorize`` to dedup across turns: if a
+        task is already running for a given evidence_id, the current
+        turn reuses it instead of creating a second concurrent encode.
+        The persistent ``Evidence.vectorized`` flag covers the already-
+        completed state; the in-flight registry covers the running
+        state. Together they prevent cross-turn task stacking.
         """
         from faultmaven.config.settings import get_settings
         from faultmaven.modules.agent.tools.vectorize_file_tool import (
@@ -2945,21 +2963,43 @@ class MilestoneEngine:
 
         for ev in getattr(case, "evidence", []):
             size = getattr(ev, "content_size_bytes", 0) or 0
-            if (
+            if not (
                 size >= min_size
                 and size <= VECTORIZATION_MAX_SIZE_BYTES
                 and not ev.vectorized
             ):
-                tasks[ev.evidence_id] = asyncio.create_task(
-                    self._vectorize_evidence(ev.evidence_id, tool_context)
+                continue
+
+            existing = self._inflight_vectorize.get(ev.evidence_id)
+            if existing is not None and not existing.done():
+                # Another turn already started this; reuse the same task
+                # so both turns observe the same completion.
+                tasks[ev.evidence_id] = existing
+                logger.debug(
+                    "proactive_vectorization_reused_inflight",
+                    extra={"evidence_id": ev.evidence_id},
                 )
-                logger.info(
-                    "proactive_vectorization_started",
-                    extra={
-                        "evidence_id": ev.evidence_id,
-                        "content_size_bytes": size,
-                    },
-                )
+                continue
+
+            task = asyncio.create_task(
+                self._vectorize_evidence(ev.evidence_id, tool_context)
+            )
+            self._inflight_vectorize[ev.evidence_id] = task
+            # Remove from registry once the task settles (success,
+            # failure, or cancellation). If persistence succeeded the
+            # flag is True and this evidence won't re-enter the loop;
+            # if it failed the next turn can retry cleanly.
+            task.add_done_callback(
+                lambda t, eid=ev.evidence_id: self._inflight_vectorize.pop(eid, None)
+            )
+            tasks[ev.evidence_id] = task
+            logger.info(
+                "proactive_vectorization_started",
+                extra={
+                    "evidence_id": ev.evidence_id,
+                    "content_size_bytes": size,
+                },
+            )
         return tasks
 
     async def _vectorize_evidence(

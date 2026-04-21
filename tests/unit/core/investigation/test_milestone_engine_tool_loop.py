@@ -1169,3 +1169,94 @@ class TestVectorizedFlagPersistence:
         assert (
             "ev_new" in tasks
         ), "Gate must still enqueue evidence where vectorized=False"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestInflightVectorizeDedup:
+    """Cross-turn deduplication of proactive vectorization tasks.
+
+    The persistent Evidence.vectorized flag flips only on completion,
+    so it doesn't help a turn whose predecessor is still running.
+    Without an in-flight registry, turn N+1 sees vectorized=False and
+    starts a second concurrent encode that contends for CPU with turn
+    N's task — the stacking pattern that drove every task past the
+    60s wait_for bound on 2026-04-21.
+
+    MilestoneEngine is a DI singleton, so self._inflight_vectorize
+    survives across turns and lets turn N+1 reuse turn N's task.
+    """
+
+    def _make_engine(self):
+        provider = AsyncMock()
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        mock_registry = MagicMock()
+        engine = MilestoneEngine(
+            llm_provider=provider,
+            repository=repo,
+            investigation_tools=mock_registry,
+            evidence_service=None,
+        )
+        assert engine._inflight_vectorize == {}
+        return engine
+
+    @staticmethod
+    def _case_with(evidence_id: str, vectorized: bool, size: int = 1_000_000):
+        class _Ev:
+            def __init__(self, ev_id, sz, vec):
+                self.evidence_id = ev_id
+                self.content_size_bytes = sz
+                self.vectorized = vec
+
+        case = MagicMock()
+        case.evidence = [_Ev(evidence_id, size, vectorized)]
+        return case
+
+    async def test_second_call_reuses_inflight_task(self):
+        """Second call with the same evidence_id must reuse the task
+        from the first call — creating a second concurrent task is the
+        stacking bug this guards against."""
+        import asyncio
+
+        engine = self._make_engine()
+        gate = asyncio.Event()
+
+        async def _never_finishes(_ev_id, _ctx):
+            await gate.wait()
+            return True
+
+        engine._vectorize_evidence = _never_finishes
+
+        case = self._case_with("ev_pending", vectorized=False)
+        tasks_turn_1 = await engine._start_proactive_vectorization(case, MagicMock())
+        tasks_turn_2 = await engine._start_proactive_vectorization(case, MagicMock())
+
+        try:
+            assert "ev_pending" in tasks_turn_1
+            assert "ev_pending" in tasks_turn_2
+            assert (
+                tasks_turn_2["ev_pending"] is tasks_turn_1["ev_pending"]
+            ), "Second turn must reuse the first turn's task"
+            assert len(engine._inflight_vectorize) == 1
+        finally:
+            gate.set()
+            await tasks_turn_1["ev_pending"]
+
+    async def test_registry_cleaned_up_on_completion(self):
+        """After the task settles, the registry entry must be removed
+        so a later turn can retry cleanly if persistence didn't land."""
+        import asyncio
+
+        engine = self._make_engine()
+        engine._vectorize_evidence = AsyncMock(return_value=True)
+
+        case = self._case_with("ev_x", vectorized=False)
+        tasks = await engine._start_proactive_vectorization(case, MagicMock())
+        await tasks["ev_x"]
+        # done_callback runs on the event loop; yield so it fires.
+        await asyncio.sleep(0)
+
+        assert (
+            "ev_x" not in engine._inflight_vectorize
+        ), "Registry must be cleaned up after task settles"

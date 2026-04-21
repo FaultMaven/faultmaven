@@ -12,7 +12,7 @@ from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 @pytest.fixture
 def mock_storage():
     storage = AsyncMock()
-    storage.retrieve = AsyncMock(
+    storage.retrieve_file = AsyncMock(
         return_value=b"line1\nline2 error occurred\nline3\nline4 error again\nline5"
     )
     return storage
@@ -75,7 +75,7 @@ class TestLocalTier2Analyze:
 
     @pytest.mark.asyncio
     async def test_no_excerpts_low_confidence(self, service, context):
-        service.storage_service.retrieve.return_value = b"all good\nno issues"
+        service.storage_service.retrieve_file.return_value = b"all good\nno issues"
         result = await service.analyze(
             file_ref="ref_1",
             query="critical database failure",
@@ -99,7 +99,7 @@ class TestLocalTier2Analyze:
 
     @pytest.mark.asyncio
     async def test_bytes_decoded(self, service, context):
-        service.storage_service.retrieve.return_value = b"error log data"
+        service.storage_service.retrieve_file.return_value = b"error log data"
         result = await service.analyze(
             file_ref="ref_1",
             query="error",
@@ -110,7 +110,7 @@ class TestLocalTier2Analyze:
 
     @pytest.mark.asyncio
     async def test_string_content_handled(self, service, context):
-        service.storage_service.retrieve.return_value = "string error content"
+        service.storage_service.retrieve_file.return_value = "string error content"
         result = await service.analyze(
             file_ref="ref_1",
             query="error",

@@ -50,8 +50,11 @@ class LocalTier2Service(ITier2AnalysisService):
     ) -> DeepAnalysisResult:
         start_time = time.time()
 
-        # Read raw file from local filesystem (no staging needed)
-        raw_content = await self.storage_service.retrieve(file_ref)
+        # Read raw file from local filesystem (no staging needed).
+        # Method name must match FileStorageService.retrieve_file — the
+        # only `retrieve` symbol on that class. SearchFileTool already
+        # uses the correct name; this path was on a stale API contract.
+        raw_content = await self.storage_service.retrieve_file(file_ref)
         if isinstance(raw_content, bytes):
             raw_content = raw_content.decode("utf-8", errors="replace")
 

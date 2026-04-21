@@ -45,7 +45,7 @@ class BasicTier2Service(ITier2AnalysisService):
     ) -> DeepAnalysisResult:
         start_time = time.time()
 
-        raw_content = await self.storage_service.retrieve(file_ref)
+        raw_content = await self.storage_service.retrieve_file(file_ref)
         if isinstance(raw_content, bytes):
             raw_content = raw_content.decode("utf-8", errors="replace")
 
