@@ -226,8 +226,11 @@ def register_tools(container: BaseDIContainer) -> None:
         if hasattr(container, "get_service")
         else None
     )
+    # Must match the registered name in services.py (`file_storage_service`).
+    # Previously keyed as "storage_service", which silently returned None
+    # because that name was never registered.
     storage_service = (
-        container.get_service("storage_service")
+        container.get_service("file_storage_service")
         if hasattr(container, "get_service")
         else None
     )
