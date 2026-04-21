@@ -782,34 +782,13 @@ def register_services(container: BaseDIContainer) -> None:
 
     # Investigation Service
     preprocessing_service = container.get_service("preprocessing_service")
-    # File storage for raw evidence access (attachment storage).
-    # Publish to the container so agent tools and the Tier 2 service can
-    # retrieve it — the canonical `_register_service(name, instance)` sets
-    # both the attribute (`container.file_storage_service`) and the registry
-    # key (`container.get_service("file_storage_service")`) under one name.
-    # Consumers must reference this exact name to avoid the class of silent
-    # wiring drift that hid this bug prior to 2026-04.
-    try:
-        from faultmaven.modules.evidence.domain.services.file_storage_service import (
-            FileStorageService,
-        )
-
-        file_storage_service = FileStorageService(
-            storage_root=settings.evidence_storage_root,
-            max_file_size_bytes=settings.max_evidence_file_size,
-        )
-        container._register_service("file_storage_service", file_storage_service)
-        logger.info(
-            f"✅ File storage service registered: {type(file_storage_service).__name__}"
-        )
-    except Exception as e:
-        # Fail-soft with loud logging: operators see the misconfiguration at
-        # startup instead of hitting an AttributeError mid-investigation, and
-        # non-storage code paths (auth, KB-only queries) still work. The
-        # registry-level `failed` status lets health checks surface it.
-        logger.error(f"❌ Failed to create file storage service: {e}", exc_info=True)
-        container._register_failed("file_storage_service", str(e))
-        file_storage_service = None
+    # File storage was already constructed and registered in
+    # register_infrastructure — retrieve the singleton here instead of
+    # constructing a second instance. Centralizing construction in the
+    # infrastructure layer ensures a single source of truth and correct
+    # init ordering (Tier 2 in infrastructure.py consumes it before this
+    # function runs).
+    file_storage_service = container.get_service("file_storage_service")
 
     investigation_service = create_investigation_service(
         milestone_engine,
