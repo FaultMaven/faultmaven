@@ -1400,11 +1400,28 @@ class AgentOrchestrationService:
                     ):
                         state.has_timed_out = True
 
-                    # Check auto-vectorization trigger
+                    # Check auto-vectorization trigger. Reactive path:
+                    # wrap with the configurable reactive bound. Proactive
+                    # kicks are elsewhere (_start_proactive_vectorization)
+                    # and intentionally unbounded.
                     if not state.vectorized and self._should_auto_vectorize(state):
-                        vectorized = await self._auto_vectorize(
-                            evidence_id, tool_context
+                        reactive_timeout = float(
+                            get_settings().agent.vectorization_reactive_timeout_seconds
                         )
+                        try:
+                            vectorized = await asyncio.wait_for(
+                                self._auto_vectorize(evidence_id, tool_context),
+                                timeout=reactive_timeout,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "Reactive auto-vectorization timed out for "
+                                "%s after %ss; agent proceeds without "
+                                "semantic search results for this turn",
+                                evidence_id,
+                                reactive_timeout,
+                            )
+                            vectorized = False
                         if vectorized:
                             state.vectorized = True
                             content_for_context += (
@@ -1820,18 +1837,26 @@ class AgentOrchestrationService:
     async def _auto_vectorize(
         self, evidence_id: str, tool_context: ToolContext
     ) -> bool:
-        """Auto-vectorize an evidence file. No user confirmation needed."""
+        """Auto-vectorize an evidence file. No user confirmation needed.
+
+        No internal ``asyncio.wait_for``: time-bound policy belongs at
+        the caller. Proactive callers (_start_proactive_vectorization)
+        run this unbounded as a background task — time-bounding a
+        fire-and-forget task only guarantees wasted CPU when encode
+        outlasts the bound. Reactive callers (tool-loop fallback path)
+        wrap this with ``asyncio.wait_for`` using
+        ``AgentSettings.vectorization_reactive_timeout_seconds``
+        because they block the agent. Mirrors the split in
+        MilestoneEngine._vectorize_evidence.
+        """
         try:
-            result = await asyncio.wait_for(
-                self.tool_registry.execute_tool(
-                    tool_name="vectorize_file",
-                    params={"evidence_id": evidence_id},
-                    context=tool_context,
-                ),
-                timeout=60,
+            result = await self.tool_registry.execute_tool(
+                tool_name="vectorize_file",
+                params={"evidence_id": evidence_id},
+                context=tool_context,
             )
             return result.success
-        except (TimeoutError, Exception) as e:
+        except Exception as e:
             logger.warning("Auto-vectorization failed for %s: %s", evidence_id, e)
             return False
 
