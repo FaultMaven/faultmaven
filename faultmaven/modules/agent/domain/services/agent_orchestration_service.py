@@ -1761,7 +1761,7 @@ class AgentOrchestrationService:
             if (
                 size >= settings.agent.vectorization_min_size_bytes
                 and size <= VECTORIZATION_MAX_SIZE_BYTES
-                and not getattr(ev, "vectorized", False)
+                and not ev.vectorized
             ):
                 tasks[ev.evidence_id] = asyncio.create_task(
                     self._auto_vectorize(ev.evidence_id, tool_context)

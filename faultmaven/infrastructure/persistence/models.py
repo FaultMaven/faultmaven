@@ -641,6 +641,13 @@ class EvidenceModel(Base):
     reliability_score = Column(Float, nullable=True)
     tags = Column(Text, nullable=True)
 
+    # Lifecycle state: set to True by the investigation engine once this
+    # evidence's structural index has been persisted into the case vector
+    # store. Persisting the flag prevents cross-turn re-vectorization of the
+    # same file, which otherwise stacks concurrent BGE-M3 encodes and drives
+    # each past the 60s wait_for bound in _vectorize_evidence.
+    vectorized = Column(Boolean, nullable=False, server_default="0")
+
     # Relationship
     case = relationship("CaseModel", back_populates="evidence")
 

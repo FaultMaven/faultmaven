@@ -1071,3 +1071,101 @@ class TestProactiveVectorizationGate:
         )
 
         engine._start_proactive_vectorization.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestVectorizedFlagPersistence:
+    """The Evidence.vectorized flag must be set and persisted on
+    successful vectorization so proactive + reactive gates skip already
+    indexed evidence on later turns. Guards against the 2026-04-21
+    incident where the gate's getattr(ev, "vectorized", False) check
+    always evaluated False because the field didn't exist, causing
+    every turn to re-queue a proactive task for the same evidence and
+    stacking concurrent BGE-M3 encodes past the 60s wait_for bound.
+    """
+
+    async def _make_engine_with_tool(self, tool_success: bool):
+        mock_registry = MagicMock()
+        mock_registry.execute_tool = AsyncMock(
+            return_value=ToolResult(success=tool_success, data="ok")
+        )
+        provider = AsyncMock()
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        engine = MilestoneEngine(
+            llm_provider=provider,
+            repository=repo,
+            investigation_tools=mock_registry,
+            evidence_service=None,
+        )
+        return engine, repo
+
+    def _make_ctx_with_evidence(self, evidence_id: str):
+        ev = MagicMock()
+        ev.evidence_id = evidence_id
+        ev.vectorized = False
+        case = MagicMock()
+        case.evidence = [ev]
+        ctx = MagicMock()
+        ctx.in_memory_case = case
+        ctx.case_id = "case_test"
+        return ctx, case, ev
+
+    async def test_success_sets_and_persists_vectorized_flag(self):
+        engine, repo = await self._make_engine_with_tool(tool_success=True)
+        ctx, case, ev = self._make_ctx_with_evidence("ev_abc")
+
+        result = await engine._vectorize_evidence("ev_abc", ctx)
+
+        assert result is True
+        assert ev.vectorized is True, (
+            "Successful vectorization must flip Evidence.vectorized so "
+            "subsequent proactive/reactive gates skip this evidence"
+        )
+        repo.save.assert_awaited_once_with(case)
+
+    async def test_failure_leaves_flag_false_and_does_not_persist(self):
+        engine, repo = await self._make_engine_with_tool(tool_success=False)
+        ctx, _, ev = self._make_ctx_with_evidence("ev_xyz")
+
+        result = await engine._vectorize_evidence("ev_xyz", ctx)
+
+        assert result is False
+        assert ev.vectorized is False, (
+            "A failed vectorize must not mark the evidence vectorized; "
+            "the next turn should retry."
+        )
+        repo.save.assert_not_called()
+
+    async def test_vectorized_evidence_skips_proactive(self):
+        """Proactive task should not be created for evidence that is
+        already marked vectorized (the persistent-flag gate)."""
+
+        class _Ev:
+            def __init__(self, ev_id, size, vectorized):
+                self.evidence_id = ev_id
+                self.content_size_bytes = size
+                self.vectorized = vectorized
+
+        engine, _ = await self._make_engine_with_tool(tool_success=True)
+        # _vectorize_evidence shouldn't be called at all when the flag is True
+        engine._vectorize_evidence = AsyncMock(return_value=True)
+
+        # Size well above the default min threshold so the size gate
+        # isn't what's suppressing the task.
+        big = 1_000_000
+        case = MagicMock()
+        case.evidence = [
+            _Ev("ev_already", big, vectorized=True),
+            _Ev("ev_new", big, vectorized=False),
+        ]
+
+        tasks = await engine._start_proactive_vectorization(case, MagicMock())
+
+        assert (
+            "ev_already" not in tasks
+        ), "Gate must skip evidence where vectorized=True"
+        assert (
+            "ev_new" in tasks
+        ), "Gate must still enqueue evidence where vectorized=False"

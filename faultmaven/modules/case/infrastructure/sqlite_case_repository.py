@@ -369,7 +369,7 @@ class SQLiteCaseRepository(CaseRepository):
                     preprocessed_content, content_ref, file_size,
                     filename, upload_timestamp, metadata,
                     source_type, content_hash, collected_at_turn,
-                    source_file_id
+                    source_file_id, vectorized
                 FROM evidence
                 WHERE case_id = :case_id
                 ORDER BY upload_timestamp DESC
@@ -411,6 +411,7 @@ class SQLiteCaseRepository(CaseRepository):
                             collected_at_turn=row[12] if row[12] else 0,
                             content_hash=row[11],
                             source_file_id=row[13],
+                            vectorized=bool(row[14]),
                         )
                     )
                 except Exception as ev_err:
@@ -1197,12 +1198,12 @@ class SQLiteCaseRepository(CaseRepository):
                     evidence_id, case_id, organization_id, category, summary, preprocessed_content,
                     content_ref, file_size, filename, upload_timestamp, metadata,
                     source_type, content_hash, collected_at_turn, source_file_id,
-                    form, is_primary, content_type, reliability_score, tags
+                    form, is_primary, content_type, reliability_score, tags, vectorized
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :category, :summary, :preprocessed_content,
                     :content_ref, :file_size, :filename, :upload_timestamp, :metadata,
                     :source_type, :content_hash, :collected_at_turn, :source_file_id,
-                    :form, :is_primary, :content_type, :reliability_score, :tags
+                    :form, :is_primary, :content_type, :reliability_score, :tags, :vectorized
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
                     category = EXCLUDED.category,
@@ -1219,7 +1220,8 @@ class SQLiteCaseRepository(CaseRepository):
                     is_primary = EXCLUDED.is_primary,
                     content_type = EXCLUDED.content_type,
                     reliability_score = EXCLUDED.reliability_score,
-                    tags = EXCLUDED.tags
+                    tags = EXCLUDED.tags,
+                    vectorized = EXCLUDED.vectorized
             """)
 
             source_type_val = (
@@ -1263,6 +1265,7 @@ class SQLiteCaseRepository(CaseRepository):
                     # exist Tier 1; populated by future code.
                     "reliability_score": getattr(evidence, "reliability_score", None),
                     "tags": getattr(evidence, "tags", None),
+                    "vectorized": evidence.vectorized,
                 },
             )
 

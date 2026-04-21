@@ -2695,8 +2695,10 @@ class MilestoneEngine:
         # Per-evidence DA failure tracking for auto-vectorization (v5.2)
         # Same pattern as deep_analysis_count above — mechanical counters
         # that trigger system actions when thresholds are met.
+        # "Already vectorized" is sourced from the persistent
+        # Evidence.vectorized flag (set + saved by _vectorize_evidence on
+        # success) so dedup holds both within a turn and across turns.
         da_empty_search_counts: dict[str, int] = {}  # evidence_id → consecutive empties
-        da_vectorized: set[str] = set()  # evidence IDs already vectorized
 
         # Proactive vectorization: start background tasks for large evidence
         # files before the tool loop begins. Runs concurrently so semantic
@@ -2886,7 +2888,6 @@ class MilestoneEngine:
                             case=case,
                             tool_context=tool_context,
                             da_empty_search_counts=da_empty_search_counts,
-                            da_vectorized=da_vectorized,
                             proactive_tasks=proactive_tasks,
                         )
 
@@ -2947,7 +2948,7 @@ class MilestoneEngine:
             if (
                 size >= min_size
                 and size <= VECTORIZATION_MAX_SIZE_BYTES
-                and not getattr(ev, "vectorized", False)
+                and not ev.vectorized
             ):
                 tasks[ev.evidence_id] = asyncio.create_task(
                     self._vectorize_evidence(ev.evidence_id, tool_context)
@@ -2966,7 +2967,15 @@ class MilestoneEngine:
         evidence_id: str,
         tool_context: Any,
     ) -> bool:
-        """Vectorize a single evidence file via the registered tool."""
+        """Vectorize a single evidence file via the registered tool.
+
+        On success, flips ``Evidence.vectorized`` to True on the in-memory
+        case and persists the case via the repository so the proactive +
+        reactive gates skip this evidence on subsequent turns. The flag is
+        the single source of truth for "is this evidence already in the
+        case vector store"; without persistence the gate re-fires every
+        turn and stacks concurrent BGE-M3 encodes (see 2026-04-21 incident).
+        """
         try:
             result = await asyncio.wait_for(
                 self.investigation_tools.execute_tool(
@@ -2976,18 +2985,9 @@ class MilestoneEngine:
                 ),
                 timeout=60,
             )
-            if not result.success:
-                logger.warning(
-                    "vectorize_file returned failure for %s: %s",
-                    evidence_id,
-                    result.error,
-                )
-            else:
-                logger.info(
-                    "vectorize_file succeeded for %s",
-                    evidence_id,
-                )
-            return result.success
+        except asyncio.TimeoutError:
+            logger.warning("Vectorization timed out for %s after 60s", evidence_id)
+            return False
         except Exception as e:
             logger.warning(
                 "Vectorization failed for %s: %s",
@@ -2996,6 +2996,70 @@ class MilestoneEngine:
                 exc_info=True,
             )
             return False
+
+        if not result.success:
+            logger.warning(
+                "vectorize_file returned failure for %s: %s",
+                evidence_id,
+                result.error,
+            )
+            return False
+
+        logger.info("vectorize_file succeeded for %s", evidence_id)
+
+        # Mark the in-memory evidence as vectorized and persist so the
+        # gate at _start_proactive_vectorization (and the reactive checks)
+        # skip this evidence on future turns. Persistence is best-effort:
+        # if the save fails, in-memory state is still updated so the gate
+        # works within the current turn; the next turn will re-check and
+        # re-fire only if persistence genuinely didn't land.
+        case = getattr(tool_context, "in_memory_case", None)
+        if case is None and getattr(tool_context, "case_repository", None):
+            try:
+                case = await tool_context.case_repository.get(tool_context.case_id)
+            except Exception as e:
+                logger.debug(
+                    "Failed to resolve case to persist vectorized flag " "for %s: %s",
+                    evidence_id,
+                    e,
+                )
+                return True
+
+        if case is not None:
+            for ev in getattr(case, "evidence", []) or []:
+                if getattr(ev, "evidence_id", None) == evidence_id:
+                    ev.vectorized = True
+                    break
+            try:
+                await self.repository.save(case)
+            except Exception as e:
+                logger.debug(
+                    "Failed to persist vectorized flag for %s: %s",
+                    evidence_id,
+                    e,
+                )
+
+        return True
+
+    @staticmethod
+    def _evidence_is_vectorized(case: Any, evidence_id: str) -> bool:
+        """Return True if the given evidence is marked vectorized on the
+        in-memory case. Source of truth for dedup — the persistent
+        Evidence.vectorized flag set by _vectorize_evidence on success.
+        """
+        if case is None:
+            return False
+        for ev in getattr(case, "evidence", []) or []:
+            if getattr(ev, "evidence_id", None) == evidence_id:
+                return bool(getattr(ev, "vectorized", False))
+        return False
+
+    _VECTORIZED_SYSTEM_MESSAGE = (
+        "\n\n[SYSTEM] This file has been automatically "
+        "indexed for semantic search. Use "
+        "case_evidence_search to find content by "
+        "meaning rather than keywords."
+    )
 
     async def _track_da_result(
         self,
@@ -3006,15 +3070,20 @@ class MilestoneEngine:
         case: Any | None,
         tool_context: Any,
         da_empty_search_counts: dict[str, int],
-        da_vectorized: set[str],
         proactive_tasks: dict[str, asyncio.Task],
     ) -> str:
         """Track DA failure signals and trigger vectorization when needed.
 
         Returns result_text, potentially with [SYSTEM] messages appended.
+        Dedup of "already vectorized" is sourced from Evidence.vectorized
+        (persistent) — within-turn and across-turn.
         """
-        # Check if proactive vectorization completed for this evidence
-        if evidence_id not in da_vectorized and evidence_id in proactive_tasks:
+        # If the proactive task for this evidence has just completed this
+        # turn, emit the [SYSTEM] advisory once. _vectorize_evidence has
+        # already flipped and persisted the flag by the time we see
+        # task.result()==True, so subsequent reactive checks naturally
+        # skip this evidence via _evidence_is_vectorized.
+        if evidence_id in proactive_tasks:
             task = proactive_tasks[evidence_id]
             if task.done() and not task.cancelled():
                 exc = task.exception()
@@ -3024,14 +3093,10 @@ class MilestoneEngine:
                         evidence_id,
                         exc,
                     )
-                elif task.result():
-                    da_vectorized.add(evidence_id)
-                    result_text += (
-                        "\n\n[SYSTEM] This file has been automatically "
-                        "indexed for semantic search. Use "
-                        "case_evidence_search to find content by "
-                        "meaning rather than keywords."
-                    )
+                elif (
+                    task.result() and self._VECTORIZED_SYSTEM_MESSAGE not in result_text
+                ):
+                    result_text += self._VECTORIZED_SYSTEM_MESSAGE
                     logger.info(
                         "proactive_vectorization_completed",
                         extra={"evidence_id": evidence_id},
@@ -3063,6 +3128,8 @@ class MilestoneEngine:
                     "deep_analysis with a different query approach."
                 )
 
+        already_vectorized = self._evidence_is_vectorized(case, evidence_id)
+
         # Track deep_analysis confidence + persist cross-turn counter
         if func_name == "deep_analysis" and tool_result.success and case:
             try:
@@ -3086,13 +3153,15 @@ class MilestoneEngine:
                         logger.debug("Failed to persist da_invocation_count: %s", e)
 
                     # Low confidence trigger
-                    if confidence < 0.2 and evidence_id not in da_vectorized:
+                    if confidence < 0.2 and not already_vectorized:
                         result_text = await self._reactive_vectorize(
                             evidence_id,
                             tool_context,
-                            da_vectorized,
                             result_text,
                             "low_confidence",
+                        )
+                        already_vectorized = self._evidence_is_vectorized(
+                            case, evidence_id
                         )
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
@@ -3101,23 +3170,22 @@ class MilestoneEngine:
         if (
             not tool_result.success
             and "timed out" in (getattr(tool_result, "error", "") or "").lower()
+            and not already_vectorized
         ):
-            if evidence_id not in da_vectorized:
-                result_text = await self._reactive_vectorize(
-                    evidence_id,
-                    tool_context,
-                    da_vectorized,
-                    result_text,
-                    "tool_timeout",
-                )
-
-        # Reactive vectorization on repeated empty searches
-        empty_count = da_empty_search_counts.get(evidence_id, 0)
-        if empty_count >= 3 and evidence_id not in da_vectorized:
             result_text = await self._reactive_vectorize(
                 evidence_id,
                 tool_context,
-                da_vectorized,
+                result_text,
+                "tool_timeout",
+            )
+            already_vectorized = self._evidence_is_vectorized(case, evidence_id)
+
+        # Reactive vectorization on repeated empty searches
+        empty_count = da_empty_search_counts.get(evidence_id, 0)
+        if empty_count >= 3 and not already_vectorized:
+            result_text = await self._reactive_vectorize(
+                evidence_id,
+                tool_context,
                 result_text,
                 "repeated_empty_searches",
             )
@@ -3128,11 +3196,15 @@ class MilestoneEngine:
         self,
         evidence_id: str,
         tool_context: Any,
-        da_vectorized: set[str],
         result_text: str,
         trigger: str,
     ) -> str:
-        """Attempt reactive vectorization for a qualifying evidence file."""
+        """Attempt reactive vectorization for a qualifying evidence file.
+
+        On success, _vectorize_evidence flips + persists the Evidence
+        vectorized flag, so subsequent reactive triggers in this turn
+        will see it and skip via _evidence_is_vectorized.
+        """
         from faultmaven.config.settings import get_settings
         from faultmaven.modules.agent.tools.vectorize_file_tool import (
             VECTORIZATION_MAX_SIZE_BYTES,
@@ -3161,13 +3233,7 @@ class MilestoneEngine:
 
         success = await self._vectorize_evidence(evidence_id, tool_context)
         if success:
-            da_vectorized.add(evidence_id)
-            result_text += (
-                "\n\n[SYSTEM] This file has been automatically "
-                "indexed for semantic search. Use "
-                "case_evidence_search to find content by "
-                "meaning rather than keywords."
-            )
+            result_text += self._VECTORIZED_SYSTEM_MESSAGE
             logger.info(
                 "reactive_vectorization_triggered",
                 extra={
