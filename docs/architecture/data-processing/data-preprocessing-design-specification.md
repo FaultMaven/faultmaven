@@ -1,4 +1,4 @@
-# Data Preprocessing Design Specification v5.3
+# Data Preprocessing Design Specification v5.4
 
 **Status**: FINAL
 **Date**: 2026-04-18
@@ -7,6 +7,14 @@
 ---
 
 ## Change Summary
+
+### v5.3 → v5.4 (Embedding Hot-Path Hardening)
+
+Three changes close a class of first-request cold-start incidents where a 225 KB log upload on a fresh server timed out at the 120 s request budget.
+
+- **Preload BGE-M3 at startup by default.** `EmbeddingSettings.preload_models` now defaults to `["BAAI/bge-m3"]` so the 1024-dim embedding model warms during lifespan startup rather than on the first request. Operators can opt out (`PRELOAD_MODELS=[]`) to trade first-request latency for faster cold boots. See §5.7.
+- **Offload BGE-M3 lookup and `encode()` to worker threads.** Both the model lookup (which may trigger a lazy load if preload was disabled or failed) and `SentenceTransformer.encode()` are CPU-bound and synchronous; calling them inline from async code freezes the event loop, which in turn prevents `asyncio.wait_for` timeouts in the request handler from firing. All request-path callsites — `store_in_vector_db_background`, `CaseVectorStore.search`, `ChromaDBVectorStore.search`, and `KnowledgeVectorStore` search variants — now wrap both calls in `asyncio.to_thread`. See §5.6.3.
+- **Gate proactive vectorization on Directed Analysis.** The design already specified proactive vectorization as a DA-only optimization (§5.3), but the tool loop was invoking it for every mode — including Triage and Knowledge Query turns, which don't consult case evidence via semantic search. The gate is now explicit on the `force_tool_use=True` flag, aligning code with spec and eliminating wasted embedding work on non-DA turns.
 
 ### v5.2 → v5.3 (Design/Code Drift Closure)
 
@@ -848,9 +856,12 @@ Each chunk stored in ChromaDB carries:
 
 Any additional scalar keys passed in `metadata=…` by the caller are forwarded as-is.
 
-#### 5.6.3 Embedding Fallback
+#### 5.6.3 Embedding Execution and Fallback
 
-Embeddings are produced by the in-process BGE-M3 model via `model_cache.get_bge_m3_model()`. If the model is unavailable at call time (model load failure, missing weights), `store_in_vector_db_background` **logs a warning and falls back to ChromaDB's default embedding function** rather than failing the store — so vectorization always succeeds, at reduced retrieval quality.
+Embeddings are produced by the in-process BGE-M3 model via `model_cache.get_bge_m3_model()`. Two properties are important for correctness on the request hot path:
+
+1. **Async offload.** Both the model lookup and `SentenceTransformer.encode()` are synchronous/CPU-bound. On the request hot path (`store_in_vector_db_background`, `CaseVectorStore.search`, `ChromaDBVectorStore.search`, `KnowledgeVectorStore.*`) they are invoked via `asyncio.to_thread(...)` so they run on the default thread-pool executor rather than the event loop thread. This preserves the responsiveness of the FastAPI request loop, lets `asyncio.wait_for` timeouts fire on schedule, and ensures concurrent requests keep making progress while an embedding is computed. Violating this invariant — e.g., adding a new `bge_model.encode(...)` call directly in an `async def` — will resurface the class of cold-start timeout incidents that §5.7 preload guards against.
+2. **Embedding fallback.** If the model is unavailable at call time (model load failure, missing weights), `store_in_vector_db_background` **logs a warning and falls back to ChromaDB's default embedding function** rather than failing the store — so vectorization always succeeds, at reduced retrieval quality.
 
 #### 5.6.4 Silent-Failure Semantics
 
@@ -869,9 +880,26 @@ CHROMADB_COLLECTION_PREFIX=case_
 # Chunking (read at startup via faultmaven/config/settings.py)
 VECTOR_CHUNK_SIZE_TOKENS=500
 VECTOR_CHUNK_OVERLAP_TOKENS=50
+
+# Embedding model warmup (see §5.6.3, §5.7.1)
+LAZY_LOAD_ML_MODELS=true                 # Defer non-preloaded models to first use
+PRELOAD_MODELS='["BAAI/bge-m3"]'         # Warm BGE-M3 during lifespan startup
 ```
 
 > **One-shot deployment knobs.** `VECTOR_CHUNK_SIZE_TOKENS` and `VECTOR_CHUNK_OVERLAP_TOKENS` are read at startup via `get_settings()` and threaded into `store_in_vector_db_background`. Changing either of them **after** the vector DB has been populated requires deleting the ChromaDB collection and re-ingesting all evidence + KB content from source — mixing chunk sizes in the same collection silently degrades retrieval quality (embeddings computed at different chunk sizes are not directly comparable). FaultMaven retains raw evidence + runbooks on disk, so re-indexing is a mechanical rebuild, never data recovery.
+
+#### 5.7.1 Embedding Model Preload
+
+The BGE-M3 weights (~1 GB) are expensive to load — typical CPU load time is 60–120 s, dominated by weight download on first boot and PyTorch initialization on subsequent boots. If the first load happens on the request hot path, it monopolizes the thread pool and blocks the turn until the model is ready.
+
+`EmbeddingSettings.preload_models` defaults to `["BAAI/bge-m3"]` so the model is loaded during lifespan startup (`main.py`), before the server accepts traffic. The trade-off:
+
+| Setting | First-request latency | Cold-boot latency | When to use |
+| ------- | --------------------- | ----------------- | ----------- |
+| `PRELOAD_MODELS='["BAAI/bge-m3"]'` (default) | Normal | +60–120 s one-time | Production, shared servers, anything user-facing |
+| `PRELOAD_MODELS=[]` (opt-out) | +60–120 s on first embedding call | Fast | Ephemeral dev containers, tests, rapid iteration |
+
+Preload is best-effort: failures are logged as warnings and the system falls back to lazy loading. Preload status is observable via `model_cache.get_model_load_info("BAAI/bge-m3")`.
 
 ### 5.8 Migration from v3.2
 

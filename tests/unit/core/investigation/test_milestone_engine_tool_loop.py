@@ -1012,3 +1012,62 @@ class TestDaProviderRouting:
 
         # llm_provider should have been called (fallback)
         default_provider.generate.assert_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestProactiveVectorizationGate:
+    """Proactive vectorization must only fire for Directed Analysis turns.
+
+    Triage and Knowledge Query turns don't consult case evidence via
+    semantic search, so eagerly embedding attachments would be wasted
+    work — and on a cold-cached BGE-M3 model it can dominate the turn
+    budget. The gate condition is `force_tool_use=True`, which DA turns
+    set (tool_choice="required") and other modes don't.
+    """
+
+    async def _setup_engine_with_case(self):
+        mock_provider = AsyncMock()
+        schema_response = _make_schema_response(
+            {"agent_response": "ok", "next_action": "continue"}
+        )
+        mock_provider.generate = AsyncMock(return_value=schema_response)
+
+        engine = _make_engine(
+            mock_provider=mock_provider,
+            mock_registry=_make_mock_registry(),
+        )
+        # Spy on the proactive entrypoint — return empty dict like the real one
+        engine._start_proactive_vectorization = AsyncMock(return_value={})
+
+        case = MagicMock()
+        case.evidence = []
+        return engine, case
+
+    async def test_da_mode_triggers_proactive_vectorization(self):
+        engine, case = await self._setup_engine_with_case()
+
+        await engine._tool_augmented_generate(
+            prompt="test",
+            schema_model=SampleResponse,
+            investigation_tools=[],
+            tool_context=MagicMock(),
+            case=case,
+            force_tool_use=True,
+        )
+
+        engine._start_proactive_vectorization.assert_awaited_once()
+
+    async def test_non_da_mode_skips_proactive_vectorization(self):
+        engine, case = await self._setup_engine_with_case()
+
+        await engine._tool_augmented_generate(
+            prompt="test",
+            schema_model=SampleResponse,
+            investigation_tools=[],
+            tool_context=MagicMock(),
+            case=case,
+            force_tool_use=False,
+        )
+
+        engine._start_proactive_vectorization.assert_not_called()
