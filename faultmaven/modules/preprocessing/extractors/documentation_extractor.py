@@ -208,37 +208,61 @@ class DocumentationExtractor:
 
         return code_blocks
 
-    def _looks_like_command(self, text: str) -> bool:
-        """Check if text looks like a shell command"""
-        command_indicators = [
-            "kubectl",
-            "docker",
-            "systemctl",
-            "journalctl",
-            "tail",
-            "grep",
-            "curl",
-            "wget",
-            "ssh",
-            "scp",
-            "ps",
-            "top",
-            "netstat",
-            "ifconfig",
-            "ping",
-            "traceroute",
-            "git",
-            "npm",
-            "pip",
-            "mvn",
-            "gradle",
-            "cargo",
-            "go",
-        ]
+    # Shell commands recognised as commands regardless of inline length.
+    # Matched as whole whitespace-separated tokens so that short but
+    # legitimate entries like ``top``, ``ps``, ``ping`` are not dropped
+    # by a length gate.
+    _COMMAND_INDICATORS = (
+        "kubectl",
+        "docker",
+        "systemctl",
+        "journalctl",
+        "tail",
+        "grep",
+        "curl",
+        "wget",
+        "ssh",
+        "scp",
+        "ps",
+        "top",
+        "netstat",
+        "ifconfig",
+        "ping",
+        "traceroute",
+        "git",
+        "npm",
+        "pip",
+        "mvn",
+        "gradle",
+        "cargo",
+        "go",
+    )
 
-        if len(text) <= 5:
-            return False  # Skip trivial inline code like `true`, `null`
-        return any(cmd in text.lower() for cmd in command_indicators)
+    def _looks_like_command(self, text: str) -> bool:
+        """Check if text looks like a shell command.
+
+        Detection is token-based rather than substring-based: each
+        whitespace-separated token (lower-cased) is compared for
+        exact equality against a known-commands list. This supersedes
+        the previous ``cmd in text.lower()`` test, which had two
+        structural flaws:
+
+        * ``go`` matched inside ``google.com`` and ``scargo``; ``pip``
+          matched inside ``zipper``, etc. — unbounded false positives.
+        * A ``len(text) <= 5`` gate ran before the indicator check, so
+          legitimate short entries like ``top``, ``ps``, ``df -h``,
+          ``free``, ``ping`` were silently rejected.
+
+        Iterating the tokens preserves the ``sudo kubectl ...`` style
+        (``kubectl`` is a whole token) while rejecting ``google.com``
+        (no token equals ``go``).
+        """
+        stripped = text.strip()
+        if not stripped:
+            return False
+
+        tokens = {t.lower() for t in stripped.split()}
+        return any(cmd in tokens for cmd in self._COMMAND_INDICATORS)
 
     def _find_troubleshooting_sections(self, sections: list[dict]) -> list[dict]:
         """Identify sections related to troubleshooting"""

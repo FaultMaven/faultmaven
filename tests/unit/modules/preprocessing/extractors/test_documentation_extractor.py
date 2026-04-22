@@ -45,6 +45,33 @@ class TestDocumentationExtractor:
         """'--force' has no command keyword — should NOT match."""
         assert extractor._looks_like_command("--force") is False
 
+    # --- Regression: short commands and substring false positives ---
+
+    def test_short_commands_accepted(self, extractor):
+        """Regression: a ``len(text) <= 5`` gate used to run *before* the
+        indicator check, silently rejecting ``top``, ``ps``, ``ping`` —
+        all already in the indicator list, all with length ≤ 5 and all
+        therefore false-negatives under the old predicate."""
+        for cmd in ("top", "ps", "ping"):
+            assert extractor._looks_like_command(cmd) is True, cmd
+
+    def test_substring_false_positives_rejected(self, extractor):
+        """Regression: the old ``cmd in text.lower()`` check matched
+        indicator names *inside* unrelated words (``go`` inside
+        ``google.com``, ``pip`` inside ``zipper``, ``ssh`` inside
+        ``smashhit``). Token-based matching rejects them."""
+        for not_a_command in ("google.com", "zipper", "ssh-keygen-wrapper"):
+            # ``ssh-keygen-wrapper`` has ``ssh`` only as a hyphen-joined
+            # substring — its single whitespace token is the whole string
+            # which is not an indicator.
+            assert extractor._looks_like_command(not_a_command) is False, not_a_command
+
+    def test_command_detected_inside_multi_word_inline(self, extractor):
+        """A backticked fragment like ``sudo kubectl get pods`` should
+        still be recognised — the token ``kubectl`` is an indicator even
+        when not the first token."""
+        assert extractor._looks_like_command("sudo kubectl get pods") is True
+
     def test_basic_document_extraction(self, extractor):
         """Basic markdown document extraction works."""
         content = """# Troubleshooting Guide

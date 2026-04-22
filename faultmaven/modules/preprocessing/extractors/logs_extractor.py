@@ -417,8 +417,19 @@ class LogsAndErrorsExtractor:
     # `pid=N` is the explicit keyword form. We do NOT accept `[\d+` without
     # the closing bracket, which would otherwise match `[19:02:15]` and
     # capture `19` as a PID.
-    _PID_KEYWORD_RE = re.compile(r"\bpid[= ]+(\d{1,5})\b", re.IGNORECASE)
-    _PID_BRACKET_RE = re.compile(r"\[(\d{1,5})\]")
+    #
+    # Digit width: Linux ``kernel.pid_max`` defaults to 32768 on desktops
+    # but is routinely raised to 4_194_304 (7 digits) on servers, and
+    # containerised workloads can cycle through them quickly. Capping at
+    # 5 digits silently dropped any PID >= 100_000 — including every PID
+    # on tuned hosts. Allow up to 7 digits; the numeric range check below
+    # filters out impossibly large matches.
+    _PID_KEYWORD_RE = re.compile(r"\bpid[= ]+(\d{1,7})\b", re.IGNORECASE)
+    _PID_BRACKET_RE = re.compile(r"\[(\d{1,7})\]")
+    # Absolute ceiling matching the current kernel maximum. Anything above
+    # this is almost certainly not a PID (timestamp ns, request byte count,
+    # etc.) and is filtered at count time.
+    _PID_MAX = 4_194_304
     _HTTP_PATH_RE = re.compile(r"\b(?:GET|POST|PUT|DELETE|PATCH)\s+(/[^\s\?]*)\b")
 
     # SSH event type patterns for semantic counting
@@ -472,7 +483,7 @@ class LogsAndErrorsExtractor:
             for pid_str in self._PID_KEYWORD_RE.findall(
                 line
             ) + self._PID_BRACKET_RE.findall(line):
-                if pid_str.isdigit() and int(pid_str) > 0:
+                if pid_str.isdigit() and 0 < int(pid_str) <= self._PID_MAX:
                     pid_counts[pid_str] += 1
             for path in self._HTTP_PATH_RE.findall(line):
                 path_counts[path] += 1
