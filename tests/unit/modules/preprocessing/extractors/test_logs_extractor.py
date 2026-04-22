@@ -225,6 +225,41 @@ class TestEntityProfileRegexes:
     def test_pid_regex_accepts_keyword_form(self):
         assert self._pids("worker pid=5678 exited") == ["5678"]
 
+    def test_pid_regex_accepts_seven_digit_pid(self):
+        """Regression: the bracket/keyword matchers previously used
+        ``\\d{1,5}`` which silently dropped any PID >= 100_000. Tuned
+        Linux hosts set ``kernel.pid_max`` to 4_194_304 (7 digits), and
+        container workloads exhaust the space routinely. Accept up to 7
+        digits so the resulting entity profile actually reflects the host."""
+        assert self._pids("host worker[2345678]: crashed") == ["2345678"]
+        assert self._pids("worker pid=1048576 exited") == ["1048576"]
+
+    def test_pid_entity_profile_counts_seven_digit_pids(self):
+        """End-to-end: a log with real-world 7-digit PIDs must surface
+        them in the entity profile rather than silently dropping them."""
+        extractor = LogsAndErrorsExtractor()
+        content = "\n".join(
+            [
+                "worker[1048576]: ERROR connection reset",
+                "worker[1048577]: ERROR connection reset",
+                "worker[1048578]: WARN retrying",
+            ]
+        )
+        result = extractor.extract(content)
+        assert "Distinct PIDs: 3" in result
+        assert "1048576" in result
+
+    def test_pid_regex_rejects_oversize_match(self):
+        """Numbers above the kernel ceiling (e.g. request-byte counts,
+        nanosecond timestamps) are not PIDs and must be filtered at
+        count-time even if the regex matched them as bare digits."""
+        extractor = LogsAndErrorsExtractor()
+        # ``[9999999]`` exceeds kernel.pid_max (4_194_304); should not
+        # appear as a PID in the entity profile.
+        content = "req processed in [9999999] ns\n" * 3
+        result = extractor.extract(content)
+        assert "9999999" not in result or "Distinct PIDs" not in result
+
     # --- IPv6: full and compressed forms; no collision with timestamps ---
 
     def test_ipv6_regex_full_form(self):

@@ -430,15 +430,17 @@ class CommandOutputExtractor:
             device_name = parts[0]
             device_info = {"name": device_name}
 
+            # NOTE: `if idx:` is wrong — column 0 is a legitimate index and
+            # was silently treated as "missing" here. Use ``is not None``.
             tps_idx = col_map.get("tps")
-            if tps_idx and tps_idx < len(parts):
+            if tps_idx is not None and tps_idx < len(parts):
                 try:
                     device_info["tps"] = float(parts[tps_idx])
                 except ValueError:
                     pass
 
             await_idx = col_map.get("await")
-            if await_idx and await_idx < len(parts):
+            if await_idx is not None and await_idx < len(parts):
                 try:
                     device_info["await"] = float(parts[await_idx])
                     if device_info["await"] > 20:
@@ -449,7 +451,7 @@ class CommandOutputExtractor:
                     pass
 
             util_idx = col_map.get("util")
-            if util_idx and util_idx < len(parts):
+            if util_idx is not None and util_idx < len(parts):
                 try:
                     device_info["util"] = float(parts[util_idx])
                     if device_info["util"] > 80:

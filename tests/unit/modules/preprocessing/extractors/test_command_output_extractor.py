@@ -161,3 +161,27 @@ KiB Mem : 16384000 total, 10000000 free,  6000000 used
 """
         result = extractor.extract(content)
         assert "Resource Hogs" not in result
+
+    def test_iostat_minimal_three_column_layout(self, extractor):
+        """A minimal iostat layout with tps/await/util directly after the
+        Device column. Prior code used ``if tps_idx:`` for column-index
+        guards — truthy-checking an integer that is a legitimately-zero
+        index. In the current iostat layouts Device is always parts[0],
+        which made the bug latent, but the guard pattern is wrong: use
+        ``is not None``. This test pins the contract that *whichever*
+        numeric column is present is parsed and thresholded."""
+        content = """\
+Linux test
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           2.00    0.00    1.00    0.50    0.00   96.50
+
+Device  tps  await  %util
+sda     50.0  25.0   85.0
+sdb     10.0   2.0    5.0
+"""
+        result = extractor.extract(content)
+        assert "sda" in result
+        # Both anomalies must be reported (await > 20ms AND %util > 80%).
+        assert "await=25.0ms" in result
+        assert "%util=85.0%" in result

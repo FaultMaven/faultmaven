@@ -386,11 +386,24 @@ class MetricsAndPerformanceExtractor:
         is kept as a distinct series keyed by ``name{labels}``. Without label
         awareness this fallback would silently skip every labeled line,
         collapsing multi-dimensional metrics into nothing.
+
+        Value-aware: the Prometheus exposition format permits ``NaN``,
+        ``+Inf`` and ``-Inf`` (OpenMetrics §5.1). A purely-digit value class
+        silently drops those lines, which matters for histograms /
+        summaries whose edge buckets legitimately report ``+Inf`` and for
+        quantile readings that have no samples yet (``NaN``). Accept them
+        explicitly — ``float()`` converts them natively.
         """
         result: dict[str, list[tuple[str | None, float]]] = {}
 
-        # name, optional {labels}, whitespace, value
-        pattern = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([\d.eE+-]+)")
+        # name, optional {labels}, whitespace, value (numeric or NaN/±Inf).
+        # Sign only applies to ``Inf`` per OpenMetrics §5.1 — NaN is
+        # unsigned. The numeric alternative carries its own sign in the
+        # character class.
+        pattern = re.compile(
+            r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+"
+            r"((?:[+-]?Inf)|NaN|[\d.eE+-]+)"
+        )
 
         for line in content.split("\n"):
             line = line.strip()
@@ -473,26 +486,44 @@ class MetricsAndPerformanceExtractor:
         """
         Analyze single metric time-series
 
-        Returns summary dict with stats and anomalies
+        Returns summary dict with stats and anomalies.
+
+        Non-finite values (``NaN`` / ``±Inf``) are excluded from statistics
+        because ``sum`` / ``min`` / ``sorted`` would silently propagate
+        them and corrupt percentiles. They are retained in the raw count
+        and reported separately so they remain visible to the LLM.
         """
-        values = [v for _, v in data_points]
-        timestamps = [t for t, _ in data_points]
+        import math
 
-        if not values:
-            return {"metric": metric_name, "count": 0, "error": "No data points"}
+        finite_points = [(t, v) for (t, v) in data_points if math.isfinite(v)]
+        finite_values = [v for _, v in finite_points]
+        non_finite_count = len(data_points) - len(finite_points)
 
-        # Calculate statistics
-        stats = self._calculate_statistics(values)
+        if not finite_values:
+            result: dict[str, Any] = {
+                "metric": metric_name,
+                "count": len(data_points),
+                "error": "No finite data points",
+            }
+            if non_finite_count:
+                result["non_finite"] = non_finite_count
+            return result
 
-        # Detect anomalies
-        anomalies = self._detect_anomalies(data_points, stats)
+        # Calculate statistics over finite values only.
+        stats = self._calculate_statistics(finite_values)
 
-        return {
+        # Detect anomalies only on finite data points.
+        anomalies = self._detect_anomalies(finite_points, stats)
+
+        summary = {
             "metric": metric_name,
-            "count": len(values),
+            "count": len(data_points),
             "stats": stats,
             "anomalies": anomalies[: self.MAX_ANOMALIES_REPORTED],
         }
+        if non_finite_count:
+            summary["non_finite"] = non_finite_count
+        return summary
 
     def _calculate_statistics(self, values: list[float]) -> dict[str, float]:
         """Calculate statistical measures"""
@@ -588,6 +619,9 @@ class MetricsAndPerformanceExtractor:
 
             if "error" in summary:
                 lines.append(f"❌ {metric_name}: {summary['error']}")
+                non_finite = summary.get("non_finite", 0)
+                if non_finite:
+                    lines.append(f"   Non-finite values: {non_finite} (NaN/±Inf)")
                 continue
 
             stats = summary["stats"]
@@ -599,6 +633,11 @@ class MetricsAndPerformanceExtractor:
             lines.append(
                 f"   Percentiles: p50={stats['p50']:.2f}, p95={stats['p95']:.2f}, p99={stats['p99']:.2f}"
             )
+            non_finite = summary.get("non_finite", 0)
+            if non_finite:
+                lines.append(
+                    f"   Non-finite values: {non_finite} (NaN/±Inf, excluded from statistics)"
+                )
 
             if anomalies:
                 lines.append(f"   ⚠️  {len(anomalies)} anomaly/anomalies detected:")

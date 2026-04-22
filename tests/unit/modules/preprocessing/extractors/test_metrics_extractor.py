@@ -189,3 +189,57 @@ http_requests_total{method="POST",status="500"} 7
         rows += "\nt_spike,500"
         result = extractor.extract(rows)
         assert "SPIKE" in result or "anomal" in result.lower()
+
+    # --- Prometheus NaN / ±Inf handling (regex fallback) ---
+
+    def test_prometheus_regex_fallback_captures_nan_and_inf(self, extractor):
+        """Regression: NaN and ±Inf are valid Prometheus values (OpenMetrics
+        §5.1) — histograms emit ``le="+Inf"`` buckets, and summaries with no
+        samples yet emit ``NaN`` quantiles. The regex fallback previously
+        required ``[\\d.eE+-]+`` after the name, which does not match the
+        literal strings ``NaN``/``+Inf``/``-Inf`` — so every such line was
+        silently dropped, making the affected series *disappear* from the
+        output rather than just skipping a single reading."""
+        content = """\
+# HELP http_request_duration_seconds Request duration
+# TYPE http_request_duration_seconds histogram
+http_request_duration_seconds_bucket{le="0.1"} 24054
+http_request_duration_seconds_bucket{le="+Inf"} 144320
+http_request_duration_seconds_sum NaN
+request_errors_total -Inf
+"""
+        with patch(
+            "faultmaven.modules.preprocessing.extractors.metrics_extractor.PROMETHEUS_CLIENT_AVAILABLE",
+            False,
+        ):
+            result = extractor.extract(content)
+            # All four series must be present — no silent drops.
+            assert "http_request_duration_seconds_bucket" in result
+            assert "http_request_duration_seconds_sum" in result
+            assert "request_errors_total" in result
+            # Non-finite values should be visible to the LLM, not hidden.
+            assert "Non-finite" in result
+
+    def test_prometheus_regex_fallback_nan_excluded_from_stats(self, extractor):
+        """When a series has both finite and NaN values, statistics are
+        computed over the finite subset — mixing NaN into min/max/mean would
+        silently produce NaN percentiles."""
+        # Multiple readings so statistics are actually computed.
+        content = """\
+# TYPE gauge_with_gaps gauge
+gauge_with_gaps{shard="a"} 10
+gauge_with_gaps{shard="b"} 20
+gauge_with_gaps{shard="c"} NaN
+gauge_with_gaps{shard="d"} 30
+"""
+        with patch(
+            "faultmaven.modules.preprocessing.extractors.metrics_extractor.PROMETHEUS_CLIENT_AVAILABLE",
+            False,
+        ):
+            result = extractor.extract(content)
+            # Each label-qualified series is its own metric (single point
+            # each), but the presence of NaN should be surfaced.
+            assert "Non-finite" in result
+            # No NaN should appear in the computed statistics lines.
+            assert "Range: nan" not in result.lower()
+            assert "mean: nan" not in result.lower()
