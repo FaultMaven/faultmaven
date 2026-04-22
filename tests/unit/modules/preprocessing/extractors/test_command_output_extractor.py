@@ -106,3 +106,58 @@ Filesystem     1K-blocks      Used Available Use% Mounted on
         content = "Some random command output that doesn't match any known format\nLine 2\nLine 3"
         result = extractor.extract(content)
         assert "unknown format" in result.lower() or "Command Output" in result
+
+    # --- top parser: CPU/memory hog detection ---
+
+    def test_top_detects_cpu_hog(self, extractor):
+        """Regression: a CPU-heavy process must surface in the Resource Hogs
+        section. A prior refactor renamed the internal process dict keys to
+        ``cpu_percent``/``mem_percent`` but left every consumer reading
+        ``cpu``/``mem``, so ``cpu_hogs`` was always empty and the summary
+        quietly omitted the finding."""
+        content = """\
+top - 10:00:01 up 1 day, load average: 1.10, 1.20, 1.15
+Tasks: 100 total
+%Cpu(s):  5.2 us,  2.1 sy,  0.0 ni, 92.5 id
+KiB Mem : 16384000 total,  8192000 free,  7000000 used
+
+  PID USER      %CPU %MEM    VSZ   RSS COMMAND
+ 1234 alice     95.0  5.0  12345  5678 /usr/bin/hungry_worker
+ 5678 bob        1.0  2.0   2345  1234 sshd
+"""
+        result = extractor.extract(content)
+        assert "Resource Hogs" in result
+        assert "hungry_worker" in result
+        assert "1234" in result  # PID of the hog
+
+    def test_top_detects_mem_hog(self, extractor):
+        """Regression: a memory-heavy process must surface in Resource Hogs."""
+        content = """\
+top - 10:00:01 up 1 day, load average: 0.10, 0.20, 0.15
+Tasks: 50 total
+%Cpu(s):  1.2 us,  0.5 sy,  0.0 ni, 98.3 id
+KiB Mem : 16384000 total,  1000000 free, 15000000 used
+
+  PID USER      %CPU %MEM    VSZ   RSS COMMAND
+ 9999 carol      2.0 88.5 123456 78901 /usr/bin/bloated_proc
+ 1111 dave       0.5  1.0   2345  1234 bash
+"""
+        result = extractor.extract(content)
+        assert "Resource Hogs" in result
+        assert "bloated_proc" in result
+        assert "9999" in result
+
+    def test_top_no_hogs_when_all_idle(self, extractor):
+        """Healthy top output has no hogs and no Resource Hogs section."""
+        content = """\
+top - 10:00:01 up 1 day, load average: 0.05, 0.10, 0.08
+Tasks: 50 total
+%Cpu(s):  1.0 us,  0.5 sy,  0.0 ni, 98.5 id
+KiB Mem : 16384000 total, 10000000 free,  6000000 used
+
+  PID USER      %CPU %MEM    VSZ   RSS COMMAND
+ 1111 alice      2.0  3.0   2345  1234 sshd
+ 2222 bob        0.5  1.0   2345  1234 bash
+"""
+        result = extractor.extract(content)
+        assert "Resource Hogs" not in result

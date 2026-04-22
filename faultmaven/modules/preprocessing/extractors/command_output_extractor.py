@@ -213,56 +213,59 @@ class CommandOutputExtractor:
         if header_idx is None or "pid" not in col_map or "command" not in col_map:
             return []
 
-        # Parse process lines
+        # Parse process lines. If COMMAND is the last column, use maxsplit so
+        # the rest of the line (which may contain spaces) stays joined as a
+        # single field; otherwise a plain whitespace split is sufficient.
+        command_idx = col_map["command"]
+        command_is_last = command_idx == max(col_map.values())
+
         for line in lines[header_idx + 1 :]:
             line = line.strip()
             if not line:
                 continue
 
             parts = (
-                line.split(maxsplit=max(col_map.values()) + 1)
-                if col_map["command"] == max(col_map.values())
-                else line.split()
+                line.split(maxsplit=command_idx) if command_is_last else line.split()
             )
 
-            if len(parts) > max(col_map.values()):
-                pid_str = parts[col_map["pid"]]
-                if pid_str.isdigit():
-                    try:
-                        cmd_val = parts[col_map["command"] :]
-                        processes.append(
-                            {
-                                "pid": int(pid_str),
-                                "user": (
-                                    parts[col_map.get("user", -1)]
-                                    if "user" in col_map
-                                    and col_map.get("user") < len(parts)
-                                    else "unknown"
-                                ),
-                                "cpu_percent": (
-                                    float(parts[col_map.get("cpu", -1)])
-                                    if "cpu" in col_map
-                                    and col_map.get("cpu") < len(parts)
-                                    else 0.0
-                                ),
-                                "mem_percent": (
-                                    float(parts[col_map.get("mem", -1)])
-                                    if "mem" in col_map
-                                    and col_map.get("mem") < len(parts)
-                                    else 0.0
-                                ),
-                                "command": (
-                                    " ".join(cmd_val)
-                                    if isinstance(cmd_val, list)
-                                    else cmd_val
-                                ),
-                            }
-                        )
-                        # We only need top 20 processes
-                        if len(processes) >= 20:
-                            break
-                    except ValueError:
-                        pass
+            if len(parts) <= command_idx:
+                continue
+
+            pid_str = parts[col_map["pid"]]
+            if not pid_str.isdigit():
+                continue
+
+            try:
+                # NOTE: consumers (cpu_hogs/mem_hogs filters, summary formatters)
+                # read keys `cpu` and `mem`. The refactor that introduced
+                # `cpu_percent`/`mem_percent` silently broke hog detection —
+                # every lookup fell through to a default of 0 and no hogs were
+                # ever reported. Keep the short names to preserve the contract.
+                processes.append(
+                    {
+                        "pid": int(pid_str),
+                        "user": (
+                            parts[col_map["user"]]
+                            if "user" in col_map and col_map["user"] < len(parts)
+                            else "unknown"
+                        ),
+                        "cpu": (
+                            float(parts[col_map["cpu"]])
+                            if "cpu" in col_map and col_map["cpu"] < len(parts)
+                            else 0.0
+                        ),
+                        "mem": (
+                            float(parts[col_map["mem"]])
+                            if "mem" in col_map and col_map["mem"] < len(parts)
+                            else 0.0
+                        ),
+                        "command": parts[command_idx],
+                    }
+                )
+                if len(processes) >= 20:
+                    break
+            except ValueError:
+                continue
 
         return processes
 

@@ -153,3 +153,112 @@ class TestLogsAndErrorsExtractor:
         """Test extractor properties"""
         assert extractor.strategy_name == "crime_scene"
         assert extractor.llm_calls_used == 0
+
+
+class TestEntityProfileRegexes:
+    """Regression tests for entity-profile regexes.
+
+    The underlying contract: entity patterns need *structural* context, not
+    just a stray delimiter. A bare colon is insufficient context for a port
+    (every ``HH:MM:SS`` would match); a bare open-bracket is insufficient
+    for a PID (``[19:02:15]`` would match). These tests lock in the
+    principle that entity tokens must sit next to a non-numeric context
+    token — a keyword, a host/address, or an enclosing bracket pair.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    @staticmethod
+    def _ports(line: str) -> list[str]:
+        return LogsAndErrorsExtractor._PORT_KEYWORD_RE.findall(
+            line
+        ) + LogsAndErrorsExtractor._HOST_PORT_RE.findall(line)
+
+    @staticmethod
+    def _pids(line: str) -> list[str]:
+        return LogsAndErrorsExtractor._PID_KEYWORD_RE.findall(
+            line
+        ) + LogsAndErrorsExtractor._PID_BRACKET_RE.findall(line)
+
+    # --- Ports: pure-digit LHS must not yield a port ---
+
+    def test_port_regex_rejects_timestamp_fragment(self):
+        """``HH:MM:SS`` has pure-digit LHS; no port should be captured."""
+        assert self._ports("log line 04:47:44 something") == []
+
+    def test_port_regex_rejects_bracketed_timestamp(self):
+        assert self._ports("[19:02:15] event") == []
+
+    def test_port_regex_accepts_explicit_keyword(self):
+        assert self._ports("Accepted from 10.0.0.5 port 22 ssh2") == ["22"]
+
+    def test_port_regex_accepts_ipv4_port(self):
+        """IPv4 LHS contains dots → non-digit context → port captured."""
+        assert self._ports("peer 192.168.1.1:80 connected") == ["80"]
+
+    def test_port_regex_accepts_hostname_port(self):
+        """Hostname LHS contains letters → port captured."""
+        assert self._ports("upstream db.example.com:5432 slow") == ["5432"]
+
+    def test_port_regex_accepts_simple_hostname_port(self):
+        assert self._ports("connecting to localhost:8080") == ["8080"]
+
+    def test_port_regex_accepts_url_embedded_port(self):
+        assert self._ports("fetched http://example.com:8443/api") == ["8443"]
+
+    # --- PIDs: bracketed form requires closing bracket ---
+
+    def test_pid_regex_rejects_partial_bracket(self):
+        """``[19:`` inside a timestamp has no closing bracket after digits."""
+        assert self._pids("[19:02:15] msg") == []
+
+    def test_pid_regex_rejects_year_inside_outer_brackets(self):
+        """The 2005 in ``[Sun Dec 04 04:47:44 2005]`` is not immediately
+        after the opening ``[`` and so must not be captured as a PID."""
+        assert self._pids("[Sun Dec 04 04:47:44 2005] msg") == []
+
+    def test_pid_regex_accepts_classic_syslog(self):
+        assert self._pids("host sshd[1234]: Failed") == ["1234"]
+
+    def test_pid_regex_accepts_keyword_form(self):
+        assert self._pids("worker pid=5678 exited") == ["5678"]
+
+    # --- IPv6: full and compressed forms; no collision with timestamps ---
+
+    def test_ipv6_regex_full_form(self):
+        assert LogsAndErrorsExtractor._IPV6_RE.findall(
+            "peer 2001:db8:85a3:0:0:8a2e:370:7334 connected"
+        ) == ["2001:db8:85a3:0:0:8a2e:370:7334"]
+
+    def test_ipv6_regex_loopback_compressed(self):
+        assert LogsAndErrorsExtractor._IPV6_RE.findall("listening on ::1") == ["::1"]
+
+    def test_ipv6_regex_link_local(self):
+        assert LogsAndErrorsExtractor._IPV6_RE.findall("peer fe80::1 up") == ["fe80::1"]
+
+    def test_ipv6_regex_middle_compression(self):
+        assert LogsAndErrorsExtractor._IPV6_RE.findall(
+            "route to 2001:db8::ff00:42:8329 via gw"
+        ) == ["2001:db8::ff00:42:8329"]
+
+    def test_ipv6_regex_does_not_match_decimal_timestamp(self):
+        assert (
+            LogsAndErrorsExtractor._IPV6_RE.findall("2024-03-15 14:30:45 INFO startup")
+            == []
+        )
+
+    # --- End-to-end: no spurious ports/PIDs from bracketed-timestamp logs ---
+
+    def test_bracketed_timestamp_logs_produce_no_spurious_entities(self, extractor):
+        """A log format that uses bracketed timestamps (Apache, CloudFoundry,
+        various custom formats) must not leak timestamp digits into the
+        port or PID entity counts."""
+        content = (
+            "[Sun Dec 04 04:47:44 2005] [notice] workerEnv.init() ok\n"
+            "[Sun Dec 04 04:47:44 2005] [error] child in error state 6\n"
+        ) * 20
+        result = extractor.extract(content)
+        assert "Distinct Ports" not in result
+        assert "Distinct PIDs" not in result
