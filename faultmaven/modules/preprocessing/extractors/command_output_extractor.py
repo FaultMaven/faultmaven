@@ -39,13 +39,17 @@ class CommandOutputExtractor:
 
     def extract(self, content: str) -> str:
         """
-        Command Output Parsing algorithm:
-        1. Detect command type (top, ps, iostat, etc.)
-        2. Parse command-specific output format
-        3. Identify resource anomalies
-        4. Rank issues by severity
-        5. Generate actionable summary
+        Command output extraction
+
+        Steps:
+        1. Classify format (lsof, netstat, ps, etc)
+        2. Apply specialized parser if available
+        3. Fallback to generic tabular / unstructured patterns
         """
+        content = content.lstrip("\ufeff")
+        if len(content) > 50_000_000:
+            return "[File exceeds 50MB maximum size limit for extraction]"
+
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
@@ -176,36 +180,89 @@ class CommandOutputExtractor:
         return {}
 
     def _extract_top_processes(self, lines: list[str]) -> list[dict]:
-        """Extract process list from top output"""
+        """Extract process list from top or ps output"""
         processes = []
 
-        # Find header line
+        # Find header line with flexible matching
         header_idx = None
+        col_map = {}
         for i, line in enumerate(lines):
-            if "PID" in line and "USER" in line and "%CPU" in line:
+            header = line.upper()
+            if (
+                "PID" in header
+                and ("%CPU" in header or "CPU" in header)
+                and "COMMAND" in header
+            ):
                 header_idx = i
+                # Dynamically map columns
+                parts = line.split()
+                for col_idx, col_name in enumerate(parts):
+                    name = col_name.upper()
+                    if name in ("PID",):
+                        col_map["pid"] = col_idx
+                    elif name in ("USER", "UID"):
+                        col_map["user"] = col_idx
+                    elif name in ("%CPU", "CPU"):
+                        col_map["cpu"] = col_idx
+                    elif name in ("%MEM", "MEM"):
+                        col_map["mem"] = col_idx
+                    elif name in ("COMMAND", "CMD"):
+                        col_map["command"] = col_idx
                 break
 
-        if header_idx is None:
+        if header_idx is None or "pid" not in col_map or "command" not in col_map:
             return []
 
         # Parse process lines
-        for line in lines[header_idx + 1 : header_idx + 21]:  # Top 20 processes
-            # Match: PID USER %CPU %MEM VSZ RSS COMMAND
-            match = re.match(
-                r"\s*(\d+)\s+(\S+)\s+([\d\.]+)\s+([\d\.]+)\s+\d+\s+\d+\s+\S+\s+\S+\s+\S+\s+(.+)",
-                line,
+        for line in lines[header_idx + 1 :]:
+            line = line.strip()
+            if not line:
+                continue
+
+            parts = (
+                line.split(maxsplit=max(col_map.values()) + 1)
+                if col_map["command"] == max(col_map.values())
+                else line.split()
             )
-            if match:
-                processes.append(
-                    {
-                        "pid": int(match.group(1)),
-                        "user": match.group(2),
-                        "cpu": float(match.group(3)),
-                        "mem": float(match.group(4)),
-                        "command": match.group(5).strip(),
-                    }
-                )
+
+            if len(parts) > max(col_map.values()):
+                pid_str = parts[col_map["pid"]]
+                if pid_str.isdigit():
+                    try:
+                        cmd_val = parts[col_map["command"] :]
+                        processes.append(
+                            {
+                                "pid": int(pid_str),
+                                "user": (
+                                    parts[col_map.get("user", -1)]
+                                    if "user" in col_map
+                                    and col_map.get("user") < len(parts)
+                                    else "unknown"
+                                ),
+                                "cpu_percent": (
+                                    float(parts[col_map.get("cpu", -1)])
+                                    if "cpu" in col_map
+                                    and col_map.get("cpu") < len(parts)
+                                    else 0.0
+                                ),
+                                "mem_percent": (
+                                    float(parts[col_map.get("mem", -1)])
+                                    if "mem" in col_map
+                                    and col_map.get("mem") < len(parts)
+                                    else 0.0
+                                ),
+                                "command": (
+                                    " ".join(cmd_val)
+                                    if isinstance(cmd_val, list)
+                                    else cmd_val
+                                ),
+                            }
+                        )
+                        # We only need top 20 processes
+                        if len(processes) >= 20:
+                            break
+                    except ValueError:
+                        pass
 
         return processes
 

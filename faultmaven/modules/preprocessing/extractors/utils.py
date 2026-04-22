@@ -97,8 +97,8 @@ _TS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         "syslog_bsd",
         re.compile(r"[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}"),
     ),
-    ("epoch_ms", re.compile(r"\b(\d{13})\b")),
-    ("epoch_s", re.compile(r"\b(\d{10})\b")),
+    ("epoch_ms", re.compile(r"\b([12]\d{12})\b")),
+    ("epoch_s", re.compile(r"\b([12]\d{9})\b")),
 ]
 
 _SYSLOG_MONTHS = {
@@ -129,26 +129,40 @@ def extract_timestamp(line: str) -> datetime | None:
             continue
         try:
             if name == "iso8601_t":
-                return datetime.fromisoformat(m.group(0))
+                dt = datetime.fromisoformat(m.group(0))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                return dt
             if name == "iso8601":
-                return datetime.strptime(m.group(0), "%Y-%m-%d %H:%M:%S")
+                return datetime.strptime(m.group(0), "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=UTC
+                )
             if name == "syslog_bsd":
                 parts = m.group(0).split()
                 month = _SYSLOG_MONTHS.get(parts[0], 1)
                 day = int(parts[1])
                 time_parts = parts[2].split(":")
-                return datetime(
-                    year=datetime.now(tz=UTC).year,
-                    month=month,
-                    day=day,
-                    hour=int(time_parts[0]),
-                    minute=int(time_parts[1]),
-                    second=int(time_parts[2]),
+
+                year = datetime.now(tz=UTC).year
+                dt = datetime(
+                    year,
+                    month,
+                    day,
+                    int(time_parts[0]),
+                    int(time_parts[1]),
+                    int(time_parts[2]),
+                    tzinfo=UTC,
                 )
-            if name == "epoch_ms":
-                return datetime.fromtimestamp(int(m.group(1)) / 1000, tz=UTC)
-            if name == "epoch_s":
-                return datetime.fromtimestamp(int(m.group(1)), tz=UTC)
+                if dt > datetime.now(tz=UTC):
+                    dt = dt.replace(year=year - 1)
+                return dt
+            if name in ("epoch_ms", "epoch_s"):
+                val = int(m.group(1))
+                secs = val / 1000 if name == "epoch_ms" else val
+                dt = datetime.fromtimestamp(secs, tz=UTC)
+                if 2000 <= dt.year <= 2100:
+                    return dt
+                continue
         except (ValueError, OSError, OverflowError):
             continue
     return None

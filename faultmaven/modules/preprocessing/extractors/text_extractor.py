@@ -24,7 +24,6 @@ class UnstructuredTextExtractor:
     """Smart extraction from unstructured text (0 LLM calls)"""
 
     # Output limits
-    MAX_OUTPUT_CHARS = 10000  # ~2.5K tokens
     MAX_SECTIONS = 20
     MAX_CODE_BLOCKS = 10
     MAX_ERROR_MESSAGES = 15
@@ -51,6 +50,10 @@ class UnstructuredTextExtractor:
         3. Prioritize by relevance (errors > code > structure)
         4. Format for readability
         """
+        content = content.lstrip("\ufeff")
+        if len(content) > 50_000_000:
+            return "[File exceeds 50MB maximum size limit for extraction]"
+
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
@@ -112,7 +115,10 @@ class UnstructuredTextExtractor:
             # Limit trace length
             if len(trace) > 500:
                 lines = trace.split("\n")
-                trace = "\n".join(lines[:10]) + "\n... [Truncated]"
+                # For long stack traces, keeping the beginning is often less useful
+                # than the end where the root cause Exception is.
+                if len(lines) > 10:
+                    trace = "... [Truncated]\n" + "\n".join(lines[-10:])
             errors.append(("Stack Trace", trace))
 
         # Pattern 2: Error lines with common keywords

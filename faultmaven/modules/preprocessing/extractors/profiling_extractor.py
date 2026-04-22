@@ -45,6 +45,10 @@ class ProfilingDataExtractor:
         5. Detect recursive patterns
         6. Generate actionable summary
         """
+        content = content.lstrip("\ufeff")
+        if len(content) > 50_000_000:
+            return "[File exceeds 50MB maximum size limit for extraction]"
+
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
@@ -84,7 +88,11 @@ class ProfilingDataExtractor:
             return self.FORMAT_FLAME_GRAPH
 
         # Check for perf format (perf stat or perf report)
-        if re.search(r"Performance counter stats", content, re.IGNORECASE):
+        if re.search(
+            r"Performance counter stats|\bcycles\b|\binstructions\b",
+            content,
+            re.IGNORECASE,
+        ):
             return self.FORMAT_PERF
         if re.search(r"Overhead\s+Command\s+Shared Object\s+Symbol", content):
             return self.FORMAT_PERF
@@ -298,10 +306,14 @@ class ProfilingDataExtractor:
         perf report: Parses overhead table for top functions; metadata
           carries ``functions_profiled`` + ``top_function``.
         """
-        if "Performance counter stats" in content:
-            return self._extract_perf_stat(content), {}
-        elif re.search(r"Overhead\s+Command\s+Shared Object\s+Symbol", content):
+        if re.search(r"Overhead\s+Command\s+Shared Object\s+Symbol", content):
             return self._extract_perf_report(content)
+        elif (
+            "Performance counter stats" in content
+            or "cycles" in content
+            or "instructions" in content
+        ):
+            return self._extract_perf_stat(content), {}
         else:
             # Fallback to basic extraction — no function-level data
             lines = content.split("\n")

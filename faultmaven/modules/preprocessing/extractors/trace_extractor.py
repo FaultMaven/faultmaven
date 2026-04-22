@@ -40,6 +40,10 @@ class TraceDataExtractor:
         5. Extract error spans
         6. Generate natural language summary
         """
+        content = content.lstrip("\ufeff")
+        if len(content) > 50_000_000:
+            return "[File exceeds 50MB maximum size limit for extraction]"
+
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
@@ -330,14 +334,33 @@ class TraceDataExtractor:
 
     def _fallback_extraction(self, content: str) -> str:
         """Fallback for non-JSON content - extract key patterns"""
-        lines = content.split("\n")[:20]  # First 20 lines
+        lines = content.split("\n")
+
+        if len(lines) <= 20:
+            preview_lines = lines
+        else:
+            preview_lines = (
+                lines[:10]
+                + ["", "... [Middle content truncated] ...", ""]
+                + lines[-10:]
+            )
 
         summary = ["Trace Data (partial extraction - invalid JSON format)", ""]
 
         # Try to find trace ID
+        trace_id_lines = []
         for line in lines:
             if "traceId" in line or "trace_id" in line:
-                summary.append(f"- {line.strip()}")
+                trace_id_lines.append(f"- {line.strip()[:100]}")
+                if len(trace_id_lines) >= 5:
+                    break
+
+        if trace_id_lines:
+            summary.extend(trace_id_lines)
+            summary.append("")
+
+        summary.append("Fallback Content Preview:")
+        summary.extend(preview_lines)
 
         summary.append(
             "\nNote: Unable to fully parse trace data. Please verify JSON format."

@@ -39,13 +39,13 @@ class TestConfigExtractor:
 
     def test_api_key_value_redacted(self, extractor):
         """Long alphanumeric values (>= 20 chars) are redacted by regex."""
-        config = json.dumps({"token": "abcdefghijklmnopqrstuvwxyz"})
+        config = json.dumps({"token": "abcdefghijklmnopqrstuvwxyz", "public": "key"})
         result = extractor.extract(config)
         assert "[REDACTED]" in result
 
     def test_sk_key_value_redacted(self, extractor):
         """OpenAI-style sk-... keys are redacted by regex."""
-        config = json.dumps({"api_key": "sk-abcdefghijklmnopq"})
+        config = json.dumps({"api_key": "sk-abcdefghijklmnopq", "public": "key"})
         result = extractor.extract(config)
         assert "[REDACTED]" in result
 
@@ -70,7 +70,7 @@ class TestConfigExtractor:
     def test_jwt_token_redacted(self, extractor):
         """JWT tokens detected by detect-secrets should be redacted."""
         jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
-        config = json.dumps({"auth_token": jwt})
+        config = json.dumps({"auth_token": jwt, "public": "key"})
         result = extractor.extract(config)
         assert "[REDACTED]" in result
         assert jwt not in result
@@ -81,7 +81,10 @@ class TestConfigExtractor:
     def test_github_token_redacted(self, extractor):
         """GitHub tokens detected by detect-secrets should be redacted."""
         config = json.dumps(
-            {"github_token": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+            {
+                "github_token": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                "public": "key",
+            }
         )
         result = extractor.extract(config)
         assert "[REDACTED]" in result
@@ -224,7 +227,7 @@ level=debug
 
     def test_secret_key_with_real_value_still_redacted(self, extractor):
         """require_password with an actual password value is still redacted."""
-        config = json.dumps({"require_password": "hunter2isMyPass"})
+        config = json.dumps({"require_password": "hunter2isMyPass", "public": "key"})
         result = extractor.extract(config)
         assert "[REDACTED]" in result
         assert "hunter2isMyPass" not in result
@@ -233,14 +236,16 @@ level=debug
 
     def test_client_secret_redacted(self, extractor):
         """client_secret contains an actual secret value."""
-        config = json.dumps({"client_secret": "s3cr3t-v4lu3-h3r3"})
+        config = json.dumps({"client_secret": "s3cr3t-v4lu3-h3r3", "public": "key"})
         result = extractor.extract(config)
         assert "[REDACTED]" in result
         assert "s3cr3t-v4lu3-h3r3" not in result
 
     def test_nested_auth_token_redacted(self, extractor):
         """Nested auth.auth_token should still be redacted."""
-        config = json.dumps({"auth": {"auth_token": "mytoken12345678"}})
+        config = json.dumps(
+            {"auth": {"auth_token": "mytoken12345678", "public": "key"}}
+        )
         result = extractor.extract(config)
         assert "[REDACTED]" in result
         assert "mytoken12345678" not in result
@@ -254,13 +259,20 @@ level=debug
 
     def test_signing_key_redacted(self, extractor):
         """signing_key is a secret-holding key."""
-        config = json.dumps({"signing_key": "supersecretkey12345"})
+        config = json.dumps({"signing_key": "supersecretkey12345", "public": "key"})
         result = extractor.extract(config)
         assert "[REDACTED]" in result
         assert "supersecretkey12345" not in result
 
     def test_access_key_env_redacted(self, extractor):
         """AWS access key in .env format still redacted."""
-        content = "AWS_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE"
+        content = "AWS_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE\nPUBLIC_KEY=123"
         result = extractor.extract(content)
         assert "[REDACTED]" in result
+
+    def test_fully_redacted_config(self, extractor):
+        """A config with only secrets triggers the fully redacted optimization."""
+        config = json.dumps({"client_secret": "s3cr3t-v4lu3-h3r3"})
+        result = extractor.extract(config)
+        assert "[WARNING: Fully Redacted Config" in result
+        assert "[REDACTED]" not in result

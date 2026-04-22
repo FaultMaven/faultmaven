@@ -101,8 +101,6 @@ class StructuredConfigExtractor:
         r"^[A-Z0-9]{32,}$",  # All-caps hex strings
     ]
 
-    MAX_OUTPUT_LINES = 500  # Safety limit
-
     @property
     def strategy_name(self) -> str:
         return "direct"
@@ -121,6 +119,10 @@ class StructuredConfigExtractor:
         3. Redact secrets
         4. Format output
         """
+        content = content.lstrip("\ufeff")
+        if len(content) > 50_000_000:
+            return "[File exceeds 50MB maximum size limit for extraction]"
+
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
@@ -142,13 +144,24 @@ class StructuredConfigExtractor:
         # Redact secrets
         sanitized, redaction_count = self._redact_secrets_counted(config_data)
 
+        # Fully redacted check
+        fully_redacted = total_keys > 0 and redaction_count == total_keys
+
         # Format output
-        result = self._format_config(sanitized)
+        if fully_redacted:
+            result = "[WARNING: Fully Redacted Config - No structural metadata available]\n\n"
+        else:
+            result = self._format_config(sanitized)
 
         # Coverage metadata
         result += format_coverage_metadata(
             Format=format_detected,
-            **{"Top-level keys": ", ".join(top_keys[:10])},
+            **{"Fully Redacted": fully_redacted if fully_redacted else None},
+            **{
+                "Top-level keys": (
+                    ", ".join(top_keys[:10]) if not fully_redacted else None
+                )
+            },
             **{"Total keys": total_keys},
             **{"Secrets redacted": redaction_count},
         )

@@ -58,6 +58,10 @@ class LogsAndErrorsExtractor:
         4. Extract context with adaptive sizing
         5. Safety check: truncate if exceeds limit
         """
+        content = content.lstrip("\ufeff")
+        if len(content) > 50_000_000:
+            return "[File exceeds 50MB maximum size limit for extraction]"
+
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
@@ -100,15 +104,26 @@ class LogsAndErrorsExtractor:
         # Entity profiling: scan full content for key entities.
         # Prepend to result so it's visible even when the structural index
         # is truncated by the context builder's per-item character cap.
-        entity_profile = self._build_entity_profile(content)
+        error_lines = {e["line_idx"] for e in errors}
+        entity_profile = self._build_entity_profile(content, error_lines)
         if entity_profile:
             result = entity_profile + "\n\n" + result
+
+        if errors:
+            top_errors = Counter(e["line_text"].strip() for e in errors).most_common(3)
+            error_summary = ["TOP ERROR MESSAGES:"]
+            for msg, count in top_errors:
+                truncated_msg = msg[:150] + "..." if len(msg) > 150 else msg
+                error_summary.append(f"  - [{count}x] {truncated_msg}")
+            result = "\n".join(error_summary) + "\n\n" + result
 
         # Coverage metadata
         severity_counts = Counter(e["keyword"] for e in errors)
         time_range = extract_time_range(content)
+        truncated = total_lines > self.MAX_SNIPPET_LINES
         result += format_coverage_metadata(
             Lines=f"{min(total_lines, self.MAX_SNIPPET_LINES)} of {total_lines}",
+            Truncated=truncated,
             Errors=len(errors),
             **{f"Severity {k}": v for k, v in severity_counts.items()},
             **time_range,
@@ -356,11 +371,17 @@ class LogsAndErrorsExtractor:
         return "\n".join(formatted)
 
     # Regex patterns for entity profiling (compiled once)
-    _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+    _IPV4_RE = re.compile(
+        r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
+    )
+    _IPV6_RE = re.compile(r"\b(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}\b")
     _USER_RE = re.compile(
-        r"(?:\buser[= ]+|\bfor (?:invalid user )?\b|\buser=)([a-zA-Z0-9._\-]+)",
+        r"(?:\buser[= ]+|\bfor (?:invalid user )?\b|\buser=)([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b",
         re.IGNORECASE,
     )
+    _PORT_RE = re.compile(r"\b(?:port[= ]+|:)(\d{1,5})\b", re.IGNORECASE)
+    _PID_RE = re.compile(r"\b(?:pid[= ]+|\[)(\d{1,5})(?:\]|\b)", re.IGNORECASE)
+    _HTTP_PATH_RE = re.compile(r"\b(?:GET|POST|PUT|DELETE|PATCH)\s+(/[^\s\?]*)\b")
 
     # SSH event type patterns for semantic counting
     _FAILED_PASSWORD_RE = re.compile(r"Failed password", re.IGNORECASE)
@@ -372,35 +393,69 @@ class LogsAndErrorsExtractor:
         r"Connection closed|Connection reset", re.IGNORECASE
     )
 
-    def _build_entity_profile(self, content: str, top_n: int = 10) -> str:
+    def _build_entity_profile(
+        self, content: str, error_lines: set[int] = None, top_n: int = 10
+    ) -> str:
         """
         Scan full content for key entities and produce a frequency summary.
 
         This gives the LLM an explicit enumeration of distinct actors/hosts
         without requiring it to manually scan hundreds of log lines.
         """
+        error_lines = error_lines or set()
         ip_counts: Counter = Counter()
+        error_ip_counts: Counter = Counter()
         user_counts: Counter = Counter()
+        error_user_counts: Counter = Counter()
         event_counts: Counter = Counter()
+        port_counts: Counter = Counter()
+        pid_counts: Counter = Counter()
+        path_counts: Counter = Counter()
 
-        for line in content.split("\n"):
-            for ip in self._IP_RE.findall(line):
-                ip_counts[ip] += 1
+        lines = content.split("\n")
+        for i, line in enumerate(lines):
+            is_error = i in error_lines
+            for ip in self._IPV4_RE.findall(line) + self._IPV6_RE.findall(line):
+                if is_error:
+                    error_ip_counts[ip] += 1
+                else:
+                    ip_counts[ip] += 1
             for user in self._USER_RE.findall(line):
                 if user:
-                    user_counts[user] += 1
+                    if is_error:
+                        error_user_counts[user] += 1
+                    else:
+                        user_counts[user] += 1
+            for port_str in self._PORT_RE.findall(line):
+                if port_str.isdigit() and 0 < int(port_str) <= 65535:
+                    port_counts[port_str] += 1
+            for pid_str in self._PID_RE.findall(line):
+                if pid_str.isdigit() and int(pid_str) > 0:
+                    pid_counts[pid_str] += 1
+            for path in self._HTTP_PATH_RE.findall(line):
+                path_counts[path] += 1
+
             # Semantic event classification
             if self._FAILED_PASSWORD_RE.search(line):
                 event_counts["failed_password"] += 1
-            elif self._ACCEPTED_PASSWORD_RE.search(line):
+            if self._ACCEPTED_PASSWORD_RE.search(line):
                 event_counts["accepted_login"] += 1
-            elif self._INVALID_USER_RE.search(line):
+            if self._INVALID_USER_RE.search(line):
                 event_counts["invalid_user"] += 1
-            elif self._CONNECTION_CLOSED_RE.search(line):
+            if self._CONNECTION_CLOSED_RE.search(line):
                 event_counts["connection_closed"] += 1
 
-        if not ip_counts and not user_counts and not event_counts:
-            return ""
+        if not (
+            ip_counts
+            or error_ip_counts
+            or user_counts
+            or error_user_counts
+            or event_counts
+            or port_counts
+            or pid_counts
+            or path_counts
+        ):
+            return "ENTITY PROFILE: No entities found"
 
         parts = ["ENTITY PROFILE (full file scan):"]
 
@@ -410,14 +465,33 @@ class LogsAndErrorsExtractor:
             for event, count in event_counts.most_common():
                 parts.append(f"    {event}: {count}")
 
-        if ip_counts:
-            parts.append(f"  Distinct IPs: {len(ip_counts)}")
+        if error_ip_counts or ip_counts:
+            parts.append("  Distinct IPs:")
+            for ip, count in error_ip_counts.most_common(top_n):
+                parts.append(f"    {ip}: {count} error mentions")
             for ip, count in ip_counts.most_common(top_n):
-                parts.append(f"    {ip}: {count} line mentions")
+                parts.append(f"    {ip}: {count} standard mentions")
 
-        if user_counts:
-            parts.append(f"  Distinct usernames: {len(user_counts)}")
+        if error_user_counts or user_counts:
+            parts.append("  Distinct usernames:")
+            for user, count in error_user_counts.most_common(top_n):
+                parts.append(f"    {user}: {count} error mentions")
             for user, count in user_counts.most_common(top_n):
-                parts.append(f"    {user}: {count} line mentions")
+                parts.append(f"    {user}: {count} standard mentions")
+
+        if port_counts:
+            parts.append(f"  Distinct Ports: {len(port_counts)}")
+            for port, count in port_counts.most_common(top_n):
+                parts.append(f"    {port}: {count} mentions")
+
+        if pid_counts:
+            parts.append(f"  Distinct PIDs: {len(pid_counts)}")
+            for pid, count in pid_counts.most_common(top_n):
+                parts.append(f"    {pid}: {count} mentions")
+
+        if path_counts:
+            parts.append(f"  HTTP Paths: {len(path_counts)}")
+            for path, count in path_counts.most_common(top_n):
+                parts.append(f"    {path}: {count} requests")
 
         return "\n".join(parts)

@@ -40,6 +40,10 @@ class DocumentationExtractor:
         5. Extract code blocks and commands
         6. Generate structured summary
         """
+        content = content.lstrip("\ufeff")
+        if len(content) > 50_000_000:
+            return "[File exceeds 50MB maximum size limit for extraction]"
+
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
@@ -79,6 +83,7 @@ class DocumentationExtractor:
             Sections=len(sections),
             **{"Code blocks": len(code_blocks)},
             **{"Commands": commands_count},
+            **{"Empty TOC / No Structure Detected": True if not sections else None},
         )
         return result
 

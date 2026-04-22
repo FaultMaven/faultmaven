@@ -41,7 +41,6 @@ class SourceCodeExtractor:
     """AST-based code analysis (0 LLM calls)"""
 
     # Output limits
-    MAX_OUTPUT_CHARS = 8000  # ~2K tokens
     MAX_FUNCTIONS = 20
     MAX_CLASSES = 15
 
@@ -55,19 +54,17 @@ class SourceCodeExtractor:
 
     def extract(self, content: str) -> str:
         """
-        Extract key information from source code
-
-        Strategy:
-        1. Detect language (Python, JavaScript, TypeScript, Java, Go, etc.)
-        2. Parse AST if possible (Python)
-        3. Extract key elements:
-           - Function/method definitions with signatures
-           - Class definitions with inheritance
-           - Import statements
-           - Error handling (try/catch/except)
-           - TODOs and FIXMEs
-        4. Format as structured summary
+        Source Code Extraction algorithm:
+        1. Parse with Tree-sitter if available
+        2. Identify structural nodes (classes, functions)
+        3. Identify imports and dependencies
+        4. Detect potential issues (TODOs, hardcoded secrets, large blocks)
+        5. Format as compact structural summary
         """
+        content = content.lstrip("\ufeff")
+        if len(content) > 50_000_000:
+            return "[File exceeds 50MB maximum size limit for extraction]"
+
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
@@ -683,9 +680,14 @@ class SourceCodeExtractor:
         """Extract function definitions using patterns"""
         functions = []
 
-        if language in ["JavaScript/TypeScript"]:
-            pattern = r"\b(?:function|const|let|var)\s+(\w+)\s*(?:=\s*)?(?:async\s+)?\([^)]*\)"
-            functions = re.findall(pattern, content)
+        if language == "JavaScript/TypeScript":
+            # Matches: function name(), const name = () =>
+            pattern = r"(?:(?:\bfunction\s+(\w+)\s*(?:async\s+)?\([^)]*\))|(?:\b(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\([^)]*\)\s*=>))"
+            matches = re.finditer(pattern, content)
+            for m in matches:
+                name = m.group(1) or m.group(2)
+                if name:
+                    functions.append(name)
         elif language == "Java":
             pattern = (
                 r"\b(?:public|private|protected)\s+(?:static\s+)?[\w<>]+\s+(\w+)\s*\("

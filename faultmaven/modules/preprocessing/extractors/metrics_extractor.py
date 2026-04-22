@@ -39,7 +39,6 @@ class MetricsAndPerformanceExtractor:
     SPIKE_SIGMA_THRESHOLD = 3.0  # Standard deviations for spike detection
     DROP_PERCENT_THRESHOLD = 0.50  # 50% drop from baseline
     MAX_ANOMALIES_REPORTED = 20  # Safety limit
-    MAX_OUTPUT_LENGTH = 5000  # Character limit for output
 
     @property
     def strategy_name(self) -> str:
@@ -60,6 +59,11 @@ class MetricsAndPerformanceExtractor:
         4. Detect anomalies (spikes, drops)
         5. Generate natural language summary
         """
+        content = content.lstrip("\ufeff")
+        if len(content) > 50_000_000:
+            return "[File exceeds 50MB maximum size limit for extraction]"
+
+        self.csv_skipped_rows = 0
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
@@ -80,7 +84,19 @@ class MetricsAndPerformanceExtractor:
 
         # Analyze each metric
         summaries = []
+        total_data_points = 0
+        min_ts = None
+        max_ts = None
+
         for metric_name, data_points in time_series.items():
+            total_data_points += len(data_points)
+            for ts, _ in data_points:
+                if ts:
+                    if not min_ts or ts < min_ts:
+                        min_ts = ts
+                    if not max_ts or ts > max_ts:
+                        max_ts = ts
+
             summary = self._analyze_metric(metric_name, data_points)
             summaries.append(summary)
 
@@ -93,13 +109,20 @@ class MetricsAndPerformanceExtractor:
         if csv_summary:
             output += f"\n\n{csv_summary}"
 
+        if getattr(self, "csv_skipped_rows", 0) > 0:
+            output += f"\n\n[Warning: {self.csv_skipped_rows} malformed CSV rows were skipped during parsing]"
+
         output = truncate_output(output)
+
+        time_span = f"{min_ts} to {max_ts}" if min_ts and max_ts else None
 
         # Coverage metadata
         metric_names = list(time_series.keys())
         output += format_coverage_metadata(
             Format=format_detected,
             Metrics=len(metric_names),
+            **{"Total data points": total_data_points},
+            **{"Time span": time_span},
             **{"Metric names": ", ".join(metric_names[:10])},
             **{"Anomalies found": total_anomalies},
         )
@@ -292,6 +315,8 @@ class MetricsAndPerformanceExtractor:
         for row in rows[1:]:
             parts = [p.strip() for p in row]
             if len(parts) != len(header):
+                if hasattr(self, "csv_skipped_rows"):
+                    self.csv_skipped_rows += 1
                 continue
 
             ts = parts[timestamp_col] if timestamp_col is not None else None
@@ -481,26 +506,31 @@ class MetricsAndPerformanceExtractor:
         Detect anomalies using statistical methods
 
         Detects:
-        - Spikes: Values >3σ above mean
+        - Spikes: Robust robust-IQR approximation for log-normal variance
         - Drops: Values <50% of baseline (non-zero mean)
         """
         anomalies = []
         mean = stats["mean"]
-        std_dev = stats["std_dev"]
+        p50 = stats["p50"]
+        p95 = stats["p95"]
 
-        spike_threshold = mean + (self.SPIKE_SIGMA_THRESHOLD * std_dev)
+        iqr_proxy = p95 - p50
+        spike_threshold = p95 + (1.5 * iqr_proxy)
+        if spike_threshold <= p50:
+            spike_threshold = p50 * 1.5 if p50 > 0 else 1.0
+
         drop_threshold = mean * (1 - self.DROP_PERCENT_THRESHOLD) if mean > 0 else None
 
         for timestamp, value in data_points:
             # Detect spikes
-            if value > spike_threshold and std_dev > 0:
-                sigma = (value - mean) / std_dev
+            if value > spike_threshold and value > p50:
+                ratio = (value / p50) if p50 > 0 else value
                 anomalies.append(
                     {
                         "type": "spike",
                         "timestamp": timestamp,
                         "value": value,
-                        "sigma": round(sigma, 2),
+                        "ratio": round(ratio, 1),
                         "threshold": round(spike_threshold, 2),
                     }
                 )
@@ -557,9 +587,9 @@ class MetricsAndPerformanceExtractor:
                     value = anomaly["value"]
 
                     if anom_type == "spike":
-                        sigma = anomaly["sigma"]
+                        ratio = anomaly.get("ratio", anomaly.get("sigma", 0))
                         lines.append(
-                            f"      • SPIKE at {timestamp}: {value:.2f} ({sigma}σ above mean)"
+                            f"      • SPIKE at {timestamp}: {value:.2f} ({ratio}x median)"
                         )
                     elif anom_type == "drop":
                         drop_pct = anomaly["drop_percent"]
