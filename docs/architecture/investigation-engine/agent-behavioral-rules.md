@@ -63,7 +63,7 @@ directly. Do NOT create a problem statement or initiate an investigation.
 
 **What it prevents**: Agent fabricates data, speculates without evidence, or gives generic advice disconnected from the specific case.
 
-**Injection point**: INVESTIGATING base template (forced structure). Anti-hallucination constraints (do not fabricate data sources) apply in all templates.
+**Injection point**: INVESTIGATING base template (forced structure). Anti-hallucination constraints (do not fabricate data sources) apply in all templates. The EVIDENCE GROUNDING block (hard constraints, see below) is stored in the `_EVIDENCE_GROUNDING_BLOCK` constant and injected via the `{evidence_grounding}` template variable in `INVESTIGATION_BASE`, appearing immediately after `CURRENT USER MESSAGE:` and before `YOUR TASK: {adaptive_instructions}`. For `knowledge_query` mode, `evidence_grounding=""` so the block is entirely absent rather than sandwiching the exemption text between constraint blocks.
 
 **Prompt injection**:
 
@@ -89,6 +89,7 @@ The three-step framework is an internal reasoning scaffold, not an output format
 - NEVER claim to have "accessed", "checked", "looked at", or "analyzed" data not provided in evidence context or the Knowledge Base
 - NEVER present a conclusion without first citing specific case evidence or a specific Runbook
 - NEVER present one explanation as confirmed when the evidence equally supports alternatives
+- NEVER cite evidence IDs (like `ev_a1b2c3d4e5f6`) in `agent_response` — reference evidence by its label (filename, description) instead
 
 **Prohibited patterns**:
 
@@ -122,7 +123,7 @@ When violations are detected, a self-correction retry feeds the specific violati
 
 **What it prevents**: Agent claims to execute actions or access systems, eroding user trust when nothing happens.
 
-**Injection point**: All templates — a strict negative constraint.
+**Injection point**: All templates — a strict negative constraint. Implemented via the `_ADVISOR_ROLE_CONSTRAINT` module-level constant in `templates.py`, which is string-concatenated into both `INQUIRY_TEMPLATE` and `INVESTIGATION_BASE`. A single definition eliminates the risk of the two copies drifting out of sync.
 
 **Prompt injection**:
 
@@ -271,11 +272,11 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | Rule | Template | Section in Template | Position |
 | ---- | -------- | ------------------- | -------- |
 | 1 (Answer First) | INQUIRY only | YOUR TASK instructions | Early (after context header) |
-| 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING | Mid-to-late (after operational sections) |
-| 3 (Advisor Role) | All templates | ASSISTANT ROLE | Varies: early in INQUIRY/TERMINAL, mid in INVESTIGATING |
+| 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING | EVIDENCE GROUNDING now before YOUR TASK; DIAGNOSTIC REASONING after ASSISTANT ROLE |
+| 3 (Advisor Role) | All templates | ASSISTANT ROLE via `_ADVISOR_ROLE_CONSTRAINT` constant | Varies: early in INQUIRY/TERMINAL, mid in INVESTIGATING. Single constant shared across INQUIRY_TEMPLATE and INVESTIGATION_BASE. |
 | 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
 | 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
-| 6 (Knowledge First) | INQUIRY + INVESTIGATION_BASE + DA system instruction | YOUR TASK (INQUIRY), DIAGNOSIS (INVESTIGATING), TYPE B routing (DA instruction) | Early in each |
+| 6 (Knowledge First) | INQUIRY + INVESTIGATION_BASE + DA system instruction | YOUR TASK (INQUIRY), DIAGNOSIS (INVESTIGATING), TYPE B routing (DA instruction); `KNOWLEDGE_QUERY_INSTRUCTIONS` constant used for knowledge_query bypass | Early in each |
 
 ### Dynamic Injection: Focus Zone and INQUIRY State
 
@@ -313,18 +314,23 @@ CONTEXT HEADER
   conversation history, user message, output format
                                                         (~2000-5000+ tokens of dynamic context)
 
-YOUR TASK: {adaptive_instructions}                      Focus Zone prepended here for DIAGNOSIS
+{evidence_grounding} (Rule 2 extension)                 _EVIDENCE_GROUNDING_BLOCK constant; set to "" for
+                                                        knowledge_query (block entirely absent, not exempted)
+YOUR TASK: {adaptive_instructions}                      Focus Zone prepended here for DIAGNOSIS only
+                                                        MITIGATION_FIRST path note scoped to DIAGNOSIS branch
 KEY PRINCIPLES (Rules 4, 5)                             Graceful Pivot + Work With What You Get
 FOLLOW-UP SUGGESTIONS
-EVIDENCE FROM ATTACHMENTS / CLASSIFICATION / RECORDS
+EVIDENCE FROM ATTACHMENTS / CLASSIFICATION DECISION TREE / RECORDS
 EVIDENCE SUMMARY QUALITY                               Long-term memory for evidence artifacts
+INVESTIGATION JOURNAL
 MILESTONE ATTRIBUTION
-ASSISTANT ROLE (Rule 3)                                 Advisor Role vocabulary constraints
+ASSISTANT ROLE (Rule 3)                                 _ADVISOR_ROLE_CONSTRAINT constant
 CONCISENESS
 DIAGNOSTIC REASONING (Rule 2)                           OBSERVATION -> ANALYSIS -> CONCLUSION
-EVIDENCE GROUNDING (Rule 2 extension)                   Anti-hallucination hard constraints
-...security constraints, hypothesis management...
+<security_constraints>
 ```
+
+**`processing_mode == "knowledge_query"` bypass**: When this mode is set, `get_prompt_for_case()` skips stage dispatch entirely and passes `evidence_grounding=""`. `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions`, and the EVIDENCE GROUNDING block is absent from the rendered prompt entirely — rather than inserting an exemption clause sandwiched between other constraint blocks. DIAGNOSTIC REASONING constraints also do not apply for that turn.
 
 ### Design Rationale
 

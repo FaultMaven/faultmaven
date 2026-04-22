@@ -204,7 +204,7 @@ Knowledge questions are detected by matching ALL three gates:
 2. **No hard case-specific entities**: No timestamps, HTTP status codes, or IP addresses. Service names and error keywords are allowed (they can be the *subject* of a knowledge question, e.g., "How does Redis clustering work?")
 3. **No case references**: No possessive/locational references to case data ("the error", "in the logs", "we're seeing"). All case reference patterns require a prefix (the/this/our/in/from) to avoid matching bare nouns like "What is a null pointer exception?"
 
-Knowledge queries still get tool access (with `tool_choice="auto"`) so the LLM can invoke `kb_qa` when the question is about runbooks or documented procedures. The LLM decides whether to use a tool based on the question. Diagnostic reasoning validation is skipped, and a KNOWLEDGE QUERY OVERRIDE escape clause relaxes evidence-grounding requirements in the prompt.
+Knowledge queries still get tool access (with `tool_choice="auto"`) so the LLM can invoke `kb_qa` when the question is about runbooks or documented procedures. The LLM decides whether to use a tool based on the question. Diagnostic reasoning validation is skipped, and the EVIDENCE GROUNDING block is omitted entirely from the rendered prompt (`evidence_grounding=""`) rather than appending an escape clause — so no constraint text sandwiches the exemption.
 
 ### 1.2 Design Principles
 
@@ -998,7 +998,7 @@ appropriate for the question. If your analysis is insufficient, the system will
 automatically index large files for semantic search — you do not need to manage this.
 ```
 
-**Knowledge Query mode**: Knowledge queries get tool access with `tool_choice="auto"` — the LLM can invoke `kb_qa` for runbook content or answer from built-in knowledge. The investigation prompt is appended with a `KNOWLEDGE QUERY OVERRIDE` escape clause that relaxes evidence-grounding and diagnostic reasoning requirements.
+**Knowledge Query mode**: Knowledge queries get tool access with `tool_choice="auto"` — the LLM can invoke `kb_qa` for runbook content or answer from built-in knowledge. `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions` and `evidence_grounding=""` is passed, so the EVIDENCE GROUNDING block is absent from the rendered prompt entirely. Diagnostic reasoning validation is also skipped.
 
 **System Instruction (Type A/B/C routing)**: The system instruction includes question routing guidance:
 

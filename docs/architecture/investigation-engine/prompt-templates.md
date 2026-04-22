@@ -45,6 +45,25 @@ from app.models import (
 TEMPLATE_VERSION = "3.0.0"
 ARCHITECTURE_VERSION = "Investigation v3.0 (Evidence-Driven)"
 CASE_MODEL_VERSION = "v3.0"
+
+# Cross-phase constants — defined once, string-concatenated into both
+# INQUIRY_TEMPLATE and INVESTIGATION_BASE to prevent drift between the two copies.
+_ADVISOR_ROLE_CONSTRAINT = "..."   # Banned/required phrase list (Rule 3)
+_DATA_CITATION_RULE = "..."        # Evidence label citation rule (Rule 2)
+_EVIDENCE_GROUNDING_BLOCK = "..."  # Anti-hallucination hard constraints (Rule 2 extension);
+                                   # injected as {evidence_grounding} in INVESTIGATION_BASE.
+                                   # Set to "" for knowledge_query mode so the block is
+                                   # entirely absent rather than sandwiching the exemption.
+
+# Injected as adaptive_instructions when processing_mode == "knowledge_query",
+# bypassing all stage dispatch entirely.
+KNOWLEDGE_QUERY_INSTRUCTIONS = "..."
+
+# Fallback templates (used when the primary template cannot be rendered):
+# FALLBACK_INQUIRY_TEMPLATE, FALLBACK_INVESTIGATION_TEMPLATE, FALLBACK_TERMINAL_TEMPLATE
+# Each now includes minimal safety constraints: no confabulation, hypothesis-evidence
+# ordering, and (for TERMINAL) the closed-case boundary. These were safety-free stubs
+# in prior versions.
 ```
 
 ---
@@ -384,10 +403,12 @@ EDGE CASES
 **User Declines Investigation**
 User: "No, I just wanted to know if this is normal"
 
-Response: Acknowledge, provide assessment, keep door open
-"10% failure rate is NOT normal - that's definitely a problem worth addressing.
-However, if you're not ready for full investigation, I'm happy to answer any
-other questions you have."
+Handled by the `USER DECIDES NOT TO INVESTIGATE` section in `INQUIRY_TEMPLATE`.
+The agent acknowledges the decision without pushback, may offer a brief insight
+("10% failure rate is not normal — worth keeping an eye on"), and then stops.
+It does NOT re-raise the investigation offer in subsequent turns.
+State: the agent does not set `user_confirmed_investigation=True`. The door is not
+actively kept open — the agent waits for the user to re-initiate rather than re-proposing.
 
 **No Problem Detected**
 User: "How do I configure connection pooling?"
@@ -599,6 +620,20 @@ def _build_task_instructions(case: Case) -> str:
     - DIAGNOSIS: Understand, diagnose, propose actions (core stage)
     - TREATMENT: Apply permanent fix, verify resolution (core stage)
     - MITIGATION: Apply and verify temporary fix (optional detour)
+
+    Knowledge-query bypass: when `processing_mode == "knowledge_query"`, stage
+    dispatch is skipped entirely. `get_prompt_for_case()` injects
+    `KNOWLEDGE_QUERY_INSTRUCTIONS` directly as `adaptive_instructions`, which
+    includes an explicit statement that EVIDENCE GROUNDING and DIAGNOSTIC
+    REASONING constraints do not apply for that turn.
+
+    INVESTIGATION_BASE layout note: `{evidence_grounding}` is a template variable
+    placed immediately after `CURRENT USER MESSAGE:` and before `YOUR TASK:
+    {adaptive_instructions}`. It is set to `_EVIDENCE_GROUNDING_BLOCK` for standard
+    investigation turns and `""` for knowledge_query mode — ensuring the block is
+    entirely absent rather than sandwiching the exemption text between constraint blocks.
+    The MITIGATION_FIRST path note is injected inside the DIAGNOSIS branch only
+    (not at the outer level, which would affect all stages).
     """
 
     stage = case.progress.current_stage
@@ -729,7 +764,28 @@ If that's difficult to obtain, [ALTERNATIVE] would also help.
 Why: [diagnostic value]"
 
 **IMPORTANT**: Process evidence naturally. There are no sub-stages to "jump"
-between — if evidence reveals root cause immediately, act on it immediately."""
+between — if evidence reveals root cause immediately, act on it immediately.
+
+**HYPOTHESIS-EVIDENCE ORDERING (Non-Negotiable)**
+Defines the mandatory 4-step sequence enforced at the top of DIAGNOSIS_INSTRUCTIONS:
+1. Create hypothesis
+2. Classify causal_evidence (requires a hypothesis to already exist)
+3. Link evidence to hypothesis record
+4. Set root_cause_identified when confidence ≥ 70%
+This replaces the three previously scattered references to the constraint.
+
+**COMPLIANCE DETECTION**
+DIAGNOSIS_INSTRUCTIONS defines what counts as user execution of a proposed action:
+- Positive signals: past-tense language, new post-action evidence, result-specific follow-up
+- NOT compliance: intent statements ("I'll try that"), silence, clarifying questions about the proposed action
+The agent must detect these signals to set the correct gate milestone.
+
+**HYPOTHESIS DEADLOCK**
+When all active hypotheses are refuted and no new evidence distinguishes between
+remaining options, DIAGNOSIS_INSTRUCTIONS prescribes:
+- Try hypotheses from different categories (up to 2 recovery cycles)
+- After 2 cycles without resolution, perform a structured handoff summary
+This sub-case is handled before the general "WHEN DIAGNOSIS STALLS" handoff path."""
 
 
 def _get_mitigation_instructions(case: Case) -> str:
@@ -865,7 +921,11 @@ GENERAL INSTRUCTIONS (Apply to All Stages)
 
 **Five types (content-based, not stage-based):**
 1. SYMPTOM - Shows problem exists (error logs, metrics, stack traces)
-2. CAUSAL - Tests why problem exists (requires hypothesis to exist first)
+2. CAUSAL - Tests why problem exists. Classification follows a 4-step decision
+   tree: (1) check whether evidence relates to a symptom or proposed action;
+   (2) check whether at least one hypothesis exists — if not, create one first
+   before classifying anything as causal_evidence; (3) evaluate against all
+   active hypotheses; (4) link to supporting/refuting hypothesis records.
 3. MITIGATION - Shows whether temp fix worked (MITIGATION stage only)
 4. SOLUTION - Shows whether permanent fix worked (TREATMENT stage only)
 5. CONTEXTUAL - Baseline/environmental context (any stage)
