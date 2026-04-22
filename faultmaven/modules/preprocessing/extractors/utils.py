@@ -90,12 +90,25 @@ def format_coverage_metadata(**kwargs: object) -> str:
 # ---------------------------------------------------------------------------
 
 # Compiled once at import time — order matters (most specific first).
+#
+# The BSD-syslog family covers a spectrum of formats that share the same
+# "Mon DD HH:MM:SS" core but differ in whether a day-of-week prefix and/or
+# a 4-digit year are present. Rather than enumerate each variant as a
+# separate pattern (which silently discards information), one pattern
+# captures the optional prefix and suffix as named groups and the parser
+# uses whichever parts were present.
 _TS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("iso8601_t", re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")),
     ("iso8601", re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")),
     (
         "syslog_bsd",
-        re.compile(r"[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}"),
+        re.compile(
+            r"(?:[A-Z][a-z]{2}\s+)?"  # optional day-of-week prefix
+            r"(?P<month>[A-Z][a-z]{2})\s+"  # month abbreviation
+            r"(?P<day>\d{1,2})\s+"  # day-of-month
+            r"(?P<time>\d{2}:\d{2}:\d{2})"  # HH:MM:SS
+            r"(?:\s+(?P<year>\d{4}))?"  # optional explicit year
+        ),
     ),
     ("epoch_ms", re.compile(r"\b([12]\d{12})\b")),
     ("epoch_s", re.compile(r"\b([12]\d{9})\b")),
@@ -138,23 +151,21 @@ def extract_timestamp(line: str) -> datetime | None:
                     tzinfo=UTC
                 )
             if name == "syslog_bsd":
-                parts = m.group(0).split()
-                month = _SYSLOG_MONTHS.get(parts[0], 1)
-                day = int(parts[1])
-                time_parts = parts[2].split(":")
+                # Single parser for the full BSD-syslog family. Use the
+                # explicit year when the input provides one; fall back to the
+                # "now or previous year" heuristic only when the year is
+                # genuinely absent from the log line.
+                month = _SYSLOG_MONTHS.get(m.group("month"), 1)
+                day = int(m.group("day"))
+                hh, mm, ss = (int(x) for x in m.group("time").split(":"))
+                year_str = m.group("year")
+                if year_str is not None:
+                    return datetime(int(year_str), month, day, hh, mm, ss, tzinfo=UTC)
 
-                year = datetime.now(tz=UTC).year
-                dt = datetime(
-                    year,
-                    month,
-                    day,
-                    int(time_parts[0]),
-                    int(time_parts[1]),
-                    int(time_parts[2]),
-                    tzinfo=UTC,
-                )
-                if dt > datetime.now(tz=UTC):
-                    dt = dt.replace(year=year - 1)
+                now = datetime.now(tz=UTC)
+                dt = datetime(now.year, month, day, hh, mm, ss, tzinfo=UTC)
+                if dt > now:
+                    dt = dt.replace(year=now.year - 1)
                 return dt
             if name in ("epoch_ms", "epoch_s"):
                 val = int(m.group(1))

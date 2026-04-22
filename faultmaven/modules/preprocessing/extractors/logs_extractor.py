@@ -374,13 +374,51 @@ class LogsAndErrorsExtractor:
     _IPV4_RE = re.compile(
         r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
     )
-    _IPV6_RE = re.compile(r"\b(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}\b")
+    # IPv6 including compressed forms (::1, fe80::1, 2001:db8::ff00:42:8329).
+    # Negative look-around rejects runs of hex-and-colons that are really
+    # timestamps or MAC addresses. An 8-group full form is the widest match;
+    # each of the following branches covers a different `::` position.
+    _IPV6_RE = re.compile(
+        r"(?<![0-9A-Fa-f:.])"
+        r"(?:"
+        r"(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}"
+        r"|(?:[0-9A-Fa-f]{1,4}:){1,7}:"
+        r"|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}"
+        r"|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}"
+        r"|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}"
+        r"|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}"
+        r"|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}"
+        r"|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}"
+        r"|::(?:[0-9A-Fa-f]{1,4}:){0,6}[0-9A-Fa-f]{1,4}"
+        r")"
+        r"(?![0-9A-Fa-f:.])"
+    )
     _USER_RE = re.compile(
         r"(?:\buser[= ]+|\bfor (?:invalid user )?\b|\buser=)([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b",
         re.IGNORECASE,
     )
-    _PORT_RE = re.compile(r"\b(?:port[= ]+|:)(\d{1,5})\b", re.IGNORECASE)
-    _PID_RE = re.compile(r"\b(?:pid[= ]+|\[)(\d{1,5})(?:\]|\b)", re.IGNORECASE)
+    # Port matchers. A port number is a numeric token that needs *structural*
+    # context on the left: either an explicit `port` keyword, or a
+    # host-or-address token before the colon. A bare `:\d+` would match every
+    # `MM:SS` fragment in a timestamp.
+    #
+    # The general rule for `<lhs>:<port>` is that the left-hand side contains
+    # at least one non-digit character (a hostname letter, or an IPv4's dot).
+    # Pure-digit LHS (timestamp fragments like `04:47`) is rejected.
+    _PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
+    _HOST_PORT_RE = re.compile(
+        # LHS must contain at least one non-digit char (letter or dot).
+        # `(?<![\w.-])` pins the start; `[\w.-]*[A-Za-z.]` requires a
+        # non-digit somewhere in the LHS.
+        r"(?<![\w.-])[\w-]*[A-Za-z.][\w.-]*:(\d{1,5})\b"
+    )
+    # PID matchers. Same principle: a PID needs structural context.
+    # `[\d+]` alone (with a closing bracket) is the classic syslog form;
+    # `pid=N` is the explicit keyword form. We do NOT accept `[\d+` without
+    # the closing bracket, which would otherwise match `[19:02:15]` and
+    # capture `19` as a PID.
+    _PID_KEYWORD_RE = re.compile(r"\bpid[= ]+(\d{1,5})\b", re.IGNORECASE)
+    _PID_BRACKET_RE = re.compile(r"\[(\d{1,5})\]")
     _HTTP_PATH_RE = re.compile(r"\b(?:GET|POST|PUT|DELETE|PATCH)\s+(/[^\s\?]*)\b")
 
     # SSH event type patterns for semantic counting
@@ -426,10 +464,14 @@ class LogsAndErrorsExtractor:
                         error_user_counts[user] += 1
                     else:
                         user_counts[user] += 1
-            for port_str in self._PORT_RE.findall(line):
+            for port_str in self._PORT_KEYWORD_RE.findall(
+                line
+            ) + self._HOST_PORT_RE.findall(line):
                 if port_str.isdigit() and 0 < int(port_str) <= 65535:
                     port_counts[port_str] += 1
-            for pid_str in self._PID_RE.findall(line):
+            for pid_str in self._PID_KEYWORD_RE.findall(
+                line
+            ) + self._PID_BRACKET_RE.findall(line):
                 if pid_str.isdigit() and int(pid_str) > 0:
                     pid_counts[pid_str] += 1
             for path in self._HTTP_PATH_RE.findall(line):

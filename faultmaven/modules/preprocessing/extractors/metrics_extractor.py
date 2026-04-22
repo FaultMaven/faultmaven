@@ -36,9 +36,13 @@ class MetricsAndPerformanceExtractor:
     """Statistical analysis of performance metrics (0 LLM calls)"""
 
     # Anomaly detection thresholds
-    SPIKE_SIGMA_THRESHOLD = 3.0  # Standard deviations for spike detection
     DROP_PERCENT_THRESHOLD = 0.50  # 50% drop from baseline
     MAX_ANOMALIES_REPORTED = 20  # Safety limit
+    # Spike detection uses an IQR proxy (p95 - p50). When the data is nearly
+    # constant the proxy collapses to ~0 and every tiny upward fluctuation is
+    # flagged as a spike. Require a minimum spread relative to the median
+    # before reporting any spikes.
+    MIN_IQR_PROXY_FRACTION = 0.05
 
     @property
     def strategy_name(self) -> str:
@@ -376,26 +380,36 @@ class MetricsAndPerformanceExtractor:
     def _parse_prometheus_regex(
         self, content: str
     ) -> dict[str, list[tuple[str | None, float]]] | None:
-        """Parse Prometheus metrics using regex (fallback)."""
+        """Parse Prometheus metrics using regex (fallback).
+
+        Label-aware: a labeled metric like ``http_requests{method="GET"} 42``
+        is kept as a distinct series keyed by ``name{labels}``. Without label
+        awareness this fallback would silently skip every labeled line,
+        collapsing multi-dimensional metrics into nothing.
+        """
         result: dict[str, list[tuple[str | None, float]]] = {}
 
-        # Match lines like: metric_name{labels} value timestamp
-        pattern = r"^([a-zA-Z_:][a-zA-Z0-9_:]*)\s+([\d.eE+-]+)"
+        # name, optional {labels}, whitespace, value
+        pattern = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([\d.eE+-]+)")
 
         for line in content.split("\n"):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
 
-            match = re.match(pattern, line)
-            if match:
-                metric_name = match.group(1)
-                value = float(match.group(2))
+            match = pattern.match(line)
+            if not match:
+                continue
 
-                if metric_name not in result:
-                    result[metric_name] = []
+            name = match.group(1)
+            labels = match.group(2) or ""
+            try:
+                value = float(match.group(3))
+            except ValueError:
+                continue
 
-                result[metric_name].append((None, value))
+            metric_key = f"{name}{labels}" if labels else name
+            result.setdefault(metric_key, []).append((None, value))
 
         return result if result else None
 
@@ -506,7 +520,8 @@ class MetricsAndPerformanceExtractor:
         Detect anomalies using statistical methods
 
         Detects:
-        - Spikes: Robust robust-IQR approximation for log-normal variance
+        - Spikes: IQR-proxy threshold, with a minimum-spread guard so nearly
+          constant data doesn't flag every trivial fluctuation.
         - Drops: Values <50% of baseline (non-zero mean)
         """
         anomalies = []
@@ -515,9 +530,16 @@ class MetricsAndPerformanceExtractor:
         p95 = stats["p95"]
 
         iqr_proxy = p95 - p50
-        spike_threshold = p95 + (1.5 * iqr_proxy)
-        if spike_threshold <= p50:
-            spike_threshold = p50 * 1.5 if p50 > 0 else 1.0
+        # Guard: suppress spike detection when the data is effectively flat.
+        # Absent this, p95 == p50 would collapse spike_threshold onto p95 and
+        # any value slightly above p95 would be flagged as a "spike".
+        min_meaningful_spread = max(abs(p50) * self.MIN_IQR_PROXY_FRACTION, 1e-9)
+        if iqr_proxy < min_meaningful_spread:
+            spike_threshold = float("inf")
+        else:
+            spike_threshold = p95 + (1.5 * iqr_proxy)
+            if spike_threshold <= p50:
+                spike_threshold = p50 * 1.5 if p50 > 0 else 1.0
 
         drop_threshold = mean * (1 - self.DROP_PERCENT_THRESHOLD) if mean > 0 else None
 
