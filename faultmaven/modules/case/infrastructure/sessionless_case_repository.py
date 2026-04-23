@@ -30,7 +30,9 @@ from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.modules.case.contracts import (
     Case,
     CaseCheckpoint,
+    CaseEntity,
     CaseStatus,
+    EntityType,
     Evidence,
     Hypothesis,
     Solution,
@@ -156,6 +158,39 @@ class SessionlessCaseRepository(CaseRepository):
         async with get_db_session() as session:
             repo = _get_repository_for_session(session)
             return await repo.list_evidence_by_time_window(case_id, start, end)
+
+    async def upsert_case_entities(
+        self,
+        case_id: str,
+        evidence_id: str,
+        entities: list[CaseEntity],
+    ) -> None:
+        """Phase 4 — see ``CaseRepository.upsert_case_entities``."""
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            await repo.upsert_case_entities(case_id, evidence_id, entities)
+
+    async def find_entity(
+        self,
+        case_id: str,
+        entity_value: str,
+        entity_type: Optional[EntityType] = None,
+    ) -> list[CaseEntity]:
+        """Phase 4 — see ``CaseRepository.find_entity``."""
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            return await repo.find_entity(case_id, entity_value, entity_type)
+
+    async def list_top_entities(
+        self,
+        case_id: str,
+        entity_type: EntityType,
+        limit: int = 10,
+    ) -> list[CaseEntity]:
+        """Phase 4 — see ``CaseRepository.list_top_entities``."""
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            return await repo.list_top_entities(case_id, entity_type, limit)
 
     async def search_by_keyword(
         self, user_id: str, keyword: str, limit: int = 50

@@ -37,9 +37,11 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
     CaseCheckpoint,
+    CaseEntity,
     CaseReport,
     CaseStatus,
     DocumentationData,
+    EntityType,
     EscalationState,
     Evidence,
     EvidenceCategory,
@@ -68,6 +70,33 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def _row_to_case_entity(row: Any) -> CaseEntity:
+    """Build a domain ``CaseEntity`` from a SELECT row.
+
+    Columns in fixed order:
+    ``(case_id, entity_type, entity_value, evidence_id,
+        mention_count, in_error_context, first_seen_ts)``
+    """
+    entity_type_str = row[1]
+    try:
+        entity_type = EntityType(entity_type_str)
+    except ValueError:
+        # Registry may contain stale values from retired enum members.
+        # Fall back to the first type to keep the read path non-
+        # failing; the agent will see the value but not be able to
+        # filter on type meaningfully.
+        entity_type = next(iter(EntityType))
+    return CaseEntity(
+        case_id=str(row[0]),
+        entity_type=entity_type,
+        entity_value=str(row[2]),
+        evidence_id=str(row[3]),
+        mention_count=int(row[4]) if row[4] is not None else 1,
+        in_error_context=bool(row[5]),
+        first_seen_ts=row[6],
+    )
 
 
 def _derive_evidence_form(evidence: Evidence) -> str:
@@ -728,6 +757,184 @@ class SQLiteCaseRepository(CaseRepository):
         except Exception as e:
             raise RepositoryException(
                 f"Failed to list evidence by time window for case {case_id}: {e}"
+            ) from e
+
+    async def upsert_case_entities(
+        self,
+        case_id: str,
+        evidence_id: str,
+        entities: List[CaseEntity],
+    ) -> None:
+        """Delete this evidence's case_entities rows, then insert fresh.
+
+        Phase 4 — see ``CaseRepository.upsert_case_entities``. The
+        delete scopes to ``(case_id, evidence_id)`` rather than just
+        ``evidence_id`` as a belt-and-suspenders check: a bug that
+        crossed evidence_ids between cases would otherwise silently
+        corrupt the registry.
+        """
+        try:
+            delete_q = text("""
+                DELETE FROM case_entities
+                WHERE case_id = :case_id AND evidence_id = :evidence_id
+                """)
+            await self.db.execute(
+                delete_q, {"case_id": case_id, "evidence_id": evidence_id}
+            )
+
+            if not entities:
+                return
+
+            insert_q = text("""
+                INSERT INTO case_entities (
+                    case_id, entity_type, entity_value, evidence_id,
+                    mention_count, in_error_context, first_seen_ts
+                ) VALUES (
+                    :case_id, :entity_type, :entity_value, :evidence_id,
+                    :mention_count, :in_error_context, :first_seen_ts
+                )
+                """)
+            for entity in entities:
+                await self.db.execute(
+                    insert_q,
+                    {
+                        "case_id": case_id,
+                        "entity_type": entity.entity_type.value,
+                        "entity_value": entity.entity_value,
+                        "evidence_id": evidence_id,
+                        "mention_count": entity.mention_count,
+                        "in_error_context": (1 if entity.in_error_context else 0),
+                        "first_seen_ts": (
+                            entity.first_seen_ts.isoformat()
+                            if entity.first_seen_ts
+                            else None
+                        ),
+                    },
+                )
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to upsert case_entities for evidence {evidence_id}: {e}"
+            ) from e
+
+    async def find_entity(
+        self,
+        case_id: str,
+        entity_value: str,
+        entity_type: Optional[EntityType] = None,
+    ) -> List[CaseEntity]:
+        """Exact-value lookup across evidence in a case.
+
+        Uses ``idx_case_entities_lookup`` (case_id + entity_type +
+        entity_value) when ``entity_type`` is supplied; degrades to an
+        index scan on the case_id prefix when it isn't.
+        """
+        try:
+            where_clauses = ["case_id = :case_id", "entity_value = :entity_value"]
+            params: Dict[str, Any] = {
+                "case_id": case_id,
+                "entity_value": entity_value,
+            }
+            if entity_type is not None:
+                where_clauses.append("entity_type = :entity_type")
+                params["entity_type"] = entity_type.value
+
+            query = text(f"""
+                SELECT
+                    case_id, entity_type, entity_value, evidence_id,
+                    mention_count, in_error_context, first_seen_ts
+                FROM case_entities
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY mention_count DESC
+                """)
+            result = await self.db.execute(query, params)
+            rows = result.fetchall()
+            return [_row_to_case_entity(row) for row in rows]
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to find entity in case {case_id}: {e}"
+            ) from e
+
+    async def list_top_entities(
+        self,
+        case_id: str,
+        entity_type: EntityType,
+        limit: int = 10,
+    ) -> List[CaseEntity]:
+        """Top-N aggregation by entity_value.
+
+        Returns one representative row per distinct entity_value, with
+        ``mention_count`` equal to the sum across evidence. The
+        representative's ``evidence_id`` is the one with the largest
+        individual count (MAX(mention_count) tiebreak).
+        """
+        try:
+            # Aggregate via GROUP BY. SQLite doesn't support ORDER BY
+            # on the aggregated count directly in a subquery window
+            # under all aiosqlite versions, so we aggregate and sort in
+            # two passes via a single SELECT with GROUP BY + ORDER BY.
+            query = text("""
+                SELECT
+                    entity_value,
+                    SUM(mention_count) AS total_mentions,
+                    MAX(mention_count) AS max_individual,
+                    MAX(in_error_context) AS any_error,
+                    MIN(first_seen_ts) AS earliest_ts
+                FROM case_entities
+                WHERE case_id = :case_id AND entity_type = :entity_type
+                GROUP BY entity_value
+                ORDER BY total_mentions DESC
+                LIMIT :limit
+                """)
+            result = await self.db.execute(
+                query,
+                {
+                    "case_id": case_id,
+                    "entity_type": entity_type.value,
+                    "limit": limit,
+                },
+            )
+            rows = result.fetchall()
+            # Synthesize representative CaseEntity rows. evidence_id is
+            # the composite PK constraint in the domain model, so we
+            # fetch a representative row per value.
+            representatives: List[CaseEntity] = []
+            for row in rows:
+                value = row[0]
+                rep_q = text("""
+                    SELECT evidence_id
+                    FROM case_entities
+                    WHERE case_id = :case_id
+                      AND entity_type = :entity_type
+                      AND entity_value = :entity_value
+                    ORDER BY mention_count DESC
+                    LIMIT 1
+                    """)
+                rep_result = await self.db.execute(
+                    rep_q,
+                    {
+                        "case_id": case_id,
+                        "entity_type": entity_type.value,
+                        "entity_value": value,
+                    },
+                )
+                rep_row = rep_result.fetchone()
+                evidence_id = rep_row[0] if rep_row else ""
+                first_seen_ts = row[4]
+                representatives.append(
+                    CaseEntity(
+                        case_id=case_id,
+                        entity_type=entity_type,
+                        entity_value=value,
+                        evidence_id=evidence_id,
+                        mention_count=int(row[1]),
+                        in_error_context=bool(row[3]),
+                        first_seen_ts=first_seen_ts,
+                    )
+                )
+            return representatives
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to list top entities for case {case_id}: {e}"
             ) from e
 
     async def search(

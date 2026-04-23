@@ -1815,6 +1815,75 @@ class HypothesisCategory(str, Enum):
     """Does not fit above categories"""
 
 
+# ============================================================
+# Case Entity Registry (Phase 4)
+# ============================================================
+
+
+class EntityType(str, Enum):
+    """Controlled vocabulary for ``case_entities.entity_type``.
+
+    Extending this vocabulary requires a design-doc edit (not just a
+    code change) so the retrieval paths — agent tools, context-builder
+    auto-injection — stay in sync with what producers emit. See
+    ``docs/working/WIP-data-processing-improvement-plan.md`` §Phase 4.
+    """
+
+    IP = "ip"
+    HOSTNAME = "hostname"
+    USER = "user"
+    PID = "pid"
+    PORT = "port"
+    SERVICE = "service"
+    PATH = "path"
+    DEVICE = "device"
+    METRIC_NAME = "metric_name"
+
+
+class CaseEntity(BaseModel):
+    """One row in the case-level entity registry.
+
+    Populated by the preprocessing pipeline post-extraction. The
+    composite (case_id, entity_type, entity_value, evidence_id) is the
+    primary key — re-extracting an evidence upserts by that tuple,
+    preserving idempotency across re-runs.
+    """
+
+    case_id: str = Field(description="Case that owns this entity observation")
+    entity_type: EntityType = Field(
+        description=("Type of entity. Controlled vocabulary — see EntityType enum.")
+    )
+    entity_value: str = Field(
+        max_length=255,
+        description="The entity itself (IP address, hostname, PID, etc.)",
+    )
+    evidence_id: str = Field(
+        description="Evidence row the entity was extracted from",
+        pattern=r"^ev_[a-f0-9]{12}$",
+    )
+    mention_count: int = Field(
+        default=1,
+        ge=1,
+        description="How many times the entity appeared in the evidence",
+    )
+    in_error_context: bool = Field(
+        default=False,
+        description=(
+            "True when the entity appeared primarily in error / warning "
+            "lines. Lets the agent distinguish 'IP X was involved in an "
+            "error' from 'IP X showed up in ambient traffic'."
+        ),
+    )
+    first_seen_ts: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Earliest timestamp associated with this entity in this "
+            "evidence — typically equals the evidence's coverage_start_ts "
+            "(Phase 3a) when the evidence is time-bound, else None."
+        ),
+    )
+
+
 class HypothesisStatus(str, Enum):
     """Hypothesis lifecycle status"""
 

@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseAction,
+    CaseEntity,
     CaseStatus,
     DocumentationData,
+    EntityType,
     EscalationState,
     Evidence,
     Hypothesis,
@@ -170,6 +172,98 @@ class CaseRepository(ABC):
 
         Raises:
             RepositoryException: If lookup fails
+        """
+        pass
+
+    @abstractmethod
+    async def upsert_case_entities(
+        self,
+        case_id: str,
+        evidence_id: str,
+        entities: List[CaseEntity],
+    ) -> None:
+        """Replace this evidence's entity rows with *entities*.
+
+        Phase 4 — invoked by the preprocessing pipeline after each
+        extraction. Semantics: delete all existing
+        ``case_entities`` rows for ``(case_id, evidence_id)``, then
+        insert the new list. This "replace per evidence" contract keeps
+        re-extraction (Phase 1.5) and alt-extractor retries (Phase 2)
+        idempotent — stale entity observations from a previous
+        extraction don't linger.
+
+        When ``entities`` is empty, the delete fires but nothing is
+        inserted — correct for timeless evidence or evidence where
+        no entity-bearing content was present.
+
+        Args:
+            case_id: Case that owns the evidence.
+            evidence_id: Evidence being (re-)indexed.
+            entities: New row set. Every entry's ``case_id`` and
+                ``evidence_id`` must match the method arguments;
+                implementations may trust the caller.
+
+        Raises:
+            RepositoryException: If the write fails.
+        """
+        pass
+
+    @abstractmethod
+    async def find_entity(
+        self,
+        case_id: str,
+        entity_value: str,
+        entity_type: Optional[EntityType] = None,
+    ) -> List[CaseEntity]:
+        """Return registry rows matching ``entity_value`` in the case.
+
+        Phase 4 — primary case-level lookup. Exact-value match on
+        ``entity_value`` (case-sensitive). When ``entity_type`` is
+        provided, restricts to that type; else returns hits across all
+        types (an IP and a hostname with the same string, for example,
+        would both surface — rare but possible).
+
+        Returns:
+            Zero or more ``CaseEntity`` rows, ordered by
+            ``mention_count`` descending so the most-mentioned
+            instances come first.
+
+        Raises:
+            RepositoryException: If the query fails.
+        """
+        pass
+
+    @abstractmethod
+    async def list_top_entities(
+        self,
+        case_id: str,
+        entity_type: EntityType,
+        limit: int = 10,
+    ) -> List[CaseEntity]:
+        """Return the top-N entities of a given type in the case.
+
+        Phase 4 — aggregation query used by the context builder's
+        entity-highlights block and by ops dashboards. Aggregation
+        key is ``entity_value``; rows are combined across evidence by
+        summing ``mention_count``. The rows returned are representative
+        samples (one per aggregated entity) sorted by total mentions
+        desc.
+
+        Args:
+            case_id: Case to query within.
+            entity_type: Required — aggregating across types is
+                semantically unclear (an IP's count plus a PID's count
+                is meaningless). Callers that want "all entities"
+                should iterate the enum and combine client-side.
+            limit: Max number of distinct entities to return.
+
+        Returns:
+            List of ``CaseEntity`` rows, one per distinct
+            ``entity_value``, ordered by aggregated mention count
+            descending.
+
+        Raises:
+            RepositoryException: If the query fails.
         """
         pass
 
@@ -518,6 +612,11 @@ class InMemoryCaseRepository(CaseRepository):
         )  # execution_id -> AgentExecution (tool_calls stored separately)
         self._agent_tool_calls: Dict[str, Any] = {}  # tool_call_id -> AgentToolCall
         self._checkpoints: Dict[str, Any] = {}  # checkpoint_id -> CaseCheckpoint
+        # Phase 4 — case entity registry. Keyed by (case_id, evidence_id)
+        # for O(1) delete-before-insert on re-extraction, with the
+        # composite (case, type, value, evidence) tuple preserved
+        # inside each row.
+        self._case_entities: Dict[tuple[str, str], List[CaseEntity]] = {}
 
     async def save(self, case: Case) -> Case:
         """Save case to memory."""
@@ -648,6 +747,78 @@ class InMemoryCaseRepository(CaseRepository):
             matches.append(ev)
         matches.sort(key=lambda ev: ev.coverage_start_ts)
         return matches
+
+    async def upsert_case_entities(
+        self,
+        case_id: str,
+        evidence_id: str,
+        entities: List[CaseEntity],
+    ) -> None:
+        """Replace this evidence's entity rows — Phase 4 in-memory impl."""
+        key = (case_id, evidence_id)
+        if entities:
+            self._case_entities[key] = list(entities)
+        else:
+            # Clear rather than store an empty list so list queries
+            # don't see a residual entry.
+            self._case_entities.pop(key, None)
+
+    async def find_entity(
+        self,
+        case_id: str,
+        entity_value: str,
+        entity_type: Optional[EntityType] = None,
+    ) -> List[CaseEntity]:
+        """Phase 4 in-memory find — scans the in-memory dict."""
+        matches: List[CaseEntity] = []
+        for (cid, _), rows in self._case_entities.items():
+            if cid != case_id:
+                continue
+            for row in rows:
+                if row.entity_value != entity_value:
+                    continue
+                if entity_type is not None and row.entity_type != entity_type:
+                    continue
+                matches.append(row)
+        # Highest mention_count first — matches SQL implementations.
+        matches.sort(key=lambda r: r.mention_count, reverse=True)
+        return matches
+
+    async def list_top_entities(
+        self,
+        case_id: str,
+        entity_type: EntityType,
+        limit: int = 10,
+    ) -> List[CaseEntity]:
+        """Phase 4 in-memory aggregation.
+
+        Sums mention_count across evidence per entity_value, returns
+        one representative row per value (the one with the highest
+        individual count) carrying the aggregated total in
+        ``mention_count`` so the contract matches the SQL version.
+        """
+        aggregated: Dict[str, CaseEntity] = {}
+        totals: Dict[str, int] = {}
+        for (cid, _), rows in self._case_entities.items():
+            if cid != case_id:
+                continue
+            for row in rows:
+                if row.entity_type != entity_type:
+                    continue
+                totals[row.entity_value] = (
+                    totals.get(row.entity_value, 0) + row.mention_count
+                )
+                existing = aggregated.get(row.entity_value)
+                if existing is None or row.mention_count > existing.mention_count:
+                    aggregated[row.entity_value] = row
+
+        # Re-stamp each representative with its aggregated total.
+        result = [
+            r.model_copy(update={"mention_count": totals[r.entity_value]})
+            for r in aggregated.values()
+        ]
+        result.sort(key=lambda r: r.mention_count, reverse=True)
+        return result[:limit]
 
     async def search(
         self,

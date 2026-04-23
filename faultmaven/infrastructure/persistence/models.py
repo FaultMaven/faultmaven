@@ -694,6 +694,56 @@ class EvidenceModel(Base):
 
 
 # ============================================================
+# Case Entity Registry (Phase 4)
+# ============================================================
+
+
+class CaseEntityModel(Base):
+    """Cross-evidence entity index for a case.
+
+    One row per (case, entity_type, entity_value, evidence) tuple.
+    Populated by the preprocessing pipeline after each extraction.
+    Enables "which evidence mentions IP 10.0.0.5 in this case?" as a
+    single indexed lookup rather than an LLM scan across summaries.
+
+    See ``alembic/versions/20260423_1400_d4e5f6a70819_...`` and
+    ``docs/working/WIP-data-processing-improvement-plan.md`` §Phase 4.
+    """
+
+    __tablename__ = "case_entities"
+
+    case_id = Column(
+        String(36),
+        ForeignKey("cases.case_id", ondelete="CASCADE"),
+        nullable=False,
+        primary_key=True,
+    )
+    entity_type = Column(String(20), nullable=False, primary_key=True)
+    entity_value = Column(String(255), nullable=False, primary_key=True)
+    evidence_id = Column(
+        String(36),
+        ForeignKey("evidence.evidence_id", ondelete="CASCADE"),
+        nullable=False,
+        primary_key=True,
+    )
+    mention_count = Column(Integer, nullable=False, server_default="1")
+    in_error_context = Column(Boolean, nullable=False, server_default="0")
+    first_seen_ts = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        # Primary lookup: "find evidence mentioning entity X in case C".
+        Index(
+            "idx_case_entities_lookup",
+            "case_id",
+            "entity_type",
+            "entity_value",
+        ),
+        # Cleanup path: located by evidence_id on re-extraction / deletion.
+        Index("idx_case_entities_by_evidence", "evidence_id"),
+    )
+
+
+# ============================================================
 # Hypothesis Model
 # ============================================================
 
