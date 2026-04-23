@@ -308,6 +308,20 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     except ValueError:
                         source_type = EvidenceSourceType.LOGS
 
+                    metadata_raw = row[9]
+                    parsed_metadata: Optional[Dict[str, Any]] = None
+                    if metadata_raw:
+                        if isinstance(metadata_raw, dict):
+                            # Postgres JSONB returns a dict directly.
+                            parsed_metadata = metadata_raw or None
+                        else:
+                            try:
+                                parsed = json.loads(metadata_raw)
+                                if isinstance(parsed, dict) and parsed:
+                                    parsed_metadata = parsed
+                            except (json.JSONDecodeError, TypeError):
+                                parsed_metadata = None
+
                     evidence_list.append(
                         Evidence(
                             evidence_id=str(row[0]),
@@ -326,6 +340,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             content_hash=row[11],
                             source_file_id=row[13],
                             vectorized=bool(row[14]),
+                            metadata=parsed_metadata,
                         )
                     )
                 except Exception as ev_err:
@@ -497,6 +512,19 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             except ValueError:
                 source_type = EvidenceSourceType.LOGS
 
+            metadata_raw = row[9]
+            parsed_metadata: Optional[Dict[str, Any]] = None
+            if metadata_raw:
+                if isinstance(metadata_raw, dict):
+                    parsed_metadata = metadata_raw or None
+                else:
+                    try:
+                        parsed = json.loads(metadata_raw)
+                        if isinstance(parsed, dict) and parsed:
+                            parsed_metadata = parsed
+                    except (json.JSONDecodeError, TypeError):
+                        parsed_metadata = None
+
             return Evidence(
                 evidence_id=str(row[0]),
                 category=category,
@@ -513,6 +541,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 collected_at_turn=row[12] if row[12] else 0,
                 content_hash=row[11],
                 source_file_id=row[13],
+                metadata=parsed_metadata,
             )
         except Exception as e:
             raise RepositoryException(
@@ -1180,7 +1209,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "file_size": evidence.content_size_bytes,
                     "filename": "",  # Evidence doesn't have filename - would come from source
                     "upload_timestamp": evidence.collected_at.isoformat(),
-                    "metadata": json.dumps({}),  # Reserved
+                    # evidence.metadata carries the structured JSON contract
+                    # from faultmaven/core/preprocessing/evidence_metadata.py.
+                    "metadata": json.dumps(evidence.metadata or {}),
                     # Phase 6 Tier 1 columns. The persistence-side `form`
                     # describes data SHAPE — distinct from domain
                     # `EvidenceForm` (entry mechanism). See sqlite_case_repository

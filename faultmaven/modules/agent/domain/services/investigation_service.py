@@ -678,6 +678,23 @@ class InvestigationService:
                 duplicate_turn=existing.collected_at_turn,
             )
 
+        # Lift the namespaced evidence_metadata block out of the
+        # preprocessing result (classifier confidence in Phase 1, extractor
+        # attempts in Phase 2, entity overflow markers in Phase 4). Absent
+        # for any PreprocessingResult produced before the Phase 1 wiring,
+        # hence the defensive extraction below. See
+        # docs/architecture/data-and-storage/schemas/case-schema.md §4.3.
+        #
+        # Accept only dict-shaped metadata — test doubles may return a
+        # MagicMock from `.get()` which would otherwise fail Evidence's
+        # Dict[str, Any] validator downstream.
+        pp_metadata = preprocessing_result.extraction_metadata
+        evidence_metadata: Optional[Dict[str, Any]] = None
+        if isinstance(pp_metadata, dict):
+            candidate = pp_metadata.get("evidence_metadata")
+            if isinstance(candidate, dict):
+                evidence_metadata = candidate
+
         # Create evidence record (form=DOCUMENT for all turn attachments)
         evidence = Evidence(
             evidence_id=f"ev_{uuid4().hex[:12]}",
@@ -696,6 +713,7 @@ class InvestigationService:
             collected_by=user_id,
             collected_at_turn=turn_number,
             original_filename=attachment.filename,
+            metadata=evidence_metadata,
         )
 
         # Store raw content for deep analysis / search_file access

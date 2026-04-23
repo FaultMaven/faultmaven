@@ -674,6 +674,64 @@ COMMENT ON COLUMN evidence.is_primary IS 'New: preserves primary-evidence-per-ca
 COMMENT ON COLUMN evidence.content_type IS 'New: MIME type from upload Attachment. Forward-looking consumers: agent-tool dispatch, UI rendering, S3 presigned-URL Content-Type.';
 ```
 
+#### `evidence.metadata` JSON contract
+
+The `metadata JSON` column is structured — not a free-for-all bag. Top-level keys are **namespaced** and **additive**; a given key is owned by a specific consumer and is not written by any other path. Absence of a key is always valid — existing evidence rows predate each key's introduction and must continue to work.
+
+Canonical shape (pydantic model `EvidenceMetadata`, see [faultmaven/core/preprocessing/evidence_metadata.py](../../../../faultmaven/core/preprocessing/evidence_metadata.py)):
+
+```python
+class ClassificationMetadata(BaseModel):
+    """Tier 0 classifier signals for this evidence.
+    Written by PreprocessingService.classify_and_extract at persistence time.
+    Read by context_builder to surface a confidence marker in the <evidence> tag."""
+    confidence: float               # 0.0 – 1.0
+    source: str                     # "user_override" | "agent_hint" | "source_url" | "browser_context" | "rule_based" | "rule_based_best_effort"
+    failed: bool                    # classification_failed short-circuit path hit
+    suggested_types: list[str]      # non-empty only when failed=True
+
+class ExtractorAttempt(BaseModel):
+    """One pass through the extraction pipeline. Populated by Phase 2."""
+    data_type: str                  # DataType enum value
+    sanity_passed: bool
+    duration_ms: int
+
+class ExtractorMetadata(BaseModel):
+    """Which extractor produced preprocessed_content, and any retries.
+    Written by PreprocessingService after extraction."""
+    chosen_type: str                # data type of the extractor whose output was kept
+    attempts: list[ExtractorAttempt] = []
+
+class EntitiesMetadata(BaseModel):
+    """Overflow markers for Phase 4's case_entities writes.
+    Rows live in the separate table; this field only records caps hit on ingest."""
+    overflow_types: list[str] = []  # entity types that exceeded the 500-per-evidence cap
+
+class CoverageMetadata(BaseModel):
+    """Extractor time-range details beyond the promoted columns (Phase 3).
+    The coverage_start_ts / coverage_end_ts columns are the queryable projection."""
+    source: Optional[str] = None    # which timestamp pattern matched (iso8601, syslog_bsd, epoch_s, ...)
+
+class EvidenceMetadata(BaseModel):
+    classification: Optional[ClassificationMetadata] = None
+    extractor:      Optional[ExtractorMetadata] = None
+    entities:       Optional[EntitiesMetadata] = None
+    coverage:       Optional[CoverageMetadata] = None
+```
+
+**Ownership rules.**
+
+| Key | Writer | Reader | Introduced in |
+| --- | --- | --- | --- |
+| `classification` | `PreprocessingService` | `context_builder` (low-confidence marker) | Phase 1 |
+| `extractor` | `PreprocessingService` | observability only (no agent-visible effect) | Phase 1 (minimal) / Phase 2 (full `attempts`) |
+| `entities` | `PreprocessingService` (on cap overflow) | agent tool `find_entity` reads the row-level table; overflow marker tells the agent "not all entities are indexed" | Phase 4 |
+| `coverage` | `PreprocessingService` | context builder (rerank); `list_evidence_by_time` tool | Phase 3 |
+
+**Backward compatibility.** Every key is optional; every existing row has `metadata = NULL` or a shape without these keys. Readers must tolerate missing keys and missing fields within each key without raising.
+
+**Why JSON and not columns.** Classifier confidence, extractor attempts, and overflow markers are **diagnostic signals** attached to an evidence row — they are not queried on their own, they are read alongside the evidence. Promoting any of these to a column would buy indexing we don't need. The `coverage_*_ts` columns are the one exception: they support indexed time-window queries and earn their column status.
+
 ### 4.3-bis evidence_artifacts — DELETED (v2.1)
 
 `evidence_artifacts` is **deleted** as of v2.1. It was functionally a black hole: the standalone API endpoint wrote rows to this table, but the investigation engine never read from it. The case-tied investigation flow reads exclusively from the `evidence` table.

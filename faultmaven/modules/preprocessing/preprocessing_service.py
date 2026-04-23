@@ -18,6 +18,11 @@ import logging
 import time
 from typing import TYPE_CHECKING, Dict, Optional
 
+from faultmaven.core.preprocessing.evidence_metadata import (
+    ClassificationMetadata,
+    EvidenceMetadata,
+    ExtractorMetadata,
+)
 from faultmaven.core.preprocessing.models import (
     ExtractionResult,
     PreprocessingResult,
@@ -245,6 +250,7 @@ class PreprocessingService:
             extraction=extraction,
             detailed_data_type=detailed_data_type,
             unified_data_type=unified_data_type,
+            classification=classification,
             start_time=start_time,
         )
 
@@ -254,14 +260,39 @@ class PreprocessingService:
         extraction: ExtractionResult,
         detailed_data_type: DataType,
         unified_data_type,
+        classification,
         start_time: float,
     ) -> PreprocessingResult:
-        """Assemble a PreprocessingResult from an ExtractionResult."""
+        """Assemble a PreprocessingResult from an ExtractionResult.
+
+        Attaches the ``evidence_metadata`` block under extraction_metadata
+        so the calling investigation service can lift it onto the
+        Evidence row without re-deriving classifier signals. See
+        docs/architecture/data-and-storage/schemas/case-schema.md §4.3
+        'evidence.metadata JSON contract'.
+        """
         processing_time_ms = int((time.time() - start_time) * 1000)
         content_size = len(content.encode("utf-8"))
         index_size = len(extraction.content.encode("utf-8"))
         compression_ratio = index_size / max(content_size, 1)
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+        evidence_meta = EvidenceMetadata(
+            classification=ClassificationMetadata(
+                confidence=float(classification.confidence),
+                source=str(classification.source),
+                failed=bool(classification.classification_failed),
+                suggested_types=[
+                    t.value for t in (classification.suggested_types or [])
+                ],
+            ),
+            extractor=ExtractorMetadata(
+                chosen_type=detailed_data_type.value,
+            ),
+        )
+
+        merged_metadata: Dict[str, object] = dict(extraction.metadata or {})
+        merged_metadata["evidence_metadata"] = evidence_meta.to_storage_dict()
 
         return PreprocessingResult(
             data_type=unified_data_type,
@@ -273,7 +304,7 @@ class PreprocessingService:
             content_type="text/plain",
             extraction_method=extraction.method,
             compression_ratio=compression_ratio,
-            extraction_metadata=extraction.metadata,
+            extraction_metadata=merged_metadata,
             content_hash=content_hash,
             processing_time_ms=processing_time_ms,
         )
@@ -306,6 +337,7 @@ class PreprocessingService:
             extraction=extraction,
             detailed_data_type=detailed_data_type,
             unified_data_type=unified_data_type,
+            classification=classification,
             start_time=start_time,
         )
 

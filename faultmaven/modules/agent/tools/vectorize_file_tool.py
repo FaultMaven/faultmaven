@@ -1,8 +1,17 @@
-"""Vectorize File Tool — On-Demand Vectorization for Semantic Search
+"""Vectorize File Tool — On-Demand Re-Vectorization for Semantic Search
 
-Chunks evidence content, generates embeddings, and stores them in
-ChromaDB for semantic search. Auto-triggered by the orchestration layer
-when directed analysis fails on files exceeding the size threshold.
+IMPORTANT: This tool is the **re-vectorization** path, not the primary
+ingestion path. Evidence uploaded to a case is vectorized eagerly at
+upload time by ``store_in_vector_db_background()``
+(``faultmaven/core/preprocessing/vector_storage.py``), which runs after
+classification + extraction. That background task populates the case
+ChromaDB collection without the agent needing to act.
+
+This tool is invoked by the orchestration layer only when directed
+analysis fails on a file that exceeds the size threshold — i.e. to
+*re*-index or to index a specific evidence item that wasn't covered by
+the primary path. Do not describe this tool as the default vectorization
+mechanism.
 
 Design Reference: docs/architecture/data-processing/README.md
 """
@@ -20,12 +29,13 @@ VECTORIZATION_MAX_SIZE_BYTES = 50_000_000  # 50MB hard cap
 
 
 class VectorizeFileTool(AgentTool):
-    """On-demand vectorization of evidence files for semantic search.
+    """On-demand re-vectorization of evidence files for semantic search.
 
     Chunks evidence content, generates embeddings, and stores them in
-    ChromaDB. After vectorization, the file's content is searchable via
-    knowledge_base_search. Auto-triggered by the orchestration layer when
-    directed analysis fails on files exceeding the size threshold.
+    ChromaDB. This is the *re-vectorization* path — the primary path
+    happens at upload time via ``store_in_vector_db_background()``
+    (see module docstring). Auto-triggered by the orchestration layer
+    when directed analysis fails on files exceeding the size threshold.
 
     Size gates (enforced):
     - File must exceed VECTORIZATION_MIN_SIZE_BYTES (configurable, default 50KB)

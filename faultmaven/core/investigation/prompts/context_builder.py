@@ -27,6 +27,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from faultmaven.core.preprocessing.evidence_metadata import (
+    LOW_CONFIDENCE_THRESHOLD,
+    EvidenceMetadata,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
@@ -69,6 +73,57 @@ KB_MAX_SOLUTION_CHARS = 800
 logger = logging.getLogger(__name__)
 
 _TRUNCATION_MARKER = "[...analysis removed for brevity...]"
+
+
+def _confidence_marker(ev) -> tuple[str, Optional[str]]:
+    """Return ``(attr, advisory)`` for the classifier-confidence marker.
+
+    The attr is either ``' confidence="low"'`` or empty; the advisory is
+    a one-line note to render inside the evidence's ``<structural_index>``
+    block when the marker fires, so the model has an in-prompt cue
+    reinforcing the XML attribute.
+
+    Returns empty marker when:
+
+    - the feature flag ``FAULTMAVEN_PREPROCESSING_CONFIDENCE_MARKER`` is off,
+    - ``ev.metadata`` is None or missing a ``classification`` block
+      (existing evidence predating Phase 1),
+    - confidence is above the low-confidence threshold.
+    """
+    try:
+        from faultmaven.config.settings import get_settings
+
+        enabled = get_settings().preprocessing.confidence_marker_enabled
+    except Exception:
+        enabled = False
+
+    if not enabled:
+        return "", None
+
+    metadata = getattr(ev, "metadata", None)
+    if not metadata:
+        return "", None
+
+    try:
+        parsed = EvidenceMetadata.from_storage_dict(metadata)
+    except Exception:
+        return "", None
+
+    classification = parsed.classification
+    if classification is None:
+        return "", None
+
+    if classification.confidence >= LOW_CONFIDENCE_THRESHOLD:
+        return "", None
+
+    advisory = (
+        f"[Classifier confidence: {classification.confidence:.2f} "
+        f"(source: {classification.source}). Treat the structural_index "
+        f"below as tentative — the classifier was unsure about this "
+        f"evidence's type, so the extractor may have been wrong.]"
+    )
+    return ' confidence="low"', advisory
+
 
 # Stopwords excluded from query-section keyword matching (common English words
 # that would cause false-positive matches across unrelated sections).
@@ -774,7 +829,8 @@ def _build_evidence_context(
             and not str(ev.content_ref).startswith("ev_")
         )
         searchable_attr = ' searchable="true"' if is_searchable else ""
-        result += f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{data_type_attr}{filename_attr}{searchable_attr}>\n'
+        confidence_attr, confidence_advisory = _confidence_marker(ev)
+        result += f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
         if structural_index.strip():
             role_attr = (
@@ -786,6 +842,8 @@ def _build_evidence_context(
             # through multi-evidence blocks, not just in the enclosing tag.
             if ev.source_file_id and str(ev.source_file_id) in file_lookup:
                 result += f"[Source: {file_lookup[str(ev.source_file_id)]}]\n"
+            if confidence_advisory:
+                result += f"{confidence_advisory}\n"
             result += structural_index
             if truncated:
                 result += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Work with the visible content above. If you need specific details beyond what's shown, suggest a targeted command the user can run.]"
@@ -806,7 +864,8 @@ def _build_evidence_context(
             and not str(ev.content_ref).startswith("ev_")
         )
         searchable_attr = ' searchable="true"' if is_searchable else ""
-        entry = f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{filename_attr}{searchable_attr}>'
+        confidence_attr, _ = _confidence_marker(ev)
+        entry = f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{filename_attr}{searchable_attr}{confidence_attr}>'
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
         if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
             break

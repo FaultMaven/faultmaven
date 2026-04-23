@@ -1542,6 +1542,22 @@ class PreprocessingSettings(BaseSettings):
         description="LLM provider for chunking operations (synthesis, chat, or specific provider)",
     )
 
+    # Phase 1: Classifier confidence marker in agent context.
+    # When True, the context_builder attaches `confidence="low"` to the
+    # <evidence> XML tag for evidence whose classifier confidence falls
+    # below LOW_CONFIDENCE_THRESHOLD (see
+    # faultmaven.core.preprocessing.evidence_metadata). The agent prompt
+    # instructs the model to treat low-confidence extractions as tentative.
+    # Default OFF — ships dark; enable explicitly in deployment config.
+    confidence_marker_enabled: bool = Field(
+        default=False,
+        validation_alias="FAULTMAVEN_PREPROCESSING_CONFIDENCE_MARKER",
+        description=(
+            "Phase 1 feature flag: surface classifier confidence as a "
+            "low-confidence marker on the <evidence> XML tag."
+        ),
+    )
+
     @field_validator("chunk_size_tokens")
     @classmethod
     def validate_chunk_size(cls, v, info):
