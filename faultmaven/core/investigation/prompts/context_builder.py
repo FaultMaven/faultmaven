@@ -25,6 +25,7 @@ Gap #9: Input Sanitization
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, time
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.preprocessing.evidence_metadata import (
@@ -670,15 +671,13 @@ _TIME_POINT_PATTERN = re.compile(
 )
 
 
-def _parse_time_token(token: str, reference_date: "datetime") -> "Optional[datetime]":
+def _parse_time_token(token: str, reference_date: datetime) -> Optional[datetime]:
     """Parse ``14:30`` / ``14:30:00`` (relative to *reference_date*) or a
     full ISO timestamp. Returns naive UTC-equivalent datetimes so the
     caller can compare uniformly against stored coverage timestamps
     (SQLite stores naive; Postgres TZ-aware — the rerank uses only
     equality-ish ordering, not subtraction, so mixing is tolerable).
     """
-    from datetime import datetime, time
-
     # ISO-8601 with date component.
     if "-" in token:
         try:
@@ -699,8 +698,8 @@ def _parse_time_token(token: str, reference_date: "datetime") -> "Optional[datet
 
 
 def _extract_time_window_from_query(
-    user_query: str, reference: "Optional[datetime]" = None
-) -> "Optional[tuple[datetime, datetime]]":
+    user_query: str, reference: Optional[datetime] = None
+) -> Optional[tuple[datetime, datetime]]:
     """Parse a simple time range out of the user's turn text.
 
     Supports the common phrasings:
@@ -714,8 +713,6 @@ def _extract_time_window_from_query(
     ``reference`` anchors bare HH:MM tokens to a date; defaults to
     ``datetime.now()`` when omitted.
     """
-    from datetime import datetime
-
     if not user_query:
         return None
     ref = reference or datetime.now()
@@ -737,7 +734,7 @@ def _extract_time_window_from_query(
     return None
 
 
-def _coverage_overlaps_window(ev, window: "tuple[datetime, datetime]") -> bool:
+def _coverage_overlaps_window(ev, window: tuple[datetime, datetime]) -> bool:
     """Return True when the evidence's coverage span intersects the
     window. NULL coverage → False (timeless evidence isn't time-
     windowable, consistent with the repository query's semantics)."""
@@ -757,7 +754,7 @@ def _coverage_overlaps_window(ev, window: "tuple[datetime, datetime]") -> bool:
 
 
 def _score_evidence_for_tier_a(
-    ev, case, time_window: "Optional[tuple[datetime, datetime]]" = None
+    ev, case, time_window: Optional[tuple[datetime, datetime]] = None
 ) -> float:
     """
     Score evidence for Tier A promotion. Higher score = more likely to get

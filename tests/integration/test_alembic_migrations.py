@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "b1c2d3e4f506"  # Evidence vectorized flag
+HEAD_REVISION = "c3d4e5f6a708"  # Phase 3a evidence coverage timestamps
 
 
 @pytest.fixture(scope="function")
