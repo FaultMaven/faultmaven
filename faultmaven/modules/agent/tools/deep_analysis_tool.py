@@ -124,6 +124,23 @@ class DeepAnalysisTool(AgentTool):
                     error=f"Evidence {evidence_id} has no file reference for deep analysis.",
                 )
 
+            # Phase 2c — triage-to-escalation counter. Mirrors the
+            # equivalent wiring in search_file_tool. Fires when this
+            # deep analysis targets an evidence delivered in the same
+            # turn — signals the extractor's output was insufficient.
+            try:
+                from faultmaven.infrastructure.observability.evidence_metrics import (
+                    record_triage_escalation_if_same_turn,
+                )
+
+                record_triage_escalation_if_same_turn(
+                    evidence=evidence,
+                    case=case,
+                    tool_name="deep_analysis",
+                )
+            except Exception:
+                pass
+
             # Build analysis context
             from faultmaven.core.preprocessing.models import (
                 AnalysisContext,

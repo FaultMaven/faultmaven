@@ -24,6 +24,9 @@ from faultmaven.core.preprocessing.evidence_metadata import (
     ExtractorAttempt,
     ExtractorMetadata,
 )
+from faultmaven.infrastructure.observability.evidence_metrics import (
+    PREPROCESSING_EXTRACTION_YIELD_RATIO,
+)
 from faultmaven.core.preprocessing.models import (
     ExtractionResult,
     PreprocessingResult,
@@ -625,6 +628,17 @@ class PreprocessingService:
         index_size = len(extraction.content.encode("utf-8"))
         compression_ratio = index_size / max(content_size, 1)
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+        # Phase 2c — extraction yield ratio (index / raw). A drift
+        # signal per data_type: when a type's yield baseline shifts
+        # abruptly, the content distribution probably changed and the
+        # extractor is producing garbage for a new sub-format. Guarded
+        # against zero-byte input so the histogram never records a
+        # spurious 0/0 = NaN.
+        if content_size > 0:
+            PREPROCESSING_EXTRACTION_YIELD_RATIO.labels(
+                data_type=detailed_data_type.value
+            ).observe(index_size / content_size)
 
         evidence_meta = EvidenceMetadata(
             classification=ClassificationMetadata(
