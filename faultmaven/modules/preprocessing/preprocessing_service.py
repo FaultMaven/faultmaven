@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from faultmaven.core.preprocessing.evidence_metadata import (
     ClassificationMetadata,
+    CoverageMetadata,
     EvidenceMetadata,
     ExtractorAttempt,
     ExtractorMetadata,
@@ -27,6 +28,7 @@ from faultmaven.core.preprocessing.evidence_metadata import (
 from faultmaven.infrastructure.observability.evidence_metrics import (
     PREPROCESSING_EXTRACTION_YIELD_RATIO,
 )
+from faultmaven.modules.preprocessing.extractors.utils import extract_time_range_ts
 from faultmaven.core.preprocessing.models import (
     ExtractionResult,
     PreprocessingResult,
@@ -640,6 +642,32 @@ class PreprocessingService:
                 data_type=detailed_data_type.value
             ).observe(index_size / content_size)
 
+        # Phase 3 — case-level timeline. Parse timestamps from the raw
+        # content and attach them to the result so the investigation
+        # service can lift them onto the Evidence row's
+        # coverage_*_ts columns. Best-effort: any parsing failure
+        # silently yields (None, None) and the row gets NULL coverage —
+        # which matches the valid state for content without parseable
+        # timestamps (configs, code, screenshots, short pastes).
+        coverage_start_ts = None
+        coverage_end_ts = None
+        try:
+            coverage_start_ts, coverage_end_ts = extract_time_range_ts(content)
+        except Exception:
+            # extract_time_range_ts already swallows per-line parse
+            # errors; a top-level exception here would be unusual.
+            # Leave both None and carry on.
+            logger.debug(
+                "extract_time_range_ts failed; coverage timestamps will be NULL"
+            )
+
+        # Build the metadata block. Coverage sub-block is populated only
+        # when at least the start timestamp was parsed — absent-is-valid
+        # per the namespaced contract in case-schema.md §4.3.
+        coverage_meta: Optional[CoverageMetadata] = None
+        if coverage_start_ts is not None:
+            coverage_meta = CoverageMetadata(source=None)
+
         evidence_meta = EvidenceMetadata(
             classification=ClassificationMetadata(
                 confidence=float(classification.confidence),
@@ -660,6 +688,7 @@ class PreprocessingService:
                     )
                 ],
             ),
+            coverage=coverage_meta,
         )
 
         merged_metadata: Dict[str, object] = dict(extraction.metadata or {})
@@ -678,6 +707,8 @@ class PreprocessingService:
             extraction_metadata=merged_metadata,
             content_hash=content_hash,
             processing_time_ms=processing_time_ms,
+            coverage_start_ts=coverage_start_ts,
+            coverage_end_ts=coverage_end_ts,
         )
 
     def _build_placeholder_result(

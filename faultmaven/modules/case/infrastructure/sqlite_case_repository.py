@@ -369,7 +369,8 @@ class SQLiteCaseRepository(CaseRepository):
                     preprocessed_content, content_ref, file_size,
                     filename, upload_timestamp, metadata,
                     source_type, content_hash, collected_at_turn,
-                    source_file_id, vectorized
+                    source_file_id, vectorized,
+                    coverage_start_ts, coverage_end_ts
                 FROM evidence
                 WHERE case_id = :case_id
                 ORDER BY upload_timestamp DESC
@@ -408,6 +409,12 @@ class SQLiteCaseRepository(CaseRepository):
                         except (json.JSONDecodeError, TypeError):
                             parsed_metadata = None
 
+                    # Phase 3 — coverage timestamps (nullable). SQLite
+                    # returns these as str or datetime depending on the
+                    # driver path; the domain model coerces.
+                    coverage_start = row[15]
+                    coverage_end = row[16]
+
                     evidence_list.append(
                         Evidence(
                             evidence_id=str(row[0]),
@@ -427,6 +434,8 @@ class SQLiteCaseRepository(CaseRepository):
                             source_file_id=row[13],
                             vectorized=bool(row[14]),
                             metadata=parsed_metadata,
+                            coverage_start_ts=coverage_start,
+                            coverage_end_ts=coverage_end,
                         )
                     )
                 except Exception as ev_err:
@@ -554,7 +563,8 @@ class SQLiteCaseRepository(CaseRepository):
                     preprocessed_content, content_ref, file_size,
                     filename, upload_timestamp, metadata,
                     source_type, content_hash, collected_at_turn,
-                    source_file_id
+                    source_file_id,
+                    coverage_start_ts, coverage_end_ts
                 FROM evidence
                 WHERE case_id = :case_id
                   AND content_hash = :content_hash
@@ -608,6 +618,8 @@ class SQLiteCaseRepository(CaseRepository):
                 content_hash=row[11],
                 source_file_id=row[13],
                 metadata=parsed_metadata,
+                coverage_start_ts=row[14],
+                coverage_end_ts=row[15],
             )
         except Exception as e:
             raise RepositoryException(
@@ -1224,12 +1236,14 @@ class SQLiteCaseRepository(CaseRepository):
                     evidence_id, case_id, organization_id, category, summary, preprocessed_content,
                     content_ref, file_size, filename, upload_timestamp, metadata,
                     source_type, content_hash, collected_at_turn, source_file_id,
-                    form, is_primary, content_type, reliability_score, tags, vectorized
+                    form, is_primary, content_type, reliability_score, tags, vectorized,
+                    coverage_start_ts, coverage_end_ts
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :category, :summary, :preprocessed_content,
                     :content_ref, :file_size, :filename, :upload_timestamp, :metadata,
                     :source_type, :content_hash, :collected_at_turn, :source_file_id,
-                    :form, :is_primary, :content_type, :reliability_score, :tags, :vectorized
+                    :form, :is_primary, :content_type, :reliability_score, :tags, :vectorized,
+                    :coverage_start_ts, :coverage_end_ts
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
                     category = EXCLUDED.category,
@@ -1247,7 +1261,9 @@ class SQLiteCaseRepository(CaseRepository):
                     content_type = EXCLUDED.content_type,
                     reliability_score = EXCLUDED.reliability_score,
                     tags = EXCLUDED.tags,
-                    vectorized = EXCLUDED.vectorized
+                    vectorized = EXCLUDED.vectorized,
+                    coverage_start_ts = EXCLUDED.coverage_start_ts,
+                    coverage_end_ts = EXCLUDED.coverage_end_ts
             """)
 
             source_type_val = (
@@ -1296,6 +1312,22 @@ class SQLiteCaseRepository(CaseRepository):
                     "reliability_score": getattr(evidence, "reliability_score", None),
                     "tags": getattr(evidence, "tags", None),
                     "vectorized": evidence.vectorized,
+                    # Phase 3 — case-level timeline. NULL for evidence
+                    # without parseable timestamps (configs, code,
+                    # screenshots, short pastes). SQLite stores
+                    # ISO-format strings in DATETIME columns; the
+                    # domain model's ``datetime`` type serialises
+                    # cleanly via str().
+                    "coverage_start_ts": (
+                        evidence.coverage_start_ts.isoformat()
+                        if evidence.coverage_start_ts
+                        else None
+                    ),
+                    "coverage_end_ts": (
+                        evidence.coverage_end_ts.isoformat()
+                        if evidence.coverage_end_ts
+                        else None
+                    ),
                 },
             )
 

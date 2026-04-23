@@ -1746,6 +1746,27 @@ class Evidence(BaseModel):
         ),
     )
 
+    # Phase 3 — Case-level timeline. See case-schema.md §4.3 and
+    # docs/working/WIP-data-processing-improvement-plan.md §Phase 3.
+    # The time span the evidence's *content* covers, distinct from:
+    #   collected_at (upload receipt time), collected_at_turn (agent turn).
+    # Nullable: NULL for evidence without parseable timestamps (configs,
+    # source code, screenshots, short pastes).
+    coverage_start_ts: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Earliest timestamp parsed from the evidence's content. "
+            "None when the content has no parseable timestamps."
+        ),
+    )
+    coverage_end_ts: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Latest timestamp parsed from the evidence's content. "
+            "None when the content has no parseable timestamps."
+        ),
+    )
+
 
 # ============================================================
 # Hypothesis Models (Section 6)

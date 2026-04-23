@@ -648,6 +648,16 @@ class EvidenceModel(Base):
     # each past the 60s wait_for bound in _vectorize_evidence.
     vectorized = Column(Boolean, nullable=False, server_default="0")
 
+    # Phase 3 — Case-level timeline. See migration
+    # ``20260423_1200_c3d4e5f6a708_phase_3_evidence_coverage_timestamps``
+    # and docs/working/WIP-data-processing-improvement-plan.md §Phase 3.
+    # The time span the evidence's *content* covers, distinct from
+    # upload_timestamp (receipt) and collected_at_turn (agent turn).
+    # Nullable — evidence without parseable timestamps (configs, code,
+    # screenshots, short pastes) has both columns NULL.
+    coverage_start_ts = Column(DateTime(timezone=True), nullable=True)
+    coverage_end_ts = Column(DateTime(timezone=True), nullable=True)
+
     # Relationship
     case = relationship("CaseModel", back_populates="evidence")
 
@@ -660,6 +670,13 @@ class EvidenceModel(Base):
         # Composite index for "primary evidence per case" lookups
         # (consumed by list_evidence_tool). Added Phase 6 Tier 1.
         Index("ix_evidence_case_is_primary", "case_id", "is_primary"),
+        # Phase 3 — case-level timeline index. Supports the query
+        # "all evidence in this case whose coverage intersects [start, end]".
+        # Case-id-prefixed so the index narrows cheaply before the overlap
+        # check runs.
+        Index(
+            "idx_evidence_coverage", "case_id", "coverage_start_ts", "coverage_end_ts"
+        ),
         # Unique constraints (via indexes for SQLite compatibility)
         # Note: These are implemented as unique indexes in the migration
         # uq_evidence_case_hash - no duplicate uploads per case

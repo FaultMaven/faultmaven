@@ -284,7 +284,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     preprocessed_content, content_ref, file_size,
                     filename, upload_timestamp, metadata,
                     source_type, content_hash, collected_at_turn,
-                    source_file_id, vectorized
+                    source_file_id, vectorized,
+                    coverage_start_ts, coverage_end_ts
                 FROM evidence
                 WHERE case_id = :case_id
                 ORDER BY upload_timestamp DESC
@@ -341,6 +342,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             source_file_id=row[13],
                             vectorized=bool(row[14]),
                             metadata=parsed_metadata,
+                            # Phase 3 — coverage timestamps (nullable).
+                            coverage_start_ts=row[15],
+                            coverage_end_ts=row[16],
                         )
                     )
                 except Exception as ev_err:
@@ -485,7 +489,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     preprocessed_content, content_ref, file_size,
                     filename, upload_timestamp, metadata,
                     source_type, content_hash, collected_at_turn,
-                    source_file_id
+                    source_file_id,
+                    coverage_start_ts, coverage_end_ts
                 FROM evidence
                 WHERE case_id = :case_id
                   AND content_hash = :content_hash
@@ -542,6 +547,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 content_hash=row[11],
                 source_file_id=row[13],
                 metadata=parsed_metadata,
+                coverage_start_ts=row[14],
+                coverage_end_ts=row[15],
             )
         except Exception as e:
             raise RepositoryException(
@@ -1176,11 +1183,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 INSERT INTO evidence (
                     evidence_id, case_id, organization_id, category, summary, preprocessed_content,
                     content_ref, file_size, filename, upload_timestamp, metadata,
-                    form, is_primary, content_type, reliability_score, tags, vectorized
+                    form, is_primary, content_type, reliability_score, tags, vectorized,
+                    coverage_start_ts, coverage_end_ts
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :category, :summary, :preprocessed_content,
                     :content_ref, :file_size, :filename, :upload_timestamp, :metadata::jsonb,
-                    :form, :is_primary, :content_type, :reliability_score, :tags, :vectorized
+                    :form, :is_primary, :content_type, :reliability_score, :tags, :vectorized,
+                    :coverage_start_ts, :coverage_end_ts
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
                     category = EXCLUDED.category,
@@ -1193,7 +1202,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     content_type = EXCLUDED.content_type,
                     reliability_score = EXCLUDED.reliability_score,
                     tags = EXCLUDED.tags,
-                    vectorized = EXCLUDED.vectorized
+                    vectorized = EXCLUDED.vectorized,
+                    coverage_start_ts = EXCLUDED.coverage_start_ts,
+                    coverage_end_ts = EXCLUDED.coverage_end_ts
             """)
 
             await self.db.execute(
@@ -1223,6 +1234,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "reliability_score": getattr(evidence, "reliability_score", None),
                     "tags": getattr(evidence, "tags", None),
                     "vectorized": evidence.vectorized,
+                    # Phase 3 — case-level timeline coverage.
+                    "coverage_start_ts": evidence.coverage_start_ts,
+                    "coverage_end_ts": evidence.coverage_end_ts,
                 },
             )
 
