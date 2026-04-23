@@ -179,11 +179,20 @@ def extract_timestamp(line: str) -> datetime | None:
     return None
 
 
-def extract_time_range(content: str) -> dict[str, str]:
-    """Return ``{"Time range": "<start> to <end>"}`` from content.
+def extract_time_range_ts(
+    content: str,
+) -> tuple[Optional["datetime"], Optional["datetime"]]:
+    """Return ``(start_ts, end_ts)`` datetime objects from *content*.
 
-    Scans only the first 10 and last 10 lines for performance.
-    Returns ``{"Time range": "unknown"}`` when no timestamps are found.
+    Scans only the first 10 and last 10 lines for performance. Returns
+    ``(None, None)`` when no timestamps are found, ``(ts, None)`` when
+    only the head has a timestamp, ``(None, None)`` when only the tail
+    does (since a meaningful time range needs both bounds).
+
+    Phase 3 — promoted from an internal helper so PreprocessingService
+    can populate ``evidence.coverage_start_ts`` / ``coverage_end_ts``
+    without having to re-parse the strings emitted by
+    ``extract_time_range``.
     """
     lines = content.split("\n")
     head = lines[:10]
@@ -200,6 +209,24 @@ def extract_time_range(content: str) -> dict[str, str]:
         last_ts = extract_timestamp(line)
         if last_ts:
             break
+
+    # Meaningful coverage span requires both bounds. A single head
+    # timestamp without a tail bound collapses to (ts, None) — the
+    # Phase 3 repository query handles this by treating single-point
+    # evidence as covering [ts, ts]; callers who need a strict range
+    # check the end_ts for None.
+    return first_ts, last_ts
+
+
+def extract_time_range(content: str) -> dict[str, str]:
+    """Return ``{"Time range": "<start> to <end>"}`` from content.
+
+    Thin string-formatting wrapper around ``extract_time_range_ts`` —
+    kept for backward-compatibility with extractors that embed the
+    range in their coverage metadata text block. New code that needs
+    the timestamps themselves should call ``extract_time_range_ts``.
+    """
+    first_ts, last_ts = extract_time_range_ts(content)
 
     if first_ts and last_ts:
         fmt = "%Y-%m-%d %H:%M:%S"

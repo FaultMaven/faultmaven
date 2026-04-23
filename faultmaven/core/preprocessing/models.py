@@ -15,6 +15,7 @@ Design Reference:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
@@ -188,6 +189,27 @@ class PreprocessingResult(BaseModel):
     # Performance
     processing_time_ms: int = Field(
         default=0, description="Total Tier 0+1 time in milliseconds"
+    )
+
+    # Phase 3 — case-level timeline. The time span the evidence's
+    # *content* covers, parsed from timestamps in the raw file. None
+    # for content without parseable timestamps (configs, code,
+    # screenshots, short pastes). The investigation service lifts
+    # these onto ``Evidence.coverage_start_ts`` / ``coverage_end_ts``
+    # at row-creation time.
+    coverage_start_ts: Optional["datetime"] = Field(
+        default=None,
+        description=(
+            "Earliest timestamp parsed from the evidence's content. "
+            "None when the content has no parseable timestamps."
+        ),
+    )
+    coverage_end_ts: Optional["datetime"] = Field(
+        default=None,
+        description=(
+            "Latest timestamp parsed from the evidence's content. "
+            "None when the content has no parseable timestamps."
+        ),
     )
 
 

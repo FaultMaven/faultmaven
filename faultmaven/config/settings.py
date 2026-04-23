@@ -1596,6 +1596,26 @@ class PreprocessingSettings(BaseSettings):
         ),
     )
 
+    # Phase 3c: Context-builder rerank on time-window queries. When
+    # True, ``context_builder._build_evidence_context`` inspects the
+    # user's current-turn message for a simple time-range pattern and,
+    # if found, boosts Tier A ranking for evidence whose
+    # ``coverage_*_ts`` intersects the window. Pure reordering — no
+    # evidence is dropped, no new evidence is fetched. When OFF, the
+    # Tier A ranking matches Phase 2 behaviour (recency-scored). Default
+    # OFF — ships dark; enable explicitly after the Phase 3b tool has
+    # produced a week of production data on what time patterns users
+    # actually ask about.
+    timeline_rerank_enabled: bool = Field(
+        default=False,
+        validation_alias="FAULTMAVEN_TIMELINE_RERANK",
+        description=(
+            "Phase 3c feature flag: boost Tier A ranking for evidence "
+            "whose coverage window matches a time range mentioned in "
+            "the current user turn."
+        ),
+    )
+
     @field_validator("chunk_size_tokens")
     @classmethod
     def validate_chunk_size(cls, v, info):

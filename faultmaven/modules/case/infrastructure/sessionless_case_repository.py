@@ -23,6 +23,7 @@ Deployment Agnostic (Principle 1):
 
 import builtins
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 from faultmaven.infrastructure.persistence.database import get_db_session
@@ -139,6 +140,22 @@ class SessionlessCaseRepository(CaseRepository):
         async with get_db_session() as session:
             repo = _get_repository_for_session(session)
             return await repo.find_by_content_hash(case_id, content_hash)
+
+    async def list_evidence_by_time_window(
+        self,
+        case_id: str,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+    ) -> list[Evidence]:
+        """Return evidence whose coverage overlaps ``[start, end]``.
+
+        Phase 3 — see ``CaseRepository.list_evidence_by_time_window``.
+        Delegates to the dialect-specific repository under a fresh
+        session, consistent with the other methods on this wrapper.
+        """
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            return await repo.list_evidence_by_time_window(case_id, start, end)
 
     async def search_by_keyword(
         self, user_id: str, keyword: str, limit: int = 50

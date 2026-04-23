@@ -716,6 +716,12 @@ class InvestigationService:
             collected_at_turn=turn_number,
             original_filename=attachment.filename,
             metadata=evidence_metadata,
+            # Phase 3 — populate coverage timestamps when the preprocessor
+            # parsed them out of the raw content. NULL for timeless
+            # evidence (configs, code, short pastes); the Phase 3b query
+            # filters these out of time-window queries naturally.
+            coverage_start_ts=preprocessing_result.coverage_start_ts,
+            coverage_end_ts=preprocessing_result.coverage_end_ts,
         )
 
         # Store raw content for deep analysis / search_file access
