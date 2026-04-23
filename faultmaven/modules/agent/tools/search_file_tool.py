@@ -156,6 +156,25 @@ class SearchFileTool(AgentTool):
                 )
             content, filename, evidence_obj = resolved
 
+            # Phase 2c — triage-to-escalation counter. Fires when this
+            # tool call targets an evidence whose structural_index was
+            # delivered in the same turn (collected_at_turn == current
+            # turn). A high rate per data_type signals the extractor's
+            # structural index is leaving the agent uninformed.
+            try:
+                from faultmaven.infrastructure.observability.evidence_metrics import (
+                    record_triage_escalation_if_same_turn,
+                )
+
+                record_triage_escalation_if_same_turn(
+                    evidence=evidence_obj,
+                    case=getattr(context, "in_memory_case", None),
+                    tool_name="search_file",
+                )
+            except Exception:
+                # Telemetry is best-effort — never fail the tool for it.
+                pass
+
             # Route by output format
             if output_format == "count":
                 return self._execute_count_format(

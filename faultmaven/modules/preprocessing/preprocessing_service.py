@@ -24,6 +24,9 @@ from faultmaven.core.preprocessing.evidence_metadata import (
     ExtractorAttempt,
     ExtractorMetadata,
 )
+from faultmaven.infrastructure.observability.evidence_metrics import (
+    PREPROCESSING_EXTRACTION_YIELD_RATIO,
+)
 from faultmaven.core.preprocessing.models import (
     ExtractionResult,
     PreprocessingResult,
@@ -36,6 +39,10 @@ from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
 from faultmaven.modules.preprocessing.extractors.protocol import Extractor
+from faultmaven.modules.preprocessing.extractors.sanity_check import (
+    SanityResult,
+    run_sanity_check,
+)
 
 if TYPE_CHECKING:
     pass
@@ -45,6 +52,59 @@ logger = logging.getLogger(__name__)
 # Tier 1 timeout: extractors must complete within this budget.
 # On timeout, falls back to TEXT extraction (preview-only).
 TIER1_TIMEOUT_SECONDS = 2.0
+
+
+# Phase 2 — alt-extractor fallback chain used when the classifier's
+# own ``suggested_types`` list is empty (which it is for confident
+# classifications, since the classifier only populates suggested_types
+# on the classification_failed path). The conservative last-resort:
+# UNSTRUCTURED_TEXT, whose extractor always produces valid-looking
+# output for any text content. If that also fails sanity (rare), the
+# retry loop terminates and direct-truncation ships.
+_FALLBACK_ALT_TYPES: tuple[DataType, ...] = (DataType.UNSTRUCTURED_TEXT,)
+
+# Hard cap on retries per the plan (Phase 2). Total attempts ≤ initial
+# + this many alternatives.
+_MAX_ALT_RETRIES = 2
+
+
+def _build_alternative_chain(
+    classification,
+    already_tried: list[DataType],
+    max_alternatives: int,
+) -> list[DataType]:
+    """Build the ordered list of alternative DataTypes to try.
+
+    Priority:
+
+    1. ``classification.suggested_types`` — populated by the classifier
+       when it short-circuited to the classification_failed path.
+    2. ``_FALLBACK_ALT_TYPES`` — a conservative last-resort chain used
+       when the classifier was confident but sanity failed anyway.
+
+    Already-tried types are excluded. Result is capped at
+    ``max_alternatives``.
+    """
+    already = set(already_tried)
+    alternatives: list[DataType] = []
+
+    for suggested in getattr(classification, "suggested_types", None) or []:
+        if suggested in already:
+            continue
+        alternatives.append(suggested)
+        already.add(suggested)
+        if len(alternatives) >= max_alternatives:
+            return alternatives
+
+    for fallback in _FALLBACK_ALT_TYPES:
+        if fallback in already:
+            continue
+        alternatives.append(fallback)
+        already.add(fallback)
+        if len(alternatives) >= max_alternatives:
+            break
+
+    return alternatives
 
 
 class PreprocessingService:
@@ -241,32 +301,182 @@ class PreprocessingService:
                 content=self._fallback_direct_extraction(content),
                 metadata={"passthrough": True, "source_type": "page_capture"},
             )
-        else:
-            # Standard path: dispatch to type-specific extractor with timeout.
-            extractor = self.extractors.get(detailed_data_type)
-            if extractor:
-                extraction = await self._extract_with_timeout(
-                    extractor, content, filename
-                )
-            else:
-                logger.warning(
-                    f"No extractor for {detailed_data_type.value}, "
-                    f"using direct truncation"
-                )
-                extraction = ExtractionResult(
-                    method="direct",
-                    content=self._fallback_direct_extraction(content),
-                    metadata={"fallback": True},
-                )
+            return self._build_result(
+                content=content,
+                extraction=extraction,
+                detailed_data_type=detailed_data_type,
+                unified_data_type=unified_data_type,
+                classification=classification,
+                start_time=start_time,
+                triggered_by=(
+                    "user_override" if user_override is not None else "initial"
+                ),
+            )
 
-        return self._build_result(
+        # Standard path: dispatch to type-specific extractor. When the
+        # Phase 2 feature flag is on, the dispatch runs sanity checks
+        # and retries alternatives on failure; otherwise it's a single-
+        # shot run matching pre-Phase-2 behaviour.
+        return await self._dispatch_with_optional_retry(
             content=content,
-            extraction=extraction,
-            detailed_data_type=detailed_data_type,
-            unified_data_type=unified_data_type,
+            filename=filename,
+            classification=classification,
+            initial_data_type=detailed_data_type,
+            initial_triggered_by=(
+                "user_override" if user_override is not None else "initial"
+            ),
+            start_time=start_time,
+        )
+
+    async def _dispatch_with_optional_retry(
+        self,
+        content: str,
+        filename: str,
+        classification,
+        initial_data_type: DataType,
+        initial_triggered_by: str,
+        start_time: float,
+    ) -> PreprocessingResult:
+        """Run the initial extractor, then retry with alternatives on
+        sanity-check failure (Phase 2 feature flag). When the flag is
+        off, matches pre-Phase-2 behaviour exactly: one extraction, no
+        sanity check, no retry.
+
+        Returns the PreprocessingResult corresponding to whichever
+        attempt passed — or the last attempt if all failed, with
+        ``metadata.extractor.chosen_type = "direct_fallback"`` so
+        observability records the drop-through.
+        """
+        from faultmaven.config.settings import get_settings
+
+        retry_enabled = get_settings().preprocessing.extractor_retry_enabled
+
+        initial = await self._run_single_dispatch(content, filename, initial_data_type)
+
+        if not retry_enabled:
+            # Phase 0 / Phase 1 behaviour: single-shot, no sanity check.
+            return self._build_result(
+                content=content,
+                extraction=initial,
+                detailed_data_type=initial_data_type,
+                unified_data_type=to_unified_data_type(initial_data_type),
+                classification=classification,
+                start_time=start_time,
+                triggered_by=initial_triggered_by,
+            )
+
+        # Phase 2 retry path. Record each attempt's sanity result so the
+        # final ``extractor.attempts`` list tells the full story.
+        attempts: list[ExtractorAttempt] = []
+        initial_sanity = run_sanity_check(initial_data_type, content, initial.content)
+        attempts.append(
+            ExtractorAttempt(
+                data_type=initial_data_type.value,
+                sanity_passed=initial_sanity.passed,
+                duration_ms=0,  # filled in by _build_result_with_attempts
+                triggered_by=initial_triggered_by,
+            )
+        )
+
+        if initial_sanity.passed:
+            return self._build_result_with_attempts(
+                content=content,
+                extraction=initial,
+                detailed_data_type=initial_data_type,
+                unified_data_type=to_unified_data_type(initial_data_type),
+                classification=classification,
+                start_time=start_time,
+                attempts=attempts,
+            )
+
+        # Sanity failed. Retry with alternatives, bounded.
+        alt_types = _build_alternative_chain(
+            classification=classification,
+            already_tried=[initial_data_type],
+            max_alternatives=_MAX_ALT_RETRIES,
+        )
+
+        winning_extraction: Optional[ExtractionResult] = initial
+        winning_type: DataType = initial_data_type
+        winning_passed = False
+
+        for alt_type in alt_types:
+            logger.info(
+                "Phase 2 retry: initial extractor for %s failed sanity "
+                "(reason=%s); trying %s",
+                initial_data_type.value,
+                initial_sanity.reason,
+                alt_type.value,
+            )
+            alt_extraction = await self._run_single_dispatch(
+                content, filename, alt_type
+            )
+            alt_sanity = run_sanity_check(alt_type, content, alt_extraction.content)
+            attempts.append(
+                ExtractorAttempt(
+                    data_type=alt_type.value,
+                    sanity_passed=alt_sanity.passed,
+                    duration_ms=0,
+                    triggered_by="sanity_retry",
+                )
+            )
+            if alt_sanity.passed:
+                winning_extraction = alt_extraction
+                winning_type = alt_type
+                winning_passed = True
+                break
+
+        if not winning_passed:
+            # All candidates failed sanity. Fall back to direct truncation
+            # and record the drop-through in evidence metadata so ops can
+            # see which content types systematically defeat the sanity
+            # checks. ExtractionResult.method is a constrained literal —
+            # we reuse ``"direct"`` here and rely on the metadata block
+            # carrying the ``chosen_type = "direct_fallback"`` signal.
+            logger.warning(
+                "Phase 2 retry exhausted for %s: all %d candidates failed "
+                "sanity; falling back to direct truncation",
+                filename,
+                len(attempts),
+            )
+            winning_extraction = ExtractionResult(
+                method="direct",
+                content=self._fallback_direct_extraction(content),
+                metadata={"fallback": True, "all_retries_failed": True},
+            )
+            winning_type = DataType.UNSTRUCTURED_TEXT
+
+        return self._build_result_with_attempts(
+            content=content,
+            extraction=winning_extraction,
+            detailed_data_type=winning_type,
+            unified_data_type=to_unified_data_type(winning_type),
             classification=classification,
             start_time=start_time,
-            triggered_by="user_override" if user_override is not None else "initial",
+            attempts=attempts,
+            direct_fallback=not winning_passed,
+        )
+
+    async def _run_single_dispatch(
+        self,
+        content: str,
+        filename: str,
+        data_type: DataType,
+    ) -> ExtractionResult:
+        """Run one extractor and return its ExtractionResult.
+
+        Encapsulates the "no extractor registered for this type →
+        direct truncation" fallback so the retry loop can treat all
+        dispatches uniformly.
+        """
+        extractor = self.extractors.get(data_type)
+        if extractor:
+            return await self._extract_with_timeout(extractor, content, filename)
+        logger.warning(f"No extractor for {data_type.value}, using direct truncation")
+        return ExtractionResult(
+            method="direct",
+            content=self._fallback_direct_extraction(content),
+            metadata={"fallback": True},
         )
 
     async def reclassify_evidence(
@@ -345,6 +555,51 @@ class PreprocessingService:
         result.extraction_metadata = extraction_metadata
         return result
 
+    def _build_result_with_attempts(
+        self,
+        content: str,
+        extraction: ExtractionResult,
+        detailed_data_type: DataType,
+        unified_data_type,
+        classification,
+        start_time: float,
+        attempts: list[ExtractorAttempt],
+        direct_fallback: bool = False,
+    ) -> PreprocessingResult:
+        """Variant of ``_build_result`` used by the Phase 2 retry path
+        to override the default single-attempt list with the full
+        sequence observed during retries.
+
+        When ``direct_fallback`` is True, the metadata records
+        ``extractor.chosen_type = "direct_fallback"`` so ops can see
+        the retry loop exhausted alternatives.
+        """
+        result = self._build_result(
+            content=content,
+            extraction=extraction,
+            detailed_data_type=detailed_data_type,
+            unified_data_type=unified_data_type,
+            classification=classification,
+            start_time=start_time,
+            triggered_by=attempts[-1].triggered_by if attempts else "initial",
+        )
+
+        # Overwrite the single-attempt block that _build_result wrote
+        # with the full retry sequence. Also record the direct-fallback
+        # signal if applicable.
+        extraction_metadata = dict(result.extraction_metadata or {})
+        new_meta = dict(extraction_metadata.get("evidence_metadata") or {})
+        extractor_block = dict(new_meta.get("extractor") or {})
+        extractor_block["attempts"] = [
+            a.model_dump(exclude_none=True) for a in attempts
+        ]
+        if direct_fallback:
+            extractor_block["chosen_type"] = "direct_fallback"
+        new_meta["extractor"] = extractor_block
+        extraction_metadata["evidence_metadata"] = new_meta
+        result.extraction_metadata = extraction_metadata
+        return result
+
     def _build_result(
         self,
         content: str,
@@ -373,6 +628,17 @@ class PreprocessingService:
         index_size = len(extraction.content.encode("utf-8"))
         compression_ratio = index_size / max(content_size, 1)
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+        # Phase 2c — extraction yield ratio (index / raw). A drift
+        # signal per data_type: when a type's yield baseline shifts
+        # abruptly, the content distribution probably changed and the
+        # extractor is producing garbage for a new sub-format. Guarded
+        # against zero-byte input so the histogram never records a
+        # spurious 0/0 = NaN.
+        if content_size > 0:
+            PREPROCESSING_EXTRACTION_YIELD_RATIO.labels(
+                data_type=detailed_data_type.value
+            ).observe(index_size / content_size)
 
         evidence_meta = EvidenceMetadata(
             classification=ClassificationMetadata(

@@ -1576,6 +1576,26 @@ class PreprocessingSettings(BaseSettings):
         ),
     )
 
+    # Phase 2: Alt-extractor fallback on degenerate sanity-check output.
+    # When True, ``PreprocessingService.classify_and_extract`` runs
+    # ``ExtractionSanityCheck`` after each extraction and, on failure,
+    # retries with alternative extractors from
+    # ``classification.suggested_types`` (or a conservative fallback
+    # chain when suggested_types is empty). Bounded at 2 retries; if all
+    # candidates fail sanity, the direct-truncation fallback is used.
+    # Each attempt is recorded in ``metadata.extractor.attempts`` for
+    # observability. Default OFF — ships dark; the legacy single-shot
+    # dispatch remains the default to minimise behaviour change.
+    extractor_retry_enabled: bool = Field(
+        default=False,
+        validation_alias="FAULTMAVEN_PREPROCESSING_EXTRACTOR_RETRY",
+        description=(
+            "Phase 2 feature flag: run a sanity check after each "
+            "extraction and retry with an alternative extractor when "
+            "the output looks degenerate."
+        ),
+    )
+
     @field_validator("chunk_size_tokens")
     @classmethod
     def validate_chunk_size(cls, v, info):
