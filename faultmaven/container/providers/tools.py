@@ -221,11 +221,6 @@ def register_tools(container: BaseDIContainer) -> None:
         logger.info("Deep analysis tool registered (DA backend active)")
 
     # Search file tool (mechanical search)
-    preprocessing_service = (
-        container.get_service("preprocessing_service")
-        if hasattr(container, "get_service")
-        else None
-    )
     # Must match the registered name in services.py (`file_storage_service`).
     # Previously keyed as "storage_service", which silently returned None
     # because that name was never registered.
@@ -239,7 +234,6 @@ def register_tools(container: BaseDIContainer) -> None:
 
         search_file_tool = SearchFileTool(
             storage_service=storage_service,
-            preprocessing_service=preprocessing_service,
         )
         container.search_file_tool = search_file_tool
         container.tools.append(search_file_tool)
