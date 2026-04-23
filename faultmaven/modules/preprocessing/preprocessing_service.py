@@ -16,11 +16,12 @@ import asyncio
 import hashlib
 import logging
 import time
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from faultmaven.core.preprocessing.evidence_metadata import (
     ClassificationMetadata,
     EvidenceMetadata,
+    ExtractorAttempt,
     ExtractorMetadata,
 )
 from faultmaven.core.preprocessing.models import (
@@ -134,6 +135,7 @@ class PreprocessingService:
         content: str,
         filename: str = "pasted_content.txt",
         source_metadata: Optional[SourceMetadata] = None,
+        user_override: Optional[DataType] = None,
     ) -> PreprocessingResult:
         """
         Tier 0+1 unified entry point: classify content, run matched extractor, package result.
@@ -151,6 +153,17 @@ class PreprocessingService:
           confidence threshold. Returns a placeholder carrying suggested
           types; the frontend shows a modal and retries with user_override.
 
+        Phase 1.5 — Reclassification path: the caller can pass
+        ``user_override`` (typically from the ``PATCH /evidence/{id}/classification``
+        endpoint or the ``reclassify_evidence`` agent tool) to force the
+        classifier to return ``source="user_override", confidence=1.0``
+        for the given DataType. The rest of the pipeline (extractor
+        dispatch, metadata assembly) is unchanged; the resulting
+        PreprocessingResult's ``extraction_metadata.evidence_metadata``
+        records ``classification.source = "user_override"`` so the
+        context builder's low-confidence marker is suppressed on the
+        updated evidence row.
+
         PII redaction is handled at the LLM boundary (MilestoneEngine),
         not here. Structural indexes are stored raw.
 
@@ -166,6 +179,7 @@ class PreprocessingService:
             filename,
             content,
             source_metadata=source_metadata,
+            user_override=user_override,
         )
 
         detailed_data_type = classification.data_type
@@ -252,7 +266,84 @@ class PreprocessingService:
             unified_data_type=unified_data_type,
             classification=classification,
             start_time=start_time,
+            triggered_by="user_override" if user_override is not None else "initial",
         )
+
+    async def reclassify_evidence(
+        self,
+        content: str,
+        filename: str,
+        user_override: DataType,
+        previous_metadata: Optional[Dict[str, Any]] = None,
+    ) -> PreprocessingResult:
+        """Re-run the preprocessing pipeline on *content* under a
+        user-specified data type.
+
+        Implements Phase 1.5 (see
+        ``docs/working/WIP-data-processing-improvement-plan.md``). The
+        caller — typically the PATCH ``/classification`` endpoint or the
+        ``reclassify_evidence`` agent tool — provides the raw file
+        bytes, the chosen data_type, and the existing evidence's
+        metadata so we can preserve its ``extractor.attempts`` history.
+
+        The resulting ``PreprocessingResult.extraction_metadata
+        ["evidence_metadata"]`` carries:
+
+        - ``classification.source = "user_override"`` and
+          ``confidence = 1.0`` (Phase 1's low-confidence marker is
+          consequently suppressed on the updated row).
+        - ``extractor.chosen_type`` = the requested type's string value.
+        - ``extractor.attempts`` = the previous attempts list with the
+          new attempt appended. Hard cap: 5 entries; oldest rotate off
+          the head.
+
+        Cap chosen to bound row growth on repeated corrections without
+        losing the initial-classification record, which is typically
+        the interesting one (it's what was wrong).
+        """
+        result = await self.classify_and_extract(
+            content=content,
+            filename=filename,
+            user_override=user_override,
+        )
+        return self._merge_attempts(result, previous_metadata)
+
+    _MAX_ATTEMPTS_KEPT = 5
+
+    def _merge_attempts(
+        self,
+        result: PreprocessingResult,
+        previous_metadata: Optional[Dict[str, Any]],
+    ) -> PreprocessingResult:
+        """Prepend previous attempts onto the freshly-written ones.
+
+        Separated from ``reclassify_evidence`` for testability and
+        because Phase 2 will reuse it for sanity-check retries.
+        """
+        if not previous_metadata:
+            return result
+
+        prior = previous_metadata.get("extractor", {}).get("attempts", [])
+        if not isinstance(prior, list) or not prior:
+            return result
+
+        extraction_metadata = dict(result.extraction_metadata or {})
+        new_meta = dict(extraction_metadata.get("evidence_metadata") or {})
+        extractor_block = dict(new_meta.get("extractor") or {})
+
+        current_attempts = list(extractor_block.get("attempts") or [])
+        combined = [dict(a) for a in prior if isinstance(a, dict)] + current_attempts
+        # Keep the most recent N entries. When trimming, drop the oldest
+        # head so the initial-classification record eventually rolls off
+        # but the latest truth is preserved.
+        if len(combined) > self._MAX_ATTEMPTS_KEPT:
+            combined = combined[-self._MAX_ATTEMPTS_KEPT :]
+
+        extractor_block["attempts"] = combined
+        new_meta["extractor"] = extractor_block
+        extraction_metadata["evidence_metadata"] = new_meta
+        result.extraction_metadata = extraction_metadata
+        return result
 
     def _build_result(
         self,
@@ -262,6 +353,7 @@ class PreprocessingService:
         unified_data_type,
         classification,
         start_time: float,
+        triggered_by: str = "initial",
     ) -> PreprocessingResult:
         """Assemble a PreprocessingResult from an ExtractionResult.
 
@@ -270,6 +362,11 @@ class PreprocessingService:
         Evidence row without re-deriving classifier signals. See
         docs/architecture/data-and-storage/schemas/case-schema.md §4.3
         'evidence.metadata JSON contract'.
+
+        ``triggered_by`` labels the ``ExtractorAttempt`` entry written
+        into ``metadata.extractor.attempts``. ``"initial"`` is the
+        upload path; ``"user_override"`` is Phase 1.5 reclassification.
+        Phase 2 will add ``"sanity_retry"``.
         """
         processing_time_ms = int((time.time() - start_time) * 1000)
         content_size = len(content.encode("utf-8"))
@@ -288,6 +385,14 @@ class PreprocessingService:
             ),
             extractor=ExtractorMetadata(
                 chosen_type=detailed_data_type.value,
+                attempts=[
+                    ExtractorAttempt(
+                        data_type=detailed_data_type.value,
+                        sanity_passed=True,
+                        duration_ms=processing_time_ms,
+                        triggered_by=triggered_by,
+                    )
+                ],
             ),
         )
 

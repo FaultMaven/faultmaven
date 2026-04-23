@@ -52,8 +52,16 @@ class ClassificationMetadata(BaseModel):
 class ExtractorAttempt(BaseModel):
     """One pass through the extractor for this evidence.
 
-    A single attempt is the norm. Multiple attempts appear when the
-    Phase 2 sanity-check-and-retry path runs.
+    A single attempt is the norm. Multiple attempts appear when:
+
+    - The Phase 2 sanity-check-and-retry path runs (``triggered_by =
+      "sanity_retry"``).
+    - Phase 1.5 reclassification runs — the user corrected the
+      classifier (``triggered_by = "user_override"``).
+
+    The list is chronological: the most recent attempt is the one whose
+    output is currently persisted as ``evidence.preprocessed_content``.
+    Hard cap: 5 entries; oldest rotate off the head when exceeded.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -61,6 +69,11 @@ class ExtractorAttempt(BaseModel):
     data_type: str
     sanity_passed: bool = True
     duration_ms: int = 0
+    triggered_by: Optional[str] = None
+    """What initiated this attempt. Known values: ``initial``,
+    ``sanity_retry`` (Phase 2), ``user_override`` (Phase 1.5). ``None``
+    is tolerated for backward-compatibility with attempts recorded
+    before the field existed."""
 
 
 class ExtractorMetadata(BaseModel):
