@@ -72,6 +72,7 @@ from faultmaven.models.api import (
     Case,
     CaseMessagesResponse,
     CaseResponse,
+    DataType,
     ErrorDetail,
     ErrorResponse,
     Message,
@@ -2341,6 +2342,98 @@ async def get_case_service_health(
         }
 
 
+# Phase 1.5 — Evidence reclassification endpoint
+# =============================================================================
+
+
+@router.patch("/{case_id}/evidence/{evidence_id}/classification")
+@trace("api_reclassify_evidence")
+async def reclassify_evidence(
+    case_id: str,
+    evidence_id: str,
+    body: Dict[str, Any] = Body(
+        ...,
+        description=(
+            "Request body: {'data_type': '<DataType value>'}. The data_type "
+            "must be one of the enum values in faultmaven.models.api.DataType "
+            "(e.g. 'logs_and_errors', 'structured_config')."
+        ),
+    ),
+    investigation_service=Depends(get_investigation_service),
+    current_user: UserDTO = Depends(require_authentication),
+):
+    """Reclassify an existing evidence row under a user-specified data type.
+
+    Phase 1.5 — the escape hatch for "the classifier was confidently
+    wrong". Re-runs the preprocessing pipeline on the stored raw file
+    with ``user_override=data_type``, overwrites the evidence's
+    structural index, and appends to its extractor.attempts history.
+
+    Gated by ``FAULTMAVEN_RECLASSIFY_ENABLED``. Returns 404 when the
+    flag is off so the endpoint is invisible in production by default.
+
+    Error responses:
+
+    - ``404`` — feature disabled, case not found, or evidence not in case.
+    - ``409`` — evidence has no ``content_ref`` (can't re-extract).
+    - ``400`` — invalid ``data_type`` string, or missing ``data_type``.
+    """
+    from faultmaven.config.settings import get_settings
+
+    settings = get_settings()
+    if not settings.preprocessing.reclassify_enabled:
+        raise HTTPException(
+            status_code=404,
+            detail="Reclassification endpoint is not enabled",
+        )
+
+    data_type_raw = body.get("data_type") if isinstance(body, dict) else None
+    if not data_type_raw or not isinstance(data_type_raw, str):
+        raise HTTPException(
+            status_code=400,
+            detail="Request body must include 'data_type' (string)",
+        )
+
+    try:
+        data_type = DataType(data_type_raw)
+    except ValueError:
+        valid = ", ".join(t.value for t in DataType)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown data_type '{data_type_raw}'. Valid: {valid}",
+        )
+
+    try:
+        updated_evidence = await investigation_service.reclassify_evidence(
+            case_id=case_id,
+            evidence_id=evidence_id,
+            user_id=current_user.user_id,
+            data_type=data_type,
+            trigger="api",
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionDeniedException as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValidationException as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ServiceException as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "evidence_id": updated_evidence.evidence_id,
+        "data_type": updated_evidence.data_type,
+        "source_type": (
+            updated_evidence.source_type.value
+            if hasattr(updated_evidence.source_type, "value")
+            else str(updated_evidence.source_type)
+        ),
+        "summary": updated_evidence.summary,
+        "metadata": updated_evidence.metadata,
+    }
+
+
+# =============================================================================
 # Case-scoped data management endpoints
 
 

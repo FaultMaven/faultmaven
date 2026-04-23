@@ -24,9 +24,11 @@ from faultmaven.exceptions import (
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
+    ValidationException,
 )
 from faultmaven.infrastructure.observability.evidence_metrics import (
     EVIDENCE_DEDUP_HITS_TOTAL,
+    EVIDENCE_RECLASSIFICATION_TOTAL,
 )
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
@@ -1036,6 +1038,146 @@ class InvestigationService:
         except Exception as e:
             logger.error(f"Failed to transition case {case_id} to INVESTIGATING: {e}")
             raise ServiceException(f"Status transition failed: {str(e)}") from e
+
+    @trace("investigation_service_reclassify_evidence")
+    async def reclassify_evidence(
+        self,
+        case_id: str,
+        evidence_id: str,
+        user_id: str,
+        data_type: DataType,
+        trigger: str = "api",
+    ) -> Evidence:
+        """Re-run preprocessing on an existing evidence row under a
+        user-specified data type.
+
+        Phase 1.5 — implements the "escape hatch" for confident
+        misclassification. The caller (PATCH endpoint or
+        ``reclassify_evidence`` agent tool) provides the new data type;
+        this method fetches the stored raw bytes, re-runs extraction
+        under ``user_override=data_type``, and overwrites the
+        ``preprocessed_content`` / ``data_type`` / ``metadata`` fields
+        on the same evidence row.
+
+        Args:
+            case_id: Case owning the evidence.
+            evidence_id: Evidence being reclassified.
+            user_id: User making the request (authorisation check).
+            data_type: Target data type (DataType enum value).
+            trigger: Where the request came from — ``api`` (direct
+                PATCH) or ``agent_tool`` (reclassify_evidence tool).
+                Labels the observability counter.
+
+        Returns:
+            The updated Evidence row with new preprocessed_content and
+            metadata.
+
+        Raises:
+            NotFoundError: case or evidence not found.
+            PermissionDeniedException: user does not own the case.
+            ValidationException: evidence has no ``content_ref`` —
+                reclassification requires stored raw bytes to re-extract.
+            ServiceException: any other failure (storage fetch,
+                preprocessing).
+        """
+        case = await self.repository.get(case_id)
+        if not case:
+            raise NotFoundError("Case", case_id)
+        if case.user_id != user_id:
+            raise PermissionDeniedException(
+                f"User {user_id} not authorized for case {case_id}"
+            )
+
+        evidence_index: Optional[int] = None
+        for i, ev in enumerate(case.evidence or []):
+            if ev.evidence_id == evidence_id:
+                evidence_index = i
+                break
+        if evidence_index is None:
+            raise NotFoundError("Evidence", evidence_id)
+
+        evidence = case.evidence[evidence_index]
+        if not evidence.content_ref:
+            raise ValidationException(
+                f"Evidence {evidence_id} has no stored raw file — "
+                "reclassification requires re-running the extractor "
+                "over the original content, which is not available for "
+                "evidence that was created without file storage."
+            )
+        if not self.file_storage_service:
+            raise ServiceException(
+                "File storage service unavailable; cannot re-extract"
+            )
+        if not self.preprocessing_service:
+            raise ServiceException(
+                "Preprocessing service unavailable; cannot reclassify"
+            )
+
+        # Fetch raw bytes + decode. Storage returns bytes; extractors
+        # operate on strings (UTF-8 is the convention per the upload path).
+        raw_bytes = await self.file_storage_service.retrieve_file(evidence.content_ref)
+        content = raw_bytes.decode("utf-8", errors="replace")
+        filename = evidence.original_filename or "evidence"
+
+        previous_metadata = evidence.metadata
+
+        preprocessing_result = await self.preprocessing_service.reclassify_evidence(
+            content=content,
+            filename=filename,
+            user_override=data_type,
+            previous_metadata=previous_metadata,
+        )
+
+        # Lift the updated evidence_metadata block from the result.
+        pp_metadata = preprocessing_result.extraction_metadata
+        new_evidence_metadata: Optional[Dict[str, Any]] = None
+        if isinstance(pp_metadata, dict):
+            candidate = pp_metadata.get("evidence_metadata")
+            if isinstance(candidate, dict):
+                new_evidence_metadata = candidate
+
+        previous_type = evidence.data_type
+        new_type = preprocessing_result.data_type.value
+
+        # Update the row in place via model_copy to bypass cross-field
+        # validators, then write back the list so Case's own validators
+        # see a consistent state.
+        updated_evidence = evidence.model_copy(
+            update={
+                "data_type": new_type,
+                "preprocessed_content": preprocessing_result.structural_index,
+                "summary": preprocessing_result.summary,
+                "source_type": _infer_source_type(preprocessing_result.data_type),
+                "preprocessing_method": preprocessing_result.extraction_method,
+                "extraction_method": preprocessing_result.extraction_method,
+                "metadata": new_evidence_metadata,
+            },
+            deep=True,
+        )
+        new_evidence_list = list(case.evidence)
+        new_evidence_list[evidence_index] = updated_evidence
+        updated_case = case.model_copy(
+            update={"evidence": new_evidence_list}, deep=True
+        )
+
+        await self.repository.save(updated_case)
+
+        EVIDENCE_RECLASSIFICATION_TOTAL.labels(
+            from_type=str(previous_type or "unknown"),
+            to_type=new_type,
+            trigger=trigger,
+        ).inc()
+
+        logger.info(
+            "Reclassified evidence %s in case %s: %s -> %s (trigger=%s)",
+            evidence_id,
+            case_id,
+            previous_type,
+            new_type,
+            trigger,
+        )
+
+        return updated_evidence
 
     @trace("investigation_service_close_case")
     async def close_case(self, case_id: str, user_id: str, closure_reason: str) -> Case:

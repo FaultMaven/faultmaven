@@ -1558,6 +1558,24 @@ class PreprocessingSettings(BaseSettings):
         ),
     )
 
+    # Phase 1.5: User-driven reclassification of persisted evidence.
+    # When True, the PATCH
+    # ``/api/v1/cases/{case_id}/evidence/{evidence_id}/classification``
+    # endpoint is live and the ``reclassify_evidence`` agent tool is
+    # registered + exposed to the LLM (with a prompt rule teaching the
+    # model when to call it). When False, the endpoint returns 404 and
+    # the tool is not registered — matching Phase 0 behaviour.
+    # Default OFF — ships dark.
+    reclassify_enabled: bool = Field(
+        default=False,
+        validation_alias="FAULTMAVEN_RECLASSIFY_ENABLED",
+        description=(
+            "Phase 1.5 feature flag: enable user-driven reclassification "
+            "of persisted evidence (PATCH endpoint + reclassify_evidence "
+            "agent tool + prompt rule)."
+        ),
+    )
+
     @field_validator("chunk_size_tokens")
     @classmethod
     def validate_chunk_size(cls, v, info):

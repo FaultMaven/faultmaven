@@ -87,6 +87,19 @@ if PROMETHEUS_AVAILABLE:
         "covering all attempts. Emitted by the PLAN-async-turn-retry "
         "implementation.",
     )
+
+    # Phase 1.5 — user-driven reclassification. Labelled by
+    # (from_type, to_type, trigger) so a classifier-bias dashboard can
+    # spot systematic (from_type, to_type) pairs. trigger values:
+    # ``api`` (direct PATCH), ``agent_tool`` (reclassify_evidence tool).
+    EVIDENCE_RECLASSIFICATION_TOTAL = Counter(
+        "faultmaven_evidence_reclassification_total",
+        "Number of evidence rows whose data_type was changed by a user "
+        "override. Emitted by the PATCH "
+        "/cases/{id}/evidence/{eid}/classification endpoint and by the "
+        "reclassify_evidence agent tool.",
+        labelnames=["from_type", "to_type", "trigger"],
+    )
 else:
     EVIDENCE_DEDUP_HITS_TOTAL = _NoOpMetric()
     EVIDENCE_ORPHAN_FILES_FOUND_TOTAL = _NoOpMetric()
@@ -94,6 +107,7 @@ else:
     EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL = _NoOpMetric()
     EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL = _NoOpMetric()
     EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS = _NoOpMetric()
+    EVIDENCE_RECLASSIFICATION_TOTAL = _NoOpMetric()
 
 
 __all__ = [
@@ -103,5 +117,6 @@ __all__ = [
     "EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL",
     "EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL",
     "EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS",
+    "EVIDENCE_RECLASSIFICATION_TOTAL",
     "PROMETHEUS_AVAILABLE",
 ]
