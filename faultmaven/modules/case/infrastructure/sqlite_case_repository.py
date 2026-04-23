@@ -26,7 +26,7 @@ import builtins
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -394,6 +394,20 @@ class SQLiteCaseRepository(CaseRepository):
                     except ValueError:
                         source_type = EvidenceSourceType.LOGS
 
+                    # Deserialize evidence.metadata (JSON-encoded Text
+                    # column). Absent / empty / unparseable → None, which
+                    # the domain model treats as "no metadata". Readers
+                    # must tolerate this shape.
+                    metadata_raw = row[9]
+                    parsed_metadata: Optional[Dict[str, Any]] = None
+                    if metadata_raw:
+                        try:
+                            parsed = json.loads(metadata_raw)
+                            if isinstance(parsed, dict) and parsed:
+                                parsed_metadata = parsed
+                        except (json.JSONDecodeError, TypeError):
+                            parsed_metadata = None
+
                     evidence_list.append(
                         Evidence(
                             evidence_id=str(row[0]),
@@ -412,6 +426,7 @@ class SQLiteCaseRepository(CaseRepository):
                             content_hash=row[11],
                             source_file_id=row[13],
                             vectorized=bool(row[14]),
+                            metadata=parsed_metadata,
                         )
                     )
                 except Exception as ev_err:
@@ -566,6 +581,16 @@ class SQLiteCaseRepository(CaseRepository):
             except ValueError:
                 source_type = EvidenceSourceType.LOGS
 
+            metadata_raw = row[9]
+            parsed_metadata: Optional[Dict[str, Any]] = None
+            if metadata_raw:
+                try:
+                    parsed = json.loads(metadata_raw)
+                    if isinstance(parsed, dict) and parsed:
+                        parsed_metadata = parsed
+                except (json.JSONDecodeError, TypeError):
+                    parsed_metadata = None
+
             return Evidence(
                 evidence_id=str(row[0]),
                 category=category,
@@ -582,6 +607,7 @@ class SQLiteCaseRepository(CaseRepository):
                 collected_at_turn=row[12] if row[12] else 0,
                 content_hash=row[11],
                 source_file_id=row[13],
+                metadata=parsed_metadata,
             )
         except Exception as e:
             raise RepositoryException(
@@ -1243,7 +1269,11 @@ class SQLiteCaseRepository(CaseRepository):
                     "file_size": evidence.content_size_bytes,
                     "filename": getattr(evidence, "original_filename", None) or "",
                     "upload_timestamp": evidence.collected_at.isoformat(),
-                    "metadata": json.dumps({}),
+                    # evidence.metadata carries the structured JSON contract
+                    # from faultmaven/core/preprocessing/evidence_metadata.py.
+                    # Empty dict when not populated — schema column has
+                    # NOT NULL default "{}" so we always write valid JSON.
+                    "metadata": json.dumps(evidence.metadata or {}),
                     "source_type": source_type_val,
                     "content_hash": getattr(evidence, "content_hash", None) or "",
                     "collected_at_turn": evidence.collected_at_turn,

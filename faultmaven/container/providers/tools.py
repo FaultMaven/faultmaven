@@ -221,11 +221,6 @@ def register_tools(container: BaseDIContainer) -> None:
         logger.info("Deep analysis tool registered (DA backend active)")
 
     # Search file tool (mechanical search)
-    preprocessing_service = (
-        container.get_service("preprocessing_service")
-        if hasattr(container, "get_service")
-        else None
-    )
     # Must match the registered name in services.py (`file_storage_service`).
     # Previously keyed as "storage_service", which silently returned None
     # because that name was never registered.
@@ -239,7 +234,6 @@ def register_tools(container: BaseDIContainer) -> None:
 
         search_file_tool = SearchFileTool(
             storage_service=storage_service,
-            preprocessing_service=preprocessing_service,
         )
         container.search_file_tool = search_file_tool
         container.tools.append(search_file_tool)
@@ -265,5 +259,35 @@ def register_tools(container: BaseDIContainer) -> None:
         logger.info("Vectorize file tool registered (auto-triggered on DA failure)")
     except Exception as e:
         logger.warning(f"Vectorize file tool registration failed: {e}")
+
+    # Phase 1.5 — Reclassify evidence tool. Registered conditionally on
+    # the feature flag so the LLM sees the tool in its function-calling
+    # menu only when the operator has opted in.
+    try:
+        from faultmaven.config.settings import get_settings
+
+        if get_settings().preprocessing.reclassify_enabled:
+            from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
+                ReclassifyEvidenceTool,
+            )
+
+            investigation_service = (
+                container.get_service("investigation_service")
+                if hasattr(container, "get_service")
+                else None
+            )
+            reclassify_evidence_tool = ReclassifyEvidenceTool(
+                investigation_service=investigation_service,
+            )
+            container.reclassify_evidence_tool = reclassify_evidence_tool
+            container.tools.append(reclassify_evidence_tool)
+            logger.info("Reclassify evidence tool registered (Phase 1.5 escape hatch)")
+        else:
+            logger.info(
+                "Reclassify evidence tool NOT registered "
+                "(FAULTMAVEN_RECLASSIFY_ENABLED=false)"
+            )
+    except Exception as e:
+        logger.warning(f"Reclassify evidence tool registration failed: {e}")
 
     logger.info(f"✅ Tools layer registered: {len(container.tools)} tools")

@@ -1542,6 +1542,40 @@ class PreprocessingSettings(BaseSettings):
         description="LLM provider for chunking operations (synthesis, chat, or specific provider)",
     )
 
+    # Phase 1: Classifier confidence marker in agent context.
+    # When True, the context_builder attaches `confidence="low"` to the
+    # <evidence> XML tag for evidence whose classifier confidence falls
+    # below LOW_CONFIDENCE_THRESHOLD (see
+    # faultmaven.core.preprocessing.evidence_metadata). The agent prompt
+    # instructs the model to treat low-confidence extractions as tentative.
+    # Default OFF — ships dark; enable explicitly in deployment config.
+    confidence_marker_enabled: bool = Field(
+        default=False,
+        validation_alias="FAULTMAVEN_PREPROCESSING_CONFIDENCE_MARKER",
+        description=(
+            "Phase 1 feature flag: surface classifier confidence as a "
+            "low-confidence marker on the <evidence> XML tag."
+        ),
+    )
+
+    # Phase 1.5: User-driven reclassification of persisted evidence.
+    # When True, the PATCH
+    # ``/api/v1/cases/{case_id}/evidence/{evidence_id}/classification``
+    # endpoint is live and the ``reclassify_evidence`` agent tool is
+    # registered + exposed to the LLM (with a prompt rule teaching the
+    # model when to call it). When False, the endpoint returns 404 and
+    # the tool is not registered — matching Phase 0 behaviour.
+    # Default OFF — ships dark.
+    reclassify_enabled: bool = Field(
+        default=False,
+        validation_alias="FAULTMAVEN_RECLASSIFY_ENABLED",
+        description=(
+            "Phase 1.5 feature flag: enable user-driven reclassification "
+            "of persisted evidence (PATCH endpoint + reclassify_evidence "
+            "agent tool + prompt rule)."
+        ),
+    )
+
     @field_validator("chunk_size_tokens")
     @classmethod
     def validate_chunk_size(cls, v, info):

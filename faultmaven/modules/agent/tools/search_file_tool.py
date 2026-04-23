@@ -1,9 +1,17 @@
 """Search File Tool — Mechanical Search over Evidence Files
 
-Provides three search modes over previously uploaded evidence files:
+Provides two search modes over previously uploaded evidence files:
+
 - keyword: Split query into keywords, find matching lines with context
 - regex: Treat query as a regex pattern
-- extractor: Re-run domain-specific extractor with different parameters
+
+Historical note: an ``extractor`` mode previously advertised "re-run the
+domain extractor with different parameters". No extractor actually
+accepted parameters, so every invocation silently degraded to a
+defaults-only re-run while returning content already present in the
+agent's ``<evidence>`` prompt block. Removed as part of plan
+Cross-Cutting Hardening H2 — see
+``docs/working/WIP-data-processing-improvement-plan.md``.
 
 Design Reference: docs/architecture/data-processing/README.md
 """
@@ -32,20 +40,17 @@ class SearchFileTool(AgentTool):
     """Mechanical search over raw evidence file content.
 
     Allows the agent to search previously uploaded evidence files using
-    keyword matching, regex patterns, or re-running domain extractors
-    with different parameters. Used within Directed Analysis as a
-    supplementary tool for exact keyword/regex/timestamp matching.
+    keyword matching or regex patterns. Used within Directed Analysis as
+    a supplementary tool for exact keyword/regex/timestamp matching.
     """
 
     def __init__(
         self,
         storage_service: Any = None,
-        preprocessing_service: Any = None,
         context_lines: int = DEFAULT_CONTEXT_LINES,
         max_results: int = DEFAULT_MAX_RESULTS,
     ):
         self.storage_service = storage_service
-        self.preprocessing_service = preprocessing_service
         self.context_lines = context_lines
         self.max_results = max_results
 
@@ -76,25 +81,15 @@ class SearchFileTool(AgentTool):
                     "type": "string",
                     "description": (
                         "Search query: keywords for keyword mode, "
-                        "regex pattern for regex mode, "
-                        "or description of what to find for extractor mode"
+                        "regex pattern for regex mode"
                     ),
                 },
                 "search_type": {
                     "type": "string",
-                    "enum": ["keyword", "regex", "extractor"],
+                    "enum": ["keyword", "regex"],
                     "description": (
                         "Search mode: 'keyword' splits query into keywords and finds matching lines, "
-                        "'regex' treats query as a regex pattern, "
-                        "'extractor' re-runs the domain extractor with different parameters"
-                    ),
-                },
-                "extractor_params": {
-                    "type": "object",
-                    "description": (
-                        "Parameters for extractor re-run mode. "
-                        'E.g., {"min_severity": "WARN"} for log extractor, '
-                        '{"z_score_threshold": 2.0} for metrics extractor'
+                        "'regex' treats query as a regex pattern"
                     ),
                 },
                 "output_format": {
@@ -128,7 +123,6 @@ class SearchFileTool(AgentTool):
         evidence_id = params.get("evidence_id")
         query = params.get("query", "")
         search_type = params.get("search_type", "keyword")
-        extractor_params = params.get("extractor_params", {})
         output_format = params.get("output_format", "excerpts")
 
         # Resolve effective max_results: LLM override → format default → instance default
@@ -177,10 +171,6 @@ class SearchFileTool(AgentTool):
             # Dispatch by search type — get all merged results, then cap
             if search_type == "regex":
                 all_results = self._regex_search(content, query)
-            elif search_type == "extractor":
-                all_results = await self._extractor_rerun(
-                    content, evidence_obj, extractor_params
-                )
             else:
                 all_results = self._keyword_search(content, query)
 
@@ -533,71 +523,6 @@ class SearchFileTool(AgentTool):
                 )
 
         return self._merge_overlapping(matches)
-
-    async def _extractor_rerun(
-        self,
-        content: str,
-        evidence: Any,
-        params: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Re-run domain-specific extractor with different parameters."""
-        if not self.preprocessing_service:
-            return [
-                {"error": "Preprocessing service not available for extractor re-run"}
-            ]
-
-        # Get the detailed data type from evidence metadata
-        data_type_str = getattr(evidence, "data_type", None)
-        if not data_type_str:
-            return [{"error": "Evidence has no data_type — cannot determine extractor"}]
-
-        from faultmaven.models.api import DataType
-
-        try:
-            # Map unified type back to detailed type for extractor lookup
-            data_type = DataType(data_type_str)
-        except ValueError:
-            # Try mapping unified type name to a detailed type
-            unified_to_detailed = {
-                "logs": DataType.LOGS_AND_ERRORS,
-                "metrics": DataType.METRICS_AND_PERFORMANCE,
-                "configuration": DataType.STRUCTURED_CONFIG,
-                "code": DataType.SOURCE_CODE,
-                "text": DataType.UNSTRUCTURED_TEXT,
-                "image": DataType.VISUAL_EVIDENCE,
-            }
-            data_type = unified_to_detailed.get(data_type_str)
-            if not data_type:
-                return [{"error": f"Unknown data_type: {data_type_str}"}]
-
-        extractor = self.preprocessing_service.extractors.get(data_type)
-        if not extractor:
-            return [{"error": f"No extractor available for {data_type.value}"}]
-
-        try:
-            result = extractor.extract(content, **params)
-            return [
-                {
-                    "extractor": extractor.strategy_name,
-                    "data_type": data_type.value,
-                    "params": params,
-                    "content": result[:10000] if len(result) > 10000 else result,
-                    "truncated": len(result) > 10000,
-                }
-            ]
-        except TypeError:
-            # Extractor doesn't accept extra params — run without them
-            result = extractor.extract(content)
-            return [
-                {
-                    "extractor": extractor.strategy_name,
-                    "data_type": data_type.value,
-                    "params": {},
-                    "content": result[:10000] if len(result) > 10000 else result,
-                    "truncated": len(result) > 10000,
-                    "note": "Extractor does not support custom parameters; ran with defaults",
-                }
-            ]
 
     # --- Vocabulary extraction (for zero-result recovery) ---
 

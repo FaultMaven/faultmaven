@@ -24,7 +24,6 @@ def tool():
     )
     return SearchFileTool(
         storage_service=storage,
-        preprocessing_service=MagicMock(),
         context_lines=5,
         max_results=3,
     )
@@ -43,7 +42,6 @@ def _make_search_tool_with_storage(
     storage.retrieve_file = AsyncMock(return_value=content)
     return SearchFileTool(
         storage_service=storage,
-        preprocessing_service=MagicMock(),
         context_lines=context_lines,
         max_results=max_results,
     )

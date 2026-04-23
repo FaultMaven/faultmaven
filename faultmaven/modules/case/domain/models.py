@@ -1732,6 +1732,20 @@ class Evidence(BaseModel):
         ge=0, description="Turn number when evidence was collected"
     )
 
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Structured diagnostic metadata from the preprocessing pipeline. "
+            "Top-level keys are namespaced — see "
+            "docs/architecture/data-and-storage/schemas/case-schema.md §4.3 "
+            "'evidence.metadata JSON contract'. "
+            "Canonical shape in "
+            "faultmaven/core/preprocessing/evidence_metadata.py::EvidenceMetadata. "
+            "Optional for backward compatibility with evidence rows that predate "
+            "the Phase 1 classifier-confidence work."
+        ),
+    )
+
 
 # ============================================================
 # Hypothesis Models (Section 6)
