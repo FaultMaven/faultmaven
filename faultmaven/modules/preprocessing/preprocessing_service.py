@@ -25,15 +25,14 @@ from faultmaven.core.preprocessing.evidence_metadata import (
     ExtractorAttempt,
     ExtractorMetadata,
 )
-from faultmaven.infrastructure.observability.evidence_metrics import (
-    PREPROCESSING_EXTRACTION_YIELD_RATIO,
-)
-from faultmaven.modules.preprocessing.extractors.utils import extract_time_range_ts
 from faultmaven.core.preprocessing.models import (
     ExtractionResult,
     PreprocessingResult,
     generate_concise_summary,
     to_unified_data_type,
+)
+from faultmaven.infrastructure.observability.evidence_metrics import (
+    PREPROCESSING_EXTRACTION_YIELD_RATIO,
 )
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.preprocessing.classifier import DataClassifier
@@ -45,6 +44,7 @@ from faultmaven.modules.preprocessing.extractors.sanity_check import (
     SanityResult,
     run_sanity_check,
 )
+from faultmaven.modules.preprocessing.extractors.utils import extract_time_range_ts
 
 if TYPE_CHECKING:
     pass
