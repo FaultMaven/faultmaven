@@ -643,7 +643,122 @@ Turns: {turns_total} total, {turns_since_progress} since last progress
     return summary
 
 
-def _score_evidence_for_tier_a(ev, case) -> float:
+_TIME_RANGE_PATTERNS: List[re.Pattern[str]] = [
+    # "between 14:30 and 14:45" / "from 14:30 to 14:45"
+    re.compile(
+        r"\b(?:between|from)\s+"
+        r"(?P<start>\d{1,2}:\d{2}(?::\d{2})?)"
+        r"\s+(?:and|to|-)\s+"
+        r"(?P<end>\d{1,2}:\d{2}(?::\d{2})?)\b",
+        re.IGNORECASE,
+    ),
+    # "2026-04-23T14:00 to 2026-04-23T15:00" — ISO-8601 range
+    re.compile(
+        r"(?P<start>\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}(?::\d{2})?)"
+        r"\s+(?:and|to|-)\s+"
+        r"(?P<end>\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}(?::\d{2})?)"
+    ),
+]
+
+# "at 14:30" / "around 14:30" — single-point queries. Matched separately
+# so the window collapses to (ts, ts) rather than erroring.
+_TIME_POINT_PATTERN = re.compile(
+    r"\b(?:at|around|near)\s+"
+    r"(?P<ts>\d{1,2}:\d{2}(?::\d{2})?"
+    r"|\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}(?::\d{2})?)\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_time_token(token: str, reference_date: "datetime") -> "Optional[datetime]":
+    """Parse ``14:30`` / ``14:30:00`` (relative to *reference_date*) or a
+    full ISO timestamp. Returns naive UTC-equivalent datetimes so the
+    caller can compare uniformly against stored coverage timestamps
+    (SQLite stores naive; Postgres TZ-aware — the rerank uses only
+    equality-ish ordering, not subtraction, so mixing is tolerable).
+    """
+    from datetime import datetime, time
+
+    # ISO-8601 with date component.
+    if "-" in token:
+        try:
+            return datetime.fromisoformat(token.replace(" ", "T"))
+        except ValueError:
+            return None
+    # HH:MM[:SS] — anchor to reference_date.
+    parts = token.split(":")
+    try:
+        h = int(parts[0])
+        m = int(parts[1])
+        s = int(parts[2]) if len(parts) > 2 else 0
+    except (ValueError, IndexError):
+        return None
+    if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= s <= 59):
+        return None
+    return datetime.combine(reference_date.date(), time(h, m, s))
+
+
+def _extract_time_window_from_query(
+    user_query: str, reference: "Optional[datetime]" = None
+) -> "Optional[tuple[datetime, datetime]]":
+    """Parse a simple time range out of the user's turn text.
+
+    Supports the common phrasings:
+
+    - ``between 14:30 and 14:45`` / ``from 14:30 to 14:45``
+    - ``at 14:30`` / ``around 14:30`` (collapses to a point)
+    - ISO-8601 ranges and points
+
+    Returns ``(start, end)`` datetimes when a range is recognised,
+    ``(ts, ts)`` for a point query, or ``None`` when nothing matches.
+    ``reference`` anchors bare HH:MM tokens to a date; defaults to
+    ``datetime.now()`` when omitted.
+    """
+    from datetime import datetime
+
+    if not user_query:
+        return None
+    ref = reference or datetime.now()
+
+    for pattern in _TIME_RANGE_PATTERNS:
+        match = pattern.search(user_query)
+        if match:
+            start = _parse_time_token(match.group("start"), ref)
+            end = _parse_time_token(match.group("end"), ref)
+            if start is not None and end is not None:
+                return (start, end) if start <= end else (end, start)
+
+    point_match = _TIME_POINT_PATTERN.search(user_query)
+    if point_match:
+        ts = _parse_time_token(point_match.group("ts"), ref)
+        if ts is not None:
+            return ts, ts
+
+    return None
+
+
+def _coverage_overlaps_window(ev, window: "tuple[datetime, datetime]") -> bool:
+    """Return True when the evidence's coverage span intersects the
+    window. NULL coverage → False (timeless evidence isn't time-
+    windowable, consistent with the repository query's semantics)."""
+    start_ts = getattr(ev, "coverage_start_ts", None)
+    end_ts = getattr(ev, "coverage_end_ts", None)
+    if start_ts is None or end_ts is None:
+        return False
+    window_start, window_end = window
+    # Naive / aware mismatch: drop tzinfo on the stored side for the
+    # comparison. This sacrifices cross-timezone correctness but the
+    # rerank is a ranking nudge, not a correctness-critical filter.
+    if start_ts.tzinfo is not None:
+        start_ts = start_ts.replace(tzinfo=None)
+    if end_ts.tzinfo is not None:
+        end_ts = end_ts.replace(tzinfo=None)
+    return start_ts <= window_end and end_ts >= window_start
+
+
+def _score_evidence_for_tier_a(
+    ev, case, time_window: "Optional[tuple[datetime, datetime]]" = None
+) -> float:
     """
     Score evidence for Tier A promotion. Higher score = more likely to get
     full structural index in the LLM context.
@@ -655,6 +770,12 @@ def _score_evidence_for_tier_a(ev, case) -> float:
       is the most valuable context the agent can have.
     - Has structural content (+1): evidence with rich preprocessed_content
       benefits more from Tier A than items with minimal extraction.
+    - Coverage match (+4): Phase 3c — evidence whose coverage_*_ts
+      intersects a time window mentioned in the current user turn.
+      The +4 weight intentionally exceeds the data-type bonus so a
+      time-matched config can outrank a non-matching log; the rerank
+      treats the time window as the strongest available signal when
+      the user has explicitly mentioned one.
     - Recency (0.0-1.0): tiebreaker. Normalized against case.current_turn so
       it never outweighs type or hypothesis bonuses.
     """
@@ -689,6 +810,13 @@ def _score_evidence_for_tier_a(ev, case) -> float:
     # more from Tier A than items with sparse/empty preprocessed_content
     if ev.preprocessed_content and len(ev.preprocessed_content) > 200:
         score += 1
+
+    # Phase 3c — time-window coverage match. Only fires when the
+    # caller supplied a parsed window (flag must be on for that to
+    # happen). Weight exceeds data-type bonus so the rerank
+    # meaningfully surfaces the matching evidence.
+    if time_window is not None and _coverage_overlaps_window(ev, time_window):
+        score += 4
 
     return score
 
@@ -768,11 +896,26 @@ def _build_evidence_context(
         else:
             text_evidence.append(ev)
 
+    # Phase 3c — extract a time window from the user's turn when the
+    # feature flag is on. The parsed window feeds into the Tier A
+    # scoring so evidence whose coverage intersects can outrank items
+    # that would otherwise score higher on data-type or recency.
+    time_window = None
+    try:
+        from faultmaven.config.settings import get_settings
+
+        if get_settings().preprocessing.timeline_rerank_enabled:
+            time_window = _extract_time_window_from_query(user_query)
+    except Exception:
+        # Settings path missing or unparseable — skip the rerank. The
+        # base ranking is still valid.
+        time_window = None
+
     # Select Tier A by relevance score (not FIFO). Logs/metrics with hypothesis
     # linkage beat READMEs/CITATIONs regardless of upload order.
     scored = sorted(
         data_evidence,
-        key=lambda ev: _score_evidence_for_tier_a(ev, case),
+        key=lambda ev: _score_evidence_for_tier_a(ev, case, time_window=time_window),
         reverse=True,
     )
     tier_a_set = set(id(ev) for ev in scored[:EVIDENCE_CONTEXT_RECENT_COUNT])
