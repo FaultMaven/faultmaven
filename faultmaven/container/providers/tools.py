@@ -320,4 +320,50 @@ def register_tools(container: BaseDIContainer) -> None:
     except Exception as e:
         logger.warning(f"List-evidence-by-time tool registration failed: {e}")
 
+    # Phase 4c — entity registry tools. ``find_entity`` and
+    # ``list_top_entities`` expose the ``case_entities`` table built by
+    # Phase 4b. Gated on the same feature flag that controls the
+    # producer side — the tools would always return empty results with
+    # the flag off, so offering them to the LLM would just invite
+    # misleading queries.
+    try:
+        from faultmaven.config.settings import get_settings
+
+        if get_settings().preprocessing.entity_registry_enabled:
+            from faultmaven.modules.agent.tools.find_entity_tool import FindEntityTool
+            from faultmaven.modules.agent.tools.list_top_entities_tool import (
+                ListTopEntitiesTool,
+            )
+
+            case_repository = (
+                container.get_service("case_repository")
+                if hasattr(container, "get_service")
+                else None
+            )
+            if case_repository is not None:
+                find_entity_tool = FindEntityTool(case_repository=case_repository)
+                list_top_entities_tool = ListTopEntitiesTool(
+                    case_repository=case_repository,
+                )
+                container.find_entity_tool = find_entity_tool
+                container.list_top_entities_tool = list_top_entities_tool
+                container.tools.append(find_entity_tool)
+                container.tools.append(list_top_entities_tool)
+                logger.info(
+                    "Entity registry tools registered (Phase 4c): "
+                    "find_entity, list_top_entities"
+                )
+            else:
+                logger.info(
+                    "Entity registry tools NOT registered "
+                    "(case_repository unavailable)"
+                )
+        else:
+            logger.info(
+                "Entity registry tools NOT registered "
+                "(FAULTMAVEN_ENTITY_REGISTRY=false)"
+            )
+    except Exception as e:
+        logger.warning(f"Entity registry tool registration failed: {e}")
+
     logger.info(f"✅ Tools layer registered: {len(container.tools)} tools")
