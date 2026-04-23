@@ -36,6 +36,9 @@ from faultmaven.infrastructure.observability.evidence_metrics import (
 )
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.preprocessing.classifier import DataClassifier
+from faultmaven.modules.preprocessing.entities import (
+    extract_entities_for_data_type,
+)
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
@@ -191,6 +194,20 @@ class PreprocessingService:
 
         if command_output_extractor:
             self.extractors[DataType.COMMAND_OUTPUT] = command_output_extractor
+
+        # Phase 4 — entity registry settings (feature flag + hard cap).
+        # Read once at construction so per-call overhead is zero; hot-
+        # reload in cloud mode flows through the settings singleton at
+        # the next service instance.
+        from faultmaven.config.settings import get_settings
+
+        preprocessing_cfg = get_settings().preprocessing
+        self._entity_registry_enabled: bool = bool(
+            getattr(preprocessing_cfg, "entity_registry_enabled", False)
+        )
+        self._entity_registry_cap: int = int(
+            getattr(preprocessing_cfg, "entity_registry_cap_per_type", 500)
+        )
 
     async def classify_and_extract(
         self,
@@ -694,6 +711,64 @@ class PreprocessingService:
         merged_metadata: Dict[str, object] = dict(extraction.metadata or {})
         merged_metadata["evidence_metadata"] = evidence_meta.to_storage_dict()
 
+        # Phase 4 — entity registry (feature-flagged). Runs the
+        # per-data-type EntityExtractor against the raw content and
+        # applies the configured per-(evidence, entity_type) hard cap.
+        # Overflow types are recorded so the agent knows the registry
+        # is incomplete for those pairs. When the feature is disabled
+        # or the data type has no registered extractor, the
+        # observation list is empty and no cap logic runs.
+        entities_payload: list[Dict[str, Any]] = []
+        overflow_types: list[str] = []
+        if self._entity_registry_enabled and not merged_metadata.get("placeholder"):
+            try:
+                observations = extract_entities_for_data_type(
+                    detailed_data_type, content
+                )
+            except Exception as exc:
+                # Entity extraction is best-effort — a regex bug must
+                # not block evidence persistence. Log and degrade.
+                logger.warning(
+                    "Entity extraction failed for %s: %s",
+                    detailed_data_type.value,
+                    exc,
+                )
+                observations = []
+
+            if observations:
+                cap = self._entity_registry_cap
+                # Bucket observations by entity_type so the cap is
+                # applied per-type (Phase 4 contract). Sort each
+                # bucket by mention_count DESC before truncation so
+                # the retained rows are the most mentioned.
+                by_type: Dict[str, list] = {}
+                for obs in observations:
+                    by_type.setdefault(obs.entity_type.value, []).append(obs)
+                for type_key, bucket in by_type.items():
+                    if len(bucket) > cap:
+                        overflow_types.append(type_key)
+                        bucket.sort(key=lambda o: o.mention_count, reverse=True)
+                        del bucket[cap:]
+                    for obs in bucket:
+                        entities_payload.append(
+                            {
+                                "entity_type": obs.entity_type.value,
+                                "entity_value": obs.entity_value,
+                                "mention_count": int(obs.mention_count),
+                                "in_error_context": bool(obs.in_error_context),
+                            }
+                        )
+
+        if overflow_types:
+            # Stable shape under metadata.entities — Phase 4c tooling
+            # reads it to warn the agent that registry lookups for
+            # these types may be incomplete.
+            stored_meta = merged_metadata["evidence_metadata"]
+            if isinstance(stored_meta, dict):
+                entities_block = stored_meta.setdefault("entities", {})
+                if isinstance(entities_block, dict):
+                    entities_block["overflow_types"] = sorted(set(overflow_types))
+
         return PreprocessingResult(
             data_type=unified_data_type,
             detailed_data_type=detailed_data_type,
@@ -709,6 +784,8 @@ class PreprocessingService:
             processing_time_ms=processing_time_ms,
             coverage_start_ts=coverage_start_ts,
             coverage_end_ts=coverage_end_ts,
+            entities=entities_payload,
+            entity_overflow_types=sorted(set(overflow_types)),
         )
 
     def _build_placeholder_result(

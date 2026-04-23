@@ -212,6 +212,32 @@ class PreprocessingResult(BaseModel):
         ),
     )
 
+    # Phase 4 — case-level entity registry. Observations produced by
+    # the EntityExtractor for this data type. Keyed by
+    # (entity_type, entity_value); ``mention_count`` and
+    # ``in_error_context`` are aggregated within a single evidence.
+    # The investigation service stamps case_id / evidence_id on to
+    # build ``CaseEntity`` rows and calls
+    # ``CaseRepository.upsert_case_entities``. Behind a feature flag
+    # (``FAULTMAVEN_ENTITY_REGISTRY``); when disabled, this list is
+    # always empty.
+    entities: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Phase 4 entity observations for the case_entities "
+            "registry. Each dict: {entity_type, entity_value, "
+            "mention_count, in_error_context}."
+        ),
+    )
+    entity_overflow_types: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Phase 4 — entity types that exceeded the per-(evidence,"
+            " type) hard cap. Surfaced in evidence.metadata so the "
+            "agent knows the registry is incomplete for those types."
+        ),
+    )
+
 
 # =============================================================================
 # Tier 2: Deep Analysis Models

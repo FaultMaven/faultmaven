@@ -751,6 +751,53 @@ class InvestigationService:
                         e,
                     )
 
+        # Phase 4 — persist extracted entities into the case-level
+        # registry. Best-effort: an entity upsert failure must not
+        # poison evidence persistence. Runs only when the preprocessor
+        # emitted observations (the feature flag is checked there).
+        entities_payload = getattr(preprocessing_result, "entities", None) or []
+        if entities_payload:
+            try:
+                from faultmaven.modules.case.domain.models import (
+                    CaseEntity,
+                    EntityType,
+                )
+
+                case_entities: list[CaseEntity] = []
+                for obs in entities_payload:
+                    try:
+                        entity_type = EntityType(obs["entity_type"])
+                    except (KeyError, ValueError):
+                        continue
+                    value = obs.get("entity_value")
+                    if not isinstance(value, str) or not value:
+                        continue
+                    case_entities.append(
+                        CaseEntity(
+                            case_id=case.case_id,
+                            entity_type=entity_type,
+                            entity_value=value[:255],
+                            evidence_id=evidence.evidence_id,
+                            mention_count=max(1, int(obs.get("mention_count", 1) or 1)),
+                            in_error_context=bool(obs.get("in_error_context", False)),
+                            # Phase 3a coverage start doubles as the
+                            # earliest timestamp for entities extracted
+                            # from this evidence. NULL for timeless
+                            # content (configs, short pastes).
+                            first_seen_ts=preprocessing_result.coverage_start_ts,
+                        )
+                    )
+                if case_entities:
+                    upsert = getattr(self.repository, "upsert_case_entities", None)
+                    if upsert is not None:
+                        await upsert(case.case_id, evidence.evidence_id, case_entities)
+            except Exception as exc:
+                logger.warning(
+                    "upsert_case_entities failed for %s (non-fatal): %s",
+                    evidence.evidence_id,
+                    exc,
+                )
+
         # Surface classification clarification hints when the heuristic
         # classifier produced a low-confidence result. Suggested types are
         # propagated by PreprocessingService via extraction_metadata as a
