@@ -31,8 +31,10 @@ from faultmaven.modules.case.domain.models import (
     ActionAttempt,
     Case,
     CaseAction,
+    CaseEntity,
     CaseStatus,
     DocumentationData,
+    EntityType,
     EscalationState,
     Evidence,
     EvidenceCategory,
@@ -62,6 +64,28 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
 # TYPE_CHECKING imports not needed - models imported directly above
 
 logger = logging.getLogger(__name__)
+
+
+def _pg_row_to_case_entity(row: Any) -> CaseEntity:
+    """Build a domain ``CaseEntity`` from a SELECT row.
+
+    Same column order as the SQLite helper in
+    ``sqlite_case_repository._row_to_case_entity``.
+    """
+    entity_type_str = row[1]
+    try:
+        entity_type = EntityType(entity_type_str)
+    except ValueError:
+        entity_type = next(iter(EntityType))
+    return CaseEntity(
+        case_id=str(row[0]),
+        entity_type=entity_type,
+        entity_value=str(row[2]),
+        evidence_id=str(row[3]),
+        mention_count=int(row[4]) if row[4] is not None else 1,
+        in_error_context=bool(row[5]),
+        first_seen_ts=row[6],
+    )
 
 
 class PostgreSQLHybridCaseRepository(CaseRepository):
@@ -660,6 +684,139 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         except Exception as e:
             raise RepositoryException(
                 f"Failed to list evidence by time window for case {case_id}: {e}"
+            ) from e
+
+    async def upsert_case_entities(
+        self,
+        case_id: str,
+        evidence_id: str,
+        entities: List[CaseEntity],
+    ) -> None:
+        """Phase 4 — replace this evidence's entity rows."""
+        try:
+            delete_q = text("""
+                DELETE FROM case_entities
+                WHERE case_id = :case_id AND evidence_id = :evidence_id
+                """)
+            await self.db.execute(
+                delete_q, {"case_id": case_id, "evidence_id": evidence_id}
+            )
+
+            if not entities:
+                return
+
+            insert_q = text("""
+                INSERT INTO case_entities (
+                    case_id, entity_type, entity_value, evidence_id,
+                    mention_count, in_error_context, first_seen_ts
+                ) VALUES (
+                    :case_id, :entity_type, :entity_value, :evidence_id,
+                    :mention_count, :in_error_context, :first_seen_ts
+                )
+                """)
+            for entity in entities:
+                await self.db.execute(
+                    insert_q,
+                    {
+                        "case_id": case_id,
+                        "entity_type": entity.entity_type.value,
+                        "entity_value": entity.entity_value,
+                        "evidence_id": evidence_id,
+                        "mention_count": entity.mention_count,
+                        "in_error_context": entity.in_error_context,
+                        "first_seen_ts": entity.first_seen_ts,
+                    },
+                )
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to upsert case_entities for evidence {evidence_id}: {e}"
+            ) from e
+
+    async def find_entity(
+        self,
+        case_id: str,
+        entity_value: str,
+        entity_type: Optional[EntityType] = None,
+    ) -> List[CaseEntity]:
+        """Phase 4 exact-value lookup — see CaseRepository.find_entity."""
+        try:
+            where_clauses = ["case_id = :case_id", "entity_value = :entity_value"]
+            params: Dict[str, Any] = {
+                "case_id": case_id,
+                "entity_value": entity_value,
+            }
+            if entity_type is not None:
+                where_clauses.append("entity_type = :entity_type")
+                params["entity_type"] = entity_type.value
+
+            query = text(f"""
+                SELECT
+                    case_id, entity_type, entity_value, evidence_id,
+                    mention_count, in_error_context, first_seen_ts
+                FROM case_entities
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY mention_count DESC
+                """)
+            result = await self.db.execute(query, params)
+            rows = result.fetchall()
+            return [_pg_row_to_case_entity(row) for row in rows]
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to find entity in case {case_id}: {e}"
+            ) from e
+
+    async def list_top_entities(
+        self,
+        case_id: str,
+        entity_type: EntityType,
+        limit: int = 10,
+    ) -> List[CaseEntity]:
+        """Phase 4 aggregation — see CaseRepository.list_top_entities.
+
+        PG version uses ``array_agg(evidence_id ORDER BY mention_count DESC)``
+        to grab a representative evidence_id per distinct entity_value
+        in a single query, avoiding the per-value follow-up scan the
+        SQLite version needs.
+        """
+        try:
+            query = text("""
+                SELECT
+                    entity_value,
+                    SUM(mention_count) AS total_mentions,
+                    BOOL_OR(in_error_context) AS any_error,
+                    MIN(first_seen_ts) AS earliest_ts,
+                    (array_agg(evidence_id ORDER BY mention_count DESC))[1]
+                        AS representative_evidence_id
+                FROM case_entities
+                WHERE case_id = :case_id AND entity_type = :entity_type
+                GROUP BY entity_value
+                ORDER BY total_mentions DESC
+                LIMIT :limit
+                """)
+            result = await self.db.execute(
+                query,
+                {
+                    "case_id": case_id,
+                    "entity_type": entity_type.value,
+                    "limit": limit,
+                },
+            )
+            rows = result.fetchall()
+            return [
+                CaseEntity(
+                    case_id=case_id,
+                    entity_type=entity_type,
+                    entity_value=row[0],
+                    evidence_id=row[4] or "",
+                    mention_count=int(row[1]),
+                    in_error_context=bool(row[2]),
+                    first_seen_ts=row[3],
+                )
+                for row in rows
+            ]
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to list top entities for case {case_id}: {e}"
             ) from e
 
     async def share_case(

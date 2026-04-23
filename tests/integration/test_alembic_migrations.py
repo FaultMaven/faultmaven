@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "c3d4e5f6a708"  # Phase 3a evidence coverage timestamps
+HEAD_REVISION = "d4e5f6a70819"  # Phase 4a case_entities registry
 
 
 @pytest.fixture(scope="function")
@@ -92,7 +92,7 @@ def get_current_revision(database_url: str) -> str:
 
 # Expected tables from all migrations
 # 16 domain tables + 11 auth/RBAC tables + 1 config table + 2 conversion tables
-# + 1 reports table + alembic_version = 31
+# + 1 reports table + 1 case_entities (phase 4a) + alembic_version = 32
 # (agent_tool_calls v1 removed in storage redesign 2026-04 phase 1;
 #  evidence_artifacts + standalone_evidence removed in phase 2)
 EXPECTED_TABLES = [
@@ -101,6 +101,7 @@ EXPECTED_TABLES = [
     "alembic_version",
     "case_actions",
     "case_checkpoints",
+    "case_entities",
     "case_messages",
     "case_tags",
     "cases",

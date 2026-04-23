@@ -1616,6 +1616,42 @@ class PreprocessingSettings(BaseSettings):
         ),
     )
 
+    # Phase 4: Case-level entity registry. When True, the preprocessor
+    # runs the per-data-type ``EntityExtractor`` after each successful
+    # extraction and writes the results into the ``case_entities`` table
+    # via ``CaseRepository.upsert_case_entities``. Writes are bounded by
+    # a hard cap of 500 rows per (evidence, entity_type); overflow is
+    # recorded in ``evidence.metadata.entities.overflow_types`` so the
+    # agent knows the registry is incomplete for that pair. When False,
+    # no entity rows are written and the Phase 4c lookup tools / context
+    # builder auto-inject find nothing — matching pre-Phase-4 behaviour.
+    # Default OFF — ships dark; enable explicitly in deployment config.
+    entity_registry_enabled: bool = Field(
+        default=False,
+        validation_alias="FAULTMAVEN_ENTITY_REGISTRY",
+        description=(
+            "Phase 4 feature flag: extract entities during preprocessing "
+            "and write them to the case_entities registry."
+        ),
+    )
+
+    # Phase 4: Hard cap on entity rows per (evidence, entity_type).
+    # Bounds pathological growth on huge logs files — a single line-
+    # storm of unique IPs shouldn't be able to balloon the registry.
+    # When exceeded, the extractor truncates to the top-N by mention
+    # count and records the overflow in ``evidence.metadata``.
+    entity_registry_cap_per_type: int = Field(
+        default=500,
+        ge=1,
+        le=10_000,
+        validation_alias="FAULTMAVEN_ENTITY_REGISTRY_CAP",
+        description=(
+            "Phase 4: max rows the registry accepts per "
+            "(evidence, entity_type). Excess rows are dropped and the "
+            "type is listed under metadata.entities.overflow_types."
+        ),
+    )
+
     @field_validator("chunk_size_tokens")
     @classmethod
     def validate_chunk_size(cls, v, info):
