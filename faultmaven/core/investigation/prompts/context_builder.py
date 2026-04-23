@@ -35,6 +35,7 @@ from faultmaven.core.preprocessing.evidence_metadata import (
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
+    EntityType,
     EvidenceForm,
     InvestigationStage,
 )
@@ -1207,6 +1208,7 @@ def build_investigation_context(
     use_state_summary: Optional[bool] = None,
     enable_stage_specific_loading: bool = True,
     processing_mode: Optional[str] = None,
+    entity_highlights: Optional[str] = None,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
@@ -1530,12 +1532,20 @@ def build_investigation_context(
                 )
             inquiry_state_str += "</inquiry_state>"
 
+    # Phase 4c — entity highlights block. Pre-fetched by the milestone
+    # engine from the Phase 4 ``case_entities`` registry. Empty string
+    # when the flag is off, the fetch failed, or the case has no
+    # extracted entities — safe to always include the key so templates
+    # can reference it unconditionally.
+    entity_highlights_str = entity_highlights or ""
+
     # Assembly with budget check
     ctx = {
         "identity": budget.use(identity),
         "core_context": budget.use(core_context),
         "milestones": budget.use(milestones_str),
         "evidence": budget.use(evidence_str),
+        "entity_highlights": budget.use(entity_highlights_str),
         "hypotheses": budget.use(hypothesis_str),
         "investigation_journal": budget.use(journal_str),
         "working_conclusion": budget.use(conclusion_str),
@@ -1548,3 +1558,88 @@ def build_investigation_context(
     }
 
     return ctx
+
+
+# =============================================================================
+# Phase 4c — entity-highlights pre-fetcher
+# =============================================================================
+
+# Entity types surfaced in the auto-injection block. These are the
+# signals that most often drive hypothesis formation and refinement.
+# Types not listed here (path, device, metric_name) are still usable
+# via the ``find_entity`` / ``list_top_entities`` tools — they're just
+# not part of the always-on highlights.
+_HIGHLIGHT_TYPES: tuple[EntityType, ...] = (
+    EntityType.IP,
+    EntityType.HOSTNAME,
+    EntityType.USER,
+    EntityType.SERVICE,
+)
+# Per-type limit. Small enough that four types fit comfortably in a
+# few hundred tokens; large enough to surface the shape of the data
+# without dumping everything. The agent can go deeper via the tools.
+_HIGHLIGHT_PER_TYPE_LIMIT = 5
+
+
+async def fetch_entity_highlights(
+    case_repository: Any,
+    case_id: str,
+    *,
+    per_type_limit: int = _HIGHLIGHT_PER_TYPE_LIMIT,
+) -> str:
+    """Return a compact ``<entity_highlights>`` block or ``""``.
+
+    Queries ``CaseRepository.list_top_entities`` for each
+    investigative-signal type (IP, hostname, user, service) and formats
+    the results as a tight XML block the template can drop in directly.
+    Empty string when:
+
+    - the repository is ``None`` or lacks ``list_top_entities`` (legacy
+      doubles),
+    - every type returned zero rows,
+    - or the query raised (failures are logged and degraded).
+
+    Callers (milestone engine) gate on ``FAULTMAVEN_ENTITY_REGISTRY``
+    before calling; this helper is also safe to call with the flag off,
+    because there'll be no entities to surface.
+    """
+    if case_repository is None:
+        return ""
+    query = getattr(case_repository, "list_top_entities", None)
+    if query is None:
+        return ""
+
+    sections: list[str] = []
+    for entity_type in _HIGHLIGHT_TYPES:
+        try:
+            rows = await query(
+                case_id=case_id,
+                entity_type=entity_type,
+                limit=per_type_limit,
+            )
+        except Exception as exc:
+            logger.warning(
+                "fetch_entity_highlights failed for %s on case %s: %s",
+                entity_type.value,
+                case_id,
+                exc,
+            )
+            continue
+        if not rows:
+            continue
+        body_lines = []
+        for row in rows:
+            marker = " (error)" if getattr(row, "in_error_context", False) else ""
+            body_lines.append(f"  - {row.entity_value} ×{row.mention_count}{marker}")
+        sections.append(f"{entity_type.value}:\n" + "\n".join(body_lines))
+
+    if not sections:
+        return ""
+
+    return (
+        "<entity_highlights>\n"
+        "Top entities extracted from this case's evidence "
+        "(aggregated mention_count across artifacts). Use find_entity "
+        "to locate a value's origin evidence, or list_top_entities for "
+        "types not shown here.\n\n" + "\n\n".join(sections) + "\n</entity_highlights>"
+    )

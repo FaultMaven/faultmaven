@@ -2181,6 +2181,29 @@ class MilestoneEngine:
                 user_message, has_attachments=bool(case.evidence)
             )
 
+            # Phase 4c — prefetch entity highlights from the Phase 4
+            # ``case_entities`` registry when the feature is on. When
+            # the flag is off (or the producer wrote no entities),
+            # ``fetch_entity_highlights`` returns "" and the template
+            # slot renders empty.
+            entity_highlights_block = ""
+            try:
+                from faultmaven.config.settings import get_settings
+                from faultmaven.core.investigation.prompts.context_builder import (
+                    fetch_entity_highlights,
+                )
+
+                if get_settings().preprocessing.entity_registry_enabled:
+                    entity_highlights_block = await fetch_entity_highlights(
+                        self.repository, case.case_id
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Entity highlights prefetch failed for case %s " "(non-fatal): %s",
+                    case.case_id,
+                    exc,
+                )
+
             prompt = get_prompt_for_case(
                 case,
                 user_message,
@@ -2188,6 +2211,7 @@ class MilestoneEngine:
                 provider_name=provider_name,
                 model_name=model_name,
                 processing_mode=classification.mode.value,
+                entity_highlights=entity_highlights_block,
             )
 
             # Determine schema based on status/stage

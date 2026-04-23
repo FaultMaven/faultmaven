@@ -289,6 +289,8 @@ STATUS: INVESTIGATING
 
 {evidence}
 
+{entity_highlights}
+
 {hypotheses}
 
 {investigation_journal}
@@ -1194,6 +1196,7 @@ def get_prompt_for_case(
     model_name: Optional[str] = None,
     use_state_summary: Optional[bool] = None,
     processing_mode: Optional[str] = None,
+    entity_highlights: Optional[str] = None,
 ) -> str:
     """Build the final prompt based on case status and stage.
 
@@ -1207,6 +1210,10 @@ def get_prompt_for_case(
                           (auto-enabled for conversations >15 turns)
         processing_mode: Processing mode (triage/directed_analysis) for structural
                         index role tagging in evidence context
+        entity_highlights: Phase 4c pre-formatted registry highlights block.
+            Milestone engine fetches via ``fetch_entity_highlights`` when
+            the feature flag is on; ``None`` / ``""`` degrades to an
+            empty section in the INVESTIGATING template.
 
     Returns:
         Formatted prompt for the LLM
@@ -1220,6 +1227,7 @@ def get_prompt_for_case(
         model_name=model_name,
         use_state_summary=use_state_summary,
         processing_mode=processing_mode,
+        entity_highlights=entity_highlights,
     )
 
     if case.status == CaseStatus.INQUIRY:
