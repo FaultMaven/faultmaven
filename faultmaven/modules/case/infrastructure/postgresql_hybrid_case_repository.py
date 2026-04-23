@@ -555,6 +555,113 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 f"Failed to find evidence by content_hash for case {case_id}: {e}"
             ) from e
 
+    async def list_evidence_by_time_window(
+        self,
+        case_id: str,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+    ) -> List[Evidence]:
+        """Return evidence whose coverage overlaps ``[start, end]``.
+
+        Same semantics as the SQLite implementation — see
+        ``CaseRepository.list_evidence_by_time_window``. Uses the
+        ``idx_evidence_coverage`` index for the case_id + range filter.
+        """
+        try:
+            where_clauses = [
+                "case_id = :case_id",
+                "coverage_start_ts IS NOT NULL",
+                "coverage_end_ts IS NOT NULL",
+            ]
+            params: Dict[str, Any] = {"case_id": case_id}
+
+            if end is not None:
+                where_clauses.append("coverage_start_ts <= :end_ts")
+                params["end_ts"] = end
+            if start is not None:
+                where_clauses.append("coverage_end_ts >= :start_ts")
+                params["start_ts"] = start
+
+            query = text(f"""
+                SELECT
+                    evidence_id, case_id, category, summary,
+                    preprocessed_content, content_ref, file_size,
+                    filename, upload_timestamp, metadata,
+                    source_type, content_hash, collected_at_turn,
+                    source_file_id, vectorized,
+                    coverage_start_ts, coverage_end_ts
+                FROM evidence
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY coverage_start_ts ASC
+                LIMIT 1000
+                """)
+            result = await self.db.execute(query, params)
+            rows = result.fetchall()
+
+            evidence_list: List[Evidence] = []
+            for row in rows:
+                try:
+                    category_str = row[2] or "contextual_evidence"
+                    try:
+                        category = EvidenceCategory(category_str)
+                    except ValueError:
+                        category = EvidenceCategory.CONTEXTUAL_EVIDENCE
+
+                    source_type_str = row[10] or "logs"
+                    try:
+                        source_type = EvidenceSourceType(source_type_str)
+                    except ValueError:
+                        source_type = EvidenceSourceType.LOGS
+
+                    metadata_raw = row[9]
+                    parsed_metadata: Optional[Dict[str, Any]] = None
+                    if metadata_raw:
+                        if isinstance(metadata_raw, dict):
+                            parsed_metadata = metadata_raw or None
+                        else:
+                            try:
+                                parsed = json.loads(metadata_raw)
+                                if isinstance(parsed, dict) and parsed:
+                                    parsed_metadata = parsed
+                            except (json.JSONDecodeError, TypeError):
+                                parsed_metadata = None
+
+                    evidence_list.append(
+                        Evidence(
+                            evidence_id=str(row[0]),
+                            category=category,
+                            primary_purpose="loaded_evidence",
+                            summary=row[3] if row[3] else "Evidence",
+                            preprocessed_content=row[4] if row[4] else "",
+                            content_ref=row[5],
+                            content_size_bytes=row[6] if row[6] else 0,
+                            original_filename=row[7],
+                            preprocessing_method="loaded",
+                            source_type=source_type,
+                            form=EvidenceForm.DOCUMENT,
+                            collected_by="user",
+                            collected_at_turn=row[12] if row[12] else 0,
+                            content_hash=row[11],
+                            source_file_id=row[13],
+                            vectorized=bool(row[14]),
+                            metadata=parsed_metadata,
+                            coverage_start_ts=row[15],
+                            coverage_end_ts=row[16],
+                        )
+                    )
+                except Exception as ev_err:
+                    logger.warning(
+                        "Failed to load evidence %s in time-window query: %s",
+                        row[0],
+                        ev_err,
+                    )
+
+            return evidence_list
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to list evidence by time window for case {case_id}: {e}"
+            ) from e
+
     async def share_case(
         self,
         case_id: str,

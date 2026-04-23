@@ -290,4 +290,34 @@ def register_tools(container: BaseDIContainer) -> None:
     except Exception as e:
         logger.warning(f"Reclassify evidence tool registration failed: {e}")
 
+    # Phase 3b — list_evidence_by_time tool. Case-level timeline
+    # queries across evidence coverage_*_ts columns. Always registered
+    # when the case repository is available — behaviour-neutral for
+    # existing cases (their coverage columns are NULL and the query
+    # naturally excludes them).
+    try:
+        from faultmaven.modules.agent.tools.list_evidence_by_time_tool import (
+            ListEvidenceByTimeTool,
+        )
+
+        case_repository = (
+            container.get_service("case_repository")
+            if hasattr(container, "get_service")
+            else None
+        )
+        if case_repository is not None:
+            list_evidence_by_time_tool = ListEvidenceByTimeTool(
+                case_repository=case_repository,
+            )
+            container.list_evidence_by_time_tool = list_evidence_by_time_tool
+            container.tools.append(list_evidence_by_time_tool)
+            logger.info("List-evidence-by-time tool registered (Phase 3b)")
+        else:
+            logger.info(
+                "List-evidence-by-time tool NOT registered "
+                "(case_repository unavailable)"
+            )
+    except Exception as e:
+        logger.warning(f"List-evidence-by-time tool registration failed: {e}")
+
     logger.info(f"✅ Tools layer registered: {len(container.tools)} tools")
