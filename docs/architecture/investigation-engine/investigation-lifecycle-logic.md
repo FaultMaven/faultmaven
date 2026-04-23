@@ -76,11 +76,9 @@ Confirmations reduce errors but create friction. Use conditional logic:
 
 **WHEN TO SKIP CONFIRMATION** (natural progression):
 
-- Problem already established and user asks follow-up question
-- User reports results of agent-suggested action (implicit confirmation)
+- Problem already established and confirmed; user asks follow-up question
 - Context is clear and user needs direct answer
 - User provides information that refines (not changes) direction
-- Investigation flowing naturally with user engagement
 
 **Two-Step Confirmation Flow** (when required):
 
@@ -301,6 +299,12 @@ prevents crashes from the LLM failing to produce tool calls on short ambiguous m
 **Repeated status_transition intent:** If a user clicks the same dropdown option again
 after the agent already proposed the transition, this is treated as an implicit
 confirmation (the intent's `to_status` matches the pending transition's `to_status`).
+
+**Contradicting status_transition intent:** If a user clicks a *different* dropdown
+option while a pending transition exists (e.g., "Close" is pending but user clicks
+"Investigating"), the pending transition is cancelled and the new intent is processed
+normally. This handles the case where the user changes their mind after requesting
+a transition.
 
 #### INVESTIGATING → CLOSED (Disposition)
 

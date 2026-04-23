@@ -1374,7 +1374,30 @@ class MilestoneEngine:
             #    intent_type="confirmation" + confirmation_value — deterministic
             # 2. Pattern-based: fallback for users who type instead of clicking
             if hasattr(case, "pending_transition") and case.pending_transition:
-                if not case.pending_transition.get("needs_info"):
+                # Contradicting status_transition intent cancels the pending
+                # transition. Example: user clicked "Close" (pending), then
+                # clicked "Investigating" — cancel the close and process the
+                # new intent normally.
+                if (
+                    intent_type == "status_transition"
+                    and intent_data
+                    and intent_data.get("to_status")
+                    != case.pending_transition.get("to_status")
+                ):
+                    from faultmaven.core.investigation.terminal_transitions import (
+                        cancel_pending_transition,
+                    )
+
+                    old_target = case.pending_transition.get("to_status")
+                    new_target = intent_data.get("to_status")
+                    cancel_pending_transition(case)
+                    logger.info(
+                        f"Pending transition to '{old_target}' cancelled — user "
+                        f"requested different transition to '{new_target}' "
+                        f"for case {case.case_id}"
+                    )
+                    # Fall through to normal intent processing (section 0c)
+                elif not case.pending_transition.get("needs_info"):
                     # Resolve confirm/decline from intent or pattern matching
                     intent_confirms = (
                         intent_type == "confirmation"

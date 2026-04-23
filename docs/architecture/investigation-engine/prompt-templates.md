@@ -96,7 +96,7 @@ def build_inquiry_prompt(case: Case, user_message: str) -> str:
 NOTE: User has NOT confirmed yet. They may:
 - Agree completely → System sets confirmed = True
 - Suggest revisions → UPDATE proposed_problem_statement based on their feedback
-- Show engagement (uploading data, asking about the problem) → Treat as implicit confirmation
+- Continue with unrelated activity → Answer their message normally, do NOT re-propose
 """
 
         previous_statement_section = f"""
@@ -308,7 +308,7 @@ Follow this progression based on conversation state:
 
 **Dynamic INQUIRY State Injection** (implemented in `context_builder.py`):
 
-When a `proposed_problem_statement` exists and is not yet confirmed, the context builder injects an `<inquiry_state>` section before the TWO-STEP CONFIRMATION instructions. This tells the LLM: (a) what statement was already proposed, (b) that it should detect implicit confirmation (data uploads, problem engagement) rather than re-asking, and (c) to set `user_confirmed_investigation=True` on any affirmative signal. This prevents the confirmation re-ask loop where the template's "TURN WHERE YOU FIRST DETECT A PROBLEM" fires every turn because the LLM doesn't know it already proposed.
+When a `proposed_problem_statement` exists and is not yet confirmed, the context builder injects an `<inquiry_state>` section with a `NOT_YET_CONFIRMED` marker. This tells the LLM: (a) what statement was already proposed, and (b) that it should NOT re-propose the same statement — focus on answering the user's current message instead. Confirmation is only accepted via explicit user affirmation (typed or via COOPERATIVE suggestion button). The injection prevents the re-proposal loop where the template's "TURN WHERE YOU FIRST DETECT A PROBLEM" fires every turn because the LLM doesn't know it already proposed.
 
 **3. Follow-Up Suggestions**
 

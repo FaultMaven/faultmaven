@@ -191,8 +191,9 @@ TURN WHERE YOU FIRST DETECT A PROBLEM (user_confirmed_investigation=False):
   mild negative ("Not yet, I have more context to share").
 
 TURN WHERE USER CONFIRMS (user_confirmed_investigation=True):
-- The user chose the positive suggestion, said yes, or engaged with the problem
-  (asked diagnostic questions, expressed urgency).
+- The user explicitly confirms: "Yes", "Correct", "Let's investigate", or equivalent
+  clear affirmation. Do NOT treat data uploads, follow-up questions, or continued
+  engagement as confirmation.
 - Always address what the user actually submitted FIRST (answer their question,
   acknowledge their data) before evaluating confirmation. Do not skip the user's
   input to transition.

@@ -1726,3 +1726,130 @@ class TestRunbookSuggestion:
 
         result = await evaluate_runbook_suggestion(case, runbook_kb=None)
         assert result.verdict == RunbookSuggestion.NOT_READY
+
+
+class TestContradictingIntentCancelsPendingTransition:
+    """Tests for Fix 1: Contradicting status_transition cancels pending_transition.
+
+    When a pending_transition exists (e.g., CLOSED) and the user submits a different
+    status_transition intent (e.g., INVESTIGATING), the pending transition should be
+    cancelled and the new intent processed normally.
+    """
+
+    @pytest.mark.asyncio
+    async def test_contradicting_intent_cancels_pending_close(
+        self, mock_llm, mock_repo
+    ):
+        """User has pending CLOSE, then clicks 'Investigating' → pending cancelled."""
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test Case",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="Test",
+            inquiry=InquiryData(
+                thread_id="thread_123",
+                proposed_problem_statement="API timeout errors",
+                problem_statement_confirmed=True,
+                decided_to_investigate=False,
+            ),
+        )
+
+        # Set up a pending CLOSE transition
+        case.pending_transition = {
+            "to_status": "closed",
+            "reason": "User wants to close",
+            "summary": "Close without resolution",
+            "evidence_ids": [],
+            "proposed_at": "2026-04-23T00:00:00+00:00",
+            "proposed_by": "agent",
+        }
+
+        # Mock LLM response for the new intent processing
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Starting investigation.",
+                "state_updates": {
+                    "user_confirmed_investigation": True,
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        # User submits a contradicting status_transition intent
+        result = await engine.process_turn(
+            case,
+            "I want to investigate this",
+            intent_type="status_transition",
+            intent_data={"to_status": "investigating"},
+        )
+
+        updated_case = result["case_updated"]
+
+        # Pending transition should be cancelled
+        assert updated_case.pending_transition is None
+
+        # Case should NOT have transitioned to CLOSED
+        assert updated_case.status != CaseStatus.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_same_intent_still_confirms(self, mock_llm, mock_repo):
+        """User has pending CLOSE, then clicks 'Close' again → treated as confirmation."""
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test Case",
+            status=CaseStatus.INVESTIGATING,
+            user_id="user_123",
+            organization_id="org_123",
+            description="Test",
+            problem_verification=ProblemVerification(
+                symptom_statement="Test symptom",
+                severity="HIGH",
+                temporal_state="ongoing",
+                urgency_level="high",
+            ),
+            inquiry=InquiryData(
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+                proposed_problem_statement="Test symptom",
+            ),
+        )
+
+        # Set up a pending CLOSE transition
+        case.pending_transition = {
+            "to_status": "closed",
+            "reason": "User wants to close",
+            "summary": "Close without resolution",
+            "evidence_ids": [],
+            "proposed_at": "2026-04-23T00:00:00+00:00",
+            "proposed_by": "agent",
+        }
+
+        # User submits SAME status_transition intent → confirmation
+        result = await engine.process_turn(
+            case,
+            "Close this case",
+            intent_type="status_transition",
+            intent_data={"to_status": "closed"},
+        )
+
+        updated_case = result["case_updated"]
+
+        # Case should have transitioned to CLOSED (same intent = confirmation)
+        assert updated_case.status == CaseStatus.CLOSED
+        assert updated_case.pending_transition is None

@@ -657,3 +657,65 @@ class TestInquiryTransitionLogic:
             case_after_turn2.inquiry.proposed_problem_statement
             == "API returning 504 timeout errors affecting users"
         )
+
+
+class TestContextBuilderConfirmationInjection:
+    """Tests for Fix 2: AWAITING_CONFIRMATION replaced with NOT_YET_CONFIRMED.
+
+    When a proposed_problem_statement exists but is not confirmed, the context
+    builder should inject NOT_YET_CONFIRMED (not AWAITING_CONFIRMATION) to prevent
+    the LLM from re-evaluating confirmation every turn.
+    """
+
+    def test_not_yet_confirmed_injected_when_unconfirmed(self):
+        """Context builder outputs NOT_YET_CONFIRMED for unconfirmed problem statement."""
+        from faultmaven.core.investigation.prompts.context_builder import (
+            build_investigation_context,
+        )
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="",
+            inquiry=InquiryData(
+                thread_id="thread_123",
+                proposed_problem_statement="API timeout errors",
+                problem_statement_confirmed=False,
+            ),
+        )
+
+        context = build_investigation_context(case, user_message="test message")
+
+        # Check all values in the returned dict for the markers
+        context_str = str(context.values())
+        assert "NOT_YET_CONFIRMED" in context_str
+        assert "AWAITING_CONFIRMATION" not in context_str
+
+    def test_no_injection_when_confirmed(self):
+        """No NOT_YET_CONFIRMED injection when problem statement is confirmed."""
+        from faultmaven.core.investigation.prompts.context_builder import (
+            build_investigation_context,
+        )
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="",
+            inquiry=InquiryData(
+                thread_id="thread_123",
+                proposed_problem_statement="API timeout errors",
+                problem_statement_confirmed=True,
+            ),
+        )
+
+        context = build_investigation_context(case, user_message="test message")
+
+        context_str = str(context.values())
+        assert "NOT_YET_CONFIRMED" not in context_str
+        assert "AWAITING_CONFIRMATION" not in context_str

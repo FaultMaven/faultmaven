@@ -1384,11 +1384,9 @@ def build_investigation_context(
             inquiry_state_str += f"CONFIRMED: {inq.problem_statement_confirmed}\n"
             if not inq.problem_statement_confirmed:
                 inquiry_state_str += (
-                    "AWAITING_CONFIRMATION: You proposed this problem statement in a previous turn. "
-                    "First, address the user's current message (answer their question, acknowledge "
-                    "new data). Then evaluate: does the user's response relate to the proposed "
-                    "problem? If yes, set user_confirmed_investigation=True. If the user submitted "
-                    "something unrelated, do not confirm — they may be changing direction.\n"
+                    "NOT_YET_CONFIRMED: You proposed this problem statement previously. "
+                    "The user has not confirmed it yet. Do NOT re-propose the same statement. "
+                    "Focus on answering the user's current message.\n"
                 )
             inquiry_state_str += "</inquiry_state>"
 
