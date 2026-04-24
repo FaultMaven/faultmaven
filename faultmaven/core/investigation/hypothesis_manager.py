@@ -344,8 +344,11 @@ class HypothesisManager:
 
         # Check for refutation
         elif hypothesis.likelihood <= 0.20 and refuting_count >= 2:
+            hypothesis.refutation_reason = (
+                f"likelihood {hypothesis.likelihood:.2f} with "
+                f"{refuting_count} refuting evidence items"
+            )[:200]
             hypothesis.status = HypothesisStatus.REFUTED
-            hypothesis.retirement_reason = "Refuted by evidence"
             logger.info(
                 f"Hypothesis REFUTED: {hypothesis.statement}",
                 extra={
@@ -426,6 +429,9 @@ class HypothesisManager:
         Returns:
             Refuted hypothesis
         """
+        # Set refutation_reason BEFORE status so the pair invariant is
+        # satisfied if this object is ever re-validated.
+        hypothesis.refutation_reason = (reason or "refuted by evidence")[:200]
         hypothesis.status = HypothesisStatus.REFUTED
         hypothesis.likelihood = 0.0
         # hypothesis.refuting_evidence.extend(refuting_evidence_ids) # Updated logic via link_evidence manually or loop
@@ -438,7 +444,6 @@ class HypothesisManager:
                     reasoning=reason,
                     completeness=1.0,
                 )
-        hypothesis.retirement_reason = reason
         hypothesis.last_updated_turn = current_turn
 
         logger.info(

@@ -281,15 +281,29 @@ The core feature. Model change, schema change, context builder change, and promp
 
 ### Phase 3: Hypothesis Refutation Reason
 
-Requires model change and schema change.
+Implemented with a **pair-integrity invariant**: `status=REFUTED` and
+`refutation_reason` travel together — a Hypothesis with one but not the
+other cannot exist. Domain-level Pydantic validator enforces the pair at
+construction; the LLM schema permits each field optional so structured-
+output parsing is resilient, and the orchestration layer would reject
+inconsistent updates (there is currently no LLM-driven `HypothesisUpdate`
+consumer — the schema is future-ready; internal refutation paths in
+`hypothesis_manager` set both fields atomically).
 
-| Change | File | Effort |
+RETIRED is the explicit fallback when the agent wants to abandon a
+hypothesis without disproof — the prompt guides the agent toward RETIRED
+rather than forcing an invented refutation reason.
+
+| Change | File | Status |
 |---|---|---|
-| `refutation_reason` on Hypothesis | `modules/case/domain/models.py` | Small |
-| Schema update for hypothesis updates | `core/investigation/schemas.py` | Small |
-| Context builder: show refutation reason | `core/investigation/prompts/context_builder.py` | Small |
-| Prompt: require reason when refuting | `core/investigation/prompts/templates.py` | Small |
-| Tests | `tests/` | Small |
+| `refutation_reason` on Hypothesis (+ `@model_validator` pair check) | `modules/case/domain/models.py` | Done |
+| Schema field on `HypothesisUpdate` (dormant: no consumer yet, future-ready) | `core/investigation/schemas.py` | Done |
+| Context builder: inline rendering of refutation reason under REFUTED hypotheses | `core/investigation/prompts/context_builder.py` | Done |
+| Prompt: REFUTED-vs-RETIRED distinction + pair-integrity requirement | `core/investigation/prompts/templates.py` | Done |
+| `hypothesis_manager` atomic assignment in auto-refute + user-driven refute paths | `core/investigation/hypothesis_manager.py` | Done |
+| UI DTO: `refutation_reason` on `HypothesisSummary` | `models/case_ui.py`, `modules/case/domain/services/case_ui_adapter.py` | Done |
+| Persistence: ORM column + migration + repository mapping | `infrastructure/persistence/models.py`, `alembic/versions/...`, `modules/case/infrastructure/sqlite_case_repository.py` | Done |
+| Tests | `tests/unit/modules/case/test_hypothesis_refutation_reason.py` | Done (15 invariant tests) |
 
 ---
 

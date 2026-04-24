@@ -351,11 +351,25 @@ class HypothesisToAdd(BaseModel):
 
 
 class HypothesisUpdate(BaseModel):
-    """Update to existing hypothesis."""
+    """Update to an existing hypothesis.
+
+    Pair integrity: when ``status`` is set to ``REFUTED``, ``refutation_reason``
+    MUST also be provided (max 200 chars). The orchestration layer rejects
+    updates that carry one without the other. If there is no disproof
+    evidence, use ``status=RETIRED`` instead (no reason required).
+    """
 
     likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
     status: Optional[HypothesisStatus] = None
-    reason: Optional[str] = None
+    refutation_reason: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Required when setting status=REFUTED. Cite the specific evidence "
+            "or reasoning that disproves the hypothesis. Not used for other "
+            "statuses. status=REFUTED and refutation_reason travel together."
+        ),
+    )
 
     @field_validator("status", mode="before")
     @classmethod

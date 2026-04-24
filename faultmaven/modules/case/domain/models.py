@@ -2071,6 +2071,18 @@ class Hypothesis(BaseModel):
         default=None, description="Reason if hypothesis was retired"
     )
 
+    refutation_reason: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Evidence or reasoning that disproves the hypothesis. "
+            "REQUIRED when status=REFUTED (enforced via model validator). "
+            "Not used for other statuses. status=REFUTED and refutation_reason "
+            "travel together — an update carrying one without the other is "
+            "rejected at the orchestration layer."
+        ),
+    )
+
     rationale: str = Field(
         description="Why this hypothesis was generated", max_length=1000
     )
@@ -2123,6 +2135,27 @@ class Hypothesis(BaseModel):
             return 0.0
 
         return (total_support - total_refute) / total
+
+    @model_validator(mode="after")
+    def _validate_refutation_reason_pairs_with_status(self) -> "Hypothesis":
+        """Pair integrity: status=REFUTED requires refutation_reason.
+
+        The two fields travel together — a Hypothesis with status=REFUTED
+        cannot exist in memory without a refutation_reason, and vice versa.
+        RETIRED has its own ``retirement_reason`` field and is a distinct
+        path (abandonment without disproof, no reason required).
+        """
+        if self.status == HypothesisStatus.REFUTED and not self.refutation_reason:
+            raise ValueError(
+                "refutation_reason is required when status=REFUTED. If there "
+                "is no disproof evidence, use status=RETIRED instead."
+            )
+        if self.refutation_reason and self.status != HypothesisStatus.REFUTED:
+            raise ValueError(
+                "refutation_reason is only valid when status=REFUTED. "
+                f"Current status is {self.status.value}."
+            )
+        return self
 
 
 # ============================================================
