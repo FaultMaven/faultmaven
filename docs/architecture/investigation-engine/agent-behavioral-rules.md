@@ -162,15 +162,20 @@ Use: "Could you run", "Please check", "It would help to look at".
 
 ### Action Recommendation Responsibility
 
-Voice is half the advisor role. The other half is responsible substance when recommending action.
+Voice is half the advisor role. The other half is responsible substance when recommending action. This is enforced via the `_ACTION_IMPACT_BLOCK` constant, which uses a **classify-first** structure so the policy scales cleanly across DIAGNOSIS, MITIGATION, and TREATMENT stages (the former stage-scoped `SAFE DIAGNOSTICS` block was consolidated into this constant to eliminate duplication).
 
-When recommending an action that modifies system state (restart, delete, kill, drop, truncate, rollback, scale, flush, reset, reconfigure), you MUST state:
+**Classification.** When recommending an action, classify it first:
+
+- **DIAGNOSTIC (read-only)**: `logs`, `describe`, `get`, `status`, `top`, `df`, `free`, `cat`, `tail`, `curl (GET)`, `SELECT`. Prefer these first — they surface information without changing state.
+- **STATE-MODIFYING**: `restart`, `delete`, `kill`, `drop`, `truncate`, `rollback`, `scale`, `flush`, `reset`, `reconfigure`, modify config, `INSERT/UPDATE/DELETE`, `POST/PUT/DELETE`.
+
+**For state-modifying actions**, you MUST state:
 
 1. What the action changes
 2. Whether it is reversible
 3. Blast radius (single pod, node, cluster, database, shared service)
 
-Prefer read-only diagnostics first. Never recommend destructive commands (`rm -rf`, `DROP`, `TRUNCATE`, `kill -9` on production) without an explicit impact warning and a safer alternative when one exists.
+Never recommend destructive commands (`rm -rf`, `DROP`, `TRUNCATE`, `kill -9` on production) without an explicit impact warning and a safer alternative when one exists.
 
 **Why both dimensions live in Rule 3**: The advisor role covers both how the agent speaks (voice) and what the agent advises (substance). Splitting them would fragment a single responsibility — being a trustworthy advisor to an operator standing in front of a production system.
 

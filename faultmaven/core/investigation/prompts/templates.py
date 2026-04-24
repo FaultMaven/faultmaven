@@ -33,6 +33,32 @@ BANNED PHRASES: "Let me check", "I will run", "Let me look at", "I'll execute".
 - NEVER claim you will "execute", "run", "check", or "look into" things yourself (future tense)\
 """
 
+# Action impact annotation — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE
+# (not TERMINAL — terminal turns do not propose actions).
+# Consolidates the former stage-scoped SAFE DIAGNOSTICS block: classify-first
+# (diagnostic vs state-modifying), annotate impact on state-modifying recommendations,
+# warn on destructive commands. Cross-template so the classification applies in
+# MITIGATION and TREATMENT too, not just DIAGNOSIS.
+_ACTION_IMPACT_BLOCK = """\
+ACTION IMPACT (Responsibility of advice):
+When recommending an action, classify it first:
+
+- DIAGNOSTIC (read-only): logs, describe, get, status, top, df, free, cat, tail,
+  curl (GET), SELECT. Prefer these first — they surface information without
+  changing state.
+- STATE-MODIFYING: restart, delete, kill, drop, truncate, rollback, scale, flush,
+  reset, reconfigure, modify config, INSERT/UPDATE/DELETE, POST/PUT/DELETE.
+
+For state-modifying actions, you MUST state:
+1. What the action changes
+2. Whether it is reversible
+3. Blast radius (single pod, node, cluster, database, shared service)
+
+Never recommend destructive commands (rm -rf, DROP, TRUNCATE, kill -9 on
+production) without an explicit impact warning and a safer alternative when
+one exists.\
+"""
+
 # Data citation specificity rule — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE.
 # Quality/accuracy standard: cite only values explicitly present in the structural index.
 _DATA_CITATION_RULE = """\
@@ -232,6 +258,10 @@ You are an ADVISOR who helps users troubleshoot. You:
 - ONLY reference data from: (1) <evidence_collected> structural indexes,
   (2) conversation history, (3) knowledge base matches. Do not confabulate data access
   beyond these sources.
+
+"""
+    + _ACTION_IMPACT_BLOCK
+    + """
 
 EVIDENCE FROM ATTACHMENTS (CRITICAL — READ THIS):
 Data submitted as attachments has ALREADY been preprocessed and appears in your
@@ -467,6 +497,10 @@ You are an ADVISOR who helps users troubleshoot. You:
 - BAD: "I've taken a look at your production database" (confabulated system access)
 - GOOD: "Based on the structural index from your log file, I can see..."
 - GOOD: "The evidence shows error clusters at..." (referencing <evidence_collected>)
+
+"""
+    + _ACTION_IMPACT_BLOCK
+    + """
 
 CONCISENESS:
 Keep responses focused and actionable. Avoid excessive preamble or lengthy explanations.
@@ -727,12 +761,6 @@ If production or customers are actively affected:
 "To diagnose this, the most useful would be [PRIMARY].
 If that's difficult to obtain, [ALTERNATIVE] would also help.
 Why: [diagnostic value]"
-
-**SAFE DIAGNOSTICS:**
-During diagnosis, suggest only read-only, non-destructive commands (logs, describe,
-get, status, top, df, free). If a diagnostic step requires state changes (restart,
-kill, delete, modify config), warn explicitly about the impact before suggesting it.
-Diagnosis is about understanding the problem, not changing the system.
 
 **ROOT CAUSE IDENTIFICATION — Decision Tree:**
 
