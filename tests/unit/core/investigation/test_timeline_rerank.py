@@ -16,7 +16,7 @@ can't silently break the Phase 3c promise that "evidence matching a
 user-named time window reaches Tier A".
 """
 
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime, time, timezone
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -379,17 +379,25 @@ class TestContextBuilderFlagIntegration:
     def test_flag_on_matching_evidence_promoted_to_tier_a(self):
         """Same setup, flag on — coverage match pushes the config into
         Tier A, which surfaces its structural_index."""
+        # Coverage dates must align with how the query time window is
+        # parsed. `_extract_time_window_from_query` anchors bare HH:MM
+        # tokens to `datetime.now()` when no reference is provided, and
+        # `_build_evidence_context` does not pass one — so the parsed
+        # window lands on today's date. Evidence coverage must use
+        # today too, otherwise there is no overlap and the +4 bonus
+        # does not fire.
+        today = datetime.now().date()
         fillers = [
             _ev(
-                start=datetime(2026, 4, 23, 20, 0),
-                end=datetime(2026, 4, 23, 20, 30),
+                start=datetime.combine(today, time(20, 0)),
+                end=datetime.combine(today, time(20, 30)),
                 data_type="logs",
             )
             for _ in range(3)
         ]
         matching_config = _ev(
-            start=datetime(2026, 4, 23, 14, 0),
-            end=datetime(2026, 4, 23, 14, 30),
+            start=datetime.combine(today, time(14, 0)),
+            end=datetime.combine(today, time(14, 30)),
             data_type="configuration",
         )
         case = _case([matching_config] + fillers)
