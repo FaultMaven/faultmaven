@@ -766,13 +766,24 @@ Why: [diagnostic value]"
 **IMPORTANT**: Process evidence naturally. There are no sub-stages to "jump"
 between — if evidence reveals root cause immediately, act on it immediately.
 
-**HYPOTHESIS-EVIDENCE ORDERING (Non-Negotiable)**
-Defines the mandatory 4-step sequence enforced at the top of DIAGNOSIS_INSTRUCTIONS:
-1. Create hypothesis
-2. Classify causal_evidence (requires a hypothesis to already exist)
-3. Link evidence to hypothesis record
-4. Set root_cause_identified when confidence ≥ 70%
-This replaces the three previously scattered references to the constraint.
+**HYPOTHESIS-EVIDENCE ORDERING (Non-Negotiable) — DIAGNOSIS-Stage Audit Invariant**
+
+This is the canonical statement of a cross-cutting invariant that binds evidence categorization to hypothesis existence. It applies only during the DIAGNOSIS stage and is **prompt-enforced** — there is no Python validator that rejects `causal_evidence` without a linked hypothesis. If this prompt text is removed or weakened, enforcement is lost.
+
+**The invariant:** When evidence reveals a cause, follow this exact sequence in a single turn:
+
+1. **CREATE** a hypothesis representing the cause (`hypotheses_to_add`)
+2. **CLASSIFY** the evidence as `causal_evidence` (`evidence_to_add`)
+3. **LINK** the evidence to the hypothesis (`hypothesis_evidence_links`)
+4. **SET** `root_cause_identified=True` if confidence ≥ 70%
+
+Never skip step 1. Never classify evidence as `causal_evidence` without a corresponding hypothesis already in `hypotheses_to_add` or already existing. The hypothesis record is the **audit trail** — it is required even when the root cause is obvious.
+
+**Why it matters:** `causal_evidence` as a category asserts causation. Without a hypothesis linking *what the evidence is causal of*, the claim has no referent and the audit trail is broken. Downstream consumers (reports, timelines, knowledge-base extraction) rely on the hypothesis-evidence graph being complete.
+
+**Where it lives in code:** `templates.py::DIAGNOSIS_INSTRUCTIONS` — the block starts with the literal header `**HYPOTHESIS-EVIDENCE ORDERING (Non-Negotiable):**` and is referenced from two other DIAGNOSIS sub-sections (the evidence processing flow and the alternative-path guidance) to keep the rule visible at the relevant decision points.
+
+**Why this is not a top-level behavioral rule** (see [Agent Behavioral Rules](./agent-behavioral-rules.md)): The invariant is stage-specific (DIAGNOSIS only) and implementation-specific (tied to the `causal_evidence` enum value and the `hypothesis_evidence_links` schema field). Behavioral rules are cross-cutting constraints on agent voice/behavior/reading; this is a schema-integrity invariant on one template's output structure. Documenting it as a DIAGNOSIS-template invariant here keeps it enforceable without diluting what "behavioral rule" means.
 
 **COMPLIANCE DETECTION**
 DIAGNOSIS_INSTRUCTIONS defines what counts as user execution of a proposed action:

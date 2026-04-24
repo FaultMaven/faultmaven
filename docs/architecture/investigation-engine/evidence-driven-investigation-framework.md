@@ -194,7 +194,7 @@ Treating mitigation as a "tool available during other stages" creates complex ro
 - `causal_evidence` — data explaining why (requires hypothesis to exist)
 - `contextual_evidence` — baseline/environmental data
 
-**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn.
+**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is a **prompt-enforced audit invariant** (no Python validator rejects orphan `causal_evidence`); the canonical specification and rationale live in [Prompt Templates §HYPOTHESIS-EVIDENCE ORDERING](./prompt-templates.md#investigating-template).
 
 **Exit conditions** (inference-based — action over words):
 

@@ -115,18 +115,21 @@ The three-step framework is an internal reasoning scaffold, not an output format
 
 **Why this is the strongest rule**: The internal reasoning scaffold forces the LLM to anchor every claim in evidence before reaching a conclusion, making hallucination structurally visible even when the output is conversational prose.
 
-**Mechanical enforcement via Diagnostic Reasoning Validator**: Rule 2 is enforced post-generation by `diagnostic_reasoning_validator.py`, which checks LLM responses for:
+**Mechanical enforcement via Diagnostic Reasoning Validator**: Rule 2 is enforced post-generation by `diagnostic_reasoning_validator.py`, which runs five signal checks on LLM responses. The specific strings and categories listed below are **illustrative examples**, not a prescriptive contract — the validator's regex lists and heuristics evolve over time as calibration improves. Consult `diagnostic_reasoning_validator.py` directly for the authoritative current behavior.
 
-1. **Evidence grounding** — markers like "THE LOG SHOWS", "BASED ON", "LOOKING AT", "I CAN SEE", "EVIDENCE SHOWS" (expanded to detect conversational evidence references, not just structured section headers)
-2. **Causal reasoning** — language like "causes", "leads to", "because", "therefore", "THIS SUGGESTS"
-3. **Specific evidence references** — at least 2 of 4 categories: timestamps (HH:MM, YYYY-MM-DD), metrics/percentages, specific IDs (commit hashes, deployment IDs), error messages/log excerpts
-4. **Anti-patterns** — checklist engineering (5+ bullets, "try these N things"), generic best practices ("implement monitoring", "follow best practices")
+1. **Evidence grounding** — detects conversational references to evidence (example markers: "the log shows", "based on", "looking at", "I can see", "evidence shows", and similar). The goal is to detect grounded responses whether they use structured section headers or natural prose.
+2. **Causal reasoning** — detects language linking cause to effect (example markers: "causes", "leads to", "because", "therefore", "this suggests"). Purpose: verify conclusions explain *why*, not just *what*.
+3. **Specific evidence references** — checks that at least 2 of 4 signal categories are present: timestamps, quantitative measures, specific identifiers, and error text. What qualifies as each signal is a heuristic the validator tunes (e.g., the ID check accepts hashes, version strings, and deployment labels; the timestamp check accepts HH:MM, YYYY-MM-DD, and relative forms). Examples in the code show the shape, not the exhaustive list.
+4. **Anti-patterns** — flags checklist engineering (many bullets of "try these N things") and generic best practices ("implement monitoring", "follow best practices") that are disconnected from case evidence.
+5. **Case specificity** — a short response (<300 chars) that neither echoes a keyword from the case's symptom statement nor cites the case ID is flagged as generic. The length gate exists so full-length responses that synthesize case detail are not falsely flagged.
 
 When violations are detected, a self-correction retry feeds the specific violations back to the LLM for one rewrite attempt. See [Error Handling §3.2](./error-handling-and-recovery.md#32-reasoning-validation-with-self-correction).
 
 **Evidence referencing**: Each evidence item in the LLM context carries a `label` attribute (filename, description, or data type). The agent MUST reference evidence by its label in responses (e.g., "in the nginx error log"), never by internal `ev_` IDs which are meaningless to users. IDs are only for internal schema fields (`evidence_analyzed`, `milestone_justifications`).
 
 **DA turn exception**: For Directed Analysis turns answering factual lookups, causal reasoning is downgraded to a warning when it is the sole violation (factual answers like "these 3 usernames attempted login" are not causal chains).
+
+**INQUIRY bypass**: The validator short-circuits entirely when `case.status == INQUIRY`. Pre-investigation turns answer user questions and gather context; they are not expected to produce observation-analysis-conclusion reasoning. This matches Rule 2's scope (INVESTIGATING) at the enforcement layer.
 
 **Graduated validator enforcement**: The forced structure applies when the agent makes diagnostic claims, proposes actions, or advances hypotheses. The validator should not trigger self-correction on responses that are confirmations, clarifications of previous analysis, or acknowledgments of user input. This graduation is implemented in the validator, not the prompt — the LLM always aims for the structure, but the validator tolerates its absence in non-diagnostic responses.
 
@@ -136,7 +139,7 @@ When violations are detected, a self-correction retry feeds the specific violati
 
 **What it prevents**: Agent claims to execute actions (voice failure) or recommends destructive operations without flagging impact (substance failure). Both erode user trust — one promises action the agent can't deliver, the other understates the cost of action the user can deliver.
 
-**Injection point**: All templates — a strict negative constraint. Implemented via the `_ADVISOR_ROLE_CONSTRAINT` module-level constant in `templates.py`, which is string-concatenated into both `INQUIRY_TEMPLATE` and `INVESTIGATION_BASE`. A single definition eliminates the risk of the two copies drifting out of sync.
+**Injection point**: All three templates — a strict negative constraint. Implemented via the `_ADVISOR_ROLE_CONSTRAINT` module-level constant in `templates.py`, which is string-concatenated into `INQUIRY_TEMPLATE`, `INVESTIGATION_BASE`, and `TERMINAL_TEMPLATE`. A single definition eliminates the risk of copies drifting out of sync. The TERMINAL inclusion is deliberate: the agent must preserve advisor voice even after a case reaches resolution (terminal Q&A about prior findings or closure discussions).
 
 **Prompt injection**:
 
@@ -366,12 +369,14 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | ---- | -------- | ------------------- | -------- |
 | 1 (Answer First) | INQUIRY only | YOUR TASK instructions | Early (after context header) |
 | 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING + hard constraints (includes confidence calibration + no premature resolution) | EVIDENCE GROUNDING before YOUR TASK; DIAGNOSTIC REASONING after ASSISTANT ROLE |
-| 3 (Advisor Role) | All templates | ASSISTANT ROLE via `_ADVISOR_ROLE_CONSTRAINT` (voice) + `_ACTION_IMPACT_BLOCK` (action impact annotation) | Voice constraint varies by template; action impact annotation paired with voice. Constants shared across INQUIRY_TEMPLATE and INVESTIGATION_BASE. |
+| 3 (Advisor Role) | All three templates | ASSISTANT ROLE via `_ADVISOR_ROLE_CONSTRAINT` (voice) + `_ACTION_IMPACT_BLOCK` (action impact annotation) | `_ADVISOR_ROLE_CONSTRAINT` shared across INQUIRY_TEMPLATE, INVESTIGATION_BASE, and TERMINAL_TEMPLATE (voice must be preserved in terminal Q&A too). `_ACTION_IMPACT_BLOCK` shared across INQUIRY_TEMPLATE and INVESTIGATION_BASE only (TERMINAL has no action proposals). |
 | 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
 | 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES (behavior table + one-ask-per-turn principle) | After YOUR TASK |
 | 6 (Knowledge First) | INQUIRY + INVESTIGATION_BASE + DA system instruction | YOUR TASK (INQUIRY), DIAGNOSIS (INVESTIGATING), TYPE B routing (DA instruction); `KNOWLEDGE_QUERY_INSTRUCTIONS` constant used for knowledge_query bypass | Early in each |
 | 7 (Signal Extraction) | INQUIRY + INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` constant | After ASSISTANT ROLE, before EVIDENCE GROUNDING |
 | 8 (Full-Context Reasoning) | INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` (paired with Rule 7) | Same block as Rule 7 |
+
+**Non-rule shared constants:** `_DATA_CITATION_RULE` is a shared quality-standard constant (not a behavioral rule) concatenated into INQUIRY_TEMPLATE's TRIAGE SUMMARY QUALITY section and INVESTIGATION_BASE's WORKING WITH EVIDENCE DATA section. It prescribes specificity when citing structural-index values (actual IPs / counts / timestamps rather than "I see some errors") and judgment when enumerating entities. Follows the same single-definition pattern as `_ADVISOR_ROLE_CONSTRAINT` to prevent drift between the two injection sites.
 
 ### Dynamic Injection: Focus Zone and INQUIRY State
 
@@ -399,7 +404,20 @@ The DA system instruction classifies user questions into three types and prescri
 
 **Why this matters for behavioral rules:** The DA system instruction applies to ALL turns with tools — including INQUIRY. Because `tool_choice=auto`, the LLM decides whether to comply. The "MUST" language for TYPE A and TYPE B is the primary enforcement mechanism for Rules 2 and 6 during the tool-augmented loop.
 
-**Location:** `milestone_engine.py:_build_da_system_instruction()` (~lines 2968-3095).
+**Additional operational guidance beyond question routing:**
+
+The DA system instruction also carries six operational clauses that are not behavioral rules but shape how the agent uses its tools. They are documented here for completeness because they share the same injection site:
+
+1. **DEFAULT: treat ambiguity as Type A.** When uncertain whether a question is case-specific or general knowledge, classify as Type A — evidence search is always safe. Prevents "I don't know" answers when evidence could have settled the question.
+2. **Search for the specific entity, not the event type.** When the user asks about a specific IP / hostname / username / error code / timestamp, `search_file` query must use THAT value directly (e.g., `query="173.234.31.186"`, not `query="Failed password"`). Searching for event types returns all entities and buries the relevant lines.
+3. **PII tokens vs raw data.** The `<evidence_collected>` summaries use PII placeholders (e.g., `<IP_ADDRESS_1>`); the raw files on disk contain ORIGINAL values. When calling `search_file`, use original values from the user's message, not PII tokens.
+4. **SEARCHABLE EVIDENCE attribute.** Only use `search_file` on evidence items with `searchable="true"` in `<evidence_collected>`. Items without this attribute are investigation notes with no file on disk.
+5. **EVIDENCE vs KNOWLEDGE distinction.** EVIDENCE is user-submitted case data; only this goes into `evidence_to_add`. KNOWLEDGE from `kb_qa` / `web_search` / training data informs analysis but is NEVER recorded as evidence. Prevents the agent from polluting the case's evidence trail with reference material.
+6. **RESPONSE FORMAT for case questions.** Cite filename + line numbers from search results (e.g., "In `data_6-1.log`, line 42: ..."). Reference evidence by filename or description, never by `ev_` IDs.
+
+These clauses are prompt-layer operational guidance rather than behavioral rules, which is why they live in the DA system instruction rather than in Rules 1–8.
+
+**Location:** `milestone_engine.py::_build_da_system_instruction()` (lines 3377-3533).
 
 ### INVESTIGATION_BASE Layout
 
@@ -419,6 +437,8 @@ KEY PRINCIPLES (Rules 4, 5)                             Graceful Pivot + Work Wi
                                                         one-ask-per-turn principle
 FOLLOW-UP SUGGESTIONS
 EVIDENCE FROM ATTACHMENTS / CLASSIFICATION DECISION TREE / RECORDS
+WORKING WITH EVIDENCE DATA                              _DATA_CITATION_RULE constant (also used in
+                                                        INQUIRY_TEMPLATE TRIAGE SUMMARY QUALITY)
 EVIDENCE SUMMARY QUALITY                                Long-term memory for evidence artifacts
 INVESTIGATION JOURNAL
 MILESTONE ATTRIBUTION

@@ -108,8 +108,8 @@ While in transparent mode, the system also checks for specific agent-internal fa
 | Pattern | Stages | Detection | Structural Action |
 |---|---|---|---|
 | **HYPOTHESIS_DEADLOCK** | DIAGNOSIS, TREATMENT | 3+ hypotheses, all INCONCLUSIVE | Retire all inconclusive hypotheses — gives LLM a clean slate |
-| **HYPOTHESIS_ANCHORING** | DIAGNOSIS, TREATMENT | 4+ failed hypotheses in same category | Ban the anchored category — adds a constraint LLM doesn't have |
-| **EXHAUSTED** | DIAGNOSIS | 2+ categories explored, 2+ hypotheses refuted, no validated hypothesis, 8+ turns | Agent produces structured handoff — summary of findings, what remains uncertain, options for user |
+| **HYPOTHESIS_ANCHORING** | DIAGNOSIS, TREATMENT | 4+ failed hypotheses in same category | Ban the anchored category and suggest alternatives from `ProgressMonitor.ALL_CATEGORIES` (`code`, `config`, `environment`, `network`, `data`, `hardware`, `external`, `human`) — adds a constraint the LLM doesn't have on its own |
+| **EXHAUSTED** | DIAGNOSIS | 2+ categories explored, 2+ hypotheses refuted, no validated hypothesis, **both** `current_turn ≥ 8` AND `turns_without_progress ≥ 5` | Agent produces structured handoff — summary of findings, what remains uncertain, options for user |
 | **FIX_FAILURE_CYCLE** | MITIGATION, TREATMENT | 2+ accepted proposed actions, verification milestone not set | Agent summarizes what was tried and presents options |
 | **ACTION_LOOP** | All stages | Identical structural output across 5+ consecutive turns | Prompt injection (current); tool blocking (future) |
 
@@ -142,7 +142,8 @@ Transparent Mode (progress stalled)
 | `transparency_threshold` | 5 | Turns without milestone progress before transparent mode activates |
 | `category_anchoring_threshold` | 4 | Failed hypotheses in same category before ANCHORING fires |
 | `action_loop_threshold` | 5 | Turns with identical structural output before ACTION_LOOP fires |
-| `exhaustion_min_turns` | 8 | Minimum total turns before EXHAUSTED pattern can fire |
+| `exhaustion_min_turns` | 8 | Minimum total turns before EXHAUSTED can fire (first threshold) |
+| `exhaustion_stall_threshold` | 5 | Turns without progress also required for EXHAUSTED (second threshold — both must be met) |
 | `fix_failure_threshold` | 2 | Accepted-but-unverified fix attempts before FIX_FAILURE_CYCLE fires |
 
 ---
