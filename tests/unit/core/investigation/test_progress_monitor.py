@@ -157,6 +157,31 @@ class TestProgressTransparency:
         result = monitor.check_progress(base_case)
         assert result is None
 
+    def test_counter_resets_on_stage_gate_milestone(self, monitor, base_case):
+        """Stage transitions reset the counter via the stage-gate milestone path.
+
+        Stage-gate milestones (mitigation_accepted, mitigation_verified,
+        solution_accepted, solution_verified) are recorded in
+        ``milestones_completed`` when they fire, so a stage transition
+        resets the investigative-turn counter just like a progress
+        milestone does. This locks in the stage-scoping behavior described
+        in progress-transparency.md §Transitions.
+        """
+        base_case.turn_history = [
+            create_turn(1, outcome=TurnOutcome.DATA_PROVIDED, evidence_added=["ev_1"]),
+            create_turn(2, outcome=TurnOutcome.DATA_REQUESTED),
+            create_turn(3, outcome=TurnOutcome.DATA_PROVIDED, evidence_added=["ev_3"]),
+            # Stage-gate milestone fires → DIAGNOSIS → MITIGATION transition.
+            # Counter must reset here despite being mid-investigation.
+            create_turn(4, milestones_completed=["mitigation_accepted"]),
+            create_turn(5, outcome=TurnOutcome.DATA_PROVIDED, evidence_added=["ev_5"]),
+        ]
+        base_case.progress.mitigation_accepted = True
+
+        # Only 1 investigative turn after the stage transition; below threshold.
+        result = monitor.check_progress(base_case)
+        assert result is None
+
     def test_silent_after_milestone_completion(self, monitor, base_case):
         """Should return to silent mode after a milestone completes."""
         # History: many investigative turns, then a milestone, then 1 more

@@ -44,6 +44,14 @@ def validate_diagnostic_reasoning(
     if case.status == CaseStatus.INQUIRY:
         return (True, [])
 
+    # EXCEPTION: non-diagnostic responses (confirmations, clarifications,
+    # acknowledgments) don't carry diagnostic weight. Graduated enforcement
+    # per agent-behavioral-rules.md Rule 2 — the validator tolerates absence
+    # of diagnostic-reasoning structure on these turns. See
+    # _is_non_diagnostic_response for the classification heuristic.
+    if _is_non_diagnostic_response(agent_response):
+        return (True, [])
+
     # Only validate if response contains suggestions/mitigations/hypotheses
     if contains_suggestion is None:
         contains_suggestion = _detect_suggestions(agent_response)
@@ -65,6 +73,13 @@ def validate_diagnostic_reasoning(
     has_generic_advice = _is_generic_best_practices(agent_response)
     lacks_specificity = _lacks_case_specificity(agent_response, case)
 
+    # Rule 8 (Full-Context Reasoning) — counter to recency bias. Only fires
+    # when the case has substantial prior context AND the response is long
+    # enough to plausibly reference it.
+    lacks_prior_context = _has_sufficient_prior_context(
+        case
+    ) and not _references_prior_context(agent_response, case, min_length=300)
+
     if not has_specific_evidence:
         violations.append(
             "Not grounded in case evidence - must reference specific metrics, timestamps, error messages, or data from THIS case"
@@ -83,6 +98,13 @@ def validate_diagnostic_reasoning(
     if has_generic_advice:
         violations.append(
             "PROHIBITED: Generic best practices detected - advice must be specific to THIS case's evidence"
+        )
+
+    if lacks_prior_context:
+        violations.append(
+            "Response does not reference prior case context (earlier evidence, "
+            "refuted/retired hypotheses, or journal entries) despite substantial "
+            "case history - may be exhibiting recency bias (Rule 8: Full-Context Reasoning)"
         )
 
     if lacks_specificity:
@@ -104,6 +126,71 @@ def validate_diagnostic_reasoning(
 # ============================================================
 # Detection Helpers
 # ============================================================
+
+
+# Non-diagnostic response classification
+# ==================================================================
+# Markers that open confirmations, clarifications, and acknowledgments.
+# Used by _is_non_diagnostic_response as a conservative bypass signal.
+_NON_DIAGNOSTIC_OPENERS: Tuple[str, ...] = (
+    # Confirmations — short affirmations of user statements
+    "yes,",
+    "yes.",
+    "yes —",
+    "yes -",
+    "correct",
+    "that's right",
+    "that is right",
+    "exactly",
+    "indeed",
+    "agreed",
+    "confirmed",
+    "confirming",
+    # Clarifications of prior analysis
+    "to clarify",
+    "to be clear",
+    "let me clarify",
+    "what i meant",
+    "clarification:",
+    # Acknowledgments of user input
+    "thanks for",
+    "thank you for",
+    "got it",
+    "understood",
+    "noted",
+    "good question",
+    "i see",
+    "i understand",
+)
+
+# Upper bound on length for non-diagnostic classification. A response that
+# opens with a confirmation/clarification/acknowledgment marker but runs long
+# may be packing diagnostic content behind the opener — run normal validation.
+_NON_DIAGNOSTIC_MAX_CHARS: int = 500
+
+
+def _is_non_diagnostic_response(response: str) -> bool:
+    """Detect responses that don't carry diagnostic weight.
+
+    Graduated validator enforcement (per agent-behavioral-rules.md Rule 2):
+    the validator should not trigger self-correction on responses that are
+    confirmations, clarifications of previous analysis, or acknowledgments
+    of user input — even when those responses contain words the
+    suggestion detector would flag.
+
+    Conservative heuristic: classification requires BOTH
+    (a) opens with a known confirmation/clarification/acknowledgment marker, AND
+    (b) is short enough (< 500 chars) to be non-substantive.
+
+    Longer responses that happen to start with the same words may be
+    making diagnostic claims behind the opener and go through normal
+    validation.
+    """
+    stripped = response.strip()
+    if len(stripped) >= _NON_DIAGNOSTIC_MAX_CHARS:
+        return False
+    lower = stripped.lower()
+    return any(lower.startswith(o) for o in _NON_DIAGNOSTIC_OPENERS)
 
 
 def _detect_suggestions(response: str) -> bool:
@@ -250,3 +337,109 @@ def _lacks_case_specificity(response: str, case: Case) -> bool:
     return (
         not problem_domain_mentioned and not case_id_mentioned and len(response) < 300
     )
+
+
+# ============================================================
+# Rule 8 — Full-Context Reasoning helpers
+# ============================================================
+
+# Thresholds controlling when the Rule 8 prior-context check fires.
+# All are conservative to minimize false positives; tune via unit tests.
+_RULE8_MIN_EVIDENCE_ITEMS: int = 3
+_RULE8_MIN_REFUTED_HYPOTHESES: int = 2
+_RULE8_MIN_JOURNAL_ENTRIES: int = 2
+_RULE8_MIN_RESPONSE_CHARS: int = 300
+_RULE8_HYPOTHESIS_KEYWORD_MATCH: int = 2  # of keywords from the statement
+
+
+def _has_sufficient_prior_context(case: Case) -> bool:
+    """Return True when the case has enough prior investigation state for
+    the Rule 8 check to be meaningful. Fresh cases with little prior
+    content have nothing to reference — firing the check there would be
+    pure noise.
+
+    The thresholds are disjunctive: any one of them being met is enough.
+    """
+    evidence_count = len(getattr(case, "evidence", []) or [])
+    if evidence_count >= _RULE8_MIN_EVIDENCE_ITEMS:
+        return True
+
+    hypotheses = getattr(case, "hypotheses", {}) or {}
+    refuted = 0
+    for h in hypotheses.values():
+        status = getattr(h, "status", None)
+        status_value = getattr(status, "value", str(status) if status else "")
+        if str(status_value).lower() in ("refuted", "retired"):
+            refuted += 1
+    if refuted >= _RULE8_MIN_REFUTED_HYPOTHESES:
+        return True
+
+    journal_entries = len(getattr(case, "investigation_journal", []) or [])
+    if journal_entries >= _RULE8_MIN_JOURNAL_ENTRIES:
+        return True
+
+    return False
+
+
+def _references_prior_context(
+    response: str,
+    case: Case,
+    min_length: int = _RULE8_MIN_RESPONSE_CHARS,
+) -> bool:
+    """Return True when the response references prior case context.
+
+    Looks for any of:
+
+    - Evidence collected in a turn earlier than the current turn, mentioned
+      by filename or data-type label.
+    - A refuted or retired hypothesis whose statement keywords appear in
+      the response (at least ``_RULE8_HYPOTHESIS_KEYWORD_MATCH`` of the
+      length-> 4 keywords).
+    - An investigation journal entry whose summary keywords appear.
+
+    Responses shorter than ``min_length`` are treated as "no reference
+    possible" and return True (short responses are exempt — they cannot
+    reasonably be expected to weave in prior context).
+    """
+    if len(response) < min_length:
+        return True  # short response — exempt from the check
+
+    response_lower = response.lower()
+
+    # Prior evidence — by label (filename / data_type)
+    current_turn = getattr(case, "current_turn", 0) or 0
+    evidence = getattr(case, "evidence", []) or []
+    for ev in evidence:
+        collected_at_turn = getattr(ev, "collected_at_turn", None)
+        if collected_at_turn is None or collected_at_turn >= current_turn:
+            continue  # not prior — skip
+        for attr in ("original_filename", "data_type"):
+            label = getattr(ev, attr, None)
+            if label and len(str(label)) > 3 and str(label).lower() in response_lower:
+                return True
+
+    # Refuted / retired hypotheses — by statement keywords
+    hypotheses = getattr(case, "hypotheses", {}) or {}
+    for h in hypotheses.values():
+        status = getattr(h, "status", None)
+        status_value = getattr(status, "value", str(status) if status else "")
+        if str(status_value).lower() not in ("refuted", "retired"):
+            continue
+        statement = getattr(h, "statement", "") or ""
+        keywords = [w for w in statement.lower().split() if len(w) > 4]
+        matches = sum(1 for k in keywords if k in response_lower)
+        if matches >= _RULE8_HYPOTHESIS_KEYWORD_MATCH:
+            return True
+
+    # Investigation journal — by entry summary keywords
+    journal = getattr(case, "investigation_journal", []) or []
+    for entry in journal:
+        summary = (
+            getattr(entry, "summary", None) or getattr(entry, "content", None) or ""
+        )
+        keywords = [w for w in str(summary).lower().split() if len(w) > 4][:8]
+        matches = sum(1 for k in keywords if k in response_lower)
+        if matches >= _RULE8_HYPOTHESIS_KEYWORD_MATCH:
+            return True
+
+    return False
