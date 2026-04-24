@@ -44,6 +44,14 @@ def validate_diagnostic_reasoning(
     if case.status == CaseStatus.INQUIRY:
         return (True, [])
 
+    # EXCEPTION: non-diagnostic responses (confirmations, clarifications,
+    # acknowledgments) don't carry diagnostic weight. Graduated enforcement
+    # per agent-behavioral-rules.md Rule 2 — the validator tolerates absence
+    # of diagnostic-reasoning structure on these turns. See
+    # _is_non_diagnostic_response for the classification heuristic.
+    if _is_non_diagnostic_response(agent_response):
+        return (True, [])
+
     # Only validate if response contains suggestions/mitigations/hypotheses
     if contains_suggestion is None:
         contains_suggestion = _detect_suggestions(agent_response)
@@ -104,6 +112,71 @@ def validate_diagnostic_reasoning(
 # ============================================================
 # Detection Helpers
 # ============================================================
+
+
+# Non-diagnostic response classification
+# ==================================================================
+# Markers that open confirmations, clarifications, and acknowledgments.
+# Used by _is_non_diagnostic_response as a conservative bypass signal.
+_NON_DIAGNOSTIC_OPENERS: Tuple[str, ...] = (
+    # Confirmations — short affirmations of user statements
+    "yes,",
+    "yes.",
+    "yes —",
+    "yes -",
+    "correct",
+    "that's right",
+    "that is right",
+    "exactly",
+    "indeed",
+    "agreed",
+    "confirmed",
+    "confirming",
+    # Clarifications of prior analysis
+    "to clarify",
+    "to be clear",
+    "let me clarify",
+    "what i meant",
+    "clarification:",
+    # Acknowledgments of user input
+    "thanks for",
+    "thank you for",
+    "got it",
+    "understood",
+    "noted",
+    "good question",
+    "i see",
+    "i understand",
+)
+
+# Upper bound on length for non-diagnostic classification. A response that
+# opens with a confirmation/clarification/acknowledgment marker but runs long
+# may be packing diagnostic content behind the opener — run normal validation.
+_NON_DIAGNOSTIC_MAX_CHARS: int = 500
+
+
+def _is_non_diagnostic_response(response: str) -> bool:
+    """Detect responses that don't carry diagnostic weight.
+
+    Graduated validator enforcement (per agent-behavioral-rules.md Rule 2):
+    the validator should not trigger self-correction on responses that are
+    confirmations, clarifications of previous analysis, or acknowledgments
+    of user input — even when those responses contain words the
+    suggestion detector would flag.
+
+    Conservative heuristic: classification requires BOTH
+    (a) opens with a known confirmation/clarification/acknowledgment marker, AND
+    (b) is short enough (< 500 chars) to be non-substantive.
+
+    Longer responses that happen to start with the same words may be
+    making diagnostic claims behind the opener and go through normal
+    validation.
+    """
+    stripped = response.strip()
+    if len(stripped) >= _NON_DIAGNOSTIC_MAX_CHARS:
+        return False
+    lower = stripped.lower()
+    return any(lower.startswith(o) for o in _NON_DIAGNOSTIC_OPENERS)
 
 
 def _detect_suggestions(response: str) -> bool:

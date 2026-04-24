@@ -13,6 +13,7 @@ from faultmaven.core.investigation.diagnostic_reasoning_validator import (
     _has_causal_reasoning,
     _is_checklist_engineering,
     _is_generic_best_practices,
+    _is_non_diagnostic_response,
     _lacks_case_specificity,
     _references_specific_evidence,
     validate_diagnostic_reasoning,
@@ -560,6 +561,90 @@ class TestLacksCaseSpecificity:
 
 
 # ============================================================
+# Tests for _is_non_diagnostic_response()
+# ============================================================
+
+
+class TestIsNonDiagnosticResponse:
+    """Graduated validator enforcement: short confirmations, clarifications,
+    and acknowledgments bypass diagnostic-reasoning validation even when they
+    contain suggestion-indicator language.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "response",
+        [
+            "Yes, that's correct.",
+            "Yes. The 14:00 spike matches what you described.",
+            "Correct, the connection pool is the likely culprit.",
+            "That's right — I should have mentioned the rollback earlier.",
+            "Exactly. You nailed it.",
+            "Indeed, the metrics confirm that.",
+            "Agreed, let's proceed.",
+            "Confirmed. The fix is now in place.",
+            "To clarify, the error I mentioned was at 14:02, not 14:20.",
+            "To be clear, I haven't applied the fix yet — only proposed it.",
+            "Let me clarify my earlier analysis.",
+            "What I meant was the connection pool, not the query cache.",
+            "Thanks for the context.",
+            "Thank you for the correction.",
+            "Got it.",
+            "Understood. I'll check the configs first.",
+            "Noted.",
+            "Good question.",
+            "I see. So the issue started at 14:00.",
+            "I understand the constraint.",
+        ],
+    )
+    def test_short_non_diagnostic_openers_classified(self, response):
+        """Short responses opening with non-diagnostic markers bypass."""
+        assert _is_non_diagnostic_response(response) is True
+
+    @pytest.mark.unit
+    def test_long_response_with_opener_not_classified(self):
+        """A response that starts with 'To clarify' but is long enough to
+        contain diagnostic content runs normal validation (not bypassed).
+        """
+        # Response is > 500 chars — packed with substantive analysis
+        response = (
+            "To clarify my earlier analysis: the error rate at 14:02 UTC spiked "
+            "to 45% after commit abc1234 was deployed at 13:58. The database "
+            "connections are timing out because max_connections was reduced "
+            "from 50 to 10 in that commit. This matches the connection pool "
+            "exhaustion pattern — each new request fails to acquire a pool "
+            "slot and times out after 30 seconds. Therefore, I recommend "
+            "reverting the deployment. The rollback should restore normal "
+            "behavior within 2 minutes based on the historical recovery "
+            "window we saw during the previous incident on March 14th."
+        )
+        assert _is_non_diagnostic_response(response) is False
+
+    @pytest.mark.unit
+    def test_diagnostic_response_not_classified(self):
+        """A substantive diagnostic response without non-diagnostic opener
+        goes through normal validation.
+        """
+        response = (
+            "The error rate spike at 14:30 correlates with the recent "
+            "deployment. You should check the connection pool configuration."
+        )
+        assert _is_non_diagnostic_response(response) is False
+
+    @pytest.mark.unit
+    def test_empty_response_not_classified(self):
+        """Empty response is not classified as non-diagnostic (edge case)."""
+        assert _is_non_diagnostic_response("") is False
+        assert _is_non_diagnostic_response("   ") is False
+
+    @pytest.mark.unit
+    def test_case_insensitive_opener_matching(self):
+        """Opener matching is case-insensitive."""
+        assert _is_non_diagnostic_response("YES, that's right.") is True
+        assert _is_non_diagnostic_response("To Clarify, the fix is pending.") is True
+
+
+# ============================================================
 # Tests for validate_diagnostic_reasoning() — Main Entry Point
 # ============================================================
 
@@ -574,6 +659,43 @@ class TestValidateDiagnosticReasoning:
         is_valid, violations = validate_diagnostic_reasoning(inquiry_case, response)
         assert is_valid is True
         assert violations == []
+
+    @pytest.mark.unit
+    def test_non_diagnostic_response_bypasses_validation(self, investigating_case):
+        """Short confirmations/clarifications/acknowledgments bypass validation
+        even when they contain suggestion-indicator language. This is the
+        graduated-enforcement exception from Rule 2.
+        """
+        # Contains "try" (suggestion indicator) but is a short acknowledgment.
+        # Without the bypass, this would fail validation because it lacks
+        # case-specific evidence and causal reasoning.
+        response = "Got it, I'll try that approach next."
+        is_valid, violations = validate_diagnostic_reasoning(
+            investigating_case, response
+        )
+        assert is_valid is True
+        assert violations == []
+
+    @pytest.mark.unit
+    def test_non_diagnostic_bypass_does_not_hide_long_diagnostic(
+        self, investigating_case
+    ):
+        """A long response starting with 'To clarify' but packed with a
+        poorly-grounded suggestion should still fail validation — the
+        bypass's length gate protects against this."""
+        # > 500 chars, starts with "To clarify", contains "should" (suggestion),
+        # but lacks case-specific evidence and causal reasoning.
+        response = (
+            "To clarify my position, we should probably restart things. "
+            + "The situation calls for decisive action. You should definitely "
+            + "try restarting the service first. " * 20
+        )
+        assert len(response) >= 500  # guard against the test going stale
+        is_valid, violations = validate_diagnostic_reasoning(
+            investigating_case, response
+        )
+        assert is_valid is False
+        assert len(violations) > 0
 
     @pytest.mark.unit
     def test_no_suggestions_always_passes(self, investigating_case):
