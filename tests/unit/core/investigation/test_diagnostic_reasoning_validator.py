@@ -5,16 +5,20 @@ Section 3.3 of the investigation specification. Covers all 7 validation
 helper functions and the main validate_diagnostic_reasoning() entry point.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from faultmaven.core.investigation.diagnostic_reasoning_validator import (
     DiagnosticReasoningError,
     _detect_suggestions,
     _has_causal_reasoning,
+    _has_sufficient_prior_context,
     _is_checklist_engineering,
     _is_generic_best_practices,
     _is_non_diagnostic_response,
     _lacks_case_specificity,
+    _references_prior_context,
     _references_specific_evidence,
     validate_diagnostic_reasoning,
 )
@@ -642,6 +646,203 @@ class TestIsNonDiagnosticResponse:
         """Opener matching is case-insensitive."""
         assert _is_non_diagnostic_response("YES, that's right.") is True
         assert _is_non_diagnostic_response("To Clarify, the fix is pending.") is True
+
+
+# ============================================================
+# Tests for _has_sufficient_prior_context() and _references_prior_context()
+# (Rule 8: Full-Context Reasoning helpers)
+# ============================================================
+
+
+def _stub_case(
+    *,
+    current_turn: int = 5,
+    evidence=None,
+    hypotheses=None,
+    journal=None,
+):
+    """Minimal case stub for Rule 8 helper tests.
+
+    The helpers use getattr for all case fields so a SimpleNamespace is
+    sufficient — no Pydantic construction or full model wiring needed.
+    """
+    return SimpleNamespace(
+        current_turn=current_turn,
+        evidence=evidence or [],
+        hypotheses=hypotheses or {},
+        investigation_journal=journal or [],
+    )
+
+
+def _stub_evidence(
+    *,
+    collected_at_turn: int,
+    original_filename: str | None = None,
+    data_type: str | None = None,
+):
+    return SimpleNamespace(
+        collected_at_turn=collected_at_turn,
+        original_filename=original_filename,
+        data_type=data_type,
+    )
+
+
+def _stub_hypothesis(*, statement: str, status: str = "refuted"):
+    return SimpleNamespace(
+        statement=statement,
+        status=SimpleNamespace(value=status),
+    )
+
+
+def _stub_journal_entry(*, summary: str):
+    return SimpleNamespace(summary=summary, content=None)
+
+
+class TestHasSufficientPriorContext:
+    """Rule 8 gating: is there enough prior context to meaningfully check?"""
+
+    @pytest.mark.unit
+    def test_fresh_case_has_insufficient_context(self):
+        case = _stub_case(evidence=[], hypotheses={}, journal=[])
+        assert _has_sufficient_prior_context(case) is False
+
+    @pytest.mark.unit
+    def test_three_evidence_items_sufficient(self):
+        case = _stub_case(
+            evidence=[_stub_evidence(collected_at_turn=1) for _ in range(3)]
+        )
+        assert _has_sufficient_prior_context(case) is True
+
+    @pytest.mark.unit
+    def test_two_evidence_items_insufficient(self):
+        case = _stub_case(
+            evidence=[_stub_evidence(collected_at_turn=1) for _ in range(2)]
+        )
+        assert _has_sufficient_prior_context(case) is False
+
+    @pytest.mark.unit
+    def test_two_refuted_hypotheses_sufficient(self):
+        case = _stub_case(
+            hypotheses={
+                "h1": _stub_hypothesis(statement="A", status="refuted"),
+                "h2": _stub_hypothesis(statement="B", status="refuted"),
+            }
+        )
+        assert _has_sufficient_prior_context(case) is True
+
+    @pytest.mark.unit
+    def test_retired_counts_as_refuted(self):
+        case = _stub_case(
+            hypotheses={
+                "h1": _stub_hypothesis(statement="A", status="retired"),
+                "h2": _stub_hypothesis(statement="B", status="retired"),
+            }
+        )
+        assert _has_sufficient_prior_context(case) is True
+
+    @pytest.mark.unit
+    def test_active_hypotheses_dont_count(self):
+        case = _stub_case(
+            hypotheses={
+                "h1": _stub_hypothesis(statement="A", status="active"),
+                "h2": _stub_hypothesis(statement="B", status="active"),
+            }
+        )
+        assert _has_sufficient_prior_context(case) is False
+
+    @pytest.mark.unit
+    def test_two_journal_entries_sufficient(self):
+        case = _stub_case(
+            journal=[
+                _stub_journal_entry(summary="A"),
+                _stub_journal_entry(summary="B"),
+            ]
+        )
+        assert _has_sufficient_prior_context(case) is True
+
+
+class TestReferencesPriorContext:
+    """Rule 8 detection: does the response reference prior case content?"""
+
+    @pytest.mark.unit
+    def test_short_response_exempt(self):
+        """Responses below min_length return True (exempt from the check)."""
+        case = _stub_case(
+            evidence=[_stub_evidence(collected_at_turn=1, original_filename="x.log")]
+        )
+        assert _references_prior_context("Short.", case, min_length=300) is True
+
+    @pytest.mark.unit
+    def test_filename_label_match_counts_as_reference(self):
+        case = _stub_case(
+            current_turn=5,
+            evidence=[
+                _stub_evidence(collected_at_turn=1, original_filename="nginx-error.log")
+            ],
+        )
+        response = (
+            "Looking at nginx-error.log from earlier, I can see the pattern "
+            "is consistent with the timeout we discussed. " + "x " * 200
+        )
+        assert _references_prior_context(response, case) is True
+
+    @pytest.mark.unit
+    def test_data_type_label_match_counts_as_reference(self):
+        case = _stub_case(
+            current_turn=5,
+            evidence=[
+                _stub_evidence(collected_at_turn=1, data_type="deployment_history")
+            ],
+        )
+        response = (
+            "The deployment_history evidence from earlier shows the relevant "
+            "pattern. " + "x " * 200
+        )
+        assert _references_prior_context(response, case) is True
+
+    @pytest.mark.unit
+    def test_current_turn_evidence_does_not_count(self):
+        """Evidence collected in the CURRENT turn is not 'prior' — the check
+        is about integrating older content."""
+        case = _stub_case(
+            current_turn=5,
+            evidence=[
+                _stub_evidence(collected_at_turn=5, original_filename="fresh.log")
+            ],
+        )
+        response = "Looking at fresh.log, I see the pattern. " + "x " * 200
+        assert _references_prior_context(response, case) is False
+
+    @pytest.mark.unit
+    def test_refuted_hypothesis_keyword_match_counts(self):
+        case = _stub_case(
+            hypotheses={
+                "h1": _stub_hypothesis(
+                    statement="network connectivity between datacenters",
+                    status="refuted",
+                ),
+            }
+        )
+        response = (
+            "I remember we already ruled out network connectivity issues between "
+            "the datacenters — that wasn't the cause. " + "x " * 200
+        )
+        assert _references_prior_context(response, case) is True
+
+    @pytest.mark.unit
+    def test_no_match_returns_false(self):
+        case = _stub_case(
+            current_turn=5,
+            evidence=[
+                _stub_evidence(collected_at_turn=1, original_filename="alpha.log")
+            ],
+        )
+        # Response is long and discusses something unrelated to the prior evidence
+        response = (
+            "The current issue appears to be in the memory allocation pattern. "
+            "Nothing references the earlier investigation trail. " + "x " * 200
+        )
+        assert _references_prior_context(response, case) is False
 
 
 # ============================================================
