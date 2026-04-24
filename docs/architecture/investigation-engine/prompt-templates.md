@@ -46,14 +46,24 @@ TEMPLATE_VERSION = "3.0.0"
 ARCHITECTURE_VERSION = "Investigation v3.0 (Evidence-Driven)"
 CASE_MODEL_VERSION = "v3.0"
 
-# Cross-phase constants — defined once, string-concatenated into both
-# INQUIRY_TEMPLATE and INVESTIGATION_BASE to prevent drift between the two copies.
-_ADVISOR_ROLE_CONSTRAINT = "..."   # Banned/required phrase list (Rule 3)
-_DATA_CITATION_RULE = "..."        # Evidence label citation rule (Rule 2)
-_EVIDENCE_GROUNDING_BLOCK = "..."  # Anti-hallucination hard constraints (Rule 2 extension);
-                                   # injected as {evidence_grounding} in INVESTIGATION_BASE.
-                                   # Set to "" for knowledge_query mode so the block is
-                                   # entirely absent rather than sandwiching the exemption.
+# Cross-phase constants — defined once, string-concatenated into the
+# templates listed below to prevent drift between copies.
+_ADVISOR_ROLE_CONSTRAINT = "..."    # Banned/required phrases (Rule 3).
+                                    # INQUIRY + INVESTIGATION_BASE + TERMINAL.
+_ACTION_IMPACT_BLOCK = "..."        # Diagnostic-vs-state-modifying classification
+                                    # + impact annotation (Rule 3).
+                                    # INQUIRY + INVESTIGATION_BASE.
+_READING_DISCIPLINE_BLOCK = "..."   # Signal Extraction + Full-Context Reasoning
+                                    # (Rules 7 + 8). INQUIRY + INVESTIGATION_BASE.
+_DATA_CITATION_RULE = "..."         # Evidence label citation rule (Rule 2).
+                                    # INQUIRY (TRIAGE SUMMARY QUALITY) +
+                                    # INVESTIGATION_BASE (WORKING WITH EVIDENCE DATA).
+_EVIDENCE_GROUNDING_BLOCK = "..."   # Anti-hallucination hard constraints (Rule 2).
+                                    # INVESTIGATION_BASE only, via
+                                    # {evidence_grounding}; set to "" for
+                                    # knowledge_query mode so the block is
+                                    # entirely absent rather than sandwiching the
+                                    # exemption.
 
 # Injected as adaptive_instructions when processing_mode == "knowledge_query",
 # bypassing all stage dispatch entirely.
