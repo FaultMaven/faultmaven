@@ -684,13 +684,36 @@ class InMemoryCaseRepository(CaseRepository):
         self._case_entities: Dict[tuple[str, str], List[CaseEntity]] = {}
 
     async def save(self, case: Case) -> Case:
-        """Save case to memory."""
+        """Save case to memory with optimistic concurrency control.
+
+        Upholds the same OCC contract as the SQL-backed repositories so
+        unit tests using the in-memory implementation actually exercise
+        the concurrency guarantees the rest of the code depends on.
+
+        - New case (no prior write): stored with version = 1.
+        - Existing case, `case.version` matches the stored version:
+          version is bumped and the case is stored.
+        - Existing case, version mismatch: raises StaleCaseException.
+        """
+        from faultmaven.modules.case.exceptions import StaleCaseException
+
         # Update timestamp
         case.updated_at = datetime.now(case.updated_at.tzinfo)
 
-        # Store (deep copy to simulate persistence)
-        self._cases[case.case_id] = case
+        existing = self._cases.get(case.case_id)
+        if existing is None:
+            # New case
+            case.version = 1
+        else:
+            if existing.version != case.version:
+                raise StaleCaseException(
+                    case_id=case.case_id,
+                    expected_version=case.version,
+                    actual_version=existing.version,
+                )
+            case.version = case.version + 1
 
+        self._cases[case.case_id] = case
         return case
 
     async def get(self, case_id: str) -> Optional[Case]:

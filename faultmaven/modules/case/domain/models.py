@@ -3496,6 +3496,19 @@ class Case(BaseModel):
         description="Most recent user/agent interaction (for 'updated Xm ago' display)",
     )
 
+    version: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Optimistic concurrency control token. Incremented on every "
+            "successful aggregate save. Callers that read-modify-write a "
+            "case must pass the loaded version back through save(case); "
+            "`save` raises StaleCaseException on mismatch. Scoped "
+            "single-row UPDATEs (update_evidence_vectorized, etc.) do "
+            "NOT bump this field — they operate on child tables."
+        ),
+    )
+
     resolved_at: Optional[datetime] = Field(
         default=None, description="When case reached RESOLVED status"
     )

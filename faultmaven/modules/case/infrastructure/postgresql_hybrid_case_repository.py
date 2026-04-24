@@ -56,6 +56,7 @@ from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoin
 
 # Case-owned models (per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
+from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     _derive_evidence_form,
@@ -146,46 +147,29 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             organization_id = case.organization_id
 
-            # Start transaction
-            async with self.db.begin():
-                # 1. Upsert main cases table
-                await self._upsert_case_record(case)
-
-                # 2. Upsert evidence (normalized table)
-                await self._upsert_evidence(
-                    case.case_id, case.evidence, organization_id
+            await self._upsert_case_record(case)
+            await self._upsert_evidence(case.case_id, case.evidence, organization_id)
+            await self._upsert_hypotheses(
+                case.case_id, case.hypotheses, organization_id
+            )
+            await self._upsert_solutions(case.case_id, case.solutions, organization_id)
+            await self._upsert_uploaded_files(
+                case.case_id, case.uploaded_files, organization_id
+            )
+            await self._upsert_messages(case.case_id, case.messages, organization_id)
+            if case.action_history:
+                await self._append_case_actions(
+                    case.case_id, case.action_history, organization_id
                 )
 
-                # 3. Upsert hypotheses (normalized table)
-                await self._upsert_hypotheses(
-                    case.case_id, case.hypotheses, organization_id
-                )
-
-                # 4. Upsert solutions (normalized table)
-                await self._upsert_solutions(
-                    case.case_id, case.solutions, organization_id
-                )
-
-                # 5. Upsert uploaded_files (normalized table)
-                await self._upsert_uploaded_files(
-                    case.case_id, case.uploaded_files, organization_id
-                )
-
-                # 6. Upsert messages (normalized table)
-                await self._upsert_messages(
-                    case.case_id, case.messages, organization_id
-                )
-
-                # 7. Append case actions (append-only)
-                if case.action_history:
-                    await self._append_case_actions(
-                        case.case_id, case.action_history, organization_id
-                    )
-
-                await self.db.commit()
-
+            await self.db.commit()
             return case
 
+        except StaleCaseException:
+            # OCC mismatch — propagate unwrapped so callers can retry or
+            # surface 409 without unwrapping a generic RepositoryException.
+            await self.db.rollback()
+            raise
         except Exception as e:
             await self.db.rollback()
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
@@ -1316,7 +1300,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     # ========================================================================
 
     async def _upsert_case_record(self, case: Case) -> None:
-        """Upsert main cases table (JSONB columns for flexible data).
+        """Upsert main cases table with optimistic concurrency control.
+
+        OCC: attempts UPDATE with a version predicate first; raises
+        StaleCaseException on version mismatch; falls back to INSERT
+        when no row exists. On success mutates `case.version` in place.
 
         Deployment-Agnostic Implementation:
         - Detects database dialect (PostgreSQL vs SQLite)
@@ -1327,170 +1315,163 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         dialect_name = self.db.bind.dialect.name if self.db.bind else "sqlite"
         is_postgresql = dialect_name == "postgresql"
 
-        # Build dialect-specific SQL
-        if is_postgresql:
-            # PostgreSQL: Use JSONB type casts for optimal performance
-            query = text("""
-                INSERT INTO cases (
-                    case_id, user_id, organization_id, title, description, investigation_strategy,
-                    status, closure_reason, current_turn, turns_without_progress,
-                    created_at, updated_at, last_activity_at, resolved_at, closed_at,
-                    inquiry, problem_verification, working_conclusion,
-                    root_cause_conclusion, path_selection,
-                    escalation_state, documentation, progress, metadata
-                ) VALUES (
-                    :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
-                    :status, :closure_reason, :current_turn, :turns_without_progress,
-                    :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
-                    :inquiry::jsonb, :problem_verification::jsonb, :working_conclusion::jsonb,
-                    :root_cause_conclusion::jsonb, :path_selection::jsonb,
-                    :escalation_state::jsonb, :documentation::jsonb, :progress::jsonb, :metadata::jsonb
-                )
-                ON CONFLICT (case_id) DO UPDATE SET
-                    user_id = EXCLUDED.user_id,
-                    organization_id = EXCLUDED.organization_id,
-                    title = EXCLUDED.title,
-                    description = EXCLUDED.description,
-                    investigation_strategy = EXCLUDED.investigation_strategy,
-                    status = EXCLUDED.status,
-                    closure_reason = EXCLUDED.closure_reason,
-                    current_turn = EXCLUDED.current_turn,
-                    turns_without_progress = EXCLUDED.turns_without_progress,
-                    updated_at = EXCLUDED.updated_at,
-                    last_activity_at = EXCLUDED.last_activity_at,
-                    resolved_at = EXCLUDED.resolved_at,
-                    closed_at = EXCLUDED.closed_at,
-                    inquiry = EXCLUDED.inquiry,
-                    problem_verification = EXCLUDED.problem_verification,
-                    working_conclusion = EXCLUDED.working_conclusion,
-                    root_cause_conclusion = EXCLUDED.root_cause_conclusion,
-                    path_selection = EXCLUDED.path_selection,
-                    escalation_state = EXCLUDED.escalation_state,
-                    documentation = EXCLUDED.documentation,
-                    progress = EXCLUDED.progress,
-                    metadata = EXCLUDED.metadata
-            """)
-        else:
-            # SQLite: Use plain parameter binding (no type casts)
-            query = text("""
-                INSERT INTO cases (
-                    case_id, user_id, organization_id, title, description, investigation_strategy,
-                    status, closure_reason, current_turn, turns_without_progress,
-                    created_at, updated_at, last_activity_at, resolved_at, closed_at,
-                    inquiry, problem_verification, working_conclusion,
-                    root_cause_conclusion, path_selection,
-                    escalation_state, documentation, progress, metadata
-                ) VALUES (
-                    :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
-                    :status, :closure_reason, :current_turn, :turns_without_progress,
-                    :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
-                    :inquiry, :problem_verification, :working_conclusion,
-                    :root_cause_conclusion, :path_selection,
-                    :escalation_state, :documentation, :progress, :metadata
-                )
-                ON CONFLICT (case_id) DO UPDATE SET
-                    user_id = EXCLUDED.user_id,
-                    organization_id = EXCLUDED.organization_id,
-                    title = EXCLUDED.title,
-                    description = EXCLUDED.description,
-                    investigation_strategy = EXCLUDED.investigation_strategy,
-                    status = EXCLUDED.status,
-                    closure_reason = EXCLUDED.closure_reason,
-                    current_turn = EXCLUDED.current_turn,
-                    turns_without_progress = EXCLUDED.turns_without_progress,
-                    updated_at = EXCLUDED.updated_at,
-                    last_activity_at = EXCLUDED.last_activity_at,
-                    resolved_at = EXCLUDED.resolved_at,
-                    closed_at = EXCLUDED.closed_at,
-                    inquiry = EXCLUDED.inquiry,
-                    problem_verification = EXCLUDED.problem_verification,
-                    working_conclusion = EXCLUDED.working_conclusion,
-                    root_cause_conclusion = EXCLUDED.root_cause_conclusion,
-                    path_selection = EXCLUDED.path_selection,
-                    escalation_state = EXCLUDED.escalation_state,
-                    documentation = EXCLUDED.documentation,
-                    progress = EXCLUDED.progress,
-                    metadata = EXCLUDED.metadata
-            """)
+        jsonb = "::jsonb" if is_postgresql else ""
+        params = self._case_record_params(case)
+        expected_version = case.version
+        new_version = expected_version + 1
+        update_params = {
+            **params,
+            "expected_version": expected_version,
+            "new_version": new_version,
+        }
 
-        await self.db.execute(
-            query,
-            {
-                "case_id": case.case_id,
-                "user_id": case.user_id,
-                "organization_id": case.organization_id,
-                "title": case.title,
-                "description": case.description,
-                "investigation_strategy": case.investigation_strategy.value,
-                "status": case.status.value,
-                "closure_reason": case.closure_reason,
-                "current_turn": case.current_turn,
-                "turns_without_progress": case.turns_without_progress,
-                "created_at": case.created_at,
-                "updated_at": case.updated_at,
-                "last_activity_at": case.last_activity_at,
-                "resolved_at": case.resolved_at,
-                "closed_at": case.closed_at,
-                "inquiry": json.dumps(case.inquiry.model_dump(mode="json")),
-                "problem_verification": (
-                    json.dumps(case.problem_verification.model_dump(mode="json"))
-                    if case.problem_verification
-                    else None
-                ),
-                "working_conclusion": (
-                    json.dumps(case.working_conclusion.model_dump(mode="json"))
-                    if case.working_conclusion
-                    else None
-                ),
-                "root_cause_conclusion": (
-                    json.dumps(case.root_cause_conclusion.model_dump(mode="json"))
-                    if case.root_cause_conclusion
-                    else None
-                ),
-                "path_selection": (
-                    json.dumps(case.path_selection.model_dump(mode="json"))
-                    if case.path_selection
-                    else None
-                ),
-                "escalation_state": (
-                    json.dumps(case.escalation_state.model_dump(mode="json"))
-                    if case.escalation_state
-                    else None
-                ),
-                "documentation": json.dumps(case.documentation.model_dump(mode="json")),
-                "progress": json.dumps(case.progress.model_dump(mode="json")),
-                "metadata": json.dumps(
-                    {
-                        k: v
-                        for k, v in {
-                            "pending_transition": case.pending_transition,
-                            "proposed_actions": (
-                                [
-                                    a.model_dump(mode="json")
-                                    for a in case.proposed_actions
-                                ]
-                                if case.proposed_actions
-                                else []
-                            ),
-                            "action_attempts": (
-                                [
-                                    a.model_dump(mode="json")
-                                    for a in case.action_attempts
-                                ]
-                                if case.action_attempts
-                                else []
-                            ),
-                            "turn_history": (
-                                [t.model_dump(mode="json") for t in case.turn_history]
-                                if case.turn_history
-                                else []
-                            ),
-                        }.items()
-                        if v
-                    }
-                ),
-            },
+        # Step 1: UPDATE with version check.
+        update_query = text(f"""
+            UPDATE cases SET
+                user_id = :user_id,
+                organization_id = :organization_id,
+                title = :title,
+                description = :description,
+                investigation_strategy = :investigation_strategy,
+                status = :status,
+                closure_reason = :closure_reason,
+                current_turn = :current_turn,
+                turns_without_progress = :turns_without_progress,
+                updated_at = :updated_at,
+                last_activity_at = :last_activity_at,
+                resolved_at = :resolved_at,
+                closed_at = :closed_at,
+                inquiry = :inquiry{jsonb},
+                problem_verification = :problem_verification{jsonb},
+                working_conclusion = :working_conclusion{jsonb},
+                root_cause_conclusion = :root_cause_conclusion{jsonb},
+                path_selection = :path_selection{jsonb},
+                escalation_state = :escalation_state{jsonb},
+                documentation = :documentation{jsonb},
+                progress = :progress{jsonb},
+                metadata = :metadata{jsonb},
+                version = :new_version
+            WHERE case_id = :case_id AND version = :expected_version
+        """)
+        result = await self.db.execute(update_query, update_params)
+
+        if result.rowcount > 0:
+            case.version = new_version
+            return
+
+        # Step 2: no UPDATE — either case is new, or version mismatched.
+        probe = await self.db.execute(
+            text("SELECT version FROM cases WHERE case_id = :case_id"),
+            {"case_id": case.case_id},
         )
+        row = probe.fetchone()
+        if row is None:
+            # New case — plain INSERT with version = 1.
+            insert_query = text(f"""
+                INSERT INTO cases (
+                    case_id, user_id, organization_id, title, description, investigation_strategy,
+                    status, closure_reason, current_turn, turns_without_progress,
+                    created_at, updated_at, last_activity_at, resolved_at, closed_at,
+                    inquiry, problem_verification, working_conclusion,
+                    root_cause_conclusion, path_selection,
+                    escalation_state, documentation, progress, metadata,
+                    version
+                ) VALUES (
+                    :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
+                    :status, :closure_reason, :current_turn, :turns_without_progress,
+                    :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
+                    :inquiry{jsonb}, :problem_verification{jsonb}, :working_conclusion{jsonb},
+                    :root_cause_conclusion{jsonb}, :path_selection{jsonb},
+                    :escalation_state{jsonb}, :documentation{jsonb}, :progress{jsonb}, :metadata{jsonb},
+                    1
+                )
+            """)
+            await self.db.execute(insert_query, params)
+            case.version = 1
+            return
+
+        # Row exists but version mismatched — caller holds stale state.
+        raise StaleCaseException(
+            case_id=case.case_id,
+            expected_version=expected_version,
+            actual_version=row[0],
+        )
+
+    def _case_record_params(self, case: Case) -> Dict[str, Any]:
+        """Parameter dict for the cases-row INSERT/UPDATE.
+
+        Shared between the UPDATE and fallback INSERT paths in
+        _upsert_case_record — keeps column serialization in one place.
+        """
+        return {
+            "case_id": case.case_id,
+            "user_id": case.user_id,
+            "organization_id": case.organization_id,
+            "title": case.title,
+            "description": case.description,
+            "investigation_strategy": case.investigation_strategy.value,
+            "status": case.status.value,
+            "closure_reason": case.closure_reason,
+            "current_turn": case.current_turn,
+            "turns_without_progress": case.turns_without_progress,
+            "created_at": case.created_at,
+            "updated_at": case.updated_at,
+            "last_activity_at": case.last_activity_at,
+            "resolved_at": case.resolved_at,
+            "closed_at": case.closed_at,
+            "inquiry": json.dumps(case.inquiry.model_dump(mode="json")),
+            "problem_verification": (
+                json.dumps(case.problem_verification.model_dump(mode="json"))
+                if case.problem_verification
+                else None
+            ),
+            "working_conclusion": (
+                json.dumps(case.working_conclusion.model_dump(mode="json"))
+                if case.working_conclusion
+                else None
+            ),
+            "root_cause_conclusion": (
+                json.dumps(case.root_cause_conclusion.model_dump(mode="json"))
+                if case.root_cause_conclusion
+                else None
+            ),
+            "path_selection": (
+                json.dumps(case.path_selection.model_dump(mode="json"))
+                if case.path_selection
+                else None
+            ),
+            "escalation_state": (
+                json.dumps(case.escalation_state.model_dump(mode="json"))
+                if case.escalation_state
+                else None
+            ),
+            "documentation": json.dumps(case.documentation.model_dump(mode="json")),
+            "progress": json.dumps(case.progress.model_dump(mode="json")),
+            "metadata": json.dumps(
+                {
+                    k: v
+                    for k, v in {
+                        "pending_transition": case.pending_transition,
+                        "proposed_actions": (
+                            [a.model_dump(mode="json") for a in case.proposed_actions]
+                            if case.proposed_actions
+                            else []
+                        ),
+                        "action_attempts": (
+                            [a.model_dump(mode="json") for a in case.action_attempts]
+                            if case.action_attempts
+                            else []
+                        ),
+                        "turn_history": (
+                            [t.model_dump(mode="json") for t in case.turn_history]
+                            if case.turn_history
+                            else []
+                        ),
+                    }.items()
+                    if v
+                }
+            ),
+        }
 
     async def _upsert_evidence(
         self, case_id: str, evidence_list: List[Evidence], organization_id: str
@@ -2079,6 +2060,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             ),
             resolved_at=row.resolved_at if hasattr(row, "resolved_at") else None,
             closed_at=row.closed_at if hasattr(row, "closed_at") else None,
+            # Optimistic concurrency token. Must round-trip so the next
+            # save() can assert it still matches the DB.
+            version=(
+                int(row.version)
+                if hasattr(row, "version") and row.version is not None
+                else 1
+            ),
         )
 
     # ========================================================================

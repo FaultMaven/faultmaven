@@ -280,7 +280,13 @@ class CaseService(ICaseService):
         self, case_id: str, updates: Dict[str, Any], user_id: Optional[str] = None
     ) -> bool:
         """
-        Update case with access control
+        Update case with access control.
+
+        Read-modify-write is wrapped in ``update_case_with_retry`` so a
+        racing concurrent writer (OCC conflict) causes a reload + re-
+        apply rather than a silent loss. The mutator is idempotent: it
+        only sets the requested fields, so re-applying it against a
+        fresher Case produces the same result.
 
         Args:
             case_id: Case identifier
@@ -296,24 +302,31 @@ class CaseService(ICaseService):
         if not updates:
             raise ValidationException("Updates cannot be empty")
 
+        from faultmaven.modules.case.utils import update_case_with_retry
+
+        # Validate and apply updates directly to Case object
+        allowed_fields = {"title", "description", "status", "closure_reason"}
+        safe_updates = {k: v for k, v in updates.items() if k in allowed_fields}
+
         try:
-            # Get current case and check access
-            case = await self.get_case(case_id, user_id)
-            if not case:
+            # Access check happens by loading via get_case first. Then the
+            # retry helper reloads on conflict — but it uses the plain
+            # repository.get(), which skips the access check. We enforce
+            # the check once up front; no privilege escalation window
+            # exists because the user_id doesn't change between attempts.
+            existing = await self.get_case(case_id, user_id)
+            if not existing:
                 return False
 
-            # Validate and apply updates directly to Case object
-            allowed_fields = {"title", "description", "status", "closure_reason"}
+            async def apply(case: Case) -> None:
+                for key, value in safe_updates.items():
+                    if hasattr(case, key):
+                        setattr(case, key, value)
 
-            for key, value in updates.items():
-                if key in allowed_fields and hasattr(case, key):
-                    setattr(case, key, value)
-
-            # Save updated case
-            saved_case = await self.repository.save(case)
+            await update_case_with_retry(self.repository, case_id, apply)
 
             logger.info(f"Updated case {case_id}")
-            return saved_case is not None
+            return True
 
         except ValidationException:
             raise

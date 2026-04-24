@@ -23,22 +23,35 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository im
 )
 
 
-@pytest.mark.asyncio
-async def test_upsert_case_detects_sqlite_dialect():
-    """Test that _upsert_case_record detects SQLite and generates compatible SQL."""
-    # Arrange - Create mock session with SQLite dialect
+def _make_mock_session_with_dialect(dialect_name: str | None) -> AsyncMock:
+    """Build an AsyncMock session whose execute() returns a rowcount=1
+    result on the first call — simulating a successful OCC UPDATE, so
+    `_upsert_case_record` takes the happy path and issues exactly one
+    execute() (the UPDATE). That's the only call we need to inspect for
+    dialect-specific SQL.
+    """
     mock_session = AsyncMock(spec=AsyncSession)
-    mock_bind = MagicMock()
-    mock_dialect = MagicMock(spec=Dialect)
-    mock_dialect.name = "sqlite"
-    mock_bind.dialect = mock_dialect
-    mock_session.bind = mock_bind
-    mock_session.execute = AsyncMock()
 
-    repository = PostgreSQLHybridCaseRepository(mock_session)
+    if dialect_name is None:
+        mock_session.bind = None
+    else:
+        mock_bind = MagicMock()
+        mock_dialect = MagicMock(spec=Dialect)
+        mock_dialect.name = dialect_name
+        mock_bind.dialect = mock_dialect
+        mock_session.bind = mock_bind
 
-    # Create test case with valid UUIDs
-    test_case = Case(
+    # AsyncMock.execute default returns AsyncMock; explicitly set
+    # `.rowcount` to 1 on the returned object so the OCC branch takes
+    # the "UPDATE succeeded" path without hitting the probe/INSERT.
+    execute_result = MagicMock()
+    execute_result.rowcount = 1
+    mock_session.execute = AsyncMock(return_value=execute_result)
+    return mock_session
+
+
+def _make_test_case() -> Case:
+    return Case(
         case_id=f"case_{str(uuid4()).replace('-', '')[:12]}",
         user_id=str(uuid4()),
         organization_id=str(uuid4()),
@@ -59,115 +72,60 @@ async def test_upsert_case_detects_sqlite_dialect():
         ),
     )
 
-    # Act
-    await repository._upsert_case_record(test_case)
 
-    # Assert - Verify SQL does NOT contain PostgreSQL-specific ::jsonb casts
+@pytest.mark.asyncio
+async def test_upsert_case_detects_sqlite_dialect():
+    """_upsert_case_record detects SQLite and generates compatible SQL.
+
+    With the mocked session's UPDATE returning rowcount=1 (simulating a
+    happy OCC update), the repository issues exactly one execute call
+    whose SQL we can inspect for dialect-specific clauses.
+    """
+    mock_session = _make_mock_session_with_dialect("sqlite")
+    repository = PostgreSQLHybridCaseRepository(mock_session)
+
+    await repository._upsert_case_record(_make_test_case())
+
     mock_session.execute.assert_called_once()
-    call_args = mock_session.execute.call_args
-    sql_text = str(call_args[0][0])
+    sql_text = str(mock_session.execute.call_args[0][0])
 
-    # SQLite version should NOT have ::jsonb type casts
+    # SQLite branch must not emit PostgreSQL-specific ::jsonb casts.
     assert (
         "::jsonb" not in sql_text
     ), "SQLite SQL should not contain PostgreSQL ::jsonb type casts"
-    assert (
-        ":inquiry, :problem_verification" in sql_text
-        or "inquiry, problem_verification" in sql_text
-    )
+    # Version predicate is the OCC hook — must be present on every
+    # UPDATE regardless of dialect.
+    assert "version = :expected_version" in sql_text
 
 
 @pytest.mark.asyncio
 async def test_upsert_case_detects_postgresql_dialect():
-    """Test that _upsert_case_record detects PostgreSQL and generates JSONB type casts."""
-    # Arrange - Create mock session with PostgreSQL dialect
-    mock_session = AsyncMock(spec=AsyncSession)
-    mock_bind = MagicMock()
-    mock_dialect = MagicMock(spec=Dialect)
-    mock_dialect.name = "postgresql"
-    mock_bind.dialect = mock_dialect
-    mock_session.bind = mock_bind
-    mock_session.execute = AsyncMock()
-
+    """_upsert_case_record emits ::jsonb casts on PostgreSQL."""
+    mock_session = _make_mock_session_with_dialect("postgresql")
     repository = PostgreSQLHybridCaseRepository(mock_session)
 
-    # Create test case with valid UUIDs
-    test_case = Case(
-        case_id=f"case_{str(uuid4()).replace('-', '')[:12]}",
-        user_id=str(uuid4()),
-        organization_id=str(uuid4()),
-        title="Test Case",
-        status=CaseStatus.INQUIRY,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-        inquiry=InquiryData(
-            initial_question="Test question",
-            clarifications=[],
-            user_context={},
-        ),
-        progress=InvestigationProgress(
-            total_turns=0,
-            investigation_depth=0,
-            current_phase="inquiry",
-            phase_confidence=0.0,
-        ),
-    )
+    await repository._upsert_case_record(_make_test_case())
 
-    # Act
-    await repository._upsert_case_record(test_case)
-
-    # Assert - Verify SQL DOES contain PostgreSQL-specific ::jsonb casts
     mock_session.execute.assert_called_once()
-    call_args = mock_session.execute.call_args
-    sql_text = str(call_args[0][0])
+    sql_text = str(mock_session.execute.call_args[0][0])
 
-    # PostgreSQL version SHOULD have ::jsonb type casts
     assert (
         "::jsonb" in sql_text
     ), "PostgreSQL SQL should contain ::jsonb type casts for optimal performance"
+    assert "version = :expected_version" in sql_text
 
 
 @pytest.mark.asyncio
 async def test_upsert_case_defaults_to_sqlite_when_no_bind():
-    """Test that _upsert_case_record defaults to SQLite SQL when session.bind is None."""
-    # Arrange - Create mock session with no bind
-    mock_session = AsyncMock(spec=AsyncSession)
-    mock_session.bind = None
-    mock_session.execute = AsyncMock()
-
+    """_upsert_case_record falls back to SQLite SQL when session.bind is None."""
+    mock_session = _make_mock_session_with_dialect(None)
     repository = PostgreSQLHybridCaseRepository(mock_session)
 
-    # Create test case with valid UUIDs
-    test_case = Case(
-        case_id=f"case_{str(uuid4()).replace('-', '')[:12]}",
-        user_id=str(uuid4()),
-        organization_id=str(uuid4()),
-        title="Test Case",
-        status=CaseStatus.INQUIRY,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-        inquiry=InquiryData(
-            initial_question="Test question",
-            clarifications=[],
-            user_context={},
-        ),
-        progress=InvestigationProgress(
-            total_turns=0,
-            investigation_depth=0,
-            current_phase="inquiry",
-            phase_confidence=0.0,
-        ),
-    )
+    await repository._upsert_case_record(_make_test_case())
 
-    # Act
-    await repository._upsert_case_record(test_case)
-
-    # Assert - Should default to SQLite (no ::jsonb)
     mock_session.execute.assert_called_once()
-    call_args = mock_session.execute.call_args
-    sql_text = str(call_args[0][0])
+    sql_text = str(mock_session.execute.call_args[0][0])
 
-    # Default should be SQLite (no type casts)
     assert (
         "::jsonb" not in sql_text
     ), "Should default to SQLite SQL when no bind available"

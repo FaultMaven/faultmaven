@@ -1375,3 +1375,145 @@ class TestLegacyInquiryConversion:
         data = {"problem_confirmation": {"preliminary_guidance": "already set"}}
         result = repository._convert_legacy_inquiry_data(data)
         assert result["problem_confirmation"]["preliminary_guidance"] == "already set"
+
+
+# ============================================================
+# Optimistic concurrency control (OCC)
+# ============================================================
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestOptimisticConcurrencyControl:
+    """`save(case)` must enforce version-based OCC so concurrent writers
+    can't silently overwrite each other. The in-memory ``case.version``
+    must round-trip via ``get()`` and bump on every successful save.
+    """
+
+    async def test_new_case_starts_at_version_1(self, repository):
+        case = _make_case(title="fresh case")
+        await repository.save(case)
+        assert case.version == 1
+
+        retrieved = await repository.get(case.case_id)
+        assert retrieved is not None
+        assert retrieved.version == 1
+
+    async def test_version_increments_on_each_save(self, repository):
+        case = _make_case(title="increment test")
+        await repository.save(case)  # v1
+        assert case.version == 1
+
+        await repository.save(case)  # v2
+        assert case.version == 2
+
+        await repository.save(case)  # v3
+        assert case.version == 3
+
+        retrieved = await repository.get(case.case_id)
+        assert retrieved.version == 3
+
+    async def test_stale_version_raises_StaleCaseException(self, repository):
+        """Two concurrent loads of the same case — first save wins, second
+        raises StaleCaseException without clobbering the first's write."""
+        from faultmaven.modules.case.exceptions import StaleCaseException
+
+        case = _make_case(title="original")
+        await repository.save(case)  # v1
+
+        # Simulate two concurrent loads.
+        loaded_a = await repository.get(case.case_id)
+        loaded_b = await repository.get(case.case_id)
+        assert loaded_a.version == loaded_b.version == 1
+
+        # First writer wins.
+        loaded_a.title = "writer A"
+        await repository.save(loaded_a)
+        assert loaded_a.version == 2
+
+        # Second writer's save fails — version predicate doesn't match.
+        loaded_b.title = "writer B"
+        with pytest.raises(StaleCaseException) as exc:
+            await repository.save(loaded_b)
+        assert exc.value.case_id == case.case_id
+        assert exc.value.expected_version == 1
+        assert exc.value.actual_version == 2
+
+        # The DB reflects writer A's changes, untouched by writer B.
+        retrieved = await repository.get(case.case_id)
+        assert retrieved.title == "writer A"
+        assert retrieved.version == 2
+
+    async def test_scoped_update_does_not_bump_version(self, repository):
+        """update_evidence_vectorized must NOT touch the case's version.
+        Scoped child-table writes are orthogonal to aggregate concurrency
+        and are the escape hatch background tasks rely on.
+        """
+        case = _make_case()
+        ev = _make_evidence(summary="fuel")
+        case.evidence.append(ev)
+        await repository.save(case)
+        initial_version = case.version
+        assert initial_version == 1
+
+        await repository.update_evidence_vectorized(case.case_id, ev.evidence_id, True)
+
+        retrieved = await repository.get(case.case_id)
+        assert retrieved.version == initial_version  # unchanged
+        assert retrieved.evidence[0].vectorized is True
+
+    async def test_retry_helper_reloads_and_retries_on_conflict(self, repository):
+        """``update_case_with_retry`` must see a fresh Case each attempt
+        and succeed when another writer has since moved on."""
+        from faultmaven.modules.case.utils import update_case_with_retry
+
+        case = _make_case(title="original")
+        await repository.save(case)  # v1
+
+        # Stale caller with version=1 in memory.
+        stale = await repository.get(case.case_id)
+        assert stale.version == 1
+
+        # Another writer updates to v2 behind the caller's back.
+        other = await repository.get(case.case_id)
+        other.title = "intervening writer"
+        await repository.save(other)  # v2
+
+        # Retry helper should reload (seeing v2), apply mutation, save (→ v3).
+        attempts = {"count": 0}
+
+        async def apply_suffix(c: Case) -> None:
+            attempts["count"] += 1
+            c.title = (c.title or "") + " [appended]"
+
+        result = await update_case_with_retry(
+            repository, case.case_id, apply_suffix, max_attempts=3
+        )
+        # Single attempt succeeds because the helper loads fresh.
+        assert attempts["count"] == 1
+        assert result.version == 3
+        assert result.title == "intervening writer [appended]"
+
+    async def test_retry_helper_raises_after_exhausting_attempts(self, repository):
+        """If the DB keeps moving ahead during every retry attempt, the
+        helper re-raises StaleCaseException instead of spinning forever."""
+        from faultmaven.modules.case.exceptions import StaleCaseException
+        from faultmaven.modules.case.utils import update_case_with_retry
+
+        case = _make_case(title="seed")
+        await repository.save(case)
+
+        async def conflicting_apply(c: Case) -> None:
+            # Before this mutator's save, race a concurrent writer so
+            # the save always sees a mismatched version.
+            other = await repository.get(c.case_id)
+            other.title = f"race-{other.version}"
+            await repository.save(other)
+            # Then the caller attempts its own mutation on a now-stale
+            # local case.
+            c.title = "caller-attempt"
+
+        with pytest.raises(StaleCaseException):
+            await update_case_with_retry(
+                repository, case.case_id, conflicting_apply, max_attempts=3
+            )

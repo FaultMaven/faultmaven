@@ -1237,6 +1237,12 @@ class InvestigationService:
         """
         Close a case.
 
+        Wrapped in ``update_case_with_retry`` so a concurrent save
+        (OCC conflict) reloads and re-applies the closure rather than
+        silently losing it. The mutator is idempotent — setting
+        ``status=CLOSED`` + ``closure_reason`` on a fresh Case produces
+        the same result.
+
         Args:
             case_id: Case identifier
             user_id: User making the request
@@ -1250,34 +1256,29 @@ class InvestigationService:
             NotFoundError: If case not found
             PermissionDeniedException: If user not authorized
         """
-        try:
-            # Retrieve case
-            case = await self.repository.get(case_id)
-            if not case:
-                raise NotFoundError("Case", case_id)
+        from faultmaven.modules.case.utils import update_case_with_retry
 
-            # Check permissions
-            if case.user_id != user_id:
-                raise PermissionDeniedException(
-                    f"User {user_id} not authorized for case {case_id}"
-                )
-
-            # Update status and timestamps (use model_copy to bypass field-by-field validation)
-            now = datetime.now(timezone.utc)
-            updated_case_data = case.model_copy(
-                update={
-                    "status": CaseStatus.CLOSED,
-                    "closure_reason": closure_reason,
-                    "closed_at": now,
-                },
-                deep=True,
+        # One up-front access check; user_id doesn't change across retry
+        # attempts so re-checking inside the loop buys nothing.
+        existing = await self.repository.get(case_id)
+        if not existing:
+            raise NotFoundError("Case", case_id)
+        if existing.user_id != user_id:
+            raise PermissionDeniedException(
+                f"User {user_id} not authorized for case {case_id}"
             )
 
-            # Save
-            updated_case = await self.repository.save(updated_case_data)
+        async def apply(case: Case) -> None:
+            # Cross-field validators on Case require object.__setattr__
+            # when setting multiple interdependent terminal fields.
+            now = datetime.now(timezone.utc)
+            object.__setattr__(case, "status", CaseStatus.CLOSED)
+            object.__setattr__(case, "closure_reason", closure_reason)
+            object.__setattr__(case, "closed_at", now)
 
+        try:
+            updated_case = await update_case_with_retry(self.repository, case_id, apply)
             logger.info(f"Closed case {case_id}, reason: {closure_reason}")
-
             return updated_case
 
         except (NotFoundError, PermissionDeniedException):

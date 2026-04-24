@@ -59,6 +59,7 @@ from faultmaven.modules.case.domain.models import (
     UploadedFile,
     WorkingConclusion,
 )
+from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import (
     CaseRepository,
     RepositoryException,
@@ -93,17 +94,20 @@ class DatabaseCaseRepository(CaseRepository):
         """
         Save or update a case in the database.
 
-        Uses merge/upsert pattern for idempotent saves.
-        Handles all related entities in a single transaction.
+        Optimistic concurrency control: an existing case is UPDATEd with
+        a version predicate; on mismatch, `StaleCaseException` is raised.
+        A new case is INSERTed with version = 1. The passed-in `case`
+        instance is mutated with the new version on success and returned.
 
         Args:
             case: Case domain object to save
 
         Returns:
-            Saved case with updated timestamps
+            Saved case with updated timestamps and bumped version
 
         Raises:
-            RepositoryException: If save fails
+            StaleCaseException: If `case.version` doesn't match the DB.
+            RepositoryException: For any other save failure.
         """
         try:
             # Update timestamp
@@ -118,11 +122,47 @@ class DatabaseCaseRepository(CaseRepository):
                 # For non-closed cases or cases without closed_at, update to now
                 case.updated_at = datetime.now(timezone.utc)
 
-            # Convert domain model to ORM model
-            case_model = self._case_to_model(case)
+            # Try UPDATE with version check. Build the UPDATE values from
+            # the same serializer that constructs the model for INSERT.
+            model_for_values = self._case_to_model(case)
+            update_values = self._case_model_values(model_for_values)
 
-            # Merge (upsert) the case
-            merged = await self.db.merge(case_model)
+            expected_version = case.version
+            new_version = expected_version + 1
+
+            update_stmt = (
+                update(CaseModel)
+                .where(
+                    and_(
+                        CaseModel.case_id == case.case_id,
+                        CaseModel.version == expected_version,
+                    )
+                )
+                .values(**update_values, version=new_version)
+            )
+            result = await self.db.execute(update_stmt)
+
+            if result.rowcount > 0:
+                case.version = new_version
+            else:
+                # Either case is new, or version mismatched. Probe to
+                # disambiguate.
+                probe = await self.db.execute(
+                    select(CaseModel.version).where(CaseModel.case_id == case.case_id)
+                )
+                actual = probe.scalar_one_or_none()
+                if actual is None:
+                    # New case — INSERT with version = 1 via add().
+                    model_for_values.version = 1
+                    self.db.add(model_for_values)
+                    case.version = 1
+                else:
+                    raise StaleCaseException(
+                        case_id=case.case_id,
+                        expected_version=expected_version,
+                        actual_version=int(actual),
+                    )
+
             await self.db.flush()
 
             # Handle related entities
@@ -131,13 +171,32 @@ class DatabaseCaseRepository(CaseRepository):
 
             await self.db.commit()
 
-            logger.debug(f"Saved case {case.case_id}")
+            logger.debug(f"Saved case {case.case_id} (version={case.version})")
             return case
 
+        except StaleCaseException:
+            # OCC mismatch — propagate unwrapped.
+            await self.db.rollback()
+            raise
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Failed to save case {case.case_id}: {e}")
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
+
+    @staticmethod
+    def _case_model_values(model: CaseModel) -> Dict[str, Any]:
+        """Column values for a CaseModel UPDATE, excluding identity and
+        the version column (both handled explicitly in save()).
+
+        Uses SQLAlchemy column attributes (Python names), which correctly
+        resolves aliased columns like ``case_metadata`` → DB ``metadata``.
+        """
+        exclude = {"case_id", "version"}
+        return {
+            attr.key: getattr(model, attr.key)
+            for attr in CaseModel.__mapper__.column_attrs
+            if attr.key not in exclude
+        }
 
     async def get(self, case_id: str) -> Optional[Case]:
         """
@@ -983,6 +1042,11 @@ class DatabaseCaseRepository(CaseRepository):
             last_activity_at=last_activity_at,
             resolved_at=resolved_at,
             closed_at=closed_at,
+            # Optimistic concurrency token. Must round-trip so the next
+            # save() can assert it still matches the DB.
+            version=(
+                int(model.version) if getattr(model, "version", None) is not None else 1
+            ),
         )
 
     # ========================================================================

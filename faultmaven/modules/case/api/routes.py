@@ -121,6 +121,7 @@ from faultmaven.modules.case.domain.services.case_converter import CaseConverter
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
 )
+from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -2218,6 +2219,29 @@ async def submit_turn(
                 },
             )
 
+    except StaleCaseException as e:
+        # OCC conflict — another writer updated the case while this turn
+        # was in flight. We deliberately do NOT silently retry: LLM turns
+        # are expensive and non-idempotent (tool calls trigger external
+        # side effects, tokens get spent). Surface the conflict to the
+        # client so it can reload and decide whether to re-submit.
+        logger.warning(
+            f"Stale case on turn submission for {case_id}: "
+            f"expected v{e.expected_version}, db v{e.actual_version}"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Case state changed while processing this turn. "
+                "Reload the case and resubmit if still applicable."
+            ),
+            headers={
+                "x-correlation-id": correlation_id,
+                "x-error-code": "CASE_VERSION_CONFLICT",
+                "x-expected-version": str(e.expected_version),
+                "x-actual-version": str(e.actual_version),
+            },
+        )
     except NotFoundError as e:
         raise HTTPException(
             status_code=404,

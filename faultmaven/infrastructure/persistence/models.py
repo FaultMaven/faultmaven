@@ -508,6 +508,16 @@ class CaseModel(Base):
     )
     archived_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Optimistic concurrency control. Incremented on every successful
+    # aggregate save; `save(case)` checks that the in-memory `case.version`
+    # matches the DB value before writing, raising `StaleCaseException` on
+    # mismatch. Protects against silent last-writer-wins when the same
+    # case is loaded and written by concurrent flows (multi-replica K8s,
+    # background tasks that outlive their triggering turn, etc).
+    # Scoped single-row UPDATEs (e.g. `update_evidence_vectorized`) do
+    # NOT bump this version — they operate on child tables only.
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+
     # Storage redesign 2026-04 — Phase 6 Tier 1 column additions.
     # Per deployment-schema-strategy.md §7.1 + §12 decision #19: lift terminal
     # state metadata out of the JSON `metadata` blob into first-class columns.

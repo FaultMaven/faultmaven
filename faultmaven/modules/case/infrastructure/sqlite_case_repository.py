@@ -63,6 +63,7 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
     WorkingConclusion,
 )
+from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -159,38 +160,43 @@ class SQLiteCaseRepository(CaseRepository):
     # ========================================================================
 
     async def save(self, case: Case) -> Case:
-        """Save case using hybrid schema with transactions."""
+        """Save case using hybrid schema with transactions.
+
+        Optimistic concurrency control is enforced inside
+        `_upsert_case_record`: the in-memory `case.version` is checked
+        against the DB row, and `StaleCaseException` is raised on
+        mismatch. On success the same `case` instance is mutated with
+        the new version and returned — callers can use either the
+        return value or the passed-in object.
+        """
         try:
             case.updated_at = datetime.now(UTC)
 
             organization_id = case.organization_id
-            async with self.db.begin():
-                await self._upsert_case_record(case)
-                await self._upsert_evidence(
-                    case.case_id, case.evidence, organization_id
-                )
-                await self._upsert_hypotheses(
-                    case.case_id, case.hypotheses, organization_id
-                )
-                await self._upsert_solutions(
-                    case.case_id, case.solutions, organization_id
-                )
-                await self._upsert_uploaded_files(
-                    case.case_id, case.uploaded_files, organization_id
-                )
-                await self._upsert_messages(
-                    case.case_id, case.messages, organization_id
+            await self._upsert_case_record(case)
+            await self._upsert_evidence(case.case_id, case.evidence, organization_id)
+            await self._upsert_hypotheses(
+                case.case_id, case.hypotheses, organization_id
+            )
+            await self._upsert_solutions(case.case_id, case.solutions, organization_id)
+            await self._upsert_uploaded_files(
+                case.case_id, case.uploaded_files, organization_id
+            )
+            await self._upsert_messages(case.case_id, case.messages, organization_id)
+
+            if case.action_history:
+                await self._append_case_actions(
+                    case.case_id, case.action_history, organization_id
                 )
 
-                if case.action_history:
-                    await self._append_case_actions(
-                        case.case_id, case.action_history, organization_id
-                    )
-
-                await self.db.commit()
-
+            await self.db.commit()
             return case
 
+        except StaleCaseException:
+            # Propagate unwrapped so callers can retry or surface 409
+            # without unwrapping a generic RepositoryException.
+            await self.db.rollback()
+            raise
         except Exception as e:
             await self.db.rollback()
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
@@ -1449,6 +1455,12 @@ class SQLiteCaseRepository(CaseRepository):
     async def _upsert_case_record(self, case: Case) -> None:
         """Upsert main cases table (SQLite-compatible - no type casts).
 
+        Optimistic concurrency control: first attempts an UPDATE with a
+        version predicate; raises StaleCaseException on version mismatch;
+        falls back to INSERT when no row exists for ``case_id``. The
+        in-memory ``case.version`` is bumped on successful update so
+        subsequent saves within the same flow work without reloading.
+
         Phase 6 (storage redesign 2026-04): persists ``closure_reason``,
         ``last_activity_at``, ``resolved_at`` and ``closed_at`` to first-class
         columns instead of the ``metadata`` JSON blob. ``last_activity_at`` is
@@ -1458,147 +1470,182 @@ class SQLiteCaseRepository(CaseRepository):
         columns.
         """
         last_activity_at = datetime.now(UTC)
-        query = text("""
-            INSERT INTO cases (
-                case_id, user_id, organization_id, title,
-                status, created_at, updated_at,
-                is_archived, archived_at,
-                closure_reason, last_activity_at, resolved_at, closed_at,
-                inquiry, problem_verification, working_conclusion,
-                root_cause_conclusion, path_selection,
-                escalation_state, documentation, progress, metadata
-            ) VALUES (
-                :case_id, :user_id, :organization_id, :title,
-                :status, :created_at, :updated_at,
-                :is_archived, :archived_at,
-                :closure_reason, :last_activity_at, :resolved_at, :closed_at,
-                :inquiry, :problem_verification, :working_conclusion,
-                :root_cause_conclusion, :path_selection,
-                :escalation_state, :documentation, :progress, :metadata
-            )
-            ON CONFLICT (case_id) DO UPDATE SET
-                user_id = EXCLUDED.user_id,
-                organization_id = EXCLUDED.organization_id,
-                title = EXCLUDED.title,
-                status = EXCLUDED.status,
-                updated_at = EXCLUDED.updated_at,
-                is_archived = EXCLUDED.is_archived,
-                archived_at = EXCLUDED.archived_at,
-                closure_reason = EXCLUDED.closure_reason,
-                last_activity_at = EXCLUDED.last_activity_at,
-                resolved_at = EXCLUDED.resolved_at,
-                closed_at = EXCLUDED.closed_at,
-                inquiry = EXCLUDED.inquiry,
-                problem_verification = EXCLUDED.problem_verification,
-                working_conclusion = EXCLUDED.working_conclusion,
-                root_cause_conclusion = EXCLUDED.root_cause_conclusion,
-                path_selection = EXCLUDED.path_selection,
-                escalation_state = EXCLUDED.escalation_state,
-                documentation = EXCLUDED.documentation,
-                progress = EXCLUDED.progress,
-                metadata = EXCLUDED.metadata
-        """)
+        params = self._case_record_params(case, last_activity_at)
 
-        await self.db.execute(
-            query,
-            {
-                "case_id": case.case_id,
-                "user_id": case.user_id,
-                "organization_id": case.organization_id,
-                "title": case.title,
-                "status": case.status.value,
-                "created_at": case.created_at,
-                "updated_at": case.updated_at,
-                "is_archived": (
-                    case.is_archived if hasattr(case, "is_archived") else False
-                ),
-                "archived_at": (
-                    case.archived_at if hasattr(case, "archived_at") else None
-                ),
-                # Phase 6 Tier 1 columns — populated from domain Case fields.
-                "closure_reason": getattr(case, "closure_reason", None),
-                "last_activity_at": last_activity_at,
-                "resolved_at": getattr(case, "resolved_at", None),
-                "closed_at": getattr(case, "closed_at", None),
-                "inquiry": json.dumps(to_json_compatible(case.inquiry.model_dump())),
-                "problem_verification": (
-                    json.dumps(
-                        to_json_compatible(case.problem_verification.model_dump())
-                    )
-                    if case.problem_verification
-                    else None
-                ),
-                "working_conclusion": (
-                    json.dumps(to_json_compatible(case.working_conclusion.model_dump()))
-                    if case.working_conclusion
-                    else None
-                ),
-                "root_cause_conclusion": (
-                    json.dumps(
-                        to_json_compatible(case.root_cause_conclusion.model_dump())
-                    )
-                    if case.root_cause_conclusion
-                    else None
-                ),
-                "path_selection": (
-                    json.dumps(to_json_compatible(case.path_selection.model_dump()))
-                    if case.path_selection
-                    else None
-                ),
-                "escalation_state": (
-                    json.dumps(to_json_compatible(case.escalation_state.model_dump()))
-                    if case.escalation_state
-                    else None
-                ),
-                "documentation": json.dumps(
-                    to_json_compatible(case.documentation.model_dump())
-                ),
-                "progress": json.dumps(to_json_compatible(case.progress.model_dump())),
-                "metadata": json.dumps(
-                    {
-                        "current_turn": case.current_turn,
-                        "turns_without_progress": case.turns_without_progress,
-                        "message_count": case.message_count,
-                        "closure_reason": case.closure_reason,
-                        "closed_at": (
-                            to_json_compatible(case.closed_at)
-                            if case.closed_at
-                            else None
-                        ),
-                        "resolved_at": (
-                            to_json_compatible(case.resolved_at)
-                            if hasattr(case, "resolved_at") and case.resolved_at
-                            else None
-                        ),
-                        "pending_transition": case.pending_transition,
-                        "proposed_actions": (
-                            [
-                                to_json_compatible(a.model_dump())
-                                for a in case.proposed_actions
-                            ]
-                            if case.proposed_actions
-                            else []
-                        ),
-                        "action_attempts": (
-                            [
-                                to_json_compatible(a.model_dump())
-                                for a in case.action_attempts
-                            ]
-                            if case.action_attempts
-                            else []
-                        ),
-                        "turn_history": (
-                            [
-                                to_json_compatible(t.model_dump())
-                                for t in case.turn_history
-                            ]
-                            if case.turn_history
-                            else []
-                        ),
-                    }
-                ),
-            },
+        # Step 1: attempt UPDATE with version check.
+        update_query = text("""
+            UPDATE cases SET
+                user_id = :user_id,
+                organization_id = :organization_id,
+                title = :title,
+                status = :status,
+                updated_at = :updated_at,
+                is_archived = :is_archived,
+                archived_at = :archived_at,
+                closure_reason = :closure_reason,
+                last_activity_at = :last_activity_at,
+                resolved_at = :resolved_at,
+                closed_at = :closed_at,
+                inquiry = :inquiry,
+                problem_verification = :problem_verification,
+                working_conclusion = :working_conclusion,
+                root_cause_conclusion = :root_cause_conclusion,
+                path_selection = :path_selection,
+                escalation_state = :escalation_state,
+                documentation = :documentation,
+                progress = :progress,
+                metadata = :metadata,
+                version = :new_version
+            WHERE case_id = :case_id AND version = :expected_version
+        """)
+        expected_version = case.version
+        new_version = expected_version + 1
+        update_params = {
+            **params,
+            "expected_version": expected_version,
+            "new_version": new_version,
+        }
+        result = await self.db.execute(update_query, update_params)
+
+        if result.rowcount > 0:
+            case.version = new_version
+            return
+
+        # Step 2: UPDATE matched no rows — either the case is new, or the
+        # version predicate failed. One SELECT to disambiguate.
+        probe = await self.db.execute(
+            text("SELECT version FROM cases WHERE case_id = :case_id"),
+            {"case_id": case.case_id},
         )
+        row = probe.fetchone()
+        if row is None:
+            # New case — INSERT with version = 1.
+            insert_query = text("""
+                INSERT INTO cases (
+                    case_id, user_id, organization_id, title,
+                    status, created_at, updated_at,
+                    is_archived, archived_at,
+                    closure_reason, last_activity_at, resolved_at, closed_at,
+                    inquiry, problem_verification, working_conclusion,
+                    root_cause_conclusion, path_selection,
+                    escalation_state, documentation, progress, metadata,
+                    version
+                ) VALUES (
+                    :case_id, :user_id, :organization_id, :title,
+                    :status, :created_at, :updated_at,
+                    :is_archived, :archived_at,
+                    :closure_reason, :last_activity_at, :resolved_at, :closed_at,
+                    :inquiry, :problem_verification, :working_conclusion,
+                    :root_cause_conclusion, :path_selection,
+                    :escalation_state, :documentation, :progress, :metadata,
+                    1
+                )
+            """)
+            await self.db.execute(insert_query, params)
+            case.version = 1
+            return
+
+        # Row exists but version mismatched — caller holds stale state.
+        raise StaleCaseException(
+            case_id=case.case_id,
+            expected_version=expected_version,
+            actual_version=row[0],
+        )
+
+    def _case_record_params(
+        self, case: Case, last_activity_at: datetime
+    ) -> dict[str, Any]:
+        """Build the parameter dict for the cases-row INSERT/UPDATE.
+
+        Shared between the UPDATE and fallback INSERT paths in
+        _upsert_case_record — keeps column serialization in one place.
+        """
+        return {
+            "case_id": case.case_id,
+            "user_id": case.user_id,
+            "organization_id": case.organization_id,
+            "title": case.title,
+            "status": case.status.value,
+            "created_at": case.created_at,
+            "updated_at": case.updated_at,
+            "is_archived": (
+                case.is_archived if hasattr(case, "is_archived") else False
+            ),
+            "archived_at": (case.archived_at if hasattr(case, "archived_at") else None),
+            # Phase 6 Tier 1 columns — populated from domain Case fields.
+            "closure_reason": getattr(case, "closure_reason", None),
+            "last_activity_at": last_activity_at,
+            "resolved_at": getattr(case, "resolved_at", None),
+            "closed_at": getattr(case, "closed_at", None),
+            "inquiry": json.dumps(to_json_compatible(case.inquiry.model_dump())),
+            "problem_verification": (
+                json.dumps(to_json_compatible(case.problem_verification.model_dump()))
+                if case.problem_verification
+                else None
+            ),
+            "working_conclusion": (
+                json.dumps(to_json_compatible(case.working_conclusion.model_dump()))
+                if case.working_conclusion
+                else None
+            ),
+            "root_cause_conclusion": (
+                json.dumps(to_json_compatible(case.root_cause_conclusion.model_dump()))
+                if case.root_cause_conclusion
+                else None
+            ),
+            "path_selection": (
+                json.dumps(to_json_compatible(case.path_selection.model_dump()))
+                if case.path_selection
+                else None
+            ),
+            "escalation_state": (
+                json.dumps(to_json_compatible(case.escalation_state.model_dump()))
+                if case.escalation_state
+                else None
+            ),
+            "documentation": json.dumps(
+                to_json_compatible(case.documentation.model_dump())
+            ),
+            "progress": json.dumps(to_json_compatible(case.progress.model_dump())),
+            "metadata": json.dumps(
+                {
+                    "current_turn": case.current_turn,
+                    "turns_without_progress": case.turns_without_progress,
+                    "message_count": case.message_count,
+                    "closure_reason": case.closure_reason,
+                    "closed_at": (
+                        to_json_compatible(case.closed_at) if case.closed_at else None
+                    ),
+                    "resolved_at": (
+                        to_json_compatible(case.resolved_at)
+                        if hasattr(case, "resolved_at") and case.resolved_at
+                        else None
+                    ),
+                    "pending_transition": case.pending_transition,
+                    "proposed_actions": (
+                        [
+                            to_json_compatible(a.model_dump())
+                            for a in case.proposed_actions
+                        ]
+                        if case.proposed_actions
+                        else []
+                    ),
+                    "action_attempts": (
+                        [
+                            to_json_compatible(a.model_dump())
+                            for a in case.action_attempts
+                        ]
+                        if case.action_attempts
+                        else []
+                    ),
+                    "turn_history": (
+                        [to_json_compatible(t.model_dump()) for t in case.turn_history]
+                        if case.turn_history
+                        else []
+                    ),
+                }
+            ),
+        }
 
     async def _upsert_evidence(
         self, case_id: str, evidence_list: builtins.list[Evidence], organization_id: str
@@ -2189,6 +2236,13 @@ class SQLiteCaseRepository(CaseRepository):
             # metadata field removed as it is not part of Case model
             "created_at": row.created_at,
             "updated_at": row.updated_at,
+            # Optimistic concurrency token. Must round-trip so the next
+            # save() can assert it still matches the DB.
+            "version": (
+                int(row.version)
+                if hasattr(row, "version") and row.version is not None
+                else 1
+            ),
         }
 
         # Backward compatibility: Fix description for old INVESTIGATING cases

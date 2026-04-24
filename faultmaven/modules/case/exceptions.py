@@ -76,6 +76,40 @@ class CaseAccessError(CaseException):
         )
 
 
+class StaleCaseException(CaseException):
+    """Raised when an aggregate save hits a version mismatch.
+
+    Indicates that between the caller's `repository.get(case_id)` and
+    their `repository.save(case)`, another writer updated the same
+    case. The caller's in-memory state is stale — it must reload, re-
+    apply the mutation, and retry, or surface the conflict upward.
+
+    See also: `update_case_with_retry` helper in
+    `faultmaven/modules/case/utils/retry.py`.
+    """
+
+    def __init__(
+        self,
+        case_id: str,
+        expected_version: int,
+        actual_version: int,
+    ):
+        self.case_id = case_id
+        self.expected_version = expected_version
+        self.actual_version = actual_version
+        super().__init__(
+            (
+                f"Stale case write for {case_id}: expected version "
+                f"{expected_version}, database has {actual_version}."
+            ),
+            details={
+                "case_id": case_id,
+                "expected_version": expected_version,
+                "actual_version": actual_version,
+            },
+        )
+
+
 class CaseValidationError(CaseException):
     """Raised when case validation fails.
 

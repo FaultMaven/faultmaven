@@ -1,9 +1,9 @@
-# Database Abstraction Layer Specification v2.3
+# Database Abstraction Layer Specification v2.4
 
 **Document Purpose**: Define the pluggable storage architecture that enables FaultMaven to switch between storage backends via configuration without code changes, across multiple data types and storage technologies.
 
 **Status**: ✅ Production Implementation
-**Version**: 2.3.0
+**Version**: 2.4.0
 **Last Updated**: 2026-04-24
 **Alignment**:
 
@@ -21,6 +21,7 @@
 - ✅ `PostgreSQLHybridCaseRepository` is the sole PostgreSQL case-repository implementation (legacy `PostgreSQLCaseRepository` class removed)
 - ✅ `InMemoryVectorStore` removed — ChromaDB `PersistentClient` is always available
 - ✅ **(v2.3, 2026-04-24)** `save(case)` is **purely additive** — the aggregate save no longer performs `DELETE ... NOT IN (in_memory_ids)` on sibling tables. Intentional deletion is explicit via scoped repository methods. See [§4.1.1 Aggregate save semantics](#411-aggregate-save-semantics).
+- ✅ **(v2.4, 2026-04-24)** `save(case)` enforces **optimistic concurrency control** via a `version` column on the `cases` table. Read-modify-write paths use the `update_case_with_retry` helper; turn submission surfaces 409 Conflict on mismatch rather than retrying (LLM calls are non-idempotent). See [§4.1.2 Optimistic concurrency control](#412-optimistic-concurrency-control).
 
 > **Reality check (2026-04-18)**: the examples below occasionally use values like `CASE_STORAGE_TYPE=postgres` or `CASE_STORAGE_TYPE=sqlite` as shorthand for deployment modes. **Those values are not recognized by the code.** The actual selector at [repository_factory.py:62-63](../../../faultmaven/infrastructure/persistence/repository_factory.py#L62-L63) accepts only `inmemory` or `database`. When `CASE_STORAGE_TYPE=database`, the SQL dialect (SQLite vs PostgreSQL) is determined by `DATABASE_URL` — see `sqlite+aiosqlite://...` vs `postgresql+asyncpg://...`. `SessionlessCaseRepository` detects the dialect at runtime and routes to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository` accordingly. For the schema-level policy that goes with this runtime routing, see [Deployment-Aware Schema Strategy](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) (internal) which defines Tier 1 (both dialects) vs Tier 2 (PostgreSQL augmentations).
 
@@ -489,6 +490,72 @@ Scoped methods:
 - Make the intent visible in the signature, so code review can catch misuse.
 
 **Historical context**. Prior to v2.3, `save(case)` performed a DELETE-then-upsert on every owned sub-collection. A fire-and-forget background task (`_vectorize_evidence`) that captured a `Case` snapshot at turn-2 time and saved it ~34s later (after BGE-M3 encoding of a 171 KB log finished) truncated messages from turns 3–6 that had been persisted in the meantime. The fix removed the DELETE clauses and introduced `update_evidence_vectorized`; the broader pattern — "aggregate save must be additive" — applies to every `_upsert_*` helper.
+
+---
+
+### 4.1.2 Optimistic concurrency control
+
+`save(case)` enforces **optimistic concurrency control (OCC)** on the Case aggregate via a `version` column on the `cases` table. Every successful aggregate save bumps `version` by 1; the save only succeeds if the caller's in-memory `case.version` still matches the DB row.
+
+**Why**. Aggregate saves are read-modify-write: a caller loads a Case, mutates it, saves. Between the load and the save, another writer (another turn, a background task, a status transition, a peer replica in K8s) can commit changes. Without OCC that second save silently last-writer-wins. OCC turns that silent loss into a loud `StaleCaseException` the caller must handle.
+
+**Why not pessimistic locks**. Pessimistic locking requires either DB-level row locks held across the LLM call (which takes tens of seconds and would serialize all turns) or an application-level lock (which only works within a single process — useless under K8s). OCC adds one integer column, costs nothing on the uncontended path, and works correctly across replicas.
+
+**Protocol**:
+
+1. `repository.get(case_id)` returns a `Case` whose `version` field matches the DB row.
+2. Caller mutates the `Case` in memory. The `version` field is not touched by the caller.
+3. `repository.save(case)` issues `UPDATE cases SET ..., version = :n+1 WHERE case_id = :id AND version = :n`.
+4. On `rowcount == 0`, the save probes the DB to distinguish "no row" (fresh insert, goes to version=1) from "row exists at different version" (raises `StaleCaseException`).
+5. On success, the passed-in `case.version` is mutated to the new version so subsequent in-flight saves within the same flow work without reloading.
+
+**Scoped updates don't bump version**. `update_evidence_vectorized`, `delete_evidence`, `delete_uploaded_file`, `update_activity_timestamp` all operate on child tables only. They do not interact with `cases.version`. This is intentional — they're the safe channel for background-task writes that shouldn't invalidate a concurrent turn's save.
+
+**Handling conflicts at the caller**. Two patterns, chosen per use case:
+
+1. **Retry** (for idempotent mutations) — use `update_case_with_retry(repo, case_id, mutator, max_attempts=3)` from `faultmaven/modules/case/utils/retry.py`. The helper loads a fresh Case per attempt, invokes the mutator against that fresh state, and saves. On `StaleCaseException` it reloads and retries; after `max_attempts` exhausted it re-raises. Current users: `case_service.update_case`, `investigation_service.close_case`.
+
+2. **Surface 409 Conflict** (for non-idempotent or expensive operations) — the `/turns` endpoint takes this path. LLM turns are expensive (seconds to minutes), non-idempotent (tool calls trigger external side effects, background vectorization fires, tokens are consumed), so silently retrying is wrong. The endpoint translates `StaleCaseException` to HTTP 409 with `x-error-code: CASE_VERSION_CONFLICT` and `x-expected-version` / `x-actual-version` headers; the client reloads case state and decides whether to resubmit.
+
+**Why the retry-vs-409 split matters**. A decorator-style `@retry_on_stale_case` is attractive for DRY but elides a question the caller must answer: "Is re-running this function against fresh state safe, or is it side-effecting?" Making the choice explicit at the call site (helper call vs. exception translation) prevents accidental retries of LLM turns.
+
+**Example — service-layer retry**:
+
+```python
+from faultmaven.modules.case.utils import update_case_with_retry
+
+async def update_case(self, case_id: str, updates: dict) -> bool:
+    async def apply(case: Case) -> None:
+        for key, value in updates.items():
+            if key in ALLOWED_FIELDS:
+                setattr(case, key, value)
+
+    await update_case_with_retry(self.repository, case_id, apply)
+    return True
+```
+
+**Example — endpoint 409 handling**:
+
+```python
+try:
+    response = await investigation_service.process_turn(...)
+except StaleCaseException as e:
+    raise HTTPException(
+        status_code=409,
+        detail="Case state changed while processing this turn. "
+               "Reload the case and resubmit if still applicable.",
+        headers={
+            "x-error-code": "CASE_VERSION_CONFLICT",
+            "x-expected-version": str(e.expected_version),
+            "x-actual-version": str(e.actual_version),
+        },
+    )
+```
+
+**Follow-up work out of scope for v2.4**:
+
+- Per-entity OCC on `evidence`, `hypotheses`, `solutions` (each aggregate gets its own `version`). Today those tables are sub-collections of Case; a future DDD carve-up would make them stand-alone aggregates with their own concurrency guarantees — background tasks could then lock individual Evidence rows without contending on `cases.version`.
+- Explicit `CaseMessages` event-stream semantics (no OCC needed — already append-only at the domain level).
 
 ---
 
