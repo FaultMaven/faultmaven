@@ -402,7 +402,20 @@ The DA system instruction classifies user questions into three types and prescri
 
 **Why this matters for behavioral rules:** The DA system instruction applies to ALL turns with tools — including INQUIRY. Because `tool_choice=auto`, the LLM decides whether to comply. The "MUST" language for TYPE A and TYPE B is the primary enforcement mechanism for Rules 2 and 6 during the tool-augmented loop.
 
-**Location:** `milestone_engine.py:_build_da_system_instruction()` (~lines 2968-3095).
+**Additional operational guidance beyond question routing:**
+
+The DA system instruction also carries six operational clauses that are not behavioral rules but shape how the agent uses its tools. They are documented here for completeness because they share the same injection site:
+
+1. **DEFAULT: treat ambiguity as Type A.** When uncertain whether a question is case-specific or general knowledge, classify as Type A — evidence search is always safe. Prevents "I don't know" answers when evidence could have settled the question.
+2. **Search for the specific entity, not the event type.** When the user asks about a specific IP / hostname / username / error code / timestamp, `search_file` query must use THAT value directly (e.g., `query="173.234.31.186"`, not `query="Failed password"`). Searching for event types returns all entities and buries the relevant lines.
+3. **PII tokens vs raw data.** The `<evidence_collected>` summaries use PII placeholders (e.g., `<IP_ADDRESS_1>`); the raw files on disk contain ORIGINAL values. When calling `search_file`, use original values from the user's message, not PII tokens.
+4. **SEARCHABLE EVIDENCE attribute.** Only use `search_file` on evidence items with `searchable="true"` in `<evidence_collected>`. Items without this attribute are investigation notes with no file on disk.
+5. **EVIDENCE vs KNOWLEDGE distinction.** EVIDENCE is user-submitted case data; only this goes into `evidence_to_add`. KNOWLEDGE from `kb_qa` / `web_search` / training data informs analysis but is NEVER recorded as evidence. Prevents the agent from polluting the case's evidence trail with reference material.
+6. **RESPONSE FORMAT for case questions.** Cite filename + line numbers from search results (e.g., "In `data_6-1.log`, line 42: ..."). Reference evidence by filename or description, never by `ev_` IDs.
+
+These clauses are prompt-layer operational guidance rather than behavioral rules, which is why they live in the DA system instruction rather than in Rules 1–8.
+
+**Location:** `milestone_engine.py::_build_da_system_instruction()` (lines 3377-3533).
 
 ### INVESTIGATION_BASE Layout
 
