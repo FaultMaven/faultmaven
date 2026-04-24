@@ -115,12 +115,12 @@ The three-step framework is an internal reasoning scaffold, not an output format
 
 **Why this is the strongest rule**: The internal reasoning scaffold forces the LLM to anchor every claim in evidence before reaching a conclusion, making hallucination structurally visible even when the output is conversational prose.
 
-**Mechanical enforcement via Diagnostic Reasoning Validator**: Rule 2 is enforced post-generation by `diagnostic_reasoning_validator.py`, which checks LLM responses for:
+**Mechanical enforcement via Diagnostic Reasoning Validator**: Rule 2 is enforced post-generation by `diagnostic_reasoning_validator.py`, which runs five signal checks on LLM responses. The specific strings and categories listed below are **illustrative examples**, not a prescriptive contract — the validator's regex lists and heuristics evolve over time as calibration improves. Consult `diagnostic_reasoning_validator.py` directly for the authoritative current behavior.
 
-1. **Evidence grounding** — markers like "THE LOG SHOWS", "BASED ON", "LOOKING AT", "I CAN SEE", "EVIDENCE SHOWS" (expanded to detect conversational evidence references, not just structured section headers)
-2. **Causal reasoning** — language like "causes", "leads to", "because", "therefore", "THIS SUGGESTS"
-3. **Specific evidence references** — at least 2 of 4 categories: timestamps (HH:MM, YYYY-MM-DD), metrics/percentages, specific IDs (commit hashes, deployment IDs), error messages/log excerpts
-4. **Anti-patterns** — checklist engineering (5+ bullets, "try these N things"), generic best practices ("implement monitoring", "follow best practices")
+1. **Evidence grounding** — detects conversational references to evidence (example markers: "the log shows", "based on", "looking at", "I can see", "evidence shows", and similar). The goal is to detect grounded responses whether they use structured section headers or natural prose.
+2. **Causal reasoning** — detects language linking cause to effect (example markers: "causes", "leads to", "because", "therefore", "this suggests"). Purpose: verify conclusions explain *why*, not just *what*.
+3. **Specific evidence references** — checks that at least 2 of 4 signal categories are present: timestamps, quantitative measures, specific identifiers, and error text. What qualifies as each signal is a heuristic the validator tunes (e.g., the ID check accepts hashes, version strings, and deployment labels; the timestamp check accepts HH:MM, YYYY-MM-DD, and relative forms). Examples in the code show the shape, not the exhaustive list.
+4. **Anti-patterns** — flags checklist engineering (many bullets of "try these N things") and generic best practices ("implement monitoring", "follow best practices") that are disconnected from case evidence.
 5. **Case specificity** — a short response (<300 chars) that neither echoes a keyword from the case's symptom statement nor cites the case ID is flagged as generic. The length gate exists so full-length responses that synthesize case detail are not falsely flagged.
 
 When violations are detected, a self-correction retry feeds the specific violations back to the LLM for one rewrite attempt. See [Error Handling §3.2](./error-handling-and-recovery.md#32-reasoning-validation-with-self-correction).
