@@ -162,15 +162,20 @@ Use: "Could you run", "Please check", "It would help to look at".
 
 ### Action Recommendation Responsibility
 
-Voice is half the advisor role. The other half is responsible substance when recommending action.
+Voice is half the advisor role. The other half is responsible substance when recommending action. This is enforced via the `_ACTION_IMPACT_BLOCK` constant, which uses a **classify-first** structure so the policy scales cleanly across DIAGNOSIS, MITIGATION, and TREATMENT stages (the former stage-scoped `SAFE DIAGNOSTICS` block was consolidated into this constant to eliminate duplication).
 
-When recommending an action that modifies system state (restart, delete, kill, drop, truncate, rollback, scale, flush, reset, reconfigure), you MUST state:
+**Classification.** When recommending an action, classify it first:
+
+- **DIAGNOSTIC (read-only)**: `logs`, `describe`, `get`, `status`, `top`, `df`, `free`, `cat`, `tail`, `curl (GET)`, `SELECT`. Prefer these first — they surface information without changing state.
+- **STATE-MODIFYING**: `restart`, `delete`, `kill`, `drop`, `truncate`, `rollback`, `scale`, `flush`, `reset`, `reconfigure`, modify config, `INSERT/UPDATE/DELETE`, `POST/PUT/DELETE`.
+
+**For state-modifying actions**, you MUST state:
 
 1. What the action changes
 2. Whether it is reversible
 3. Blast radius (single pod, node, cluster, database, shared service)
 
-Prefer read-only diagnostics first. Never recommend destructive commands (`rm -rf`, `DROP`, `TRUNCATE`, `kill -9` on production) without an explicit impact warning and a safer alternative when one exists.
+Never recommend destructive commands (`rm -rf`, `DROP`, `TRUNCATE`, `kill -9` on production) without an explicit impact warning and a safer alternative when one exists.
 
 **Why both dimensions live in Rule 3**: The advisor role covers both how the agent speaks (voice) and what the agent advises (substance). Splitting them would fragment a single responsibility — being a trustworthy advisor to an operator standing in front of a production system.
 
@@ -373,8 +378,8 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
 | 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES (behavior table + one-ask-per-turn principle) | After YOUR TASK |
 | 6 (Knowledge First) | INQUIRY + INVESTIGATION_BASE + DA system instruction | YOUR TASK (INQUIRY), DIAGNOSIS (INVESTIGATING), TYPE B routing (DA instruction); `KNOWLEDGE_QUERY_INSTRUCTIONS` constant used for knowledge_query bypass | Early in each |
-| 7 (Signal Extraction) | INQUIRY + INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` constant | After ASSISTANT ROLE, before EVIDENCE GROUNDING |
-| 8 (Full-Context Reasoning) | INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` (paired with Rule 7) | Same block as Rule 7 |
+| 7 (Signal Extraction) | INQUIRY + INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` constant | After CURRENT USER MESSAGE, before YOUR TASK (INQUIRY) / before EVIDENCE GROUNDING (INVESTIGATION_BASE) — near top of each template |
+| 8 (Full-Context Reasoning) | INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` (paired with Rule 7) | Same block as Rule 7. In INQUIRY the Full-Context portion is a no-op because its scope-gating opener ("When drawing diagnostic conclusions...") does not engage on pre-investigation turns. |
 
 **Non-rule shared constants:** `_DATA_CITATION_RULE` is a shared quality-standard constant (not a behavioral rule) concatenated into INQUIRY_TEMPLATE's TRIAGE SUMMARY QUALITY section and INVESTIGATION_BASE's WORKING WITH EVIDENCE DATA section. It prescribes specificity when citing structural-index values (actual IPs / counts / timestamps rather than "I see some errors") and judgment when enumerating entities. Follows the same single-definition pattern as `_ADVISOR_ROLE_CONSTRAINT` to prevent drift between the two injection sites.
 
