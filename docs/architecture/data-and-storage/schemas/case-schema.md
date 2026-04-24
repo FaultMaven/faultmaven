@@ -339,7 +339,7 @@ class Case(BaseModel):
 Core Table (1):
 └── cases              -- Main case data + JSONB for low-cardinality items
 
-High-Cardinality Tables (7):
+High-Cardinality Tables (8):
 ├── evidence           -- Investigation evidence, single table, case_id NOT NULL FK
 ├── hypotheses         -- Hypotheses being tested (many per case)
 ├── solutions          -- Proposed/verified solutions (few per case)
@@ -348,7 +348,8 @@ High-Cardinality Tables (7):
 ├── case_actions       -- Audit trail of actions & status transitions
 │                       -- (Python alias: CaseStatusTransitionModel)
 ├── case_checkpoints   -- State snapshots (one per turn)
-└── reports            -- Generated reports (few per case, versioned)
+├── reports            -- Generated reports (few per case, versioned)
+└── case_entities      -- Phase 4 cross-artifact entity index (feature-flagged)
 
 Agent Execution Cascade (3):
 ├── investigation_sessions  -- Per-investigation agent context (case-owned)
@@ -363,7 +364,7 @@ DELETED tables (v2.1):
 └── agent_tool_calls v1 -- DELETED: zero functional readers/writers in production code paths
 ```
 
-The full live table count across user + case + knowledge + conversion + config domains is **29** (post-v2.1 redesign) — see `er-diagram.md` for the authoritative enumeration.
+The full live table count across user + case + knowledge + conversion + config domains is **30** (post-v2.1 redesign, Phase 4 entity registry added) — see `er-diagram.md` for the authoritative enumeration.
 
 ### 4.2 cases (Main Table)
 
@@ -1255,6 +1256,48 @@ Tool-call log per agent execution. **Renamed from `agent_tool_calls_v2`** in v2.
 `users`, `organizations`, and related auth/RBAC tables are defined in [user-schema.md](./user-schema.md) — that is the authoritative source for their DDL. They are not redefined here.
 
 `sessions` (SQL auth sessions table) — **DELETED in v2.1**. Auth sessions are Redis-only. See §4.1 table overview and [deployment-schema-strategy.md §11.1](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+
+---
+
+### 4.13 case_entities (High-Cardinality Table — Phase 4)
+
+Cross-artifact entity index for a case. One row per `(case, entity_type, entity_value, evidence)` tuple, populated by the preprocessing pipeline after each successful extraction. Makes *"which evidence in this case mentions IP 10.0.0.5?"* a single indexed lookup rather than an LLM scan across evidence summaries.
+
+```sql
+CREATE TABLE case_entities (
+    case_id          VARCHAR(36)  NOT NULL REFERENCES cases(case_id)          ON DELETE CASCADE,
+    entity_type      VARCHAR(20)  NOT NULL,
+    entity_value     VARCHAR(255) NOT NULL,
+    evidence_id      VARCHAR(36)  NOT NULL REFERENCES evidence(evidence_id)   ON DELETE CASCADE,
+    mention_count    INTEGER      NOT NULL DEFAULT 1,
+    in_error_context BOOLEAN      NOT NULL DEFAULT FALSE,
+    first_seen_ts    TIMESTAMP WITH TIME ZONE,
+    PRIMARY KEY (case_id, entity_type, entity_value, evidence_id)
+);
+
+-- Primary query path: "find evidence mentioning entity X in case C"
+CREATE INDEX idx_case_entities_lookup
+    ON case_entities(case_id, entity_type, entity_value);
+-- Cleanup path: located by evidence_id on re-extraction / deletion
+CREATE INDEX idx_case_entities_by_evidence
+    ON case_entities(evidence_id);
+```
+
+**Design Notes**:
+
+- Composite primary key makes the write path idempotent — re-extracting an evidence (Phase 1.5 reclassification, Phase 2 retry loop) upserts by the full tuple rather than appending duplicates.
+- `entity_type` is a controlled vocabulary enforced at the Pydantic layer (not via `CHECK` — PostgreSQL-only constraints aren't portable to SQLite). Valid values: `ip`, `hostname`, `user`, `pid`, `port`, `service`, `path`, `device`, `metric_name`. Extending requires a design-doc edit so the retrieval paths stay in sync with what producers emit.
+- `first_seen_ts` is nullable: populated from the evidence's `coverage_start_ts` (Phase 3a, §4.3) when the evidence is time-bound, else NULL for timeless content (configs, source code, short pastes).
+- Both FKs cascade on delete. Case or evidence deletion sweeps registry rows without a separate cleanup job.
+- Row growth is bounded by a preprocessor-side hard cap of **500 entities per (evidence, entity_type)** pair, tunable via `FAULTMAVEN_ENTITY_REGISTRY_CAP`. Worst case per case: `evidence_count × 500 × |entity_type vocabulary|` — 100 evidence × 500 × 9 = 450k rows, well within PostgreSQL comfort.
+- Overflow is recorded on `evidence.metadata.entities.overflow_types` (list of type values) and increments the `faultmaven_case_entities_overflow_total{entity_type}` counter. Exit-criteria dashboard triggers a cap review if any type overflows on >20% of evidence.
+- **Shipped dark** behind `FAULTMAVEN_ENTITY_REGISTRY` (default False). Flag controls both the producer (preprocessor writes) and the consumer (agent tools + context-builder highlights). The table stays in schema regardless of flag state.
+
+**Write path**: `PreprocessingService._build_result` → `InvestigationService._preprocess_attachment` → `CaseRepository.upsert_case_entities(case_id, evidence_id, entities)`. Semantics: delete-then-insert scoped to `(case_id, evidence_id)`. Empty list clears without inserting.
+
+**Read path**: `CaseRepository.find_entity(case_id, entity_value, entity_type?)` and `list_top_entities(case_id, entity_type, limit)`. Exposed to the agent via `find_entity` and `list_top_entities` tools; also pre-fetched by the milestone engine and injected as an `<entity_highlights>` block in the INVESTIGATING template.
+
+**Applicability**: Both deployments. Full design + extractor contribution matrix: [entity-registry.md](../../data-processing/entity-registry.md).
 
 ---
 

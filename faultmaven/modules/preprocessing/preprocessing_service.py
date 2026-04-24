@@ -32,6 +32,7 @@ from faultmaven.core.preprocessing.models import (
     to_unified_data_type,
 )
 from faultmaven.infrastructure.observability.evidence_metrics import (
+    CASE_ENTITIES_OVERFLOW_TOTAL,
     PREPROCESSING_EXTRACTION_YIELD_RATIO,
 )
 from faultmaven.models.api import DataType, SourceMetadata
@@ -747,6 +748,11 @@ class PreprocessingService:
                 for type_key, bucket in by_type.items():
                     if len(bucket) > cap:
                         overflow_types.append(type_key)
+                        # Phase 4 telemetry: one increment per
+                        # (evidence, type) overflow event — not per
+                        # excess row. Exit-criteria dashboard reads
+                        # the ratio of overflow/writes per type.
+                        CASE_ENTITIES_OVERFLOW_TOTAL.labels(entity_type=type_key).inc()
                         bucket.sort(key=lambda o: o.mention_count, reverse=True)
                         del bucket[cap:]
                     for obs in bucket:
