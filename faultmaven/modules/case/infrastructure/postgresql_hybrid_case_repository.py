@@ -1141,6 +1141,73 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 f"Failed to update activity timestamp for case {case_id}: {e}"
             ) from e
 
+    async def update_evidence_vectorized(
+        self, case_id: str, evidence_id: str, vectorized: bool
+    ) -> bool:
+        """Scoped UPDATE of the `vectorized` column on one evidence row.
+
+        Safe alternative to aggregate save(case) from background tasks — does
+        not touch case_messages or other sibling tables.
+        """
+        try:
+            query = text("""
+                UPDATE evidence
+                SET vectorized = :vectorized
+                WHERE case_id = :case_id AND evidence_id = :evidence_id
+            """)
+            result = await self.db.execute(
+                query,
+                {
+                    "case_id": case_id,
+                    "evidence_id": evidence_id,
+                    "vectorized": vectorized,
+                },
+            )
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to update vectorized flag for evidence "
+                f"{evidence_id} on case {case_id}: {e}"
+            ) from e
+
+    async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
+        """Scoped DELETE of a single evidence row."""
+        try:
+            query = text("""
+                DELETE FROM evidence
+                WHERE case_id = :case_id AND evidence_id = :evidence_id
+            """)
+            result = await self.db.execute(
+                query, {"case_id": case_id, "evidence_id": evidence_id}
+            )
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to delete evidence {evidence_id} on case {case_id}: {e}"
+            ) from e
+
+    async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
+        """Scoped DELETE of a single uploaded_file row."""
+        try:
+            query = text("""
+                DELETE FROM uploaded_files
+                WHERE case_id = :case_id AND file_id = :file_id
+            """)
+            result = await self.db.execute(
+                query, {"case_id": case_id, "file_id": file_id}
+            )
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to delete uploaded_file {file_id} on case {case_id}: {e}"
+            ) from e
+
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """
         Compute analytics for case from normalized tables.
@@ -1428,19 +1495,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def _upsert_evidence(
         self, case_id: str, evidence_list: List[Evidence], organization_id: str
     ) -> None:
-        """Upsert evidence records (normalized table)."""
-        # Delete existing evidence not in current list
-        current_ids = [e.evidence_id for e in evidence_list]
-        if current_ids:
-            delete_query = text("""
-                DELETE FROM evidence
-                WHERE case_id = :case_id
-                AND evidence_id != ALL(:current_ids)
-            """)
-            await self.db.execute(
-                delete_query, {"case_id": case_id, "current_ids": current_ids}
-            )
+        """Upsert evidence records (normalized table).
 
+        Purely additive: inserts new rows and updates existing ones keyed by
+        evidence_id. Does NOT remove rows absent from `evidence_list`. The
+        in-memory case is a working snapshot, not the canonical truth for
+        which rows should exist — callers holding a stale snapshot (e.g.
+        background tasks) must not be able to silently delete rows that
+        other concurrent writers have added. For intentional removal, use
+        `delete_evidence(case_id, evidence_id)` explicitly.
+        """
         # Upsert each evidence record
         for evidence in evidence_list:
             query = text("""
@@ -1507,19 +1571,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def _upsert_hypotheses(
         self, case_id: str, hypotheses_dict: Dict[str, Hypothesis], organization_id: str
     ) -> None:
-        """Upsert hypotheses records (normalized table)."""
-        # Delete existing hypotheses not in current dict
-        current_ids = list(hypotheses_dict.keys())
-        if current_ids:
-            delete_query = text("""
-                DELETE FROM hypotheses
-                WHERE case_id = :case_id
-                AND hypothesis_id != ALL(:current_ids)
-            """)
-            await self.db.execute(
-                delete_query, {"case_id": case_id, "current_ids": current_ids}
-            )
+        """Upsert hypotheses records (normalized table).
 
+        Purely additive — see `_upsert_evidence` for rationale. For
+        intentional removal, use `IHypothesisRepository.delete_hypothesis`.
+        """
         # Upsert each hypothesis
         for hypothesis_id, hypothesis in hypotheses_dict.items():
             query = text("""
@@ -1591,21 +1647,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def _upsert_solutions(
         self, case_id: str, solutions_list: List[Solution], organization_id: str
     ) -> None:
-        """Upsert solutions records (normalized table)."""
-        # Delete existing solutions not in current list
-        current_ids = [
-            s.solution_id for s in solutions_list if hasattr(s, "solution_id")
-        ]
-        if current_ids:
-            delete_query = text("""
-                DELETE FROM solutions
-                WHERE case_id = :case_id
-                AND solution_id != ALL(:current_ids)
-            """)
-            await self.db.execute(
-                delete_query, {"case_id": case_id, "current_ids": current_ids}
-            )
+        """Upsert solutions records (normalized table).
 
+        Purely additive — see `_upsert_evidence` for rationale. For
+        intentional removal, use `ISolutionRepository.delete_solution`.
+        """
         # Upsert each solution
         for solution in solutions_list:
             solution_id = (
@@ -1717,19 +1763,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def _upsert_uploaded_files(
         self, case_id: str, files_list: List[UploadedFile], organization_id: str
     ) -> None:
-        """Upsert uploaded_files records (normalized table) - matches UploadedFile Pydantic model."""
-        # Delete existing files not in current list
-        current_ids = [f.file_id for f in files_list]
-        if current_ids:
-            delete_query = text("""
-                DELETE FROM uploaded_files
-                WHERE case_id = :case_id
-                AND file_id != ALL(:current_ids)
-            """)
-            await self.db.execute(
-                delete_query, {"case_id": case_id, "current_ids": current_ids}
-            )
+        """Upsert uploaded_files records (normalized table) - matches UploadedFile Pydantic model.
 
+        Purely additive — see `_upsert_evidence` for rationale. For
+        intentional removal, use `delete_uploaded_file(case_id, file_id)`.
+        """
         # Upsert each file (field names match Pydantic model exactly)
         for file in files_list:
             query = text("""
@@ -1776,31 +1814,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     ) -> None:
         """Upsert case messages (PostgreSQL-optimized).
 
+        Purely additive — messages are an append-only log at the domain
+        level; nothing intentionally deletes them. A stale in-memory
+        ``case.messages`` MUST NOT silently truncate rows other concurrent
+        writers have persisted.
+
         Schema per design spec (case-schema.md §4.7):
         - message_id, turn_number, role, content, created_at, token_count, metadata
-
-        Strategy:
-        1. Delete messages not in current list (maintain sync with domain model)
-        2. Upsert each message (INSERT ... ON CONFLICT DO UPDATE)
-
-        Note: PostgreSQL uses != ALL(array) for exclusion queries (more efficient than NOT IN)
         """
-        # Get IDs of messages that should exist
-        current_ids = [
-            msg.get("message_id") for msg in messages_list if msg.get("message_id")
-        ]
-
-        if current_ids:
-            # Delete messages not in current list (PostgreSQL array syntax)
-            delete_query = text("""
-                DELETE FROM case_messages
-                WHERE case_id = :case_id
-                AND message_id != ALL(:current_ids)
-            """)
-            await self.db.execute(
-                delete_query, {"case_id": case_id, "current_ids": current_ids}
-            )
-
         # Upsert each message
         for idx, msg in enumerate(messages_list):
             # Skip if no message_id (shouldn't happen, but be safe)

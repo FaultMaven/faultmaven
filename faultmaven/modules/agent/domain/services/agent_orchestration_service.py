@@ -1276,14 +1276,12 @@ class AgentOrchestrationService:
                     "search_file",
                     "deep_analysis",
                 ):
-                    # Lazy-init per-evidence state with cross-turn count
+                    # Lazy-init per-evidence state. da_call_count is in-turn
+                    # only; cross-turn persistence would need a backing DB
+                    # column on Evidence.
                     if evidence_id not in evidence_da_states:
                         ev_size = await self._get_evidence_size(
                             evidence_id, tool_context
-                        )
-                        persisted_da_count = await self._get_persisted_da_count(
-                            evidence_id,
-                            context.context_data.get("case_id", ""),
                         )
                         # Check if proactive vectorization already completed
                         proactive_done = False
@@ -1298,7 +1296,7 @@ class AgentOrchestrationService:
                         evidence_da_states[evidence_id] = EvidenceDAState(
                             evidence_id=evidence_id,
                             content_size_bytes=ev_size,
-                            da_call_count=persisted_da_count,
+                            da_call_count=0,
                             vectorized=proactive_done,
                         )
                     state = evidence_da_states[evidence_id]
@@ -1356,7 +1354,10 @@ class AgentOrchestrationService:
                                 "query approach."
                             )
 
-                    # Track deep_analysis confidence + persist cross-turn counter
+                    # Track deep_analysis confidence. Counter is in-turn only
+                    # — no cross-turn persistence because Evidence has no
+                    # da_invocation_count DB column, and aggregate save(case)
+                    # from this path would race with concurrent turn writes.
                     if result.tool_name == "deep_analysis" and result.success:
                         try:
                             data = json.loads(result.content)
@@ -1367,31 +1368,6 @@ class AgentOrchestrationService:
                                 )
                         except (json.JSONDecodeError, TypeError, ValueError):
                             pass
-                        # Persist da_invocation_count for cross-turn trigger #4.
-                        # Evidence is a Pydantic model embedded in Case.evidence[],
-                        # so we update via case_repo (not evidence_service which
-                        # operates on the separate EvidenceArtifact SQL table).
-                        try:
-                            case = await self.case_repo.get(
-                                context.context_data.get("case_id", "")
-                            )
-                            if case:
-                                for ev in case.evidence:
-                                    if ev.evidence_id == evidence_id:
-                                        ev.da_invocation_count = (
-                                            getattr(ev, "da_invocation_count", 0) + 1
-                                        )
-                                        # Sync persistent count into ephemeral state
-                                        if ev.da_invocation_count > state.da_call_count:
-                                            state.da_call_count = ev.da_invocation_count
-                                        break
-                                await self.case_repo.save(case)
-                        except Exception as e:
-                            logger.debug(
-                                "Failed to update da_invocation_count for %s: %s",
-                                evidence_id,
-                                e,
-                            )
 
                     # Track timeouts
                     if (
@@ -1815,24 +1791,6 @@ class AgentOrchestrationService:
                 },
             )
         return tasks
-
-    async def _get_persisted_da_count(
-        self,
-        evidence_id: str,
-        case_id: str,
-    ) -> int:
-        """Load persisted da_invocation_count for cross-turn continuity."""
-        if not case_id:
-            return 0
-        try:
-            case = await self.case_repo.get(case_id)
-            if case:
-                for ev in case.evidence:
-                    if ev.evidence_id == evidence_id:
-                        return getattr(ev, "da_invocation_count", 0)
-        except Exception:
-            pass
-        return 0
 
     async def _auto_vectorize(
         self, evidence_id: str, tool_context: ToolContext

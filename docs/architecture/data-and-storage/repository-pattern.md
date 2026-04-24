@@ -1,10 +1,10 @@
-# Database Abstraction Layer Specification v2.2
+# Database Abstraction Layer Specification v2.3
 
 **Document Purpose**: Define the pluggable storage architecture that enables FaultMaven to switch between storage backends via configuration without code changes, across multiple data types and storage technologies.
 
 **Status**: ✅ Production Implementation
-**Version**: 2.2.1
-**Last Updated**: 2026-03-18
+**Version**: 2.3.0
+**Last Updated**: 2026-04-24
 **Alignment**:
 
 - Investigation Architecture v2.0 (Milestone-Based)
@@ -20,6 +20,7 @@
 - ✅ 13-method `CaseRepository` interface
 - ✅ `PostgreSQLHybridCaseRepository` is the sole PostgreSQL case-repository implementation (legacy `PostgreSQLCaseRepository` class removed)
 - ✅ `InMemoryVectorStore` removed — ChromaDB `PersistentClient` is always available
+- ✅ **(v2.3, 2026-04-24)** `save(case)` is **purely additive** — the aggregate save no longer performs `DELETE ... NOT IN (in_memory_ids)` on sibling tables. Intentional deletion is explicit via scoped repository methods. See [§4.1.1 Aggregate save semantics](#411-aggregate-save-semantics).
 
 > **Reality check (2026-04-18)**: the examples below occasionally use values like `CASE_STORAGE_TYPE=postgres` or `CASE_STORAGE_TYPE=sqlite` as shorthand for deployment modes. **Those values are not recognized by the code.** The actual selector at [repository_factory.py:62-63](../../../faultmaven/infrastructure/persistence/repository_factory.py#L62-L63) accepts only `inmemory` or `database`. When `CASE_STORAGE_TYPE=database`, the SQL dialect (SQLite vs PostgreSQL) is determined by `DATABASE_URL` — see `sqlite+aiosqlite://...` vs `postgresql+asyncpg://...`. `SessionlessCaseRepository` detects the dialect at runtime and routes to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository` accordingly. For the schema-level policy that goes with this runtime routing, see [Deployment-Aware Schema Strategy](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) (internal) which defines Tier 1 (both dialects) vs Tier 2 (PostgreSQL augmentations).
 
@@ -359,7 +360,14 @@ class CaseRepository(ABC):
     # Core CRUD (5 methods)
     @abstractmethod
     async def save(self, case: Case) -> Case:
-        """Save or update a case. Returns the saved case."""
+        """Save or update a case. Returns the saved case.
+
+        Semantics: purely additive for all owned sub-collections
+        (messages, evidence, hypotheses, solutions, uploaded_files).
+        Rows absent from the in-memory case are NOT removed — see
+        §4.1.1. Use the explicit scoped `delete_*` methods for
+        intentional removal.
+        """
         ...
 
     @abstractmethod
@@ -448,6 +456,39 @@ class CaseRepository(ABC):
 ```
 
 **Illustrated above: 11 methods** (5 CRUD + 2 messages + 4 specialized). The full interface adds report, checkpoint, evidence, and agent-execution operations — see the canonical `case_repository.py` for the complete contract.
+
+---
+
+### 4.1.1 Aggregate save semantics
+
+`save(case)` persists the case aggregate. For each owned sub-collection — `messages`, `evidence`, `hypotheses`, `solutions`, `uploaded_files` — the per-collection `_upsert_*` helper is **purely additive**: it inserts new rows and updates existing rows keyed by primary ID, but does NOT delete rows absent from the in-memory list.
+
+**Why this matters**. The in-memory `Case` object is a working snapshot, not the canonical truth for which rows should exist. Callers that save a `Case` they loaded earlier (foreground turn handlers, background vectorization tasks, DA tracking) cannot be trusted to hold the latest list of children — between their `get()` and `save()`, another concurrent writer may have added rows. Historically these helpers ran `DELETE FROM <table> WHERE case_id = ? AND <pk> NOT IN (in_memory_ids)`, which silently truncated those newer rows.
+
+**Rule**: **never use `save(case)` as a channel for intentional deletion.** If you need to remove a row, call the explicit scoped method that states the intent in its signature:
+
+| Entity | Explicit removal |
+| --- | --- |
+| Evidence | `delete_evidence(case_id, evidence_id)` |
+| Uploaded file | `delete_uploaded_file(case_id, file_id)` |
+| Hypothesis | `IHypothesisRepository.delete_hypothesis(hypothesis_id, organization_id)` |
+| Solution | `ISolutionRepository.delete_solution(solution_id, organization_id)` |
+| Message | — (append-only log; no domain operation intentionally removes messages) |
+
+**Scoped UPDATE methods**. For background tasks that need to persist a single-field change on one row, prefer scoped methods over aggregate save:
+
+| Method | Purpose |
+| --- | --- |
+| `update_evidence_vectorized(case_id, evidence_id, vectorized)` | Flip the `vectorized` flag after BGE-M3 encode completes. |
+| `update_activity_timestamp(case_id)` | Refresh `cases.updated_at` without re-serializing the aggregate. |
+
+Scoped methods:
+
+- Touch one column on one row; blast radius is the intended field.
+- Are safe to call from a fire-and-forget task holding a stale `Case` snapshot — the stale snapshot is never consulted during the write.
+- Make the intent visible in the signature, so code review can catch misuse.
+
+**Historical context**. Prior to v2.3, `save(case)` performed a DELETE-then-upsert on every owned sub-collection. A fire-and-forget background task (`_vectorize_evidence`) that captured a `Case` snapshot at turn-2 time and saved it ~34s later (after BGE-M3 encoding of a 171 KB log finished) truncated messages from turns 3–6 that had been persisted in the meantime. The fix removed the DELETE clauses and introduced `update_evidence_vectorized`; the broader pattern — "aggregate save must be additive" — applies to every `_upsert_*` helper.
 
 ---
 

@@ -138,6 +138,33 @@ class ICaseRepository(Protocol):
         """Update case last_activity_at timestamp."""
         ...
 
+    async def update_evidence_vectorized(
+        self, case_id: str, evidence_id: str, vectorized: bool
+    ) -> bool:
+        """Update the `vectorized` flag on a single evidence row.
+
+        Scoped single-field update — does not rewrite the case aggregate.
+        Safe to call from background tasks holding a stale Case snapshot,
+        since it touches only the one column on the one row.
+        """
+        ...
+
+    async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
+        """Delete a single evidence row.
+
+        Explicit alternative to mirror-delete via aggregate save(case).
+        Returns True if a row was removed, False if no such evidence existed.
+        """
+        ...
+
+    async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
+        """Delete a single uploaded_file row.
+
+        Explicit alternative to mirror-delete via aggregate save(case).
+        Returns True if a row was removed, False if no such file existed.
+        """
+        ...
+
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """Compute analytics for a case."""
         ...

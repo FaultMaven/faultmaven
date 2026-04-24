@@ -395,6 +395,71 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
+    async def update_evidence_vectorized(
+        self, case_id: str, evidence_id: str, vectorized: bool
+    ) -> bool:
+        """
+        Update the `vectorized` flag on a single evidence row.
+
+        Scoped single-field update — does NOT rewrite the case aggregate.
+        Safe to call from background tasks holding a stale Case snapshot,
+        since it touches only the one column on the one row.
+
+        Args:
+            case_id: Case the evidence belongs to (used for authorisation/scoping).
+            evidence_id: Evidence row to update.
+            vectorized: New value for the flag.
+
+        Returns:
+            True if a row was updated, False if no such evidence existed.
+
+        Raises:
+            RepositoryException: If the update fails.
+        """
+        pass
+
+    @abstractmethod
+    async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
+        """
+        Delete a single evidence row.
+
+        Explicit alternative to the mirror-delete that `save(case)` performs
+        via `_upsert_evidence`. Prefer this method for intentional removals —
+        it states intent clearly and does not require a case-aggregate save.
+
+        Args:
+            case_id: Case the evidence belongs to.
+            evidence_id: Evidence row to remove.
+
+        Returns:
+            True if a row was removed, False if no such evidence existed.
+
+        Raises:
+            RepositoryException: If the delete fails.
+        """
+        pass
+
+    @abstractmethod
+    async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
+        """
+        Delete a single uploaded_file row.
+
+        Explicit alternative to the mirror-delete that `save(case)` performs
+        via `_upsert_uploaded_files`. Prefer this method for intentional removals.
+
+        Args:
+            case_id: Case the file belongs to.
+            file_id: Uploaded file row to remove.
+
+        Returns:
+            True if a row was removed, False if no such file existed.
+
+        Raises:
+            RepositoryException: If the delete fails.
+        """
+        pass
+
+    @abstractmethod
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """
         Compute analytics for a case.
@@ -901,6 +966,43 @@ class InMemoryCaseRepository(CaseRepository):
 
         case.last_activity_at = datetime.now(timezone.utc)
         return True
+
+    async def update_evidence_vectorized(
+        self, case_id: str, evidence_id: str, vectorized: bool
+    ) -> bool:
+        """Flip `vectorized` on a single evidence row in memory."""
+        case = self._cases.get(case_id)
+        if not case:
+            return False
+        for ev in case.evidence or []:
+            if getattr(ev, "evidence_id", None) == evidence_id:
+                ev.vectorized = vectorized
+                return True
+        return False
+
+    async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
+        """Remove a single evidence row in memory."""
+        case = self._cases.get(case_id)
+        if not case or not case.evidence:
+            return False
+        before = len(case.evidence)
+        case.evidence = [
+            ev
+            for ev in case.evidence
+            if getattr(ev, "evidence_id", None) != evidence_id
+        ]
+        return len(case.evidence) < before
+
+    async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
+        """Remove a single uploaded_file row in memory."""
+        case = self._cases.get(case_id)
+        if not case or not case.uploaded_files:
+            return False
+        before = len(case.uploaded_files)
+        case.uploaded_files = [
+            f for f in case.uploaded_files if getattr(f, "file_id", None) != file_id
+        ]
+        return len(case.uploaded_files) < before
 
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """Compute analytics for case in memory."""

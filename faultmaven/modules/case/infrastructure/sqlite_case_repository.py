@@ -1267,6 +1267,83 @@ class SQLiteCaseRepository(CaseRepository):
                 f"Failed to update activity timestamp for case {case_id}: {e}"
             ) from e
 
+    async def update_evidence_vectorized(
+        self, case_id: str, evidence_id: str, vectorized: bool
+    ) -> bool:
+        """Scoped UPDATE of the `vectorized` column on one evidence row.
+
+        Replaces the `save(case)` path previously used by background
+        vectorization tasks — that path rewrote the whole case aggregate from
+        a potentially stale snapshot and silently truncated newer writes on
+        concurrent tables (see milestone_engine._vectorize_evidence).
+        """
+        try:
+            query = text("""
+                UPDATE evidence
+                SET vectorized = :vectorized
+                WHERE case_id = :case_id AND evidence_id = :evidence_id
+            """)
+            result = await self.db.execute(
+                query,
+                {
+                    "case_id": case_id,
+                    "evidence_id": evidence_id,
+                    "vectorized": 1 if vectorized else 0,
+                },
+            )
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to update vectorized flag for evidence "
+                f"{evidence_id} on case {case_id}: {e}"
+            ) from e
+
+    async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
+        """Scoped DELETE of a single evidence row.
+
+        Explicit alternative to the mirror-delete the aggregate save performs.
+        Use this for intentional removals rather than popping from
+        `case.evidence` and calling `save(case)`.
+        """
+        try:
+            query = text("""
+                DELETE FROM evidence
+                WHERE case_id = :case_id AND evidence_id = :evidence_id
+            """)
+            result = await self.db.execute(
+                query, {"case_id": case_id, "evidence_id": evidence_id}
+            )
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to delete evidence {evidence_id} on case {case_id}: {e}"
+            ) from e
+
+    async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
+        """Scoped DELETE of a single uploaded_file row.
+
+        Explicit alternative to the mirror-delete the aggregate save performs.
+        """
+        try:
+            query = text("""
+                DELETE FROM uploaded_files
+                WHERE case_id = :case_id AND file_id = :file_id
+            """)
+            result = await self.db.execute(
+                query, {"case_id": case_id, "file_id": file_id}
+            )
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to delete uploaded_file {file_id} on case {case_id}: {e}"
+            ) from e
+
     async def get_analytics(self, case_id: str) -> dict[str, Any]:
         """Compute analytics for case from normalized tables.
 
@@ -1526,22 +1603,16 @@ class SQLiteCaseRepository(CaseRepository):
     async def _upsert_evidence(
         self, case_id: str, evidence_list: builtins.list[Evidence], organization_id: str
     ) -> None:
-        """Upsert evidence records (SQLite-compatible)."""
-        # Delete existing evidence not in current list using IN clause
-        current_ids = [e.evidence_id for e in evidence_list]
-        if current_ids:
-            # SQLite: Use explicit IN clause instead of != ALL(array)
-            placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
-            delete_query = text(f"""
-                DELETE FROM evidence
-                WHERE case_id = :case_id
-                AND evidence_id NOT IN ({placeholders})
-            """)
-            params = {"case_id": case_id}
-            for i, eid in enumerate(current_ids):
-                params[f"id_{i}"] = eid
-            await self.db.execute(delete_query, params)
+        """Upsert evidence records (SQLite-compatible).
 
+        Purely additive: inserts new rows and updates existing ones keyed by
+        evidence_id. Does NOT remove rows absent from `evidence_list`. The
+        in-memory case is a working snapshot, not the canonical truth for
+        which rows should exist — callers holding a stale snapshot (e.g.
+        background tasks) must not be able to silently delete rows that
+        other concurrent writers have added. For intentional removal, use
+        `delete_evidence(case_id, evidence_id)` explicitly.
+        """
         # Upsert each evidence record (no ::jsonb type cast)
         for evidence in evidence_list:
             query = text("""
@@ -1647,20 +1718,11 @@ class SQLiteCaseRepository(CaseRepository):
     async def _upsert_hypotheses(
         self, case_id: str, hypotheses_dict: dict[str, Hypothesis], organization_id: str
     ) -> None:
-        """Upsert hypotheses records (SQLite-compatible)."""
-        current_ids = list(hypotheses_dict.keys())
-        if current_ids:
-            placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
-            delete_query = text(f"""
-                DELETE FROM hypotheses
-                WHERE case_id = :case_id
-                AND hypothesis_id NOT IN ({placeholders})
-            """)
-            params = {"case_id": case_id}
-            for i, hid in enumerate(current_ids):
-                params[f"id_{i}"] = hid
-            await self.db.execute(delete_query, params)
+        """Upsert hypotheses records (SQLite-compatible).
 
+        Purely additive — see `_upsert_evidence` for rationale. For
+        intentional removal, use `IHypothesisRepository.delete_hypothesis`.
+        """
         for hypothesis_id, hypothesis in hypotheses_dict.items():
             query = text("""
                 INSERT INTO hypotheses (
@@ -1736,22 +1798,11 @@ class SQLiteCaseRepository(CaseRepository):
         solutions_list: builtins.list[Solution],
         organization_id: str,
     ) -> None:
-        """Upsert solutions records (SQLite-compatible)."""
-        current_ids = [
-            s.solution_id for s in solutions_list if hasattr(s, "solution_id")
-        ]
-        if current_ids:
-            placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
-            delete_query = text(f"""
-                DELETE FROM solutions
-                WHERE case_id = :case_id
-                AND solution_id NOT IN ({placeholders})
-            """)
-            params = {"case_id": case_id}
-            for i, sid in enumerate(current_ids):
-                params[f"id_{i}"] = sid
-            await self.db.execute(delete_query, params)
+        """Upsert solutions records (SQLite-compatible).
 
+        Purely additive — see `_upsert_evidence` for rationale. For
+        intentional removal, use `ISolutionRepository.delete_solution`.
+        """
         for solution in solutions_list:
             solution_id = (
                 solution.solution_id
@@ -1864,20 +1915,11 @@ class SQLiteCaseRepository(CaseRepository):
         files_list: builtins.list[UploadedFile],
         organization_id: str,
     ) -> None:
-        """Upsert uploaded_files records (SQLite-compatible)."""
-        current_ids = [f.file_id for f in files_list]
-        if current_ids:
-            placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
-            delete_query = text(f"""
-                DELETE FROM uploaded_files
-                WHERE case_id = :case_id
-                AND file_id NOT IN ({placeholders})
-            """)
-            params = {"case_id": case_id}
-            for i, fid in enumerate(current_ids):
-                params[f"id_{i}"] = fid
-            await self.db.execute(delete_query, params)
+        """Upsert uploaded_files records (SQLite-compatible).
 
+        Purely additive — see `_upsert_evidence` for rationale. For
+        intentional removal, use `delete_uploaded_file(case_id, file_id)`.
+        """
         for file in files_list:
             query = text("""
                 INSERT INTO uploaded_files (
@@ -1923,27 +1965,14 @@ class SQLiteCaseRepository(CaseRepository):
     ) -> None:
         """Upsert case messages (SQLite-compatible).
 
+        Purely additive — messages are an append-only log at the domain
+        level; nothing intentionally deletes them. A stale in-memory
+        ``case.messages`` MUST NOT silently truncate rows other concurrent
+        writers have persisted.
+
         Schema per design spec (case-schema.md §4.7):
         - message_id, turn_number, role, content, created_at, token_count, metadata
         """
-        # Get IDs of messages that should exist
-        current_ids = [
-            msg.get("message_id") for msg in messages_list if msg.get("message_id")
-        ]
-
-        if current_ids:
-            # Delete messages not in current list
-            placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
-            delete_query = text(f"""
-                DELETE FROM case_messages
-                WHERE case_id = :case_id
-                AND message_id NOT IN ({placeholders})
-            """)
-            params = {"case_id": case_id}
-            for i, mid in enumerate(current_ids):
-                params[f"id_{i}"] = mid
-            await self.db.execute(delete_query, params)
-
         # Upsert each message
         for idx, msg in enumerate(messages_list):
             # Skip if no message_id (shouldn't happen, but be safe)

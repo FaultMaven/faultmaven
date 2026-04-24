@@ -3056,12 +3056,10 @@ class MilestoneEngine:
     ) -> bool:
         """Vectorize a single evidence file via the registered tool.
 
-        On success, flips ``Evidence.vectorized`` to True on the in-memory
-        case and persists the case via the repository so the proactive +
-        reactive gates skip this evidence on subsequent turns. The flag is
-        the single source of truth for "is this evidence already in the
-        case vector store"; without persistence the gate re-fires every
-        turn and stacks concurrent BGE-M3 encodes (2026-04-21 incident).
+        On success, flips ``Evidence.vectorized`` to True via a scoped
+        single-row repository UPDATE so proactive + reactive gates skip
+        this evidence on subsequent turns. The flag is the single source
+        of truth for "is this evidence already in the case vector store".
 
         No internal ``asyncio.wait_for``: time-bound policy belongs at the
         caller. Proactive callers run this unbounded as a background task
@@ -3099,37 +3097,32 @@ class MilestoneEngine:
 
         logger.info("vectorize_file succeeded for %s", evidence_id)
 
-        # Mark the in-memory evidence as vectorized and persist so the
-        # gate at _start_proactive_vectorization (and the reactive checks)
-        # skip this evidence on future turns. Persistence is best-effort:
-        # if the save fails, in-memory state is still updated so the gate
-        # works within the current turn; the next turn will re-check and
-        # re-fire only if persistence genuinely didn't land.
-        case = getattr(tool_context, "in_memory_case", None)
-        if case is None and getattr(tool_context, "case_repository", None):
+        # Persist vectorized=True via a scoped single-row UPDATE. Must NOT
+        # use repository.save(case) — this runs as a fire-and-forget task
+        # that can complete after subsequent turns have written. An
+        # aggregate save from a stale snapshot would silently wipe those
+        # newer writes across every case-owned table.
+        case_id = getattr(tool_context, "case_id", None)
+        if case_id:
             try:
-                case = await tool_context.case_repository.get(tool_context.case_id)
-            except Exception as e:
-                logger.debug(
-                    "Failed to resolve case to persist vectorized flag " "for %s: %s",
-                    evidence_id,
-                    e,
+                await self.repository.update_evidence_vectorized(
+                    case_id, evidence_id, True
                 )
-                return True
-
-        if case is not None:
-            for ev in getattr(case, "evidence", []) or []:
-                if getattr(ev, "evidence_id", None) == evidence_id:
-                    ev.vectorized = True
-                    break
-            try:
-                await self.repository.save(case)
             except Exception as e:
                 logger.debug(
                     "Failed to persist vectorized flag for %s: %s",
                     evidence_id,
                     e,
                 )
+
+        # Flip the flag on the in-memory snapshot so the current turn's
+        # gate sees it without another DB read.
+        case = getattr(tool_context, "in_memory_case", None)
+        if case is not None:
+            for ev in getattr(case, "evidence", []) or []:
+                if getattr(ev, "evidence_id", None) == evidence_id:
+                    ev.vectorized = True
+                    break
 
         return True
 
@@ -3222,7 +3215,9 @@ class MilestoneEngine:
 
         already_vectorized = self._evidence_is_vectorized(case, evidence_id)
 
-        # Track deep_analysis confidence + persist cross-turn counter
+        # Track deep_analysis confidence for the low-confidence trigger
+        # below. In-turn only — see agent_orchestration_service for why
+        # cross-turn persistence was dropped.
         if func_name == "deep_analysis" and tool_result.success and case:
             try:
                 data = (
@@ -3232,17 +3227,6 @@ class MilestoneEngine:
                 )
                 if isinstance(data, dict):
                     confidence = float(data.get("confidence", 1.0))
-                    # Persist da_invocation_count for cross-turn tracking
-                    for ev in getattr(case, "evidence", []):
-                        if ev.evidence_id == evidence_id:
-                            ev.da_invocation_count = (
-                                getattr(ev, "da_invocation_count", 0) + 1
-                            )
-                            break
-                    try:
-                        await self.repository.save(case)
-                    except Exception as e:
-                        logger.debug("Failed to persist da_invocation_count: %s", e)
 
                     # Low confidence trigger
                     if confidence < 0.2 and not already_vectorized:

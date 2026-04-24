@@ -502,6 +502,89 @@ class DatabaseCaseRepository(CaseRepository):
                 f"Failed to update activity timestamp for case {case_id}: {e}"
             ) from e
 
+    async def update_evidence_vectorized(
+        self, case_id: str, evidence_id: str, vectorized: bool
+    ) -> bool:
+        """Scoped UPDATE of the `vectorized` flag on one evidence row.
+
+        Safe alternative to aggregate save(case) from background tasks — does
+        not rewrite case_messages or other sibling tables.
+        """
+        try:
+            stmt = (
+                update(EvidenceModel)
+                .where(
+                    and_(
+                        EvidenceModel.case_id == case_id,
+                        EvidenceModel.evidence_id == evidence_id,
+                    )
+                )
+                .values(vectorized=vectorized)
+            )
+            result = await self.db.execute(stmt)
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(
+                "Failed to update vectorized flag for evidence %s on case %s: %s",
+                evidence_id,
+                case_id,
+                e,
+            )
+            raise RepositoryException(
+                f"Failed to update vectorized flag for evidence "
+                f"{evidence_id} on case {case_id}: {e}"
+            ) from e
+
+    async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
+        """Scoped DELETE of a single evidence row."""
+        try:
+            stmt = delete(EvidenceModel).where(
+                and_(
+                    EvidenceModel.case_id == case_id,
+                    EvidenceModel.evidence_id == evidence_id,
+                )
+            )
+            result = await self.db.execute(stmt)
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(
+                "Failed to delete evidence %s on case %s: %s",
+                evidence_id,
+                case_id,
+                e,
+            )
+            raise RepositoryException(
+                f"Failed to delete evidence {evidence_id} on case {case_id}: {e}"
+            ) from e
+
+    async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
+        """Scoped DELETE of a single uploaded_file row."""
+        try:
+            stmt = delete(UploadedFileModel).where(
+                and_(
+                    UploadedFileModel.case_id == case_id,
+                    UploadedFileModel.file_id == file_id,
+                )
+            )
+            result = await self.db.execute(stmt)
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(
+                "Failed to delete uploaded_file %s on case %s: %s",
+                file_id,
+                case_id,
+                e,
+            )
+            raise RepositoryException(
+                f"Failed to delete uploaded_file {file_id} on case {case_id}: {e}"
+            ) from e
+
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """
         Compute analytics for a case.

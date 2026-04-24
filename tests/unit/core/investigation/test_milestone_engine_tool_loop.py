@@ -1092,7 +1092,10 @@ class TestVectorizedFlagPersistence:
         )
         provider = AsyncMock()
         repo = MagicMock()
+        # Scoped update replaces aggregate save(case) so a stale snapshot
+        # can't truncate concurrent writes on sibling tables.
         repo.save = AsyncMock()
+        repo.update_evidence_vectorized = AsyncMock(return_value=True)
         engine = MilestoneEngine(
             llm_provider=provider,
             repository=repo,
@@ -1120,10 +1123,18 @@ class TestVectorizedFlagPersistence:
 
         assert result is True
         assert ev.vectorized is True, (
-            "Successful vectorization must flip Evidence.vectorized so "
-            "subsequent proactive/reactive gates skip this evidence"
+            "Successful vectorization must flip Evidence.vectorized on the "
+            "in-memory snapshot so the current turn's gate sees the flip."
         )
-        repo.save.assert_awaited_once_with(case)
+        # Persistence must go through the scoped single-row UPDATE, NOT the
+        # aggregate save(case) path. An aggregate save from this
+        # fire-and-forget task would silently truncate messages and other
+        # sibling rows that concurrent turns have written while the BGE-M3
+        # encode was in flight.
+        repo.update_evidence_vectorized.assert_awaited_once_with(
+            "case_test", "ev_abc", True
+        )
+        repo.save.assert_not_called()
 
     async def test_failure_leaves_flag_false_and_does_not_persist(self):
         engine, repo = await self._make_engine_with_tool(tool_success=False)
@@ -1136,6 +1147,7 @@ class TestVectorizedFlagPersistence:
             "A failed vectorize must not mark the evidence vectorized; "
             "the next turn should retry."
         )
+        repo.update_evidence_vectorized.assert_not_called()
         repo.save.assert_not_called()
 
     async def test_vectorized_evidence_skips_proactive(self):

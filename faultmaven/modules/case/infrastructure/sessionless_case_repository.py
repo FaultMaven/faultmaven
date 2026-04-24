@@ -281,6 +281,28 @@ class SessionlessCaseRepository(CaseRepository):
             repo = _get_repository_for_session(session)
             return await repo.update_activity_timestamp(case_id)
 
+    async def update_evidence_vectorized(
+        self, case_id: str, evidence_id: str, vectorized: bool
+    ) -> bool:
+        """Scoped update of the `vectorized` flag on one evidence row."""
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            return await repo.update_evidence_vectorized(
+                case_id, evidence_id, vectorized
+            )
+
+    async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
+        """Explicit scoped delete of a single evidence row."""
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            return await repo.delete_evidence(case_id, evidence_id)
+
+    async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
+        """Explicit scoped delete of a single uploaded_file row."""
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            return await repo.delete_uploaded_file(case_id, file_id)
+
     async def get_analytics(self, case_id: str) -> dict[str, Any]:
         """Compute analytics for a case."""
         async with get_db_session() as session:
