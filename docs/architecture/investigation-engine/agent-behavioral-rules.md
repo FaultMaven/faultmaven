@@ -376,6 +376,8 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | 7 (Signal Extraction) | INQUIRY + INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` constant | After ASSISTANT ROLE, before EVIDENCE GROUNDING |
 | 8 (Full-Context Reasoning) | INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` (paired with Rule 7) | Same block as Rule 7 |
 
+**Non-rule shared constants:** `_DATA_CITATION_RULE` is a shared quality-standard constant (not a behavioral rule) concatenated into INQUIRY_TEMPLATE's TRIAGE SUMMARY QUALITY section and INVESTIGATION_BASE's WORKING WITH EVIDENCE DATA section. It prescribes specificity when citing structural-index values (actual IPs / counts / timestamps rather than "I see some errors") and judgment when enumerating entities. Follows the same single-definition pattern as `_ADVISOR_ROLE_CONSTRAINT` to prevent drift between the two injection sites.
+
 ### Dynamic Injection: Focus Zone and INQUIRY State
 
 Two pieces of rule-adjacent content are injected at runtime:
@@ -435,6 +437,8 @@ KEY PRINCIPLES (Rules 4, 5)                             Graceful Pivot + Work Wi
                                                         one-ask-per-turn principle
 FOLLOW-UP SUGGESTIONS
 EVIDENCE FROM ATTACHMENTS / CLASSIFICATION DECISION TREE / RECORDS
+WORKING WITH EVIDENCE DATA                              _DATA_CITATION_RULE constant (also used in
+                                                        INQUIRY_TEMPLATE TRIAGE SUMMARY QUALITY)
 EVIDENCE SUMMARY QUALITY                                Long-term memory for evidence artifacts
 INVESTIGATION JOURNAL
 MILESTONE ATTRIBUTION
