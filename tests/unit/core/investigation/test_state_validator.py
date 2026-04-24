@@ -197,6 +197,7 @@ class TestHypothesisStates:
             statement="Test hypothesis",
             category=HypothesisCategory.CODE,
             status=HypothesisStatus.REFUTED,
+            refutation_reason="disproved by counter-evidence",
             generated_at_turn=1,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC,
             rationale="Test hypothesis",

@@ -157,8 +157,15 @@ def _make_hypothesis(
     likelihood: float = 0.7,
     statement: str = "DNS cache stale",
     turn: int = 2,
+    refutation_reason: str | None = None,
 ) -> Hypothesis:
-    """Create a Hypothesis object."""
+    """Create a Hypothesis object.
+
+    When ``status=REFUTED``, a refutation_reason is required by the domain
+    invariant; callers should pass one or accept the default placeholder.
+    """
+    if status == HypothesisStatus.REFUTED and refutation_reason is None:
+        refutation_reason = "test refutation reason"
     return Hypothesis(
         hypothesis_id=f"hyp_{uuid4().hex[:12]}",
         statement=statement,
@@ -168,6 +175,7 @@ def _make_hypothesis(
         generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
         rationale="DNS TTL expired",
         generated_at_turn=turn,
+        refutation_reason=refutation_reason,
     )
 
 
@@ -350,6 +358,7 @@ class TestTransformInvestigating:
             status=HypothesisStatus.REFUTED,
             likelihood=0.3,
             statement="Network partition",
+            refutation_reason="packet capture shows consistent connectivity",
         )
         case.hypotheses[h1.hypothesis_id] = h1
         case.hypotheses[h2.hypothesis_id] = h2
