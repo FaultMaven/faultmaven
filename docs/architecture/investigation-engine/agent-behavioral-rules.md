@@ -121,12 +121,15 @@ The three-step framework is an internal reasoning scaffold, not an output format
 2. **Causal reasoning** — language like "causes", "leads to", "because", "therefore", "THIS SUGGESTS"
 3. **Specific evidence references** — at least 2 of 4 categories: timestamps (HH:MM, YYYY-MM-DD), metrics/percentages, specific IDs (commit hashes, deployment IDs), error messages/log excerpts
 4. **Anti-patterns** — checklist engineering (5+ bullets, "try these N things"), generic best practices ("implement monitoring", "follow best practices")
+5. **Case specificity** — a short response (<300 chars) that neither echoes a keyword from the case's symptom statement nor cites the case ID is flagged as generic. The length gate exists so full-length responses that synthesize case detail are not falsely flagged.
 
 When violations are detected, a self-correction retry feeds the specific violations back to the LLM for one rewrite attempt. See [Error Handling §3.2](./error-handling-and-recovery.md#32-reasoning-validation-with-self-correction).
 
 **Evidence referencing**: Each evidence item in the LLM context carries a `label` attribute (filename, description, or data type). The agent MUST reference evidence by its label in responses (e.g., "in the nginx error log"), never by internal `ev_` IDs which are meaningless to users. IDs are only for internal schema fields (`evidence_analyzed`, `milestone_justifications`).
 
 **DA turn exception**: For Directed Analysis turns answering factual lookups, causal reasoning is downgraded to a warning when it is the sole violation (factual answers like "these 3 usernames attempted login" are not causal chains).
+
+**INQUIRY bypass**: The validator short-circuits entirely when `case.status == INQUIRY`. Pre-investigation turns answer user questions and gather context; they are not expected to produce observation-analysis-conclusion reasoning. This matches Rule 2's scope (INVESTIGATING) at the enforcement layer.
 
 **Graduated validator enforcement**: The forced structure applies when the agent makes diagnostic claims, proposes actions, or advances hypotheses. The validator should not trigger self-correction on responses that are confirmations, clarifications of previous analysis, or acknowledgments of user input. This graduation is implemented in the validator, not the prompt — the LLM always aims for the structure, but the validator tolerates its absence in non-diagnostic responses.
 
