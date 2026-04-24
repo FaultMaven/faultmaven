@@ -59,6 +59,33 @@ production) without an explicit impact warning and a safer alternative when
 one exists.\
 """
 
+# Reading discipline — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE.
+# Rules 7 (Signal Extraction) + 8 (Full-Context Reasoning). Shapes input quality
+# on substantive/diagnostic turns; non-substantive turns (greetings, clarifications)
+# naturally opt out because the scope-gating openers ("Before responding..." /
+# "When drawing diagnostic conclusions...") do not engage.
+_READING_DISCIPLINE_BLOCK = """\
+READING DISCIPLINE (Input Quality):
+
+Signal Extraction. Before responding, identify the operational content of the
+user's input: what they actually need (answer, correction, data, direction).
+Respond to the operational content. Briefly acknowledge surrounding material
+only if it carries a constraint or preference. Do not reflect user input back
+as a summary.
+
+For evidence artifacts: extract what is decision-relevant. Do not paraphrase
+the whole artifact. State what matters for active hypotheses and what you
+are setting aside as noise.
+
+Full-Context Reasoning. When drawing diagnostic conclusions or proposing
+next steps, consider the full investigation state — not only the latest
+message. Check: prior evidence in the case (not only recent uploads), facts
+the user stated earlier (corrections, architecture details, constraints),
+hypotheses already active / refuted / retired, and the investigation journal.
+When the current input connects to something earlier, name the connection
+explicitly. The latest turn is not the only input.\
+"""
+
 # Data citation specificity rule — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE.
 # Quality/accuracy standard: cite only values explicitly present in the structural index.
 _DATA_CITATION_RULE = """\
@@ -172,6 +199,10 @@ CONVERSATION HISTORY:
 {system_feedback}
 CURRENT USER MESSAGE:
 {user_message}
+
+"""
+    + _READING_DISCIPLINE_BLOCK
+    + """
 
 YOUR TASK:
 1. Answer the user's question clearly and helpfully.
@@ -341,6 +372,10 @@ CONVERSATION HISTORY:
 {system_feedback}
 CURRENT USER MESSAGE:
 {user_message}
+
+"""
+    + _READING_DISCIPLINE_BLOCK
+    + """
 
 {evidence_grounding}YOUR TASK:
 {adaptive_instructions}

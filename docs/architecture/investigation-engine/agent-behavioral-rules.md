@@ -378,8 +378,8 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
 | 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES (behavior table + one-ask-per-turn principle) | After YOUR TASK |
 | 6 (Knowledge First) | INQUIRY + INVESTIGATION_BASE + DA system instruction | YOUR TASK (INQUIRY), DIAGNOSIS (INVESTIGATING), TYPE B routing (DA instruction); `KNOWLEDGE_QUERY_INSTRUCTIONS` constant used for knowledge_query bypass | Early in each |
-| 7 (Signal Extraction) | INQUIRY + INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` constant | After ASSISTANT ROLE, before EVIDENCE GROUNDING |
-| 8 (Full-Context Reasoning) | INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` (paired with Rule 7) | Same block as Rule 7 |
+| 7 (Signal Extraction) | INQUIRY + INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` constant | After CURRENT USER MESSAGE, before YOUR TASK (INQUIRY) / before EVIDENCE GROUNDING (INVESTIGATION_BASE) — near top of each template |
+| 8 (Full-Context Reasoning) | INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` (paired with Rule 7) | Same block as Rule 7. In INQUIRY the Full-Context portion is a no-op because its scope-gating opener ("When drawing diagnostic conclusions...") does not engage on pre-investigation turns. |
 
 **Non-rule shared constants:** `_DATA_CITATION_RULE` is a shared quality-standard constant (not a behavioral rule) concatenated into INQUIRY_TEMPLATE's TRIAGE SUMMARY QUALITY section and INVESTIGATION_BASE's WORKING WITH EVIDENCE DATA section. It prescribes specificity when citing structural-index values (actual IPs / counts / timestamps rather than "I see some errors") and judgment when enumerating entities. Follows the same single-definition pattern as `_ADVISOR_ROLE_CONSTRAINT` to prevent drift between the two injection sites.
 
