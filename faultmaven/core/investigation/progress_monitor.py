@@ -53,6 +53,27 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Stage-Gate Milestones (trigger stage transitions)
+# =============================================================================
+#
+# These four milestones drive stage transitions (per
+# docs/architecture/investigation-engine/evidence-driven-investigation-framework.md §3).
+# When any of them fires in a turn, the stage changes. Because they are also
+# included in TurnProgress.milestones_completed, the investigative-turn counter
+# resets on stage transitions through the general milestone-reset path — the
+# counter is effectively "turns since the last milestone OR stage change,"
+# matching progress-transparency.md §Transitions.
+STAGE_GATE_MILESTONES: frozenset[str] = frozenset(
+    {
+        "mitigation_accepted",
+        "mitigation_verified",
+        "solution_accepted",
+        "solution_verified",
+    }
+)
+
+
+# =============================================================================
 # Milestone Dependency Map (static)
 # =============================================================================
 
@@ -273,7 +294,17 @@ class ProgressMonitor:
 
         Conversational turns (questions, off-topic chat) are excluded.
 
-        The counter resets when any milestone is completed.
+        **Stage-scoping:** The counter resets on any entry in
+        ``milestones_completed``. This includes both progress milestones (e.g.,
+        ``symptom_verified``) AND stage-gate milestones
+        (``STAGE_GATE_MILESTONES``: ``mitigation_accepted``,
+        ``mitigation_verified``, ``solution_accepted``, ``solution_verified``).
+        Since stage transitions are always driven by a stage-gate milestone in
+        the same turn, a stage transition always resets the counter. This
+        matches progress-transparency.md §Transitions ("A stage transition
+        resets the counter. A milestone completion in the current stage turns
+        the light off") — the two clauses describe the same mechanism from
+        different angles.
 
         Args:
             case: Current investigation case
@@ -286,7 +317,9 @@ class ProgressMonitor:
 
         count = 0
         for turn in reversed(case.turn_history):
-            # Stop counting at the last milestone completion
+            # Reset on any milestone — progress OR stage-gate. Stage
+            # transitions come through here because STAGE_GATE_MILESTONES
+            # are recorded in turn.milestones_completed when they fire.
             if turn.milestones_completed:
                 break
 
