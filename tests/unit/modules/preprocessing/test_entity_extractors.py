@@ -353,3 +353,56 @@ async def test_preprocessor_caps_per_type_and_records_overflow(monkeypatch):
     evidence_meta = result.extraction_metadata.get("evidence_metadata", {})
     overflow = evidence_meta.get("entities", {}).get("overflow_types")
     assert overflow == ["ip"]
+
+
+@pytest.mark.asyncio
+async def test_preprocessor_increments_overflow_counter_on_cap_trip(monkeypatch):
+    """Phase 4 hygiene — ``faultmaven_case_entities_overflow_total`` must
+    increment once per (evidence, entity_type) overflow event. The
+    counter is labeled by entity_type; we read the ``ip`` sample before
+    and after to assert a single-step increment even though the
+    underlying cap truncated 15 rows (20 distinct IPs → 5 retained)."""
+    monkeypatch.setenv("FAULTMAVEN_ENTITY_REGISTRY", "true")
+    monkeypatch.setenv("FAULTMAVEN_ENTITY_REGISTRY_CAP", "5")
+    from faultmaven.config import settings as settings_module
+
+    settings_module._settings_instance = None
+
+    from faultmaven.infrastructure.observability.evidence_metrics import (
+        CASE_ENTITIES_OVERFLOW_TOTAL,
+        PROMETHEUS_AVAILABLE,
+    )
+    from faultmaven.modules.preprocessing.classifier import DataClassifier
+    from faultmaven.modules.preprocessing.extractors.logs_extractor import (
+        LogsAndErrorsExtractor,
+    )
+    from faultmaven.modules.preprocessing.preprocessing_service import (
+        PreprocessingService,
+    )
+
+    if not PROMETHEUS_AVAILABLE:
+        pytest.skip("prometheus_client not installed; counter is a no-op")
+
+    def _ip_sample() -> float:
+        # prometheus_client ``Counter.labels(...)._value.get()`` exposes
+        # the raw float — the public API for introspection.
+        return CASE_ENTITIES_OVERFLOW_TOTAL.labels(entity_type="ip")._value.get()
+
+    before = _ip_sample()
+
+    lines = [
+        f"2024-01-01 12:00:{i:02d} sshd[1234]: ERROR Failed password "
+        f"for root from 10.0.0.{i} port 22"
+        for i in range(20)
+    ]
+    svc = PreprocessingService(
+        classifier=DataClassifier(),
+        logs_extractor=LogsAndErrorsExtractor(),
+    )
+    await svc.classify_and_extract(content="\n".join(lines), filename="auth.log")
+
+    after = _ip_sample()
+    assert after == pytest.approx(before + 1.0), (
+        f"Expected ip overflow counter to step by exactly 1; "
+        f"before={before} after={after}"
+    )

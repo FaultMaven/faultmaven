@@ -139,6 +139,22 @@ if PROMETHEUS_AVAILABLE:
         "index insufficient for that type.",
         labelnames=["data_type", "tool"],
     )
+
+    # Phase 4 — case-level entity registry overflow. Labeled by
+    # ``entity_type`` so the dashboard surfaces which vocabulary
+    # members regularly hit the per-(evidence, type) hard cap.
+    # Emitted once per (evidence, entity_type) pair that overflows,
+    # not per excess row — a single evidence spilling 1000 IPs
+    # increments the ``ip`` bucket by 1, not 500.
+    # Per Phase 4 plan exit criteria: if any type's overflow rate
+    # > 20% of evidence, tune the cap or split the type.
+    CASE_ENTITIES_OVERFLOW_TOTAL = Counter(
+        "faultmaven_case_entities_overflow_total",
+        "Number of (evidence, entity_type) pairs that exceeded the "
+        "Phase 4 per-(evidence, type) hard cap and had entity rows "
+        "truncated. Labelled by entity_type.",
+        labelnames=["entity_type"],
+    )
 else:
     EVIDENCE_DEDUP_HITS_TOTAL = _NoOpMetric()
     EVIDENCE_ORPHAN_FILES_FOUND_TOTAL = _NoOpMetric()
@@ -149,6 +165,7 @@ else:
     EVIDENCE_RECLASSIFICATION_TOTAL = _NoOpMetric()
     PREPROCESSING_EXTRACTION_YIELD_RATIO = _NoOpMetric()
     AGENT_TRIAGE_ESCALATION_TOTAL = _NoOpMetric()
+    CASE_ENTITIES_OVERFLOW_TOTAL = _NoOpMetric()
 
 
 __all__ = [
@@ -161,6 +178,7 @@ __all__ = [
     "EVIDENCE_RECLASSIFICATION_TOTAL",
     "PREPROCESSING_EXTRACTION_YIELD_RATIO",
     "AGENT_TRIAGE_ESCALATION_TOTAL",
+    "CASE_ENTITIES_OVERFLOW_TOTAL",
     "PROMETHEUS_AVAILABLE",
     "record_triage_escalation_if_same_turn",
 ]
