@@ -136,7 +136,7 @@ When violations are detected, a self-correction retry feeds the specific violati
 
 **What it prevents**: Agent claims to execute actions (voice failure) or recommends destructive operations without flagging impact (substance failure). Both erode user trust — one promises action the agent can't deliver, the other understates the cost of action the user can deliver.
 
-**Injection point**: All templates — a strict negative constraint. Implemented via the `_ADVISOR_ROLE_CONSTRAINT` module-level constant in `templates.py`, which is string-concatenated into both `INQUIRY_TEMPLATE` and `INVESTIGATION_BASE`. A single definition eliminates the risk of the two copies drifting out of sync.
+**Injection point**: All three templates — a strict negative constraint. Implemented via the `_ADVISOR_ROLE_CONSTRAINT` module-level constant in `templates.py`, which is string-concatenated into `INQUIRY_TEMPLATE`, `INVESTIGATION_BASE`, and `TERMINAL_TEMPLATE`. A single definition eliminates the risk of copies drifting out of sync. The TERMINAL inclusion is deliberate: the agent must preserve advisor voice even after a case reaches resolution (terminal Q&A about prior findings or closure discussions).
 
 **Prompt injection**:
 
@@ -366,7 +366,7 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | ---- | -------- | ------------------- | -------- |
 | 1 (Answer First) | INQUIRY only | YOUR TASK instructions | Early (after context header) |
 | 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING + hard constraints (includes confidence calibration + no premature resolution) | EVIDENCE GROUNDING before YOUR TASK; DIAGNOSTIC REASONING after ASSISTANT ROLE |
-| 3 (Advisor Role) | All templates | ASSISTANT ROLE via `_ADVISOR_ROLE_CONSTRAINT` (voice) + `_ACTION_IMPACT_BLOCK` (action impact annotation) | Voice constraint varies by template; action impact annotation paired with voice. Constants shared across INQUIRY_TEMPLATE and INVESTIGATION_BASE. |
+| 3 (Advisor Role) | All three templates | ASSISTANT ROLE via `_ADVISOR_ROLE_CONSTRAINT` (voice) + `_ACTION_IMPACT_BLOCK` (action impact annotation) | `_ADVISOR_ROLE_CONSTRAINT` shared across INQUIRY_TEMPLATE, INVESTIGATION_BASE, and TERMINAL_TEMPLATE (voice must be preserved in terminal Q&A too). `_ACTION_IMPACT_BLOCK` shared across INQUIRY_TEMPLATE and INVESTIGATION_BASE only (TERMINAL has no action proposals). |
 | 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
 | 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES (behavior table + one-ask-per-turn principle) | After YOUR TASK |
 | 6 (Knowledge First) | INQUIRY + INVESTIGATION_BASE + DA system instruction | YOUR TASK (INQUIRY), DIAGNOSIS (INVESTIGATING), TYPE B routing (DA instruction); `KNOWLEDGE_QUERY_INSTRUCTIONS` constant used for knowledge_query bypass | Early in each |
