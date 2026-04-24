@@ -4,7 +4,7 @@ This document specifies the progress transparency feature for the FaultMaven inv
 
 **Related Documents**:
 
-- [Agent Behavioral Rules](./agent-behavioral-rules.md) — The 6 rules governing agent behavior
+- [Agent Behavioral Rules](./agent-behavioral-rules.md) — The 8 rules governing agent behavior (output, resilience, and input reading)
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) — Stage transitions and milestones
 - [Prompt Templates](./prompt-templates.md) — Where progress transparency is injected
 - [Error Handling and Recovery](./error-handling-and-recovery.md) — System-level safety nets
@@ -200,5 +200,5 @@ Agent response includes: "We've narrowed the issue to either a connection pool e
 
 - **Does not detect or judge user behavior.** If the user chats for 20 turns without providing data, the counter only increments on turns where the agent attempted diagnostic work. Conversational turns don't trigger transparency.
 - **Does not force the agent to do anything.** The injection provides context and asks for case-specific guidance. It does not override the behavioral rules or the stage-specific template.
-- **Does not replace the behavioral rules.** Rules 1-7 govern per-turn agent behavior. Progress transparency governs multi-turn trajectory awareness.
+- **Does not replace the behavioral rules.** Rules 1-8 govern per-turn agent behavior. Progress transparency governs multi-turn trajectory awareness.
 - **Does not guarantee resolution.** Some investigations won't resolve regardless. This feature makes the dependencies visible so the user can make informed decisions.

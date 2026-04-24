@@ -350,7 +350,7 @@ class TurnOutcome(str, Enum):
     Turn outcome classification.
 
     NOTE: Outcomes are LLM-observable only (what happened this turn).
-    Workflow control uses direct metrics (turns_without_progress, stagnation detection).
+    Workflow control uses direct metrics (turns_without_progress, progress monitoring).
     """
 
     MILESTONE_COMPLETED = "milestone_completed"
@@ -378,7 +378,7 @@ class TurnOutcome(str, Enum):
     """Doesn't fit standard outcomes"""
 
     # NOTE: No "BLOCKED" - investigation stalls naturally via turns_without_progress
-    # Stagnation detection triggers at 5+ turns without progress (prompt hints, not mode changes)
+    # Progress monitor activates transparent mode at 5+ investigative turns without progress (prompt hints, not mode changes)
 ```
 
 ### 1.4 InvestigationPath

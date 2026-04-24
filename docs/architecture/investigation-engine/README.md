@@ -10,7 +10,7 @@ For understanding the investigation system, read in this order:
 2. **[Investigation Lifecycle Logic](./investigation-lifecycle-logic.md)** — State transitions, stage routing, case actions, turn tracking
 3. **[Investigation Data Models](./investigation-data-models.md)** — CaseStatus, Evidence, Hypothesis, Solution, and related structures
 4. **[Prompt Templates](./prompt-templates.md)** — INQUIRY / INVESTIGATING / TERMINAL templates and their assembly
-5. **[Agent Behavioral Rules](./agent-behavioral-rules.md)** — 6 prompt-injected rules that constrain agent output
+5. **[Agent Behavioral Rules](./agent-behavioral-rules.md)** — 8 prompt-injected rules that constrain agent output and shape input reading
 
 ## Reference
 

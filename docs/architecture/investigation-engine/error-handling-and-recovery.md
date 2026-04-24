@@ -384,7 +384,7 @@ Validation errors from multiple sources are merged into `system_feedback` on the
 |--------|-------------|---------|
 | Diagnostic reasoning validator | `diagnostic_reasoning_violations` | Case-specific reasoning issues |
 | Reasoning-first validator | `reasoning_validation_errors` | Missing milestone justifications |
-| Stagnation breaker | `breakout_prompt_injection` | Recovery instructions (e.g., "try different category") |
+| Progress monitor | `breakout_prompt_injection` | Transparency guidance + repair-pattern injection (e.g., "try different category" on anchoring) |
 | State validator | `validation_repairs` | Automatic state corrections applied |
 
 This ensures the LLM receives corrective instructions for the next turn even when the current turn's issues are non-fatal.
@@ -935,7 +935,7 @@ This error handling framework provides:
 
 6. **Evidence-driven state validation** - Ensure gate milestone and progress milestone consistency
 
-7. **Stagnation detection** - Identify when investigation is stuck (no progress, anchoring, loops)
+7. **Progress monitoring** - Identify when investigation is stalled and surface pending-milestone guidance (includes repair patterns for anchoring, deadlock, action loops, fix-failure cycles, and exhaustion). See [Progress Transparency](./progress-transparency.md).
 
 8. **Recovery strategies** - Memory compression, hypothesis simplification, fallback prompts
 
@@ -945,7 +945,7 @@ This error handling framework provides:
 
 **Integration Points**:
 
-- `MilestoneEngine.process_turn()` - Per-case lock, calls StateValidator, StagnationDetector, stage-gate side effects, and self-correction retry
+- `MilestoneEngine.process_turn()` - Per-case lock, calls StateValidator, ProgressMonitor, stage-gate side effects, and self-correction retry
 - `LLMProvider.generate()` - Uses LLMErrorHandler for retry logic
 - `ResponseParser.parse()` - Handles parsing failures gracefully
 - `build_investigation_context()` - Consumes system_feedback from previous turn for LLM context

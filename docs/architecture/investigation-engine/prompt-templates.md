@@ -1305,7 +1305,7 @@ needed to prove the problem exists.
 ...
 ```
 
-### Example 3: INVESTIGATING Template (With Stagnation Recovery)
+### Example 3: INVESTIGATING Template (With Progress Transparency Guidance)
 
 ```
 [... standard header and state ...]

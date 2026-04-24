@@ -33,7 +33,6 @@ This document defines the investigation architecture for FaultMaven's investigat
 - User-Agent Handshake for disposition transitions (RESOLVED/CLOSED)
 - Hypothesis lifecycle (CAPTURED → ACTIVE → VALIDATED/REFUTED/RETIRED)
 - Knowledge base pre-check and fast-track resolution
-- Stagnation detection and progress tracking
 - Input sanitization and token budget management
 
 ---
@@ -930,7 +929,7 @@ This is not used for escalation thresholds (escalation is based on capability ex
 
 - **LLM context**: The agent sees what has been tried (both mitigations and solutions) and can avoid repeating failed approaches
 - **Analytics**: Time-per-cycle, failure categorization, investigation thoroughness, mitigation effectiveness
-- **Stagnation detection input**: The stagnation detector can use attempt history to detect when the agent is cycling without new evidence
+- **Progress monitor input**: The progress monitor can use attempt history to detect fix-failure cycles and repeated execution paths (see [Progress Transparency](./progress-transparency.md) repair patterns)
 - **Audit trail**: Complete record of all mitigation and solution actions, even after flag resets
 
 ---
@@ -969,7 +968,7 @@ stateDiagram-v2
         }
 
         state "Safety Systems" as SAFETY {
-            StagnationDetector: Stagnation<br/>Detector
+            ProgressMonitor: Progress<br/>Monitor
         }
     }
 
@@ -1063,7 +1062,7 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 5. **Add ActionAttempt tracking** — List on Case for solution and mitigation history (Section 10.6)
 6. **Update EvidenceCategory enum** — Add mitigation_evidence, rename resolution_evidence
 7. **Update evidence_processor.py** — Validation rules for new evidence categories
-8. **Update milestone_engine.py** — Stage dispatch, compliance detection (post-LLM), stagnation detection
+8. **Update milestone_engine.py** — Stage dispatch, compliance detection (post-LLM), progress monitoring
 9. **Update context_builder.py** (DONE) — Stage-specific context loading (hypothesis condensing per stage), ProposedAction in prompt context. See [Context Engineering Analysis: Stage-Specific Hypothesis Condensing](../../reference/deep-dives/context-engineering-analysis.md#stage-specific-hypothesis-condensing)
 10. **Update LLM response schemas** — ProposedAction output, gate milestones, progress milestones
 11. **Update tests** — All test files referencing old milestones/stages
@@ -1127,7 +1126,7 @@ new.action_attempts = []
 | TERMINAL template | Unchanged |
 | Hypothesis lifecycle and evidence linking | Unchanged |
 | Knowledge base pre-check and fast-track | Unchanged |
-| Stagnation detection and progress tracking | Updated — broadened progress definition, stagnation nudges are prompt hints not mode changes |
+| Progress monitoring and milestone tracking | Updated — `StagnationDetector`/`StagnationBreaker` replaced by `ProgressMonitor`; progress definition broadened; stagnation nudges are prompt hints, not mode changes |
 | Evidence creation pipeline (classify → create) | Unchanged |
 | Preprocessing service (Tier 0+1) | Unchanged |
 | Input sanitization and token budget | Unchanged |
