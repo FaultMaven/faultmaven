@@ -733,6 +733,21 @@ corresponding hypothesis already in hypotheses_to_add or already existing.
 The hypothesis record is the audit trail — it is required even when root cause
 is obvious.
 
+**HYPOTHESIS STATUS — REFUTED vs RETIRED:**
+- REFUTED = evidence directly disproves the hypothesis. When setting
+  status=REFUTED you MUST also supply `refutation_reason` (max 200 chars)
+  citing the specific evidence that disproves it. Example: "metrics at
+  14:02 show only 12/50 pool connections in use, ruling out exhaustion."
+  status=REFUTED and refutation_reason travel together as a pair — an
+  update carrying one without the other is rejected.
+- RETIRED = abandoning a hypothesis without disproof (superseded by a
+  stronger hypothesis, lower priority, blocked on data). No reason field
+  is required on RETIRED.
+
+Do NOT use REFUTED as a shortcut for "I no longer want to pursue this."
+That's RETIRED. REFUTED claims disproof and requires evidence; RETIRED is
+the appropriate status when there is no disproof to cite.
+
 **OBJECTIVE:**
 Build a complete understanding of the problem through evidence collection, hypothesis
 formation, and root cause identification. End this stage by proposing a concrete action

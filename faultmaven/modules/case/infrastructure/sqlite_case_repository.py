@@ -238,6 +238,7 @@ class SQLiteCaseRepository(CaseRepository):
                    generated_at_turn, last_updated_turn, last_progress_at_turn,
                    iterations_without_progress,
                    category, generation_mode, rationale, retirement_reason,
+                   refutation_reason,
                    evidence_links, tested_at, concluded_at, proposed_at, updated_at, metadata
             FROM hypotheses
             WHERE case_id = :case_id
@@ -262,12 +263,13 @@ class SQLiteCaseRepository(CaseRepository):
                     "generation_mode": row[10],
                     "rationale": row[11],
                     "retirement_reason": row[12],
-                    "evidence_links": json.loads(row[13]) if row[13] else {},
-                    "tested_at": row[14],
-                    "concluded_at": row[15],
-                    "proposed_at": row[16],
-                    "updated_at": row[17],
-                    "metadata": json.loads(row[18]) if row[18] else {},
+                    "refutation_reason": row[13],
+                    "evidence_links": json.loads(row[14]) if row[14] else {},
+                    "tested_at": row[15],
+                    "concluded_at": row[16],
+                    "proposed_at": row[17],
+                    "updated_at": row[18],
+                    "metadata": json.loads(row[19]) if row[19] else {},
                 }
             )
         return hypotheses
@@ -1665,14 +1667,14 @@ class SQLiteCaseRepository(CaseRepository):
                     hypothesis_id, case_id, organization_id, statement, status, likelihood, initial_likelihood,
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
                     iterations_without_progress,
-                    category, generation_mode, rationale, retirement_reason, evidence_links,
+                    category, generation_mode, rationale, retirement_reason, refutation_reason, evidence_links,
                     tested_at, concluded_at, proposed_at, updated_at, metadata,
                     created_by, updated_by
                 ) VALUES (
                     :hypothesis_id, :case_id, :organization_id, :statement, :status, :likelihood, :initial_likelihood,
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
                     :iterations_without_progress,
-                    :category, :generation_mode, :rationale, :retirement_reason, :evidence_links,
+                    :category, :generation_mode, :rationale, :retirement_reason, :refutation_reason, :evidence_links,
                     :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata,
                     :created_by, :updated_by
                 )
@@ -1685,6 +1687,7 @@ class SQLiteCaseRepository(CaseRepository):
                     last_progress_at_turn = EXCLUDED.last_progress_at_turn,
                     iterations_without_progress = EXCLUDED.iterations_without_progress,
                     retirement_reason = EXCLUDED.retirement_reason,
+                    refutation_reason = EXCLUDED.refutation_reason,
                     evidence_links = EXCLUDED.evidence_links,
                     concluded_at = EXCLUDED.concluded_at,
                     updated_at = EXCLUDED.updated_at,
@@ -1709,6 +1712,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "generation_mode": hypothesis.generation_mode.value,
                     "rationale": hypothesis.rationale,
                     "retirement_reason": hypothesis.retirement_reason,
+                    "refutation_reason": hypothesis.refutation_reason,
                     "evidence_links": json.dumps(
                         {
                             eid: link.model_dump(mode="json")

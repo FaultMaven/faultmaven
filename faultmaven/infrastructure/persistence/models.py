@@ -776,6 +776,7 @@ class HypothesisModel(Base):
 
     rationale = Column(Text)
     retirement_reason = Column(Text)
+    refutation_reason = Column(String(200))
 
     # Evidence Relationships (Many-to-Many via JSONB for simplicity in hybrid model,
     # or junction table. We'll stick to JSONB in the 'evidence_links' field to match Domain)

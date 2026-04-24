@@ -399,6 +399,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
                     likelihood=hyp.likelihood,
                     status=hyp.status,
                     evidence_count=len(hyp.evidence_links),
+                    refutation_reason=hyp.refutation_reason,
                 )
             )
 

@@ -1323,12 +1323,24 @@ def build_investigation_context(
     )
 
     # 5. Hypothesis Summary
+    #
+    # For REFUTED hypotheses we render the refutation_reason inline so the
+    # agent sees WHY a theory was rejected, not just that it was. This
+    # prevents re-proposing near-duplicates under slightly different names
+    # and supports Rule 8 (Full-Context Reasoning). The pair-integrity
+    # invariant guarantees refutation_reason is non-empty when status=REFUTED,
+    # so no fallback rendering is needed.
     hypothesis_str = ""
     active_h = [h for h in case.hypotheses.values() if h.status.value != "retired"]
     if active_h:
         hypothesis_str = "<working_hypotheses>\n"
         for h in active_h:
-            hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%, Status: {h.status.value})\n"
+            hypothesis_str += (
+                f"- {h.statement} "
+                f"(Confidence: {h.likelihood*100:.0f}%, Status: {h.status.value})\n"
+            )
+            if h.status.value == "refuted":
+                hypothesis_str += f"  Refuted because: {h.refutation_reason}\n"
         hypothesis_str += "</working_hypotheses>"
 
     # 5a. Investigation Journal (durable long-term memory)

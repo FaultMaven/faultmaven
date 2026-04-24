@@ -129,6 +129,16 @@ class HypothesisSummary(BaseModel):
         ge=0, description="Number of evidence items related to this hypothesis"
     )
 
+    refutation_reason: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Reason the hypothesis was refuted. Populated only when "
+            "status=REFUTED; None otherwise. Mirrors the domain model's "
+            "pair-integrity invariant."
+        ),
+    )
+
 
 class EvidenceSummary(BaseModel):
     """Summary of evidence for INVESTIGATING phase UI."""
