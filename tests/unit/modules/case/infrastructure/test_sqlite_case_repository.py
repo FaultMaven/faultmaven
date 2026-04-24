@@ -323,20 +323,91 @@ class TestRelatedDataRoundTrip:
         assert summaries == {"evidence one", "evidence two"}
 
     @pytest.mark.asyncio
-    async def test_evidence_upsert_removes_deleted_entries(self, repository):
+    async def test_evidence_upsert_is_purely_additive(self, repository):
+        """save(case) must NOT delete evidence rows that are absent from the
+        in-memory case.evidence list.
+
+        Rationale: callers holding a stale Case snapshot (e.g. a background
+        task that started on turn N) must not silently wipe rows that other
+        concurrent writers have since added. Removal is an explicit,
+        deliberate operation — see test_delete_evidence_removes_row.
+        """
         case = _make_case()
         ev1 = _make_evidence(summary="keep")
-        ev2 = _make_evidence(summary="discard")
+        ev2 = _make_evidence(summary="also-keep")
         case.evidence.extend([ev1, ev2])
         await repository.save(case)
 
-        # Remove ev2 locally and re-save
+        # A stale caller drops ev2 from its in-memory list and re-saves.
+        # The row must survive — the stale list is NOT the canonical truth.
         case.evidence = [ev1]
         await repository.save(case)
 
         retrieved = await repository.get(case.case_id)
+        summaries = {ev.summary for ev in retrieved.evidence}
+        assert summaries == {"keep", "also-keep"}
+
+    @pytest.mark.asyncio
+    async def test_delete_evidence_removes_row(self, repository):
+        """delete_evidence is the explicit, scoped path for intentional removal."""
+        case = _make_case()
+        ev1 = _make_evidence(summary="keep")
+        ev2 = _make_evidence(summary="remove-me")
+        case.evidence.extend([ev1, ev2])
+        await repository.save(case)
+
+        removed = await repository.delete_evidence(case.case_id, ev2.evidence_id)
+        assert removed is True
+
+        retrieved = await repository.get(case.case_id)
         assert len(retrieved.evidence) == 1
         assert retrieved.evidence[0].summary == "keep"
+
+        # Deleting a non-existent row returns False without raising.
+        removed_again = await repository.delete_evidence(case.case_id, ev2.evidence_id)
+        assert removed_again is False
+
+    @pytest.mark.asyncio
+    async def test_update_evidence_vectorized_flips_flag_only(self, repository):
+        """update_evidence_vectorized must update only the one column on the
+        one row — it must not touch messages, hypotheses, or any other
+        sibling table. This is the property that makes it safe to call from
+        a fire-and-forget task holding a stale Case snapshot.
+        """
+        case = _make_case()
+        ev = _make_evidence(summary="fuel file")
+        case.evidence.append(ev)
+        # Populate sibling tables so we can verify they're untouched.
+        case.messages.append(
+            {
+                "message_id": "msg_abc123",
+                "turn_number": 1,
+                "role": "user",
+                "content": "what happened?",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        await repository.save(case)
+
+        updated = await repository.update_evidence_vectorized(
+            case.case_id, ev.evidence_id, True
+        )
+        assert updated is True
+
+        retrieved = await repository.get(case.case_id)
+        ev_after = next(
+            e for e in retrieved.evidence if e.evidence_id == ev.evidence_id
+        )
+        assert ev_after.vectorized is True
+        # Sibling table untouched.
+        assert len(retrieved.messages) == 1
+        assert retrieved.messages[0]["message_id"] == "msg_abc123"
+
+        # Updating a non-existent evidence row returns False without raising.
+        missing = await repository.update_evidence_vectorized(
+            case.case_id, "ev_does_not_exist", True
+        )
+        assert missing is False
 
     @pytest.mark.asyncio
     async def test_round_trips_hypotheses(self, repository):
@@ -354,7 +425,11 @@ class TestRelatedDataRoundTrip:
         assert got.likelihood == pytest.approx(0.6)
 
     @pytest.mark.asyncio
-    async def test_hypothesis_upsert_removes_missing_entries(self, repository):
+    async def test_hypothesis_upsert_is_purely_additive(self, repository):
+        """save(case) must NOT delete hypotheses absent from the in-memory
+        case.hypotheses dict. Removal is explicit via the hypothesis
+        repository — see `IHypothesisRepository.delete_hypothesis`.
+        """
         case = _make_case()
         h1 = _make_hypothesis(statement="Hypothesis A")
         h2 = _make_hypothesis(statement="Hypothesis B")
@@ -362,11 +437,15 @@ class TestRelatedDataRoundTrip:
         case.hypotheses[h2.hypothesis_id] = h2
         await repository.save(case)
 
+        # Stale caller drops h2 and re-saves — h2 must survive.
         case.hypotheses = {h1.hypothesis_id: h1}
         await repository.save(case)
 
         retrieved = await repository.get(case.case_id)
-        assert set(retrieved.hypotheses.keys()) == {h1.hypothesis_id}
+        assert set(retrieved.hypotheses.keys()) == {
+            h1.hypothesis_id,
+            h2.hypothesis_id,
+        }
 
     @pytest.mark.asyncio
     async def test_round_trips_solutions(self, repository):
@@ -396,18 +475,44 @@ class TestRelatedDataRoundTrip:
         }
 
     @pytest.mark.asyncio
-    async def test_uploaded_files_upsert_removes_missing(self, repository):
+    async def test_uploaded_files_upsert_is_purely_additive(self, repository):
+        """save(case) must NOT delete uploaded_files rows absent from the
+        in-memory list. Use delete_uploaded_file for intentional removal.
+        """
         case = _make_case()
         f1 = _make_uploaded_file("keep.log")
-        f2 = _make_uploaded_file("discard.log")
+        f2 = _make_uploaded_file("also-keep.log")
         case.uploaded_files.extend([f1, f2])
         await repository.save(case)
 
+        # Stale caller drops f2 — row must survive.
         case.uploaded_files = [f1]
         await repository.save(case)
 
         retrieved = await repository.get(case.case_id)
-        assert [f.filename for f in retrieved.uploaded_files] == ["keep.log"]
+        assert {f.filename for f in retrieved.uploaded_files} == {
+            "keep.log",
+            "also-keep.log",
+        }
+
+    @pytest.mark.asyncio
+    async def test_delete_uploaded_file_removes_row(self, repository):
+        """delete_uploaded_file is the explicit, scoped path for removal."""
+        case = _make_case()
+        f1 = _make_uploaded_file("keep.log")
+        f2 = _make_uploaded_file("remove-me.log")
+        case.uploaded_files.extend([f1, f2])
+        await repository.save(case)
+
+        removed = await repository.delete_uploaded_file(case.case_id, f2.file_id)
+        assert removed is True
+
+        retrieved = await repository.get(case.case_id)
+        assert len(retrieved.uploaded_files) == 1
+        assert retrieved.uploaded_files[0].filename == "keep.log"
+
+        removed_again = await repository.delete_uploaded_file(case.case_id, f2.file_id)
+        assert removed_again is False
 
     @pytest.mark.asyncio
     async def test_action_history_persisted_via_case_actions(self, repository):

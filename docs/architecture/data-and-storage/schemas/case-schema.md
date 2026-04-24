@@ -958,6 +958,8 @@ COMMENT ON COLUMN uploaded_files.content_ref IS 'Storage path - links to Evidenc
 
 ### 4.7 case_messages (High-Cardinality Table)
 
+> **Write semantics (v2.3, 2026-04-24)**: `case_messages` is an **append-only event stream** at the domain level. `save(case)` performs additive INSERT-or-UPDATE only — no code path intentionally deletes messages, and the repository no longer runs `DELETE ... NOT IN (in_memory_ids)` as part of aggregate save. See [repository-pattern.md §4.1.1](../repository-pattern.md#411-aggregate-save-semantics) for the full rule across owned sub-collections.
+>
 > **Column discrepancies vs. live ORM**:
 >
 > - `message_id UUID PRIMARY KEY DEFAULT gen_random_uuid()` — live ORM uses `String(36)` as the primary key with no auto-generation (post-Phase 4 width normalization). UUID PK with `gen_random_uuid()` is **Tier 2 (PostgreSQL-only)** (SQLite cannot express this natively). The Tier 1 reality is a VARCHAR(36) application-generated ID.
