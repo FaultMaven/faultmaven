@@ -143,6 +143,7 @@ async def create_test_schema(session: AsyncSession):
             generation_mode TEXT,
             rationale TEXT,
             retirement_reason TEXT,
+            refutation_reason TEXT,
             evidence_links TEXT,
             tested_at TIMESTAMP,
             concluded_at TIMESTAMP,

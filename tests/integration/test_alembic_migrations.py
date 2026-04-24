@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "d4e5f6a70819"  # Phase 4a case_entities registry
+HEAD_REVISION = "e5f6a7081920"  # hypothesis refutation_reason column
 
 
 @pytest.fixture(scope="function")
