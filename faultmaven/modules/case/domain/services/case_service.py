@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.models.api_models import (
     CaseCreateRequest,
     CaseListFilter,
@@ -36,6 +35,7 @@ from faultmaven.models.api_models import (
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.case.domain.models import Case, CaseStatus, MessageType
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible

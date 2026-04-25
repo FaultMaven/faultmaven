@@ -35,7 +35,6 @@ from faultmaven.exceptions import (
     ServiceError,
     ValidationException,
 )
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
@@ -46,6 +45,7 @@ from faultmaven.modules.case.contracts import (
     ICaseRepository,
     InvestigationStrategy,
 )
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.providers.tenancy.base import TenantProvider
 
 

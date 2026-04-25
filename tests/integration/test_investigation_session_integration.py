@@ -20,9 +20,6 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.database import reset_engine
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-    SQLiteCaseRepository,
-)
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
@@ -39,6 +36,9 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     ExecutionStatus,
 )
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InquiryData
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
+)
 from tests.utils import (
     generate_case_id,
     generate_session_id,

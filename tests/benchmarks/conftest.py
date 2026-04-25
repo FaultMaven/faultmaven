@@ -10,10 +10,6 @@ from typing import AsyncGenerator
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-    SQLiteCaseRepository,
-)
-
 # DatabaseEvidenceArtifactRepository removed in storage redesign 2026-04
 # phase 2 (standalone evidence path deletion).
 # AgentExecutionRepository removed - agent executions now handled by ICaseRepository
@@ -21,6 +17,9 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     DatabaseInvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
+)
 
 # DatabaseSessionRepository (SQL auth session repo) removed in storage
 # redesign 2026-04 phase 3 — auth sessions are Redis-only.
