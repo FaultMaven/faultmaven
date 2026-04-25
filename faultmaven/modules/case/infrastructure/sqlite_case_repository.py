@@ -488,6 +488,274 @@ class SQLiteCaseRepository(CaseRepository):
                 e,
             )
 
+    # ========================================================================
+    # Bulk loaders — used by list() to avoid the N+1 per-case fan-out that
+    # would otherwise run (N * 5) queries for a page of N cases. Each loader
+    # issues one SELECT with WHERE case_id IN (:ids) and groups results by
+    # case_id in Python. Shapes mirror the per-case _load_* helpers above so
+    # _row_to_case can consume either.
+    # ========================================================================
+
+    def _bind_ids(self, params: dict[str, Any], ids: builtins.list[str]) -> str:
+        """Expand a list of case_ids into named parameters. Returns the
+        SQL placeholder clause (``:cid_0, :cid_1, ...``) to splice into
+        an ``IN (...)`` and mutates ``params`` with the values."""
+        names = []
+        for i, cid in enumerate(ids):
+            key = f"cid_{i}"
+            params[key] = cid
+            names.append(f":{key}")
+        return ", ".join(names)
+
+    async def _load_hypotheses_bulk(
+        self, case_ids: builtins.list[str]
+    ) -> dict[str, builtins.list[dict]]:
+        if not case_ids:
+            return {}
+        params: dict[str, Any] = {}
+        placeholders = self._bind_ids(params, case_ids)
+        query = text(f"""
+            SELECT case_id, hypothesis_id, statement, status, likelihood,
+                   initial_likelihood, generated_at_turn, last_updated_turn,
+                   last_progress_at_turn, iterations_without_progress,
+                   category, generation_mode, rationale, retirement_reason,
+                   refutation_reason, evidence_links, tested_at, concluded_at,
+                   proposed_at, updated_at, metadata
+            FROM hypotheses
+            WHERE case_id IN ({placeholders})
+        """)
+        rows = (await self.db.execute(query, params)).fetchall()
+
+        by_case: dict[str, builtins.list[dict]] = {cid: [] for cid in case_ids}
+        for row in rows:
+            by_case.setdefault(row[0], []).append(
+                {
+                    "hypothesis_id": row[1],
+                    "statement": row[2],
+                    "status": row[3],
+                    "likelihood": row[4],
+                    "initial_likelihood": row[5],
+                    "generated_at_turn": row[6] or 0,
+                    "last_updated_turn": row[7],
+                    "last_progress_at_turn": row[8],
+                    "iterations_without_progress": row[9],
+                    "category": row[10],
+                    "generation_mode": row[11],
+                    "rationale": row[12],
+                    "retirement_reason": row[13],
+                    "refutation_reason": row[14],
+                    "evidence_links": json.loads(row[15]) if row[15] else {},
+                    "tested_at": row[16],
+                    "concluded_at": row[17],
+                    "proposed_at": row[18],
+                    "updated_at": row[19],
+                    "metadata": json.loads(row[20]) if row[20] else {},
+                }
+            )
+        return by_case
+
+    async def _load_solutions_bulk(
+        self, case_ids: builtins.list[str]
+    ) -> dict[str, builtins.list[dict]]:
+        if not case_ids:
+            return {}
+        params: dict[str, Any] = {}
+        placeholders = self._bind_ids(params, case_ids)
+        query = text(f"""
+            SELECT case_id, solution_id, solution_type, title, immediate_action,
+                   longterm_fix, implementation_steps, commands, risks,
+                   proposed_at, updated_at, metadata
+            FROM solutions
+            WHERE case_id IN ({placeholders})
+        """)
+        rows = (await self.db.execute(query, params)).fetchall()
+
+        by_case: dict[str, builtins.list[dict]] = {cid: [] for cid in case_ids}
+        for row in rows:
+            by_case.setdefault(row[0], []).append(
+                {
+                    "solution_id": row[1],
+                    "solution_type": row[2] or "other",
+                    "title": row[3] or "Untitled solution",
+                    "immediate_action": row[4],
+                    "longterm_fix": row[5],
+                    "implementation_steps": json.loads(row[6]) if row[6] else [],
+                    "commands": json.loads(row[7]) if row[7] else [],
+                    "risks": json.loads(row[8]) if row[8] else [],
+                    "proposed_at": row[9],
+                    "updated_at": row[10],
+                    "metadata": json.loads(row[11]) if row[11] else {},
+                }
+            )
+        return by_case
+
+    async def _load_uploaded_files_bulk(
+        self, case_ids: builtins.list[str]
+    ) -> dict[str, builtins.list[dict]]:
+        if not case_ids:
+            return {}
+        params: dict[str, Any] = {}
+        placeholders = self._bind_ids(params, case_ids)
+        query = text(f"""
+            SELECT case_id, file_id, filename, size_bytes, data_type,
+                   uploaded_at_turn, uploaded_at, source_type, content_ref,
+                   preprocessing_summary, metadata
+            FROM uploaded_files
+            WHERE case_id IN ({placeholders})
+        """)
+        result = await self.db.execute(query, params)
+        rows = result.fetchall()
+
+        by_case: dict[str, builtins.list[dict]] = {cid: [] for cid in case_ids}
+        for row in rows:
+            by_case.setdefault(row[0], []).append(
+                {
+                    "file_id": row[1],
+                    "filename": row[2],
+                    "size_bytes": row[3] or 0,
+                    "data_type": row[4] or "other",
+                    "uploaded_at_turn": row[5] or 0,
+                    "uploaded_at": row[6],
+                    "source_type": row[7] or "file_upload",
+                    "content_ref": row[8] or "",
+                    "preprocessing_summary": row[9] or "",
+                }
+            )
+        return by_case
+
+    async def _load_messages_bulk(
+        self, case_ids: builtins.list[str]
+    ) -> dict[str, builtins.list[dict]]:
+        if not case_ids:
+            return {}
+        params: dict[str, Any] = {}
+        placeholders = self._bind_ids(params, case_ids)
+        query = text(f"""
+            SELECT case_id, message_id, turn_number, role, content,
+                   created_at, token_count, metadata
+            FROM case_messages
+            WHERE case_id IN ({placeholders})
+            ORDER BY case_id, created_at ASC
+        """)
+        rows = (await self.db.execute(query, params)).fetchall()
+
+        by_case: dict[str, builtins.list[dict]] = {cid: [] for cid in case_ids}
+        for row in rows:
+            msg_timestamp = row[5]
+            if msg_timestamp:
+                if isinstance(msg_timestamp, str):
+                    msg_timestamp = msg_timestamp.replace(" ", "T")
+                elif hasattr(msg_timestamp, "isoformat"):
+                    msg_timestamp = msg_timestamp.isoformat()
+
+            metadata_raw = row[7]
+            if isinstance(metadata_raw, str):
+                parsed_metadata = json.loads(metadata_raw) if metadata_raw else {}
+            elif metadata_raw is None:
+                parsed_metadata = {}
+            else:
+                parsed_metadata = metadata_raw
+
+            by_case.setdefault(row[0], []).append(
+                {
+                    "message_id": row[1],
+                    "turn_number": row[2] or 0,
+                    "role": row[3],
+                    "content": row[4],
+                    "created_at": msg_timestamp,
+                    "token_count": row[6],
+                    "metadata": parsed_metadata,
+                }
+            )
+        return by_case
+
+    async def _load_evidence_for_cases_bulk(self, cases: builtins.list[Case]) -> None:
+        """Hydrate ``Case.evidence`` on every case in ``cases`` with one
+        SELECT. Failures on individual rows are logged and skipped so one
+        bad evidence row doesn't blank the whole list.
+        """
+        if not cases:
+            return
+        case_ids = [c.case_id for c in cases]
+        params: dict[str, Any] = {}
+        placeholders = self._bind_ids(params, case_ids)
+        try:
+            query = text(f"""
+                SELECT
+                    evidence_id, case_id, category, summary,
+                    preprocessed_content, content_ref, file_size,
+                    filename, upload_timestamp, metadata,
+                    source_type, content_hash, collected_at_turn,
+                    source_file_id, vectorized,
+                    coverage_start_ts, coverage_end_ts
+                FROM evidence
+                WHERE case_id IN ({placeholders})
+                ORDER BY upload_timestamp DESC
+                LIMIT 1000
+            """)
+            rows = (await self.db.execute(query, params)).fetchall()
+
+            by_case: dict[str, builtins.list[Evidence]] = {cid: [] for cid in case_ids}
+            for row in rows:
+                try:
+                    category_str = row[2] or "contextual_evidence"
+                    try:
+                        category = EvidenceCategory(category_str)
+                    except ValueError:
+                        category = EvidenceCategory.CONTEXTUAL_EVIDENCE
+
+                    source_type_str = row[10] or "logs"
+                    try:
+                        source_type = EvidenceSourceType(source_type_str)
+                    except ValueError:
+                        source_type = EvidenceSourceType.LOGS
+
+                    metadata_raw = row[9]
+                    parsed_metadata: Optional[Dict[str, Any]] = None
+                    if metadata_raw:
+                        try:
+                            parsed = json.loads(metadata_raw)
+                            if isinstance(parsed, dict) and parsed:
+                                parsed_metadata = parsed
+                        except (json.JSONDecodeError, TypeError):
+                            parsed_metadata = None
+
+                    by_case.setdefault(row[1], []).append(
+                        Evidence(
+                            evidence_id=str(row[0]),
+                            category=category,
+                            primary_purpose="loaded_evidence",
+                            summary=row[3] if row[3] else "Evidence",
+                            preprocessed_content=row[4] if row[4] else "",
+                            content_ref=row[5],
+                            content_size_bytes=row[6] if row[6] else 0,
+                            original_filename=row[7],
+                            preprocessing_method="loaded",
+                            source_type=source_type,
+                            form=EvidenceForm.DOCUMENT,
+                            collected_by="user",
+                            collected_at_turn=row[12] if row[12] else 0,
+                            content_hash=row[11],
+                            source_file_id=row[13],
+                            vectorized=bool(row[14]),
+                            metadata=parsed_metadata,
+                            coverage_start_ts=row[15],
+                            coverage_end_ts=row[16],
+                        )
+                    )
+                except Exception as ev_err:  # noqa: BLE001
+                    logging.getLogger(__name__).warning(
+                        "Failed to load evidence %s: %s", row[0], ev_err
+                    )
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "Failed to bulk-load evidence for %d cases: %s", len(cases), e
+            )
+            return
+
+        for case in cases:
+            case.evidence = by_case.get(case.case_id, [])
+
     async def list(
         self,
         user_id: str | None = None,
@@ -496,10 +764,17 @@ class SQLiteCaseRepository(CaseRepository):
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Case], int]:
-        """List cases with optional filters and pagination."""
+        """List cases with optional filters and pagination.
+
+        Uses batched loads for owned sub-collections (one SELECT per
+        table with ``WHERE case_id IN (...)``), then assembles Cases in
+        Python. The earlier N+1 pattern — calling ``self.get(cid)`` per
+        row — didn't scale past ~30 cases under the per-case 5-table
+        fan-out (hypotheses/solutions/uploaded_files/messages/evidence).
+        """
         try:
             where_clauses = []
-            params = {"limit": limit, "offset": offset}
+            params: dict[str, Any] = {"limit": limit, "offset": offset}
 
             if user_id:
                 where_clauses.append("user_id = :user_id")
@@ -515,36 +790,58 @@ class SQLiteCaseRepository(CaseRepository):
 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
-            # Count query
+            # Count query.
             count_query = text(f"SELECT COUNT(*) FROM cases {where_sql}")
             count_result = await self.db.execute(count_query, params)
             total_count = count_result.scalar()
 
-            # List query
+            # Page query — fetch full case rows (we need every column for
+            # _row_to_case; a later optimization could project only the
+            # fields the caller declares it needs).
             list_query = text(f"""
-                SELECT case_id
+                SELECT *
                 FROM cases
                 {where_sql}
                 ORDER BY updated_at DESC
                 LIMIT :limit OFFSET :offset
             """)
+            rows = (await self.db.execute(list_query, params)).fetchall()
 
-            result = await self.db.execute(list_query, params)
-            case_ids = [row[0] for row in result.fetchall()]
+            if not rows:
+                return [], total_count
 
-            # Fetch full cases — skip individual failures so one bad case
-            # doesn't prevent listing all others
-            cases = []
-            for cid in case_ids:
+            case_ids = [row.case_id for row in rows]
+
+            # Batch-load every owned sub-collection with one SELECT each.
+            hypotheses_by_case = await self._load_hypotheses_bulk(case_ids)
+            solutions_by_case = await self._load_solutions_bulk(case_ids)
+            uploaded_files_by_case = await self._load_uploaded_files_bulk(case_ids)
+            messages_by_case = await self._load_messages_bulk(case_ids)
+
+            cases: list[Case] = []
+            for row in rows:
                 try:
-                    case = await self.get(cid)
+                    case = self._row_to_case(
+                        row,
+                        hypotheses_by_case.get(row.case_id, []),
+                        solutions_by_case.get(row.case_id, []),
+                        uploaded_files_by_case.get(row.case_id, []),
+                        messages_by_case.get(row.case_id, []),
+                    )
                     if case:
                         cases.append(case)
-                except RepositoryException as e:
+                except Exception as e:  # noqa: BLE001
                     logger.error(
-                        f"Skipping case {cid} in list: deserialization failed: {e}"
+                        "Skipping case %s in list: deserialization failed: %s",
+                        getattr(row, "case_id", "<unknown>"),
+                        e,
                     )
                     continue
+
+            # Evidence is loaded last (it's the heaviest table and the only
+            # one that needs mutation of the already-constructed Case
+            # instances). Same batched shape.
+            await self._load_evidence_for_cases_bulk(cases)
 
             return cases, total_count
 
