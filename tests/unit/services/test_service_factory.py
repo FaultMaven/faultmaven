@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
@@ -25,6 +24,7 @@ from faultmaven.modules.case.domain.services.api_case_service import APICaseServ
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
 # APIEvidenceArtifactService import removed in storage redesign 2026-04 phase 2.
 from faultmaven.modules.evidence.domain.services.file_storage_service import (

@@ -31,7 +31,6 @@ from faultmaven.infrastructure.observability.evidence_metrics import (
     EVIDENCE_RECLASSIFICATION_TOTAL,
 )
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import (
     AttachmentResult,
@@ -44,6 +43,7 @@ from faultmaven.models.api_models import (
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import Case, CaseStatus
+from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
 from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceCategory,

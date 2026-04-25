@@ -20,9 +20,6 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-    SQLiteCaseRepository,
-)
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
 )
@@ -31,6 +28,9 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationStrategy,
+)
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 
 from .conftest import generate_case_id

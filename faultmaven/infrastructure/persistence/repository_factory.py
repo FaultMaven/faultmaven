@@ -28,7 +28,6 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.infrastructure.persistence.database import get_db_session
-
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,

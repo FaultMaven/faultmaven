@@ -27,9 +27,6 @@ from faultmaven.exceptions import (
     NotFoundError,
     ValidationException,
 )
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-    SQLiteCaseRepository,
-)
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
@@ -53,6 +50,9 @@ from faultmaven.modules.case.domain.services.investigation_session_service impor
 )
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
+)
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 
 # ============================================================

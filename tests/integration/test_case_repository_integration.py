@@ -23,18 +23,11 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.modules.case.infrastructure.case_repository import (
-    CaseRepository,
-    InMemoryCaseRepository,
-)
 from faultmaven.infrastructure.persistence.database import (
     close_database,
     get_db_session,
     init_database,
     reset_engine,
-)
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-    SQLiteCaseRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import (
@@ -54,6 +47,13 @@ from faultmaven.modules.case.domain.models import (
     InvestigationStrategy,
     Solution,
     SolutionType,
+)
+from faultmaven.modules.case.infrastructure.case_repository import (
+    CaseRepository,
+    InMemoryCaseRepository,
+)
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 from tests.utils import seed_organizations
 

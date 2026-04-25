@@ -20,10 +20,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-    SQLiteCaseRepository,
-)
-
 # InMemoryEvidenceArtifactRepository import removed in storage redesign
 # 2026-04 phase 2 (standalone evidence path deletion).
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
@@ -34,6 +30,9 @@ from faultmaven.modules.case.domain.models import CaseSeverity
 
 # AgentExecutionRepository removed - APICaseService now uses case_repo
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
+)
 
 # ============================================================
 # Fixtures

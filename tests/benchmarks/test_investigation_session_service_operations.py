@@ -22,9 +22,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-    SQLiteCaseRepository,
-)
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InMemoryInvestigationSessionRepository,
 )
@@ -44,6 +41,9 @@ from faultmaven.modules.case.domain.models import (
 # AgentExecutionRepository removed - APIInvestigationSessionService now uses case_repo
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
+)
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 
 # ============================================================

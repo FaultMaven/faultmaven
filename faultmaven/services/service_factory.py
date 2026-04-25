@@ -29,12 +29,12 @@ from faultmaven.infrastructure.persistence.repository_factory import (
     get_knowledge_item_repository,
 )
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
+from faultmaven.modules.case.domain.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
     get_repository_for_session,
-)
-from faultmaven.modules.case.domain.services.investigation_session_service import (
-    APIInvestigationSessionService,
 )
 from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
