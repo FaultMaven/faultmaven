@@ -7,7 +7,7 @@ No LLM calls required - pure keyword-based extraction.
 
 import re
 from collections import Counter
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING
 
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
@@ -18,6 +18,45 @@ from faultmaven.modules.preprocessing.extractors.utils import (
 
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+
+# ---------------------------------------------------------------------------
+# Log-template normalisation — strips per-line variable parts so that
+# "mod_jk child workerEnv in error state 6 1" and
+# "mod_jk child workerEnv in error state 6 2" collapse to a single template.
+#
+# Patterns applied in order, then trailing whitespace stripped:
+#   1. Apache CLF timestamp  [Mon Jan  2 15:04:05 2006]
+#   2. ISO-8601 / RFC-3339   2006-01-02T15:04:05Z or 2006-01-02 15:04:05
+#   3. Syslog preamble       Jan  2 15:04:05 hostname
+#   4. Hex literals          0xDEADBEEF → <addr>
+#   5. Pure-digit brackets   [1234] (PID) — letters preserved ([error] safe)
+#   6. Trailing numeric run  " 42" " 1 2" at end-of-line (process ordinals)
+# ---------------------------------------------------------------------------
+_TPL_TS_APACHE = re.compile(r"\[\w{3} +\w{3} +\d{1,2} +\d{2}:\d{2}:\d{2} +\d{4}\]\s*")
+_TPL_TS_ISO = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\s*"
+)
+_TPL_TS_SYSLOG = re.compile(r"^\w{3} +\d{1,2} +\d{2}:\d{2}:\d{2} +\S+ +")
+_TPL_HEX = re.compile(r"\b0x[0-9a-fA-F]+\b")
+_TPL_PID_BRACKET = re.compile(r"\[\d+\]")
+
+
+def _normalize_template(line: str) -> str:
+    """Return the message-template of a log line with variable parts removed.
+
+    Strips timestamps, hex literals, and pure-digit brackets (PIDs), then
+    trims whitespace. Trailing numeric tokens are intentionally left intact:
+    they are often semantic (e.g. "error state 6" vs "error state 7") rather
+    than variable process ordinals, so collapsing them would merge distinct
+    templates.
+    """
+    s = line.strip()
+    s = _TPL_TS_APACHE.sub("", s)
+    s = _TPL_TS_ISO.sub("", s)
+    s = _TPL_TS_SYSLOG.sub("", s)
+    s = _TPL_HEX.sub("<addr>", s)
+    s = _TPL_PID_BRACKET.sub("", s)
+    return s.strip()
 
 
 class LogsAndErrorsExtractor:
@@ -110,12 +149,9 @@ class LogsAndErrorsExtractor:
             result = entity_profile + "\n\n" + result
 
         if errors:
-            top_errors = Counter(e["line_text"].strip() for e in errors).most_common(3)
-            error_summary = ["TOP ERROR MESSAGES:"]
-            for msg, count in top_errors:
-                truncated_msg = msg[:150] + "..." if len(msg) > 150 else msg
-                error_summary.append(f"  - [{count}x] {truncated_msg}")
-            result = "\n".join(error_summary) + "\n\n" + result
+            template_block = self._build_template_counts(errors)
+            if template_block:
+                result = template_block + "\n\n" + result
 
         # Coverage metadata
         severity_counts = Counter(e["keyword"] for e in errors)
@@ -369,6 +405,35 @@ class LogsAndErrorsExtractor:
         ]
 
         return "\n".join(formatted)
+
+    def _build_template_counts(self, errors: list[dict]) -> str:
+        """Normalise every severity-matched line to its message template and
+        count occurrences across the full file.
+
+        Unlike the old TOP ERROR MESSAGES block (which used raw line text and
+        therefore counted every timestamped/PID-suffixed line as unique),
+        this normalises away timestamps, PIDs, and trailing numeric ordinals
+        before counting — so "error state 6 1" and "error state 6 2" both
+        collapse to "error state 6" and their counts accumulate correctly.
+        """
+        template_counts: Counter[str] = Counter(
+            _normalize_template(e["line_text"]) for e in errors
+        )
+        if not template_counts:
+            return ""
+
+        total = len(errors)
+        distinct = len(template_counts)
+        header = (
+            f"EVENT TEMPLATE COUNTS"
+            f" ({total} lines matched severity keywords,"
+            f" {distinct} distinct template{'s' if distinct != 1 else ''}):"
+        )
+        lines = [header]
+        for template, count in template_counts.most_common():
+            truncated = template[:120] + "..." if len(template) > 120 else template
+            lines.append(f"  [{count:>4}x] {truncated}")
+        return "\n".join(lines)
 
     # Regex patterns for entity profiling (compiled once)
     _IPV4_RE = re.compile(

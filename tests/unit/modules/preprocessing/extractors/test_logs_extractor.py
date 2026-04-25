@@ -8,6 +8,7 @@ import pytest
 
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
+    _normalize_template,
 )
 
 
@@ -297,3 +298,194 @@ class TestEntityProfileRegexes:
         result = extractor.extract(content)
         assert "Distinct Ports" not in result
         assert "Distinct PIDs" not in result
+
+
+class TestNormalizeTemplate:
+    """_normalize_template strips per-occurrence variable parts, preserving
+    the semantic message template so that identical log message types
+    accumulate into a single counter bucket."""
+
+    # --- Timestamp stripping ---
+
+    def test_apache_clf_timestamp_stripped(self):
+        line = (
+            "[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 6"
+        )
+        assert (
+            _normalize_template(line)
+            == "[error] mod_jk child workerEnv in error state 6"
+        )
+
+    def test_apache_clf_timestamp_single_digit_day(self):
+        line = "[Mon Jan  2 15:04:05 2006] [notice] workerEnv.init() ok /etc/httpd/conf/w.properties"
+        result = _normalize_template(line)
+        assert result.startswith("[notice]")
+        assert "2006" not in result
+
+    def test_iso_timestamp_stripped(self):
+        line = "2026-04-25T12:34:56Z ERROR connection refused on port 5432"
+        result = _normalize_template(line)
+        assert "2026" not in result
+        assert "ERROR connection refused on port 5432" == result
+
+    def test_iso_timestamp_with_offset_stripped(self):
+        line = "2026-04-25T12:34:56+05:30 WARN high memory usage"
+        result = _normalize_template(line)
+        assert "2026" not in result
+        assert "WARN high memory usage" == result
+
+    def test_syslog_preamble_stripped(self):
+        line = "Dec  4 04:47:44 myhost sshd[1234]: Failed password for root"
+        result = _normalize_template(line)
+        assert "Dec" not in result
+        assert "sshd" in result
+
+    # --- Hex stripping ---
+
+    def test_hex_address_replaced(self):
+        line = "2026-04-25T00:00:00Z ERROR segfault at 0xdeadbeef in libfoo.so"
+        result = _normalize_template(line)
+        assert "0xdeadbeef" not in result
+        assert "<addr>" in result
+
+    # --- PID bracket stripping ---
+
+    def test_pid_bracket_stripped(self):
+        line = "Dec  4 04:47:44 host kernel[9876]: out of memory"
+        result = _normalize_template(line)
+        assert "[9876]" not in result
+
+    def test_level_bracket_preserved(self):
+        """[error] and [notice] brackets must survive — they contain letters."""
+        line = "[Sun Dec 04 04:47:44 2005] [error] something bad"
+        result = _normalize_template(line)
+        assert "[error]" in result
+
+    # --- Semantic number preservation ---
+
+    def test_state_code_preserved(self):
+        """Numeric state codes at line-end must not be stripped — they
+        distinguish distinct error types (state 6 vs state 7)."""
+        l6 = (
+            "[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 6"
+        )
+        l7 = (
+            "[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 7"
+        )
+        assert _normalize_template(l6) != _normalize_template(l7)
+
+    def test_error_code_preserved(self):
+        line = "2026-04-25T00:00:00Z ERROR exit code 137"
+        result = _normalize_template(line)
+        assert "137" in result
+
+    # --- Idempotency and edge cases ---
+
+    def test_already_normalized_line_unchanged(self):
+        line = "[error] something went wrong"
+        assert _normalize_template(line) == line
+
+    def test_empty_line_returns_empty(self):
+        assert _normalize_template("") == ""
+
+    def test_whitespace_only_returns_empty(self):
+        assert _normalize_template("   ") == ""
+
+
+class TestBuildTemplateCounts:
+    """_build_template_counts produces an EVENT TEMPLATE COUNTS block that
+    reflects full-file frequencies, not the truncated crime-scene window."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _make_errors(self, templates: list[tuple[str, int]]) -> list[dict]:
+        """Build a fake errors list: (template, count) pairs."""
+        errors = []
+        for template, count in templates:
+            for _ in range(count):
+                errors.append(
+                    {"line_text": template, "severity": 50, "keyword": "ERROR"}
+                )
+        return errors
+
+    def test_header_contains_counts(self, extractor):
+        errors = self._make_errors([("ERROR disk full", 5), ("ERROR timeout", 3)])
+        block = extractor._build_template_counts(errors)
+        assert "EVENT TEMPLATE COUNTS" in block
+        assert "8 lines matched severity keywords" in block
+        assert "2 distinct templates" in block
+
+    def test_sorted_descending_by_count(self, extractor):
+        errors = self._make_errors([("ERROR minor", 2), ("ERROR major", 10)])
+        block = extractor._build_template_counts(errors)
+        major_pos = block.index("major")
+        minor_pos = block.index("minor")
+        assert major_pos < minor_pos
+
+    def test_apache_state_counts_distinct(self, extractor):
+        """The key regression test: state 6 and state 7 must not merge."""
+        state6 = (
+            "[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 6"
+        )
+        state7 = (
+            "[Mon Dec 05 19:15:57 2005] [error] mod_jk child workerEnv in error state 7"
+        )
+        errors = self._make_errors([(state6, 369), (state7, 101)])
+        block = extractor._build_template_counts(errors)
+        assert "[ 369x] [error] mod_jk child workerEnv in error state 6" in block
+        assert "[ 101x] [error] mod_jk child workerEnv in error state 7" in block
+
+    def test_empty_errors_returns_empty_string(self, extractor):
+        assert extractor._build_template_counts([]) == ""
+
+    def test_singular_template_label(self, extractor):
+        errors = self._make_errors([("ERROR boom", 1)])
+        block = extractor._build_template_counts(errors)
+        assert "1 distinct template)" in block  # not "templates"
+
+    def test_template_truncated_at_120_chars(self, extractor):
+        long_msg = "ERROR " + "x" * 200
+        errors = self._make_errors([(long_msg, 1)])
+        block = extractor._build_template_counts(errors)
+        assert "..." in block
+        for line in block.split("\n"):
+            if "x" * 10 in line:
+                assert len(line) < 200  # truncated
+
+
+class TestExtractTemplateCounts:
+    """Integration: extract() output contains EVENT TEMPLATE COUNTS, not
+    the old TOP ERROR MESSAGES block."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _apache_log(self, n6: int, n7: int) -> str:
+        state6 = "[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 6\n"
+        state7 = "[Mon Dec 05 00:00:01 2005] [error] mod_jk child workerEnv in error state 7\n"
+        notice = "[Sun Dec 04 04:47:44 2005] [notice] workerEnv.init() ok /etc/httpd/conf/workers2.properties\n"
+        return (state6 * n6) + (state7 * n7) + (notice * 50)
+
+    def test_no_top_error_messages_heading(self, extractor):
+        result = extractor.extract(self._apache_log(10, 5))
+        assert "TOP ERROR MESSAGES" not in result
+
+    def test_event_template_counts_heading_present(self, extractor):
+        result = extractor.extract(self._apache_log(10, 5))
+        assert "EVENT TEMPLATE COUNTS" in result
+
+    def test_state6_and_state7_counts_in_output(self, extractor):
+        result = extractor.extract(self._apache_log(369, 101))
+        assert "369x" in result
+        assert "101x" in result
+        assert "state 6" in result
+        assert "state 7" in result
+
+    def test_no_errors_produces_no_template_block(self, extractor):
+        """Tail fallback: no errors → no template counts block."""
+        content = "INFO startup complete\n" * 50
+        result = extractor.extract(content)
+        assert "EVENT TEMPLATE COUNTS" not in result
