@@ -1354,10 +1354,8 @@ class AgentOrchestrationService:
                                 "query approach."
                             )
 
-                    # Track deep_analysis confidence. Counter is in-turn only
-                    # — no cross-turn persistence because Evidence has no
-                    # da_invocation_count DB column, and aggregate save(case)
-                    # from this path would race with concurrent turn writes.
+                    # Track deep_analysis confidence. Counter is in-turn
+                    # only by design — see _should_auto_vectorize.
                     if result.tool_name == "deep_analysis" and result.success:
                         try:
                             data = json.loads(result.content)

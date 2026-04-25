@@ -31,7 +31,7 @@ from faultmaven.infrastructure.observability.evidence_metrics import (
     EVIDENCE_RECLASSIFICATION_TOTAL,
 )
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.infrastructure.persistence.case_repository import CaseRepository
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import (
     AttachmentResult,

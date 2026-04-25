@@ -1,24 +1,22 @@
-"""Repository Factory for Case Persistence.
+"""Repository Factory for Investigation Session and Knowledge persistence.
 
-This module provides a factory pattern for creating case repositories.
-It enables switching between different storage backends via configuration.
+This module provides factories for creating session and knowledge-item
+repositories backed by InMemory or SQLAlchemy implementations, with
+storage selection driven by environment / settings.
 
-Supported backends:
-- inmemory: In-memory storage (testing/development)
-- database: SQLAlchemy ORM with SQLite/PostgreSQL
+The case-repository factories that historically lived here were removed
+when the parallel ``infrastructure.persistence`` and
+``modules.case.infrastructure`` hierarchies were consolidated. Case
+repositories now come from ``modules.case.infrastructure``:
 
-Usage:
-    from faultmaven.infrastructure.persistence.repository_factory import (
-        get_case_repository,
-        get_case_repository_async,
-    )
+- ``InMemoryCaseRepository`` — instantiate directly for tests.
+- ``get_repository_for_session(session)`` (in
+  ``sessionless_case_repository``) — returns the dialect-appropriate
+  ``SQLiteCaseRepository`` or ``PostgreSQLHybridCaseRepository``.
+- ``SessionlessCaseRepository`` — no-arg, opens its own session per op.
 
-    # Sync context (uses default session)
-    repo = get_case_repository()
-
-    # Async context (with explicit session)
-    async with get_db_session() as session:
-        repo = await get_case_repository_async(session)
+Storage type helpers (``STORAGE_TYPE_*``, ``get_storage_type``) remain
+here because session/knowledge factories share the same env-var fallback.
 """
 
 import logging
@@ -29,14 +27,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.infrastructure.persistence.case_repository import (
-    CaseRepository,
-    InMemoryCaseRepository,
-)
 from faultmaven.infrastructure.persistence.database import get_db_session
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
-)
+
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
@@ -52,8 +44,6 @@ logger = logging.getLogger(__name__)
 STORAGE_TYPE_INMEMORY = "inmemory"
 STORAGE_TYPE_DATABASE = "database"
 
-# Singleton in-memory repositories (for consistency across calls)
-_inmemory_repository: InMemoryCaseRepository | None = None
 # `_inmemory_session_repository` and the SQL session-repository factory
 # (`get_session_repository*`, `get_session_storage_type`,
 # `get_inmemory_session_repository`, `reset_inmemory_session_repository`,
@@ -97,169 +87,14 @@ def get_storage_type() -> str:
         return os.getenv("CASE_STORAGE_TYPE", STORAGE_TYPE_DATABASE)
 
 
-def get_case_repository(
-    storage_type: str | None = None,
-    session: AsyncSession | None = None,
-) -> CaseRepository:
-    """
-    Get a case repository instance based on configuration.
-
-    This is the main factory function for obtaining a CaseRepository.
-
-    Args:
-        storage_type: Optional override for storage type.
-                     If None, uses CASE_STORAGE_TYPE env var.
-        session: Optional database session for database storage.
-                Required for database storage type.
-
-    Returns:
-        CaseRepository implementation
-
-    Raises:
-        ValueError: If storage type is unknown
-        RuntimeError: If database session is required but not provided
-
-    Example:
-        # In-memory (for testing)
-        os.environ["CASE_STORAGE_TYPE"] = "inmemory"
-        repo = get_case_repository()
-
-        # Database (production)
-        os.environ["CASE_STORAGE_TYPE"] = "database"
-        async with get_db_session() as session:
-            repo = get_case_repository(session=session)
-    """
-    global _inmemory_repository
-
-    effective_type = storage_type or get_storage_type()
-    logger.debug(f"Creating case repository with storage type: {effective_type}")
-
-    if effective_type == STORAGE_TYPE_INMEMORY:
-        # Return singleton in-memory repository
-        if _inmemory_repository is None:
-            _inmemory_repository = InMemoryCaseRepository()
-            logger.info("Created InMemoryCaseRepository (singleton)")
-        return _inmemory_repository
-
-    elif effective_type == STORAGE_TYPE_DATABASE:
-        if session is None:
-            raise RuntimeError(
-                "Database session is required for database storage type. "
-                "Use get_case_repository_async() or provide a session."
-            )
-        logger.debug("Created DatabaseCaseRepository")
-        return DatabaseCaseRepository(session)
-
-    else:
-        raise ValueError(f"Unknown storage type: {effective_type}")
-
-
-@asynccontextmanager
-async def get_case_repository_async(
-    storage_type: str | None = None,
-) -> AsyncGenerator[CaseRepository, None]:
-    """
-    Get a case repository with automatic session management.
-
-    This is the recommended way to obtain a repository in async contexts.
-    It automatically handles database session lifecycle.
-
-    Args:
-        storage_type: Optional override for storage type.
-                     If None, uses CASE_STORAGE_TYPE env var.
-
-    Yields:
-        CaseRepository implementation
-
-    Raises:
-        ValueError: If storage type is unknown
-
-    Example:
-        async with get_case_repository_async() as repo:
-            case = await repo.get("case_abc123def456")
-            await repo.save(case)
-    """
-    global _inmemory_repository
-
-    effective_type = storage_type or get_storage_type()
-
-    if effective_type == STORAGE_TYPE_INMEMORY:
-        # Return singleton in-memory repository
-        if _inmemory_repository is None:
-            _inmemory_repository = InMemoryCaseRepository()
-            logger.info("Created InMemoryCaseRepository (singleton)")
-        yield _inmemory_repository
-
-    elif effective_type == STORAGE_TYPE_DATABASE:
-        # Create database repository with session
-        async with get_db_session() as session:
-            repo = DatabaseCaseRepository(session)
-            yield repo
-
-    else:
-        raise ValueError(f"Unknown storage type: {effective_type}")
-
-
-def create_case_repository(
-    session: AsyncSession | None = None,
-    force_inmemory: bool = False,
-) -> CaseRepository:
-    """
-    Create a case repository instance.
-
-    Alternative factory function with explicit control.
-
-    Args:
-        session: Database session (required for database mode)
-        force_inmemory: Force in-memory mode regardless of config
-
-    Returns:
-        CaseRepository implementation
-    """
-    if force_inmemory:
-        return InMemoryCaseRepository()
-
-    storage_type = get_storage_type()
-
-    if storage_type == STORAGE_TYPE_INMEMORY:
-        return InMemoryCaseRepository()
-
-    elif storage_type == STORAGE_TYPE_DATABASE:
-        if session is None:
-            raise RuntimeError("Database session is required for database storage type")
-        return DatabaseCaseRepository(session)
-
-    else:
-        raise ValueError(f"Unknown storage type: {storage_type}")
-
-
-def reset_inmemory_repository() -> None:
-    """
-    Reset the singleton in-memory repository.
-
-    Useful for testing to ensure clean state between tests.
-    """
-    global _inmemory_repository
-    if _inmemory_repository is not None:
-        _inmemory_repository.clear()
-        _inmemory_repository = None
-        logger.debug("Reset in-memory repository singleton")
-
-
-def get_inmemory_repository() -> InMemoryCaseRepository:
-    """
-    Get or create the singleton in-memory repository.
-
-    Useful when you specifically need in-memory storage.
-
-    Returns:
-        InMemoryCaseRepository singleton instance
-    """
-    global _inmemory_repository
-    if _inmemory_repository is None:
-        _inmemory_repository = InMemoryCaseRepository()
-    return _inmemory_repository
-
+# ============================================================
+# Case repository factories REMOVED in 2026-04 hierarchy consolidation.
+# Use the unified ``modules.case.infrastructure`` hierarchy directly:
+#   - InMemoryCaseRepository() for tests / ephemeral storage.
+#   - get_repository_for_session(session) for session-bound DB use.
+#   - SessionlessCaseRepository() for stateless cloud/local DB.
+# See ``faultmaven.modules.case.infrastructure.case_repository`` and
+# ``sessionless_case_repository`` for the canonical types.
 
 # ============================================================
 # Session Repository Factory: REMOVED in storage redesign 2026-04 phase 3.
@@ -280,28 +115,12 @@ def get_inmemory_repository() -> InMemoryCaseRepository:
 # ============================================================
 # Dependency Injection Helpers
 # ============================================================
-
-
-async def get_repository_dependency() -> AsyncGenerator[CaseRepository, None]:
-    """
-    FastAPI dependency for obtaining a case repository.
-
-    Use this in FastAPI route dependencies:
-
-        @app.get("/cases/{case_id}")
-        async def get_case(
-            case_id: str,
-            repo: CaseRepository = Depends(get_repository_dependency)
-        ):
-            return await repo.get(case_id)
-
-    Yields:
-        CaseRepository instance
-    """
-    async with get_case_repository_async() as repo:
-        yield repo
-
-
+#
+# get_repository_dependency was removed in 2026-04 hierarchy consolidation.
+# FastAPI routes that need a case repository should depend on the
+# request-scoped ``ServiceFactory`` (see ``faultmaven.api.dependencies``)
+# or instantiate ``InMemoryCaseRepository`` directly for tests.
+#
 # get_session_repository_dependency was removed in storage redesign
 # 2026-04 phase 3 (auth sessions are Redis-only via RedisSessionStore).
 # get_evidence_artifact_repository_dependency was removed in storage redesign

@@ -128,34 +128,25 @@ class TestEvidenceNewFields:
         ev = _make_evidence(processing_mode="directed_analysis")
         assert ev.processing_mode == "directed_analysis"
 
-    def test_da_invocation_count_defaults_to_zero(self):
-        ev = _make_evidence()
-        assert ev.da_invocation_count == 0
+    # da_invocation_count tests removed — the field was a Pydantic-only
+    # cross-turn counter with no backing DB column. The save path that
+    # was supposed to persist it silently dropped the value (see the
+    # 2026-04 additive-save fix), so the field never round-tripped and
+    # had no real consumer. Removed in the hierarchy consolidation.
+    # Within-turn DA tracking lives on
+    # ``EvidenceDAState.da_call_count`` in agent_orchestration_service.
 
-    def test_da_invocation_count_set(self):
-        ev = _make_evidence(da_invocation_count=3)
-        assert ev.da_invocation_count == 3
-
-    def test_da_invocation_count_rejects_negative(self):
-        with pytest.raises(Exception):
-            _make_evidence(da_invocation_count=-1)
-
-    def test_processing_fields_roundtrip_via_dict(self):
-        """processing_mode and da_invocation_count survive dict serialization."""
-        ev = _make_evidence(
-            processing_mode="directed_analysis",
-            da_invocation_count=5,
-        )
+    def test_processing_mode_roundtrip_via_dict(self):
+        """processing_mode survives dict serialization."""
+        ev = _make_evidence(processing_mode="directed_analysis")
         as_dict = ev.model_dump()
         restored = Evidence(**as_dict)
         assert restored.processing_mode == "directed_analysis"
-        assert restored.da_invocation_count == 5
 
     def test_backward_compat_missing_processing_fields(self):
-        """Evidence created without processing fields → defaults to None/0."""
+        """Evidence created without processing_mode defaults to None."""
         ev = _make_evidence()
         assert ev.processing_mode is None
-        assert ev.da_invocation_count == 0
 
 
 # =============================================================================

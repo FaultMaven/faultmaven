@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.infrastructure.persistence.case_repository import CaseRepository
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.models.api_models import (
     CaseCreateRequest,
     CaseListFilter,

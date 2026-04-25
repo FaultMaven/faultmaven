@@ -20,8 +20,8 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
@@ -72,7 +72,7 @@ async def session_repository(
 
 
 @pytest.fixture
-async def benchmark_case(case_repository: DatabaseCaseRepository) -> Case:
+async def benchmark_case(case_repository: SQLiteCaseRepository) -> Case:
     """Create a case for benchmark session operations."""
     case = Case(
         case_id=generate_case_id(),
@@ -147,7 +147,7 @@ class TestSessionCreationPerformance:
     async def test_batch_session_creation_throughput(
         self,
         session_repository: DatabaseInvestigationSessionRepository,
-        case_repository: DatabaseCaseRepository,
+        case_repository: SQLiteCaseRepository,
         benchmark_session,
     ):
         """Measure throughput of creating multiple sessions.
@@ -314,7 +314,7 @@ class TestSessionRetrievalPerformance:
     async def test_list_sessions_by_user_latency(
         self,
         session_repository: DatabaseInvestigationSessionRepository,
-        case_repository: DatabaseCaseRepository,
+        case_repository: SQLiteCaseRepository,
         benchmark_session,
     ):
         """Measure latency of listing sessions by user.

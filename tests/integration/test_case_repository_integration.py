@@ -23,7 +23,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.case_repository import (
+from faultmaven.modules.case.infrastructure.case_repository import (
     CaseRepository,
     InMemoryCaseRepository,
 )
@@ -33,17 +33,10 @@ from faultmaven.infrastructure.persistence.database import (
     init_database,
     reset_engine,
 )
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.infrastructure.persistence.repository_factory import (
-    STORAGE_TYPE_DATABASE,
-    STORAGE_TYPE_INMEMORY,
-    get_case_repository,
-    get_case_repository_async,
-    reset_inmemory_repository,
-)
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseAction,
@@ -133,15 +126,14 @@ async def test_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture(scope="function")
-async def db_repository(test_session) -> DatabaseCaseRepository:
-    """Create DatabaseCaseRepository with test session."""
-    return DatabaseCaseRepository(test_session)
+async def db_repository(test_session) -> SQLiteCaseRepository:
+    """Create SQLiteCaseRepository with test session."""
+    return SQLiteCaseRepository(test_session)
 
 
 @pytest.fixture(scope="function")
 def inmemory_repository() -> InMemoryCaseRepository:
     """Create fresh InMemoryCaseRepository."""
-    reset_inmemory_repository()
     return InMemoryCaseRepository()
 
 
@@ -221,7 +213,7 @@ def sample_case_with_hypotheses() -> Case:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_full_case_lifecycle(db_repository: DatabaseCaseRepository):
+async def test_full_case_lifecycle(db_repository: SQLiteCaseRepository):
     """Test create -> update -> retrieve -> delete flow."""
     # Create
     case = Case(
@@ -275,7 +267,7 @@ async def test_full_case_lifecycle(db_repository: DatabaseCaseRepository):
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_case_with_evidence(
-    db_repository: DatabaseCaseRepository, sample_case_with_evidence: Case
+    db_repository: SQLiteCaseRepository, sample_case_with_evidence: Case
 ):
     """Test case with linked evidence."""
     # Save case with evidence
@@ -291,7 +283,7 @@ async def test_case_with_evidence(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_add_evidence_to_existing_case(db_repository: DatabaseCaseRepository):
+async def test_add_evidence_to_existing_case(db_repository: SQLiteCaseRepository):
     """Test adding evidence to an existing case."""
     # Create initial case
     case = Case(
@@ -333,7 +325,7 @@ async def test_add_evidence_to_existing_case(db_repository: DatabaseCaseReposito
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_case_with_hypotheses(
-    db_repository: DatabaseCaseRepository, sample_case_with_hypotheses: Case
+    db_repository: SQLiteCaseRepository, sample_case_with_hypotheses: Case
 ):
     """Test case with linked hypotheses."""
     # Save case with hypotheses
@@ -352,7 +344,7 @@ async def test_case_with_hypotheses(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_hypothesis_validation_flow(db_repository: DatabaseCaseRepository):
+async def test_hypothesis_validation_flow(db_repository: SQLiteCaseRepository):
     """Test hypothesis lifecycle from proposed to validated."""
     # Create case
     case = Case(
@@ -400,70 +392,6 @@ async def test_hypothesis_validation_flow(db_repository: DatabaseCaseRepository)
 
 
 # ============================================================
-# Repository Factory Tests
-# ============================================================
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_repository_factory_inmemory():
-    """Test repository factory returns InMemoryCaseRepository."""
-    # Set storage type
-    os.environ["CASE_STORAGE_TYPE"] = STORAGE_TYPE_INMEMORY
-    reset_inmemory_repository()
-
-    # Get repository
-    async with get_case_repository_async() as repo:
-        assert isinstance(repo, InMemoryCaseRepository)
-
-        # Test basic operations
-        case = Case(
-            case_id=f"case_{uuid4().hex[:12]}",
-            user_id="factory-test-user",
-            organization_id="factory-test-org",
-            title="Factory Test Case",
-        )
-        await repo.save(case)
-        retrieved = await repo.get(case.case_id)
-        assert retrieved is not None
-
-    # Cleanup
-    reset_inmemory_repository()
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_repository_factory_database(test_session: AsyncSession):
-    """Test repository factory with explicit session returns DatabaseCaseRepository."""
-    # Pass storage_type explicitly to avoid Settings caching
-    repo = get_case_repository(storage_type=STORAGE_TYPE_DATABASE, session=test_session)
-    assert isinstance(repo, DatabaseCaseRepository)
-
-    # Test basic operations
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="factory-db-test-user",
-        organization_id="factory-db-test-org",
-        title="Factory DB Test Case",
-    )
-    await repo.save(case)
-    retrieved = await repo.get(case.case_id)
-    assert retrieved is not None
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_repository_factory_invalid_type():
-    """Test repository factory with invalid storage type."""
-    # Pass storage_type explicitly to avoid Settings caching
-    with pytest.raises(ValueError) as exc_info:
-        async with get_case_repository_async(storage_type="invalid_type") as repo:
-            pass
-
-    assert "Unknown storage type" in str(exc_info.value)
-
-
-# ============================================================
 # Concurrent Operations Tests
 # ============================================================
 
@@ -482,7 +410,7 @@ async def test_concurrent_case_creation(test_engine):
 
     async def create_case(index: int) -> Case:
         async with session_factory() as session:
-            repo = DatabaseCaseRepository(session)
+            repo = SQLiteCaseRepository(session)
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id="concurrent-test-user",
@@ -500,7 +428,7 @@ async def test_concurrent_case_creation(test_engine):
 
     # Verify all retrievable
     async with session_factory() as session:
-        repo = DatabaseCaseRepository(session)
+        repo = SQLiteCaseRepository(session)
         for case in cases:
             retrieved = await repo.get(case.case_id)
             assert retrieved is not None
@@ -522,7 +450,7 @@ async def test_concurrent_message_addition(test_engine):
     # Create case with its own session
     case_id = f"case_{uuid4().hex[:12]}"
     async with session_factory() as session:
-        repo = DatabaseCaseRepository(session)
+        repo = SQLiteCaseRepository(session)
         case = Case(
             case_id=case_id,
             user_id="concurrent-msg-user",
@@ -533,7 +461,7 @@ async def test_concurrent_message_addition(test_engine):
 
     async def add_message(index: int) -> bool:
         async with session_factory() as session:
-            repo = DatabaseCaseRepository(session)
+            repo = SQLiteCaseRepository(session)
             return await repo.add_message(
                 case_id,
                 {
@@ -552,7 +480,7 @@ async def test_concurrent_message_addition(test_engine):
 
     # Verify all messages stored
     async with session_factory() as session:
-        repo = DatabaseCaseRepository(session)
+        repo = SQLiteCaseRepository(session)
         messages = await repo.get_messages(case_id, limit=20)
     assert len(messages) == 10
 
@@ -564,7 +492,7 @@ async def test_concurrent_message_addition(test_engine):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_get_nonexistent_case(db_repository: DatabaseCaseRepository):
+async def test_get_nonexistent_case(db_repository: SQLiteCaseRepository):
     """Test getting a case that doesn't exist."""
     result = await db_repository.get("case_doesnotexist")
     assert result is None
@@ -572,7 +500,7 @@ async def test_get_nonexistent_case(db_repository: DatabaseCaseRepository):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_delete_nonexistent_case(db_repository: DatabaseCaseRepository):
+async def test_delete_nonexistent_case(db_repository: SQLiteCaseRepository):
     """Test deleting a case that doesn't exist."""
     result = await db_repository.delete("case_doesnotexist")
     assert result is False
@@ -580,7 +508,7 @@ async def test_delete_nonexistent_case(db_repository: DatabaseCaseRepository):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_add_message_nonexistent_case(db_repository: DatabaseCaseRepository):
+async def test_add_message_nonexistent_case(db_repository: SQLiteCaseRepository):
     """Test adding message to nonexistent case."""
     result = await db_repository.add_message(
         "case_doesnotexist", {"role": "user", "content": "Test message"}
@@ -595,7 +523,7 @@ async def test_add_message_nonexistent_case(db_repository: DatabaseCaseRepositor
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_complex_case_persistence(db_repository: DatabaseCaseRepository):
+async def test_complex_case_persistence(db_repository: SQLiteCaseRepository):
     """Test persisting a case with all complex fields."""
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",

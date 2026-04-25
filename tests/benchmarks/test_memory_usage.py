@@ -16,8 +16,8 @@ import os
 import psutil
 import pytest
 
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -58,7 +58,7 @@ class TestMemoryUsage:
     @pytest.mark.asyncio
     async def test_memory_usage_under_load(
         self,
-        case_repository: DatabaseCaseRepository,
+        case_repository: SQLiteCaseRepository,
         benchmark_session,
     ):
         """Measure memory usage under typical workload.
@@ -103,7 +103,7 @@ class TestMemoryUsage:
     @pytest.mark.asyncio
     async def test_memory_efficiency_large_dataset(
         self,
-        case_repository: DatabaseCaseRepository,
+        case_repository: SQLiteCaseRepository,
         benchmark_session,
     ):
         """Measure memory efficiency with larger dataset.
@@ -164,7 +164,7 @@ class TestMemoryUsage:
     @pytest.mark.asyncio
     async def test_memory_cleanup_after_gc(
         self,
-        case_repository: DatabaseCaseRepository,
+        case_repository: SQLiteCaseRepository,
         benchmark_session,
     ):
         """Verify memory is released after garbage collection.

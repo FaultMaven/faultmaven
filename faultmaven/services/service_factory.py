@@ -20,17 +20,19 @@ from typing import TYPE_CHECKING, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.config.settings import get_settings
-from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.repository_factory import (
     STORAGE_TYPE_DATABASE,
-    get_case_repository,
     get_investigation_session_repository,
     get_knowledge_item_repository,
 )
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
+    get_repository_for_session,
+)
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
@@ -83,11 +85,11 @@ class ServiceFactory:
         self.db_session = db_session
         self.tenant_provider = tenant_provider
 
-        # Create repositories with the provided session
-        self.case_repo: CaseRepository = get_case_repository(
-            storage_type=STORAGE_TYPE_DATABASE,
-            session=db_session,
-        )
+        # Create repositories with the provided session.
+        # `get_repository_for_session` returns the dialect-appropriate
+        # implementation from the unified `modules.case.infrastructure`
+        # hierarchy (SQLiteCaseRepository or PostgreSQLHybridCaseRepository).
+        self.case_repo: CaseRepository = get_repository_for_session(db_session)
         self.session_repo: InvestigationSessionRepository = (
             get_investigation_session_repository(
                 storage_type=STORAGE_TYPE_DATABASE,

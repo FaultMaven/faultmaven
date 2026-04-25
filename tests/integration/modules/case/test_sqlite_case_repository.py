@@ -93,7 +93,9 @@ async def create_test_schema(session: AsyncSession):
             progress TEXT,
             metadata TEXT,
             is_archived INTEGER NOT NULL DEFAULT 0,
-            archived_at TIMESTAMP
+            archived_at TIMESTAMP,
+            -- OCC token (2026-04-24 hierarchy consolidation).
+            version INTEGER NOT NULL DEFAULT 1
         )
     """))
 
@@ -748,15 +750,15 @@ class TestDialectDetection:
     """Test that SessionlessCaseRepository correctly detects SQLite dialect."""
 
     async def test_dialect_detection_selects_sqlite_repo(self, sqlite_session):
-        """Test that _get_repository_for_session returns SQLiteCaseRepository for SQLite."""
+        """Test that get_repository_for_session returns SQLiteCaseRepository for SQLite."""
         from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
-            _get_repository_for_session,
+            get_repository_for_session,
         )
         from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
             SQLiteCaseRepository,
         )
 
-        repo = _get_repository_for_session(sqlite_session)
+        repo = get_repository_for_session(sqlite_session)
 
         # Should return SQLiteCaseRepository for SQLite dialect
         assert isinstance(repo, SQLiteCaseRepository)

@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _get_repository_for_session(session):
+def get_repository_for_session(session):
     """
     Factory function to create the appropriate repository based on database dialect.
 
@@ -108,13 +108,13 @@ class SessionlessCaseRepository(CaseRepository):
     async def save(self, case: Case) -> Case:
         """Save case with new session per operation."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.save(case)
 
     async def get(self, case_id: str) -> Case | None:
         """Get case with new session per operation."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.get(case_id)
 
     async def list_by_user(
@@ -126,13 +126,13 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> tuple[list[Case], int]:
         """List cases with new session per operation."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.list_by_user(user_id, limit, offset, status_filter)
 
     async def delete(self, case_id: str) -> bool:
         """Delete case with new session per operation."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.delete(case_id)
 
     async def find_by_content_hash(
@@ -140,7 +140,7 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> Evidence | None:
         """Find oldest Evidence in a case whose content_hash matches."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.find_by_content_hash(case_id, content_hash)
 
     async def list_evidence_by_time_window(
@@ -156,7 +156,7 @@ class SessionlessCaseRepository(CaseRepository):
         session, consistent with the other methods on this wrapper.
         """
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.list_evidence_by_time_window(case_id, start, end)
 
     async def upsert_case_entities(
@@ -167,7 +167,7 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> None:
         """Phase 4 — see ``CaseRepository.upsert_case_entities``."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             await repo.upsert_case_entities(case_id, evidence_id, entities)
 
     async def find_entity(
@@ -178,7 +178,7 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> list[CaseEntity]:
         """Phase 4 — see ``CaseRepository.find_entity``."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.find_entity(case_id, entity_value, entity_type)
 
     async def list_top_entities(
@@ -189,7 +189,7 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> list[CaseEntity]:
         """Phase 4 — see ``CaseRepository.list_top_entities``."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.list_top_entities(case_id, entity_type, limit)
 
     async def search_by_keyword(
@@ -197,25 +197,25 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> list[Case]:
         """Search cases with new session per operation."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.search_by_keyword(user_id, keyword, limit)
 
     async def add_evidence(self, case_id: str, evidence: Evidence) -> None:
         """Add evidence with new session per operation."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             await repo.add_evidence(case_id, evidence)
 
     async def add_hypothesis(self, case_id: str, hypothesis: Hypothesis) -> None:
         """Add hypothesis with new session per operation."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             await repo.add_hypothesis(case_id, hypothesis)
 
     async def add_solution(self, case_id: str, solution: Solution) -> None:
         """Add solution with new session per operation."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             await repo.add_solution(case_id, solution)
 
     async def update_status(
@@ -223,13 +223,13 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> None:
         """Update status with new session per operation."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             await repo.update_status(case_id, new_status, reason)
 
     async def get_by_ids(self, case_ids: list[str]) -> list[Case]:
         """Bulk get cases with new session per operation."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.get_by_ids(case_ids)
 
     # ============================================================
@@ -246,7 +246,7 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> tuple[list[Case], int]:
         """List cases with optional filters."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.list(user_id, organization_id, status, limit, offset)
 
     async def search(
@@ -258,13 +258,13 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> tuple[builtins.list[Case], int]:
         """Search cases by text query."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.search(query, user_id, organization_id, limit)
 
     async def add_message(self, case_id: str, message_dict: dict) -> bool:
         """Add a message to a case."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.add_message(case_id, message_dict)
 
     async def get_messages(
@@ -272,13 +272,13 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> builtins.list[dict]:
         """Get messages for a case with pagination."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.get_messages(case_id, limit, offset)
 
     async def update_activity_timestamp(self, case_id: str) -> bool:
         """Update case last_activity_at timestamp."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.update_activity_timestamp(case_id)
 
     async def update_evidence_vectorized(
@@ -286,7 +286,7 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> bool:
         """Scoped update of the `vectorized` flag on one evidence row."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.update_evidence_vectorized(
                 case_id, evidence_id, vectorized
             )
@@ -294,19 +294,19 @@ class SessionlessCaseRepository(CaseRepository):
     async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
         """Explicit scoped delete of a single evidence row."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.delete_evidence(case_id, evidence_id)
 
     async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
         """Explicit scoped delete of a single uploaded_file row."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.delete_uploaded_file(case_id, file_id)
 
     async def get_analytics(self, case_id: str) -> dict[str, Any]:
         """Compute analytics for a case."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.get_analytics(case_id)
 
     async def cleanup_expired(
@@ -314,13 +314,13 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> int:
         """Clean up expired/old cases."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.cleanup_expired(max_age_days, batch_size)
 
     async def count_user_cases_on_date(self, user_id: str, date: Any) -> int:
         """Count cases created by user on a specific date."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.count_user_cases_on_date(user_id, date)
 
     # ============================================================
@@ -330,13 +330,13 @@ class SessionlessCaseRepository(CaseRepository):
     async def add_report(self, report: "CaseReport") -> "CaseReport":
         """Save report to persistence layer."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.add_report(report)
 
     async def get_report(self, report_id: str) -> Optional["CaseReport"]:
         """Retrieve a report by ID."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.get_report(report_id)
 
     async def get_reports(
@@ -348,7 +348,7 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> builtins.list["CaseReport"]:
         """Get reports for a case with optional filtering."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.get_reports(
                 case_id, report_type, include_history, only_current
             )
@@ -356,13 +356,13 @@ class SessionlessCaseRepository(CaseRepository):
     async def update_report(self, report: "CaseReport") -> "CaseReport":
         """Update an existing report."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.update_report(report)
 
     async def delete_report(self, report_id: str) -> bool:
         """Delete a report by ID."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.delete_report(report_id)
 
     # Standalone evidence operations were removed in storage redesign 2026-04
@@ -375,13 +375,13 @@ class SessionlessCaseRepository(CaseRepository):
     async def create_agent_execution(self, execution: Any) -> Any:
         """Create new agent execution record."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.create_agent_execution(execution)
 
     async def get_agent_execution(self, execution_id: str) -> Any | None:
         """Get agent execution by ID with tool calls loaded."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.get_agent_execution(execution_id)
 
     async def list_agent_executions_by_case(
@@ -394,7 +394,7 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> tuple[builtins.list[Any], int]:
         """List agent executions for a case with optional filters."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.list_agent_executions_by_case(
                 case_id, status, agent_type, limit, offset
             )
@@ -408,7 +408,7 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> tuple[builtins.list[Any], int]:
         """List agent executions for a session with optional filters."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.list_agent_executions_by_session(
                 session_id, status, limit, offset
             )
@@ -416,25 +416,25 @@ class SessionlessCaseRepository(CaseRepository):
     async def update_agent_execution(self, execution: Any) -> Any:
         """Update agent execution status and results."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.update_agent_execution(execution)
 
     async def delete_agent_execution(self, execution_id: str) -> bool:
         """Delete agent execution by ID (cascades to tool calls)."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.delete_agent_execution(execution_id)
 
     async def create_agent_tool_call(self, tool_call: Any) -> Any:
         """Create new agent tool call record."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.create_agent_tool_call(tool_call)
 
     async def update_agent_tool_call(self, tool_call: Any) -> Any:
         """Update agent tool call status and results."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.update_agent_tool_call(tool_call)
 
     async def get_agent_tool_calls_for_execution(
@@ -442,13 +442,13 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> builtins.list[Any]:
         """Get all tool calls for an execution."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.get_agent_tool_calls_for_execution(execution_id)
 
     async def count_agent_executions_by_case(self, case_id: str) -> int:
         """Count agent executions for a case."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.count_agent_executions_by_case(case_id)
 
     async def get_latest_agent_execution(
@@ -458,7 +458,7 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> Any | None:
         """Get the most recent agent execution for a case."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.get_latest_agent_execution(case_id, agent_type)
 
     # ============================================================
@@ -468,17 +468,17 @@ class SessionlessCaseRepository(CaseRepository):
     async def create_checkpoint(self, checkpoint: "CaseCheckpoint") -> "CaseCheckpoint":
         """Create a new case checkpoint."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.create_checkpoint(checkpoint)
 
     async def get_checkpoint(self, checkpoint_id: str) -> Optional["CaseCheckpoint"]:
         """Get a checkpoint by ID."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.get_checkpoint(checkpoint_id)
 
     async def get_checkpoints(self, case_id: str) -> builtins.list["CaseCheckpoint"]:
         """Get all checkpoints for a case."""
         async with get_db_session() as session:
-            repo = _get_repository_for_session(session)
+            repo = get_repository_for_session(session)
             return await repo.get_checkpoints(case_id)

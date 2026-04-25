@@ -1,15 +1,15 @@
-# Database Abstraction Layer Specification v2.4
+# Database Abstraction Layer Specification v2.5
 
 **Document Purpose**: Define the pluggable storage architecture that enables FaultMaven to switch between storage backends via configuration without code changes, across multiple data types and storage technologies.
 
 **Status**: ✅ Production Implementation
-**Version**: 2.4.0
-**Last Updated**: 2026-04-24
+**Version**: 2.5.0
+**Last Updated**: 2026-04-25
 **Alignment**:
 
 - Investigation Architecture v2.0 (Milestone-Based)
 - Case Model Design v2.0
-- Current Implementation (faultmaven/infrastructure/persistence/)
+- Current Implementation (faultmaven/modules/case/infrastructure/)
 
 **Critical Updates**:
 
@@ -22,6 +22,7 @@
 - ✅ `InMemoryVectorStore` removed — ChromaDB `PersistentClient` is always available
 - ✅ **(v2.3, 2026-04-24)** `save(case)` is **purely additive** — the aggregate save no longer performs `DELETE ... NOT IN (in_memory_ids)` on sibling tables. Intentional deletion is explicit via scoped repository methods. See [§4.1.1 Aggregate save semantics](#411-aggregate-save-semantics).
 - ✅ **(v2.4, 2026-04-24)** `save(case)` enforces **optimistic concurrency control** via a `version` column on the `cases` table. Read-modify-write paths use the `update_case_with_retry` helper; turn submission surfaces 409 Conflict on mismatch rather than retrying (LLM calls are non-idempotent). See [§4.1.2 Optimistic concurrency control](#412-optimistic-concurrency-control).
+- ✅ **(v2.5, 2026-04-25)** Case repository hierarchy **consolidated**. The duplicate hierarchy at `faultmaven/infrastructure/persistence/{case_repository,database_case_repository}.py` was deleted; the canonical types live at `faultmaven/modules/case/infrastructure/{case_repository,sqlite_case_repository,postgresql_hybrid_case_repository,sessionless_case_repository}.py`. The redundant generic `DatabaseCaseRepository` (incomplete in the new hierarchy, ORM-merge-based in the old) was also removed — production paths use `SessionlessCaseRepository` (auto-session) or `get_repository_for_session(session)` (existing session). The `Evidence.da_invocation_count` Pydantic field was removed at the same time — it had no DB column and never round-tripped.
 
 > **Reality check (2026-04-18)**: the examples below occasionally use values like `CASE_STORAGE_TYPE=postgres` or `CASE_STORAGE_TYPE=sqlite` as shorthand for deployment modes. **Those values are not recognized by the code.** The actual selector at [repository_factory.py:62-63](../../../faultmaven/infrastructure/persistence/repository_factory.py#L62-L63) accepts only `inmemory` or `database`. When `CASE_STORAGE_TYPE=database`, the SQL dialect (SQLite vs PostgreSQL) is determined by `DATABASE_URL` — see `sqlite+aiosqlite://...` vs `postgresql+asyncpg://...`. `SessionlessCaseRepository` detects the dialect at runtime and routes to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository` accordingly. For the schema-level policy that goes with this runtime routing, see [Deployment-Aware Schema Strategy](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) (internal) which defines Tier 1 (both dialects) vs Tier 2 (PostgreSQL augmentations).
 

@@ -138,11 +138,13 @@ def register_services(redis_client=None) -> None:
     from faultmaven.infrastructure.persistence.repository_factory import (
         STORAGE_TYPE_INMEMORY,
         get_agent_execution_repository,
-        get_case_repository,
         get_investigation_session_repository,
     )
     from faultmaven.modules.case.domain.services.investigation_session_service import (
         APIInvestigationSessionService,
+    )
+    from faultmaven.modules.case.infrastructure.case_repository import (
+        InMemoryCaseRepository,
     )
 
     # APIInvestigationSessionService - Used by AgentOrchestrationService
@@ -160,7 +162,7 @@ def register_services(redis_client=None) -> None:
         execution_repo = get_agent_execution_repository(
             storage_type=STORAGE_TYPE_INMEMORY
         )
-        case_repo = get_case_repository(storage_type=STORAGE_TYPE_INMEMORY)
+        case_repo = InMemoryCaseRepository()
 
         return APIInvestigationSessionService(
             session_repo=session_repo,

@@ -5,16 +5,11 @@ This package provides database and storage implementations for the application.
 Modules:
 - models: SQLAlchemy ORM models for database tables
 - database: Database session management and connection pooling
-- database_case_repository: SQLAlchemy ORM-based case repository
-- repository_factory: Factory pattern for repository creation
-- case_repository: Base repository interfaces and implementations
+- repository_factory: Factories for investigation session and knowledge
+  item repositories. (Case repositories live in
+  ``faultmaven.modules.case.infrastructure``.)
 """
 
-from faultmaven.infrastructure.persistence.case_repository import (
-    CaseRepository,
-    InMemoryCaseRepository,
-    RepositoryException,
-)
 from faultmaven.infrastructure.persistence.database import (
     check_database_health,
     close_database,
@@ -22,31 +17,8 @@ from faultmaven.infrastructure.persistence.database import (
     init_database,
     reset_engine,
 )
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
-)
-from faultmaven.infrastructure.persistence.repository_factory import (
-    create_case_repository,
-    get_case_repository,
-    get_case_repository_async,
-    get_repository_dependency,
-    reset_inmemory_repository,
-)
 
 __all__ = [
-    # Base interfaces
-    "CaseRepository",
-    "InMemoryCaseRepository",
-    "RepositoryException",
-    # Database repository
-    "DatabaseCaseRepository",
-    # Factory functions
-    "get_case_repository",
-    "get_case_repository_async",
-    "create_case_repository",
-    "reset_inmemory_repository",
-    "get_repository_dependency",
-    # Database management
     "get_db_session",
     "init_database",
     "close_database",

@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -36,7 +36,7 @@ class TestCaseCreationPerformance:
     @pytest.mark.asyncio
     async def test_single_case_creation_latency(
         self,
-        case_repository: DatabaseCaseRepository,
+        case_repository: SQLiteCaseRepository,
         benchmark_session,
     ):
         """Measure latency of creating a single case.
@@ -66,7 +66,7 @@ class TestCaseCreationPerformance:
     @pytest.mark.asyncio
     async def test_batch_case_creation_throughput(
         self,
-        case_repository: DatabaseCaseRepository,
+        case_repository: SQLiteCaseRepository,
         benchmark_session,
     ):
         """Measure throughput of creating multiple cases.
@@ -109,7 +109,7 @@ class TestCaseRetrievalPerformance:
     @pytest.mark.asyncio
     async def test_single_case_retrieval_latency(
         self,
-        case_repository: DatabaseCaseRepository,
+        case_repository: SQLiteCaseRepository,
         benchmark_session,
     ):
         """Measure latency of retrieving a single case.
@@ -143,7 +143,7 @@ class TestCaseRetrievalPerformance:
     @pytest.mark.asyncio
     async def test_list_cases_latency(
         self,
-        case_repository: DatabaseCaseRepository,
+        case_repository: SQLiteCaseRepository,
         benchmark_session,
     ):
         """Measure latency of listing cases with pagination.
@@ -188,7 +188,7 @@ class TestCaseUpdatePerformance:
     @pytest.mark.asyncio
     async def test_case_update_latency(
         self,
-        case_repository: DatabaseCaseRepository,
+        case_repository: SQLiteCaseRepository,
         benchmark_session,
     ):
         """Measure latency of updating a case.
@@ -232,7 +232,7 @@ class TestCaseSearchPerformance:
     @pytest.mark.asyncio
     async def test_search_cases_latency(
         self,
-        case_repository: DatabaseCaseRepository,
+        case_repository: SQLiteCaseRepository,
         benchmark_session,
     ):
         """Measure latency of searching cases.

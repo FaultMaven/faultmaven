@@ -1671,12 +1671,6 @@ class Evidence(BaseModel):
         max_length=50,
     )
 
-    da_invocation_count: int = Field(
-        default=0,
-        ge=0,
-        description="DA invocations across turns for this evidence (failure trigger #4)",
-    )
-
     # ============================================================
     # Source Information
     # ============================================================

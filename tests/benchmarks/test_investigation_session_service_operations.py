@@ -22,8 +22,8 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InMemoryInvestigationSessionRepository,
@@ -81,9 +81,9 @@ async def async_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture
-async def case_repo(async_session) -> DatabaseCaseRepository:
+async def case_repo(async_session) -> SQLiteCaseRepository:
     """Create database case repository."""
-    return DatabaseCaseRepository(async_session)
+    return SQLiteCaseRepository(async_session)
 
 
 @pytest.fixture
@@ -467,7 +467,7 @@ class TestGetSessionWithExecutionsBenchmarks:
     """Benchmark get session with executions operations."""
 
     @pytest.mark.skip(
-        reason="Agent execution methods not yet implemented in DatabaseCaseRepository after migration"
+        reason="Agent execution methods not yet implemented in SQLiteCaseRepository after migration"
     )
     @pytest.mark.asyncio
     async def test_benchmark_get_session_with_executions(
@@ -517,7 +517,7 @@ class TestAddExecutionBenchmarks:
     """Benchmark add execution to session operations."""
 
     @pytest.mark.skip(
-        reason="Agent execution methods not yet implemented in DatabaseCaseRepository after migration"
+        reason="Agent execution methods not yet implemented in SQLiteCaseRepository after migration"
     )
     @pytest.mark.asyncio
     async def test_benchmark_add_execution_to_session(

@@ -351,64 +351,10 @@ class TestSchemaJournalEntries:
         assert state.journal_entries is None
 
 
-# ============================================================
-# Persistence Resilience
-# ============================================================
-
-
-class TestJournalPersistenceResilience:
-    """Test that corrupt journal data is handled gracefully."""
-
-    def test_corrupt_entry_skipped(self):
-        """Corrupt entries should be silently skipped during parsing."""
-        from faultmaven.infrastructure.persistence.database_case_repository import (
-            DatabaseCaseRepository,
-        )
-
-        repo = DatabaseCaseRepository.__new__(DatabaseCaseRepository)
-        raw = [
-            {"turn": 1, "entry_type": "finding", "content": "Valid entry"},
-            {"turn": "not_a_number"},  # missing required fields
-            {"entry_type": "invalid_type", "content": "Bad type", "turn": 2},
-            {"turn": 3, "entry_type": "decision", "content": "Another valid one"},
-        ]
-        result = repo._parse_investigation_journal(raw)
-        # Only valid entries survive
-        assert len(result) == 2
-        assert result[0].content == "Valid entry"
-        assert result[1].content == "Another valid one"
-
-    def test_empty_list_parsed(self):
-        """Empty list should parse to empty list."""
-        from faultmaven.infrastructure.persistence.database_case_repository import (
-            DatabaseCaseRepository,
-        )
-
-        repo = DatabaseCaseRepository.__new__(DatabaseCaseRepository)
-        assert repo._parse_investigation_journal([]) == []
-
-    def test_entries_with_optional_fields(self):
-        """Entries with and without optional fields parse correctly."""
-        from faultmaven.infrastructure.persistence.database_case_repository import (
-            DatabaseCaseRepository,
-        )
-
-        repo = DatabaseCaseRepository.__new__(DatabaseCaseRepository)
-        raw = [
-            {
-                "turn": 1,
-                "entry_type": "finding",
-                "content": "With refs",
-                "evidence_id": "ev_abc123def456",
-                "hypothesis_id": "hyp_abc123def456",
-            },
-            {
-                "turn": 2,
-                "entry_type": "user_context",
-                "content": "Without refs",
-            },
-        ]
-        result = repo._parse_investigation_journal(raw)
-        assert len(result) == 2
-        assert result[0].evidence_id == "ev_abc123def456"
-        assert result[1].evidence_id is None
+# Persistence-resilience tests previously verified
+# `DatabaseCaseRepository._parse_investigation_journal` — a defensive
+# parser that lived in the now-deleted parallel repository hierarchy.
+# investigation_journal is currently an in-memory-only field on Case
+# (no DB column, no read/write through any repository), so there is no
+# persistence layer to be defensive about. If journal persistence is
+# ever added back, port the resilience tests to the new home then.

@@ -18,7 +18,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.infrastructure.persistence.case_repository import InMemoryCaseRepository
+from faultmaven.modules.case.infrastructure.case_repository import (
+    InMemoryCaseRepository,
+)
 from faultmaven.infrastructure.persistence.postgresql_hybrid_case_repository import (
     PostgreSQLHybridCaseRepository,
 )
@@ -197,7 +199,9 @@ class TestRepositoryArchitecture:
     def test_repository_interface_no_find_by_session(self):
         """Verify find_by_session() method was removed"""
 
-        from faultmaven.infrastructure.persistence.case_repository import CaseRepository
+        from faultmaven.modules.case.infrastructure.case_repository import (
+            CaseRepository,
+        )
 
         # find_by_session should NOT exist in abstract interface
         assert not hasattr(CaseRepository, "find_by_session")

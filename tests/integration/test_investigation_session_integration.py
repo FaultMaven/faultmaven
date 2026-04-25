@@ -20,8 +20,8 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.database import reset_engine
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
@@ -39,7 +39,12 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     ExecutionStatus,
 )
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InquiryData
-from tests.utils import generate_case_id, generate_session_id, install_org_autoseed
+from tests.utils import (
+    generate_case_id,
+    generate_session_id,
+    install_org_autoseed,
+    seed_organizations,
+)
 
 # ============================================================
 # Test Fixtures
@@ -80,6 +85,25 @@ async def test_engine():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Pre-seed every hardcoded org_id used across the file so the case
+    # repository's raw-SQL writes find their FK target. The ORM autoseed
+    # hook only fires for ORM flushes; raw INSERTs need orgs in place
+    # before the cursor executes.
+    seed_factory = async_sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with seed_factory() as seed_session:
+        await seed_organizations(
+            seed_session,
+            [
+                "integration-test-org",
+                "cascade-test-org",
+                "test-org",
+                "different-org",
+                "order-test-org",
+            ],
+        )
+
     yield engine
 
     await engine.dispose()
@@ -100,9 +124,9 @@ async def test_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture(scope="function")
-async def case_repository(test_session) -> DatabaseCaseRepository:
-    """Create DatabaseCaseRepository with test session."""
-    return DatabaseCaseRepository(test_session)
+async def case_repository(test_session) -> SQLiteCaseRepository:
+    """Create SQLiteCaseRepository with test session."""
+    return SQLiteCaseRepository(test_session)
 
 
 @pytest.fixture(scope="function")
@@ -115,8 +139,13 @@ async def session_repository(test_session) -> DatabaseInvestigationSessionReposi
 
 
 @pytest.fixture
-async def sample_case(case_repository: DatabaseCaseRepository) -> Case:
-    """Create a sample case for testing sessions."""
+async def sample_case(case_repository: SQLiteCaseRepository) -> Case:
+    """Create a sample case for testing sessions.
+
+    The parent ``integration-test-org`` is pre-seeded by the
+    ``test_engine`` fixture above, so this raw-SQL case write satisfies
+    the FK without explicit per-test seeding.
+    """
     case = Case(
         case_id=generate_case_id(),
         user_id="integration-test-user",
@@ -282,7 +311,7 @@ async def test_session_lifecycle_active_to_abandoned(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_cascade_delete_case_to_sessions(
-    case_repository: DatabaseCaseRepository,
+    case_repository: SQLiteCaseRepository,
     session_repository: DatabaseInvestigationSessionRepository,
     test_session: AsyncSession,
 ):
@@ -326,7 +355,7 @@ async def test_cascade_delete_case_to_sessions(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_four_level_cascade_delete_chain(
-    case_repository: DatabaseCaseRepository,
+    case_repository: SQLiteCaseRepository,
     session_repository: DatabaseInvestigationSessionRepository,
     test_session: AsyncSession,
 ):
@@ -568,7 +597,7 @@ async def test_get_active_session_returns_none_when_no_active(
 @pytest.mark.integration
 async def test_list_sessions_by_user_pagination(
     session_repository: DatabaseInvestigationSessionRepository,
-    case_repository: DatabaseCaseRepository,
+    case_repository: SQLiteCaseRepository,
 ):
     """Test pagination for list_by_user_id."""
     user_id = "pagination-test-user"

@@ -16,7 +16,7 @@ from faultmaven.modules.case.domain.models import Case, CaseStatus
 
 if TYPE_CHECKING:
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
-    from faultmaven.infrastructure.persistence.case_repository import CaseRepository
+    from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
 
 def create_sample_case(

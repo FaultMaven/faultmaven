@@ -1004,10 +1004,27 @@ class SQLiteCaseRepository(CaseRepository):
     async def add_message(self, case_id: str, message_dict: dict) -> bool:
         """Add message to case_messages table.
 
+        Returns False (not raise) if the parent case doesn't exist —
+        organization_id is NOT NULL on case_messages and is derived
+        via subquery from the parent case row, so a missing case
+        would otherwise surface as an IntegrityError. Pre-checking
+        keeps the contract: True on success, False on missing case,
+        raise only on real persistence errors.
+
         Schema per design spec (case-schema.md §4.7):
         - message_id, turn_number, role, content, created_at, token_count, metadata
         """
         try:
+            # Pre-check the case exists to keep the (case_id missing → False)
+            # contract; the INSERT below would otherwise hit
+            # NOT NULL on case_messages.organization_id.
+            probe = await self.db.execute(
+                text("SELECT 1 FROM cases WHERE case_id = :case_id"),
+                {"case_id": case_id},
+            )
+            if probe.fetchone() is None:
+                return False
+
             message_id = message_dict.get("message_id", f"msg_{uuid4().hex[:16]}")
             # Accept both 'timestamp' (legacy) and 'created_at' (design spec)
             created_at = (
@@ -1017,7 +1034,8 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
             # SQLite-compatible: no ::jsonb type cast
-            # organization_id is NOT NULL — derive from parent case
+            # organization_id derived from the parent case (already verified
+            # to exist by the probe above).
             query = text("""
                 INSERT INTO case_messages (message_id, case_id, organization_id, turn_number, role, content, created_at, token_count, metadata)
                 VALUES (:message_id, :case_id, (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = :case_id), :turn_number, :role, :content, :created_at, :token_count, :metadata)
@@ -1613,6 +1631,8 @@ class SQLiteCaseRepository(CaseRepository):
                     "turns_without_progress": case.turns_without_progress,
                     "message_count": case.message_count,
                     "closure_reason": case.closure_reason,
+                    "description": case.description,
+                    "investigation_strategy": case.investigation_strategy.value,
                     "closed_at": (
                         to_json_compatible(case.closed_at) if case.closed_at else None
                     ),
@@ -2245,9 +2265,12 @@ class SQLiteCaseRepository(CaseRepository):
             ),
         }
 
-        # Backward compatibility: Fix description for old INVESTIGATING cases
-        # Old cases may be in INVESTIGATING status with empty description
-        description = row.description if hasattr(row, "description") else ""
+        # description has no first-class column on `cases`; round-trip
+        # through the metadata JSON blob. Fall back to row column or
+        # empty string for legacy rows that pre-date the metadata key.
+        description = metadata.get("description") or (
+            row.description if hasattr(row, "description") else ""
+        )
         if (
             CaseStatus(row.status) == CaseStatus.INVESTIGATING
             and (not description or not description.strip())
@@ -2267,10 +2290,17 @@ class SQLiteCaseRepository(CaseRepository):
         if description:
             case_data["description"] = description
 
-        if hasattr(row, "investigation_strategy") and row.investigation_strategy:
-            case_data["investigation_strategy"] = InvestigationStrategy(
-                row.investigation_strategy
-            )
+        # investigation_strategy isn't a first-class column on `cases`
+        # (no Tier 1 column for it yet) — round-trip via the metadata
+        # JSON blob. Fall through to Pydantic's default if neither
+        # source carries a value.
+        strategy_value = metadata.get("investigation_strategy") or (
+            row.investigation_strategy
+            if hasattr(row, "investigation_strategy")
+            else None
+        )
+        if strategy_value:
+            case_data["investigation_strategy"] = InvestigationStrategy(strategy_value)
 
         if hasattr(row, "last_activity_at") and row.last_activity_at:
             case_data["last_activity_at"] = row.last_activity_at

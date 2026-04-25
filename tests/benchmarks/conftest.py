@@ -10,8 +10,8 @@ from typing import AsyncGenerator
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 
 # DatabaseEvidenceArtifactRepository removed in storage redesign 2026-04
@@ -81,9 +81,9 @@ async def benchmark_session(
 
 
 @pytest.fixture
-async def case_repository(benchmark_session) -> DatabaseCaseRepository:
+async def case_repository(benchmark_session) -> SQLiteCaseRepository:
     """Create case repository for benchmarks."""
-    return DatabaseCaseRepository(benchmark_session)
+    return SQLiteCaseRepository(benchmark_session)
 
 
 # session_repository (SQL auth session repo) fixture removed in storage

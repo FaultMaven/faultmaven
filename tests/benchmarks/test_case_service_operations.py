@@ -20,8 +20,8 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 
 # InMemoryEvidenceArtifactRepository import removed in storage redesign
@@ -70,9 +70,9 @@ async def async_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture
-async def case_repo(async_session) -> DatabaseCaseRepository:
+async def case_repo(async_session) -> SQLiteCaseRepository:
     """Create database case repository."""
-    return DatabaseCaseRepository(async_session)
+    return SQLiteCaseRepository(async_session)
 
 
 @pytest.fixture

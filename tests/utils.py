@@ -42,7 +42,7 @@ async def seed_organizations(session, org_ids: Iterable[str]) -> None:
 
 
 def install_org_autoseed(sync_session) -> None:
-    """Auto-create OrganizationModel rows for any new tenanted object.
+    """Auto-create OrganizationModel rows for any new tenanted ORM object.
 
     Phase 9 added FK on tenanted tables. This hook seeds the parent org row
     inside the same flush so FK constraints succeed without churning each test
@@ -50,6 +50,12 @@ def install_org_autoseed(sync_session) -> None:
     so the rows materialize in the current transaction before child INSERTs;
     objects added via session.add() inside before_flush defer to the next
     flush, which is too late to satisfy the FK.
+
+    NOTE: This hook only fires for ORM-mediated writes (via session flush).
+    Tests that exercise raw-SQL repositories like ``SQLiteCaseRepository``
+    bypass the ORM flush path; those tests should call
+    ``seed_organizations(session, [...])`` explicitly before the first save,
+    or wrap the case repository with the ``seed_orgs_for_repo`` helper.
 
     Call once per AsyncSession with `session.sync_session` as the argument.
     """

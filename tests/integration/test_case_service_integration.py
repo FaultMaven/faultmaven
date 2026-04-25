@@ -24,8 +24,8 @@ from faultmaven.exceptions import (
     NotFoundError,
     ValidationException,
 )
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
+from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+    SQLiteCaseRepository,
 )
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
@@ -77,9 +77,9 @@ async def async_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture
-async def case_repo(async_session) -> DatabaseCaseRepository:
+async def case_repo(async_session) -> SQLiteCaseRepository:
     """Create database case repository."""
-    return DatabaseCaseRepository(async_session)
+    return SQLiteCaseRepository(async_session)
 
 
 @pytest.fixture
@@ -130,7 +130,7 @@ def case_service_factory(session_factory, session_repo):
 
     async def create_service():
         async with session_factory() as session:
-            case_repo = DatabaseCaseRepository(session)
+            case_repo = SQLiteCaseRepository(session)
             service = APICaseService(
                 case_repo=case_repo,
                 session_repo=session_repo,
@@ -736,7 +736,7 @@ class TestConcurrentOperations:
     session/transaction management issues in concurrent scenarios.
 
     ROOT CAUSE:
-    - DatabaseCaseRepository.save() calls commit() and rollback() on shared session
+    - SQLiteCaseRepository.save() calls commit() and rollback() on shared session
     - When multiple async tasks use the same session concurrently, they can trigger:
       * IllegalStateChangeError: rollback() already in progress
       * InvalidRequestError: Session is already flushing
