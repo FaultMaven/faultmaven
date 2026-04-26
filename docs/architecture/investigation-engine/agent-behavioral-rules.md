@@ -9,7 +9,7 @@ This document defines the behavioral policy for the FaultMaven agent at the prom
 - [Prompt Templates](./prompt-templates.md) — Where rules are encoded into LLM prompts
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) — Architecture and design (§8.5: Focus Zone Emphasis)
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) — State transitions and stage logic
-- [Stage-Specific Agent Instructions](./stage-agent-instructions.md) — What the agent must accomplish at each stage (complements these cross-cutting rules)
+- [Agent Stage Playbook](./agent-stage-playbook.md) — What the agent must accomplish at each stage (complements these cross-cutting rules)
 
 ---
 

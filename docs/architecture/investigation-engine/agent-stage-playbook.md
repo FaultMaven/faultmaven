@@ -1,18 +1,20 @@
-# Stage-Specific Agent Instructions
+# Agent Stage Playbook
 
-This document defines what the agent must do at each phase and stage of a FaultMaven investigation. Where [Agent Behavioral Rules](./agent-behavioral-rules.md) define **how the agent must behave at all times** (cross-cutting constraints), this document defines **what the agent must accomplish at each stage** — specific duties, evidence to collect, user instruction patterns, and gate conditions.
+This playbook is the authoritative source for per-stage agent behavior in FaultMaven investigations. The duties, evidence requirements, user instruction patterns, and gate conditions defined here are the direct basis for what is injected into each stage's prompt template. When writing or updating a prompt block, this playbook is the spec: a duty absent from the prompt is a gap to close; a prompt instruction not grounded here should not exist.
+
+Where [Agent Behavioral Rules](./agent-behavioral-rules.md) define **how the agent must behave at all times** (cross-cutting constraints), this playbook defines **what the agent must do at each stage** — the plays it runs, the evidence it collects, and the conditions that advance the investigation.
 
 **The distinction:**
 - Behavioral rules = good citizenship (do not speculate, do not claim execution, read inputs well)
-- Stage instructions = leadership (advance milestones, collect evidence, instruct the user precisely)
+- Stage playbook = execution (advance milestones, collect evidence, instruct the user precisely)
 
-Both operate together. A rule says "never claim to execute code." A stage instruction says "in Zone 2, ask for the deployment log that distinguishes between your two active hypotheses." Neither is the other's substitute.
+Both operate together. A rule says "never claim to execute code." The playbook says "in Zone 2, ask for the deployment log that distinguishes between your two active hypotheses." Neither is the other's substitute.
 
 **Related Documents**:
 - [Agent Behavioral Rules](./agent-behavioral-rules.md) — Cross-cutting behavioral constraints (Rules 1–8)
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) — State transitions, gate milestones, path selection
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) — Evidence classification design
-- [Prompt Templates](./prompt-templates.md) — Where stage instructions are encoded
+- [Prompt Templates](./prompt-templates.md) — Where this playbook's content is encoded
 
 ---
 
@@ -30,12 +32,12 @@ INVESTIGATING (phase)
   │    └─ Zone 3: Solution Proposal      [root_cause_identified set, solution_proposed not set]
   │
   │    └─ gate → MITIGATION: user executes proposed temp fix (mitigation_accepted)
-  │    └─ gate → RESOLVING:  user executes proposed solution  (solution_accepted)
+  │    └─ gate → TREATMENT:  user executes proposed solution  (solution_accepted)
   │
   ├─ MITIGATION (detour — optional)
   │    └─ gate → DIAGNOSIS: mitigation verified (mitigation_verified, flags reset)
   │
-  └─ RESOLVING (stage)
+  └─ TREATMENT (stage)
        └─ gate → TERMINAL: user confirms fix worked (solution_verified + handshake)
 
 TERMINAL (state — not a phase)
@@ -50,8 +52,8 @@ TERMINAL (state — not a phase)
 | DIAGNOSIS Zone 2 | `causal_evidence` (requires hypothesis first), `contextual_evidence` | `root_cause_identified` |
 | DIAGNOSIS Zone 3 | None (agent proposes from existing evidence) | `solution_proposed` |
 | MITIGATION | `mitigation_evidence` | `mitigation_accepted`, `mitigation_verified` |
-| RESOLVING | `solution_evidence` | `solution_accepted`, `solution_verified` |
-| RESOLVING (failure path) | `causal_evidence`, `symptom_evidence` | Re-enters Zone 2 logic within RESOLVING |
+| TREATMENT | `solution_evidence` | `solution_accepted`, `solution_verified` |
+| TREATMENT (failure path) | `causal_evidence`, `symptom_evidence` | Re-enters Zone 2 logic within TREATMENT |
 
 ---
 
@@ -249,7 +251,7 @@ When `solution_proposed = True`, the agent is awaiting user compliance with the 
 | Clarifying path | COOPERATIVE (query_submit) | "Yes, apply the temp fix first" |
 
 **Gate out of Zone 3:**
-- `solution_accepted` (user executes proposed solution → RESOLVING)
+- `solution_accepted` (user executes proposed solution → TREATMENT)
 - `mitigation_accepted` (user executes proposed temp fix → MITIGATION)
 
 **Anti-patterns:**
@@ -322,7 +324,7 @@ After `mitigation_verified`, both `mitigation_accepted` and `mitigation_verified
 
 ---
 
-## RESOLVING Stage
+## TREATMENT Stage
 
 ### Purpose
 
@@ -385,7 +387,7 @@ Verify that the applied fix resolves the problem. If it does, close the investig
 
 - Proposing a different solution after failure without collecting new evidence
 - Suggesting evidence collection (logs, monitoring) as alternatives to the resolution confirmation COOPERATIVE suggestions
-- Returning to DIAGNOSIS after a failed fix (stay in RESOLVING)
+- Returning to DIAGNOSIS after a failed fix (stay in TREATMENT)
 - Allowing `solution_verified` to be set without user confirmation (it requires the handshake)
 
 ---
@@ -411,7 +413,7 @@ TERMINAL Q&A uses `TERMINAL_TEMPLATE` with `TerminalResponse` schema. The milest
 
 ### Compliance Detection
 
-Applies in DIAGNOSIS (Zone 3) and RESOLVING. The agent detects that the user has executed a proposed action from the user's message:
+Applies in DIAGNOSIS (Zone 3) and TREATMENT. The agent detects that the user has executed a proposed action from the user's message:
 
 **Is compliance:**
 - User provides NEW output from AFTER the action (logs, metrics, command output with post-action timestamps)
@@ -445,13 +447,15 @@ One primary ask per turn. When multiple pieces of data would help, pick the sing
 | DIAGNOSIS Zone 2 | 1 EVIDENCE (targeted to hypothesis) + optionally 1 COOPERATIVE (command) |
 | DIAGNOSIS Zone 3 | 1 COOPERATIVE command_copy (the fix) |
 | MITIGATION | 1 COOPERATIVE command_copy + 1 EVIDENCE (post-fix) |
-| RESOLVING (primary) | 1 EVIDENCE (post-fix) |
-| RESOLVING (completion) | 2 COOPERATIVE (yes resolved / not yet) |
+| TREATMENT (primary) | 1 EVIDENCE (post-fix) |
+| TREATMENT (completion) | 2 COOPERATIVE (yes resolved / not yet) |
 | TERMINAL | 1–2 COOPERATIVE (report, runbook) |
 
 ---
 
-## Prompt Injection Architecture
+## Prompt Injection Map
+
+Each section of this playbook maps to a concrete injection point in `templates.py`. The agent duties, anti-patterns, and gate conditions in each stage section above are the spec; the blocks below are where they live in code.
 
 Stage instructions are injected as `{adaptive_instructions}` in `INVESTIGATION_BASE`:
 
@@ -460,7 +464,7 @@ Stage instructions are injected as `{adaptive_instructions}` in `INVESTIGATION_B
 | INQUIRY | `INQUIRY_TEMPLATE` (YOUR TASK section) | Lines 225–362 |
 | DIAGNOSIS | `DIAGNOSIS_INSTRUCTIONS` + `_get_diagnosis_focus_emphasis(progress)` prepended | Lines 742–924 (instructions), 1283–1316 (emphasis function) |
 | MITIGATION | `MITIGATION_INSTRUCTIONS` | Lines 926–978 |
-| RESOLVING | `TREATMENT_INSTRUCTIONS` | Lines 980–1108 |
+| TREATMENT | `TREATMENT_INSTRUCTIONS` | Lines 980–1108 |
 
 `_get_diagnosis_focus_emphasis()` maps the three DIAGNOSIS zones to a contextual status signal prepended to `DIAGNOSIS_INSTRUCTIONS`:
 

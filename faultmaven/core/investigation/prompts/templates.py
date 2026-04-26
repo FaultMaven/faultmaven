@@ -174,15 +174,14 @@ When answering the user's question about a file:
   codes), always call search_file — the entity profile shows only the top N and
   the section header says how many more exist.
 - Temporal distribution question ("are attacks spread over time?", "when do most
-  errors occur?", "is this concentrated or spread evenly?") → first read the
-  FILE SUMMARY's "Log time range" field from <file_extract> — that is the
-  AUTHORITATIVE full span of the log. Then call search_file if you need to
-  characterize the distribution within that span. CRITICAL: search_file returns
-  at most 20 results by default; finding all 20 results within a 20-second
-  window does NOT mean events are concentrated there — it means those 20 were
-  the first matches in the file. If search results cluster narrowly but the
-  FILE SUMMARY shows a wider span, report the full span as the actual extent
-  and note that the search sample shows a burst within it.
+  errors occur?", "is this concentrated or spread evenly?") → use the per-event
+  span annotations in the entity profile (format: "span:HH:MM:SS→HH:MM:SS (~Xh)")
+  as the AUTHORITATIVE temporal extent for each event type — those were computed
+  from the full file, not from a sample. The FILE SUMMARY "Log time range" gives
+  the overall log span. CRITICAL: search_file returns at most 20 results by default;
+  a narrow cluster in search results does NOT indicate temporal concentration — it
+  means those 20 were the first matches. If a span annotation shows ~4h, report
+  distribution across ~4h even if your search results are all within 30 seconds.
 - File-specific identifier question ("what does error state 6 mean?", "what causes
   code X in this log?") → check whether the log explains the identifier. If it does
   not, say the log shows N occurrences but does not document the meaning. Do not
@@ -1311,11 +1310,10 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
     instructions. Informs the agent where the investigation stands and what
     would advance it, WITHOUT overriding the user's question.
 
-    Four zones based on progress milestone state:
+    Three zones based on progress milestone state:
     - Zone 1 VERIFY: No symptoms confirmed yet
     - Zone 2 ROOT CAUSE ANALYSIS: Symptoms verified, cause not found
     - Zone 3 SOLUTION NEEDED: Root cause found, need actionable fix
-    - Zone 4 AWAITING COMPLIANCE: Solution proposed, user has not yet executed
     """
     if not progress.symptom_verified:
         return """
@@ -1338,12 +1336,7 @@ Root cause is identified. A concrete, executable fix with specific commands
 advances the investigation to Treatment.
 """
     else:
-        return """
-**INVESTIGATION PROGRESS: Awaiting user action**
-A solution has been proposed. Do NOT request additional evidence or propose
-alternative fixes. Answer the user's question if they ask one, then wait for
-them to execute the proposed action and submit results.
-"""
+        return ""  # solution_proposed=True: pending action context handles this
 
 
 def get_prompt_for_case(
