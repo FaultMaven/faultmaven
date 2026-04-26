@@ -7,11 +7,13 @@ Covers:
 - R3: Token budget truncation utility
 """
 
+import json
+
 import pytest
 
 from faultmaven.modules.preprocessing.extractors.protocol import (
-    ExtractResult,
     Extractor,
+    ExtractResult,
 )
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
@@ -149,8 +151,6 @@ class TestExtractResultRoundTrip:
         assert restored.file_meta == {}
 
     def test_version_field_present(self):
-        import json
-
         er = ExtractResult(file_extract="x")
         d = json.loads(er.to_json())
         assert d["v"] == 1
@@ -158,7 +158,7 @@ class TestExtractResultRoundTrip:
 
     def test_from_json_legacy_plaintext_is_not_supported(self):
         """from_json expects valid JSON — callers handle legacy via _parse_preprocessed_content."""
-        with pytest.raises(Exception):
+        with pytest.raises((json.JSONDecodeError, ValueError)):
             ExtractResult.from_json("this is plain text, not JSON")
 
 
