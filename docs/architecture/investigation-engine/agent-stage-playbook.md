@@ -75,10 +75,14 @@ A diagnostic variable tells the agent what to search for in submitted data. The 
 
 **Search for (per hypothesis category):**
 
-- Deployment / change: timestamps correlating with symptom onset, config diffs, rollout events
+- Deployment / change — **two steps, distinct evidence types:**
+  - Step 1: Find the **change event** (deployment timestamp, update applied, config push, scaling event near the timeline window) → `contextual_evidence`. This is a trigger signal — it narrows the search space and raises hypothesis confidence, but is not itself a root cause.
+  - Step 2: Drill into the **specific changes made** in that event (code diff, config values before/after, dependency version change, schema alteration) → `causal_evidence` once a hypothesis links a specific change to the symptom mechanism. A deployment is a trigger; the changed `max_connections` value is a candidate root cause.
 - Resource exhaustion: memory / CPU / disk / connection counts at or near limits
 - Dependency failure: downstream service timeouts, external API errors, database failures
 - Code / query defect: slow query logs, exception stack traces, query plan changes
+
+**Hypothesis precision requirement:** a hypothesis must state a mechanism, not just a trigger. "The deployment at 14:28 caused the issue" is a trigger observation — it is not a hypothesis. "The deployment changed `max_connections` from 100 to 10, causing connection pool exhaustion which produced timeouts at 14:31" is a hypothesis — it names the specific change and the mechanism that produces the symptom.
 
 **Conclusive when:** an active hypothesis has confidence ≥ 70%, evidence directly links the proposed cause to the symptom (timing, error chain, or mechanism match), and no alternative hypothesis is equally supported.
 
@@ -251,7 +255,10 @@ Establish a shared understanding of the problem before investigation begins. The
 1. Apply the three-step diagnostic pattern: search for symptom signatures using `search_file` → evaluate against conclusive criteria → advance with citation or ask specifically.
 2. When asking for data, apply the specificity standard: what log or metric, from what source, for what timeframe.
 3. Do not form hypotheses until `symptom_verified = True`.
-4. Scope, timeline, and recent changes are secondary — extract them from symptom evidence when present, but do not delay Zone 1 progress waiting for them.
+4. **Extract scope and timeline from the symptom evidence.** When evidence confirms the symptom, actively note and state:
+   - **Scope** — how many systems, services, pods, or users are affected. Wide scope (multiple regions, many pods) signals a systemic cause; narrow scope (single pod, single user) signals an isolated cause. This directly shapes which hypothesis categories Zone 2 prioritises first.
+   - **Timeline** — the first occurrence timestamp. This becomes the anchor for all Zone 2 searches — every evidence request in Zone 2 should reference this window. Without a timeline, change searches are unbounded and noisy.
+   - These are extracted facts, not tracked variables. State them explicitly in the response when found. Do not delay `symptom_verified` waiting for them, but actively look for them in the same evidence.
 
 **User instruction patterns:**
 
@@ -277,10 +284,12 @@ Establish a shared understanding of the problem before investigation begins. The
 **Agent duties:**
 
 1. **Search KB first** — call `kb_qa` for the confirmed symptom before generating hypotheses. If a runbook matches, follow its diagnostic steps as the default approach.
-2. Apply the hypothesis-evidence ordering: form hypothesis → apply three-step pattern for `root_cause_identified` → validate or refute.
-3. **Single-shot vs multi-hypothesis:** if the root cause is obvious from existing evidence (clear error chain, strong timing correlation), form one hypothesis and validate in the same turn. If ambiguous, form 2–4 hypotheses across different categories and request targeted evidence per hypothesis.
-4. Each evidence request must be tied to a specific hypothesis and follow the specificity standard.
-5. Refute with reason; retire without. Never use `REFUTED` without evidence of disproof.
+2. **Use scope to prioritise hypothesis categories.** Wide scope (multiple services, regions, pods) → systemic hypotheses first: shared dependency failure, network issue, config push affecting all instances. Narrow scope (single pod, user, endpoint) → isolated hypotheses first: pod-specific config, user-specific data, targeted code path.
+3. **Use timeline as the search anchor.** Every evidence request in Zone 2 must reference the timeline window established in Zone 1. Before generating hypotheses, run a targeted search for change events just before the timeline: deployments, updates, config pushes, scaling events. A change event near the timeline raises confidence in a deployment/change hypothesis — classify it as `contextual_evidence`. Then drill into the specific changes made (see `root_cause_identified` search signatures) to find the candidate root cause.
+4. Apply the hypothesis-evidence ordering: form hypothesis → apply three-step pattern for `root_cause_identified` → validate or refute.
+5. **Single-shot vs multi-hypothesis:** if the root cause is obvious from existing evidence (clear error chain, strong timing correlation, specific change found), form one hypothesis and validate in the same turn. If ambiguous, form 2–4 hypotheses across different categories and request targeted evidence per hypothesis.
+6. Each evidence request must be tied to a specific hypothesis and follow the specificity standard.
+7. Refute with reason; retire without. Never use `REFUTED` without evidence of disproof.
 
 **User instruction patterns:**
 
@@ -296,6 +305,8 @@ Establish a shared understanding of the problem before investigation begins. The
 - Using `REFUTED` without `refutation_reason`
 - Using `REFUTED` when there is no evidence of disproof (use `RETIRED`)
 - Requesting evidence not tied to a specific hypothesis
+- Treating a change event (deployment, update) as a root cause — it is a trigger; the root cause is the specific change within it
+- Setting `root_cause_identified` with only a trigger observation and no mechanism
 
 ---
 
