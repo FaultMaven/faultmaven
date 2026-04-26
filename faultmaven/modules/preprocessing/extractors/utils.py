@@ -110,6 +110,14 @@ _TS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
             r"(?:\s+(?P<year>\d{4}))?"  # optional explicit year
         ),
     ),
+    # Compact numeric timestamp used by HDFS and some Hadoop ecosystem logs:
+    # YYMMDD HHMMSS — e.g. "081109 203615" = 2008-11-09 20:36:15.
+    # Pattern must be strict enough to avoid matching random 6-digit pairs;
+    # the parsed values are range-validated in the handler.
+    (
+        "yymmdd",
+        re.compile(r"\b(\d{2})(\d{2})(\d{2}) (\d{2})(\d{2})(\d{2})\b"),
+    ),
     ("epoch_ms", re.compile(r"\b([12]\d{12})\b")),
     ("epoch_s", re.compile(r"\b([12]\d{9})\b")),
 ]
@@ -167,6 +175,18 @@ def extract_timestamp(line: str) -> datetime | None:
                 if dt > now:
                     dt = dt.replace(year=now.year - 1)
                 return dt
+            if name == "yymmdd":
+                yy, mo, dd, hh, mm, ss = (int(x) for x in m.groups())
+                year = 2000 + yy
+                if not (
+                    1 <= mo <= 12
+                    and 1 <= dd <= 31
+                    and 0 <= hh <= 23
+                    and 0 <= mm <= 59
+                    and 0 <= ss <= 59
+                ):
+                    continue
+                return datetime(year, mo, dd, hh, mm, ss, tzinfo=UTC)
             if name in ("epoch_ms", "epoch_s"):
                 val = int(m.group(1))
                 secs = val / 1000 if name == "epoch_ms" else val

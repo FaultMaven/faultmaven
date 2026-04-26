@@ -859,3 +859,284 @@ class TestDetectLogPattern:
         result = extractor.extract(lines)
         if result.search_map and "EVENT TEMPLATE COUNTS" in result.search_map:
             assert "CRIME SCENE" in _fe(result)
+
+
+class TestIPAuthBreakdown:
+    """IP auth breakdown table — per-IP per-event-type counts emitted in
+    search_map so the agent can answer auth-attempt-count questions directly."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _ssh_log_with_mixed_events(self) -> str:
+        lines = []
+        # IP 10.0.0.1: 5 failed_password + 3 invalid_user = 8 auth events
+        for _ in range(5):
+            lines.append(
+                "Dec 10 06:55:00 host sshd[1]: Failed password for root from 10.0.0.1 port 22"
+            )
+        for _ in range(3):
+            lines.append(
+                "Dec 10 07:00:00 host sshd[1]: Invalid user admin from 10.0.0.1 port 22"
+            )
+        # IP 10.0.0.2: 2 failed_password only = 2 auth events
+        for _ in range(2):
+            lines.append(
+                "Dec 10 07:30:00 host sshd[2]: Failed password for guest from 10.0.0.2 port 22"
+            )
+        return "\n".join(lines)
+
+    def test_auth_breakdown_present_in_search_map(self, extractor):
+        result = extractor.extract(self._ssh_log_with_mixed_events())
+        assert "IP auth breakdown" in _sm(result)
+
+    def test_auth_breakdown_shows_event_counts(self, extractor):
+        result = extractor.extract(self._ssh_log_with_mixed_events())
+        sm = _sm(result)
+        assert "failed_password=5" in sm
+        assert "invalid_user=3" in sm
+
+    def test_auth_breakdown_shows_total(self, extractor):
+        result = extractor.extract(self._ssh_log_with_mixed_events())
+        # 10.0.0.1: 5 failed + 3 invalid = 8
+        assert "auth total=8" in _sm(result)
+
+    def test_auth_breakdown_absent_for_non_auth_logs(self, extractor):
+        """Logs with only HTTP paths and no auth events must not emit a breakdown."""
+        lines = "\n".join(
+            ["[Sun Dec 04 04:47:44 2005] [error] GET /index.html HTTP/1.1 400"] * 10
+        )
+        result = extractor.extract(lines)
+        assert "IP auth breakdown" not in _sm(result)
+
+    def test_auth_breakdown_ip_mention_count_unchanged(self, extractor):
+        """The line-occurrence count in Distinct IPs section must not change."""
+        result = extractor.extract(self._ssh_log_with_mixed_events())
+        sm = _sm(result)
+        # 10.0.0.1 appears on 8 lines total
+        assert "10.0.0.1: 8 line occurrences (all event types)" in sm
+
+
+class TestAllUsernamesEmitted:
+    """q3 fix — all distinct usernames must appear in search_map regardless
+    of how many there are; the old top-20 cap caused misses."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def test_more_than_twenty_usernames_all_emitted(self, extractor):
+        """25 distinct usernames must all appear (old cap was 20)."""
+        lines = []
+        for i in range(25):
+            lines.append(
+                f"Dec 10 12:00:00 host sshd[1]: Invalid user user{i:02d} from 10.0.0.1 port 22"
+            )
+        result = extractor.extract("\n".join(lines))
+        sm = _sm(result)
+        for i in range(25):
+            assert f"user{i:02d}" in sm, f"user{i:02d} not found in search_map"
+
+    def test_username_header_shows_total_count(self, extractor):
+        lines = []
+        for i in range(5):
+            lines.append(
+                f"Dec 10 12:00:00 host sshd[1]: Failed password for person{i} from 10.0.0.1 port 22"
+            )
+        result = extractor.extract("\n".join(lines))
+        assert "Distinct usernames (5 total)" in _sm(result)
+
+    def test_no_incomplete_notice_emitted(self, extractor):
+        """The old 'INCOMPLETE: N more not shown' message must not appear."""
+        lines = []
+        for i in range(25):
+            lines.append(
+                f"Dec 10 12:00:00 host sshd[1]: Invalid user user{i:02d} from 10.0.0.1 port 22"
+            )
+        result = extractor.extract("\n".join(lines))
+        assert "INCOMPLETE" not in _sm(result)
+
+
+class TestNumericStateCodeNote:
+    """q6 fix — FILE SUMMARY must contain a note about internal state codes
+    when the log has 'error state N' lines (e.g. mod_jk)."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _apache_modjk_log(self) -> str:
+        # Include a PID-bearing line so pid_counts is non-empty and
+        # _build_entity_profile() doesn't hit the early-return path.
+        lines = [
+            "[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 6 1",
+            "[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 6 2",
+            "[Sun Dec 04 04:47:45 2005] [notice] jk2_init() Found child [6725] in scoreboard slot 10",
+        ] * 10
+        return "\n".join(lines)
+
+    def test_state_code_note_in_file_summary(self, extractor):
+        result = extractor.extract(self._apache_modjk_log())
+        assert "numeric state codes" in _fe(result).lower()
+        assert "not documented in this log" in _fe(result)
+
+    def test_state_code_note_absent_for_ssh_logs(self, extractor):
+        """SSH logs with no 'error state N' lines must not get the note."""
+        lines = "\n".join(
+            [
+                "Dec 10 12:00:00 host sshd[1]: Failed password for root from 10.0.0.1 port 22"
+            ]
+            * 20
+        )
+        result = extractor.extract(lines)
+        assert "numeric state codes" not in _fe(result).lower()
+
+    def test_state_code_note_in_file_summary_not_search_map(self, extractor):
+        """The note belongs in file_extract (FILE SUMMARY), not search_map."""
+        result = extractor.extract(self._apache_modjk_log())
+        assert "numeric state codes" in _fe(result).lower()
+        # It may optionally appear in search_map too, but must be in file_extract
+
+
+class TestSyslogServiceBreakdown:
+    """Service breakdown section appears for multi-service syslog logs."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _linux_mixed_log(self) -> str:
+        lines = []
+        # 50 ftpd lines
+        for _ in range(50):
+            lines.append(
+                "Jun 17 07:07:00 combo ftpd[29504]: connection from 1.2.3.4 (host.example.com) at Mon Jun 17 07:07:00 2005"
+            )
+        # 20 sshd lines
+        for _ in range(20):
+            lines.append(
+                "Jun 14 15:16:01 combo sshd(pam_unix)[19939]: authentication failure; logname= uid=0 euid=0 tty=NODEVssh ruser= rhost=218.188.2.4"
+            )
+        # 10 su lines
+        for _ in range(10):
+            lines.append(
+                "Jun 15 04:06:18 combo su(pam_unix)[21416]: session opened for user cyrus by (uid=0)"
+            )
+        return "\n".join(lines)
+
+    def test_top_services_section_present_for_multi_service(self, extractor):
+        result = extractor.extract(self._linux_mixed_log())
+        assert "Top services" in _sm(result)
+
+    def test_most_common_service_listed_first(self, extractor):
+        result = extractor.extract(self._linux_mixed_log())
+        sm = _sm(result)
+        ftpd_pos = sm.find("ftpd:")
+        sshd_pos = sm.find("sshd:")
+        assert ftpd_pos != -1, "ftpd should appear in Top services"
+        assert ftpd_pos < sshd_pos, "ftpd (50 lines) should precede sshd (20 lines)"
+
+    def test_service_section_absent_for_single_service(self, extractor):
+        """Pure sshd log — no service breakdown needed."""
+        lines = "\n".join(
+            [
+                "Dec 10 12:00:00 host sshd[1]: Failed password for root from 10.0.0.1 port 22"
+            ]
+            * 30
+        )
+        result = extractor.extract(lines)
+        assert "Top services" not in _sm(result)
+
+    def test_service_counts_reflect_line_counts(self, extractor):
+        result = extractor.extract(self._linux_mixed_log())
+        sm = _sm(result)
+        assert "50 lines" in sm, "ftpd should show 50 lines"
+
+
+class TestSSHSessionOpened:
+    """ssh_session_opened event type — counts and FILE SUMMARY note."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _linux_session_log(self) -> str:
+        lines = []
+        # Auth failures from attacker
+        for _ in range(40):
+            lines.append(
+                "Jun 14 15:16:01 combo sshd(pam_unix)[1000]: authentication failure; logname= uid=0 euid=0 tty=NODEVssh ruser= rhost=150.183.249.110"
+            )
+        # Successful SSH sessions
+        for _ in range(10):
+            lines.append(
+                "Jun 17 20:29:26 combo sshd(pam_unix)[30631]: session opened for user test by (uid=509)"
+            )
+        return "\n".join(lines)
+
+    def test_ssh_session_count_in_event_types(self, extractor):
+        result = extractor.extract(self._linux_session_log())
+        # Event key uses underscores in the entity profile
+        assert "ssh_session_opened" in _sm(result).lower()
+
+    def test_ssh_session_count_correct(self, extractor):
+        result = extractor.extract(self._linux_session_log())
+        assert "10" in _sm(result)
+
+    def test_file_summary_mentions_successful_sessions(self, extractor):
+        result = extractor.extract(self._linux_session_log())
+        assert "successful SSH session" in _fe(result)
+
+    def test_su_sessions_not_counted_as_ssh(self, extractor):
+        """su(pam_unix) session opens must not be counted as ssh_session_opened."""
+        lines = "\n".join(
+            [
+                "Jun 15 04:06:18 combo su(pam_unix)[21416]: session opened for user cyrus by (uid=0)"
+            ]
+            * 20
+            + [
+                "Jun 14 15:16:01 combo sshd(pam_unix)[1000]: authentication failure; logname= uid=0 euid=0 tty=NODEVssh ruser= rhost=150.183.249.110"
+            ]
+            * 20
+        )
+        result = extractor.extract(lines)
+        # su sessions should not appear as ssh_session_opened
+        assert "successful SSH session" not in _fe(result)
+
+
+class TestYYMMDDTimestamp:
+    """YYMMDD HHMMSS format (HDFS / Hadoop ecosystem logs)."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _hdfs_log(self) -> str:
+        # Needs >10 lines so extract_time_range_ts scans both head and tail.
+        early = "081109 203615 148 INFO dfs.DataNode$PacketResponder: PacketResponder 1 for block blk_123 terminating"
+        mid = "081109 214043 2561 WARN dfs.DataNode$DataXceiver: 10.251.30.85:50010:Got exception while serving blk_456"
+        late = "081111 102017 26347 INFO dfs.DataNode$DataXceiver: Receiving block blk_abc src: /10.250.9.2:50010"
+        lines = [early] * 5 + [mid] * 5 + [late] * 5
+        return "\n".join(lines)
+
+    def test_time_range_extracted_from_hdfs_format(self, extractor):
+        result = extractor.extract(self._hdfs_log())
+        # The time range should be populated from YYMMDD timestamps
+        assert "2008-11-09" in _fe(result), "Start date should be 2008-11-09"
+        assert "2008-11-11" in _fe(result), "End date should be 2008-11-11"
+
+    def test_hdfs_time_range_not_unknown(self, extractor):
+        result = extractor.extract(self._hdfs_log())
+        assert "unknown" not in _fe(result).lower()
+
+    def test_warn_only_note_in_file_summary(self, extractor):
+        """WARN-only logs should say 'no ERROR or FATAL entries' in FILE SUMMARY."""
+        result = extractor.extract(self._hdfs_log())
+        assert "no error or fatal" in _fe(result).lower()
+
+    def test_warn_only_note_absent_for_error_logs(self, extractor):
+        """Logs with ERROR lines must NOT get the warn-only note."""
+        lines = "\n".join(["Dec 10 12:00:00 host sshd[1]: ERROR failed hard"] * 15)
+        result = extractor.extract(lines)
+        assert "no error or fatal" not in _fe(result).lower()

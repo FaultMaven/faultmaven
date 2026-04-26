@@ -145,7 +145,17 @@ class LogsAndErrorsExtractor:
 
         # Entity profiling \u2014 returns (summary, profile_body) separately
         error_lines = {e["line_idx"] for e in errors}
-        file_summary, profile_body = self._build_entity_profile(content, error_lines)
+        # True when the error set contains only WARN/WARNING lines (no ERROR/FATAL/CRITICAL)
+        high_severity_weight = max(
+            (self.SEVERITY_WEIGHTS.get(e["keyword"], 0) for e in errors),
+            default=0,
+        )
+        warn_only = (
+            len(errors) > 0 and high_severity_weight <= self.SEVERITY_WEIGHTS["WARN"]
+        )
+        file_summary, profile_body = self._build_entity_profile(
+            content, error_lines, warn_only=warn_only
+        )
 
         # Template counts \u2192 search map
         # Pass all lines so the function can fall back to counting every line
@@ -597,6 +607,28 @@ class LogsAndErrorsExtractor:
     _PAM_AUTH_FAILURE_RE = re.compile(
         r"pam_unix\([^)]*\):\s*authentication failure", re.IGNORECASE
     )
+    # Numeric state codes (e.g. "error state 6") are internal to the log source;
+    # the log itself does not document their meanings. Detection triggers a note
+    # in FILE SUMMARY to prevent the agent from asserting meanings from training data.
+    _STATE_CODE_RE = re.compile(r"\berror state \d+\b", re.IGNORECASE)
+    # Successful SSH session opens — PAM-style syslog logs a "session opened
+    # for user <name>" line from sshd instead of "Accepted password". Counted
+    # separately so the breakdown table distinguishes SSH successes from
+    # local su/kerberos sessions (which also emit "session opened" but from
+    # a different service process).
+    _SSH_SESSION_RE = re.compile(r"sshd[^:]*:\s*session opened for user", re.IGNORECASE)
+    # Auth-relevant event types included in the per-IP breakdown table.
+    # ssh_session_opened is intentionally excluded: "session opened" lines
+    # carry no rhost IP, so they never appear in ip_event_counts.
+    _AUTH_EVENTS: frozenset = frozenset(
+        {"failed_password", "pam_auth_failure", "invalid_user", "accepted_login"}
+    )
+    # Syslog service name extractor — captures the base program name from
+    # "service[PID]:" and "service(module)[PID]:" prefixes. Matches only
+    # when the token is preceded by whitespace (avoids false matches inside
+    # message bodies) and followed by an optional paren group and a PID bracket.
+    # Examples: " sshd(pam_unix)[19939]" → "sshd"; " ftpd[29504]" → "ftpd".
+    _SYSLOG_SERVICE_RE = re.compile(r"\s([\w.-]+)(?:\([^)]*\))?\[\d+\]")
 
     # Reverse-DNS hostname pattern — syslog's rhost field stores the PTR record
     # of the connecting IP (e.g. customer-187-141-143-180-sta.) which the entity
@@ -645,13 +677,18 @@ class LogsAndErrorsExtractor:
         "failed_password": "Failed password",
         "pam_auth_failure": "authentication failure; logname=",
         "accepted_login": "Accepted password",
+        "ssh_session_opened": "session opened for user",
         "invalid_user": "Invalid user",
         "connection_closed": "Connection closed",
         "break_in_attempt": "POSSIBLE BREAK-IN ATTEMPT",
     }
 
     def _build_entity_profile(
-        self, content: str, error_lines: set[int] = None, top_n: int = 20
+        self,
+        content: str,
+        error_lines: set[int] = None,
+        top_n: int = 20,
+        warn_only: bool = False,
     ) -> str:
         """Scan the full file for key entities and produce a frequency summary.
 
@@ -678,14 +715,23 @@ class LogsAndErrorsExtractor:
         # Per-IP burst spans on attack-event lines only (not all lines)
         ip_attack_first_ts: dict = {}
         ip_attack_last_ts: dict = {}
+        # Per-IP per-event-type counts for the auth breakdown table
+        ip_event_counts: dict[str, Counter] = {}
+        # Tracks whether the log contains "error state N" lines (mod_jk / similar)
+        has_numeric_state_codes = False
+        # Syslog service name counts for multi-service logs
+        service_counts: Counter = Counter()
 
         lines = content.split("\n")
         for i, line in enumerate(lines):
             is_error = i in error_lines
-            for ip in self._IPV4_RE.findall(line) + self._IPV6_RE.findall(line):
+            line_ips = self._IPV4_RE.findall(line)
+            for ip in line_ips + self._IPV6_RE.findall(line):
                 ip_all_counts[ip] += 1
                 if is_error:
                     ip_error_counts[ip] += 1
+            if not has_numeric_state_codes and self._STATE_CODE_RE.search(line):
+                has_numeric_state_codes = True
             for user in self._USER_RE.findall(line):
                 # Skip SSH/TLS protocol keywords and reverse-DNS hostnames.
                 # Syslog stores the PTR record of the connecting IP in the
@@ -718,6 +764,11 @@ class LogsAndErrorsExtractor:
                     pid_counts[pid_str] += 1
             for path in self._HTTP_PATH_RE.findall(line):
                 path_counts[path] += 1
+            # Syslog service breakdown — extract base service name from
+            # "service[PID]:" and "service(module)[PID]:" patterns.
+            svc_m = self._SYSLOG_SERVICE_RE.search(line)
+            if svc_m:
+                service_counts[svc_m.group(1)] += 1
 
             # Semantic event classification — also track first/last timestamp
             # per event type so the entity profile can report temporal span.
@@ -740,6 +791,9 @@ class LogsAndErrorsExtractor:
             if self._PAM_AUTH_FAILURE_RE.search(line):
                 event_counts["pam_auth_failure"] += 1
                 matched_events.append("pam_auth_failure")
+            if self._SSH_SESSION_RE.search(line):
+                event_counts["ssh_session_opened"] += 1
+                matched_events.append("ssh_session_opened")
             if matched_events:
                 ts = extract_timestamp(line)
                 if ts:
@@ -750,11 +804,19 @@ class LogsAndErrorsExtractor:
                             event_last_ts[ev] = ts
                     # Track per-IP burst spans on attack-event lines — enables
                     # describing per-IP bursty behavior in the entity profile.
-                    for ip in self._IPV4_RE.findall(line):
+                    for ip in line_ips:
                         if ip not in ip_attack_first_ts or ts < ip_attack_first_ts[ip]:
                             ip_attack_first_ts[ip] = ts
                         if ip not in ip_attack_last_ts or ts > ip_attack_last_ts[ip]:
                             ip_attack_last_ts[ip] = ts
+                # Per-IP per-event-type counts — correlate IPs with events on the
+                # same line so the agent can answer "how many auth attempts did X make"
+                # directly from the extract rather than chaining search_file calls.
+                for ip in line_ips:
+                    if ip not in ip_event_counts:
+                        ip_event_counts[ip] = Counter()
+                    for ev in matched_events:
+                        ip_event_counts[ip][ev] += 1
 
         if not (
             ip_all_counts
@@ -781,10 +843,20 @@ class LogsAndErrorsExtractor:
             last_ts=last_ts,
             ip_attack_first_ts=ip_attack_first_ts,
             ip_attack_last_ts=ip_attack_last_ts,
+            has_numeric_state_codes=has_numeric_state_codes,
+            warn_only=warn_only,
         )
 
         # ENTITY PROFILE body — the search map
         parts: list[str] = ["ENTITY PROFILE (full file scan):"]
+
+        # Top services — only shown for multi-service syslog logs (2+ services
+        # each with ≥5 lines). A single dominant service adds no value here.
+        sig_services = [(s, n) for s, n in service_counts.most_common(8) if n >= 5]
+        if len(sig_services) >= 2:
+            parts.append("  Top services (syslog process names, line counts):")
+            for svc, n in sig_services:
+                parts.append(f"    {svc}: {n} lines")
 
         if event_counts:
             parts.append(
@@ -824,7 +896,7 @@ class LogsAndErrorsExtractor:
                 "  Distinct IPs"
                 "  [search: pass the IP string to search_file;"
                 " mention count = all line occurrences across all event types,"
-                " not auth-specific — use search_file for event-specific counts]:"
+                " not auth-specific — see IP auth breakdown below for event-specific counts]:"
             )
             for ip, total in ip_all_counts.most_common(top_n):
                 error_n = ip_error_counts.get(ip, 0)
@@ -833,18 +905,43 @@ class LogsAndErrorsExtractor:
                     f"    {ip}: {total} line occurrences (all event types){annotation}"
                 )
 
+        # Auth breakdown table: per-IP counts for each auth event type, summed
+        # into an auth total. Use this to answer "how many auth attempts did X make"
+        # directly — do not use the total line-occurrence count above for that.
+        auth_ips = [
+            ip
+            for ip, _ in ip_all_counts.most_common(top_n)
+            if ip in ip_event_counts
+            and any(ip_event_counts[ip].get(ev, 0) for ev in self._AUTH_EVENTS)
+        ]
+        if auth_ips:
+            parts.append(
+                "  IP auth breakdown"
+                " [use these event-specific counts for auth-attempt totals,"
+                " not the line-occurrence counts above]:"
+            )
+            for ip in auth_ips[:5]:
+                ev_parts = []
+                auth_total = 0
+                for ev in (
+                    "failed_password",
+                    "pam_auth_failure",
+                    "invalid_user",
+                    "accepted_login",
+                ):
+                    n = ip_event_counts[ip].get(ev, 0)
+                    if n:
+                        ev_parts.append(f"{ev}={n}")
+                        auth_total += n
+                if ev_parts:
+                    parts.append(
+                        f"    {ip}: {', '.join(ev_parts)} → auth total={auth_total}"
+                    )
+
         if user_all_counts:
             total_distinct = len(user_all_counts)
-            more_note = (
-                f" — INCOMPLETE: {total_distinct - min(top_n, total_distinct)} more"
-                f" not shown; call search_file('Invalid user') for the full list"
-                if total_distinct > top_n
-                else ""
-            )
-            parts.append(
-                f"  Distinct usernames (top {min(top_n, total_distinct)} of {total_distinct}{more_note}):"
-            )
-            for user, total in user_all_counts.most_common(top_n):
+            parts.append(f"  Distinct usernames ({total_distinct} total):")
+            for user, total in user_all_counts.most_common():
                 error_n = user_error_counts.get(user, 0)
                 annotation = f"  ({error_n} on error lines)" if error_n else ""
                 parts.append(f"    {user}: {total} mentions{annotation}")
@@ -912,6 +1009,8 @@ class LogsAndErrorsExtractor:
         last_ts=None,
         ip_attack_first_ts: dict = None,
         ip_attack_last_ts: dict = None,
+        has_numeric_state_codes: bool = False,
+        warn_only: bool = False,
     ) -> str:
         """Return a compact FILE SUMMARY (2–4 sentences) describing dominant
         activity, top source, and key absences.
@@ -967,6 +1066,19 @@ class LogsAndErrorsExtractor:
         if root_count > 0 and pattern and "brute-force" in pattern:
             sentences.append(f"Includes {root_count} root login attempts.")
 
+        # Successful SSH sessions — noted immediately after attack context so the
+        # agent includes them in summaries rather than focusing only on failures.
+        ssh_success = event_counts.get("ssh_session_opened", 0)
+        if ssh_success > 0:
+            if pattern and "brute-force" in pattern:
+                prefix = "Despite attack traffic, "
+            else:
+                prefix = ""
+            sentences.append(
+                f"{prefix}{ssh_success} successful SSH session(s) opened"
+                f" (search: 'session opened for user')."
+            )
+
         # Per-IP burst pattern for brute-force attacks — each source IP attacks in
         # a concentrated burst at different times; combined activity spans the full
         # log period. This directly answers temporal distribution questions.
@@ -1001,10 +1113,25 @@ class LogsAndErrorsExtractor:
 
         # Key absences the agent can confidently answer without searching
         absent = []
+        if warn_only:
+            # Severity-flagged lines are WARN/WARNING only — explicitly note
+            # the absence of higher-severity entries so the agent can answer
+            # "were there any errors/failures?" questions correctly without
+            # hedging that WARNs "could lead to" errors.
+            absent.append("no ERROR or FATAL entries (highest severity is WARN)")
         if not path_counts:
             absent.append("no HTTP traffic")
         if absent:
             sentences.append(f"Absent: {', '.join(absent)}.")
+
+        # Numeric state codes: log sources like mod_jk use internal state numbers
+        # not documented in the log itself. Embed the note here so the agent reads
+        # it before asserting meanings from training data.
+        if has_numeric_state_codes:
+            sentences.append(
+                '[Note: numeric state codes (e.g. "error state 6") are internal'
+                " values — their specific meanings are not documented in this log.]"
+            )
 
         # Time range with computed duration — surfaces full log span so agent
         # cross-references correctly and can answer duration questions directly.

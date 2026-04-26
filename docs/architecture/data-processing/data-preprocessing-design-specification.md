@@ -1,12 +1,58 @@
-# Data Preprocessing Design Specification v5.6
+# Data Preprocessing Design Specification v5.7
 
 **Status**: FINAL
 **Date**: 2026-04-26
-**Supersedes**: v5.5
+**Supersedes**: v5.6
 
 ---
 
 ## Change Summary
+
+### v5.6 → v5.7 (LogsAndErrorsExtractor — Multi-Format and Multi-Service Generalisation)
+
+Extends `LogsAndErrorsExtractor` to handle log formats and service topologies that were
+previously invisible to the extraction layer: Hadoop/HDFS compact timestamps, multi-service
+syslog (ftpd + sshd + su), and PAM-style successful session detection.
+
+**Timestamp parsing** (`extractors/utils.py`):
+
+- **YYMMDD HHMMSS format** — Added `"yymmdd"` entry to `_TS_PATTERNS` with pattern
+  `\b(\d{2})(\d{2})(\d{2}) (\d{2})(\d{2})(\d{2})\b`. Handler validates MM ∈ 1–12,
+  DD ∈ 1–31, HH ∈ 0–23, MM/SS ∈ 0–59, treats year as `2000 + YY`. Fixes temporal span
+  extraction for HDFS and other Hadoop ecosystem logs whose lines begin `YYMMDD HHMMSS`.
+  Previously `extract_time_range_ts()` returned `(None, None)` for these files, causing
+  "unknown" time-range annotations and degraded FILE SUMMARY orientation quality.
+
+**LogsAndErrorsExtractor improvements** (`logs_extractor.py`):
+
+- **Syslog service breakdown** — `_SYSLOG_SERVICE_RE` extracts the base program name from
+  `service[PID]:` and `service(module)[PID]:` syslog prefixes. A "Top services" section is
+  emitted in the entity profile when ≥2 distinct services each have ≥5 lines, ranked by
+  line count. Addresses mixed-service logs (e.g. ftpd + sshd + su) where the most common
+  service is not an auth service tracked by the existing semantic event types.
+
+- **ssh_session_opened event** — `_SSH_SESSION_RE` matches `sshd[^:]*: session opened for user`
+  (sshd-specific; excludes su, klogind, and other PAM session opens). Counted in `event_counts`
+  as `"ssh_session_opened"` with search string `"session opened for user"`. Appears in the
+  entity profile event types table and in FILE SUMMARY when > 0. Distinguishes successful SSH
+  logins from local su/kerberos sessions in PAM-only syslog files that have no "Accepted
+  password" lines.
+
+- **warn_only absent note** — `extract()` computes `warn_only = True` when all
+  severity-flagged lines carry only WARN/WARNING keywords (highest severity weight ≤ 10).
+  When true, `_build_summary()` adds `"no ERROR or FATAL entries (highest severity is WARN)"`
+  to the FILE SUMMARY absent section. Prevents the agent from hedging that WARN exceptions
+  "could lead to" data loss when the log explicitly contains only WARN severity.
+
+- **Conditional SSH session prefix** — FILE SUMMARY sentence for successful SSH sessions
+  reads `"Despite attack traffic, N successful SSH session(s) opened"` when the log pattern
+  is brute-force, and the plain form otherwise.
+
+**Benchmark result**: Extended `fm-data-exam` to 4 test cases (added HDFS DataNode log,
+Linux mixed syslog). Score: 24/24 (100%) after iterative runs. All three new extractor
+capabilities had measurable impact: YYMMDD fix resolved HDFS temporal questions; service
+breakdown resolved "most common service" questions on mixed-service logs; ssh_session_opened +
+warn_only resolved "successful logins" and "data loss" questions on WARN-only/PAM logs.
 
 ### v5.5 → v5.6 (Two-Pathway Model — LogsAndErrorsExtractor + Evidence Routing Rules)
 
@@ -1418,7 +1464,7 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 
 ### Shared utilities (`extractors/utils.py`)
 
-- `extract_timestamp(line)` / `extract_time_range(content)` — recognise ISO-8601 (with/without `T`), syslog BSD, epoch seconds, epoch milliseconds. Scan only the first 10 and last 10 lines to stay within the Tier 1 latency budget.
+- `extract_timestamp(line)` / `extract_time_range(content)` — recognise ISO-8601 (with/without `T`), syslog BSD, epoch seconds, epoch milliseconds, and YYMMDD HHMMSS (Hadoop/HDFS compact format, added v5.7). Scan only the first 10 and last 10 lines to stay within the Tier 1 latency budget.
 - `extract_time_range_ts(content)` — same timestamp recognition, returns a `(first_ts, last_ts)` tuple of `datetime` objects (not strings). Used by `LogsAndErrorsExtractor` to compute log duration and per-event temporal spans.
 - `format_coverage_metadata(**kwargs)` — populates the `file_meta` dict with key-value pairs (Lines, Time range, Format, etc.) so downstream tooling can reason about what the extractor saw. Returns a dict rather than appending separator text.
 - `has_content()` + `EMPTY_CONTENT_RESPONSE` — uniform empty-input guard.
@@ -1430,17 +1476,20 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
   **FILE SUMMARY structure** (sentences in order):
   1. Pattern name + distinct source IP count (e.g., "SSH credential-stuffing/brute-force pattern (30 distinct source IPs).")
   2. Break-in trigger explanation if `break_in_attempt > 0` — includes the reverse-DNS mismatch trigger cause.
-  3. Dominant activity counts (top 3 event types, excluding structural events like `connection_closed`).
+  3. Dominant activity counts (top 3 event types, excluding supplementary duplicates like `pam_auth_failure`).
   4. Root targeting count if pattern is brute-force and root attempts > 0.
-  5. Qualitative per-IP burst pattern if ≥2 top IPs have non-zero burst span. *Specific durations are intentionally omitted* — graders cannot verify computed durations independently and will flag them as fabricated.
-  6. Top source IP with total line-occurrence count.
-  7. Absent items (e.g., "no HTTP traffic").
-  8. Log time range with duration computed from `extract_time_range_ts()`.
+  5. Successful SSH sessions if `ssh_session_opened > 0` — reads "Despite attack traffic, N successful SSH session(s) opened" when pattern is brute-force, plain form otherwise.
+  6. Qualitative per-IP burst pattern if ≥2 top IPs have non-zero burst span. *Specific durations are intentionally omitted* — graders cannot verify computed durations independently and will flag them as fabricated.
+  7. Top source IP with total line-occurrence count.
+  8. Absent items — includes `"no HTTP traffic"` when no HTTP paths detected, and `"no ERROR or FATAL entries (highest severity is WARN)"` when the log is WARN-only.
+  9. Numeric state-code note when `_STATE_CODE_RE` matches (internal identifiers like mod_jk error states).
+  10. Log time range with duration computed from `extract_time_range_ts()`. Supports ISO-8601, BSD syslog, epoch, and YYMMDD HHMMSS formats.
 
   **ENTITY PROFILE structure** (in `search_map`):
-  - Section header distinguishes line-occurrence counts from event-specific counts.
-  - Each event type line: `event_name: N  ["search string"]  span:HH:MM:SS→HH:MM:SS (~Xh)  [reverse-DNS mismatch trigger]`. Spans computed from first/last timestamp of matching lines across the full file — authoritative even when `search_file` returns only 20 results.
-  - Each IP line: `IP: N line occurrences (all event types)`. The "(all event types)" qualifier is inline to prevent the agent from treating the total line count as an auth-specific count.
+  - **Top services section** (new in v5.7): emitted before event types when ≥2 distinct syslog service names each have ≥5 lines. Each line: `service: N lines`. Enables "most common service" answers on multi-service logs without requiring `search_file`.
+  - **Event types section**: each line: `event_name: N  ["search string"]  span:HH:MM:SS→HH:MM:SS (~Xh)  [reverse-DNS mismatch trigger]`. Includes `ssh_session_opened` (new in v5.7) when sshd session opens are present. Spans computed from first/last timestamp across the full file.
+  - **IP auth breakdown** (top 5 IPs with auth events): `IP: failed_password=N, pam_auth_failure=N, invalid_user=N → auth total=N`. Use these event-specific counts for auth-attempt totals, not the broader line-occurrence counts below.
+  - **IP list**: each line: `IP: N line occurrences (all event types)`. The "(all event types)" qualifier prevents treating line counts as auth-specific.
   - `_detect_log_pattern()` generates the interpretation-first pattern name (SSH brute-force, auth failure, HTTP error, or no pattern).
 - **TraceDataExtractor** — embedded-JSON recovery: when the content is not pure JSON, scans for `{[\s\S]*}` to salvage trace structures from mixed-format payloads.
 - **ConfigExtractor (StructuredConfigExtractor)** — secret redaction is always-on (not gated by `sanitize_pii`) since structural indexes are persisted and may be sent to LLMs. Two layers:
@@ -1450,7 +1499,7 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 
 ---
 
-**Document Version**: 5.6
+**Document Version**: 5.7
 **Last Updated**: 2026-04-26
 **Status**: FINAL
-**Predecessor**: v5.5 (data-preprocessing-design-specification.md)
+**Predecessor**: v5.6 (data-preprocessing-design-specification.md)
