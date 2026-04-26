@@ -16,6 +16,7 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     extract_time_range_ts,
     extract_timestamp,
     has_content,
+    has_yearless_timestamps,
 )
 
 if TYPE_CHECKING:
@@ -552,8 +553,26 @@ class LogsAndErrorsExtractor:
         r")"
         r"(?![0-9A-Fa-f:.])"
     )
-    _USER_RE = re.compile(
-        r"(?:\buser[= ]+|\bfor (?:invalid user )?\b|\buser=)([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b",
+    # Username extraction — split into two patterns so the "for <user>" branch
+    # is only applied to lines with explicit auth keywords, preventing kernel
+    # and service messages like "for high-res timesource" or "for PnP cards"
+    # from landing in the username list.
+    #
+    # _USER_FIELD_RE: matches "user= <name>" and "user <name>" — always applied.
+    # _USER_FOR_RE: matches "for [invalid user] <name>" — gated on _AUTH_CONTEXT_RE.
+    _USER_FIELD_RE = re.compile(
+        r"\buser[= ]+([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b",
+        re.IGNORECASE,
+    )
+    _USER_FOR_RE = re.compile(
+        r"\bfor (?:invalid user )?([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b",
+        re.IGNORECASE,
+    )
+    # Lines that carry these phrases are SSH/PAM auth events — the only context
+    # where "for <username>" is a reliable username signal.
+    _AUTH_CONTEXT_RE = re.compile(
+        r"Failed password|Accepted (?:password|publickey)|Invalid user"
+        r"|authentication failure|session opened for",
         re.IGNORECASE,
     )
     # Port matchers. A port number is a numeric token that needs *structural*
@@ -732,22 +751,25 @@ class LogsAndErrorsExtractor:
                     ip_error_counts[ip] += 1
             if not has_numeric_state_codes and self._STATE_CODE_RE.search(line):
                 has_numeric_state_codes = True
-            for user in self._USER_RE.findall(line):
+            # "user= <name>" / "user <name>" apply to every line.
+            # "for <name>" applies only when the line has auth-context keywords —
+            # prevents kernel/service messages ("for high-res timesource",
+            # "for PnP cards") from polluting the username list.
+            user_candidates = list(self._USER_FIELD_RE.findall(line))
+            if self._AUTH_CONTEXT_RE.search(line):
+                user_candidates += self._USER_FOR_RE.findall(line)
+            for user in user_candidates:
                 # Skip SSH/TLS protocol keywords and reverse-DNS hostnames.
                 # Syslog stores the PTR record of the connecting IP in the
                 # rhost field (e.g. customer-187-141-143-180-sta.), which the
-                # "for <word>" branch of _USER_RE would otherwise count as a
-                # login username. _REVERSE_DNS_RE detects embedded IP octets.
+                # "for <name>" branch would otherwise count as a login username.
+                # _REVERSE_DNS_RE detects embedded IP octets.
                 if (
                     user
                     and user.lower() not in self._USER_PROTOCOL_TERMS
                     and not self._REVERSE_DNS_RE.search(user)
-                    and not user[
-                        0
-                    ].isdigit()  # filter pure-numeric tokens like "0", "1234"
-                    and user[
-                        -1
-                    ].isalnum()  # filter tokens with trailing punctuation like "request."
+                    and not user[0].isdigit()
+                    and user[-1].isalnum()
                 ):
                     user_all_counts[user] += 1
                     if is_error:
@@ -831,6 +853,7 @@ class LogsAndErrorsExtractor:
         # FILE SUMMARY — returned separately so extract() can place it in file_extract
         first_ts, last_ts = extract_time_range_ts(content)
         tr = extract_time_range(content)
+        yearless_ts = has_yearless_timestamps(content)
         summary = self._build_summary(
             event_counts,
             ip_all_counts,
@@ -845,6 +868,7 @@ class LogsAndErrorsExtractor:
             ip_attack_last_ts=ip_attack_last_ts,
             has_numeric_state_codes=has_numeric_state_codes,
             warn_only=warn_only,
+            yearless_timestamps=yearless_ts,
         )
 
         # ENTITY PROFILE body — the search map
@@ -1011,6 +1035,7 @@ class LogsAndErrorsExtractor:
         ip_attack_last_ts: dict = None,
         has_numeric_state_codes: bool = False,
         warn_only: bool = False,
+        yearless_timestamps: bool = False,
     ) -> str:
         """Return a compact FILE SUMMARY (2–4 sentences) describing dominant
         activity, top source, and key absences.
@@ -1144,6 +1169,15 @@ class LogsAndErrorsExtractor:
                 elif delta_secs >= 60:
                     duration_note = f" (~{int(delta_secs / 60)}min duration)"
             sentences.append(f"Log time range: {time_range}{duration_note}.")
+            if yearless_timestamps:
+                # Syslog BSD timestamps omit the year; extract_time_range_ts
+                # uses today's year as a fallback. Signal this so the agent
+                # does not present the inferred year as a known fact.
+                inferred_year = time_range[:4] if time_range[0].isdigit() else ""
+                sentences.append(
+                    f"[Note: timestamps in this log have no year —"
+                    f" {inferred_year} is inferred from the current date.]"
+                )
 
         if not sentences:
             return ""

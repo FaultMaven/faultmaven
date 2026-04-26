@@ -199,6 +199,21 @@ def extract_timestamp(line: str) -> datetime | None:
     return None
 
 
+def has_yearless_timestamps(content: str) -> bool:
+    """Return True when the file's leading timestamps are syslog BSD without an explicit year.
+
+    Checks only the first 20 non-empty lines for speed. Returns False when no
+    syslog_bsd timestamps are found (the file may use a format that always
+    includes a year, or no recognisable timestamps at all).
+    """
+    syslog_pat = next(pat for name, pat in _TS_PATTERNS if name == "syslog_bsd")
+    for line in content.split("\n")[:20]:
+        m = syslog_pat.search(line)
+        if m:
+            return m.group("year") is None
+    return False
+
+
 def extract_time_range_ts(
     content: str,
 ) -> tuple[Optional["datetime"], Optional["datetime"]]:

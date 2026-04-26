@@ -43,6 +43,12 @@ class MetricsAndPerformanceExtractor:
     # flagged as a spike. Require a minimum spread relative to the median
     # before reporting any spikes.
     MIN_IQR_PROXY_FRACTION = 0.05
+    # Extreme-outlier fallback: when the IQR proxy is too small to distinguish
+    # spikes from noise (flat-data guard fires), still flag values that exceed
+    # p99 by this factor. Ratio of 3 avoids false positives on normally
+    # distributed data (max ≈ 1.5× p99) while catching genuine outliers like
+    # a single CPU spike that is 10×+ the 99th percentile.
+    EXTREME_OUTLIER_P99_RATIO = 3.0
 
     @property
     def strategy_name(self) -> str:
@@ -571,12 +577,20 @@ class MetricsAndPerformanceExtractor:
         p95 = stats["p95"]
 
         iqr_proxy = p95 - p50
+        p99 = stats.get("p99", p95)
         # Guard: suppress spike detection when the data is effectively flat.
         # Absent this, p95 == p50 would collapse spike_threshold onto p95 and
         # any value slightly above p95 would be flagged as a "spike".
+        # Exception: when the max value exceeds p99 by EXTREME_OUTLIER_P99_RATIO,
+        # the data has a genuine extreme outlier that the flat-data guard would
+        # otherwise miss (e.g. a single CPU spike at 18× the baseline).
         min_meaningful_spread = max(abs(p50) * self.MIN_IQR_PROXY_FRACTION, 1e-9)
         if iqr_proxy < min_meaningful_spread:
-            spike_threshold = float("inf")
+            max_value = stats.get("max", 0)
+            if p99 > 0 and max_value > p99 * self.EXTREME_OUTLIER_P99_RATIO:
+                spike_threshold = p99 * self.EXTREME_OUTLIER_P99_RATIO
+            else:
+                spike_threshold = float("inf")
         else:
             spike_threshold = p95 + (1.5 * iqr_proxy)
             if spike_threshold <= p50:
@@ -611,6 +625,9 @@ class MetricsAndPerformanceExtractor:
                     }
                 )
 
+        # Sort by value descending so the most extreme anomalies appear first in
+        # the display cap (agent sees the biggest spike, not just the earliest).
+        anomalies.sort(key=lambda a: a["value"], reverse=True)
         return anomalies
 
     def _format_summary(self, summaries: list[dict[str, Any]]) -> str:
@@ -638,7 +655,7 @@ class MetricsAndPerformanceExtractor:
             anomalies = summary["anomalies"]
 
             lines.append(f"📊 {metric_name} ({count} data points):")
-            lines.append(f"   Range: {stats['min']:.2f} - {stats['max']:.2f}")
+            lines.append(f"   Range: {stats['min']:.4g} - {stats['max']:.4g}")
             lines.append(f"   Mean: {stats['mean']:.2f} (±{stats['std_dev']:.2f})")
             lines.append(
                 f"   Percentiles: p50={stats['p50']:.2f}, p95={stats['p95']:.2f}, p99={stats['p99']:.2f}"
@@ -660,12 +677,12 @@ class MetricsAndPerformanceExtractor:
                     if anom_type == "spike":
                         ratio = anomaly.get("ratio", anomaly.get("sigma", 0))
                         lines.append(
-                            f"      • SPIKE at {timestamp}: {value:.2f} ({ratio}x median)"
+                            f"      • SPIKE at {timestamp}: {value:.4g} ({ratio}x median)"
                         )
                     elif anom_type == "drop":
                         drop_pct = anomaly["drop_percent"]
                         lines.append(
-                            f"      • DROP at {timestamp}: {value:.2f} ({drop_pct}% below baseline)"
+                            f"      • DROP at {timestamp}: {value:.4g} ({drop_pct}% below baseline)"
                         )
 
                 if len(anomalies) > 10:

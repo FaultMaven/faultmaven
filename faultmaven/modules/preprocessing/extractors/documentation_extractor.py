@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Dict, List
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    MAX_STRUCTURAL_INDEX_CHARS,
     has_content,
+    truncate_output,
 )
 
 if TYPE_CHECKING:
@@ -386,4 +388,24 @@ class DocumentationExtractor:
                 indent = "  " * (section["level"] - 1)
                 lines.append(f"{indent}- {section['title']}")
 
-        return "\n".join(lines)
+        # Actual section content — allows the agent to answer questions about
+        # what the document contains (tables, descriptions, references, etc.)
+        # without an LLM summarisation step.
+        content_lines: list[str] = []
+        for section in sections:
+            body = section.get("content", "").strip()
+            if not body:
+                continue
+            indent = "  " * (section["level"] - 1)
+            content_lines.append(f"\n{indent}## {section['title']}")
+            # Limit each section to 2000 chars to keep budget for all sections
+            if len(body) > 2000:
+                body = body[:2000] + " ..."
+            content_lines.append(body)
+
+        if content_lines:
+            lines.append("")
+            lines.append("=== DOCUMENT CONTENT ===")
+            lines.extend(content_lines)
+
+        return truncate_output("\n".join(lines), MAX_STRUCTURAL_INDEX_CHARS)

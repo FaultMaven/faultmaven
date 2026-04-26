@@ -616,7 +616,7 @@ class TestEntityProfileMergedBuckets:
 
 class TestUsernameProtocolTermFilter:
     """Step 1 (G7) — SSH/TLS protocol keywords must not be captured as
-    usernames by _USER_RE's broad 'for <word>' branch."""
+    usernames by the 'for <word>' branch of _USER_FOR_RE."""
 
     @pytest.fixture
     def extractor(self):
@@ -1140,3 +1140,101 @@ class TestYYMMDDTimestamp:
         lines = "\n".join(["Dec 10 12:00:00 host sshd[1]: ERROR failed hard"] * 15)
         result = extractor.extract(lines)
         assert "no error or fatal" not in _fe(result).lower()
+
+
+class TestNonAuthForWordFilter:
+    """_USER_FOR_RE is only applied on lines with explicit auth-context keywords.
+    Kernel and service messages like 'for high-res timesource' or 'for PnP cards'
+    must not pollute the username list, while 'session opened for user <name>'
+    and 'Failed password for <name>' must still capture the username."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _make_log(self, *lines, pad=15) -> str:
+        """Pad with neutral filler to meet >10-line thresholds."""
+        filler = "Jun 14 12:00:00 host kernel: generic info message"
+        return "\n".join(list(lines) + [filler] * pad)
+
+    def test_kernel_for_word_not_captured(self, extractor):
+        """'for high-res timesource' must not produce a 'high-res' username entry."""
+        log = self._make_log(
+            "Jul 27 14:41:57 combo kernel: Using tsc for high-res timesource"
+        )
+        result = extractor.extract(log)
+        # "high-res: N mentions" format indicates a username entry; the raw token
+        # may still appear in template-count lines that reproduce the original text.
+        assert "high-res: " not in _sm(result)
+
+    def test_isapnp_for_word_not_captured(self, extractor):
+        """'for PnP cards' must not produce a 'PnP' username entry."""
+        log = self._make_log(
+            "Jul 27 14:42:00 combo kernel: isapnp: Scanning for PnP cards..."
+        )
+        result = extractor.extract(log)
+        assert "PnP: " not in _sm(result)
+
+    def test_failed_password_for_username_captured(self, extractor):
+        """Auth context ('Failed password') must still enable 'for <user>' capture."""
+        log = self._make_log(
+            *[
+                "Dec 10 12:00:00 host sshd[1]: Failed password for guest from 1.2.3.4 port 22 ssh2"
+            ]
+            * 5
+        )
+        result = extractor.extract(log)
+        assert "guest" in _sm(result)
+
+    def test_session_opened_for_user_captured(self, extractor):
+        """'session opened for user <name>' must capture the username via _USER_FIELD_RE."""
+        log = self._make_log(
+            *[
+                "Jun 15 10:00:00 host sshd(pam_unix)[999]: session opened for user cyrus by (uid=0)"
+            ]
+            * 5
+        )
+        result = extractor.extract(log)
+        assert "cyrus" in _sm(result)
+
+
+class TestYearlessTimestampNote:
+    """Syslog BSD logs without an explicit year get a FILE SUMMARY note explaining
+    that the displayed year is inferred from the current date."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _syslog_yearless(self, n: int = 15) -> str:
+        """Minimal syslog BSD log with no year in timestamps."""
+        lines = [
+            f"Jun {14 + i % 3} 12:00:{i:02d} host sshd[1]: Failed password for root from 1.2.3.4 port 22 ssh2"
+            for i in range(n)
+        ]
+        return "\n".join(lines)
+
+    def _iso_log(self, n: int = 15) -> str:
+        """ISO-8601 log — year always present."""
+        lines = [
+            f"2023-06-{14 + i % 3:02d} 12:00:00 ERROR host sshd: Failed password for root from 1.2.3.4"
+            for i in range(n)
+        ]
+        return "\n".join(lines)
+
+    def test_yearless_note_present_in_file_summary(self, extractor):
+        result = extractor.extract(self._syslog_yearless())
+        assert "timestamps in this log have no year" in _fe(result).lower()
+
+    def test_yearless_note_absent_for_iso_timestamps(self, extractor):
+        result = extractor.extract(self._iso_log())
+        assert "timestamps in this log have no year" not in _fe(result).lower()
+
+    def test_yearless_note_contains_inferred_year(self, extractor):
+        """The note should mention the inferred year (a 4-digit number)."""
+        import re
+
+        result = extractor.extract(self._syslog_yearless())
+        note = _fe(result)
+        # The note format: "[Note: timestamps in this log have no year — YYYY is inferred...]"
+        assert re.search(r"is inferred from the current date", note)

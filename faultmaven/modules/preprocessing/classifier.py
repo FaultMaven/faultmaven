@@ -751,7 +751,12 @@ class DataClassifier:
                 classification_failed=False,
             )
 
-        if config_score >= 2:
+        # Documentation-extension files (md/rst/adoc/txt) contain Markdown
+        # constructs like [Anchor] and label: that superficially match config
+        # patterns. Guard against the false-positive before checking
+        # DOCUMENTATION (step 7).
+        doc_exts_early = {".md", ".rst", ".adoc", ".txt"}
+        if config_score >= 2 and ext not in doc_exts_early:
             return ClassificationResult(
                 data_type=DataType.STRUCTURED_CONFIG,
                 confidence=min(0.75 + confidence_boost, 0.85),
