@@ -252,3 +252,51 @@ gauge_with_gaps{shard="d"} 30
             # No NaN should appear in the computed statistics lines.
             assert "Range: nan" not in result.file_extract.lower()
             assert "mean: nan" not in result.file_extract.lower()
+
+
+class TestFmtVal:
+    """Tests for MetricsAndPerformanceExtractor._fmt_val."""
+
+    @pytest.fixture
+    def fmt(self):
+        return MetricsAndPerformanceExtractor()._fmt_val
+
+    def test_zero(self, fmt):
+        assert fmt(0) == "0"
+        assert fmt(0.0) == "0"
+
+    def test_integer_like_float(self, fmt):
+        # Should not produce scientific notation for typical large integers
+        assert fmt(12345.0) == "12345"
+        assert fmt(100.0) == "100"
+
+    def test_typical_decimal(self, fmt):
+        assert fmt(2.344) == "2.344"
+        assert fmt(0.066) == "0.066"
+
+    def test_trailing_zeros_stripped(self, fmt):
+        assert fmt(1.5000) == "1.5"
+        assert fmt(10.0) == "10"
+
+    def test_small_value_near_threshold(self, fmt):
+        # 1e-4 is the boundary — values at or below use :.4g
+        result = fmt(1e-4)
+        # 1e-4 is exactly at the boundary (abs_val < 1e-4 is False), so :.4f applies
+        assert result == "0.0001"
+
+    def test_very_small_uses_scientific(self, fmt):
+        result = fmt(1e-5)
+        assert "e" in result.lower()
+
+    def test_very_large_uses_scientific(self, fmt):
+        result = fmt(1e10)
+        assert "e" in result.lower()
+
+    def test_negative_value(self, fmt):
+        assert fmt(-2.344) == "-2.344"
+        assert fmt(-100.0) == "-100"
+
+    def test_no_scientific_for_large_cpu_pct(self, fmt):
+        # CPU percentages like 99.99 should never get scientific notation
+        assert "e" not in fmt(99.99).lower()
+        assert "e" not in fmt(100.0).lower()

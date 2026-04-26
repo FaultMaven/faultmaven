@@ -1238,3 +1238,12 @@ class TestYearlessTimestampNote:
         note = _fe(result)
         # The note format: "[Note: timestamps in this log have no year — YYYY is inferred...]"
         assert re.search(r"is inferred from the current date", note)
+
+    def test_yearless_note_includes_sample_raw_timestamp(self, extractor):
+        """The note should include a raw sample timestamp so the agent can see the format."""
+        import re
+
+        result = extractor.extract(self._syslog_yearless())
+        note = _fe(result)
+        # The note includes e.g. '(e.g., 'Jun 14 12:00:00')' — check for the month abbreviation
+        assert re.search(r"e\.g\.,\s*'Jun\s+\d+\s+\d{2}:\d{2}:\d{2}'", note)
