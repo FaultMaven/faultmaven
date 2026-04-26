@@ -142,9 +142,9 @@ class LogsAndErrorsExtractor:
         file_summary, profile_body = self._build_entity_profile(content, error_lines)
 
         # Template counts \u2192 search map
-        template_block = ""
-        if errors:
-            template_block = self._build_template_counts(errors, total_lines) or ""
+        # Pass all lines so the function can fall back to counting every line
+        # when error-keyword coverage is too sparse (< MIN_TEMPLATE_COVERAGE_FRACTION).
+        template_block = self._build_template_counts(errors, total_lines, lines) or ""
 
         # --- Assemble file_extract (default question answer) ---
         file_extract_parts = [p for p in [file_summary, crime_scene] if p]
@@ -416,54 +416,71 @@ class LogsAndErrorsExtractor:
 
         return "\n".join(formatted)
 
-    def _build_template_counts(self, errors: list[dict], total_lines: int = 0) -> str:
-        """Normalise every severity-matched line to its message template and
-        count occurrences.
+    def _build_template_counts(
+        self,
+        errors: list[dict],
+        total_lines: int = 0,
+        all_lines: list[str] | None = None,
+    ) -> str:
+        """Normalise log lines to message templates and count occurrences.
 
-        Unlike the old TOP ERROR MESSAGES block (which used raw line text and
-        therefore counted every timestamped/PID-suffixed line as unique),
-        this normalises away timestamps, PIDs, and hex literals before
-        counting — so Apache "error state 6" lines accumulate correctly.
+        Primary mode: count only severity-keyword-matched lines (the `errors`
+        list). When those lines represent fewer than MIN_TEMPLATE_COVERAGE_FRACTION
+        of the file (e.g. SSH auth logs where attack lines carry no ERROR keyword),
+        fall back to counting ALL lines so that notice/info-level events are not
+        invisible.
 
-        When total_lines is provided and severity-keyword lines represent
-        fewer than MIN_TEMPLATE_COVERAGE_FRACTION of the file, the block is
-        suppressed — it covers too small a fraction to be meaningful (e.g.
-        SSH auth logs where "Failed password" lines have no ERROR keyword).
         Pass total_lines=0 to skip the coverage gate (e.g. in unit tests).
         """
-        if not errors:
+        if not errors and not all_lines:
             return ""
 
-        if total_lines > 0:
+        use_all_lines = False
+        if total_lines > 0 and errors:
             coverage = len(errors) / total_lines
             if coverage < self.MIN_TEMPLATE_COVERAGE_FRACTION:
+                use_all_lines = True
+        elif not errors:
+            use_all_lines = True
+
+        if use_all_lines:
+            if not all_lines:
                 return ""
-
-        template_counts: Counter[str] = Counter(
-            _normalize_template(e["line_text"]) for e in errors
-        )
-        if not template_counts:
-            return ""
-
-        total = len(errors)
-        distinct = len(template_counts)
-        if total_lines > 0:
-            scope = (
-                f"error-keyword lines: {total} of {total_lines},"
-                f" {total / total_lines:.0%} coverage"
+            non_blank = [ln for ln in all_lines if ln.strip()]
+            template_counts: Counter[str] = Counter(
+                _normalize_template(ln) for ln in non_blank
             )
+            if not template_counts:
+                return ""
+            total = len(non_blank)
+            distinct = len(template_counts)
+            scope = f"all lines: {total} of {total_lines or total}"
         else:
-            scope = f"{total} lines matched severity keywords"
+            template_counts = Counter(
+                _normalize_template(e["line_text"]) for e in errors
+            )
+            if not template_counts:
+                return ""
+            total = len(errors)
+            distinct = len(template_counts)
+            if total_lines > 0:
+                scope = (
+                    f"error-keyword lines: {total} of {total_lines},"
+                    f" {total / total_lines:.0%} coverage"
+                )
+            else:
+                scope = f"{total} lines matched severity keywords"
+
         header = (
             f"EVENT TEMPLATE COUNTS"
             f" ({scope},"
             f" {distinct} distinct template{'s' if distinct != 1 else ''}):"
         )
-        lines = [header]
+        output_lines = [header]
         for template, count in template_counts.most_common():
             truncated = template[:120] + "..." if len(template) > 120 else template
-            lines.append(f"  [{count:>4}x] {truncated}")
-        return "\n".join(lines)
+            output_lines.append(f"  [{count:>4}x] {truncated}")
+        return "\n".join(output_lines)
 
     # Regex patterns for entity profiling (compiled once)
     _IPV4_RE = re.compile(
@@ -536,6 +553,13 @@ class LogsAndErrorsExtractor:
     _CONNECTION_CLOSED_RE = re.compile(
         r"Connection closed|Connection reset", re.IGNORECASE
     )
+    _BREAK_IN_ATTEMPT_RE = re.compile(r"POSSIBLE BREAK-IN ATTEMPT", re.IGNORECASE)
+
+    # Reverse-DNS hostname pattern — syslog's rhost field stores the PTR record
+    # of the connecting IP (e.g. customer-187-141-143-180-sta.) which the entity
+    # extractor would otherwise count as a login username. Three or more numeric
+    # segments separated by hyphens or dots identify this pattern reliably.
+    _REVERSE_DNS_RE = re.compile(r"\d{1,3}(?:[.-]\d{1,3}){2,}")
 
     # Minimum fraction of total lines that must match severity keywords for
     # the template counts block to be shown. Below this threshold the block
@@ -567,6 +591,7 @@ class LogsAndErrorsExtractor:
         "accepted_login": "Accepted password",
         "invalid_user": "Invalid user",
         "connection_closed": "Connection closed",
+        "break_in_attempt": "POSSIBLE BREAK-IN ATTEMPT",
     }
 
     def _build_entity_profile(
@@ -600,9 +625,16 @@ class LogsAndErrorsExtractor:
                 if is_error:
                     ip_error_counts[ip] += 1
             for user in self._USER_RE.findall(line):
-                # Skip SSH/TLS protocol keywords that _USER_RE's broad
-                # "for <word>" branch would otherwise capture as usernames.
-                if user and user.lower() not in self._USER_PROTOCOL_TERMS:
+                # Skip SSH/TLS protocol keywords and reverse-DNS hostnames.
+                # Syslog stores the PTR record of the connecting IP in the
+                # rhost field (e.g. customer-187-141-143-180-sta.), which the
+                # "for <word>" branch of _USER_RE would otherwise count as a
+                # login username. _REVERSE_DNS_RE detects embedded IP octets.
+                if (
+                    user
+                    and user.lower() not in self._USER_PROTOCOL_TERMS
+                    and not self._REVERSE_DNS_RE.search(user)
+                ):
                     user_all_counts[user] += 1
                     if is_error:
                         user_error_counts[user] += 1
@@ -628,6 +660,8 @@ class LogsAndErrorsExtractor:
                 event_counts["invalid_user"] += 1
             if self._CONNECTION_CLOSED_RE.search(line):
                 event_counts["connection_closed"] += 1
+            if self._BREAK_IN_ATTEMPT_RE.search(line):
+                event_counts["break_in_attempt"] += 1
 
         if not (
             ip_all_counts

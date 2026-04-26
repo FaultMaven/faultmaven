@@ -499,11 +499,12 @@ class TestExtractTemplateCounts:
         assert "state 6" in _sm(result)
         assert "state 7" in _sm(result)
 
-    def test_no_errors_produces_no_template_block(self, extractor):
-        """Tail fallback: no errors → no template counts block."""
+    def test_no_errors_triggers_all_lines_fallback(self, extractor):
+        """No error-keyword lines → all-lines fallback produces a template block."""
         content = "INFO startup complete\n" * 50
         result = extractor.extract(content)
-        assert "EVENT TEMPLATE COUNTS" not in _all(result)
+        assert "EVENT TEMPLATE COUNTS" in _sm(result)
+        assert "all lines" in _sm(result)
 
 
 class TestTemplateCoverageSuppression:
@@ -527,11 +528,12 @@ class TestTemplateCoverageSuppression:
                 )
         return "\n".join(lines)
 
-    def test_template_block_suppressed_when_low_coverage(self, extractor):
-        """Coverage 2% (48 of 2000) → template block must not appear."""
+    def test_low_coverage_triggers_all_lines_fallback(self, extractor):
+        """Coverage 2% (48 of 2000) → all-lines fallback produces a template block."""
         content = self._ssh_log(total=2000, error_count=48)
         result = extractor.extract(content)
-        assert "EVENT TEMPLATE COUNTS" not in _all(result)
+        assert "EVENT TEMPLATE COUNTS" in _sm(result)
+        assert "all lines" in _sm(result)
 
     def test_template_block_shown_when_sufficient_coverage(self, extractor):
         """Coverage 25% (500 of 2000) → template block must appear."""
