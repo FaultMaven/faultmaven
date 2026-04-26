@@ -174,11 +174,15 @@ When answering the user's question about a file:
   codes), always call search_file — the entity profile shows only the top N and
   the section header says how many more exist.
 - Temporal distribution question ("are attacks spread over time?", "when do most
-  errors occur?", "is this concentrated or spread evenly?") → call search_file,
-  then cross-reference the file_meta time_range. If your search returned events
-  from a narrow window but file_meta shows a much wider span, explicitly report
-  the full span from file_meta and characterize your search results as a sample
-  from within that period — not the full temporal picture.
+  errors occur?", "is this concentrated or spread evenly?") → first read the
+  FILE SUMMARY's "Log time range" field from <file_extract> — that is the
+  AUTHORITATIVE full span of the log. Then call search_file if you need to
+  characterize the distribution within that span. CRITICAL: search_file returns
+  at most 20 results by default; finding all 20 results within a 20-second
+  window does NOT mean events are concentrated there — it means those 20 were
+  the first matches in the file. If search results cluster narrowly but the
+  FILE SUMMARY shows a wider span, report the full span as the actual extent
+  and note that the search sample shows a burst within it.
 - File-specific identifier question ("what does error state 6 mean?", "what causes
   code X in this log?") → check whether the log explains the identifier. If it does
   not, say the log shows N occurrences but does not document the meaning. Do not
