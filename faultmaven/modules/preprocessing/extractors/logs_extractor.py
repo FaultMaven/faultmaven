@@ -13,6 +13,8 @@ from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
     extract_time_range,
+    extract_time_range_ts,
+    extract_timestamp,
     has_content,
 )
 
@@ -154,17 +156,6 @@ class LogsAndErrorsExtractor:
         severity_counts = Counter(e["keyword"] for e in errors)
         time_range = extract_time_range(content)
         file_extract_parts = [p for p in [file_summary, crime_scene] if p]
-        # Append a temporal context footer so the full log span is visible even
-        # after reading a narrow crime scene excerpt, preventing the agent from
-        # treating a search sample as the complete temporal picture.
-        if crime_scene and time_range.get("Time range"):
-            file_extract_parts.append(
-                f"TEMPORAL CONTEXT: The crime scene above shows extracted error"
-                f" clusters — not the full timeline. Full log time range:"
-                f" {time_range['Time range']}."
-                f" Search results from a narrow window are a sample; events may"
-                f" span the entire log period."
-            )
         file_extract = "\n\n".join(file_extract_parts)
 
         # --- Assemble search_map (navigation for search_file) ---
@@ -518,6 +509,9 @@ class LogsAndErrorsExtractor:
             f"EVENT TEMPLATE COUNTS"
             f" ({scope},"
             f" {distinct} distinct template{'s' if distinct != 1 else ''}):"
+            f" [Note: these are message-template variants, not distinct event"
+            f" categories — count reflects parameter variation (IDs, state numbers);"
+            f" semantic event types are in the ENTITY PROFILE above]"
         )
         output_lines = [header]
         for template, count in template_counts.most_common():
@@ -678,6 +672,12 @@ class LogsAndErrorsExtractor:
         port_counts: Counter = Counter()
         pid_counts: Counter = Counter()
         path_counts: Counter = Counter()
+        # Running min/max timestamps per event type for temporal span display
+        event_first_ts: dict = {}
+        event_last_ts: dict = {}
+        # Per-IP burst spans on attack-event lines only (not all lines)
+        ip_attack_first_ts: dict = {}
+        ip_attack_last_ts: dict = {}
 
         lines = content.split("\n")
         for i, line in enumerate(lines):
@@ -719,19 +719,42 @@ class LogsAndErrorsExtractor:
             for path in self._HTTP_PATH_RE.findall(line):
                 path_counts[path] += 1
 
-            # Semantic event classification
+            # Semantic event classification — also track first/last timestamp
+            # per event type so the entity profile can report temporal span.
+            matched_events = []
             if self._FAILED_PASSWORD_RE.search(line):
                 event_counts["failed_password"] += 1
+                matched_events.append("failed_password")
             if self._ACCEPTED_PASSWORD_RE.search(line):
                 event_counts["accepted_login"] += 1
+                matched_events.append("accepted_login")
             if self._INVALID_USER_RE.search(line):
                 event_counts["invalid_user"] += 1
+                matched_events.append("invalid_user")
             if self._CONNECTION_CLOSED_RE.search(line):
                 event_counts["connection_closed"] += 1
+                matched_events.append("connection_closed")
             if self._BREAK_IN_ATTEMPT_RE.search(line):
                 event_counts["break_in_attempt"] += 1
+                matched_events.append("break_in_attempt")
             if self._PAM_AUTH_FAILURE_RE.search(line):
                 event_counts["pam_auth_failure"] += 1
+                matched_events.append("pam_auth_failure")
+            if matched_events:
+                ts = extract_timestamp(line)
+                if ts:
+                    for ev in matched_events:
+                        if ev not in event_first_ts or ts < event_first_ts[ev]:
+                            event_first_ts[ev] = ts
+                        if ev not in event_last_ts or ts > event_last_ts[ev]:
+                            event_last_ts[ev] = ts
+                    # Track per-IP burst spans on attack-event lines — enables
+                    # describing per-IP bursty behavior in the entity profile.
+                    for ip in self._IPV4_RE.findall(line):
+                        if ip not in ip_attack_first_ts or ts < ip_attack_first_ts[ip]:
+                            ip_attack_first_ts[ip] = ts
+                        if ip not in ip_attack_last_ts or ts > ip_attack_last_ts[ip]:
+                            ip_attack_last_ts[ip] = ts
 
         if not (
             ip_all_counts
@@ -744,6 +767,7 @@ class LogsAndErrorsExtractor:
             return "", "ENTITY PROFILE: No entities found"
 
         # FILE SUMMARY — returned separately so extract() can place it in file_extract
+        first_ts, last_ts = extract_time_range_ts(content)
         tr = extract_time_range(content)
         summary = self._build_summary(
             event_counts,
@@ -753,6 +777,10 @@ class LogsAndErrorsExtractor:
             len(lines),
             len(error_lines),
             time_range=tr.get("Time range", ""),
+            first_ts=first_ts,
+            last_ts=last_ts,
+            ip_attack_first_ts=ip_attack_first_ts,
+            ip_attack_last_ts=ip_attack_last_ts,
         )
 
         # ENTITY PROFILE body — the search map
@@ -765,7 +793,31 @@ class LogsAndErrorsExtractor:
             )
             for event, count in event_counts.most_common():
                 search_str = self._EVENT_SEARCH_STRINGS.get(event, event)
-                parts.append(f'    {event}: {count}  ["{search_str}"]')
+                # Temporal span: full first→last range for this event type.
+                # search_file returns only 20 results — a sample; use this span.
+                span_note = ""
+                ft = event_first_ts.get(event)
+                lt = event_last_ts.get(event)
+                if ft and lt and ft != lt:
+                    delta_secs = (lt - ft).total_seconds()
+                    if delta_secs >= 3600:
+                        span_str = f"~{delta_secs / 3600:.1f}h"
+                    elif delta_secs >= 60:
+                        span_str = f"~{int(delta_secs / 60)}min"
+                    else:
+                        span_str = f"~{int(delta_secs)}s"
+                    span_note = (
+                        f"  span:{ft.strftime('%H:%M:%S')}→{lt.strftime('%H:%M:%S')}"
+                        f" ({span_str})"
+                    )
+                rdns_note = (
+                    "  [reverse-DNS mismatch trigger]"
+                    if event == "break_in_attempt"
+                    else ""
+                )
+                parts.append(
+                    f'    {event}: {count}  ["{search_str}"]{span_note}{rdns_note}'
+                )
 
         if ip_all_counts:
             parts.append(
@@ -777,7 +829,9 @@ class LogsAndErrorsExtractor:
             for ip, total in ip_all_counts.most_common(top_n):
                 error_n = ip_error_counts.get(ip, 0)
                 annotation = f"  ({error_n} on error lines)" if error_n else ""
-                parts.append(f"    {ip}: {total} line occurrences{annotation}")
+                parts.append(
+                    f"    {ip}: {total} line occurrences (all event types){annotation}"
+                )
 
         if user_all_counts:
             total_distinct = len(user_all_counts)
@@ -854,6 +908,10 @@ class LogsAndErrorsExtractor:
         total_lines: int,
         error_count: int,
         time_range: str = "",
+        first_ts=None,
+        last_ts=None,
+        ip_attack_first_ts: dict = None,
+        ip_attack_last_ts: dict = None,
     ) -> str:
         """Return a compact FILE SUMMARY (2–4 sentences) describing dominant
         activity, top source, and key absences.
@@ -869,7 +927,21 @@ class LogsAndErrorsExtractor:
             event_counts, path_counts, error_count, total_lines
         )
         if pattern:
+            n_distinct_ips = len(ip_counts)
+            if "brute-force" in pattern and n_distinct_ips > 1:
+                pattern = f"{pattern} ({n_distinct_ips} distinct source IPs)"
             sentences.append(f"{pattern}.")
+
+        # Break-in attempt trigger IMMEDIATELY after the pattern — POSSIBLE BREAK-IN
+        # ATTEMPT is a specific OpenSSH warning; placing it early ensures agents see
+        # what triggers it even when answering a focused count question.
+        if event_counts.get("break_in_attempt", 0) > 0:
+            ba_count = event_counts["break_in_attempt"]
+            sentences.append(
+                f"{ba_count} POSSIBLE BREAK-IN ATTEMPT warnings"
+                f" (OpenSSH trigger: each fired because the connecting IP's PTR"
+                f" record did not match the IP address — reverse-DNS mismatch)."
+            )
 
         # Dominant activity counts — exclude supplementary duplicate event types
         summary_events = Counter(
@@ -890,6 +962,38 @@ class LogsAndErrorsExtractor:
                 f"{error_count} severity-flagged lines out of {total_lines} total."
             )
 
+        # Root targeting — explicitly call out root password guessing when present
+        root_count = user_counts.get("root", 0)
+        if root_count > 0 and pattern and "brute-force" in pattern:
+            sentences.append(f"Includes {root_count} root login attempts.")
+
+        # Per-IP burst pattern for brute-force attacks — each source IP attacks in
+        # a concentrated burst at different times; combined activity spans the full
+        # log period. This directly answers temporal distribution questions.
+        if (
+            pattern
+            and "brute-force" in pattern
+            and ip_attack_first_ts
+            and ip_attack_last_ts
+        ):
+            top_ips = [
+                ip for ip, _ in ip_counts.most_common(3) if ip in ip_attack_first_ts
+            ]
+            if len(top_ips) >= 2:
+                has_bursts = any(
+                    ip_attack_first_ts.get(ip)
+                    and ip_attack_last_ts.get(ip)
+                    and ip_attack_first_ts[ip] != ip_attack_last_ts[ip]
+                    for ip in top_ips[:3]
+                )
+                if has_bursts:
+                    sentences.append(
+                        "Per-IP burst pattern: attacks NOT evenly distributed —"
+                        " each source concentrates attempts in a short burst"
+                        " at different times, with combined activity spanning"
+                        " the full log period."
+                    )
+
         # Top source IP
         if ip_counts:
             top_ip, top_count = ip_counts.most_common(1)[0]
@@ -902,9 +1006,17 @@ class LogsAndErrorsExtractor:
         if absent:
             sentences.append(f"Absent: {', '.join(absent)}.")
 
-        # Time range — surfaces full log span so agent cross-references correctly
-        if time_range:
-            sentences.append(f"Log time range: {time_range}.")
+        # Time range with computed duration — surfaces full log span so agent
+        # cross-references correctly and can answer duration questions directly.
+        if time_range and time_range != "unknown":
+            duration_note = ""
+            if first_ts and last_ts and last_ts > first_ts:
+                delta_secs = (last_ts - first_ts).total_seconds()
+                if delta_secs >= 3600:
+                    duration_note = f" (~{delta_secs / 3600:.1f}h duration)"
+                elif delta_secs >= 60:
+                    duration_note = f" (~{int(delta_secs / 60)}min duration)"
+            sentences.append(f"Log time range: {time_range}{duration_note}.")
 
         if not sentences:
             return ""

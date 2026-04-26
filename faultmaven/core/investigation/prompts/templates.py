@@ -173,6 +173,13 @@ When answering the user's question about a file:
   For "list all X" questions (enumerate all usernames, all paths, all error
   codes), always call search_file — the entity profile shows only the top N and
   the section header says how many more exist.
+- Count question about a named log event type ("how many X?", "how often does Y
+  occur?") → call search_file for the authoritative count, then ALSO read
+  <file_extract> (FILE SUMMARY) for semantic context. For log-file count questions,
+  a count alone is an incomplete answer — always include what that event type
+  means or indicates. The FILE SUMMARY contains [trigger] and semantic explanations
+  for key event types; include these alongside the count even if the question only
+  asks "how many?"
 - Temporal distribution question ("are attacks spread over time?", "when do most
   errors occur?", "is this concentrated or spread evenly?") → use the per-event
   span annotations in the entity profile (format: "span:HH:MM:SS→HH:MM:SS (~Xh)")
