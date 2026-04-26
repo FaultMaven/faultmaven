@@ -63,8 +63,13 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 └─────┬───────────────────────────────────────────────────────────────────┘
       │
       │ PreprocessingResult
-      │ {data_type, summary, structural_index, content_ref, content_hash,
-      │  extraction_method, content_size_bytes, extraction_metadata}
+      │ {data_type, summary, structural_index (= ExtractResult JSON), content_ref,
+      │  content_hash, extraction_method, content_size_bytes, extraction_metadata}
+      │
+      │  ExtractResult JSON: {"v":1, "file_extract": "...", "search_map": "...",
+      │                       "file_meta": {...}}
+      │  Stored as evidence.preprocessed_content. Parsed by context_builder.py
+      │  into three separate XML elements: <file_extract>, <search_map>, <file_meta>.
       ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    Investigation Service Layer                           │
@@ -93,7 +98,9 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │ Analyzes:                                                           │ │
 │  │ - Full case context (existing evidence, hypotheses, milestones)   │ │
 │  │ - User message content                                             │ │
-│  │ - PreprocessingResult.structural_index (if file upload)           │ │
+│  │ - evidence.preprocessed_content parsed into three XML elements:   │ │
+│  │     <file_extract> (orientation), <search_map> (entity profile +  │ │
+│  │     search hints), <file_meta> (coverage stats as structured dict) │ │
 │  │ - PreprocessingResult.summary (<500 chars, always included)       │ │
 │  │                                                                     │ │
 │  │ Returns:                                                           │ │
@@ -962,6 +969,6 @@ For the canonical description of Stage 1 behaviour, pass-through branch, and for
 
 ---
 
-**Document Version:** 2.6
-**Last Updated:** 2026-03-15
+**Document Version:** 2.7
+**Last Updated:** 2026-04-26
 **Status:** Design Specification

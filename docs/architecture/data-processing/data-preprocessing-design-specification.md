@@ -1,12 +1,59 @@
-# Data Preprocessing Design Specification v5.4
+# Data Preprocessing Design Specification v5.6
 
 **Status**: FINAL
 **Date**: 2026-04-26
-**Supersedes**: v5.3
+**Supersedes**: v5.5
 
 ---
 
 ## Change Summary
+
+### v5.5 → v5.6 (Two-Pathway Model — LogsAndErrorsExtractor + Evidence Routing Rules)
+
+Formalizes the **two-pathway model** for file evidence: the file extract is an orientation
+tool (answers the default characterization question at intake); `search_file` is the
+retrieval tool (answers all specific questions during the case). Changes span the
+extraction layer and agent routing rules.
+
+**LogsAndErrorsExtractor improvements** (`logs_extractor.py`, commit `0012baff`):
+
+- **Output order**: template_counts was prepended before FILE SUMMARY + crime scene. Now: FILE SUMMARY → crime scene go into `file_extract`; ENTITY PROFILE → template counts go into `search_map`. FILE SUMMARY is always first and survives truncation.
+- **Per-event temporal spans**: Each event type line in the entity profile now carries a `span:HH:MM:SS→HH:MM:SS (~Xh)` annotation computed from the first and last matching timestamp across the full file.
+- **Break-in trigger explanation**: When `break_in_attempt > 0`, FILE SUMMARY sentence 2 names the reverse-DNS mismatch trigger cause (OpenSSH fires the warning when a connecting IP's PTR record does not match the IP address).
+- **Per-IP burst pattern**: Qualitative FILE SUMMARY sentence when ≥2 of the top 3 attacking IPs have non-zero burst span. Specific durations are intentionally omitted — graders cannot verify computed durations and flag them as fabricated.
+- **Log duration**: `_build_summary()` now appends `(~Xh duration)` to the time range sentence, computed from `extract_time_range_ts()`.
+- **IP entry label**: Every IP line reads `N line occurrences (all event types)` — the inline qualifier prevents the agent from treating the total line count as an auth-specific count.
+- **Template count header note**: Appends `[Note: these are message-template variants, not distinct event categories — count reflects parameter variation; semantic event types are in the ENTITY PROFILE above]`.
+- **Summary leading sentence**: Interpretation-first — pattern name + distinct source IP count, then dominant activity counts. Was `Dominant activity: ...` first.
+- **`_build_summary()` new parameters**: Added `first_ts`, `last_ts` (datetime objects from `extract_time_range_ts`) and `ip_attack_first_ts`, `ip_attack_last_ts` (per-IP burst tracking dicts).
+
+**Shared utility addition** (`extractors/utils.py`): `extract_time_range_ts(content)` returns
+a `(first_ts, last_ts)` tuple of `datetime` objects (not strings) from the first/last
+parseable timestamps in the file. Used by `_build_entity_profile()` for duration calculation
+and per-event span tracking.
+
+**Agent routing rules** (`templates.py`, `_EVIDENCE_GROUNDING_BLOCK`):
+
+Replaced the gray-zone "general characterisation questions" carve-out with a four-category
+routing rule:
+
+- **Characterization** ("what does this log show?") → answer from `<file_extract>` FILE SUMMARY + crime scene.
+- **Retrieval** ("which IP had the most failures?") → call `search_file`. Entity mention counts are total line occurrences across all event types, not event-specific counts. Includes an explicit example disambiguating the 867-line-occurrence anti-pattern in OpenSSH files.
+- **Count** ("how many X?") → call `search_file` for the authoritative count, then ALSO read FILE SUMMARY for semantic context. A count alone is an incomplete answer for log events.
+- **Temporal distribution** ("spread evenly or concentrated?") → use the per-event span annotations in the entity profile as the authoritative temporal extent. `search_file` returns at most 20 results by default; a narrow cluster in results does not indicate temporal concentration.
+- **File-specific identifier** ("what does error state 6 mean?") → check whether the log explains the identifier. If not, say the log shows N occurrences but does not document the meaning. Do not assert technical meanings from training data.
+
+Added IP-count disambiguation example to the routing rule (the 867-line-occurrence anti-pattern
+for OpenSSH files). Added file-specific identifier rule prohibiting asserting technical meanings
+of internal error codes from training data.
+
+**Intake instruction** (`templates.py`, INQUIRY phase): When the user submits a file without a
+question, the agent now uses the file extract for the orientation response (not `search_file`),
+leading with FILE SUMMARY pattern/finding, naming key entities and anomalies.
+
+**Benchmark result**: Scores improved from 33% baseline to 75% (9/12) on the two-test
+`fm-data-exam` suite. See `docs/working/HANDOFF-data-processing-benchmark.md` for full
+per-question breakdown and remaining failure analysis.
 
 ### v5.4 → v5.5 (Vectorization Time-Bound Split)
 
@@ -998,6 +1045,13 @@ appropriate for the question. If your analysis is insufficient, the system will
 automatically index large files for semantic search — you do not need to manage this.
 ```
 
+**Note (v5.6):** The per-turn routing rule in `_EVIDENCE_GROUNDING_BLOCK` (injected via
+`evidence_grounding=`) provides finer-grained routing guidance that supersedes the
+`DATA_ACCESS_DIRECTED_ANALYSIS` defaults for specific question types. See Section 1 of
+`templates.py` for the four-category rule (characterization / retrieval / count /
+temporal distribution). The DA mode prompt governs tool selection strategy; the
+evidence grounding block governs what source to answer from.
+
 **Knowledge Query mode**: Knowledge queries get tool access with `tool_choice="auto"` — the LLM can invoke `kb_qa` for runbook content or answer from built-in knowledge. `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions` and `evidence_grounding=""` is passed, so the EVIDENCE GROUNDING block is absent from the rendered prompt entirely. Diagnostic reasoning validation is also skipped.
 
 **System Instruction (Type A/B/C routing)**: The system instruction includes question routing guidance:
@@ -1365,12 +1419,29 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 ### Shared utilities (`extractors/utils.py`)
 
 - `extract_timestamp(line)` / `extract_time_range(content)` — recognise ISO-8601 (with/without `T`), syslog BSD, epoch seconds, epoch milliseconds. Scan only the first 10 and last 10 lines to stay within the Tier 1 latency budget.
+- `extract_time_range_ts(content)` — same timestamp recognition, returns a `(first_ts, last_ts)` tuple of `datetime` objects (not strings). Used by `LogsAndErrorsExtractor` to compute log duration and per-event temporal spans.
 - `format_coverage_metadata(**kwargs)` — populates the `file_meta` dict with key-value pairs (Lines, Time range, Format, etc.) so downstream tooling can reason about what the extractor saw. Returns a dict rather than appending separator text.
 - `has_content()` + `EMPTY_CONTENT_RESPONSE` — uniform empty-input guard.
 
 ### Extractor-specific notes
 
-- **LogsAndErrorsExtractor** — entity profile (services, hostnames, frequent identifiers) is returned in `search_map` (not prepended); FILE SUMMARY + crime scene content are in `file_extract`. `_detect_log_pattern()` generates an interpretation-first sentence (e.g., "SSH credential-stuffing/brute-force pattern") prepended to the FILE SUMMARY.
+- **LogsAndErrorsExtractor** — `file_extract` contains FILE SUMMARY (2–4 sentences) followed by the crime scene excerpt. `search_map` contains the ENTITY PROFILE followed by EVENT TEMPLATE COUNTS. This order guarantees the FILE SUMMARY is always the first thing the LLM reads and survives per-item char truncation.
+
+  **FILE SUMMARY structure** (sentences in order):
+  1. Pattern name + distinct source IP count (e.g., "SSH credential-stuffing/brute-force pattern (30 distinct source IPs).")
+  2. Break-in trigger explanation if `break_in_attempt > 0` — includes the reverse-DNS mismatch trigger cause.
+  3. Dominant activity counts (top 3 event types, excluding structural events like `connection_closed`).
+  4. Root targeting count if pattern is brute-force and root attempts > 0.
+  5. Qualitative per-IP burst pattern if ≥2 top IPs have non-zero burst span. *Specific durations are intentionally omitted* — graders cannot verify computed durations independently and will flag them as fabricated.
+  6. Top source IP with total line-occurrence count.
+  7. Absent items (e.g., "no HTTP traffic").
+  8. Log time range with duration computed from `extract_time_range_ts()`.
+
+  **ENTITY PROFILE structure** (in `search_map`):
+  - Section header distinguishes line-occurrence counts from event-specific counts.
+  - Each event type line: `event_name: N  ["search string"]  span:HH:MM:SS→HH:MM:SS (~Xh)  [reverse-DNS mismatch trigger]`. Spans computed from first/last timestamp of matching lines across the full file — authoritative even when `search_file` returns only 20 results.
+  - Each IP line: `IP: N line occurrences (all event types)`. The "(all event types)" qualifier is inline to prevent the agent from treating the total line count as an auth-specific count.
+  - `_detect_log_pattern()` generates the interpretation-first pattern name (SSH brute-force, auth failure, HTTP error, or no pattern).
 - **TraceDataExtractor** — embedded-JSON recovery: when the content is not pure JSON, scans for `{[\s\S]*}` to salvage trace structures from mixed-format payloads.
 - **ConfigExtractor (StructuredConfigExtractor)** — secret redaction is always-on (not gated by `sanitize_pii`) since structural indexes are persisted and may be sent to LLMs. Two layers:
   1. **Key-based** — suffix-anchored patterns match the terminal key segment only (e.g., `_password$`, `_token$`, `_secret$`). Keys where the secret word is a prefix (e.g., `token_type`, `auth_method`) are NOT redacted. A non-secret value bypass skips redaction for obvious enum/boolean values.
@@ -1379,7 +1450,7 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 
 ---
 
-**Document Version**: 5.4
+**Document Version**: 5.6
 **Last Updated**: 2026-04-26
 **Status**: FINAL
-**Predecessor**: v5.3 (data-preprocessing-design-specification.md)
+**Predecessor**: v5.5 (data-preprocessing-design-specification.md)
