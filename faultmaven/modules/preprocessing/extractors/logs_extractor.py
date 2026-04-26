@@ -853,7 +853,7 @@ class LogsAndErrorsExtractor:
         # FILE SUMMARY — returned separately so extract() can place it in file_extract
         first_ts, last_ts = extract_time_range_ts(content)
         tr = extract_time_range(content)
-        yearless_ts = has_yearless_timestamps(content)
+        yearless_ts, sample_raw_ts = has_yearless_timestamps(content)
         summary = self._build_summary(
             event_counts,
             ip_all_counts,
@@ -869,6 +869,7 @@ class LogsAndErrorsExtractor:
             has_numeric_state_codes=has_numeric_state_codes,
             warn_only=warn_only,
             yearless_timestamps=yearless_ts,
+            sample_raw_ts=sample_raw_ts,
         )
 
         # ENTITY PROFILE body — the search map
@@ -1036,6 +1037,7 @@ class LogsAndErrorsExtractor:
         has_numeric_state_codes: bool = False,
         warn_only: bool = False,
         yearless_timestamps: bool = False,
+        sample_raw_ts: str | None = None,
     ) -> str:
         """Return a compact FILE SUMMARY (2–4 sentences) describing dominant
         activity, top source, and key absences.
@@ -1174,8 +1176,9 @@ class LogsAndErrorsExtractor:
                 # uses today's year as a fallback. Signal this so the agent
                 # does not present the inferred year as a known fact.
                 inferred_year = time_range[:4] if time_range[0].isdigit() else ""
+                example_clause = f" (e.g., '{sample_raw_ts}')" if sample_raw_ts else ""
                 sentences.append(
-                    f"[Note: timestamps in this log have no year —"
+                    f"[Note: timestamps in this log have no year{example_clause} —"
                     f" {inferred_year} is inferred from the current date.]"
                 )
 

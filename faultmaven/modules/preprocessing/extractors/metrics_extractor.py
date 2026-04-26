@@ -630,6 +630,19 @@ class MetricsAndPerformanceExtractor:
         anomalies.sort(key=lambda a: a["value"], reverse=True)
         return anomalies
 
+    def _fmt_val(self, value: float) -> str:
+        """Format metric values to avoid scientific notation for typical magnitudes."""
+        if value == 0:
+            return "0"
+        abs_val = abs(value)
+        if abs_val >= 1e9 or abs_val < 1e-4:
+            return f"{value:.4g}"
+
+        formatted = f"{value:.4f}"
+        if "." in formatted:
+            formatted = formatted.rstrip("0").rstrip(".")
+        return formatted or "0"
+
     def _format_summary(self, summaries: list[dict[str, Any]]) -> str:
         """Format analysis results as natural language summary"""
         lines = ["=== METRICS ANALYSIS SUMMARY ===\n"]
@@ -655,10 +668,14 @@ class MetricsAndPerformanceExtractor:
             anomalies = summary["anomalies"]
 
             lines.append(f"📊 {metric_name} ({count} data points):")
-            lines.append(f"   Range: {stats['min']:.4g} - {stats['max']:.4g}")
-            lines.append(f"   Mean: {stats['mean']:.2f} (±{stats['std_dev']:.2f})")
             lines.append(
-                f"   Percentiles: p50={stats['p50']:.2f}, p95={stats['p95']:.2f}, p99={stats['p99']:.2f}"
+                f"   Range: {self._fmt_val(stats['min'])} - {self._fmt_val(stats['max'])}"
+            )
+            lines.append(
+                f"   Mean: {self._fmt_val(stats['mean'])} (±{self._fmt_val(stats['std_dev'])})"
+            )
+            lines.append(
+                f"   Percentiles: p50={self._fmt_val(stats['p50'])}, p95={self._fmt_val(stats['p95'])}, p99={self._fmt_val(stats['p99'])}"
             )
             non_finite = summary.get("non_finite", 0)
             if non_finite:
@@ -677,12 +694,12 @@ class MetricsAndPerformanceExtractor:
                     if anom_type == "spike":
                         ratio = anomaly.get("ratio", anomaly.get("sigma", 0))
                         lines.append(
-                            f"      • SPIKE at {timestamp}: {value:.4g} ({ratio}x median)"
+                            f"      • SPIKE at {timestamp}: {self._fmt_val(value)} ({ratio}x median)"
                         )
                     elif anom_type == "drop":
                         drop_pct = anomaly["drop_percent"]
                         lines.append(
-                            f"      • DROP at {timestamp}: {value:.4g} ({drop_pct}% below baseline)"
+                            f"      • DROP at {timestamp}: {self._fmt_val(value)} ({drop_pct}% below baseline)"
                         )
 
                 if len(anomalies) > 10:
