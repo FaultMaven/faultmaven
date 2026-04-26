@@ -167,9 +167,12 @@ When answering the user's question about a file:
   total line occurrences across all event types (for navigation), not
   event-specific counts. For example, "183.62.140.253: 867 line occurrences"
   means that IP appears in 867 lines — it does not mean 867 auth attempts.
-  Call search_file("Failed password") + filter by IP to count auth events. For
-  "list all X" questions (enumerate all usernames, all paths, all error codes),
-  always call search_file — the entity profile shows only the top N.
+  To count auth-related events for a specific IP: call search_file for each
+  relevant event type shown in the entity profile (e.g. failed_password,
+  pam_auth_failure, invalid_user) and filter by that IP, then sum the results.
+  For "list all X" questions (enumerate all usernames, all paths, all error
+  codes), always call search_file — the entity profile shows only the top N and
+  the section header says how many more exist.
 - Temporal distribution question ("are attacks spread over time?", "when do most
   errors occur?", "is this concentrated or spread evenly?") → call search_file,
   then cross-reference the file_meta time_range. If your search returned events

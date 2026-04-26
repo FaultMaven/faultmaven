@@ -585,6 +585,12 @@ class LogsAndErrorsExtractor:
         r"Connection closed|Connection reset", re.IGNORECASE
     )
     _BREAK_IN_ATTEMPT_RE = re.compile(r"POSSIBLE BREAK-IN ATTEMPT", re.IGNORECASE)
+    # PAM authentication failure lines accompany sshd "Failed password" events —
+    # they are separate log lines for the same auth event (two lines per failure).
+    # Counting them separately gives a more complete per-IP auth failure tally.
+    _PAM_AUTH_FAILURE_RE = re.compile(
+        r"pam_unix\([^)]*\):\s*authentication failure", re.IGNORECASE
+    )
 
     # Reverse-DNS hostname pattern — syslog's rhost field stores the PTR record
     # of the connecting IP (e.g. customer-187-141-143-180-sta.) which the entity
@@ -631,6 +637,7 @@ class LogsAndErrorsExtractor:
     # entity profile so the agent knows what to pass to search_file.
     _EVENT_SEARCH_STRINGS: dict = {
         "failed_password": "Failed password",
+        "pam_auth_failure": "authentication failure; logname=",
         "accepted_login": "Accepted password",
         "invalid_user": "Invalid user",
         "connection_closed": "Connection closed",
@@ -711,6 +718,8 @@ class LogsAndErrorsExtractor:
                 event_counts["connection_closed"] += 1
             if self._BREAK_IN_ATTEMPT_RE.search(line):
                 event_counts["break_in_attempt"] += 1
+            if self._PAM_AUTH_FAILURE_RE.search(line):
+                event_counts["pam_auth_failure"] += 1
 
         if not (
             ip_all_counts
@@ -758,9 +767,14 @@ class LogsAndErrorsExtractor:
 
         if user_all_counts:
             total_distinct = len(user_all_counts)
+            more_note = (
+                f" — INCOMPLETE: {total_distinct - min(top_n, total_distinct)} more"
+                f" not shown; call search_file('Invalid user') for the full list"
+                if total_distinct > top_n
+                else ""
+            )
             parts.append(
-                f"  Distinct usernames (top {min(top_n, total_distinct)} of {total_distinct}"
-                f" — use search_file('Invalid user') for the complete list):"
+                f"  Distinct usernames (top {min(top_n, total_distinct)} of {total_distinct}{more_note}):"
             )
             for user, total in user_all_counts.most_common(top_n):
                 error_n = user_error_counts.get(user, 0)
