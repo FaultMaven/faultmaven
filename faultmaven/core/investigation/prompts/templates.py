@@ -161,9 +161,15 @@ When answering the user's question about a file:
   "summarize this file") → answer from <file_extract>. This is what the FILE
   SUMMARY and crime scene content inside <file_extract> are designed for.
 - Retrieval question ("which IP had the most failures?", "how many times did X
-  occur?", "show me lines where Y happened") → call search_file before answering.
-  Do not answer retrieval questions from <file_extract> alone, even if numbers
-  appear there. The extract reports orientation data, not audit-accurate counts.
+  occur?", "show me lines where Y happened", "list all X") → call search_file
+  before answering. Do not answer retrieval questions from <file_extract> or the
+  entity mention counts in <search_map> alone. The entity mention counts are
+  total line occurrences across all event types (for navigation), not
+  event-specific counts. For example, "183.62.140.253: 867 line occurrences"
+  means that IP appears in 867 lines — it does not mean 867 auth attempts.
+  Call search_file("Failed password") + filter by IP to count auth events. For
+  "list all X" questions (enumerate all usernames, all paths, all error codes),
+  always call search_file — the entity profile shows only the top N.
 - Temporal distribution question ("are attacks spread over time?", "when do most
   errors occur?", "is this concentrated or spread evenly?") → call search_file,
   then cross-reference the file_meta time_range. If your search returned events

@@ -39,6 +39,10 @@ _TPL_TS_ISO = re.compile(
 _TPL_TS_SYSLOG = re.compile(r"^\w{3} +\d{1,2} +\d{2}:\d{2}:\d{2} +\S+ +")
 _TPL_HEX = re.compile(r"\b0x[0-9a-fA-F]+\b")
 _TPL_PID_BRACKET = re.compile(r"\[\d+\]")
+# Normalizes ALL standalone numbers (including trailing) — used only for
+# non-error prominence detection where process IDs and slot numbers should
+# collapse to the same template.
+_TPL_ANY_NUMBER = re.compile(r"\b\d+\b")
 
 
 def _normalize_template(line: str) -> str:
@@ -471,6 +475,33 @@ class LogsAndErrorsExtractor:
             else:
                 scope = f"{total} lines matched severity keywords"
 
+            # Augment with prominent non-error templates so that high-frequency
+            # info/notice events (e.g. Apache mod_jk init messages) are visible
+            # even when error-keyword lines dominate by keyword count.
+            # Uses aggressive number normalization so that lines differing only
+            # in variable process IDs or slot numbers collapse to one template.
+            if all_lines and total_lines > 0:
+                error_line_set = {e["line_text"] for e in errors}
+                non_error_non_blank = [
+                    ln for ln in all_lines if ln.strip() and ln not in error_line_set
+                ]
+                if non_error_non_blank:
+                    non_error_counts: Counter[str] = Counter(
+                        _TPL_ANY_NUMBER.sub("N", _normalize_template(ln))
+                        for ln in non_error_non_blank
+                    )
+                    prominent = [
+                        (tpl, cnt)
+                        for tpl, cnt in non_error_counts.most_common(10)
+                        if cnt >= self.MIN_PROMINENT_NON_ERROR_COUNT
+                    ]
+                    if prominent:
+                        for tpl, cnt in prominent:
+                            template_counts[tpl] += cnt
+                        scope += f" + {len(prominent)} prominent non-error"
+
+            distinct = len(template_counts)
+
         header = (
             f"EVENT TEMPLATE COUNTS"
             f" ({scope},"
@@ -567,6 +598,9 @@ class LogsAndErrorsExtractor:
     # representative (e.g. SSH brute-force logs where attack lines contain
     # no ERROR/WARN/FATAL keywords).
     MIN_TEMPLATE_COVERAGE_FRACTION = 0.15
+    # Minimum occurrences for a non-error-keyword line template to be considered
+    # "prominent" and included alongside error-only template counts.
+    MIN_PROMINENT_NON_ERROR_COUNT = 50
 
     # SSH/TLS protocol terms that _USER_RE's broad "for <word>" branch would
     # otherwise capture as usernames. These are structural keywords in auth
@@ -581,6 +615,15 @@ class LogsAndErrorsExtractor:
             "the",
             "a",
             "an",
+            # PAM/sshd structural words captured by the "user <word>" pattern
+            # that are log-message tokens, never actual account names.
+            "unknown",  # "check pass; user unknown" — PAM status, not username
+            "invalid",  # "invalid user admin" — adjective, not username
+            "user",  # "user=root" field name
+            "none",
+            "null",
+            "request",  # "input_userauth_request" function name fragment
+            "sshd",  # process name captured via "for sshd" in some PAM messages
         }
     )
 
@@ -595,7 +638,7 @@ class LogsAndErrorsExtractor:
     }
 
     def _build_entity_profile(
-        self, content: str, error_lines: set[int] = None, top_n: int = 10
+        self, content: str, error_lines: set[int] = None, top_n: int = 20
     ) -> str:
         """Scan the full file for key entities and produce a frequency summary.
 
@@ -634,6 +677,12 @@ class LogsAndErrorsExtractor:
                     user
                     and user.lower() not in self._USER_PROTOCOL_TERMS
                     and not self._REVERSE_DNS_RE.search(user)
+                    and not user[
+                        0
+                    ].isdigit()  # filter pure-numeric tokens like "0", "1234"
+                    and user[
+                        -1
+                    ].isalnum()  # filter tokens with trailing punctuation like "request."
                 ):
                     user_all_counts[user] += 1
                     if is_error:
@@ -698,17 +747,20 @@ class LogsAndErrorsExtractor:
         if ip_all_counts:
             parts.append(
                 "  Distinct IPs"
-                "  [search: use the IP string literally with search_file]:"
+                "  [search: pass the IP string to search_file;"
+                " mention count = all line occurrences across all event types,"
+                " not auth-specific — use search_file for event-specific counts]:"
             )
             for ip, total in ip_all_counts.most_common(top_n):
                 error_n = ip_error_counts.get(ip, 0)
                 annotation = f"  ({error_n} on error lines)" if error_n else ""
-                parts.append(f"    {ip}: {total} mentions{annotation}")
+                parts.append(f"    {ip}: {total} line occurrences{annotation}")
 
         if user_all_counts:
+            total_distinct = len(user_all_counts)
             parts.append(
-                "  Distinct usernames"
-                "  [search: use the username literally with search_file]:"
+                f"  Distinct usernames (top {min(top_n, total_distinct)} of {total_distinct}"
+                f" — use search_file('Invalid user') for the complete list):"
             )
             for user, total in user_all_counts.most_common(top_n):
                 error_n = user_error_counts.get(user, 0)
