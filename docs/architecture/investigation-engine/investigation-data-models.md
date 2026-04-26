@@ -171,21 +171,6 @@ class InvestigationProgress(BaseModel):
         description="Symptom confirmed with evidence"
     )
 
-    scope_assessed: bool = Field(
-        default=False,
-        description="Scope determined (affected users, services, regions)"
-    )
-
-    timeline_established: bool = Field(
-        default=False,
-        description="Timeline determined (when started, when noticed)"
-    )
-
-    changes_identified: bool = Field(
-        default=False,
-        description="Recent changes identified"
-    )
-
     root_cause_identified: bool = Field(
         default=False,
         description="Root cause determined (hypothesis validated with high confidence)"
@@ -264,14 +249,11 @@ class InvestigationProgress(BaseModel):
 
 #### Progress Milestone Evidence Expectations
 
-The milestone engine validates evidence claims for **progress milestones** (non-stage-driving) using a category-count check:
+The milestone engine validates evidence claims for **progress indicators** (non-stage-driving) using a category-count check:
 
-| Progress Milestone | Min Evidence | Expected Categories |
+| Progress Indicator | Min Evidence | Expected Categories |
 |-------------------|-------------|---------------------|
 | `symptom_verified` | 1 | SYMPTOM |
-| `scope_assessed` | 1 | SYMPTOM |
-| `timeline_established` | 1 | SYMPTOM |
-| `changes_identified` | 1 | SYMPTOM, CAUSAL |
 | `root_cause_identified` | 2 | CAUSAL |
 | `solution_proposed` | 0 | (set programmatically when ProposedAction created) |
 

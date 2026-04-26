@@ -449,7 +449,7 @@ class StateValidator:
 
         Gate milestones: mitigation_accepted, mitigation_verified,
             solution_accepted, solution_verified
-        Progress milestones: symptom_verified, scope_assessed, etc.
+        Progress indicators: symptom_verified, root_cause_identified, solution_proposed
 
         Milestones can only go False → True, never revert.
         Some milestones have logical dependencies.

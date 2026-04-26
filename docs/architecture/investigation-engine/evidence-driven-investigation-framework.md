@@ -21,7 +21,7 @@ This document defines the investigation architecture for FaultMaven's investigat
 |--------|--------|
 | **Stage model** | 2 core stages (DIAGNOSIS, TREATMENT) with optional MITIGATION detour |
 | **Stage transitions** | Inference-based (user compliance with proposed action implies acceptance) |
-| **Progress tracking** | 10 investigation milestones: 4 gate milestones (drive transitions) + 6 progress milestones (LLM context, non-driving) |
+| **Progress tracking** | 7 investigation milestones: 4 gate milestones (drive transitions) + 3 progress indicators (LLM context, non-driving) |
 | **Evidence types** | 5 categories: symptom, causal, mitigation, solution, contextual |
 | **Hypothesis constraint** | Required before causal_evidence classification |
 | **Mitigation** | Distinct stage with own prompt, evidence type, and iterative verification |
@@ -320,7 +320,7 @@ The state of an investigation at any point in time is defined by two dimensions:
 
 **Stage** is a computed property derived from 4 gate milestones. It determines which prompt template the LLM receives and what kind of work is expected.
 
-**Investigation Milestones** are 10 boolean flags (grouped into gate milestones and progress milestones) that track the investigation's advancement. Gate milestones drive stage transitions; progress milestones provide the LLM with context about what has been established so far.
+**Investigation Milestones** are 7 boolean flags (grouped into gate milestones and progress indicators) that track the investigation's advancement. Gate milestones drive stage transitions; progress indicators provide the LLM with context about what has been established so far.
 
 Together, these dimensions fully describe investigation state:
 
@@ -328,7 +328,7 @@ Together, these dimensions fully describe investigation state:
 |-----------|--------|--------|
 | **Stage** | DIAGNOSIS, MITIGATION, TREATMENT | LLM prompt selection, evidence expectations |
 | **Gate Milestones** (4) | mitigation_accepted, mitigation_verified, solution_accepted, solution_verified | Stage transitions |
-| **Progress Milestones** (6) | symptom_verified, scope_assessed, timeline_established, changes_identified, root_cause_identified, solution_proposed | LLM focus within stage, analytics, path selection |
+| **Progress Indicators** (3) | symptom_verified, root_cause_identified, solution_proposed | LLM focus within DIAGNOSIS stage, analytics |
 
 Note: Stage is not independent — it is *computed from* gate milestones. But it is the primary abstraction users and the LLM interact with, while milestones are the underlying state.
 
@@ -354,18 +354,19 @@ Gate milestones drive stage transitions. They are **set by the LLM in structured
 | DIAGNOSIS → MITIGATION | **Inferred from compliance** | User's action IS acceptance |
 | INVESTIGATING → RESOLVED | User-Agent Handshake | Irreversible disposition |
 
-#### Progress Milestones (6)
+#### Progress Indicators (3)
 
-Progress milestones track what has been established during the investigation. They are set by the LLM in structured output and do NOT drive stage transitions. They serve three purposes: (1) inform LLM focus within a stage, (2) provide analytics and dashboard progress, (3) influence path selection decisions.
+Progress indicators track what has been established during the DIAGNOSIS stage. They are set by the LLM in structured output and do NOT drive stage transitions. They serve two purposes: (1) inform LLM focus within DIAGNOSIS, (2) provide analytics and dashboard progress.
 
-| Milestone | What It Tracks | Evidence Category |
-|-----------|---------------|-------------------|
+Only variables that pass both design tests are progress indicators: (a) they must be mandatory — their absence genuinely blocks forward progress, and (b) they must require an independent evidence search (not just extracted as a byproduct of another search).
+
+| Indicator | What It Tracks | Evidence Category |
+|-----------|----------------|-------------------|
 | `symptom_verified` | Problem confirmed with concrete evidence (logs, metrics, user reports) | SYMPTOM_EVIDENCE |
-| `scope_assessed` | Blast radius determined — affected users, services, regions | SYMPTOM_EVIDENCE |
-| `timeline_established` | When problem started, when noticed, duration | SYMPTOM_EVIDENCE |
-| `changes_identified` | Recent deployments, config changes, scaling events identified | SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE |
 | `root_cause_identified` | Root cause determined (directly or via hypothesis validation) | CAUSAL_EVIDENCE |
 | `solution_proposed` | Set programmatically when ProposedAction with action_type=SOLUTION is created | (programmatic, not evidence-driven) |
+
+**What about scope, timeline, and changes?** Scope and timeline are facts *extracted* from symptom evidence — they are attributes of the investigation context, not independent evidence searches. Change events (deployments, config updates) are *contextual triggers* that inform hypothesis prioritization, not mandatory gate conditions. All three are valuable context that the agent captures opportunistically when present in evidence; none of them gate progress when absent.
 
 ### 4.3 Stage Computation
 
@@ -389,10 +390,12 @@ Key properties:
 
 The old milestones (symptom_verified, scope_assessed, timeline_established, changes_identified, root_cause_identified, solution_proposed, solution_applied, mitigation_applied, solution_verified) tracked micro-progress within what is now a single DIAGNOSIS stage.
 
-In the new model:
-- **symptom_verified, scope_assessed, timeline_established, changes_identified**: Retained as progress milestones — provide LLM context within DIAGNOSIS. They do not control stage selection.
-- **root_cause_identified**: Retained as a progress milestone. Also tracked via hypothesis status (VALIDATED with high confidence).
-- **solution_proposed**: Retained as a progress milestone, but set programmatically (not by LLM). Tells the LLM "you already proposed a solution" without scanning conversation history.
+In the current model:
+
+- **symptom_verified**: Retained as a progress indicator — confirms the problem exists before any hypothesis work begins.
+- **scope_assessed, timeline_established, changes_identified**: **Removed.** These failed both design tests: (a) their absence does not block progress (investigation continues without them), and (b) they don't require independent evidence searches — scope and timeline are extracted facts from symptom evidence, and change events are contextual triggers already captured as `contextual_evidence`. The agent captures this context opportunistically; it never stalls waiting for it.
+- **root_cause_identified**: Retained as a progress indicator. Also reflected in hypothesis status (VALIDATED with high confidence ≥ 70%).
+- **solution_proposed**: Retained as a progress indicator, set programmatically (not by LLM) when a `ProposedAction` with `action_type=SOLUTION` is created. Tells the LLM "you already proposed a solution" without scanning conversation history.
 - **solution_applied**: Tracked as part of TREATMENT workflow. Not a milestone.
 - **mitigation_applied**: Replaced by the MITIGATION stage with its own lifecycle.
 - **solution_verified**: Retained as a gate milestone driving the TREATMENT → RESOLVED transition.
@@ -801,7 +804,7 @@ class InvestigationProgress(BaseModel):
     solution_verified: bool = False
     mitigation_applied: bool = False
 
-# New: Gate milestones + progress milestones (non-stage-driving)
+# Current: Gate milestones + progress indicators (non-stage-driving)
 class InvestigationProgress(BaseModel):
     # Gate milestones (inferred from user behavior — drive stage transitions)
     mitigation_accepted: bool = False     # DIAGNOSIS → MITIGATION (inferred from compliance)
@@ -809,17 +812,12 @@ class InvestigationProgress(BaseModel):
     solution_accepted: bool = False       # DIAGNOSIS → TREATMENT (inferred from compliance)
     solution_verified: bool = False       # TREATMENT → RESOLVED (User-Agent Handshake)
 
-    # Progress milestones (set by LLM — do NOT drive stage transitions)
+    # Progress indicators (set by LLM — do NOT drive stage transitions)
     # Used for: LLM context, progress display, analytics, deciding when/what to propose
-    symptom_verified: bool = False        # Problem symptoms confirmed
-    scope_assessed: bool = False          # Impact scope determined
-    timeline_established: bool = False    # When it started / timeline understood
-    changes_identified: bool = False      # Recent changes correlated
-    root_cause_identified: bool = False   # Root cause hypothesis validated
-    solution_proposed: bool = False       # A solution has been proposed (set when
-                                          # ProposedAction with action_type=SOLUTION is created)
-                                          # Tells the LLM "you already proposed a solution"
-                                          # without scanning conversation history
+    symptom_verified: bool = False        # Problem symptoms confirmed with evidence
+    root_cause_identified: bool = False   # Root cause hypothesis validated (≥70% confidence)
+    solution_proposed: bool = False       # Set programmatically when ProposedAction
+                                          # with action_type=SOLUTION is created
 
     @property
     def current_stage(self) -> InvestigationStage:
@@ -1075,13 +1073,12 @@ Existing cases with old milestone fields need migration:
 - Cases in INVESTIGATING: Map old milestones to new fields:
 
 ```python
-# Progress milestones: direct copy (field names unchanged)
+# Progress indicators: copy the two retained fields
 new.symptom_verified = old.symptom_verified
-new.scope_assessed = old.scope_assessed
-new.timeline_established = old.timeline_established
-new.changes_identified = old.changes_identified
 new.root_cause_identified = old.root_cause_identified
 new.solution_proposed = old.solution_proposed
+# Note: scope_assessed, timeline_established, changes_identified are not migrated
+# (fields removed — they failed the mandatory-gate and distinct-search-target tests)
 
 # Gate milestones: infer from old state
 new.solution_accepted = old.solution_applied    # if applied, they accepted
@@ -1102,7 +1099,7 @@ new.action_attempts = []
 | Component | Old | New |
 |-----------|-----|-----|
 | InvestigationStage enum | 4 values | 3 values |
-| InvestigationProgress | 9 boolean flags driving stages | 4 gate milestones (inferred) + 6 progress milestones (non-driving, LLM context) |
+| InvestigationProgress | 9 boolean flags driving stages | 4 gate milestones (inferred) + 3 progress indicators (non-driving, LLM context) |
 | Stage computation | Computed from milestone flags | Computed from gate milestones only |
 | Stage transitions (case actions) | Automatic (milestone-driven) | Inference-based (user compliance with proposed action) |
 | Proposal tracking | None (free text only) | ProposedAction with action_type, expected_command (Section 10.5) |
@@ -1140,7 +1137,7 @@ new.action_attempts = []
 
 All open questions from the initial draft have been resolved.
 
-1. **Old milestones retained as progress milestones.** The old flags (symptom_verified, scope_assessed, timeline_established, changes_identified, root_cause_identified, solution_proposed) are retained as non-stage-driving progress milestones on InvestigationProgress. They are used by the LLM to evaluate investigation progress and decide when/what to propose — but they do NOT drive stage transitions. The change is removing sub-stage boundaries, not the tracking data. These should be called "progress milestones" or "diagnostic flags" rather than "milestones" to avoid confusion with the gate milestones (solution_accepted, solution_verified, mitigation_accepted, mitigation_verified).
+1. **Progress indicators trimmed to 3.** Three original flags (scope_assessed, timeline_established, changes_identified) were removed from InvestigationProgress. They failed both design tests: (a) their absence does not block forward progress (mandatory-gate test), and (b) they do not require an independent evidence search — scope and timeline are facts extracted as byproducts of symptom evidence, and change events are contextual triggers (classified as `contextual_evidence`), not a distinct mandatory milestone. The three retained flags (symptom_verified, root_cause_identified, solution_proposed) each require their own evidence search and each signals a distinct diagnostic shift. These are called "progress indicators" rather than "progress milestones" to avoid confusion with the gate milestones (solution_accepted, solution_verified, mitigation_accepted, mitigation_verified) that drive stage transitions.
 
 2. **Mitigation returns to DIAGNOSIS for RCA by default; `rca_infeasible` overrides.** After mitigation is verified, the default behavior directs the user back to root cause analysis. However, when `rca_infeasible=True` on `ProblemVerification` (set by the LLM when the problem involves uncontrollable external dependencies, deprecated systems, or known intractable conditions), the agent proposes closure instead of pushing RCA. This is an advisory signal, not a forced path — the user can still request RCA. The terminal state for these cases is `CLOSED(mitigation_sufficient)`, and the agent offers Mitigation Playbook generation to capture operational knowledge. See [Investigation Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal).
 
@@ -1165,9 +1162,9 @@ All open questions from the initial draft have been resolved.
 | **State/CaseState** | A complete technical snapshot of the case at a point in time. |
 | **Investigation State** | The current state of an investigation, defined by two dimensions: Stage (where the investigation is) and Investigation Milestones (what has been established and acted upon). See §4.1. |
 | **Stage** | One of DIAGNOSIS, MITIGATION, or TREATMENT (within the INVESTIGATING phase only). Computed from gate milestones. Determines which prompt the LLM receives. |
-| **Investigation Milestone** | Collective term for the 10 boolean flags that track investigation advancement. Two sub-types: gate milestones (4, drive transitions) and progress milestones (6, LLM context). |
+| **Investigation Milestone** | Collective term for the 7 boolean flags that track investigation advancement. Two sub-types: gate milestones (4, drive transitions) and progress indicators (3, LLM context). |
 | **Gate Milestone** | A milestone that drives stage transitions (mitigation_accepted, mitigation_verified, solution_accepted, solution_verified). Set by the LLM in structured output when it detects user compliance. |
-| **Progress Milestone** | A milestone that tracks investigation advancement without driving stage transitions (symptom_verified, scope_assessed, timeline_established, changes_identified, root_cause_identified, solution_proposed). Set by the LLM, used for context and analytics. |
+| **Progress Indicator** | A flag that tracks diagnostic advancement without driving stage transitions (symptom_verified, root_cause_identified, solution_proposed). Set by the LLM, used for focus guidance and analytics. |
 | **Evidence** | Data submitted by the user, classified by the LLM into categories. |
 | **Hypothesis** | A testable theory about the root cause, with confidence scoring and evidence links. |
 | **Inference-based transition** | A stage change inferred from user compliance with a proposed action (executing a command and submitting results). |

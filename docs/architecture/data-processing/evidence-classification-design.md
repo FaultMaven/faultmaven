@@ -137,9 +137,10 @@ class EvidenceCategory(str, Enum):
     - User impact reports
     - Deployment logs showing recent changes
 
-    Advances Milestones: symptom_verified, scope_assessed, timeline_established
+    Advances Milestone: symptom_verified
     (Note: Milestone validation only runs during INVESTIGATING status. Evidence
-    created during INQUIRY sits inert until investigation begins.)
+    created during INQUIRY sits inert until investigation begins. Scope and
+    timeline are facts extracted from this same evidence, not separate milestones.)
     """
 
     CAUSAL_EVIDENCE = "causal_evidence"
@@ -445,8 +446,8 @@ Turn 3 (INVESTIGATING):
 User uploads additional evidence showing connection pool exhausted
 
 LLM Processing:
-- MilestoneUpdates: {symptom_verified: true, scope_assessed: true}
-- System infers: ev_abc123def456.advances_milestones = ["symptom_verified", "scope_assessed"]
+- MilestoneUpdates: {symptom_verified: true}
+- System infers: ev_abc123def456.advances_milestones = ["symptom_verified"]
   (Evidence from turn 1 now contributes to milestones completed in turn 3)
 ```
 
@@ -766,12 +767,8 @@ The system infers which milestones an evidence record advanced based on its cate
 CATEGORY_MILESTONE_MAP = {
     EvidenceCategory.SYMPTOM_EVIDENCE: [
         "symptom_verified",
-        "scope_assessed",
-        "timeline_established",
-        "changes_identified",
     ],
     EvidenceCategory.CAUSAL_EVIDENCE: [
-        "changes_identified",
         "root_cause_identified",
         "solution_proposed",
     ],
@@ -815,8 +812,8 @@ def _infer_milestones(
 Turn 5:
 - User uploads log file showing error traces
 - LLM evaluates, creates SYMPTOM_EVIDENCE
-- LLM sets MilestoneUpdates: {symptom_verified: true, scope_assessed: true}
-- System infers: advances_milestones = ["symptom_verified", "scope_assessed"]
+- LLM sets MilestoneUpdates: {symptom_verified: true}
+- System infers: advances_milestones = ["symptom_verified"]
   (intersection of eligible milestones for SYMPTOM_EVIDENCE and completed this turn)
 ```
 

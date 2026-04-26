@@ -621,12 +621,9 @@ State updates occur at specific points within a turn to ensure consistency:
 |-------------|----------|------|---------|
 | `proposed_problem_statement` | — | During INQUIRY turn | LLM generates from conversation |
 | `problem_statement_confirmed` | — | After user confirmation | User says "Yes" or equivalent |
-| `symptom_verified` | Progress milestone | After evidence processing | LLM sets in structured output when symptoms confirmed |
-| `scope_assessed` | Progress milestone | After evidence processing | LLM sets in structured output when impact scope determined |
-| `timeline_established` | Progress milestone | After evidence processing | LLM sets in structured output when timeline understood |
-| `changes_identified` | Progress milestone | After evidence processing | LLM sets in structured output when changes correlated |
-| `root_cause_identified` | Progress milestone | After hypothesis validation | LLM sets when hypothesis validated with high confidence |
-| `solution_proposed` | Progress milestone | After LLM proposes action | Set when ProposedAction with action_type=SOLUTION is created |
+| `symptom_verified` | Progress indicator | After evidence processing | LLM sets in structured output when symptoms confirmed |
+| `root_cause_identified` | Progress indicator | After hypothesis validation | LLM sets when hypothesis validated with high confidence |
+| `solution_proposed` | Progress indicator | After LLM proposes action | Set when ProposedAction with action_type=SOLUTION is created |
 | `path_selection` | — | When `symptom_verified` milestone completes (single trigger point) | Automatic from problem verification data. Reverted if milestone validation invalidates `symptom_verified`. |
 | `mitigation_accepted` | Gate milestone | LLM structured output | LLM detects user complied with proposed temp fix (submitted results) |
 | `mitigation_verified` | Gate milestone | LLM structured output | LLM detects user confirms mitigation worked → return to DIAGNOSIS |
@@ -637,7 +634,7 @@ State updates occur at specific points within a turn to ensure consistency:
 **Gate milestones vs Progress milestones**:
 
 - **Gate milestones** (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`): Drive stage transitions. Set by the LLM in structured output when it detects user compliance with a ProposedAction. The LLM is the compliance detector — the user's action is the trigger; the LLM recognizes it (Framework §4.1).
-- **Progress milestones** (`symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions.
+- **Progress indicators** (`symptom_verified`, `root_cause_identified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions.
 
 **Order of Operations Within a Turn**:
 
@@ -1347,7 +1344,7 @@ MITIGATION is a **distinct stage** — a controlled detour to stabilize the situ
 
 **Gate milestones**: `mitigation_accepted` → `mitigation_verified` → `solution_accepted` → `solution_verified`
 
-**Progress milestones** (non-driving): `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`
+**Progress indicators** (non-driving): `symptom_verified`, `root_cause_identified`, `solution_proposed`
 
 ---
 
@@ -1371,7 +1368,7 @@ Direct root cause analysis — no mitigation detour.
 
 **Gate milestones**: `solution_accepted` → `solution_verified`
 
-**Progress milestones** (non-driving): `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`
+**Progress indicators** (non-driving): `symptom_verified`, `root_cause_identified`, `solution_proposed`
 
 ---
 
@@ -1515,8 +1512,7 @@ async def record_turn(
 
     # Detect state changes (both gate milestones and progress milestones)
     STAGE_GATE_MILESTONES = {"mitigation_accepted", "mitigation_verified", "solution_accepted", "solution_verified"}
-    PROGRESS_INDICATORS = {"symptom_verified", "scope_assessed", "timeline_established",
-                           "changes_identified", "root_cause_identified", "solution_proposed"}
+    PROGRESS_INDICATORS = {"symptom_verified", "root_cause_identified", "solution_proposed"}
 
     all_changed = [
         key for key in progress_before
@@ -1702,12 +1698,12 @@ This section outlines all possible case lifecycles and their associated mileston
 **Phase 2: Investigation**
 
 *   **DIAGNOSIS Stage** (natural flow, not sequential sub-stages)
-    *   Agent verifies symptoms, scope, timeline using evidence
-    *   Progress milestones set by LLM: `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`
+    *   Agent verifies symptoms using evidence
+    *   Progress indicator: `symptom_verified` (LLM sets when symptoms confirmed)
     *   Agent forms hypotheses, tests against evidence
-    *   Progress milestone: `root_cause_identified` (when hypothesis validated with high confidence)
+    *   Progress indicator: `root_cause_identified` (when hypothesis validated with high confidence)
     *   Agent proposes concrete solution action
-    *   Progress milestone: `solution_proposed` (when ProposedAction with action_type=SOLUTION created)
+    *   Progress indicator: `solution_proposed` (when ProposedAction with action_type=SOLUTION created)
     *   **Constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`
 
 *   **DIAGNOSIS → TREATMENT transition** (inference-based)
@@ -1746,8 +1742,9 @@ the agent proposes closure instead. The user can always close via UI at any poin
 *   `solution_accepted`: User complied with proposed permanent solution (inferred from submission).
 *   `solution_verified`: Permanent fix validated (via User-Agent Handshake).
 
-**Progress milestones** (non-driving):
-*   `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`: Set during DIAGNOSIS.
+**Progress indicators** (non-driving):
+
+*   `symptom_verified`: Set during DIAGNOSIS when symptoms confirmed.
 *   `root_cause_identified`: Set when hypothesis validated with high confidence.
 *   `solution_proposed`: Set when ProposedAction with action_type=SOLUTION created.
 
@@ -2070,7 +2067,8 @@ Independent of post-terminal operations. User can archive any terminal case via 
 3.  **Closure**: Case marked `CLOSED` with reason (e.g., `escalated`, `abandoned`, `mitigation_sufficient`).
 
 #### Milestones
-*   Partial completion of progress milestones (symptom_verified, scope_assessed, etc.).
+
+*   Partial completion of progress indicators (symptom_verified, root_cause_identified, solution_proposed).
 *   Gate milestones may be partially set (e.g., mitigation_accepted/verified if mitigation was performed).
 *   `working_conclusion`: Summary of findings up to the point of closure.
 *   `action_attempts`: Complete record of all mitigation and solution actions attempted.

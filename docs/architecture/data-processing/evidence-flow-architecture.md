@@ -735,7 +735,6 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
                   ┌───────────────────────┐
                   │ MilestoneUpdates:     │
                   │ - symptom_verified    │
-                  │ - scope_assessed      │
                   └───────────┬───────────┘
                               │
                               ↓
@@ -744,8 +743,7 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
                   │                       │
                   │ Evidence from turn 1: │
                   │ advances_milestones = │
-                  │ ["symptom_verified",  │
-                  │  "scope_assessed"]    │
+                  │ ["symptom_verified"]  │
                   │                       │
                   │ (Evidence retroactively│
                   │  contributes)         │

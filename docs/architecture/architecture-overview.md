@@ -92,7 +92,7 @@ Investigation is driven by the `MilestoneEngine` (not a rigid phase machine). Tu
 
 Key concepts:
 - **Case Status**: INQUIRY → INVESTIGATING → RESOLVED / CLOSED
-- **Milestones** drive progress: 4 gate milestones (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`) drive stage transitions; 6 progress milestones (`symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`) provide LLM context
+- **Milestones** drive progress: 4 gate milestones (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`) drive stage transitions; 3 progress indicators (`symptom_verified`, `root_cause_identified`, `solution_proposed`) provide LLM context
 - **Hypotheses** have a lifecycle: CAPTURED → ACTIVE → VALIDATED / REFUTED / RETIRED, with confidence decay (`0.85^iterations`)
 - **Behavioral rules** (6 total) constrain every agent response via prompt injection — see [Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)
 

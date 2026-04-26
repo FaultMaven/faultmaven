@@ -89,9 +89,6 @@ Each milestone has known evidence dependencies. This map is static — it define
 | Pending Milestone | Stage | What Would Advance It |
 |---|---|---|
 | symptom_verified | DIAGNOSIS | Evidence showing error patterns, symptoms, or anomalies (logs, error reports, metrics) |
-| scope_assessed | DIAGNOSIS | Evidence showing which systems or services are affected |
-| timeline_established | DIAGNOSIS | Evidence with timestamps showing when the issue started or changed |
-| changes_identified | DIAGNOSIS | Evidence of recent changes (deployment logs, config diffs, code changes) |
 | root_cause_identified | DIAGNOSIS | Validated hypothesis with supporting causal evidence |
 | solution_proposed | DIAGNOSIS | Sufficient confidence in root cause to propose a concrete fix |
 | mitigation_verified | MITIGATION | User confirmation that temporary fix stabilized the situation |

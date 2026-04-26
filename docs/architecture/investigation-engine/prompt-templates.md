@@ -583,12 +583,9 @@ def _format_milestones(progress) -> str:
         status = "✅" if completed else "⏳"
         lines.append(f"{status} {milestone}")
 
-    lines.append("\n**Progress Milestones:**")
+    lines.append("\n**Progress Indicators:**")
     indicators = {
         "symptom_verified": progress.symptom_verified,
-        "scope_assessed": progress.scope_assessed,
-        "timeline_established": progress.timeline_established,
-        "changes_identified": progress.changes_identified,
         "root_cause_identified": progress.root_cause_identified,
         "solution_proposed": progress.solution_proposed,
     }
@@ -735,10 +732,8 @@ def _get_diagnosis_instructions(case: Case) -> str:
 
 1. **Verify Symptoms** (if not yet done)
    - Confirm symptom with logs, metrics, or user reports
-   - Assess scope (blast radius) and urgency
-   - Establish timeline and identify recent changes
-   - Set progress milestones: symptom_verified, scope_assessed,
-     timeline_established, changes_identified
+   - Assess scope (blast radius), establish timeline, identify recent changes
+   - Set progress indicator: symptom_verified
 
 2. **Diagnose Root Cause**
    - Form hypotheses based on evidence (2-4 theories)
@@ -1289,11 +1284,8 @@ API intermittently timing out (10% request failure rate)
 ⏳ solution_accepted
 ⏳ solution_verified
 
-**Progress Milestones:**
+**Progress Indicators:**
 ⏳ symptom_verified
-⏳ scope_assessed
-⏳ timeline_established
-⏳ changes_identified
 ⏳ root_cause_identified
 ⏳ solution_proposed
 

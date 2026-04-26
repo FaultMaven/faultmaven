@@ -576,7 +576,7 @@ async def process_evidence_batch(
     for evidence in evidence_list:
         case.evidence.append(evidence)
 
-    case.progress.scope_assessed = True
+    case.progress.symptom_verified = True
     case.current_turn += 1
 
     # Save once at the end

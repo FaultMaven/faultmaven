@@ -5622,9 +5622,6 @@ Agent completes milestones opportunistically based on data availability.
 **Properties:**
 
 - `symptom_verified` (boolean) ❌ - Symptom confirmed with concrete evidence (logs, metrics, user reports)
-- `scope_assessed` (boolean) ❌ - Scope determined: affected users/services/regions, blast radius
-- `timeline_established` (boolean) ❌ - Timeline determined: when problem started, when noticed, duration
-- `changes_identified` (boolean) ❌ - Recent changes identified: deployments, configs, scaling events
 - `root_cause_identified` (boolean) ❌ - Root cause determined (directly or via hypothesis validation)
 - `root_cause_likelihood` (number) ❌ - Likelihood in root cause identification (0.0 = unknown, 1.0 = certain)
 - `root_cause_method` (unknown) ❌ - How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | user_provided | other

@@ -624,11 +624,13 @@ The investigation engine uses a **data-driven, milestone-based** approach:
 - **Confidence decay** - Stagnant hypotheses decay via `0.85^iterations` formula
 - **Anchoring detection** - Prevents fixation on weak theories
 
-**9 Progress Milestones:**
-`symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`,
-`root_cause_identified`, `solution_proposed`, `solution_applied`, `solution_verified`, `mitigation_applied`
+**Progress Indicators (3)** — LLM-settable, non-stage-driving. Inform focus and analytics within DIAGNOSIS:
+`symptom_verified`, `root_cause_identified`, `solution_proposed`
 
-Implemented in `core/investigation/milestone_engine.py` with hypothesis management in `hypothesis_manager.py`.
+**Gate Milestones (4)** — Drive stage transitions when LLM detects user compliance:
+`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`
+
+Implemented in `core/investigation/milestone_engine.py` with hypothesis management in `hypothesis_manager.py` and progress monitoring in `progress_monitor.py`.
 
 ### Dependency Injection
 

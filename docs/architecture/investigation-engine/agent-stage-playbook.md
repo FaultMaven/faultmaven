@@ -33,7 +33,7 @@ The investigation state at any point is fully described by 8 variables across 3 
 | 7 | `solution_verified` | Action | User — explicit handshake confirmation only |
 | 8 | Hypothesis state | Analytical | Agent — constructed from evidence; bridges 1 → 2 |
 
-Variables not in this table (`scope_assessed`, `timeline_established`, `changes_identified`) are secondary attributes. They are extracted from evidence when available and inform analysis, but their absence never blocks progress and they do not define state.
+Scope, timeline, and change correlation are not tracked as separate variables. They are facts extracted from symptom evidence during diagnosis — scope and timeline emerge from the same evidence that confirms `symptom_verified`, and change events classify as `contextual_evidence` that feeds hypothesis formation. Their absence never blocks progress.
 
 ---
 
