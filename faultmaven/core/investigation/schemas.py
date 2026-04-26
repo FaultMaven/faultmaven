@@ -125,8 +125,7 @@ class InternalReasoning(BaseModel):
         description=(
             "MANDATORY: For EVERY milestone set to True in milestones, provide a justification here. "
             "Format: {milestone_name: 'justification citing specific evidence IDs'}. "
-            "Example: {'scope_assessed': 'All 20 pods affected per ev_abc123', "
-            "'timeline_established': 'Started at 17:44 UTC per ev_def456'}. "
+            "Example: {'symptom_verified': 'Connection errors confirmed per ev_abc123'}. "
             "DO NOT leave empty {} when completing milestones - validation will reject."
         ),
     )
@@ -197,9 +196,6 @@ class MilestoneUpdates(BaseModel):
 
     # Progress indicators (LLM-settable, non-stage-driving)
     symptom_verified: Optional[bool] = None
-    scope_assessed: Optional[bool] = None
-    timeline_established: Optional[bool] = None
-    changes_identified: Optional[bool] = None
     root_cause_identified: Optional[bool] = None
     root_cause_likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
     # solution_proposed removed (3F) — set programmatically at ProposedAction creation

@@ -83,21 +83,6 @@ MILESTONE_DEPENDENCIES: Dict[str, Dict[str, str]] = {
         "description": "Verify the reported symptoms with evidence",
         "needs": "Evidence showing error patterns, symptoms, or anomalies (logs, error reports, metrics)",
     },
-    "scope_assessed": {
-        "stage": "DIAGNOSIS",
-        "description": "Determine which systems or services are affected",
-        "needs": "Evidence showing which systems or services are affected",
-    },
-    "timeline_established": {
-        "stage": "DIAGNOSIS",
-        "description": "Establish when the issue started or changed",
-        "needs": "Evidence with timestamps showing when the issue started or changed",
-    },
-    "changes_identified": {
-        "stage": "DIAGNOSIS",
-        "description": "Identify recent changes that may relate to the issue",
-        "needs": "Evidence of recent changes (deployment logs, config diffs, code changes)",
-    },
     "root_cause_identified": {
         "stage": "DIAGNOSIS",
         "description": "Validate a hypothesis with supporting causal evidence",

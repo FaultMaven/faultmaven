@@ -220,13 +220,11 @@ def _investigation_verification_response() -> InvestigationResponse_Diagnosis:
             evidence_analyzed=["ev_placeholder"],
             milestone_justifications={
                 "symptom_verified": "Connection pool exhaustion confirmed via log evidence",
-                "scope_assessed": "Impact limited to database-connected API endpoints",
             },
         ),
         state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
             milestones=MilestoneUpdates(
                 symptom_verified=True,
-                scope_assessed=True,
             ),
             evidence_to_add=[
                 EvidenceToAdd(
@@ -425,7 +423,6 @@ class TestInvestigationLifecycle:
         updated = result["case_updated"]
         assert updated.status == CaseStatus.INVESTIGATING
         assert updated.progress.symptom_verified is True
-        assert updated.progress.scope_assessed is True
         assert len(updated.evidence) >= 1
         # Engine-created evidence from evidence_to_add uses SUBMITTED_DATA
         ev = updated.evidence[0]
@@ -477,7 +474,6 @@ class TestInvestigationLifecycle:
             result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
         case = result["case_updated"]
         assert case.progress.symptom_verified is True
-        assert case.progress.scope_assessed is True
 
         # === Turn 4: Agent proposes resolution ===
         case.current_turn = 4
@@ -782,21 +778,27 @@ class TestEvidenceAccumulation:
         # Turn 4: More evidence (timeline)
         case.current_turn = 4
         response_turn4 = InvestigationResponse_Diagnosis(
-            agent_response="Timeline data confirms the causal correlation.",
+            agent_response="Root cause confirmed: v2.1.3 deployment introduced a DB connection leak.",
             internal_reasoning=InternalReasoning(
                 evidence_analyzed=["ev_placeholder"],
                 milestone_justifications={
-                    "timeline_established": "Deployment at 14:00, first errors at 14:03",
+                    "root_cause_identified": "Connection leak introduced in v2.1.3 deployment at 14:00",
                 },
             ),
             state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
-                milestones=MilestoneUpdates(timeline_established=True),
+                milestones=MilestoneUpdates(root_cause_identified=True),
                 evidence_to_add=[
                     EvidenceToAdd(
-                        summary="Timeline: errors started at 14:03 after v2.1.3 deploy at 14:00",
-                        category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                        summary="v2.1.3 deployment introduced DB connection leak causing errors from 14:03",
+                        category=EvidenceCategory.CAUSAL_EVIDENCE,
                         source_type=EvidenceSourceType.LOGS,
                         content_ref="deploy: 14:00:00 v2.1.3; errors: 14:03:21",
+                    ),
+                    EvidenceToAdd(
+                        summary="Connection pool exhaustion trace confirms leak in v2.1.3 connection handler",
+                        category=EvidenceCategory.CAUSAL_EVIDENCE,
+                        source_type=EvidenceSourceType.LOGS,
+                        content_ref="pool.max_connections exceeded; handler.py:L42 missing conn.close()",
                     ),
                 ],
                 outcome=TurnOutcome.MILESTONE_COMPLETED,
@@ -810,7 +812,7 @@ class TestEvidenceAccumulation:
         case = result["case_updated"]
 
         assert len(case.evidence) > count_after_turn3
-        assert case.progress.timeline_established is True
+        assert case.progress.root_cause_identified is True
 
     async def test_evidence_milestone_attribution(self, engine, case_repo):
         """Evidence advances_milestones correctly attributed via Tier 2 inference."""

@@ -327,12 +327,6 @@ def _generate_next_steps(
 
     if not progress.symptom_verified:
         steps.append("Verify symptom with concrete evidence")
-    elif not progress.scope_assessed:
-        steps.append("Assess scope and affected systems")
-    elif not progress.timeline_established:
-        steps.append("Establish timeline of events")
-    elif not progress.changes_identified:
-        steps.append("Identify recent changes")
     elif not progress.root_cause_identified:
         if evidence_completeness < 0.70:
             steps.append("Collect more evidence to test hypotheses")
@@ -387,10 +381,6 @@ def _create_early_stage_conclusion(
     # Generate statement based on current stage
     if not progress.symptom_verified:
         statement = "Verifying symptom - problem understanding in progress"
-    elif not progress.scope_assessed:
-        statement = "Assessing scope and impact of the problem"
-    elif not progress.timeline_established:
-        statement = "Establishing timeline and temporal context"
     elif not progress.root_cause_identified:
         statement = "Investigating potential causes - awaiting hypothesis generation"
     else:

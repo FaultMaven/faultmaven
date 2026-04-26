@@ -114,12 +114,8 @@ from faultmaven.modules.knowledge.contracts import IKnowledgeService
 CATEGORY_MILESTONE_MAP = {
     EvidenceCategory.SYMPTOM_EVIDENCE: [
         "symptom_verified",  # Confirms problem exists
-        "scope_assessed",  # Identifies impact scope
-        "timeline_established",  # Provides temporal data
-        "changes_identified",  # Shows what changed (deployment logs, config diffs)
     ],
     EvidenceCategory.CAUSAL_EVIDENCE: [
-        "changes_identified",  # Identifies which change caused the problem
         "root_cause_identified",  # Demonstrates root cause
         "solution_proposed",  # Justifies proposed solution
     ],
@@ -270,9 +266,9 @@ def _infer_milestones(
 
     Example:
         category = SYMPTOM_EVIDENCE
-        milestones_completed_this_turn = ["symptom_verified", "scope_assessed"]
-        eligible = ["symptom_verified", "scope_assessed", "timeline_established", "changes_identified"]
-        result = ["symptom_verified", "scope_assessed"]
+        milestones_completed_this_turn = ["symptom_verified"]
+        eligible = ["symptom_verified"]
+        result = ["symptom_verified"]
 
     Key Insight:
         With one-file-per-turn constraint (UI limitation), inference is UNAMBIGUOUS.
@@ -4399,9 +4395,6 @@ class MilestoneEngine:
             milestone_fields = [
                 # Progress indicators (LLM context, non-stage-driving)
                 "symptom_verified",
-                "scope_assessed",
-                "timeline_established",
-                "changes_identified",
                 "root_cause_identified",
                 # solution_proposed — set programmatically at ProposedAction creation (3F)
                 # solution_verified — requires User-Agent Handshake
@@ -4871,8 +4864,6 @@ class MilestoneEngine:
             initial_milestones = []
             if case.progress.verification_complete:
                 initial_milestones.append("symptom_verified")
-            if case.progress.scope_assessed:
-                initial_milestones.append("scope_assessed")
 
             for ev in case.evidence:
                 if not ev.advances_milestones:

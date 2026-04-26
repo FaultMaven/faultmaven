@@ -29,18 +29,6 @@ class MilestoneUpdates(BaseModel):
         default=None, description="Symptom confirmed with concrete evidence"
     )
 
-    scope_assessed: Optional[bool] = Field(
-        default=None, description="Scope determined (affected users/services/regions)"
-    )
-
-    timeline_established: Optional[bool] = Field(
-        default=None, description="Timeline determined (when started, when noticed)"
-    )
-
-    changes_identified: Optional[bool] = Field(
-        default=None, description="Recent changes identified (deployments, configs)"
-    )
-
     root_cause_identified: Optional[bool] = Field(
         default=None, description="Root cause determined"
     )

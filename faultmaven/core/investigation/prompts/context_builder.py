@@ -604,12 +604,6 @@ def _build_state_summary(case: Case) -> str:
         p = case.progress
         if p.symptom_verified:
             verified_items.append("symptom")
-        if p.scope_assessed:
-            verified_items.append("scope")
-        if p.timeline_established:
-            verified_items.append("timeline")
-        if p.changes_identified:
-            verified_items.append("changes")
 
     verified = ", ".join(verified_items) if verified_items else "none"
 
@@ -1332,9 +1326,6 @@ def build_investigation_context(
         # Progress indicators (LLM context)
         indicators = {
             "symptom_verified": p.symptom_verified,
-            "scope_assessed": p.scope_assessed,
-            "timeline_established": p.timeline_established,
-            "changes_identified": p.changes_identified,
             "root_cause_identified": p.root_cause_identified,
             "solution_proposed": p.solution_proposed,
         }

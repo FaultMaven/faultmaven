@@ -203,7 +203,7 @@ class TestProgressTransparency:
 
     def test_pending_milestone_identified_correctly(self, monitor, base_case):
         """Should identify the first incomplete milestone for the stage."""
-        # symptom_verified is done, scope_assessed is not
+        # symptom_verified is done, root_cause_identified is not
         base_case.progress.symptom_verified = True
         base_case.turn_history = [
             create_turn(1, milestones_completed=["symptom_verified"]),
@@ -215,7 +215,7 @@ class TestProgressTransparency:
         result = monitor.check_progress(base_case)
 
         assert result is not None
-        assert result.pending_milestone == "scope_assessed"
+        assert result.pending_milestone == "root_cause_identified"
 
 
 # =========================================================================

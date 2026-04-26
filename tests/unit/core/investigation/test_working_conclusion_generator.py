@@ -184,7 +184,7 @@ class TestProgressMetricsCalculation:
         base_case.turn_history = [
             create_turn(1, milestones_completed=["symptom_verified"]),
             create_turn(2, evidence_added=["ev_1", "ev_2"]),
-            create_turn(3, milestones_completed=["scope_assessed"]),
+            create_turn(3, milestones_completed=["root_cause_identified"]),
         ]
 
         metrics = calculate_progress_metrics(base_case, current_turn=4)
@@ -251,21 +251,18 @@ class TestNextStepsGeneration:
 
         assert any("symptom" in step.lower() for step in metrics.next_steps)
 
-    def test_suggests_scope_after_symptom(self, base_case):
-        """Should suggest scope assessment after symptom verified."""
+    def test_suggests_investigation_after_symptom(self, base_case):
+        """Should suggest investigation steps after symptom verified."""
         base_case.progress.symptom_verified = True
-        base_case.progress.scope_assessed = False
 
         metrics = calculate_progress_metrics(base_case, current_turn=1)
 
-        assert any("scope" in step.lower() for step in metrics.next_steps)
+        assert len(metrics.next_steps) > 0
+        assert not any("symptom" in step.lower() for step in metrics.next_steps)
 
     def test_suggests_solution_after_root_cause(self, base_case):
         """Should suggest solution after root cause identified."""
         base_case.progress.symptom_verified = True
-        base_case.progress.scope_assessed = True
-        base_case.progress.timeline_established = True
-        base_case.progress.changes_identified = True
         base_case.progress.root_cause_identified = True
         base_case.progress.solution_proposed = False
 

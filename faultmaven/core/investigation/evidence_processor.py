@@ -33,24 +33,6 @@ MILESTONE_EVIDENCE_EXPECTATIONS: Dict[str, Dict] = {
         "expected_categories": [EvidenceCategory.SYMPTOM_EVIDENCE],
         "description": "At least 1 symptom evidence item confirming the reported symptom",
     },
-    "scope_assessed": {
-        "min_evidence": 1,
-        "expected_categories": [EvidenceCategory.SYMPTOM_EVIDENCE],
-        "description": "At least 1 evidence item identifying impact scope",
-    },
-    "timeline_established": {
-        "min_evidence": 1,
-        "expected_categories": [EvidenceCategory.SYMPTOM_EVIDENCE],
-        "description": "At least 1 evidence item with temporal data",
-    },
-    "changes_identified": {
-        "min_evidence": 1,
-        "expected_categories": [
-            EvidenceCategory.SYMPTOM_EVIDENCE,
-            EvidenceCategory.CAUSAL_EVIDENCE,
-        ],
-        "description": "At least 1 evidence item linking to recent changes",
-    },
     "root_cause_identified": {
         "min_evidence": 2,
         "expected_categories": [EvidenceCategory.CAUSAL_EVIDENCE],

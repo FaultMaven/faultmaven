@@ -367,21 +367,6 @@ class InvestigationProgress(BaseModel):
         description="Symptom confirmed with concrete evidence (logs, metrics, user reports)",
     )
 
-    scope_assessed: bool = Field(
-        default=False,
-        description="Scope determined: affected users/services/regions, blast radius",
-    )
-
-    timeline_established: bool = Field(
-        default=False,
-        description="Timeline determined: when problem started, when noticed, duration",
-    )
-
-    changes_identified: bool = Field(
-        default=False,
-        description="Recent changes identified: deployments, configs, scaling events",
-    )
-
     root_cause_identified: bool = Field(
         default=False,
         description="Root cause determined (directly or via hypothesis validation)",
@@ -415,7 +400,7 @@ class InvestigationProgress(BaseModel):
     # ============================================================
     verification_completed_at: Optional[datetime] = Field(
         default=None,
-        description="When all verification milestones (symptom, scope, timeline, changes) were completed",
+        description="When symptom verification milestone was completed",
     )
 
     investigation_completed_at: Optional[datetime] = Field(
@@ -471,13 +456,8 @@ class InvestigationProgress(BaseModel):
 
     @property
     def verification_complete(self) -> bool:
-        """Check if all verification progress indicators completed."""
-        return (
-            self.symptom_verified
-            and self.scope_assessed
-            and self.timeline_established
-            and self.changes_identified
-        )
+        """Check if symptom verification is complete."""
+        return self.symptom_verified
 
     @property
     def investigation_complete(self) -> bool:
@@ -500,9 +480,6 @@ class InvestigationProgress(BaseModel):
             "solution_verified": self.solution_verified,
             # Progress indicators
             "symptom_verified": self.symptom_verified,
-            "scope_assessed": self.scope_assessed,
-            "timeline_established": self.timeline_established,
-            "changes_identified": self.changes_identified,
             "root_cause_identified": self.root_cause_identified,
             "solution_proposed": self.solution_proposed,
         }
@@ -513,9 +490,6 @@ class InvestigationProgress(BaseModel):
         """Get list of pending progress indicator names."""
         indicator_map = {
             "symptom_verified": self.symptom_verified,
-            "scope_assessed": self.scope_assessed,
-            "timeline_established": self.timeline_established,
-            "changes_identified": self.changes_identified,
             "root_cause_identified": self.root_cause_identified,
             "solution_proposed": self.solution_proposed,
         }
@@ -1214,7 +1188,7 @@ class EvidenceCategory(str, Enum):
     - User impact reports
     - Deployment logs showing recent changes
 
-    Advances Milestones: symptom_verified, scope_assessed, timeline_established
+    Advances Milestones: symptom_verified
     (Note: Milestone validation only runs during INVESTIGATING status. Evidence
     created during INQUIRY sits inert until investigation begins.)
     """

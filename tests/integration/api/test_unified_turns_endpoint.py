@@ -254,11 +254,11 @@ class TestTurnResponseModel:
     def test_response_with_milestones(self):
         """TurnResponse includes milestone completion data."""
         response = _make_turn_response(
-            milestones_completed=["symptom_verified", "scope_assessed"],
+            milestones_completed=["symptom_verified"],
             case_status=CaseStatus.INVESTIGATING,
             progress_made=True,
         )
-        assert response.milestones_completed == ["symptom_verified", "scope_assessed"]
+        assert response.milestones_completed == ["symptom_verified"]
         assert response.case_status == CaseStatus.INVESTIGATING
         assert response.progress_made is True
 

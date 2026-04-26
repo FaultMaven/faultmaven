@@ -394,12 +394,10 @@ class TestTransformInvestigating:
     def test_progress_summary(self):
         case = _make_investigating_case()
         case.progress.symptom_verified = True
-        case.progress.scope_assessed = True
 
         result = transform_case_for_ui(case)
 
         assert "symptom_verified" in result.progress.completed_indicators
-        assert "scope_assessed" in result.progress.completed_indicators
         assert result.progress.total_evidence == 0
 
     def test_progress_total_evidence_count(self):

@@ -693,10 +693,9 @@ internal_reasoning:
     * Format: {{milestone_name: "justification describing the evidence"}}
     * ⚠️ Empty {{}} when completing milestones = validation error
 
-    Example (completing TWO milestones):
+    Example (completing a milestone):
     ✅ {{
-         scope_assessed: "All 20 Redis pods hitting max_connections=100 (metrics data)",
-         timeline_established: "Started 30 min ago at 17:44 UTC (monitoring alerts)"
+         symptom_verified: "Connection errors at rate 12% confirmed in application logs"
        }}
 
   uncertainties: [what remains unclear]
@@ -1334,7 +1333,7 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
 **INVESTIGATION PROGRESS: Symptom verification pending**
 No symptoms have been formally confirmed. When analyzing data, look for
 evidence the problem exists — errors, anomalies, user impact — to advance
-symptom_verified, scope_assessed, and timeline_established.
+symptom_verified.
 """
     elif progress.symptom_verified and not progress.root_cause_identified:
         return """

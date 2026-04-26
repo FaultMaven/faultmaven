@@ -86,7 +86,7 @@ class InvestigationProgressSummary(BaseModel):
 
     completed_indicators: List[str] = Field(
         default_factory=list,
-        description="Completed progress indicators (e.g. symptom_verified, scope_assessed)",
+        description="Completed progress indicators (e.g. symptom_verified, root_cause_identified)",
     )
 
     completed_stage_gates: List[str] = Field(

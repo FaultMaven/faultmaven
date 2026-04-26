@@ -115,9 +115,6 @@ def _get_investigation_strategy_data(case: Case) -> Optional[InvestigationStrate
     if pending_milestones:
         milestone_steps = {
             "symptom_verified": "Verify symptom with concrete evidence",
-            "scope_assessed": "Assess scope and impact (users/services/regions)",
-            "timeline_established": "Establish when problem started and timeline",
-            "changes_identified": "Identify recent changes (deployments, configs)",
             "root_cause_identified": "Identify and validate root cause",
             "solution_proposed": "Propose solution or mitigation",
             "solution_accepted": "User submitted results of executing solution",
@@ -219,9 +216,6 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
 # Milestone dependency descriptions (static map, mirrors progress_monitor.py)
 _MILESTONE_DESCRIPTIONS = {
     "symptom_verified": "Verify the reported symptoms with evidence",
-    "scope_assessed": "Determine which systems or services are affected",
-    "timeline_established": "Establish when the issue started or changed",
-    "changes_identified": "Identify recent changes that may relate to the issue",
     "root_cause_identified": "Validate a hypothesis with supporting causal evidence",
     "solution_proposed": "Propose a concrete fix based on identified root cause",
     "mitigation_verified": "Verify that the temporary fix stabilized the situation",
@@ -266,9 +260,6 @@ def _compute_progress_transparency(
     stage_milestones = {
         "DIAGNOSIS": [
             "symptom_verified",
-            "scope_assessed",
-            "timeline_established",
-            "changes_identified",
             "root_cause_identified",
             "solution_proposed",
         ],

@@ -643,7 +643,6 @@ class TestMilestoneEngine:
         # Start in INVESTIGATING with resolution-ready case
         base_case.status = CaseStatus.INVESTIGATING
         base_case.progress.symptom_verified = True
-        base_case.progress.scope_assessed = True
         _make_resolution_ready(base_case)
 
         # ===== TURN N: User says "the fix worked" → proposes transition =====
@@ -723,7 +722,6 @@ class TestMilestoneEngine:
         # Start in INVESTIGATING with some progress
         base_case.status = CaseStatus.INVESTIGATING
         base_case.progress.symptom_verified = True
-        base_case.progress.scope_assessed = True
 
         # Mock LLM response (still goes through LLM after proposing)
         mock_response_content = json.dumps(

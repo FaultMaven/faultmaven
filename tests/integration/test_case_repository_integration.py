@@ -543,8 +543,6 @@ async def test_complex_case_persistence(db_repository: SQLiteCaseRepository):
 
     # Add progress
     case.progress.symptom_verified = True
-    case.progress.scope_assessed = True
-    case.progress.timeline_established = True
 
     # Add turn tracking
     case.current_turn = 5
@@ -563,8 +561,6 @@ async def test_complex_case_persistence(db_repository: SQLiteCaseRepository):
     assert retrieved.investigation_strategy == InvestigationStrategy.ACTIVE_INCIDENT
     assert retrieved.inquiry.inquiry_turns == 3
     assert retrieved.progress.symptom_verified is True
-    assert retrieved.progress.scope_assessed is True
-    assert retrieved.progress.timeline_established is True
     assert retrieved.current_turn == 5
     assert retrieved.turns_without_progress == 1
     assert retrieved.message_count == 10

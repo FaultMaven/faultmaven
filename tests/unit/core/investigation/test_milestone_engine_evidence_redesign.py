@@ -197,8 +197,6 @@ class TestMilestoneAdvancementAttribution:
         assert EvidenceCategory.SYMPTOM_EVIDENCE in CATEGORY_MILESTONE_MAP
         symptom_milestones = CATEGORY_MILESTONE_MAP[EvidenceCategory.SYMPTOM_EVIDENCE]
         assert "symptom_verified" in symptom_milestones
-        assert "scope_assessed" in symptom_milestones
-        assert "timeline_established" in symptom_milestones
 
     @pytest.mark.asyncio
     async def test_category_milestone_map_has_causal_evidence(self):
@@ -223,12 +221,11 @@ class TestMilestoneAdvancementAttribution:
     async def test_milestone_advancement_inference_from_category(self):
         """System infers advances_milestones from category + milestones completed."""
         category = EvidenceCategory.SYMPTOM_EVIDENCE
-        milestones_completed = ["symptom_verified", "scope_assessed"]
+        milestones_completed = ["symptom_verified"]
         eligible = CATEGORY_MILESTONE_MAP.get(category, [])
         inferred = [m for m in milestones_completed if m in eligible]
         assert "symptom_verified" in inferred
-        assert "scope_assessed" in inferred
-        assert len(inferred) == 2
+        assert len(inferred) == 1
 
     @pytest.mark.asyncio
     async def test_evidence_advances_milestones_populated(self):
@@ -237,20 +234,18 @@ class TestMilestoneAdvancementAttribution:
         case = _make_investigating_case()
 
         mock_response = {
-            "agent_response": "Symptom verified and scope assessed.",
+            "agent_response": "Symptom verified.",
             "internal_reasoning": {
                 "evidence_analyzed": ["new_index_0"],
                 "conclusions": [],
                 "milestone_justifications": {
                     "symptom_verified": "Confirmed errors in logs",
-                    "scope_assessed": "Errors affect all users",
                 },
                 "uncertainties": [],
             },
             "state_updates": {
                 "milestones": {
                     "symptom_verified": True,
-                    "scope_assessed": True,
                 },
                 "evidence_to_add": [
                     {
