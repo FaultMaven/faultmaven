@@ -732,6 +732,7 @@ class LogsAndErrorsExtractor:
             return "", "ENTITY PROFILE: No entities found"
 
         # FILE SUMMARY — returned separately so extract() can place it in file_extract
+        tr = extract_time_range(content)
         summary = self._build_summary(
             event_counts,
             ip_all_counts,
@@ -739,6 +740,7 @@ class LogsAndErrorsExtractor:
             path_counts,
             len(lines),
             len(error_lines),
+            time_range=tr.get("Time range", ""),
         )
 
         # ENTITY PROFILE body — the search map
@@ -826,6 +828,11 @@ class LogsAndErrorsExtractor:
 
         return ""
 
+    # Event types that are supplementary log-layer duplicates of another event
+    # type (e.g. PAM logs the same auth failure as sshd "Failed password").
+    # Excluded from FILE SUMMARY counts to avoid misrepresenting event volume.
+    _SUMMARY_EXCLUDE_EVENTS: frozenset = frozenset({"pam_auth_failure"})
+
     def _build_summary(
         self,
         event_counts: "Counter[str]",
@@ -834,6 +841,7 @@ class LogsAndErrorsExtractor:
         path_counts: "Counter[str]",
         total_lines: int,
         error_count: int,
+        time_range: str = "",
     ) -> str:
         """Return a compact FILE SUMMARY (2–4 sentences) describing dominant
         activity, top source, and key absences.
@@ -851,8 +859,15 @@ class LogsAndErrorsExtractor:
         if pattern:
             sentences.append(f"{pattern}.")
 
-        # Dominant activity counts
-        top_events = event_counts.most_common(3)
+        # Dominant activity counts — exclude supplementary duplicate event types
+        summary_events = Counter(
+            {
+                k: v
+                for k, v in event_counts.items()
+                if k not in self._SUMMARY_EXCLUDE_EVENTS
+            }
+        )
+        top_events = summary_events.most_common(3)
         if top_events:
             ev_summary = ", ".join(
                 f"{name.replace('_', ' ')} ({count})" for name, count in top_events
@@ -874,6 +889,10 @@ class LogsAndErrorsExtractor:
             absent.append("no HTTP traffic")
         if absent:
             sentences.append(f"Absent: {', '.join(absent)}.")
+
+        # Time range — surfaces full log span so agent cross-references correctly
+        if time_range:
+            sentences.append(f"Log time range: {time_range}.")
 
         if not sentences:
             return ""
