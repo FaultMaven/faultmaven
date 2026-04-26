@@ -16,6 +16,7 @@ mechanism.
 Design Reference: docs/architecture/data-processing/README.md
 """
 
+import json
 import logging
 from typing import Any, Dict
 
@@ -154,8 +155,23 @@ class VectorizeFileTool(AgentTool):
                     ),
                 )
 
-            # Get the structural index content to vectorize
-            structural_index = getattr(evidence, "preprocessed_content", None)
+            # Get the file_extract content to vectorize (not raw JSON).
+            # Check for "file_extract" key presence rather than exact version so
+            # future schema bumps don't silently vectorize a JSON blob.
+            raw_preprocessed = getattr(evidence, "preprocessed_content", None)
+            if not raw_preprocessed:
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error="Evidence has no preprocessed content to vectorize",
+                )
+            structural_index = raw_preprocessed
+            try:
+                _d = json.loads(raw_preprocessed)
+                if isinstance(_d, dict) and "file_extract" in _d:
+                    structural_index = _d["file_extract"] or raw_preprocessed
+            except (ValueError, TypeError):
+                pass  # Legacy plaintext — vectorize as-is
             if not structural_index:
                 return ToolResult(
                     success=False,

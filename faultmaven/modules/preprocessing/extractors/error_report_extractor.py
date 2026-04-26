@@ -8,9 +8,9 @@ No LLM calls required - pure stack trace parsing and pattern matching.
 import re
 from typing import TYPE_CHECKING, Dict, List, Tuple
 
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
-    format_coverage_metadata,
     has_content,
 )
 
@@ -62,7 +62,7 @@ class ErrorReportExtractor:
         7. Generate actionable summary with fix suggestions
         """
         if not has_content(content):
-            return EMPTY_CONTENT_RESPONSE
+            return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         # Detect language
         language = self._detect_language(content)
@@ -78,18 +78,19 @@ class ErrorReportExtractor:
             language, exception_type, exception_msg, stack_frames, content
         )
 
-        # Coverage metadata
         root_cause = None
         if stack_frames:
             root_frame = stack_frames[-1]
             root_cause = root_frame.get("file", root_frame.get("class_method", "?"))
-        result += format_coverage_metadata(
-            Language=language,
-            Exception=exception_type,
-            **{"Stack frames": len(stack_frames)},
-            **{"Root cause": root_cause},
-        )
-        return result
+        file_meta: dict = {
+            "language": language,
+            "exception_type": exception_type,
+            "stack_frames": len(stack_frames),
+            "size_bytes": len(content.encode("utf-8", errors="replace")),
+        }
+        if root_cause:
+            file_meta["root_cause"] = root_cause
+        return ExtractResult(file_extract=result, file_meta=file_meta)
 
     def _detect_language(self, content: str) -> str:
         """Detect programming language from exception format"""

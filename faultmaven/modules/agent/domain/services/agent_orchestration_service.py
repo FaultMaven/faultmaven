@@ -1025,42 +1025,45 @@ class AgentOrchestrationService:
         if not hasattr(case, "evidence") or not case.evidence:
             return gaps
 
-        # Collect all coverage metadata from evidence
-        all_coverage_text = ""
-        time_ranges: list[str] = []
+        # Collect coverage metadata from evidence file_meta
+        import json as _json
+
+        all_time_ranges: list[str] = []
+        all_services: list[str] = []
 
         for ev in case.evidence:
             preprocessed = getattr(ev, "preprocessed_content", "") or ""
+            try:
+                d = _json.loads(preprocessed)
+                if isinstance(d, dict) and d.get("v") == 1:
+                    meta = d.get("file_meta") or {}
+                    tr = meta.get("time_range")
+                    if tr:
+                        all_time_ranges.append(str(tr))
+                    continue
+            except (ValueError, TypeError):
+                pass
+            # Legacy: parse old COVERAGE_SEPARATOR format
             if COVERAGE_SEPARATOR in preprocessed:
                 coverage_section = preprocessed.split(COVERAGE_SEPARATOR)[1]
-                all_coverage_text += " " + coverage_section
-
-                # Extract time range values
                 for line in coverage_section.split("\n"):
                     if line.startswith("First timestamp:") or line.startswith(
                         "Last timestamp:"
                     ):
-                        time_ranges.append(line)
+                        all_time_ranges.append(line)
 
-        if not all_coverage_text:
-            return gaps
-
-        coverage_lower = all_coverage_text.lower()
+        coverage_lower = " ".join(all_time_ranges + all_services).lower()
 
         # Check timestamps — warn if queried times are mentioned but not in ranges
         for ts in entities.get("timestamps", []):
-            if ts not in all_coverage_text and time_ranges:
+            if ts not in coverage_lower and all_time_ranges:
                 gaps.append(
                     f"Queried time '{ts}' not found in evidence coverage "
-                    f"(available: {'; '.join(time_ranges[:3])})"
+                    f"(available: {'; '.join(all_time_ranges[:3])})"
                 )
 
-        # Check services
-        for svc in entities.get("services", []):
-            if svc not in coverage_lower:
-                gaps.append(
-                    f"Service '{svc}' not mentioned in any evidence coverage metadata"
-                )
+        # Service coverage check removed: new file_meta model does not carry
+        # a services list; service presence is checked via search_file instead.
 
         return gaps
 

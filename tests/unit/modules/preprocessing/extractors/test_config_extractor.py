@@ -33,34 +33,34 @@ class TestConfigExtractor:
         """Keys matching 'password' are redacted."""
         config = json.dumps({"database": {"password": "mysecret", "host": "localhost"}})
         result = extractor.extract(config)
-        assert "[REDACTED]" in result
-        assert "mysecret" not in result
-        assert "localhost" in result
+        assert "[REDACTED]" in result.file_extract
+        assert "mysecret" not in result.file_extract
+        assert "localhost" in result.file_extract
 
     def test_api_key_value_redacted(self, extractor):
         """Long alphanumeric values (>= 20 chars) are redacted by regex."""
         config = json.dumps({"token": "abcdefghijklmnopqrstuvwxyz", "public": "key"})
         result = extractor.extract(config)
-        assert "[REDACTED]" in result
+        assert "[REDACTED]" in result.file_extract
 
     def test_sk_key_value_redacted(self, extractor):
         """OpenAI-style sk-... keys are redacted by regex."""
         config = json.dumps({"api_key": "sk-abcdefghijklmnopq", "public": "key"})
         result = extractor.extract(config)
-        assert "[REDACTED]" in result
+        assert "[REDACTED]" in result.file_extract
 
     def test_short_value_not_redacted(self, extractor):
         """Short values (< 16 chars) should NOT be redacted by value check."""
         config = json.dumps({"log_level": "debug", "timeout": "30"})
         result = extractor.extract(config)
-        assert "debug" in result
-        assert "30" in result
+        assert "debug" in result.file_extract
+        assert "30" in result.file_extract
 
     def test_hostname_not_redacted(self, extractor):
         """Hostnames should NOT be redacted (not matching secret patterns)."""
         config = json.dumps({"hostname": "my-server.example.com"})
         result = extractor.extract(config)
-        assert "my-server.example.com" in result
+        assert "my-server.example.com" in result.file_extract
 
     # --- R5.2: detect-secrets second-pass ---
 
@@ -72,8 +72,8 @@ class TestConfigExtractor:
         jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
         config = json.dumps({"auth_token": jwt, "public": "key"})
         result = extractor.extract(config)
-        assert "[REDACTED]" in result
-        assert jwt not in result
+        assert "[REDACTED]" in result.file_extract
+        assert jwt not in result.file_extract
 
     @pytest.mark.skipif(
         not DETECT_SECRETS_AVAILABLE, reason="detect-secrets not installed"
@@ -87,7 +87,7 @@ class TestConfigExtractor:
             }
         )
         result = extractor.extract(config)
-        assert "[REDACTED]" in result
+        assert "[REDACTED]" in result.file_extract
 
     @pytest.mark.skipif(
         not DETECT_SECRETS_AVAILABLE, reason="detect-secrets not installed"
@@ -98,7 +98,7 @@ class TestConfigExtractor:
         # should not flag it
         config = json.dumps({"log_level": "debug", "max_retries": 5})
         result = extractor.extract(config)
-        assert "debug" in result
+        assert "debug" in result.file_extract
 
     def test_fallback_when_detect_secrets_unavailable(self, extractor):
         """Config extraction works without detect-secrets (regex only)."""
@@ -113,8 +113,10 @@ class TestConfigExtractor:
             False,
         ):
             result = extractor.extract(config)
-            assert "[REDACTED]" in result  # Regex still catches password key
-            assert "localhost" in result
+            assert (
+                "[REDACTED]" in result.file_extract
+            )  # Regex still catches password key
+            assert "localhost" in result.file_extract
 
     # --- Config format parsing ---
 
@@ -122,8 +124,8 @@ class TestConfigExtractor:
         """JSON config parsed and formatted."""
         config = json.dumps({"server": {"port": 8080, "host": "0.0.0.0"}})
         result = extractor.extract(config)
-        assert "port" in result
-        assert "8080" in result
+        assert "port" in result.file_extract
+        assert "8080" in result.file_extract
 
     def test_env_file(self, extractor):
         """Key=value .env format parsed."""
@@ -134,9 +136,9 @@ API_KEY=sk-verylongsecretkey123456789
 LOG_LEVEL=info
 """
         result = extractor.extract(content)
-        assert "localhost" in result
-        assert "[REDACTED]" in result  # API_KEY key matches secret pattern
-        assert "info" in result
+        assert "localhost" in result.file_extract
+        assert "[REDACTED]" in result.file_extract  # API_KEY key matches secret pattern
+        assert "info" in result.file_extract
 
     def test_ini_sections(self, extractor):
         """INI format with sections parsed."""
@@ -149,9 +151,9 @@ port=5432
 level=debug
 """
         result = extractor.extract(content)
-        assert "database" in result
-        assert "localhost" in result
-        assert "debug" in result
+        assert "database" in result.file_extract
+        assert "localhost" in result.file_extract
+        assert "debug" in result.file_extract
 
     # --- False-positive prevention (tightened key patterns) ---
 
@@ -159,55 +161,55 @@ level=debug
         """AUTH_TYPE is a mode selector, not a secret."""
         config = json.dumps({"AUTH_TYPE": "bearer"})
         result = extractor.extract(config)
-        assert "bearer" in result
-        assert "[REDACTED]" not in result
+        assert "bearer" in result.file_extract
+        assert "[REDACTED]" not in result.file_extract
 
     def test_auth_method_not_redacted(self, extractor):
         """auth_method describes auth approach, not a credential."""
         config = json.dumps({"auth_method": "oauth2"})
         result = extractor.extract(config)
-        assert "oauth2" in result
-        assert "[REDACTED]" not in result
+        assert "oauth2" in result.file_extract
+        assert "[REDACTED]" not in result.file_extract
 
     def test_authentication_mode_not_redacted(self, extractor):
         """authentication_mode is config metadata, not a secret."""
         config = json.dumps({"authentication_mode": "saml"})
         result = extractor.extract(config)
-        assert "saml" in result
-        assert "[REDACTED]" not in result
+        assert "saml" in result.file_extract
+        assert "[REDACTED]" not in result.file_extract
 
     def test_oauth_redirect_uri_not_redacted(self, extractor):
         """oauth_redirect_uri is a URL, not a secret."""
         config = json.dumps({"oauth_redirect_uri": "https://app.example.com/callback"})
         result = extractor.extract(config)
-        assert "https://app.example.com/callback" in result
+        assert "https://app.example.com/callback" in result.file_extract
 
     def test_token_type_not_redacted(self, extractor):
         """token_type describes the kind of token, not a credential."""
         config = json.dumps({"token_type": "bearer"})
         result = extractor.extract(config)
-        assert "bearer" in result
-        assert "[REDACTED]" not in result
+        assert "bearer" in result.file_extract
+        assert "[REDACTED]" not in result.file_extract
 
     def test_token_expiry_not_redacted(self, extractor):
         """token_expiry is a numeric setting, not a secret."""
         config = json.dumps({"token_expiry": "3600"})
         result = extractor.extract(config)
-        assert "3600" in result
-        assert "[REDACTED]" not in result
+        assert "3600" in result.file_extract
+        assert "[REDACTED]" not in result.file_extract
 
     def test_keycloak_url_not_redacted(self, extractor):
         """keycloak_url is a service URL, not a secret."""
         config = json.dumps({"keycloak_url": "https://keycloak.example.com"})
         result = extractor.extract(config)
-        assert "https://keycloak.example.com" in result
+        assert "https://keycloak.example.com" in result.file_extract
 
     def test_key_format_not_redacted(self, extractor):
         """key_format describes a format, not a credential."""
         config = json.dumps({"key_format": "pem"})
         result = extractor.extract(config)
-        assert "pem" in result
-        assert "[REDACTED]" not in result
+        assert "pem" in result.file_extract
+        assert "[REDACTED]" not in result.file_extract
 
     # --- Non-secret value bypass ---
 
@@ -215,22 +217,22 @@ level=debug
         """require_password=true is a boolean flag, not a credential."""
         config = json.dumps({"require_password": "true"})
         result = extractor.extract(config)
-        assert "true" in result
-        assert "[REDACTED]" not in result
+        assert "true" in result.file_extract
+        assert "[REDACTED]" not in result.file_extract
 
     def test_token_with_bearer_enum_not_redacted(self, extractor):
         """token=bearer is a mode enum, not a credential."""
         config = json.dumps({"token": "bearer"})
         result = extractor.extract(config)
-        assert "bearer" in result
-        assert "[REDACTED]" not in result
+        assert "bearer" in result.file_extract
+        assert "[REDACTED]" not in result.file_extract
 
     def test_secret_key_with_real_value_still_redacted(self, extractor):
         """require_password with an actual password value is still redacted."""
         config = json.dumps({"require_password": "hunter2isMyPass", "public": "key"})
         result = extractor.extract(config)
-        assert "[REDACTED]" in result
-        assert "hunter2isMyPass" not in result
+        assert "[REDACTED]" in result.file_extract
+        assert "hunter2isMyPass" not in result.file_extract
 
     # --- Regression: real secrets still redacted ---
 
@@ -238,8 +240,8 @@ level=debug
         """client_secret contains an actual secret value."""
         config = json.dumps({"client_secret": "s3cr3t-v4lu3-h3r3", "public": "key"})
         result = extractor.extract(config)
-        assert "[REDACTED]" in result
-        assert "s3cr3t-v4lu3-h3r3" not in result
+        assert "[REDACTED]" in result.file_extract
+        assert "s3cr3t-v4lu3-h3r3" not in result.file_extract
 
     def test_nested_auth_token_redacted(self, extractor):
         """Nested auth.auth_token should still be redacted."""
@@ -247,32 +249,32 @@ level=debug
             {"auth": {"auth_token": "mytoken12345678", "public": "key"}}
         )
         result = extractor.extract(config)
-        assert "[REDACTED]" in result
-        assert "mytoken12345678" not in result
+        assert "[REDACTED]" in result.file_extract
+        assert "mytoken12345678" not in result.file_extract
 
     def test_database_password_nested_redacted(self, extractor):
         """database.password still redacted with dotted path."""
         config = json.dumps({"database": {"password": "dbpass123"}})
         result = extractor.extract(config)
-        assert "[REDACTED]" in result
-        assert "dbpass123" not in result
+        assert "[REDACTED]" in result.file_extract
+        assert "dbpass123" not in result.file_extract
 
     def test_signing_key_redacted(self, extractor):
         """signing_key is a secret-holding key."""
         config = json.dumps({"signing_key": "supersecretkey12345", "public": "key"})
         result = extractor.extract(config)
-        assert "[REDACTED]" in result
-        assert "supersecretkey12345" not in result
+        assert "[REDACTED]" in result.file_extract
+        assert "supersecretkey12345" not in result.file_extract
 
     def test_access_key_env_redacted(self, extractor):
         """AWS access key in .env format still redacted."""
         content = "AWS_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE\nPUBLIC_KEY=123"
         result = extractor.extract(content)
-        assert "[REDACTED]" in result
+        assert "[REDACTED]" in result.file_extract
 
     def test_fully_redacted_config(self, extractor):
         """A config with only secrets triggers the fully redacted optimization."""
         config = json.dumps({"client_secret": "s3cr3t-v4lu3-h3r3"})
         result = extractor.extract(config)
-        assert "[WARNING: Fully Redacted Config" in result
-        assert "[REDACTED]" not in result
+        assert "[WARNING: Fully Redacted Config" in result.file_extract
+        assert "[REDACTED]" not in result.file_extract

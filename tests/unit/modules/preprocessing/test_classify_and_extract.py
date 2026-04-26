@@ -44,11 +44,16 @@ def service(mock_classifier, mock_logs_extractor):
     )
 
 
+def _log_content(n_lines: int = 250) -> str:
+    """Build synthetic log content large enough to exceed MIN_EXTRACTION_LINES."""
+    return "\n".join(f"2024-01-01 INFO log line {i}" for i in range(n_lines))
+
+
 class TestClassifyAndExtract:
     @pytest.mark.asyncio
     async def test_basic_success(self, service):
         """classify_and_extract classifies and extracts pasted text."""
-        content = "2024-01-01 ERROR NullPointerException at line 42"
+        content = _log_content()
         result = await service.classify_and_extract(content=content)
 
         assert isinstance(result, PreprocessingResult)
@@ -100,7 +105,7 @@ class TestClassifyAndExtract:
         """Falls back to direct truncation when no extractor matches."""
         # Set classifier to return a type with no registered extractor
         mock_classifier.classify.return_value.data_type = DataType.VISUAL_EVIDENCE
-        result = await service.classify_and_extract(content="image data")
+        result = await service.classify_and_extract(content=_log_content())
 
         assert result.extraction_method == "direct"
 
@@ -110,3 +115,22 @@ class TestClassifyAndExtract:
         result = await service.classify_and_extract(content="some data")
         assert result.summary is not None
         assert len(result.summary) > 0
+
+    @pytest.mark.asyncio
+    async def test_small_file_passthrough_skips_extractor(
+        self, service, mock_logs_extractor
+    ):
+        """Files below MIN_EXTRACTION_LINES skip extraction and use raw content."""
+        small_content = "\n".join(f"2024-01-01 INFO line {i}" for i in range(50))
+        result = await service.classify_and_extract(content=small_content)
+
+        assert result.extraction_method == "raw_passthrough"
+        mock_logs_extractor.extract.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_file_at_threshold_runs_extractor(self, service, mock_logs_extractor):
+        """Files at or above MIN_EXTRACTION_LINES still go through extraction."""
+        result = await service.classify_and_extract(content=_log_content(250))
+
+        assert result.extraction_method == "crime_scene"
+        mock_logs_extractor.extract.assert_called_once()

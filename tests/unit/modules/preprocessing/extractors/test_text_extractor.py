@@ -31,7 +31,7 @@ The mirror syncs every 5 minutes.
 No issues were detected during the last sync cycle.
 """
         result = extractor.extract(content)
-        assert "ERROR MESSAGES" not in result
+        assert "ERROR MESSAGES" not in result.file_extract
 
     def test_terrorism_does_not_trigger(self, extractor):
         """'terrorism' contains substring — should NOT trigger error detection."""
@@ -40,7 +40,7 @@ The report covers counter-terrorism strategies and national security.
 Intelligence agencies collaborate to prevent terrorism globally.
 """
         result = extractor.extract(content)
-        assert "ERROR MESSAGES" not in result
+        assert "ERROR MESSAGES" not in result.file_extract
 
     def test_real_error_does_trigger(self, extractor):
         """'Error: connection refused' is a real error and SHOULD trigger."""
@@ -50,8 +50,8 @@ Error: connection refused on port 5432
 Retrying in 5 seconds...
 """
         result = extractor.extract(content)
-        assert "ERROR MESSAGES" in result
-        assert "connection refused" in result
+        assert "ERROR MESSAGES" in result.file_extract
+        assert "connection refused" in result.file_extract
 
     def test_fatal_crash_triggers(self, extractor):
         """'fatal crash occurred' should trigger error detection."""
@@ -61,8 +61,8 @@ At 12:05 a fatal crash occurred in the main process.
 Core dump saved to /tmp/core.
 """
         result = extractor.extract(content)
-        assert "ERROR MESSAGES" in result
-        assert "fatal" in result.lower()
+        assert "ERROR MESSAGES" in result.file_extract
+        assert "fatal" in result.file_extract.lower()
 
     def test_failure_as_standalone_word(self, extractor):
         """'failure' as standalone word should trigger."""
@@ -72,4 +72,4 @@ A failure was detected during the health check phase.
 Rolling back to previous version.
 """
         result = extractor.extract(content)
-        assert "ERROR MESSAGES" in result
+        assert "ERROR MESSAGES" in result.file_extract

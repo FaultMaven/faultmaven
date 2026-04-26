@@ -14,9 +14,9 @@ import json
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
-    format_coverage_metadata,
     has_content,
     truncate_output,
 )
@@ -52,7 +52,7 @@ class MetricsAndPerformanceExtractor:
     def llm_calls_used(self) -> int:
         return 0
 
-    def extract(self, content: str) -> str:
+    def extract(self, content: str) -> ExtractResult:
         """
         Extract and analyze metrics data
 
@@ -65,11 +65,13 @@ class MetricsAndPerformanceExtractor:
         """
         content = content.lstrip("\ufeff")
         if len(content) > 50_000_000:
-            return "[File exceeds 50MB maximum size limit for extraction]"
+            return ExtractResult(
+                file_extract="[File exceeds 50MB maximum size limit for extraction]"
+            )
 
         self.csv_skipped_rows = 0
         if not has_content(content):
-            return EMPTY_CONTENT_RESPONSE
+            return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         # Try to parse as different formats
         time_series = self._parse_metrics(content)
@@ -78,10 +80,16 @@ class MetricsAndPerformanceExtractor:
         if not time_series:
             # Valid CSV with no numeric columns — provide structural summary
             if csv_summary:
-                return csv_summary + format_coverage_metadata(
-                    Format="csv (non-numeric)",
+                return ExtractResult(
+                    file_extract=csv_summary,
+                    file_meta={
+                        "format": "csv (non-numeric)",
+                        "size_bytes": len(content.encode("utf-8", errors="replace")),
+                    },
                 )
-            return "[Failed to parse metrics data - unsupported format]"
+            return ExtractResult(
+                file_extract="[Failed to parse metrics data - unsupported format]"
+            )
 
         # Detect format for coverage
         format_detected = self._detect_format_name(content)
@@ -120,17 +128,19 @@ class MetricsAndPerformanceExtractor:
 
         time_span = f"{min_ts} to {max_ts}" if min_ts and max_ts else None
 
-        # Coverage metadata
         metric_names = list(time_series.keys())
-        output += format_coverage_metadata(
-            Format=format_detected,
-            Metrics=len(metric_names),
-            **{"Total data points": total_data_points},
-            **{"Time span": time_span},
-            **{"Metric names": ", ".join(metric_names[:10])},
-            **{"Anomalies found": total_anomalies},
+        return ExtractResult(
+            file_extract=output,
+            file_meta={
+                "format": format_detected,
+                "metrics": len(metric_names),
+                "total_data_points": total_data_points,
+                "time_span": time_span,
+                "metric_names": ", ".join(metric_names[:10]),
+                "anomalies_found": total_anomalies,
+                "size_bytes": len(content.encode("utf-8", errors="replace")),
+            },
         )
-        return output
 
     def _detect_format_name(self, content: str) -> str:
         """Detect which format was successfully parsed."""

@@ -12,9 +12,9 @@ import json
 import re
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
-    format_coverage_metadata,
     has_content,
     truncate_output,
 )
@@ -109,7 +109,7 @@ class StructuredConfigExtractor:
     def llm_calls_used(self) -> int:
         return 0
 
-    def extract(self, content: str) -> str:
+    def extract(self, content: str) -> ExtractResult:
         """
         Extract and sanitize configuration
 
@@ -121,10 +121,12 @@ class StructuredConfigExtractor:
         """
         content = content.lstrip("\ufeff")
         if len(content) > 50_000_000:
-            return "[File exceeds 50MB maximum size limit for extraction]"
+            return ExtractResult(
+                file_extract="[File exceeds 50MB maximum size limit for extraction]"
+            )
 
         if not has_content(content):
-            return EMPTY_CONTENT_RESPONSE
+            return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         # Detect format
         format_detected = self._detect_format(content)
@@ -153,19 +155,19 @@ class StructuredConfigExtractor:
         else:
             result = self._format_config(sanitized)
 
-        # Coverage metadata
-        result += format_coverage_metadata(
-            Format=format_detected,
-            **{"Fully Redacted": fully_redacted if fully_redacted else None},
-            **{
-                "Top-level keys": (
+        return ExtractResult(
+            file_extract=result,
+            file_meta={
+                "format": format_detected,
+                "fully_redacted": fully_redacted if fully_redacted else None,
+                "top_level_keys": (
                     ", ".join(top_keys[:10]) if not fully_redacted else None
-                )
+                ),
+                "total_keys": total_keys,
+                "secrets_redacted": redaction_count,
+                "size_bytes": len(content.encode("utf-8", errors="replace")),
             },
-            **{"Total keys": total_keys},
-            **{"Secrets redacted": redaction_count},
         )
-        return result
 
     def _detect_format(self, content: str) -> str:
         """Detect config format without parsing."""

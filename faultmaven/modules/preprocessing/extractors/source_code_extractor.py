@@ -12,9 +12,9 @@ import ast
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
-    format_coverage_metadata,
     has_content,
     truncate_output,
 )
@@ -52,7 +52,7 @@ class SourceCodeExtractor:
     def llm_calls_used(self) -> int:
         return 0
 
-    def extract(self, content: str) -> str:
+    def extract(self, content: str) -> ExtractResult:
         """
         Source Code Extraction algorithm:
         1. Parse with Tree-sitter if available
@@ -63,10 +63,12 @@ class SourceCodeExtractor:
         """
         content = content.lstrip("\ufeff")
         if len(content) > 50_000_000:
-            return "[File exceeds 50MB maximum size limit for extraction]"
+            return ExtractResult(
+                file_extract="[File exceeds 50MB maximum size limit for extraction]"
+            )
 
         if not has_content(content):
-            return EMPTY_CONTENT_RESPONSE
+            return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         total_lines = len(content.split("\n"))
 
@@ -77,20 +79,28 @@ class SourceCodeExtractor:
             classes = self._extract_classes(tree)
             functions = self._extract_functions(tree)
             error_handling = self._extract_error_handling(tree)
-            return python_result + format_coverage_metadata(
-                Language="Python",
-                Lines=total_lines,
-                Functions=len(functions),
-                Classes=len(classes),
-                **{"Error handlers": len(error_handling)},
+            return ExtractResult(
+                file_extract=python_result,
+                file_meta={
+                    "language": "Python",
+                    "lines": total_lines,
+                    "functions": len(functions),
+                    "classes": len(classes),
+                    "error_handlers": len(error_handling),
+                    "size_bytes": len(content.encode("utf-8", errors="replace")),
+                },
             )
 
         # Fall back to pattern-based extraction
         result = self._pattern_based_extraction(content)
         language = self._detect_language(content)
-        return result + format_coverage_metadata(
-            Language=language,
-            Lines=total_lines,
+        return ExtractResult(
+            file_extract=result,
+            file_meta={
+                "language": language,
+                "lines": total_lines,
+                "size_bytes": len(content.encode("utf-8", errors="replace")),
+            },
         )
 
     def _parse_python_ast(self, content: str) -> str | None:

@@ -37,8 +37,11 @@ class TestMetricsExtractor:
         )
         result = extractor.extract(content)
         # Should parse successfully (not return a parse failure message)
-        assert "METRICS ANALYSIS" in result or "CSV STRUCTURE" in result
-        assert "temperature" in result or "humidity" in result
+        assert (
+            "METRICS ANALYSIS" in result.file_extract
+            or "CSV STRUCTURE" in result.file_extract
+        )
+        assert "temperature" in result.file_extract or "humidity" in result.file_extract
 
     def test_csv_standard_format(self, extractor):
         """Standard CSV without quoting still works."""
@@ -49,8 +52,8 @@ class TestMetricsExtractor:
             "2024-01-01T00:02:00,48.1,59.8\n"
         )
         result = extractor.extract(content)
-        assert "METRICS ANALYSIS" in result
-        assert "cpu" in result or "memory" in result
+        assert "METRICS ANALYSIS" in result.file_extract
+        assert "cpu" in result.file_extract or "memory" in result.file_extract
 
     def test_csv_with_spike(self, extractor):
         """CSV with anomaly detection."""
@@ -61,7 +64,7 @@ class TestMetricsExtractor:
         lines.append("2024-01-01T00:50:00,5000.0")
         content = "\n".join(lines)
         result = extractor.extract(content)
-        assert "SPIKE" in result or "anomal" in result.lower()
+        assert "SPIKE" in result.file_extract or "anomal" in result.file_extract.lower()
 
     # --- JSON metrics ---
 
@@ -75,7 +78,7 @@ class TestMetricsExtractor:
             {"timestamp": "2024-01-03", "cpu": 48.1, "memory": 59.8},
         ]
         result = extractor.extract(json.dumps(data))
-        assert "METRICS ANALYSIS" in result
+        assert "METRICS ANALYSIS" in result.file_extract
 
     # --- Prometheus ---
 
@@ -88,8 +91,8 @@ http_requests_total 1523
 http_request_duration_seconds 0.025
 """
         result = extractor.extract(content)
-        assert "METRICS ANALYSIS" in result
-        assert "http_requests_total" in result
+        assert "METRICS ANALYSIS" in result.file_extract
+        assert "http_requests_total" in result.file_extract
 
     # --- R5.3: Prometheus label-preserving parsing ---
 
@@ -105,10 +108,10 @@ http_requests_total{method="GET",handler="/api"} 1027
 http_requests_total{method="POST",handler="/api"} 42
 """
         result = extractor.extract(content)
-        assert "METRICS ANALYSIS" in result
+        assert "METRICS ANALYSIS" in result.file_extract
         # Labels should be preserved in metric names
-        assert "method=" in result
-        assert "handler=" in result
+        assert "method=" in result.file_extract
+        assert "handler=" in result.file_extract
 
     @pytest.mark.skipif(
         not PROMETHEUS_CLIENT_AVAILABLE, reason="prometheus_client not installed"
@@ -125,10 +128,10 @@ http_requests_total{method="GET"} 100
 http_requests_total{method="POST"} 25
 """
         result = extractor.extract(content)
-        assert "cpu_usage" in result
+        assert "cpu_usage" in result.file_extract
         # Should have separate entries for GET and POST
-        assert "GET" in result
-        assert "POST" in result
+        assert "GET" in result.file_extract
+        assert "POST" in result.file_extract
 
     def test_prometheus_regex_fallback(self, extractor):
         """When prometheus_client is mocked as unavailable, regex fallback works."""
@@ -142,8 +145,8 @@ cpu_usage 0.85
             False,
         ):
             result = extractor.extract(content)
-            assert "METRICS ANALYSIS" in result
-            assert "cpu_usage" in result
+            assert "METRICS ANALYSIS" in result.file_extract
+            assert "cpu_usage" in result.file_extract
 
     def test_prometheus_regex_fallback_preserves_labels(self, extractor):
         """Regex fallback must keep labeled series distinct. Before the fix,
@@ -161,8 +164,14 @@ http_requests_total{method="POST",status="500"} 7
         ):
             result = extractor.extract(content)
             # Both labeled series should be represented as distinct metrics
-            assert 'method="GET"' in result or 'method="GET"' in result
-            assert 'method="POST"' in result or 'method="POST"' in result
+            assert (
+                'method="GET"' in result.file_extract
+                or 'method="GET"' in result.file_extract
+            )
+            assert (
+                'method="POST"' in result.file_extract
+                or 'method="POST"' in result.file_extract
+            )
 
     # --- Spike detection robustness ---
 
@@ -179,7 +188,7 @@ http_requests_total{method="POST",status="500"} 7
         rows += "\nt_odd,50.3"
         result = extractor.extract(rows)
         # With the constant-data guard, no spike should be reported
-        assert "SPIKE" not in result
+        assert "SPIKE" not in result.file_extract
 
     def test_spike_still_detected_on_variable_data(self, extractor):
         """Sanity check: genuine spikes on variable data are still detected."""
@@ -188,7 +197,7 @@ http_requests_total{method="POST",status="500"} 7
         rows += "\n".join(f"t{i},{10 + (i % 10) * 4}" for i in range(100))
         rows += "\nt_spike,500"
         result = extractor.extract(rows)
-        assert "SPIKE" in result or "anomal" in result.lower()
+        assert "SPIKE" in result.file_extract or "anomal" in result.file_extract.lower()
 
     # --- Prometheus NaN / ±Inf handling (regex fallback) ---
 
@@ -214,11 +223,11 @@ request_errors_total -Inf
         ):
             result = extractor.extract(content)
             # All four series must be present — no silent drops.
-            assert "http_request_duration_seconds_bucket" in result
-            assert "http_request_duration_seconds_sum" in result
-            assert "request_errors_total" in result
+            assert "http_request_duration_seconds_bucket" in result.file_extract
+            assert "http_request_duration_seconds_sum" in result.file_extract
+            assert "request_errors_total" in result.file_extract
             # Non-finite values should be visible to the LLM, not hidden.
-            assert "Non-finite" in result
+            assert "Non-finite" in result.file_extract
 
     def test_prometheus_regex_fallback_nan_excluded_from_stats(self, extractor):
         """When a series has both finite and NaN values, statistics are
@@ -239,7 +248,7 @@ gauge_with_gaps{shard="d"} 30
             result = extractor.extract(content)
             # Each label-qualified series is its own metric (single point
             # each), but the presence of NaN should be surfaced.
-            assert "Non-finite" in result
+            assert "Non-finite" in result.file_extract
             # No NaN should appear in the computed statistics lines.
-            assert "Range: nan" not in result.lower()
-            assert "mean: nan" not in result.lower()
+            assert "Range: nan" not in result.file_extract.lower()
+            assert "mean: nan" not in result.file_extract.lower()

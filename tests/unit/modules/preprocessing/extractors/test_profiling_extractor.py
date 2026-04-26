@@ -37,14 +37,19 @@ class TestProfilingExtractor:
        1.500000000 seconds time elapsed
 """
         result = extractor.extract(content)
-        assert "perf stat" in result
-        assert "IPC" in result
+        assert "perf stat" in result.file_extract
+        assert "IPC" in result.file_extract
         # IPC = 2.1B / 3B = 0.7
-        assert "0.70" in result
+        assert "0.70" in result.file_extract
         # Low IPC flagged
-        assert "low IPC" in result or "memory stalls" in result
+        assert (
+            "low IPC" in result.file_extract or "memory stalls" in result.file_extract
+        )
         # Cache miss rate = 5M/50M = 10%
-        assert "Cache miss" in result or "cache" in result.lower()
+        assert (
+            "Cache miss" in result.file_extract
+            or "cache" in result.file_extract.lower()
+        )
 
     def test_perf_stat_good_ipc(self, extractor):
         """perf stat with good IPC (>1.0) — no anomaly."""
@@ -57,9 +62,9 @@ class TestProfilingExtractor:
        0.500000000 seconds time elapsed
 """
         result = extractor.extract(content)
-        assert "IPC" in result
+        assert "IPC" in result.file_extract
         # IPC = 2.5 — good
-        assert "2.50" in result
+        assert "2.50" in result.file_extract
 
     # --- R6.3: perf report ---
 
@@ -74,10 +79,10 @@ class TestProfilingExtractor:
      5.00%  myapp    myapp              [.] parse_json
 """
         result = extractor.extract(content)
-        assert "perf report" in result
-        assert "EVP_EncryptUpdate" in result
-        assert "process_request" in result
-        assert "30.2" in result or "30.25" in result
+        assert "perf report" in result.file_extract
+        assert "EVP_EncryptUpdate" in result.file_extract
+        assert "process_request" in result.file_extract
+        assert "30.2" in result.file_extract or "30.25" in result.file_extract
 
     # --- Existing: cProfile ---
 
@@ -95,9 +100,12 @@ class TestProfilingExtractor:
        99    0.100    0.001    0.100    0.001 {built-in method builtins.len}
 """
         result = extractor.extract(content)
-        assert "cProfile" in result
-        assert "Hotspots" in result or "hotspot" in result.lower()
-        assert "main" in result or "query" in result
+        assert "cProfile" in result.file_extract
+        assert (
+            "Hotspots" in result.file_extract
+            or "hotspot" in result.file_extract.lower()
+        )
+        assert "main" in result.file_extract or "query" in result.file_extract
 
     # --- Existing: flame graph ---
 
@@ -110,5 +118,5 @@ main;init 50
 main;cleanup 30
 """
         result = extractor.extract(content)
-        assert "Flame Graph" in result
-        assert "db_query" in result or "process" in result
+        assert "Flame Graph" in result.file_extract
+        assert "db_query" in result.file_extract or "process" in result.file_extract

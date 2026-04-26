@@ -9,10 +9,10 @@ import re
 from collections import Counter
 from typing import TYPE_CHECKING
 
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
     extract_time_range,
-    format_coverage_metadata,
     has_content,
 )
 
@@ -88,21 +88,23 @@ class LogsAndErrorsExtractor:
     def llm_calls_used(self) -> int:
         return 0
 
-    def extract(self, content: str) -> str:
+    def extract(self, content: str) -> ExtractResult:
         """
         Crime Scene Extraction algorithm:
         1. Find all errors with severity tracking
         2. Prioritize highest-severity error
         3. Detect multiple crime scenes or error bursts
         4. Extract context with adaptive sizing
-        5. Safety check: truncate if exceeds limit
+        5. Return structured ExtractResult with three distinct parts
         """
         content = content.lstrip("\ufeff")
         if len(content) > 50_000_000:
-            return "[File exceeds 50MB maximum size limit for extraction]"
+            return ExtractResult(
+                file_extract="[File exceeds 50MB maximum size limit for extraction]"
+            )
 
         if not has_content(content):
-            return EMPTY_CONTENT_RESPONSE
+            return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         lines = content.split("\n")
         total_lines = len(lines)
@@ -111,60 +113,68 @@ class LogsAndErrorsExtractor:
         errors = self._find_all_errors_with_severity(lines)
 
         if not errors:
-            # No errors found - extract tail
-            result = self._extract_tail(lines)
+            crime_scene = self._extract_tail(lines)
         else:
-            # 2. Find highest-severity error
             primary_error = max(errors, key=lambda e: e["severity"])
-
-            # 3. Check for multiple high-severity errors (ERROR level or higher)
             high_severity = [
                 e for e in errors if e["severity"] >= self.SEVERITY_WEIGHTS["ERROR"]
             ]
 
             if len(high_severity) > 1:
-                # Multiple crime scenes: first + last
-                result = self._extract_multiple_crime_scenes(
+                crime_scene = self._extract_multiple_crime_scenes(
                     lines, high_severity[0], high_severity[-1]
                 )
             else:
-                # 4. Check for error burst around primary error
                 burst_window = self._detect_error_burst(
                     lines, primary_error["line_idx"]
                 )
-
                 if burst_window:
-                    result = self._extract_burst_context(
+                    crime_scene = self._extract_burst_context(
                         lines, burst_window, primary_error
                     )
                 else:
-                    result = self._extract_single_error_context(lines, primary_error)
+                    crime_scene = self._extract_single_error_context(
+                        lines, primary_error
+                    )
 
-        # Entity profiling: scan full content for key entities.
-        # Prepend to result so it's visible even when the structural index
-        # is truncated by the context builder's per-item character cap.
+        # Entity profiling \u2014 returns (summary, profile_body) separately
         error_lines = {e["line_idx"] for e in errors}
-        entity_profile = self._build_entity_profile(content, error_lines)
-        if entity_profile:
-            result = entity_profile + "\n\n" + result
+        file_summary, profile_body = self._build_entity_profile(content, error_lines)
 
+        # Template counts \u2192 search map
+        template_block = ""
         if errors:
-            template_block = self._build_template_counts(errors)
-            if template_block:
-                result = template_block + "\n\n" + result
+            template_block = self._build_template_counts(errors, total_lines) or ""
 
-        # Coverage metadata
+        # --- Assemble file_extract (default question answer) ---
+        file_extract_parts = [p for p in [file_summary, crime_scene] if p]
+        file_extract = "\n\n".join(file_extract_parts)
+
+        # --- Assemble search_map (navigation for search_file) ---
+        search_map_parts = [p for p in [profile_body, template_block] if p]
+        search_map = "\n\n".join(search_map_parts) or None
+
+        # --- Assemble file_meta (facts about the raw file) ---
         severity_counts = Counter(e["keyword"] for e in errors)
         time_range = extract_time_range(content)
         truncated = total_lines > self.MAX_SNIPPET_LINES
-        result += format_coverage_metadata(
-            Lines=f"{min(total_lines, self.MAX_SNIPPET_LINES)} of {total_lines}",
-            Truncated=truncated,
-            Errors=len(errors),
-            **{f"Severity {k}": v for k, v in severity_counts.items()},
-            **time_range,
+        file_meta: dict = {
+            "lines": total_lines,
+            "lines_extracted": min(total_lines, self.MAX_SNIPPET_LINES),
+            "size_bytes": len(content.encode("utf-8", errors="replace")),
+            "truncated": truncated,
+            "errors": len(errors),
+        }
+        if severity_counts:
+            file_meta["severity"] = dict(severity_counts)
+        if time_range.get("Time range"):
+            file_meta["time_range"] = time_range["Time range"]
+
+        return ExtractResult(
+            file_extract=file_extract,
+            search_map=search_map,
+            file_meta=file_meta,
         )
-        return result
 
     def _find_all_errors_with_severity(self, lines: list[str]) -> list[dict]:
         """
@@ -406,16 +416,29 @@ class LogsAndErrorsExtractor:
 
         return "\n".join(formatted)
 
-    def _build_template_counts(self, errors: list[dict]) -> str:
+    def _build_template_counts(self, errors: list[dict], total_lines: int = 0) -> str:
         """Normalise every severity-matched line to its message template and
-        count occurrences across the full file.
+        count occurrences.
 
         Unlike the old TOP ERROR MESSAGES block (which used raw line text and
         therefore counted every timestamped/PID-suffixed line as unique),
-        this normalises away timestamps, PIDs, and trailing numeric ordinals
-        before counting — so "error state 6 1" and "error state 6 2" both
-        collapse to "error state 6" and their counts accumulate correctly.
+        this normalises away timestamps, PIDs, and hex literals before
+        counting — so Apache "error state 6" lines accumulate correctly.
+
+        When total_lines is provided and severity-keyword lines represent
+        fewer than MIN_TEMPLATE_COVERAGE_FRACTION of the file, the block is
+        suppressed — it covers too small a fraction to be meaningful (e.g.
+        SSH auth logs where "Failed password" lines have no ERROR keyword).
+        Pass total_lines=0 to skip the coverage gate (e.g. in unit tests).
         """
+        if not errors:
+            return ""
+
+        if total_lines > 0:
+            coverage = len(errors) / total_lines
+            if coverage < self.MIN_TEMPLATE_COVERAGE_FRACTION:
+                return ""
+
         template_counts: Counter[str] = Counter(
             _normalize_template(e["line_text"]) for e in errors
         )
@@ -424,9 +447,16 @@ class LogsAndErrorsExtractor:
 
         total = len(errors)
         distinct = len(template_counts)
+        if total_lines > 0:
+            scope = (
+                f"error-keyword lines: {total} of {total_lines},"
+                f" {total / total_lines:.0%} coverage"
+            )
+        else:
+            scope = f"{total} lines matched severity keywords"
         header = (
             f"EVENT TEMPLATE COUNTS"
-            f" ({total} lines matched severity keywords,"
+            f" ({scope},"
             f" {distinct} distinct template{'s' if distinct != 1 else ''}):"
         )
         lines = [header]
@@ -507,20 +537,56 @@ class LogsAndErrorsExtractor:
         r"Connection closed|Connection reset", re.IGNORECASE
     )
 
+    # Minimum fraction of total lines that must match severity keywords for
+    # the template counts block to be shown. Below this threshold the block
+    # is suppressed — it covers too small a portion of the file to be
+    # representative (e.g. SSH brute-force logs where attack lines contain
+    # no ERROR/WARN/FATAL keywords).
+    MIN_TEMPLATE_COVERAGE_FRACTION = 0.15
+
+    # SSH/TLS protocol terms that _USER_RE's broad "for <word>" branch would
+    # otherwise capture as usernames. These are structural keywords in auth
+    # log messages, never actual account names.
+    _USER_PROTOCOL_TERMS: frozenset = frozenset(
+        {
+            "authentication",
+            "publickey",
+            "preauth",
+            "key",
+            "address",
+            "the",
+            "a",
+            "an",
+        }
+    )
+
+    # Exact search strings for each semantic event type — surfaced in the
+    # entity profile so the agent knows what to pass to search_file.
+    _EVENT_SEARCH_STRINGS: dict = {
+        "failed_password": "Failed password",
+        "accepted_login": "Accepted password",
+        "invalid_user": "Invalid user",
+        "connection_closed": "Connection closed",
+    }
+
     def _build_entity_profile(
         self, content: str, error_lines: set[int] = None, top_n: int = 10
     ) -> str:
-        """
-        Scan full content for key entities and produce a frequency summary.
+        """Scan the full file for key entities and produce a frequency summary.
 
-        This gives the LLM an explicit enumeration of distinct actors/hosts
-        without requiring it to manually scan hundreds of log lines.
+        All IP and username counts reflect the complete file — not just
+        severity-keyword lines. Entities are ranked by total mentions so the
+        most active actor always appears first regardless of which log level
+        its lines carry.
+
+        An optional annotation "(N on error lines)" is added when an entity
+        appears on severity-keyword lines, but this does NOT affect ordering.
         """
         error_lines = error_lines or set()
-        ip_counts: Counter = Counter()
-        error_ip_counts: Counter = Counter()
-        user_counts: Counter = Counter()
-        error_user_counts: Counter = Counter()
+        ip_all_counts: Counter = Counter()
+        ip_error_counts: Counter = Counter()
+        user_all_counts: Counter = Counter()
+        user_error_counts: Counter = Counter()
         event_counts: Counter = Counter()
         port_counts: Counter = Counter()
         pid_counts: Counter = Counter()
@@ -530,16 +596,16 @@ class LogsAndErrorsExtractor:
         for i, line in enumerate(lines):
             is_error = i in error_lines
             for ip in self._IPV4_RE.findall(line) + self._IPV6_RE.findall(line):
+                ip_all_counts[ip] += 1
                 if is_error:
-                    error_ip_counts[ip] += 1
-                else:
-                    ip_counts[ip] += 1
+                    ip_error_counts[ip] += 1
             for user in self._USER_RE.findall(line):
-                if user:
+                # Skip SSH/TLS protocol keywords that _USER_RE's broad
+                # "for <word>" branch would otherwise capture as usernames.
+                if user and user.lower() not in self._USER_PROTOCOL_TERMS:
+                    user_all_counts[user] += 1
                     if is_error:
-                        error_user_counts[user] += 1
-                    else:
-                        user_counts[user] += 1
+                        user_error_counts[user] += 1
             for port_str in self._PORT_KEYWORD_RE.findall(
                 line
             ) + self._HOST_PORT_RE.findall(line):
@@ -564,38 +630,56 @@ class LogsAndErrorsExtractor:
                 event_counts["connection_closed"] += 1
 
         if not (
-            ip_counts
-            or error_ip_counts
-            or user_counts
-            or error_user_counts
+            ip_all_counts
+            or user_all_counts
             or event_counts
             or port_counts
             or pid_counts
             or path_counts
         ):
-            return "ENTITY PROFILE: No entities found"
+            return "", "ENTITY PROFILE: No entities found"
 
-        parts = ["ENTITY PROFILE (full file scan):"]
+        # FILE SUMMARY — returned separately so extract() can place it in file_extract
+        summary = self._build_summary(
+            event_counts,
+            ip_all_counts,
+            user_all_counts,
+            path_counts,
+            len(lines),
+            len(error_lines),
+        )
 
-        # Event types first — most useful for LLM interpretation
+        # ENTITY PROFILE body — the search map
+        parts: list[str] = ["ENTITY PROFILE (full file scan):"]
+
         if event_counts:
-            parts.append("  Event types:")
+            parts.append(
+                "  Event types"
+                "  [search: use the exact string shown with search_file]:"
+            )
             for event, count in event_counts.most_common():
-                parts.append(f"    {event}: {count}")
+                search_str = self._EVENT_SEARCH_STRINGS.get(event, event)
+                parts.append(f'    {event}: {count}  ["{search_str}"]')
 
-        if error_ip_counts or ip_counts:
-            parts.append("  Distinct IPs:")
-            for ip, count in error_ip_counts.most_common(top_n):
-                parts.append(f"    {ip}: {count} error mentions")
-            for ip, count in ip_counts.most_common(top_n):
-                parts.append(f"    {ip}: {count} standard mentions")
+        if ip_all_counts:
+            parts.append(
+                "  Distinct IPs"
+                "  [search: use the IP string literally with search_file]:"
+            )
+            for ip, total in ip_all_counts.most_common(top_n):
+                error_n = ip_error_counts.get(ip, 0)
+                annotation = f"  ({error_n} on error lines)" if error_n else ""
+                parts.append(f"    {ip}: {total} mentions{annotation}")
 
-        if error_user_counts or user_counts:
-            parts.append("  Distinct usernames:")
-            for user, count in error_user_counts.most_common(top_n):
-                parts.append(f"    {user}: {count} error mentions")
-            for user, count in user_counts.most_common(top_n):
-                parts.append(f"    {user}: {count} standard mentions")
+        if user_all_counts:
+            parts.append(
+                "  Distinct usernames"
+                "  [search: use the username literally with search_file]:"
+            )
+            for user, total in user_all_counts.most_common(top_n):
+                error_n = user_error_counts.get(user, 0)
+                annotation = f"  ({error_n} on error lines)" if error_n else ""
+                parts.append(f"    {user}: {total} mentions{annotation}")
 
         if port_counts:
             parts.append(f"  Distinct Ports: {len(port_counts)}")
@@ -612,4 +696,85 @@ class LogsAndErrorsExtractor:
             for path, count in path_counts.most_common(top_n):
                 parts.append(f"    {path}: {count} requests")
 
-        return "\n".join(parts)
+        return summary, "\n".join(parts)
+
+    @staticmethod
+    def _detect_log_pattern(
+        event_counts: "Counter[str]",
+        path_counts: "Counter[str]",
+        error_count: int,
+        total_lines: int,
+    ) -> str:
+        """Return a one-phrase pattern interpretation for the FILE SUMMARY, or ''."""
+        failed = event_counts.get("failed_password", 0)
+        accepted = event_counts.get("accepted_login", 0)
+        invalid = event_counts.get("invalid_user", 0)
+
+        # SSH brute-force: failures dominate with few or no successes
+        if failed > 0 and (accepted == 0 or failed >= 3 * accepted):
+            return "SSH credential-stuffing/brute-force pattern"
+
+        # General SSH authentication activity
+        if failed > 0 or invalid > 0 or accepted > 0:
+            return "SSH authentication activity"
+
+        # HTTP: paths detected
+        if path_counts:
+            if error_count > 0 and error_count / max(total_lines, 1) > 0.05:
+                return "HTTP error pattern"
+            return "HTTP access log"
+
+        return ""
+
+    def _build_summary(
+        self,
+        event_counts: "Counter[str]",
+        ip_counts: "Counter[str]",
+        user_counts: "Counter[str]",
+        path_counts: "Counter[str]",
+        total_lines: int,
+        error_count: int,
+    ) -> str:
+        """Return a compact FILE SUMMARY (2–4 sentences) describing dominant
+        activity, top source, and key absences.
+
+        Prepended to the entity profile so it survives context truncation and
+        gives the agent an immediate orientation without requiring it to parse
+        the full entity table.
+        """
+        sentences = []
+
+        # Interpretation-first: name the pattern before listing counts
+        pattern = self._detect_log_pattern(
+            event_counts, path_counts, error_count, total_lines
+        )
+        if pattern:
+            sentences.append(f"{pattern}.")
+
+        # Dominant activity counts
+        top_events = event_counts.most_common(3)
+        if top_events:
+            ev_summary = ", ".join(
+                f"{name.replace('_', ' ')} ({count})" for name, count in top_events
+            )
+            sentences.append(f"Dominant activity: {ev_summary}.")
+        elif error_count > 0:
+            sentences.append(
+                f"{error_count} severity-flagged lines out of {total_lines} total."
+            )
+
+        # Top source IP
+        if ip_counts:
+            top_ip, top_count = ip_counts.most_common(1)[0]
+            sentences.append(f"Top source: {top_ip} ({top_count} mentions).")
+
+        # Key absences the agent can confidently answer without searching
+        absent = []
+        if not path_counts:
+            absent.append("no HTTP traffic")
+        if absent:
+            sentences.append(f"Absent: {', '.join(absent)}.")
+
+        if not sentences:
+            return ""
+        return "FILE SUMMARY: " + " ".join(sentences)

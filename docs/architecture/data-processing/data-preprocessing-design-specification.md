@@ -1,8 +1,8 @@
-# Data Preprocessing Design Specification v5.5
+# Data Preprocessing Design Specification v5.4
 
 **Status**: FINAL
-**Date**: 2026-04-18
-**Supersedes**: v5.2
+**Date**: 2026-04-26
+**Supersedes**: v5.3
 
 ---
 
@@ -297,18 +297,18 @@ For the full runtime-marker vocabulary (including `structure_extraction`, `none`
 
 **All 11 extractors use stdlib only** (re, ast, json). No external dependencies except optional `yaml`/`tomli` for config parsing. This means zero external risk, deterministic output, and fast execution.
 
-#### Coverage Metadata (v4.2)
+#### Coverage Metadata (v5.4 — file_meta dict)
 
-All 10 active extractors (excluding VisualEvidence) append **coverage metadata** after a `--- COVERAGE METADATA ---` separator. This metadata enables downstream systems — particularly the orchestration layer's coverage gap detection (Section 6.1) — to identify what an extractor *did* and *didn't* process.
+All 10 active extractors (excluding VisualEvidence) return **coverage metadata** as the `file_meta` field of `ExtractResult` — a structured dict returned alongside `file_extract` and `search_map`. The `--- COVERAGE METADATA ---` separator text no longer exists. Coverage data is now a structured dict, enabling downstream systems — particularly the orchestration layer's coverage gap detection (Section 6.1) — to read typed values directly rather than parsing separator text.
 
 **Format:**
-```
-[... structural index output ...]
 
---- COVERAGE METADATA ---
-Lines: 847 of 12453
-Time range: 2024-01-15T10:30:00 to 2024-01-15T10:45:23
-Severity distribution: ERROR=23, WARN=45, CRITICAL=2
+```json
+{
+  "total_lines": 847,
+  "time_range": {"start": "2024-01-15T10:30:00", "end": "2024-01-15T10:45:23"},
+  "severity_distribution": {"ERROR": 23, "WARN": 45, "CRITICAL": 2}
+}
 ```
 
 **Per-extractor metadata fields (as actually emitted by current code):**
@@ -335,7 +335,7 @@ Severity distribution: ERROR=23, WARN=45, CRITICAL=2
 > - **perf report**: `Functions profiled` = count of parsed symbols; `Top function` = highest-overhead symbol.
 > - **perf stat** and **unknown-format fallback**: neither field is emitted, because these formats carry no function-level data. `format_coverage_metadata` drops `None`-valued keys, so the absence is genuine (not a lie by omission).
 
-Coverage metadata is additive — appended after the separator, never modifying existing output. Utility functions in `faultmaven/modules/preprocessing/extractors/utils.py` provide `COVERAGE_SEPARATOR`, `format_coverage_metadata()`, `extract_timestamp()`, and `extract_time_range()`.
+Coverage data is stored as a structured `file_meta` dict in `ExtractResult`, returned alongside `file_extract` and `search_map`. Utility functions in `faultmaven/modules/preprocessing/extractors/utils.py` provide `format_coverage_metadata()`, `extract_timestamp()`, and `extract_time_range()`.
 
 ### 2.3 Classification Fallback: Best-Effort Dispatch
 
@@ -410,15 +410,15 @@ investigation_service.process_turn(payload: TurnPayload)
   │                 → DataClassifier.classify(...)
   │                 → extractor.extract(content)   [with 2s timeout]
   │                 → PreprocessingResult
-  │           → Evidence(form=DOCUMENT, preprocessed_content=structural_index)
+  │           → Evidence(form=DOCUMENT, preprocessed_content=ExtractResult.to_json())
   │
   │   PII redaction is NOT applied at extraction time.
   │   It runs at the LLM boundary (MilestoneEngine), so structural indexes
   │   are stored raw and the redaction map can be kept consistent per-case.
   │
   ├─ STEP 2: LLM INFERENCE
-  │   Context includes structural indexes via Context Sliding Window
-  │   (Tier A: recent data with full structural_index, searchable="true")
+  │   Context includes file extracts via Context Sliding Window
+  │   (Tier A: recent data with <file_extract>, <search_map>, and <file_meta> elements, searchable="true")
   │   Tools access raw files via ToolContext.in_memory_case
   │   → LLM responds with evidence_to_add (agent findings → SUBMITTED_DATA)
   │
@@ -972,12 +972,12 @@ Two `DATA_ACCESS_*` constants are injected into the INVESTIGATOR system prompt v
 ```text
 ## Data Access Strategy
 
-The structural indexes in <evidence_collected> are your primary source.
+The <file_extract> content in <evidence_collected> is your primary source.
 Summarize the key findings: errors by severity, anomalies, misconfigurations,
 notable patterns.
-If a structural_index is [TRUNCATED], use search_file to retrieve specific sections.
-Do NOT call deep_analysis or vectorize_file in triage mode — the structural
-index is the answer.
+If a <file_extract> is [TRUNCATED], use search_file to retrieve specific sections.
+Do NOT call deep_analysis or vectorize_file in triage mode — the file extract
+is the answer.
 ```
 
 **Directed Analysis mode** (`DATA_ACCESS_DIRECTED_ANALYSIS`):
@@ -985,7 +985,7 @@ index is the answer.
 ```text
 ## Data Access Strategy
 
-The user has a specific question. The <structural_index role="orientation"> for
+The user has a specific question. The <file_extract role="orientation"> for
 each evidence file is a map of the file's contents (time range, services, error
 distribution).
 
@@ -1010,7 +1010,7 @@ automatically index large files for semantic search — you do not need to manag
 
 Default is Type A (evidence search is always safe).
 
-**Structural index tagging**: In DA mode, structural indexes are tagged `<structural_index role="orientation">` to signal they are orientation data, not the primary output. In Triage mode, plain `<structural_index>` is used.
+**File extract tagging**: In DA mode, file extracts are tagged `<file_extract role="orientation">` to signal they are orientation data, not the primary output. In Triage mode, plain `<file_extract>` is used.
 
 ### 6.1 Orchestration Hardening: Mechanical Safety Nets (v4.2, updated v5.2)
 
@@ -1022,7 +1022,7 @@ Before each LLM call, the orchestration service extracts entities from the user'
 
 1. **Query entity extraction** — Compiled regex extracts timestamps (`14:00`, `2024-01-15`), service names (words after `in`/`from`/`on`), HTTP error codes (`4xx`/`5xx`), error codes (`E1234`), and IP addresses.
 
-2. **Coverage gap detection** — For each evidence artifact, parse the `--- COVERAGE METADATA ---` section. Compare query timestamps against evidence time ranges, query services against evidence source fields. Gaps produce advisory strings.
+2. **Coverage gap detection** — For each evidence artifact, read the `file_meta` dict from the evidence's JSON `preprocessed_content` (keys such as `file_meta["time_range"]` and `file_meta["services"]`). Compare query timestamps against evidence time ranges, query services against evidence source fields. Gaps produce advisory strings.
 
 3. **Advisory injection** — Gap descriptions are appended to the LLM system prompt as `[COVERAGE ADVISORY]` blocks. Example: `"User asks about 14:00 but evidence ev_abc only covers 13:42-13:57. Agent should acknowledge the gap or search for additional data."`
 
@@ -1325,7 +1325,7 @@ PII_REDACT_PASSWORDS=true
 
 ## Appendix B: Extractor Reference
 
-All 11 extractors share the uniform `extract(content: str) -> str` contract. They are stateless, produce a structural index with appended coverage metadata, and run under a 2-second Tier 1 timeout. None accept per-call parameter overrides; when the agent needs a different slice of the data it uses keyword or regex search via `search_file`.
+All 11 extractors share the uniform `extract(content: str) -> ExtractResult` contract. They are stateless, return an `ExtractResult` with three parts: `file_extract` (orientation content), `search_map` (entity profile + search hints), and `file_meta` (coverage data as a structured dict). All run under a 2-second Tier 1 timeout. None accept per-call parameter overrides; when the agent needs a different slice of the data it uses keyword or regex search via `search_file`.
 
 ### Strategy names
 
@@ -1359,18 +1359,18 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 - `MAX_STRUCTURAL_INDEX_TOKENS = 2500`
 - `MAX_STRUCTURAL_INDEX_CHARS = 10000`
 - **Two truncation strategies, applied at different stages:**
-  - `truncate_output()` (extractors, `extractors/utils.py`) — preserves the first 40 % + last 40 % of the produced structural index so both file headers and tails remain visible. Applied when an extractor's output exceeds the cap.
+  - `truncate_output()` (extractors, `extractors/utils.py`) — preserves the first 40 % + last 40 % of the produced `file_extract` content so both file headers and tails remain visible. Applied when an extractor's output exceeds the cap.
   - `_fallback_direct_extraction()` (`PreprocessingService`, `preprocessing_service.py`) — **head-only** cap at `max_chars=10000` with a trailing `... [Truncated N chars]` marker. Used by the orchestrator when no extractor runs (`page_capture_passthrough`, `UNANALYZABLE`, `classification_failed`, Tier 1 timeout/error `structure_extraction` fallback) — there's no extractor output to preserve a tail from, just raw content.
 
 ### Shared utilities (`extractors/utils.py`)
 
 - `extract_timestamp(line)` / `extract_time_range(content)` — recognise ISO-8601 (with/without `T`), syslog BSD, epoch seconds, epoch milliseconds. Scan only the first 10 and last 10 lines to stay within the Tier 1 latency budget.
-- `format_coverage_metadata(**kwargs)` — appends `--- COVERAGE METADATA ---` with key-value pairs (Lines, Time range, Format, etc.) so downstream tooling can reason about what the extractor saw.
+- `format_coverage_metadata(**kwargs)` — populates the `file_meta` dict with key-value pairs (Lines, Time range, Format, etc.) so downstream tooling can reason about what the extractor saw. Returns a dict rather than appending separator text.
 - `has_content()` + `EMPTY_CONTENT_RESPONSE` — uniform empty-input guard.
 
 ### Extractor-specific notes
 
-- **LogsAndErrorsExtractor** — entity profile (services, hostnames, frequent identifiers) is **prepended** to the structural index so it survives context-builder truncation.
+- **LogsAndErrorsExtractor** — entity profile (services, hostnames, frequent identifiers) is returned in `search_map` (not prepended); FILE SUMMARY + crime scene content are in `file_extract`. `_detect_log_pattern()` generates an interpretation-first sentence (e.g., "SSH credential-stuffing/brute-force pattern") prepended to the FILE SUMMARY.
 - **TraceDataExtractor** — embedded-JSON recovery: when the content is not pure JSON, scans for `{[\s\S]*}` to salvage trace structures from mixed-format payloads.
 - **ConfigExtractor (StructuredConfigExtractor)** — secret redaction is always-on (not gated by `sanitize_pii`) since structural indexes are persisted and may be sent to LLMs. Two layers:
   1. **Key-based** — suffix-anchored patterns match the terminal key segment only (e.g., `_password$`, `_token$`, `_secret$`). Keys where the secret word is a prefix (e.g., `token_type`, `auth_method`) are NOT redacted. A non-secret value bypass skips redaction for obvious enum/boolean values.
@@ -1379,7 +1379,7 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 
 ---
 
-**Document Version**: 5.3
-**Last Updated**: 2026-04-18
+**Document Version**: 5.4
+**Last Updated**: 2026-04-26
 **Status**: FINAL
-**Predecessor**: v5.2 (data-preprocessing-design-specification.md)
+**Predecessor**: v5.3 (data-preprocessing-design-specification.md)

@@ -52,6 +52,7 @@ ExtractionMethod = Literal[
     "structure_extraction",  # timeout/error fallback to TEXT preview
     "none",  # UNANALYZABLE short-circuit
     "classification_failed",  # low-confidence short-circuit for user modal
+    "raw_passthrough",  # small-file short-circuit (< MIN_EXTRACTION_LINES)
 ]
 
 # =============================================================================

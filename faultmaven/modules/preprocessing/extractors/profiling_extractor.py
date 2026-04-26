@@ -8,9 +8,9 @@ No LLM calls required - pure parsing and statistical analysis.
 import re
 from typing import TYPE_CHECKING, Dict, List
 
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
-    format_coverage_metadata,
     has_content,
 )
 
@@ -47,10 +47,12 @@ class ProfilingDataExtractor:
         """
         content = content.lstrip("\ufeff")
         if len(content) > 50_000_000:
-            return "[File exceeds 50MB maximum size limit for extraction]"
+            return ExtractResult(
+                file_extract="[File exceeds 50MB maximum size limit for extraction]"
+            )
 
         if not has_content(content):
-            return EMPTY_CONTENT_RESPONSE
+            return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         # Detect format
         prof_format = self._detect_format(content)
@@ -64,18 +66,15 @@ class ProfilingDataExtractor:
         parser = parsers.get(prof_format, self._fallback_extraction)
         result, metadata = parser(content)
 
-        # Coverage metadata — Format is always present. Per-format parsers
-        # populate "Functions profiled" + "Top function" when they have that
-        # signal; perf-stat and unknown-fallback omit them (format_coverage_metadata
-        # drops None-valued keys). See design-check 2026-04-20 resolution.
-        result += format_coverage_metadata(
-            Format=prof_format,
-            **{
-                "Functions profiled": metadata.get("functions_profiled"),
-                "Top function": metadata.get("top_function"),
-            },
-        )
-        return result
+        file_meta: dict = {
+            "format": prof_format,
+            "size_bytes": len(content.encode("utf-8", errors="replace")),
+        }
+        if metadata.get("functions_profiled") is not None:
+            file_meta["functions_profiled"] = metadata["functions_profiled"]
+        if metadata.get("top_function") is not None:
+            file_meta["top_function"] = metadata["top_function"]
+        return ExtractResult(file_extract=result, file_meta=file_meta)
 
     def _detect_format(self, content: str) -> str:
         """Detect profiling data format"""

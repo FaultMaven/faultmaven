@@ -43,7 +43,10 @@ from faultmaven.modules.preprocessing.entities import (
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
-from faultmaven.modules.preprocessing.extractors.protocol import Extractor
+from faultmaven.modules.preprocessing.extractors.protocol import (
+    Extractor,
+    ExtractResult,
+)
 from faultmaven.modules.preprocessing.extractors.sanity_check import (
     SanityResult,
     run_sanity_check,
@@ -58,6 +61,11 @@ logger = logging.getLogger(__name__)
 # Tier 1 timeout: extractors must complete within this budget.
 # On timeout, falls back to TEXT extraction (preview-only).
 TIER1_TIMEOUT_SECONDS = 2.0
+
+# Files smaller than this threshold are passed through raw instead of
+# running extraction — the raw content is already a better "file extract"
+# than any compressed representation would be.
+MIN_EXTRACTION_LINES = 200
 
 
 # Phase 2 — alt-extractor fallback chain used when the classifier's
@@ -320,6 +328,35 @@ class PreprocessingService:
                 method="page_capture_passthrough",
                 content=self._fallback_direct_extraction(content),
                 metadata={"passthrough": True, "source_type": "page_capture"},
+            )
+            return self._build_result(
+                content=content,
+                extraction=extraction,
+                detailed_data_type=detailed_data_type,
+                unified_data_type=unified_data_type,
+                classification=classification,
+                start_time=start_time,
+                triggered_by=(
+                    "user_override" if user_override is not None else "initial"
+                ),
+            )
+
+        # Path 4: small-file passthrough — raw content is a better file
+        # extract than any compressed representation, and extraction adds
+        # no value for files that fit in the LLM context window directly.
+        line_count = content.count("\n") + 1
+        if line_count < MIN_EXTRACTION_LINES:
+            logger.info(
+                "classify_and_extract: %s has %d lines (< %d threshold) — "
+                "raw passthrough, skipping extraction",
+                filename,
+                line_count,
+                MIN_EXTRACTION_LINES,
+            )
+            extraction = ExtractionResult(
+                method="raw_passthrough",
+                content=content,
+                metadata={"passthrough": True, "source_type": "small_file"},
             )
             return self._build_result(
                 content=content,
@@ -645,7 +682,10 @@ class PreprocessingService:
         """
         processing_time_ms = int((time.time() - start_time) * 1000)
         content_size = len(content.encode("utf-8"))
-        index_size = len(extraction.content.encode("utf-8"))
+        _index_str = (
+            extraction.metadata.get("extract_result_json") or extraction.content
+        )
+        index_size = len(_index_str.encode("utf-8"))
         compression_ratio = index_size / max(content_size, 1)
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
@@ -779,7 +819,8 @@ class PreprocessingService:
             data_type=unified_data_type,
             detailed_data_type=detailed_data_type,
             summary=generate_concise_summary(extraction.content),
-            structural_index=extraction.content,
+            structural_index=extraction.metadata.get("extract_result_json")
+            or extraction.content,
             content_ref=None,
             content_size_bytes=content_size,
             content_type="text/plain",
@@ -855,9 +896,19 @@ class PreprocessingService:
                 asyncio.to_thread(extractor.extract, content),
                 timeout=TIER1_TIMEOUT_SECONDS,
             )
+            if isinstance(result_content, ExtractResult):
+                return ExtractionResult(
+                    method=extractor.strategy_name,
+                    # content holds file_extract text for sanity checks;
+                    # extract_result_json carries the full structured payload.
+                    content=result_content.file_extract,
+                    metadata={"extract_result_json": result_content.to_json()},
+                )
+            # Fallback: extractor returned a plain string (should not happen
+            # once all extractors return ExtractResult, but kept for safety).
             return ExtractionResult(
                 method=extractor.strategy_name,
-                content=result_content,
+                content=str(result_content),
                 metadata={},
             )
         except asyncio.TimeoutError:

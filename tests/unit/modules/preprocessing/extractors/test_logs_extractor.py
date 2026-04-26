@@ -12,6 +12,21 @@ from faultmaven.modules.preprocessing.extractors.logs_extractor import (
 )
 
 
+def _fe(result) -> str:
+    """file_extract field — orientation content (FILE SUMMARY + crime scene)."""
+    return result.file_extract or ""
+
+
+def _sm(result) -> str:
+    """search_map field — entity profile + template counts."""
+    return result.search_map or ""
+
+
+def _all(result) -> str:
+    """Combined text for 'not in' assertions spanning both fields."""
+    return _fe(result) + "\n" + _sm(result)
+
+
 class TestLogsAndErrorsExtractor:
     """Test Crime Scene Extraction functionality"""
 
@@ -33,9 +48,9 @@ class TestLogsAndErrorsExtractor:
         result = extractor.extract(content)
 
         # Should extract ±200 lines around error
-        assert "ERROR: Database connection failed" in result
-        assert "CRIME SCENE EXTRACTION" in result
-        assert "Single ERROR" in result
+        assert "ERROR: Database connection failed" in _fe(result)
+        assert "CRIME SCENE EXTRACTION" in _fe(result)
+        assert "Single ERROR" in _fe(result)
 
     def test_severity_prioritization(self, extractor):
         """Test that FATAL takes priority over ERROR"""
@@ -51,13 +66,13 @@ class TestLogsAndErrorsExtractor:
         result = extractor.extract(content)
 
         # Should prioritize FATAL over ERROR
-        assert "FATAL: System crash" in result
+        assert "FATAL: System crash" in _fe(result)
         # Extractor detects both ERROR and FATAL, so it reports "Multiple crime scenes"
         # The FATAL is prioritized (included in output), but both are detected
-        assert "FATAL" in result and (
-            "Multiple crime scenes" in result
-            or "Single FATAL" in result
-            or "ERROR burst" in result
+        assert "FATAL" in _fe(result) and (
+            "Multiple crime scenes" in _fe(result)
+            or "Single FATAL" in _fe(result)
+            or "ERROR burst" in _fe(result)
         )
 
     def test_multiple_crime_scenes(self, extractor):
@@ -74,9 +89,9 @@ class TestLogsAndErrorsExtractor:
         result = extractor.extract(content)
 
         # Should extract both crime scenes
-        assert "Multiple crime scenes" in result
-        assert "First ERROR" in result
-        assert "Last ERROR" in result
+        assert "Multiple crime scenes" in _fe(result)
+        assert "First ERROR" in _fe(result)
+        assert "Last ERROR" in _fe(result)
 
     def test_error_burst_detection(self, extractor):
         """Test detection of error clustering"""
@@ -92,7 +107,7 @@ class TestLogsAndErrorsExtractor:
         result = extractor.extract(content)
 
         # Should detect burst
-        assert "burst detected" in result.lower() or "ERROR" in result
+        assert "burst detected" in _fe(result).lower() or "ERROR" in _fe(result)
 
     def test_no_errors_fallback(self, extractor):
         """Test tail extraction when no errors found"""
@@ -102,8 +117,8 @@ class TestLogsAndErrorsExtractor:
         result = extractor.extract(content)
 
         # Should extract last 500 lines
-        assert "No errors detected" in result
-        assert "showing last" in result
+        assert "No errors detected" in _fe(result)
+        assert "showing last" in _fe(result)
 
     def test_safety_truncation(self, extractor):
         """Test that output is truncated if too large"""
@@ -118,7 +133,7 @@ class TestLogsAndErrorsExtractor:
         result = extractor.extract(content)
 
         # Should be truncated to MAX_SNIPPET_LINES (500)
-        result_line_count = len(result.split("\n"))
+        result_line_count = len(_fe(result).split("\n"))
         assert (
             result_line_count <= extractor.MAX_SNIPPET_LINES + 10
         )  # Some buffer for headers
@@ -135,8 +150,8 @@ class TestLogsAndErrorsExtractor:
 
         result = extractor.extract(content)
 
-        assert "panic" in result.lower()
-        assert "CRIME SCENE" in result
+        assert "panic" in _fe(result).lower()
+        assert "CRIME SCENE" in _fe(result)
 
     def test_severity_ordering_critical_over_warning(self, extractor):
         """R4.4: Line containing both WARNING and CRITICAL should classify as CRITICAL."""
@@ -148,7 +163,7 @@ class TestLogsAndErrorsExtractor:
         content = "\n".join(log_lines)
         result = extractor.extract(content)
         # The line matches both WARNING and CRITICAL — CRITICAL (severity 90) should win
-        assert "Single CRITICAL" in result
+        assert "Single CRITICAL" in _fe(result)
 
     def test_properties(self, extractor):
         """Test extractor properties"""
@@ -247,8 +262,8 @@ class TestEntityProfileRegexes:
             ]
         )
         result = extractor.extract(content)
-        assert "Distinct PIDs: 3" in result
-        assert "1048576" in result
+        assert "Distinct PIDs: 3" in _sm(result)
+        assert "1048576" in _sm(result)
 
     def test_pid_regex_rejects_oversize_match(self):
         """Numbers above the kernel ceiling (e.g. request-byte counts,
@@ -259,7 +274,7 @@ class TestEntityProfileRegexes:
         # appear as a PID in the entity profile.
         content = "req processed in [9999999] ns\n" * 3
         result = extractor.extract(content)
-        assert "9999999" not in result or "Distinct PIDs" not in result
+        assert "9999999" not in _sm(result) or "Distinct PIDs" not in _sm(result)
 
     # --- IPv6: full and compressed forms; no collision with timestamps ---
 
@@ -296,8 +311,8 @@ class TestEntityProfileRegexes:
             "[Sun Dec 04 04:47:44 2005] [error] child in error state 6\n"
         ) * 20
         result = extractor.extract(content)
-        assert "Distinct Ports" not in result
-        assert "Distinct PIDs" not in result
+        assert "Distinct Ports" not in _sm(result)
+        assert "Distinct PIDs" not in _sm(result)
 
 
 class TestNormalizeTemplate:
@@ -471,21 +486,374 @@ class TestExtractTemplateCounts:
 
     def test_no_top_error_messages_heading(self, extractor):
         result = extractor.extract(self._apache_log(10, 5))
-        assert "TOP ERROR MESSAGES" not in result
+        assert "TOP ERROR MESSAGES" not in _all(result)
 
     def test_event_template_counts_heading_present(self, extractor):
         result = extractor.extract(self._apache_log(10, 5))
-        assert "EVENT TEMPLATE COUNTS" in result
+        assert "EVENT TEMPLATE COUNTS" in _sm(result)
 
     def test_state6_and_state7_counts_in_output(self, extractor):
         result = extractor.extract(self._apache_log(369, 101))
-        assert "369x" in result
-        assert "101x" in result
-        assert "state 6" in result
-        assert "state 7" in result
+        assert "369x" in _sm(result)
+        assert "101x" in _sm(result)
+        assert "state 6" in _sm(result)
+        assert "state 7" in _sm(result)
 
     def test_no_errors_produces_no_template_block(self, extractor):
         """Tail fallback: no errors → no template counts block."""
         content = "INFO startup complete\n" * 50
         result = extractor.extract(content)
-        assert "EVENT TEMPLATE COUNTS" not in result
+        assert "EVENT TEMPLATE COUNTS" not in _all(result)
+
+
+class TestTemplateCoverageSuppression:
+    """Step 2 — template block suppressed when severity-keyword lines are a
+    small fraction of the file (< MIN_TEMPLATE_COVERAGE_FRACTION)."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _ssh_log(self, total: int, error_count: int) -> str:
+        """Build a synthetic SSH log with error_count WARN lines and
+        (total - error_count) INFO lines.  Coverage = error_count / total."""
+        lines = []
+        for i in range(total):
+            if i < error_count:
+                lines.append(f"Dec 10 12:00:{i:02d} host sshd[1000]: WARN attempt {i}")
+            else:
+                lines.append(
+                    f"Dec 10 12:00:00 host sshd[1000]: Failed password for user{i} from 10.0.0.1"
+                )
+        return "\n".join(lines)
+
+    def test_template_block_suppressed_when_low_coverage(self, extractor):
+        """Coverage 2% (48 of 2000) → template block must not appear."""
+        content = self._ssh_log(total=2000, error_count=48)
+        result = extractor.extract(content)
+        assert "EVENT TEMPLATE COUNTS" not in _all(result)
+
+    def test_template_block_shown_when_sufficient_coverage(self, extractor):
+        """Coverage 25% (500 of 2000) → template block must appear."""
+        content = self._ssh_log(total=2000, error_count=500)
+        result = extractor.extract(content)
+        assert "EVENT TEMPLATE COUNTS" in _sm(result)
+
+    def test_coverage_threshold_boundary(self, extractor):
+        """Exactly at threshold (15%) — block should appear."""
+        content = self._ssh_log(total=100, error_count=15)
+        result = extractor.extract(content)
+        assert "EVENT TEMPLATE COUNTS" in _sm(result)
+
+    def test_zero_total_lines_skips_coverage_check(self, extractor):
+        """When total_lines=0 (unit-test mode), coverage gate is skipped."""
+        errors = [
+            {"line_text": "ERROR disk full", "severity": 50, "keyword": "ERROR"}
+        ] * 2
+        block = extractor._build_template_counts(errors, total_lines=0)
+        assert "EVENT TEMPLATE COUNTS" in block
+
+
+class TestEntityProfileMergedBuckets:
+    """Step 1 — entity profile merges error/standard IP buckets and ranks by
+    total mentions.  The old split (error mentions first) caused the wrong IP
+    to appear at the top for SSH brute-force logs."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _ssh_brute_force_log(self) -> str:
+        """Synthetic SSH log that mirrors the real openssh-01 structure:
+        - 183.62.140.253: 867 total lines, none with ERROR/WARN keywords
+        - 103.99.0.122:    45 lines total, all with ERROR/WARN keyword
+        In the old split, 103.99.0.122 appeared first ("error mentions").
+        With merged sort-by-total, 183.62.140.253 must come first.
+        """
+        lines = []
+        # High-volume attacker — no ERROR keyword
+        for i in range(867):
+            lines.append(
+                f"Dec 10 12:00:00 host sshd[1000]: Failed password for root from 183.62.140.253 port {22000 + i}"
+            )
+        # Low-volume but hits ERROR lines
+        for i in range(45):
+            lines.append(
+                f"Dec 10 12:00:00 host sshd[1001]: ERROR connection from 103.99.0.122 port {33000 + i}"
+            )
+        return "\n".join(lines)
+
+    def test_ip_merged_by_total_mentions(self, extractor):
+        """183.62.140.253 (867 total) must rank above 103.99.0.122 (45 total)."""
+        result = extractor.extract(self._ssh_brute_force_log())
+        sm = _sm(result)
+        pos_high = sm.index("183.62.140.253")
+        pos_low = sm.index("103.99.0.122")
+        assert (
+            pos_high < pos_low
+        ), "High-volume IP must appear before low-volume error-only IP"
+
+    def test_ip_section_has_no_error_standard_split(self, extractor):
+        """The old 'error mentions' / 'standard mentions' labels must be gone."""
+        result = extractor.extract(self._ssh_brute_force_log())
+        assert "error mentions" not in _all(result).lower()
+        assert "standard mentions" not in _all(result).lower()
+
+    def test_error_line_annotation_present_for_qualifying_ip(self, extractor):
+        """The optional '(N on error lines)' annotation appears for IPs that
+        hit severity-keyword lines, but doesn't change the ranking."""
+        result = extractor.extract(self._ssh_brute_force_log())
+        # 103.99.0.122 appears on ERROR lines → annotation expected
+        assert "on error lines" in _sm(result)
+
+    def test_entity_profile_full_file_label(self, extractor):
+        """Entity profile header must say 'full file scan'."""
+        result = extractor.extract(self._ssh_brute_force_log())
+        assert "ENTITY PROFILE (full file scan)" in _sm(result)
+
+
+class TestUsernameProtocolTermFilter:
+    """Step 1 (G7) — SSH/TLS protocol keywords must not be captured as
+    usernames by _USER_RE's broad 'for <word>' branch."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def test_authentication_not_captured_as_username(self, extractor):
+        """'No more user authentication methods available for authentication from …'
+        must not add 'authentication' to the username list."""
+        line = (
+            "Dec 10 12:00:00 host sshd[1000]: "
+            "No more user authentication methods available for authentication from 10.0.0.1"
+        )
+        result = extractor.extract(line)
+        # 'authentication' must not appear as a username entry
+        assert "authentication: " not in _sm(result)
+
+    def test_publickey_not_captured_as_username(self, extractor):
+        line = "Dec 10 12:00:00 host sshd[1000]: Accepted publickey for admin from 10.0.0.2"
+        result = extractor.extract(line)
+        assert "publickey: " not in _sm(result)
+
+    def test_real_username_still_captured(self, extractor):
+        """Protocol-term filter must not suppress real account names."""
+        lines = "\n".join(
+            [
+                f"Dec 10 12:00:00 host sshd[1000]: Failed password for testuser from 10.0.0.3 port 22"
+            ]
+            * 5
+        )
+        result = extractor.extract(lines)
+        assert "testuser" in _sm(result)
+
+    def test_root_captured_as_username(self, extractor):
+        """'root' is a real username and must NOT be filtered."""
+        lines = "\n".join(
+            [
+                f"Dec 10 12:00:00 host sshd[1000]: Failed password for root from 10.0.0.4 port 22"
+            ]
+            * 3
+        )
+        result = extractor.extract(lines)
+        assert "root" in _sm(result)
+
+
+class TestFileSummary:
+    """Step 3 — FILE SUMMARY prepended to entity profile with dominant
+    activity, top source, and absence declarations."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def test_file_summary_present_in_extract(self, extractor):
+        lines = "\n".join(
+            [
+                f"Dec 10 12:00:00 host sshd[1000]: Failed password for root from 10.0.0.5 port 22"
+            ]
+            * 20
+        )
+        result = extractor.extract(lines)
+        assert "FILE SUMMARY:" in _fe(result)
+
+    def test_file_summary_shows_dominant_event(self, extractor):
+        lines = "\n".join(
+            [
+                f"Dec 10 12:00:00 host sshd[1000]: Failed password for user{i} from 10.0.0.5 port 22"
+                for i in range(50)
+            ]
+        )
+        result = extractor.extract(lines)
+        assert "failed password" in _fe(result).lower()
+
+    def test_file_summary_absent_http_traffic_declared(self, extractor):
+        """SSH log with no HTTP entries must declare 'no HTTP traffic' absent."""
+        lines = "\n".join(
+            [
+                f"Dec 10 12:00:00 host sshd[1000]: Failed password for root from 10.0.0.5 port 22"
+            ]
+            * 10
+        )
+        result = extractor.extract(lines)
+        assert "no HTTP traffic" in _fe(result)
+
+    def test_file_summary_no_absent_http_when_paths_present(self, extractor):
+        """When HTTP paths are found, the absence declaration must NOT appear."""
+        lines = "\n".join(
+            [
+                "[Sun Dec 04 04:47:44 2005] [error] GET /index.html HTTP/1.1 400",
+                "[Sun Dec 04 04:47:45 2005] [error] POST /api/login HTTP/1.1 500",
+            ]
+            * 10
+        )
+        result = extractor.extract(lines)
+        assert "no HTTP traffic" not in _all(result)
+
+    def test_summary_precedes_entity_profile(self, extractor):
+        """FILE SUMMARY is in file_extract; ENTITY PROFILE is in search_map (separate fields)."""
+        lines = "\n".join(
+            [
+                f"Dec 10 12:00:00 host sshd[1000]: Failed password for root from 10.0.0.5 port 22"
+            ]
+            * 10
+        )
+        result = extractor.extract(lines)
+        assert "FILE SUMMARY:" in _fe(result)
+        assert "ENTITY PROFILE" in _sm(result)
+
+
+class TestSearchHints:
+    """Step 4 — entity profile sections include [search: …] hints so the
+    agent knows exactly what to pass to search_file."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def test_ip_section_has_search_hint(self, extractor):
+        lines = "\n".join(
+            [
+                f"Dec 10 12:00:00 host sshd[1000]: Failed password for root from 10.0.0.5 port 22"
+            ]
+            * 5
+        )
+        result = extractor.extract(lines)
+        assert "[search:" in _sm(result)
+        # IP section specifically
+        assert "Distinct IPs" in _sm(result)
+
+    def test_event_section_has_search_hint(self, extractor):
+        lines = "\n".join(
+            [
+                f"Dec 10 12:00:00 host sshd[1000]: Failed password for root from 10.0.0.5 port 22"
+            ]
+            * 5
+        )
+        result = extractor.extract(lines)
+        # Event entry format: failed_password: 5  ["Failed password"]
+        assert '"Failed password"' in _sm(result)
+
+    def test_username_section_has_search_hint(self, extractor):
+        lines = "\n".join(
+            [
+                f"Dec 10 12:00:00 host sshd[1000]: Failed password for admin from 10.0.0.5 port 22"
+            ]
+            * 5
+        )
+        result = extractor.extract(lines)
+        assert "Distinct usernames" in _sm(result)
+        assert "[search:" in _sm(result)
+
+
+class TestDetectLogPattern:
+    """_detect_log_pattern — interpretation-first FILE SUMMARY heuristic."""
+
+    def _counts(self, **kwargs):
+        from collections import Counter
+
+        return Counter(kwargs)
+
+    def test_ssh_bruteforce_no_successes(self):
+        event_counts = self._counts(failed_password=20)
+        label = LogsAndErrorsExtractor._detect_log_pattern(event_counts, {}, 20, 200)
+        assert "brute-force" in label.lower() or "credential" in label.lower()
+
+    def test_ssh_bruteforce_ratio(self):
+        """failures ≥ 3× successes triggers brute-force label."""
+        event_counts = self._counts(failed_password=30, accepted_login=5)
+        label = LogsAndErrorsExtractor._detect_log_pattern(event_counts, {}, 35, 300)
+        assert "brute-force" in label.lower() or "credential" in label.lower()
+
+    def test_ssh_auth_activity_not_bruteforce(self):
+        """failures < 3× successes → general auth activity, not brute-force."""
+        event_counts = self._counts(failed_password=3, accepted_login=5)
+        label = LogsAndErrorsExtractor._detect_log_pattern(event_counts, {}, 8, 100)
+        assert "authentication" in label.lower()
+        assert "brute-force" not in label.lower()
+
+    def test_ssh_invalid_user_triggers_auth_label(self):
+        event_counts = self._counts(invalid_user=10)
+        label = LogsAndErrorsExtractor._detect_log_pattern(event_counts, {}, 10, 100)
+        assert "authentication" in label.lower()
+
+    def test_http_error_pattern(self):
+        from collections import Counter
+
+        path_counts = Counter({"/api/login": 50})
+        event_counts = self._counts()
+        # 15 errors out of 100 lines = 15% > 5% threshold
+        label = LogsAndErrorsExtractor._detect_log_pattern(
+            event_counts, path_counts, 15, 100
+        )
+        assert "http" in label.lower() and "error" in label.lower()
+
+    def test_http_access_log_low_errors(self):
+        from collections import Counter
+
+        path_counts = Counter({"/index.html": 100})
+        event_counts = self._counts()
+        # 2 errors out of 200 lines = 1% < 5% threshold
+        label = LogsAndErrorsExtractor._detect_log_pattern(
+            event_counts, path_counts, 2, 200
+        )
+        assert "http" in label.lower()
+        assert "error" not in label.lower()
+
+    def test_no_pattern_returns_empty(self):
+        event_counts = self._counts()
+        label = LogsAndErrorsExtractor._detect_log_pattern(event_counts, {}, 0, 100)
+        assert label == ""
+
+    def test_pattern_appears_first_in_file_summary(self):
+        """Interpretation prefix must be the first sentence of FILE SUMMARY."""
+        extractor = LogsAndErrorsExtractor()
+        lines = "\n".join(
+            [
+                f"Dec 10 12:00:00 host sshd[1000]: Failed password for root from 10.0.0.5 port 22"
+            ]
+            * 30
+        )
+        result = extractor.extract(lines)
+        fe = _fe(result)
+        summary_start = fe.index("FILE SUMMARY:")
+        summary_line = fe[summary_start:].split("\n")[0]
+        assert (
+            "brute-force" in summary_line.lower()
+            or "credential" in summary_line.lower()
+        )
+
+    def test_template_counts_in_search_map_crime_scene_in_file_extract(self):
+        """EVENT TEMPLATE COUNTS is in search_map; CRIME SCENE is in file_extract."""
+        extractor = LogsAndErrorsExtractor()
+        # Need enough errors for coverage threshold (≥15%): 50 WARN out of 100 lines
+        error_lines = [
+            f"Dec 10 12:00:00 host sshd[1000]: WARN bad attempt {i}" for i in range(50)
+        ]
+        normal_lines = [
+            f"Dec 10 12:00:00 host sshd[1000]: normal line {i}" for i in range(50)
+        ]
+        lines = "\n".join(error_lines + normal_lines)
+        result = extractor.extract(lines)
+        if result.search_map and "EVENT TEMPLATE COUNTS" in result.search_map:
+            assert "CRIME SCENE" in _fe(result)

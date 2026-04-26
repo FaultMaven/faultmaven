@@ -9,7 +9,10 @@ Covers:
 
 import pytest
 
-from faultmaven.modules.preprocessing.extractors.protocol import Extractor
+from faultmaven.modules.preprocessing.extractors.protocol import (
+    ExtractResult,
+    Extractor,
+)
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
     MAX_STRUCTURAL_INDEX_CHARS,
@@ -113,15 +116,50 @@ class TestInputGuardrails:
 
     def test_empty_input(self, extractor_instance):
         result = extractor_instance.extract("")
-        assert result == EMPTY_CONTENT_RESPONSE
+        assert result.file_extract == EMPTY_CONTENT_RESPONSE
 
     def test_whitespace_input(self, extractor_instance):
         result = extractor_instance.extract("   \n\t  ")
-        assert result == EMPTY_CONTENT_RESPONSE
+        assert result.file_extract == EMPTY_CONTENT_RESPONSE
 
     def test_short_input(self, extractor_instance):
         result = extractor_instance.extract("abc")
-        assert result == EMPTY_CONTENT_RESPONSE
+        assert result.file_extract == EMPTY_CONTENT_RESPONSE
+
+
+class TestExtractResultRoundTrip:
+    """Round-trip serialization for ExtractResult."""
+
+    def test_full_round_trip(self):
+        er = ExtractResult(
+            file_extract="FILE SUMMARY: brute-force pattern.",
+            search_map="ENTITY PROFILE:\n  IP: 1.2.3.4 [search: 1.2.3.4]",
+            file_meta={"total_lines": 500, "time_range": {"start": "T0", "end": "T1"}},
+        )
+        restored = ExtractResult.from_json(er.to_json())
+        assert restored.file_extract == er.file_extract
+        assert restored.search_map == er.search_map
+        assert restored.file_meta == er.file_meta
+
+    def test_none_search_map_round_trip(self):
+        er = ExtractResult(file_extract="plain extract", search_map=None, file_meta={})
+        restored = ExtractResult.from_json(er.to_json())
+        assert restored.search_map is None
+        assert restored.file_extract == "plain extract"
+        assert restored.file_meta == {}
+
+    def test_version_field_present(self):
+        import json
+
+        er = ExtractResult(file_extract="x")
+        d = json.loads(er.to_json())
+        assert d["v"] == 1
+        assert "file_extract" in d
+
+    def test_from_json_legacy_plaintext_is_not_supported(self):
+        """from_json expects valid JSON — callers handle legacy via _parse_preprocessed_content."""
+        with pytest.raises(Exception):
+            ExtractResult.from_json("this is plain text, not JSON")
 
 
 class TestTruncateOutput:

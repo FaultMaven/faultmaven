@@ -11,9 +11,9 @@ specifying a different LLM provider for visual processing than text chat.
 
 from typing import TYPE_CHECKING, Optional
 
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
-    format_coverage_metadata,
     has_content,
 )
 
@@ -63,7 +63,7 @@ class VisualEvidenceExtractor:
             Placeholder message indicating vision processing required
         """
         if not has_content(content):
-            return EMPTY_CONTENT_RESPONSE
+            return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         # Detect image format
         file_ext = ""
@@ -104,12 +104,11 @@ Recommendation:
 For now, please provide textual description of the visual evidence alongside
 the image file, or extract text from screenshots manually.
 """
-        # Minimal coverage metadata so R3 gap detection sees *something* for
-        # visual evidence instead of skipping it. Phase 3 multimodal vision
-        # will extend this dict with entity-level fields (Vision model,
-        # Entities detected, …) without changing the schema.
-        return placeholder + format_coverage_metadata(
-            Format=file_ext or "unknown",
-            Filename=filename,
-            **{"Size bytes": len(content)},
+        return ExtractResult(
+            file_extract=placeholder,
+            file_meta={
+                "format": file_ext or "unknown",
+                "filename": filename,
+                "size_bytes": len(content),
+            },
         )

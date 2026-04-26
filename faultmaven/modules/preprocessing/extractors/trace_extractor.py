@@ -9,9 +9,9 @@ import json
 import re
 from typing import TYPE_CHECKING, Dict, List
 
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
-    format_coverage_metadata,
     has_content,
 )
 
@@ -42,23 +42,34 @@ class TraceDataExtractor:
         """
         content = content.lstrip("\ufeff")
         if len(content) > 50_000_000:
-            return "[File exceeds 50MB maximum size limit for extraction]"
+            return ExtractResult(
+                file_extract="[File exceeds 50MB maximum size limit for extraction]"
+            )
 
         if not has_content(content):
-            return EMPTY_CONTENT_RESPONSE
+            return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         try:
             trace_data = json.loads(content)
         except json.JSONDecodeError:
-            # If not pure JSON, try to extract JSON from text
             json_match = re.search(r"\{[\s\S]*\}", content)
             if json_match:
                 try:
                     trace_data = json.loads(json_match.group())
                 except json.JSONDecodeError:
-                    return self._fallback_extraction(content)
+                    return ExtractResult(
+                        file_extract=self._fallback_extraction(content),
+                        file_meta={
+                            "size_bytes": len(content.encode("utf-8", errors="replace"))
+                        },
+                    )
             else:
-                return self._fallback_extraction(content)
+                return ExtractResult(
+                    file_extract=self._fallback_extraction(content),
+                    file_meta={
+                        "size_bytes": len(content.encode("utf-8", errors="replace"))
+                    },
+                )
 
         # Extract trace ID
         trace_id = self._extract_trace_id(trace_data)
@@ -67,8 +78,11 @@ class TraceDataExtractor:
         spans = self._extract_spans(trace_data)
 
         if not spans:
-            return (
-                f"Trace Analysis (traceId: {trace_id})\n\nNo spans found in trace data."
+            return ExtractResult(
+                file_extract=f"Trace Analysis (traceId: {trace_id})\n\nNo spans found in trace data.",
+                file_meta={
+                    "size_bytes": len(content.encode("utf-8", errors="replace"))
+                },
             )
 
         # Calculate total duration
@@ -91,15 +105,17 @@ class TraceDataExtractor:
             trace_id, total_duration, critical_path, slow_spans, error_spans, call_tree
         )
 
-        # Coverage metadata
         services = sorted(set(s["service"] for s in spans))
-        summary += format_coverage_metadata(
-            Spans=len(spans),
-            Services=", ".join(services),
-            **{"Error spans": len(error_spans)},
-            **{"Total duration ms": f"{total_duration:.1f}"},
+        return ExtractResult(
+            file_extract=summary,
+            file_meta={
+                "spans": len(spans),
+                "services": ", ".join(services),
+                "error_spans": len(error_spans),
+                "total_duration_ms": round(total_duration, 1),
+                "size_bytes": len(content.encode("utf-8", errors="replace")),
+            },
         )
-        return summary
 
     def _extract_trace_id(self, trace_data: dict) -> str:
         """Extract trace ID from various trace formats"""

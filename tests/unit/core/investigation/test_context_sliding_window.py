@@ -159,7 +159,7 @@ class TestTierA:
         assert f'id="{ev.evidence_id}"' in result
         assert 'form="document"' in result
         assert 'data_type="LOGS"' in result
-        assert "<structural_index>" in result
+        assert "<file_extract>" in result
         assert "CRIME SCENE EXTRACTION" in result
         assert "<summary>" in result
 
@@ -174,7 +174,7 @@ class TestTierA:
         result = _build_evidence_context(case)
 
         assert 'form="submitted_data"' in result
-        assert "<structural_index>" in result
+        assert "<file_extract>" in result
         assert "timeout" in result
 
     def test_three_recent_items_all_tier_a(self):
@@ -195,7 +195,7 @@ class TestTierA:
             assert f"Structural index for item {i}" in result
 
     def test_empty_structural_index_omits_tag(self):
-        """Evidence with empty preprocessed_content omits <structural_index> tag."""
+        """Evidence with empty preprocessed_content omits <file_extract> tag."""
         ev = _make_evidence(
             preprocessed_content="",
             summary="Log file with no extractable structure",
@@ -251,7 +251,7 @@ class TestTruncation:
         result = _build_evidence_context(case)
 
         # At least the first items should have structural_index
-        assert "<structural_index>" in result
+        assert "<file_extract>" in result
         # Total result should be within reasonable bounds
         assert (
             len(result) < EVIDENCE_CONTEXT_MAX_TOTAL_CHARS + 5000
@@ -537,7 +537,7 @@ class TestProcessingModeOrientation:
     """
 
     def test_da_mode_adds_role_orientation(self):
-        """processing_mode='directed_analysis' → <structural_index role="orientation">."""
+        """processing_mode='directed_analysis' → <file_extract role="orientation">."""
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Nginx errors",
@@ -546,11 +546,11 @@ class TestProcessingModeOrientation:
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case, processing_mode="directed_analysis")
 
-        assert '<structural_index role="orientation">' in result
+        assert '<file_extract role="orientation">' in result
         assert "CRIME SCENE: 502 errors" in result
 
     def test_triage_mode_no_role_attribute(self):
-        """processing_mode='triage' → <structural_index> (no role)."""
+        """processing_mode='triage' → <file_extract> (no role)."""
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Nginx errors",
@@ -559,11 +559,11 @@ class TestProcessingModeOrientation:
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case, processing_mode="triage")
 
-        assert "<structural_index>" in result
+        assert "<file_extract>" in result
         assert 'role="orientation"' not in result
 
     def test_none_mode_no_role_attribute(self):
-        """processing_mode=None (default) → <structural_index> (no role)."""
+        """processing_mode=None (default) → <file_extract> (no role)."""
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Nginx errors",
@@ -572,7 +572,7 @@ class TestProcessingModeOrientation:
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)  # no processing_mode arg
 
-        assert "<structural_index>" in result
+        assert "<file_extract>" in result
         assert 'role="orientation"' not in result
 
     def test_orientation_role_only_on_tier_a(self):
@@ -589,7 +589,7 @@ class TestProcessingModeOrientation:
         result = _build_evidence_context(case, processing_mode="directed_analysis")
 
         # Tier A (recent 3): should have role="orientation"
-        assert '<structural_index role="orientation">' in result
+        assert '<file_extract role="orientation">' in result
         # The older items (Tier B) should be summary-only — no structural_index at all
 
 

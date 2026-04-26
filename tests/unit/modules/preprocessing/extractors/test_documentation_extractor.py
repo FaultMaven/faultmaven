@@ -89,5 +89,9 @@ Use `docker logs myservice` to view service logs.
 Set `LOG_LEVEL=debug` in the `.env` file.
 """
         result = extractor.extract(content)
-        assert "Troubleshooting" in result
-        assert "Code blocks" in result or "Commands" in result or "kubectl" in result
+        assert "Troubleshooting" in result.file_extract
+        assert (
+            "Code blocks" in result.file_extract
+            or "Commands" in result.file_extract
+            or "kubectl" in result.file_extract
+        )

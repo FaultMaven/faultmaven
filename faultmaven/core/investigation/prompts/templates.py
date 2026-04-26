@@ -129,7 +129,7 @@ ABSOLUTELY FORBIDDEN:
 CONFIDENCE MARKERS (per-evidence signal quality):
 - An evidence tag carrying `confidence="low"` means the classifier was unsure
   about this file's data type, so the extractor may have produced a summary
-  that doesn't reflect the actual content. Treat its structural_index as
+  that doesn't reflect the actual content. Treat its file_extract as
   tentative — do not assert specific findings from it ("the logs show X")
   without first confirming via a tool call or asking the user.
 - When an answer depends on a low-confidence evidence item, either
@@ -152,10 +152,28 @@ RECLASSIFICATION:
   your response ("reclassified as logs_and_errors") so the user sees the
   correction landed.
 
+USING EVIDENCE DATA (file extracts):
+The file extract is an orientation tool — it summarizes the file's content at
+intake for investigation context assembly. It is not a Q&A surface.
+
+When answering the user's question about a file:
+- Characterization question ("what does this log show?", "what's happening?",
+  "summarize this file") → answer from <file_extract>. This is what the FILE
+  SUMMARY and crime scene content inside <file_extract> are designed for.
+- Retrieval question ("which IP had the most failures?", "how many times did X
+  occur?", "show me lines where Y happened") → call search_file before answering.
+  Do not answer retrieval questions from <file_extract> alone, even if numbers
+  appear there. The extract reports orientation data, not audit-accurate counts.
+
+When advancing the investigation independently (not responding to a user question):
+- You are always free to call search_file on any uploaded file to gather evidence.
+  Use the [search: ...] hints in <search_map> as your starting search strings.
+  Proactive search is expected — do not wait for the user to ask.
+
 EXAMPLES:
 ❌ BAD: "I've taken a look at the service map and logs for frontend-api"
 ❌ BAD: "The user-profile service seems to be taking an unusually long time"
-✅ GOOD: "Based on the structural index for your log file, I can see error clusters at..."
+✅ GOOD: "Based on the file extract for your log file, I can see error clusters at..."
 ✅ GOOD: "To diagnose this further, could you check the logs for frontend-api?"
 
 If evidence is missing: Use missing_critical_data to report the gap.
@@ -222,9 +240,12 @@ YOUR TASK:
        ("How do I check logs of a restarting pod?" → LOW, not ongoing)
      * Only HIGH/CRITICAL + ongoing for ACTIVE incidents happening RIGHT NOW
 
-If the user message is raw data (logs, command output) with no question, analyze it
-and surface key findings — errors, anomalies, notable patterns. Provide value
-immediately rather than asking the user what they want you to do with it.
+If the user submits a file without asking a question: respond with a characterization
+of what the file shows, drawing from <file_extract> inside <evidence_collected>. Lead
+with the pattern or dominant finding (FILE SUMMARY), then name key entities and
+notable anomalies. This is the orientation response — use <file_extract> for this,
+not search_file. Call search_file only if the evidence is marked low-confidence or
+you need to verify a specific claim that goes beyond what <file_extract> states.
 
 TRIAGE SUMMARY QUALITY (when summarizing uploaded evidence):
 - """
@@ -1266,10 +1287,11 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
     instructions. Informs the agent where the investigation stands and what
     would advance it, WITHOUT overriding the user's question.
 
-    Three zones based on progress milestone state:
-    - VERIFY: No symptoms confirmed yet
-    - ROOT CAUSE ANALYSIS: Symptoms verified, cause not found
-    - SOLUTION NEEDED: Root cause found, need actionable fix
+    Four zones based on progress milestone state:
+    - Zone 1 VERIFY: No symptoms confirmed yet
+    - Zone 2 ROOT CAUSE ANALYSIS: Symptoms verified, cause not found
+    - Zone 3 SOLUTION NEEDED: Root cause found, need actionable fix
+    - Zone 4 AWAITING COMPLIANCE: Solution proposed, user has not yet executed
     """
     if not progress.symptom_verified:
         return """
@@ -1292,7 +1314,12 @@ Root cause is identified. A concrete, executable fix with specific commands
 advances the investigation to Treatment.
 """
     else:
-        return ""  # solution_proposed=True: pending action context handles this
+        return """
+**INVESTIGATION PROGRESS: Awaiting user action**
+A solution has been proposed. Do NOT request additional evidence or propose
+alternative fixes. Answer the user's question if they ask one, then wait for
+them to execute the proposed action and submit results.
+"""
 
 
 def get_prompt_for_case(

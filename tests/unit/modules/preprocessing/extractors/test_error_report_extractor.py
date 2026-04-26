@@ -32,9 +32,9 @@ Traceback (most recent call last):
 ValueError: invalid literal"""
         result = extractor.extract(content)
         # Root cause should be the innermost frame: db.py:15 query
-        assert "db.py" in result
-        assert "query" in result
-        assert "Root Cause" in result
+        assert "db.py" in result.file_extract
+        assert "query" in result.file_extract
+        assert "Root Cause" in result.file_extract
 
     def test_java_root_cause(self, extractor):
         """Java: most recent call first → first at-frame is root cause.
@@ -47,8 +47,11 @@ java.lang.NullPointerException: Cannot invoke method on null
     at java.lang.Thread.run(Thread.java:829)"""
         result = extractor.extract(content)
         # Root cause should be Service.processRequest (innermost/most recent)
-        assert "Service.processRequest" in result or "Service.java" in result
-        assert "Root Cause" in result
+        assert (
+            "Service.processRequest" in result.file_extract
+            or "Service.java" in result.file_extract
+        )
+        assert "Root Cause" in result.file_extract
 
     def test_java_root_cause_not_thread_run(self, extractor):
         """Java root cause should NOT be Thread.run (outermost frame)."""
@@ -59,11 +62,11 @@ java.lang.NullPointerException: null
         result = extractor.extract(content)
         # Should NOT identify Thread.run as root cause
         assert (
-            "Thread.run" not in result.split("Root Cause")[1]
-            if "Root Cause" in result
+            "Thread.run" not in result.file_extract.split("Root Cause")[1]
+            if "Root Cause" in result.file_extract
             else True
         )
-        assert "Service" in result
+        assert "Service" in result.file_extract
 
     def test_javascript_root_cause(self, extractor):
         """JS: most recent call first → first at-frame is root cause."""
@@ -74,8 +77,8 @@ TypeError: Cannot read properties of undefined (reading 'map')
     at Layer.handle (node_modules/express/lib/router/layer.js:95:5)"""
         result = extractor.extract(content)
         # Root cause should be processData (innermost)
-        assert "processData" in result or "data.js" in result
-        assert "Root Cause" in result
+        assert "processData" in result.file_extract or "data.js" in result.file_extract
+        assert "Root Cause" in result.file_extract
 
     def test_go_panic_root_cause(self, extractor):
         """Go panic traces list the panic site first."""
@@ -87,7 +90,7 @@ goroutine 1 [running]:
     handler.go:42
     server.go:100"""
         result = extractor.extract(content)
-        assert "panic" in result.lower()
+        assert "panic" in result.file_extract.lower()
 
     # --- Happy path tests ---
 
@@ -101,12 +104,12 @@ Traceback (most recent call last):
     return data[key]
 KeyError: 'missing_key'"""
         result = extractor.extract(content)
-        assert "KeyError" in result
-        assert "missing_key" in result
-        assert "Likely Fixes" in result
+        assert "KeyError" in result.file_extract
+        assert "missing_key" in result.file_extract
+        assert "Likely Fixes" in result.file_extract
 
     def test_unknown_language(self, extractor):
         """Unknown language should still produce output."""
         content = "Some random error text without recognized patterns"
         result = extractor.extract(content)
-        assert "Unknown" in result
+        assert "Unknown" in result.file_extract

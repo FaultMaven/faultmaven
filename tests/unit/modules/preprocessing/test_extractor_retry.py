@@ -71,7 +71,9 @@ def _enable_retry(value: bool):
     )
 
 
-_LONG_CONTENT = "x" * 200  # above the sanity-check thin-case threshold
+_LONG_CONTENT = "\n".join(
+    f"2024-01-01 INFO metric line {i}" for i in range(250)
+)  # above the sanity-check thin-case threshold AND MIN_EXTRACTION_LINES
 
 
 # ---------------------------------------------------------------------------

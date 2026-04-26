@@ -22,6 +22,7 @@ Gap #9: Input Sanitization
 - Reference: Prompt Engineering Guide Section 16.2
 """
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -43,9 +44,9 @@ from faultmaven.modules.case.contracts import (
 # =============================================================================
 # Evidence Context Sliding Window Configuration
 # =============================================================================
-# How many recent data evidence items get full structural_index (Tier A)
+# How many recent data evidence items get full file_extract (Tier A)
 EVIDENCE_CONTEXT_RECENT_COUNT = 3
-# Max chars per Tier A evidence item's structural_index
+# Max chars per Tier A evidence item's file_extract
 EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM = 4000
 # Max total chars for the entire evidence context section
 EVIDENCE_CONTEXT_MAX_TOTAL_CHARS = 16000
@@ -77,11 +78,48 @@ logger = logging.getLogger(__name__)
 _TRUNCATION_MARKER = "[...analysis removed for brevity...]"
 
 
+def _parse_preprocessed_content(raw: str) -> tuple[str, str | None, dict]:
+    """Parse preprocessed_content into (file_extract, search_map, file_meta).
+
+    New format is JSON with {"v": 1, "file_extract": ..., "search_map": ...,
+    "file_meta": ...} (see extractors/protocol.py SCHEMA_VERSION). Falls back
+    to treating the raw string as file_extract for legacy plaintext records.
+    """
+    if not raw:
+        return "", None, {}
+    try:
+        d = json.loads(raw)
+        if isinstance(d, dict) and "file_extract" in d:
+            return (
+                d.get("file_extract", ""),
+                d.get("search_map"),
+                d.get("file_meta") or {},
+            )
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return raw, None, {}
+
+
+def _format_file_meta(file_meta: dict) -> str:
+    """Format file_meta dict as a human-readable k=v string.
+
+    Scalar values are rendered directly; nested dicts/lists use compact JSON
+    so the LLM can read them without encountering Python repr artifacts.
+    """
+    parts = []
+    for k, v in file_meta.items():
+        if isinstance(v, (dict, list)):
+            parts.append(f"{k}={json.dumps(v, separators=(',', ':'))}")
+        else:
+            parts.append(f"{k}={v}")
+    return ", ".join(parts)
+
+
 def _confidence_marker(ev) -> tuple[str, Optional[str]]:
     """Return ``(attr, advisory)`` for the classifier-confidence marker.
 
     The attr is either ``' confidence="low"'`` or empty; the advisory is
-    a one-line note to render inside the evidence's ``<structural_index>``
+    a one-line note to render inside the evidence's ``<file_extract>``
     block when the marker fires, so the model has an in-prompt cue
     reinforcing the XML attribute.
 
@@ -120,7 +158,7 @@ def _confidence_marker(ev) -> tuple[str, Optional[str]]:
 
     advisory = (
         f"[Classifier confidence: {classification.confidence:.2f} "
-        f"(source: {classification.source}). Treat the structural_index "
+        f"(source: {classification.source}). Treat the file extract "
         f"below as tentative — the classifier was unsure about this "
         f"evidence's type, so the extractor may have been wrong.]"
     )
@@ -926,7 +964,9 @@ def _build_evidence_context(
 
     # Tier A: Recent data evidence with structural index
     for ev in tier_a:
-        structural_index = ev.preprocessed_content or ""
+        file_extract, search_map, file_meta = _parse_preprocessed_content(
+            ev.preprocessed_content or ""
+        )
 
         # Rerank page capture sections by query relevance before truncation
         # so the most pertinent panels/messages survive the per-item char cap.
@@ -934,23 +974,19 @@ def _build_evidence_context(
             user_query
             and getattr(ev, "extraction_method", None) == "page_capture_passthrough"
         ):
-            structural_index = _rerank_page_capture_sections(
-                structural_index, user_query
-            )
+            file_extract = _rerank_page_capture_sections(file_extract, user_query)
 
         truncated = False
 
-        # Per-item cap
-        if len(structural_index) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
-            remaining_chars = (
-                len(structural_index) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
-            )
-            structural_index = structural_index[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
+        # Per-item cap applies to file_extract (the orientation content)
+        if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
+            remaining_chars = len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
+            file_extract = file_extract[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
             truncated = True
 
         # Total budget cap
         entry_estimate = (
-            len(structural_index) + len(ev.summary or "") + 200
+            len(file_extract) + len(ev.summary or "") + 200
         )  # overhead for XML tags
         if total_chars + entry_estimate > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
             # Downgrade remaining Tier A to Tier B (summary only)
@@ -973,11 +1009,11 @@ def _build_evidence_context(
         confidence_attr, confidence_advisory = _confidence_marker(ev)
         result += f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
-        if structural_index.strip():
+        if file_extract.strip():
             role_attr = (
                 ' role="orientation"' if processing_mode == "directed_analysis" else ""
             )
-            result += f"    <structural_index{role_attr}>\n"
+            result += f"    <file_extract{role_attr}>\n"
             # Content-level source attribution: reinforces the XML attribute
             # so the LLM sees which file this content belongs to while reading
             # through multi-evidence blocks, not just in the enclosing tag.
@@ -985,10 +1021,15 @@ def _build_evidence_context(
                 result += f"[Source: {file_lookup[str(ev.source_file_id)]}]\n"
             if confidence_advisory:
                 result += f"{confidence_advisory}\n"
-            result += structural_index
+            result += file_extract
             if truncated:
                 result += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Work with the visible content above. If you need specific details beyond what's shown, suggest a targeted command the user can run.]"
-            result += "\n    </structural_index>\n"
+            result += "\n    </file_extract>\n"
+        if search_map and search_map.strip():
+            result += f"    <search_map>\n{search_map}\n    </search_map>\n"
+        if file_meta:
+            meta_lines = _format_file_meta(file_meta)
+            result += f"    <file_meta>{meta_lines}</file_meta>\n"
         result += "  </evidence>\n"
         total_chars += entry_estimate
 

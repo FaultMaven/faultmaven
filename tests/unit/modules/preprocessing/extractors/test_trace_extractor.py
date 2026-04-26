@@ -41,7 +41,7 @@ class TestTraceExtractor:
             ],
         }
         result = extractor.extract(json.dumps(trace))
-        assert "50.0ms" in result or "50.0" in result
+        assert "50.0ms" in result.file_extract or "50.0" in result.file_extract
 
     def test_jaeger_microseconds(self, extractor):
         """Jaeger spans use microseconds — should convert to ms correctly."""
@@ -64,7 +64,7 @@ class TestTraceExtractor:
             ]
         }
         result = extractor.extract(json.dumps(trace))
-        assert "50.0ms" in result or "50.0" in result
+        assert "50.0ms" in result.file_extract or "50.0" in result.file_extract
 
     def test_long_running_span_not_misinterpreted(self, extractor):
         """A span lasting >1000s should NOT be divided by 1M.
@@ -89,7 +89,7 @@ class TestTraceExtractor:
         # The old bug would have been: "1500000000000 > 1000000 → divide by 1000000 → 1500000"
         # which happened to be correct by coincidence for this value.
         # But the key is: it should NOT use magnitude heuristic.
-        assert "1500000" in result or "batch-job" in result
+        assert "1500000" in result.file_extract or "batch-job" in result.file_extract
 
     # --- Basic trace parsing ---
 
@@ -116,14 +116,19 @@ class TestTraceExtractor:
             ],
         }
         result = extractor.extract(json.dumps(trace))
-        assert "Errors detected" in result or "FAILED" in result
+        assert (
+            "Errors detected" in result.file_extract or "FAILED" in result.file_extract
+        )
 
     def test_invalid_json_fallback(self, extractor):
         """Non-JSON content should fall back gracefully."""
         result = extractor.extract(
             "This is not JSON at all, just some text content here"
         )
-        assert "partial extraction" in result.lower() or "invalid JSON" in result
+        assert (
+            "partial extraction" in result.file_extract.lower()
+            or "invalid JSON" in result.file_extract
+        )
 
     # --- R8: Critical path graph traversal ---
 
@@ -185,9 +190,11 @@ class TestTraceExtractor:
         }
         result = extractor.extract(json.dumps(trace))
         # Critical path should include the chain through db
-        assert "db" in result.lower()
+        assert "db" in result.file_extract.lower()
         assert (
-            "index-scan" in result or "db-lookup" in result or "db.index-scan" in result
+            "index-scan" in result.file_extract
+            or "db-lookup" in result.file_extract
+            or "db.index-scan" in result.file_extract
         )
 
     def test_critical_path_malformed_no_root(self, extractor):
@@ -215,4 +222,6 @@ class TestTraceExtractor:
         }
         result = extractor.extract(json.dumps(trace))
         # Should still produce output (fallback to top-by-duration)
-        assert "svc" in result.lower() or "op" in result.lower()
+        assert (
+            "svc" in result.file_extract.lower() or "op" in result.file_extract.lower()
+        )

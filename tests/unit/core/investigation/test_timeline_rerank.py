@@ -374,7 +374,7 @@ class TestContextBuilderFlagIntegration:
         # Look for structural_index *immediately* after (within 300 chars
         # of) the config tag; its absence means Tier B.
         local_window = out[config_tag_start : config_tag_start + 300]
-        assert "<structural_index" not in local_window
+        assert "<file_extract" not in local_window
 
     def test_flag_on_matching_evidence_promoted_to_tier_a(self):
         """Same setup, flag on — coverage match pushes the config into
@@ -410,7 +410,7 @@ class TestContextBuilderFlagIntegration:
         config_tag_start = out.find(f'id="{matching_config.evidence_id}"')
         local_window = out[config_tag_start : config_tag_start + 300]
         # Phase 3c bonus ran → config is now in Tier A with structural_index.
-        assert "<structural_index" in local_window
+        assert "<file_extract" in local_window
 
     def test_flag_on_no_time_phrase_behaves_like_flag_off(self):
         """User turn without a time phrase — rerank doesn't fire, and
@@ -437,4 +437,4 @@ class TestContextBuilderFlagIntegration:
 
         config_tag_start = out.find(f'id="{matching_config.evidence_id}"')
         local_window = out[config_tag_start : config_tag_start + 300]
-        assert "<structural_index" not in local_window
+        assert "<file_extract" not in local_window

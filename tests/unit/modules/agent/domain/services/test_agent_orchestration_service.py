@@ -1513,7 +1513,9 @@ class TestDetectCoverageGaps:
         # "14:00" appears in the coverage text, so no gap
         assert len(gaps) == 0
 
-    def test_detects_missing_service(self, orchestration_service):
+    def test_service_gap_not_detected_in_new_model(self, orchestration_service):
+        # Service gap detection via coverage text was removed in the file-extract
+        # redesign (file_meta model). Services are checked via search_file instead.
         from faultmaven.modules.preprocessing.extractors.utils import (
             COVERAGE_SEPARATOR,
         )
@@ -1528,8 +1530,8 @@ class TestDetectCoverageGaps:
             "ip_addresses": [],
         }
         gaps = orchestration_service._detect_coverage_gaps(entities, case)
-        assert len(gaps) > 0
-        assert "kafka" in gaps[0]
+        # No service gaps emitted — service coverage is handled by search_file
+        assert not any("kafka" in g for g in gaps)
 
     def test_no_gap_when_service_covered(self, orchestration_service):
         from faultmaven.modules.preprocessing.extractors.utils import (

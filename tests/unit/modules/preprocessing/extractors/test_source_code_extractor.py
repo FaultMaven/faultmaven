@@ -43,10 +43,10 @@ def baz(x: int) -> str:
     return str(x)
 '''
         result = extractor.extract(code)
-        assert "PYTHON CODE ANALYSIS" in result
-        assert "import os" in result
-        assert "Foo" in result
-        assert "baz" in result
+        assert "PYTHON CODE ANALYSIS" in result.file_extract
+        assert "import os" in result.file_extract
+        assert "Foo" in result.file_extract
+        assert "baz" in result.file_extract
 
     def test_python_error_handling(self, extractor):
         """Python try/except blocks extracted."""
@@ -60,8 +60,8 @@ def risky():
         fallback()
 """
         result = extractor.extract(code)
-        assert "Error Handling" in result
-        assert "ValueError" in result
+        assert "Error Handling" in result.file_extract
+        assert "ValueError" in result.file_extract
 
     # --- JavaScript (tree-sitter path) ---
 
@@ -82,11 +82,11 @@ function fetchData(url) {
 // TODO: Add error handling
 """
         result = extractor.extract(code)
-        assert "tree-sitter" in result
-        assert "JavaScript" in result
-        assert "Dashboard" in result
-        assert "fetchData" in result
-        assert "TODO" in result
+        assert "tree-sitter" in result.file_extract
+        assert "JavaScript" in result.file_extract
+        assert "Dashboard" in result.file_extract
+        assert "fetchData" in result.file_extract
+        assert "TODO" in result.file_extract
 
     @pytest.mark.skipif(not TREE_SITTER_AVAILABLE, reason="tree-sitter not installed")
     def test_javascript_imports(self, extractor):
@@ -98,8 +98,8 @@ import { useState, useEffect } from 'react';
 function App() { return null; }
 """
         result = extractor.extract(code)
-        assert "Imports" in result
-        assert "react" in result
+        assert "Imports" in result.file_extract
+        assert "react" in result.file_extract
 
     @pytest.mark.skipif(not TREE_SITTER_AVAILABLE, reason="tree-sitter not installed")
     def test_javascript_try_catch(self, extractor):
@@ -114,8 +114,8 @@ function doWork() {
 }
 """
         result = extractor.extract(code)
-        assert "Error Handling" in result
-        assert "try/catch" in result
+        assert "Error Handling" in result.file_extract
+        assert "try/catch" in result.file_extract
 
     # --- TypeScript ---
 
@@ -141,10 +141,10 @@ function processItems(items: User[]): void {
 }
 """
         result = extractor.extract(code)
-        assert "TypeScript" in result
-        assert "User" in result
-        assert "UserService" in result
-        assert "processItems" in result
+        assert "TypeScript" in result.file_extract
+        assert "User" in result.file_extract
+        assert "UserService" in result.file_extract
+        assert "processItems" in result.file_extract
 
     # --- Java ---
 
@@ -170,11 +170,11 @@ public class MyService {
 }
 """
         result = extractor.extract(code)
-        assert "Java" in result
-        assert "MyService" in result
-        assert "process" in result
-        assert "calculate" in result
-        assert "Error Handling" in result
+        assert "Java" in result.file_extract
+        assert "MyService" in result.file_extract
+        assert "process" in result.file_extract
+        assert "calculate" in result.file_extract
+        assert "Error Handling" in result.file_extract
 
     # --- Go ---
 
@@ -208,11 +208,14 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 // TODO: Add graceful shutdown
 """
         result = extractor.extract(code)
-        assert "Go" in result
-        assert "Server" in result
-        assert "handleRequest" in result or "Start" in result
-        assert "error checks" in result.lower() or "Error Handling" in result
-        assert "TODO" in result
+        assert "Go" in result.file_extract
+        assert "Server" in result.file_extract
+        assert "handleRequest" in result.file_extract or "Start" in result.file_extract
+        assert (
+            "error checks" in result.file_extract.lower()
+            or "Error Handling" in result.file_extract
+        )
+        assert "TODO" in result.file_extract
 
     # --- Rust ---
 
@@ -239,10 +242,10 @@ impl Config {
 }
 """
         result = extractor.extract(code)
-        assert "Rust" in result
-        assert "Config" in result
-        assert "process" in result or "new" in result
-        assert "use std" in result or "Imports" in result
+        assert "Rust" in result.file_extract
+        assert "Config" in result.file_extract
+        assert "process" in result.file_extract or "new" in result.file_extract
+        assert "use std" in result.file_extract or "Imports" in result.file_extract
 
     # --- C ---
 
@@ -265,10 +268,10 @@ int process(const char* input) {
 // TODO: Add error handling
 """
         result = extractor.extract(code)
-        assert "C/C++" in result
-        assert "Config" in result
-        assert "process" in result
-        assert "#include" in result or "Imports" in result
+        assert "C/C++" in result.file_extract
+        assert "Config" in result.file_extract
+        assert "process" in result.file_extract
+        assert "#include" in result.file_extract or "Imports" in result.file_extract
 
     # --- Fallback ---
 
@@ -288,6 +291,6 @@ function greet(name) {
             False,
         ):
             result = extractor.extract(js_code)
-            assert "Pattern-based" in result
-            assert "JavaScript" in result
-            assert "greet" in result
+            assert "Pattern-based" in result.file_extract
+            assert "JavaScript" in result.file_extract
+            assert "greet" in result.file_extract

@@ -9,9 +9,9 @@ No LLM calls required - pure tabular parsing and threshold-based analysis.
 import re
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
-    format_coverage_metadata,
     has_content,
 )
 
@@ -48,10 +48,12 @@ class CommandOutputExtractor:
         """
         content = content.lstrip("\ufeff")
         if len(content) > 50_000_000:
-            return "[File exceeds 50MB maximum size limit for extraction]"
+            return ExtractResult(
+                file_extract="[File exceeds 50MB maximum size limit for extraction]"
+            )
 
         if not has_content(content):
-            return EMPTY_CONTENT_RESPONSE
+            return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         total_lines = len(content.split("\n"))
 
@@ -71,12 +73,14 @@ class CommandOutputExtractor:
         parser = parsers.get(command_type, self._fallback_extraction)
         result = parser(content)
 
-        # Coverage metadata
-        result += format_coverage_metadata(
-            Command=command_type,
-            Lines=total_lines,
+        return ExtractResult(
+            file_extract=result,
+            file_meta={
+                "command": command_type,
+                "lines": total_lines,
+                "size_bytes": len(content.encode("utf-8", errors="replace")),
+            },
         )
-        return result
 
     def _detect_command_type(self, content: str) -> str:
         """Detect which command generated this output"""

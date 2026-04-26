@@ -9,9 +9,9 @@ No LLM calls required - pure markdown/text parsing.
 import re
 from typing import TYPE_CHECKING, Dict, List
 
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
-    format_coverage_metadata,
     has_content,
 )
 
@@ -42,10 +42,12 @@ class DocumentationExtractor:
         """
         content = content.lstrip("\ufeff")
         if len(content) > 50_000_000:
-            return "[File exceeds 50MB maximum size limit for extraction]"
+            return ExtractResult(
+                file_extract="[File exceeds 50MB maximum size limit for extraction]"
+            )
 
         if not has_content(content):
-            return EMPTY_CONTENT_RESPONSE
+            return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         # Detect format
         is_markdown = self._is_markdown(content)
@@ -77,15 +79,16 @@ class DocumentationExtractor:
             if cb["type"] == "inline" and self._looks_like_command(cb["code"])
         )
 
-        # Coverage metadata
-        result += format_coverage_metadata(
-            Format="markdown" if is_markdown else "plain",
-            Sections=len(sections),
-            **{"Code blocks": len(code_blocks)},
-            **{"Commands": commands_count},
-            **{"Empty TOC / No Structure Detected": True if not sections else None},
-        )
-        return result
+        file_meta: dict = {
+            "format": "markdown" if is_markdown else "plain",
+            "sections": len(sections),
+            "code_blocks": len(code_blocks),
+            "commands": commands_count,
+            "size_bytes": len(content.encode("utf-8", errors="replace")),
+        }
+        if not sections:
+            file_meta["empty_toc"] = True
+        return ExtractResult(file_extract=result, file_meta=file_meta)
 
     def _is_markdown(self, content: str) -> bool:
         """Detect if content is Markdown format"""

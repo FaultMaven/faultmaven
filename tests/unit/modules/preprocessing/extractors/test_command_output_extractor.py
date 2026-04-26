@@ -38,11 +38,14 @@ sda             45.00       120.00       250.00         0.00    1200000    25000
 sdb            200.00       500.00      1200.00         0.00    5000000   12000000          0   25.00   85.50
 """
         result = extractor.extract(content)
-        assert "I/O Statistics" in result
-        assert "sda" in result
-        assert "sdb" in result
+        assert "I/O Statistics" in result.file_extract
+        assert "sda" in result.file_extract
+        assert "sdb" in result.file_extract
         # sdb should be flagged: await > 20ms and util > 80%
-        assert "Anomalies" in result or "anomal" in result.lower()
+        assert (
+            "Anomalies" in result.file_extract
+            or "anomal" in result.file_extract.lower()
+        )
 
     def test_iostat_no_anomalies(self, extractor):
         """iostat with all healthy devices."""
@@ -56,10 +59,10 @@ Device            tps    kB_read/s    kB_wrtn/s    await  %util
 sda             10.00        50.00       100.00     2.00    5.00
 """
         result = extractor.extract(content)
-        assert "I/O Statistics" in result
-        assert "sda" in result
+        assert "I/O Statistics" in result.file_extract
+        assert "sda" in result.file_extract
         # No anomalies expected
-        assert "Anomalies" not in result
+        assert "Anomalies" not in result.file_extract
 
     # --- R6.2: vmstat parser ---
 
@@ -71,10 +74,13 @@ procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
  2  1  51200 102400  20480 204800  100  200    50   100  500  800 30 10 35 25  0
 """
         result = extractor.extract(content)
-        assert "Virtual Memory" in result
-        assert "blocked" in result  # b=1 should be flagged
-        assert "swap activity" in result.lower() or "si=" in result  # si/so > 0
-        assert "Anomalies" in result
+        assert "Virtual Memory" in result.file_extract
+        assert "blocked" in result.file_extract  # b=1 should be flagged
+        assert (
+            "swap activity" in result.file_extract.lower()
+            or "si=" in result.file_extract
+        )  # si/so > 0
+        assert "Anomalies" in result.file_extract
 
     def test_vmstat_healthy(self, extractor):
         """vmstat with no anomalies."""
@@ -84,9 +90,9 @@ procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
  0  0      0 500000  30000 300000    0    0    10    20  200  400 10  5 85  0  0
 """
         result = extractor.extract(content)
-        assert "Virtual Memory" in result
-        assert "0 running" in result
-        assert "85% idle" in result or "id" in result
+        assert "Virtual Memory" in result.file_extract
+        assert "0 running" in result.file_extract
+        assert "85% idle" in result.file_extract or "id" in result.file_extract
 
     # --- Existing commands ---
 
@@ -98,14 +104,17 @@ Filesystem     1K-blocks      Used Available Use% Mounted on
 /dev/sdb1      102400000  10000000  92400000  10% /data
 """
         result = extractor.extract(content)
-        assert "Disk Usage" in result
-        assert "90%" in result
+        assert "Disk Usage" in result.file_extract
+        assert "90%" in result.file_extract
 
     def test_unknown_command_fallback(self, extractor):
         """Unknown command output uses fallback."""
         content = "Some random command output that doesn't match any known format\nLine 2\nLine 3"
         result = extractor.extract(content)
-        assert "unknown format" in result.lower() or "Command Output" in result
+        assert (
+            "unknown format" in result.file_extract.lower()
+            or "Command Output" in result.file_extract
+        )
 
     # --- top parser: CPU/memory hog detection ---
 
@@ -126,9 +135,9 @@ KiB Mem : 16384000 total,  8192000 free,  7000000 used
  5678 bob        1.0  2.0   2345  1234 sshd
 """
         result = extractor.extract(content)
-        assert "Resource Hogs" in result
-        assert "hungry_worker" in result
-        assert "1234" in result  # PID of the hog
+        assert "Resource Hogs" in result.file_extract
+        assert "hungry_worker" in result.file_extract
+        assert "1234" in result.file_extract  # PID of the hog
 
     def test_top_detects_mem_hog(self, extractor):
         """Regression: a memory-heavy process must surface in Resource Hogs."""
@@ -143,9 +152,9 @@ KiB Mem : 16384000 total,  1000000 free, 15000000 used
  1111 dave       0.5  1.0   2345  1234 bash
 """
         result = extractor.extract(content)
-        assert "Resource Hogs" in result
-        assert "bloated_proc" in result
-        assert "9999" in result
+        assert "Resource Hogs" in result.file_extract
+        assert "bloated_proc" in result.file_extract
+        assert "9999" in result.file_extract
 
     def test_top_no_hogs_when_all_idle(self, extractor):
         """Healthy top output has no hogs and no Resource Hogs section."""
@@ -160,7 +169,7 @@ KiB Mem : 16384000 total, 10000000 free,  6000000 used
  2222 bob        0.5  1.0   2345  1234 bash
 """
         result = extractor.extract(content)
-        assert "Resource Hogs" not in result
+        assert "Resource Hogs" not in result.file_extract
 
     def test_iostat_minimal_three_column_layout(self, extractor):
         """A minimal iostat layout with tps/await/util directly after the
@@ -181,7 +190,7 @@ sda     50.0  25.0   85.0
 sdb     10.0   2.0    5.0
 """
         result = extractor.extract(content)
-        assert "sda" in result
+        assert "sda" in result.file_extract
         # Both anomalies must be reported (await > 20ms AND %util > 80%).
-        assert "await=25.0ms" in result
-        assert "%util=85.0%" in result
+        assert "await=25.0ms" in result.file_extract
+        assert "%util=85.0%" in result.file_extract
