@@ -151,7 +151,20 @@ class LogsAndErrorsExtractor:
         template_block = self._build_template_counts(errors, total_lines, lines) or ""
 
         # --- Assemble file_extract (default question answer) ---
+        severity_counts = Counter(e["keyword"] for e in errors)
+        time_range = extract_time_range(content)
         file_extract_parts = [p for p in [file_summary, crime_scene] if p]
+        # Append a temporal context footer so the full log span is visible even
+        # after reading a narrow crime scene excerpt, preventing the agent from
+        # treating a search sample as the complete temporal picture.
+        if crime_scene and time_range.get("Time range"):
+            file_extract_parts.append(
+                f"TEMPORAL CONTEXT: The crime scene above shows extracted error"
+                f" clusters — not the full timeline. Full log time range:"
+                f" {time_range['Time range']}."
+                f" Search results from a narrow window are a sample; events may"
+                f" span the entire log period."
+            )
         file_extract = "\n\n".join(file_extract_parts)
 
         # --- Assemble search_map (navigation for search_file) ---
@@ -159,9 +172,8 @@ class LogsAndErrorsExtractor:
         search_map = "\n\n".join(search_map_parts) or None
 
         # --- Assemble file_meta (facts about the raw file) ---
-        severity_counts = Counter(e["keyword"] for e in errors)
-        time_range = extract_time_range(content)
         truncated = total_lines > self.MAX_SNIPPET_LINES
+        # (time_range already computed above before file_extract assembly)
         file_meta: dict = {
             "lines": total_lines,
             "lines_extracted": min(total_lines, self.MAX_SNIPPET_LINES),
