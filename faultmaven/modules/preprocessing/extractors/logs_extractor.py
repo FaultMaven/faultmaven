@@ -674,7 +674,11 @@ class LogsAndErrorsExtractor:
     MIN_TEMPLATE_COVERAGE_FRACTION = 0.15
     # Minimum occurrences for a non-error-keyword line template to be considered
     # "prominent" and included alongside error-only template counts.
-    MIN_PROMINENT_NON_ERROR_COUNT = 50
+    # Set to 20 so that INFO activity like FastLeaderElection (37 lines in a 2k
+    # ZooKeeper log) is visible alongside WARN-dominated template counts. This
+    # threshold exposes moderate-frequency healthy-signal entries that would
+    # otherwise be invisible when 50 was the bar.
+    MIN_PROMINENT_NON_ERROR_COUNT = 20
 
     # SSH/TLS protocol terms that _USER_RE's broad "for <word>" branch would
     # otherwise capture as usernames. These are structural keywords in auth
