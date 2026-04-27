@@ -1119,14 +1119,25 @@ class LogsAndErrorsExtractor:
             sentences.append(
                 f"{error_count} severity-flagged lines out of {total_lines} total."
             )
-            # Surface non-flagged line count when significant — prevents agents
-            # from over-indexing on severity counts alone when INFO/DEBUG lines
-            # show the service remained partially operational alongside the errors.
+            # Surface non-flagged line count and its operational implication.
+            # When ≥25% of lines are INFO/DEBUG-level, the service was still
+            # partially operational alongside the severity-flagged events —
+            # agents must not treat severity counts alone as evidence of
+            # complete failure.
             if non_flagged >= max(10, int(total_lines * 0.1)):
-                sentences.append(
-                    f"{non_flagged} lines carry no severity flag"
-                    " (INFO/DEBUG-level normal-operation entries)."
-                )
+                non_flagged_pct = non_flagged / total_lines
+                if non_flagged_pct >= 0.25:
+                    sentences.append(
+                        f"{non_flagged} lines ({non_flagged_pct:.0%}) carry no"
+                        " severity flag (INFO/DEBUG-level entries) — service"
+                        " activity continued throughout the log period"
+                        " alongside the WARN/ERROR events."
+                    )
+                else:
+                    sentences.append(
+                        f"{non_flagged} lines carry no severity flag"
+                        " (INFO/DEBUG-level normal-operation entries)."
+                    )
 
         # Root targeting — explicitly call out root password guessing when present
         root_count = user_counts.get("root", 0)
