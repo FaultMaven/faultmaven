@@ -390,6 +390,10 @@ FREE_SPEECH — You need the user's own knowledge, judgment, or observations.
   Ask an open-ended question. hints: 2-5 short tags (1-3 words) to guide their thinking.
   {{"label": "Describe the symptoms", "action_type": "FREE_SPEECH", "payload": "What specific behavior are you seeing?", "hints": ["symptoms", "error messages", "timeline", "affected services"]}}
 
+Before marking a suggestion COOPERATIVE, ask: if the user sends this message,
+can I deliver what it implies? If the response would require data not in this
+case, use EVIDENCE instead — ask the user to collect and submit it.
+
 Keep labels concise (3-8 words). body is optional but recommended for non-obvious suggestions.
 YOU are the expert — never suggest the user look for information elsewhere.
 NOTE: action_type MUST be exactly "COOPERATIVE", "EVIDENCE", or "FREE_SPEECH".
@@ -486,6 +490,10 @@ EVIDENCE — WHAT data you need. The user might already have it (file, dashboard
 FREE_SPEECH — You need the user's own knowledge, judgment, or observations.
   Ask an open-ended question. hints: 2-5 short tags (1-3 words) to guide their thinking.
   {{"label": "Report outcome", "action_type": "FREE_SPEECH", "payload": "What happened after applying the change?", "hints": ["resolved", "partially fixed", "no change", "worse"]}}
+
+Before marking a suggestion COOPERATIVE, ask: if the user sends this message,
+can I deliver what it implies? If the response would require data not in this
+case, use EVIDENCE instead — ask the user to collect and submit it.
 
 Keep labels concise (3-8 words). body is optional but recommended for non-obvious suggestions.
 YOU are the expert — never suggest the user look for information elsewhere.

@@ -178,7 +178,21 @@ Voice is half the advisor role. The other half is responsible substance when rec
 
 Never recommend destructive commands (`rm -rf`, `DROP`, `TRUNCATE`, `kill -9` on production) without an explicit impact warning and a safer alternative when one exists.
 
-**Why both dimensions live in Rule 3**: The advisor role covers both how the agent speaks (voice) and what the agent advises (substance). Splitting them would fragment a single responsibility — being a trustworthy advisor to an operator standing in front of a production system.
+### Suggestion Type Boundary
+
+A COOPERATIVE suggestion is a clickable pre-composed message. When sent, the agent is expected to act on it — steer the investigation, confirm a transition, engage with analysis, acknowledge a step. The failure mode is generating a COOPERATIVE suggestion whose implied outcome the agent cannot deliver.
+
+**Prescribed behavior**: Before marking a suggestion COOPERATIVE, ask: *if the user clicks this, can I actually deliver what it implies?* If delivering the response would require data not present in the case, use EVIDENCE to ask the user to collect and submit it.
+
+**Prompt injection** (FOLLOW-UP SUGGESTIONS section, both INQUIRY and INVESTIGATION_BASE):
+
+```text
+Before marking a suggestion COOPERATIVE, ask: if the user sends this message,
+can I deliver what it implies? If the response would require data not in this
+case, use EVIDENCE instead — ask the user to collect and submit it.
+```
+
+**Why all three dimensions live in Rule 3**: The advisor role covers how the agent speaks (voice), what it advises (substance), and what it promises via suggestions (fidelity). Splitting them would fragment a single responsibility — being a trustworthy advisor to an operator standing in front of a production system.
 
 **Why it matters**: The agent cannot execute commands, access systems, or modify infrastructure — language that implies otherwise creates false expectations. And when the agent recommends action the operator *can* execute, understating impact is equally damaging: an advisor who doesn't flag that `kill -9` on a stateful pod may corrupt the write-ahead log isn't an advisor, they're a liability. Both voice and substance are part of the role.
 
