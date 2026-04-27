@@ -147,23 +147,31 @@ class AnthropicProvider(BaseLLMProvider):
         # Make API request
         url = f"{self.config.base_url.rstrip('/')}/messages"
 
+        _MAX_RATE_LIMIT_RETRIES = 2
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url,
-                    headers=headers,
-                    json=request_body,
-                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-                ) as response:
-
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise LLMException(
-                            f"Anthropic API request failed: {response.status} - {error_text}",
-                            status_code=response.status,
-                        )
-
-                    response_data = await response.json()
+                for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+                    async with session.post(
+                        url,
+                        headers=headers,
+                        json=request_body,
+                        timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                    ) as response:
+                        if response.status == 429 and attempt < _MAX_RATE_LIMIT_RETRIES:
+                            retry_after = float(
+                                response.headers.get("retry-after", "60")
+                            )
+                            await asyncio.sleep(retry_after)
+                            continue
+                        if response.status != 200:
+                            error_text = await response.text()
+                            raise LLMException(
+                                f"Anthropic API request failed: {response.status} - {error_text}",
+                                status_code=response.status,
+                                retryable=response.status == 429,
+                            )
+                        response_data = await response.json()
+                        break
         except asyncio.TimeoutError:
             raise LLMException(
                 f"Anthropic API request timed out after {self.config.timeout}s "

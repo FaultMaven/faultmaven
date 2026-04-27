@@ -156,68 +156,74 @@ class GroqProvider(BaseLLMProvider):
         payload.update({k: v for k, v in kwargs.items() if v is not None})
 
         # Make request to Groq API
+        _MAX_RATE_LIMIT_RETRIES = 2
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.config.base_url}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-                ) as response:
-
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise LLMException(
-                            f"Groq API error {response.status}: {error_text}",
-                            status_code=response.status,
-                        )
-
-                    data = await response.json()
-
-                    # Extract response content (OpenAI-compatible format)
-                    if not data.get("choices") or len(data["choices"]) == 0:
-                        raise LLMException("Groq API returned no choices")
-
-                    message = data["choices"][0]["message"]
-
-                    # Extract content (may be None if tool_calls present)
-                    content = message.get("content", "")
-                    if content:
-                        content = self._validate_response_content(content)
-
-                    # Extract tool calls if present
-                    tool_calls = None
-                    if "tool_calls" in message and message["tool_calls"]:
-                        tool_calls = [
-                            ToolCall(
-                                id=tc["id"], type=tc["type"], function=tc["function"]
+                for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+                    async with session.post(
+                        f"{self.config.base_url}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                    ) as response:
+                        if response.status == 429 and attempt < _MAX_RATE_LIMIT_RETRIES:
+                            retry_after = float(
+                                response.headers.get("retry-after", "60")
                             )
-                            for tc in message["tool_calls"]
-                        ]
+                            await asyncio.sleep(retry_after)
+                            continue
+                        if response.status != 200:
+                            error_text = await response.text()
+                            raise LLMException(
+                                f"Groq API error {response.status}: {error_text}",
+                                status_code=response.status,
+                                retryable=response.status == 429,
+                            )
+                        data = await response.json()
+                        break
 
-                        # If tool_calls present but no content, parse function arguments as content
-                        if not content and tool_calls:
-                            # Use the first tool call's arguments as JSON content
-                            try:
-                                content = tool_calls[0].function.get("arguments", "{}")
-                            except Exception:
-                                content = "{}"
+                # Extract response content (OpenAI-compatible format)
+                if not data.get("choices") or len(data["choices"]) == 0:
+                    raise LLMException("Groq API returned no choices")
 
-                    # Extract token usage
-                    usage = data.get("usage", {})
-                    tokens_used = usage.get("total_tokens", 0)
+                message = data["choices"][0]["message"]
 
-                    response_time = self._get_response_time_ms()
+                # Extract content (may be None if tool_calls present)
+                content = message.get("content", "")
+                if content:
+                    content = self._validate_response_content(content)
 
-                    return LLMResponse(
-                        content=content,
-                        confidence=self.config.confidence_score,
-                        provider=self.provider_name,
-                        model=effective_model,
-                        tokens_used=tokens_used,
-                        response_time_ms=response_time,
-                        tool_calls=tool_calls,
-                    )
+                # Extract tool calls if present
+                tool_calls = None
+                if "tool_calls" in message and message["tool_calls"]:
+                    tool_calls = [
+                        ToolCall(id=tc["id"], type=tc["type"], function=tc["function"])
+                        for tc in message["tool_calls"]
+                    ]
+
+                    # If tool_calls present but no content, parse function arguments as content
+                    if not content and tool_calls:
+                        # Use the first tool call's arguments as JSON content
+                        try:
+                            content = tool_calls[0].function.get("arguments", "{}")
+                        except Exception:
+                            content = "{}"
+
+                # Extract token usage
+                usage = data.get("usage", {})
+                tokens_used = usage.get("total_tokens", 0)
+
+                response_time = self._get_response_time_ms()
+
+                return LLMResponse(
+                    content=content,
+                    confidence=self.config.confidence_score,
+                    provider=self.provider_name,
+                    model=effective_model,
+                    tokens_used=tokens_used,
+                    response_time_ms=response_time,
+                    tool_calls=tool_calls,
+                )
         except asyncio.TimeoutError:
             raise LLMException(
                 f"Groq API request timed out after {self.config.timeout}s "

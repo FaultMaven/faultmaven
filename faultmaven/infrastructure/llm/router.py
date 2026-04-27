@@ -165,7 +165,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 messages=sanitized_messages,
                 confidence_threshold=self.confidence_threshold,
                 timeout=self.request_timeout,  # Enforce router-level timeout ceiling
-                retries=0,  # Do not duplicate retries at the router level
+                retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
                 retry_delay=1.0,
             )
 
