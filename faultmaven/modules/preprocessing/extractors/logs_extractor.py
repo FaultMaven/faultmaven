@@ -37,7 +37,10 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 _TPL_TS_APACHE = re.compile(r"\[\w{3} +\w{3} +\d{1,2} +\d{2}:\d{2}:\d{2} +\d{4}\]\s*")
 _TPL_TS_ISO = re.compile(
-    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\s*"
+    # Handles both dot-separated (ISO-8601) and comma-separated (Java/log4j)
+    # milliseconds: e.g. "2015-07-29 19:34:09,295" uses comma while
+    # "2024-01-02T15:04:05.123Z" uses dot. The [.,] handles both.
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:\d{2})?\s*"
 )
 _TPL_TS_SYSLOG = re.compile(r"^\w{3} +\d{1,2} +\d{2}:\d{2}:\d{2} +\S+ +")
 _TPL_HEX = re.compile(r"\b0x[0-9a-fA-F]+\b")
@@ -69,7 +72,13 @@ def _normalize_template(line: str) -> str:
 class LogsAndErrorsExtractor:
     """Crime Scene Extraction for logs and error reports (0 LLM calls)"""
 
-    # Severity weights for error prioritization
+    # Severity weights for error prioritization.
+    # INFO/DEBUG/TRACE/VERBOSE carry weight=0: they act as "level anchors" —
+    # when one appears leftmost in a line (i.e., it IS the log level field),
+    # it prevents higher-severity keywords in the message body from
+    # misclassifying the line. Lines resolving to weight=0 are excluded from
+    # the error list. This fixes e.g. ZooKeeper INFO lines whose message body
+    # contains "Error Path:" or "Error:KeeperErrorCode".
     SEVERITY_WEIGHTS = {
         "FATAL": 100,
         "CRITICAL": 90,
@@ -77,6 +86,10 @@ class LogsAndErrorsExtractor:
         "ERROR": 50,
         "WARN": 10,
         "WARNING": 10,
+        "INFO": 0,
+        "DEBUG": 0,
+        "TRACE": 0,
+        "VERBOSE": 0,
     }
 
     # Configuration constants
@@ -225,7 +238,10 @@ class LogsAndErrorsExtractor:
                         best_pos = pos
                         best_severity = severity
 
-            if best_keyword:
+            # weight=0 means the leftmost keyword is an INFO/DEBUG/TRACE level
+            # anchor — exclude from error list even if higher-severity keywords
+            # appear later in the message body.
+            if best_keyword and best_severity > 0:
                 errors.append(
                     {
                         "line_idx": idx,
