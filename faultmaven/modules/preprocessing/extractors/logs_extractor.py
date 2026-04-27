@@ -196,33 +196,44 @@ class LogsAndErrorsExtractor:
 
     def _find_all_errors_with_severity(self, lines: list[str]) -> list[dict]:
         """
-        Scan all lines for error keywords and track severity
+        Scan all lines for error keywords and track severity.
+
+        Match resolution: when multiple severity keywords appear in a line the
+        LEFTMOST match wins.  This correctly handles structured log formats where
+        the log-level field appears early in the line (e.g. "- WARN  [thread]")
+        and severity words may also appear in the message body (e.g. "error = ").
+        Ties in position are broken by higher severity.
 
         Returns:
             List of dicts with {line_idx, line_text, severity, keyword}
         """
         errors = []
 
-        # Sort by severity descending so the highest-severity match wins per line
-        sorted_keywords = sorted(
-            self.SEVERITY_WEIGHTS.items(), key=lambda x: x[1], reverse=True
-        )
-
         for idx, line in enumerate(lines):
-            # Check each severity keyword (highest severity first)
-            for keyword, severity in sorted_keywords:
-                # Case-insensitive match with word boundary
+            best_keyword: str | None = None
+            best_pos = len(line) + 1
+            best_severity = 0
+
+            for keyword, severity in self.SEVERITY_WEIGHTS.items():
                 pattern = rf"\b{re.escape(keyword)}\b"
-                if re.search(pattern, line, re.IGNORECASE):
-                    errors.append(
-                        {
-                            "line_idx": idx,
-                            "line_text": line,
-                            "severity": severity,
-                            "keyword": keyword,
-                        }
-                    )
-                    break  # Only count first match per line
+                m = re.search(pattern, line, re.IGNORECASE)
+                if m:
+                    pos = m.start()
+                    # Leftmost position wins; tie → higher severity wins
+                    if pos < best_pos or (pos == best_pos and severity > best_severity):
+                        best_keyword = keyword
+                        best_pos = pos
+                        best_severity = severity
+
+            if best_keyword:
+                errors.append(
+                    {
+                        "line_idx": idx,
+                        "line_text": line,
+                        "severity": best_severity,
+                        "keyword": best_keyword,
+                    }
+                )
 
         return errors
 
@@ -1084,9 +1095,18 @@ class LogsAndErrorsExtractor:
             )
             sentences.append(f"Dominant activity: {ev_summary}.")
         elif error_count > 0:
+            non_flagged = total_lines - error_count
             sentences.append(
                 f"{error_count} severity-flagged lines out of {total_lines} total."
             )
+            # Surface non-flagged line count when significant — prevents agents
+            # from over-indexing on severity counts alone when INFO/DEBUG lines
+            # show the service remained partially operational alongside the errors.
+            if non_flagged >= max(10, int(total_lines * 0.1)):
+                sentences.append(
+                    f"{non_flagged} lines carry no severity flag"
+                    " (INFO/DEBUG-level normal-operation entries)."
+                )
 
         # Root targeting — explicitly call out root password guessing when present
         root_count = user_counts.get("root", 0)
