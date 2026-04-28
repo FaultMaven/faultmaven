@@ -16,7 +16,7 @@
 
 ## Implementation-Ready Prompt Text (HISTORICAL — SUPERSEDED)
 
-This document provides the **complete, production-ready prompt templates** as Python template strings. These can be directly integrated into your codebase.
+This document contains historical prompt templates from an earlier version of the investigation engine. They are superseded and should not be integrated into the codebase. See the authoritative sources listed in the banner above.
 
 ---
 

@@ -121,7 +121,7 @@ class InvestigationProgress(BaseModel):
        Set by the LLM in structured output when it detects user compliance
        with a ProposedAction (Framework §4.2). The LLM is the compliance
        detector — the user's action is the trigger; the LLM recognizes it.
-    2. PROGRESS INDICATORS (6): Provide LLM context and analytics.
+    2. PROGRESS INDICATORS (3): Provide LLM context and analytics.
        Set by LLM in structured output. Do NOT drive stage transitions.
     """
 

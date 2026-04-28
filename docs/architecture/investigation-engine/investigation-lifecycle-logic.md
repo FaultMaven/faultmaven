@@ -464,9 +464,9 @@ VALID_TRANSITIONS = {
                                                  └──────────────┘
 ```
 
-### 1.4 Automatic Disposition Actions
+### 1.4 Automatic Milestone Tracking and Stage Transitions
 
-Disposition case actions are triggered automatically based on milestone completion.
+Stage transitions within INVESTIGATING (e.g., DIAGNOSIS → MITIGATION) are triggered automatically when the LLM sets the corresponding gate milestone. Disposition actions (RESOLVED, CLOSED) are NEVER automatic — they always require an explicit User-Agent Handshake (see §1.2).
 
 ```python
 async def process_turn(case: Case, user_message: str) -> str:
