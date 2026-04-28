@@ -650,9 +650,12 @@ class ProgressMonitor:
         "environment",
         "network",
         "data",
+        "database",
         "hardware",
+        "security",
         "external",
         "human",
+        "other",
     ]
 
     def _repair_anchoring(self, case: Case) -> RepairAction:

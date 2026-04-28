@@ -6,7 +6,7 @@ based on the Investigation Architecture Specification v2.0.
 Key Models:
 - Case: Root case entity with milestone-based progress tracking
 - CaseStatus: Lifecycle status (INQUIRY -> INVESTIGATING -> RESOLVED/CLOSED)
-- InvestigationProgress: 8 milestones tracking verification, diagnosis, and resolution
+- InvestigationProgress: 7 milestones tracking verification, diagnosis, and resolution
 - ProblemVerification: Consolidated symptom, scope, timeline, and changes data
 - Evidence: Categorized evidence collection with hypothesis evaluation
 - Hypothesis: Optional systematic root cause exploration
@@ -1612,7 +1612,7 @@ class Evidence(BaseModel):
         default=None,
         description=(
             "Unified data type from preprocessing (logs, metrics, configuration, "
-            "code, text, image). Maps to UnifiedDataType enum. None for legacy evidence."
+            "code, text, image). None for legacy evidence without preprocessing."
         ),
         max_length=50,
     )

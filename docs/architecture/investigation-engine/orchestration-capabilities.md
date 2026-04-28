@@ -104,7 +104,9 @@ The `AgentOrchestrationService` includes three mechanical safety nets that impro
 
 ### 5.2 Per-Evidence DA Failure Tracking + Auto-Vectorization (R4, v5.0)
 
-**Problem**: The agent may call `search_file` or `deep_analysis` repeatedly on the same evidence file without resolution, hitting empty results or low-confidence answers.
+**Proactive pre-vectorization**: At DA-mode turn entry, before the tool loop begins, the engine starts background vectorization tasks for large unvectorized evidence files via `_start_proactive_vectorization()`. These run concurrently with the LLM's first iteration so semantic search (`case_evidence_search`) is available by the time the agent needs it. This optimization is gated on `force_tool_use=True` (Directed Analysis turns only) — triage and knowledge query turns don't use case evidence via semantic search, so pre-vectorization on those turns would be wasted work. See [Data Preprocessing §5](../data-processing/data-preprocessing-design-specification.md) (vectorization is scoped to DA-mode turns).
+
+**Reactive auto-vectorization**: The agent may call `search_file` or `deep_analysis` repeatedly on the same evidence file without resolution, hitting empty results or low-confidence answers.
 
 **Mechanism** (replaces v4.2 global `consecutive_empty_searches` counter):
 

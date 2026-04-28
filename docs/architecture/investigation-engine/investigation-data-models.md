@@ -1483,13 +1483,13 @@ class DocumentType(str, Enum):
 >
 > **Current Data Type (6 total, unified with preprocessing)**:
 >
-> - Uses `DataType` enum: `LOGS`, `METRICS`, `CONFIGURATION`, `CODE`, `TEXT`, `IMAGE`
-> - Replaces the old `EvidenceSourceType` enum
+> - The `data_type: Optional[str]` field on `Evidence` captures the preprocessing output (values: `logs`, `metrics`, `configuration`, `code`, `text`, `image`)
+> - `EvidenceSourceType` remains the canonical evidence source classifier (stored in `Evidence.source_type`); a planned rename to `DataType` was not executed
 >
 > **Key Changes from Previous Design**:
 >
 > - ❌ `UNCLASSIFIED` category **REMOVED** (single-phase creation)
-> - ❌ `EvidenceSourceType` **REPLACED** with `DataType`
+> - ⏸️ `EvidenceSourceType` → `DataType` rename **PLANNED but not yet executed** — `EvidenceSourceType` remains in use
 > - ✅ `OTHER` **RENAMED** to `CONTEXTUAL_EVIDENCE`
 > - ✅ `REJECTED` category **ADDED**
 > - ✅ `RESOLUTION_EVIDENCE` **RENAMED** to `SOLUTION_EVIDENCE`
@@ -1610,8 +1610,22 @@ class HypothesisStatus(str, Enum):
     VALIDATED = "validated"     # likelihood ≥ 0.70 + 2+ supporting evidence
     REFUTED = "refuted"         # likelihood ≤ 0.20 + 2+ refuting evidence
     INCONCLUSIVE = "inconclusive"  # likelihood 0.3–0.5 + stagnant 3+ turns (no evidence change)
-    RETIRED = "retired"         # Confidence decayed below threshold
+    RETIRED = "retired"         # Confidence decayed below threshold (system-automated, see below)
+```
 
+**Hypothesis status transitions — LLM-driven vs. system-automated:**
+
+| Status | Trigger | Who sets it |
+|---|---|---|
+| `CAPTURED` → `ACTIVE` | LLM starts investigating the hypothesis | LLM (structured output) |
+| `ACTIVE` → `VALIDATED` | likelihood ≥ 0.70 with 2+ supporting evidence links | LLM (structured output) |
+| `ACTIVE` → `REFUTED` | likelihood ≤ 0.20 with 2+ refuting evidence links | LLM (structured output) |
+| `ACTIVE` → `INCONCLUSIVE` | likelihood 0.3–0.5 **and** `iterations_without_progress ≥ 3` | **System-automated** (`hypothesis_manager.py`) |
+| `ACTIVE` → `RETIRED` | likelihood < 0.30 | **System-automated** (`hypothesis_manager.py`) |
+
+The automatic `INCONCLUSIVE` and `RETIRED` transitions run after each evidence update in `HypothesisManager.update_hypothesis()`. They are mechanically applied thresholds, not LLM judgment calls. This prevents stale low-confidence hypotheses from consuming LLM context across turns when no new evidence is advancing them.
+
+```python
 class HypothesisGenerationMode(str, Enum):
     OPPORTUNISTIC = "opportunistic"
     SYSTEMATIC = "systematic"

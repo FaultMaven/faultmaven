@@ -68,7 +68,7 @@ This document defines error handling and recovery strategies for the FaultMaven 
 **Strategy**: Log error, notify monitoring, suggest escalation
 
 ### 1.5 Logic Errors (Investigation Stalls)
-- No progress for 3+ turns
+- No progress for 5+ turns
 - Hypothesis anchoring (same category tested repeatedly)
 - Evidence contradictions
 - Gate milestone dependencies violated
