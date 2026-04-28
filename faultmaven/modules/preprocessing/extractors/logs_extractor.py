@@ -211,11 +211,12 @@ class LogsAndErrorsExtractor:
         """
         Scan all lines for error keywords and track severity.
 
-        Match resolution: when multiple severity keywords appear in a line the
-        LEFTMOST match wins.  This correctly handles structured log formats where
-        the log-level field appears early in the line (e.g. "- WARN  [thread]")
-        and severity words may also appear in the message body (e.g. "error = ").
-        Ties in position are broken by higher severity.
+        Two-pass logic per line:
+        1. Find leftmost keyword. If it has weight=0 (INFO/DEBUG/TRACE/VERBOSE),
+           treat the line as an informational entry and skip it — even if
+           higher-severity words appear in the message body.
+        2. If the leftmost keyword has weight>0, pick the HIGHEST-severity
+           keyword anywhere in the line (e.g. "WARNING: CRITICAL failure" → CRITICAL).
 
         Returns:
             List of dicts with {line_idx, line_text, severity, keyword}
@@ -223,25 +224,35 @@ class LogsAndErrorsExtractor:
         errors = []
 
         for idx, line in enumerate(lines):
-            best_keyword: str | None = None
-            best_pos = len(line) + 1
-            best_severity = 0
+            # Pass 1: find leftmost keyword to detect level anchors
+            leftmost_pos = len(line) + 1
+            leftmost_severity = 0
 
             for keyword, severity in self.SEVERITY_WEIGHTS.items():
                 pattern = rf"\b{re.escape(keyword)}\b"
                 m = re.search(pattern, line, re.IGNORECASE)
-                if m:
-                    pos = m.start()
-                    # Leftmost position wins; tie → higher severity wins
-                    if pos < best_pos or (pos == best_pos and severity > best_severity):
-                        best_keyword = keyword
-                        best_pos = pos
-                        best_severity = severity
+                if m and m.start() < leftmost_pos:
+                    leftmost_pos = m.start()
+                    leftmost_severity = severity
 
-            # weight=0 means the leftmost keyword is an INFO/DEBUG/TRACE level
-            # anchor — exclude from error list even if higher-severity keywords
-            # appear later in the message body.
-            if best_keyword and best_severity > 0:
+            # If leftmost keyword is a weight=0 anchor (INFO/DEBUG/TRACE/VERBOSE),
+            # this is an informational log entry — skip regardless of body content.
+            if leftmost_severity == 0:
+                continue
+
+            # Pass 2: pick the highest-severity keyword in the line
+            best_keyword: str | None = None
+            best_severity = 0
+
+            for keyword, severity in self.SEVERITY_WEIGHTS.items():
+                if severity == 0:
+                    continue
+                pattern = rf"\b{re.escape(keyword)}\b"
+                if re.search(pattern, line, re.IGNORECASE) and severity > best_severity:
+                    best_keyword = keyword
+                    best_severity = severity
+
+            if best_keyword:
                 errors.append(
                     {
                         "line_idx": idx,
@@ -277,8 +288,10 @@ class LogsAndErrorsExtractor:
         burst_errors = []
         for idx in range(start, end):
             line = lines[idx]
-            # Check for any error keyword
-            for keyword in self.SEVERITY_WEIGHTS.keys():
+            # Check for any error keyword (skip weight-0 level anchors like INFO/DEBUG)
+            for keyword, weight in self.SEVERITY_WEIGHTS.items():
+                if weight == 0:
+                    continue
                 pattern = rf"\b{re.escape(keyword)}\b"
                 if re.search(pattern, line, re.IGNORECASE):
                     burst_errors.append(idx)
