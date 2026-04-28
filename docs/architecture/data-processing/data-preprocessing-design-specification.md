@@ -502,10 +502,19 @@ investigation_service.process_turn(payload: TurnPayload)
   │   for attachment in payload.attachments:
   │       _preprocess_attachment(case, attachment)
   │           → preprocessing_service.classify_and_extract(content, filename)
-  │                 → DataClassifier.classify(...)
-  │                 → extractor.extract(content)   [with 2s timeout]
-  │                 → PreprocessingResult
-  │           → Evidence(form=DOCUMENT, preprocessed_content=ExtractResult.to_json())
+  │                 → DataClassifier.classify(...)        [Tier 0]
+  │                 → short-circuit (UNANALYZABLE | classification_failed
+  │                   | page_capture | raw_passthrough)? → placeholder/skip
+  │                 → extractor.extract(content)          [Tier 1, 2s timeout]
+  │                 → optional Phase 2 sanity-retry with alternative DataType
+  │                   (gated on `extractor_retry_enabled`; ≤ 2 retries) — §2.6
+  │                 → extract_time_range_ts(content)      [Phase 3 timestamps]
+  │                 → extract_entities_for_data_type(...) [Phase 4, flag-gated]
+  │                 → PreprocessingResult (carries coverage_start/end_ts,
+  │                   entities, entity_overflow_types, evidence_metadata)
+  │           → Evidence(form=DOCUMENT, preprocessed_content=ExtractResult.to_json(),
+  │                      coverage_start_ts/end_ts, metadata=EvidenceMetadata)
+  │           → CaseRepository.upsert_case_entities(case_id, evidence_id, entities)
   │
   │   PII redaction is NOT applied at extraction time.
   │   It runs at the LLM boundary (MilestoneEngine), so structural indexes
@@ -533,13 +542,21 @@ investigation_service.process_turn(payload: TurnPayload)
 | **Form** | `DOCUMENT` | `DOCUMENT` |
 | **Preprocessing** | Step 1 (before LLM) | Step 1 (before LLM) |
 
-**Single entry point**: `PreprocessingService.classify_and_extract(content, filename, source_metadata)`. The service short-circuits extraction for three special paths:
+**Single entry point**: `PreprocessingService.classify_and_extract(content, filename, source_metadata, user_override)`. The service short-circuits extraction for **four** special paths (in evaluation order):
 
-- `source_type == "page_capture"` → `page_capture_passthrough` (copilot already produced structured markdown).
 - `data_type == UNANALYZABLE` → placeholder with `extraction_method="none"`.
 - `classification_failed=True` (confidence < 0.50) → placeholder with `extraction_method="classification_failed"` plus `suggested_types` in `extraction_metadata` for the cooperative-clarification UX (see §2.5 below).
+- `source_type == "page_capture"` → `page_capture_passthrough` (copilot already produced structured markdown).
+- `line_count < MIN_EXTRACTION_LINES` (200) → `raw_passthrough` (the raw content is itself a better orientation than any compressed structural index for files this small; extractors are skipped and the raw bytes are stored as `file_extract`).
 
-Otherwise the type-specific extractor runs under a 2-second timeout. Output is a `PreprocessingResult` — see §7.1 for the full field list.
+Otherwise the type-specific extractor runs under a 2-second timeout (Phase 2 sanity-retry may run on top — see §2.6). The reclassification entry point (§2.6) reuses this same method via `user_override`.
+
+**Output**: `PreprocessingResult` — Pydantic model defined canonically in [`faultmaven/core/preprocessing/models.py`](../../../faultmaven/core/preprocessing/models.py). The model carries (in addition to the obvious `data_type`, `summary`, `structural_index`, `content_ref`, `content_hash`, `extraction_method`, `extraction_metadata`):
+
+- `coverage_start_ts` / `coverage_end_ts` (Phase 3) — earliest/latest timestamp parsed from the content; `None` for files without parseable timestamps. Lifted onto `Evidence.coverage_start_ts/end_ts` at row creation. See §2.7.
+- `entities` / `entity_overflow_types` (Phase 4) — entity observations + overflow markers feeding the case-level entity registry. Always empty when the `FAULTMAVEN_ENTITY_REGISTRY` flag is off. See [entity-registry.md](./entity-registry.md).
+
+The `extraction_metadata["evidence_metadata"]` slot carries a structured `EvidenceMetadata` payload (classifier signals, extractor attempt history, entity overflow, coverage source pattern) — canonical schema in [`case-schema.md §evidence.metadata JSON contract`](../data-and-storage/schemas/case-schema.md#evidencemetadata-json-contract); reader-friendly copy of the dataclass shape lives in [`faultmaven/core/preprocessing/evidence_metadata.py`](../../../faultmaven/core/preprocessing/evidence_metadata.py).
 
 **Deduplication is live.** Per-case content-hash deduplication short-circuits duplicate uploads: before creating a new `Evidence` row, `_preprocess_attachment` calls `ICaseRepository.find_by_content_hash(case_id, content_hash)`. A match returns the existing `Evidence` and skips storage (no re-write of the raw file). The per-attachment turn response carries `duplicate_of` and `duplicate_turn` so the frontend can render a non-blocking toast. Scope is per-case only — the same content can be uploaded to different cases without interference. Implementation: `ICaseRepository.find_by_content_hash` contract with implementations on `SessionlessCaseRepository` (production), `SQLiteCaseRepository`, `PostgreSQLHybridCaseRepository`, and `InMemoryCaseRepository`.
 
@@ -553,6 +570,45 @@ The agent still attempts the investigation in the same turn — classification u
 - Plus a **"Something else"** fallback that submits *"Treat the previously uploaded file as unstructured text and try to analyze it."*
 
 The user clicks a card; the next turn runs normally with the pre-composed message. The agent reads the raw file via its existing tools (`search_file`, `deep_analysis`) using the user-provided type hint. There is no re-classification at the classifier layer, no evidence mutation, no new LLM integration — just the existing COOPERATIVE suggestion plumbing driving a deterministic post-turn injector in `InvestigationService`.
+
+### 2.6 Reclassification and Sanity-Retry
+
+The extractor pipeline has two correction paths layered on top of the §2.4 single entry point. Both are bounded, both record their attempt history on `extraction_metadata.evidence_metadata.extractor.attempts`, and both produce a normal `PreprocessingResult` whose downstream consumers don't need to know retry happened.
+
+#### Phase 1.5 — User-driven reclassification
+
+When the heuristic classifier picks the wrong `DataType` (or short-circuits on `classification_failed`), the user can correct it. Two callers exist:
+
+- `PATCH /evidence/{id}/classification` — operator/UI-driven correction.
+- `reclassify_evidence` agent tool — agent-driven correction during investigation.
+
+Both invoke `PreprocessingService.reclassify_evidence(content, filename, user_override, previous_metadata)`, which calls `classify_and_extract(..., user_override=<DataType>)`. The classifier is forced to return `source="user_override"`, `confidence=1.0`, suppressing the low-confidence marker on the updated evidence row. The newly-produced `extractor.attempts` list is then prepended with the prior attempts via `_merge_attempts()`. The combined list is hard-capped at `_MAX_ATTEMPTS_KEPT = 5` entries; the **oldest** entries roll off the head when the cap is exceeded — preserving the most recent truth and the immediately-preceding mistakes, while bounding row growth on repeated corrections.
+
+Each appended attempt sets `triggered_by = "user_override"` so observability can distinguish user-corrected rows from initial classifications.
+
+#### Phase 2 — Sanity-check-and-retry on extraction
+
+When the initial extractor's output fails a per-`DataType` sanity check (e.g., a `TraceDataExtractor` produced no spans, a `MetricsAndPerformanceExtractor` found no numeric series), the service retries with a different extractor instead of shipping a degraded structural index.
+
+- **Feature flag**: `extractor_retry_enabled` in `PreprocessingSettings`. When off, behaviour matches pre-Phase-2 (single-shot dispatch, no sanity check).
+- **Sanity check**: `run_sanity_check(data_type, raw_content, extracted_content) -> SanityResult(passed: bool, reason: str)`. Per-DataType heuristics live in `modules/preprocessing/extractors/sanity_check.py`.
+- **Alternative chain** (`_build_alternative_chain`): tries the classifier's `suggested_types` first (when populated — they only are on the classification_failed path), then the conservative fallback `_FALLBACK_ALT_TYPES = (UNSTRUCTURED_TEXT,)`. Already-tried types are excluded.
+- **Hard cap**: `_MAX_ALT_RETRIES = 2` alternatives. Total attempts ≤ initial + 2.
+- **All-failed drop-through**: if every candidate fails sanity, the service ships a `_fallback_direct_extraction` of the raw content (head-only truncation at `MAX_STRUCTURAL_INDEX_CHARS`) and stamps `extractor.chosen_type = "direct_fallback"` in metadata so observability can find evidence rows where the sanity ladder gave up.
+
+Each retry appended to `extractor.attempts` carries `triggered_by = "sanity_retry"` and its own `sanity_passed` flag. Combined with Phase 1.5, the attempt list reads as a chronological audit trail (`initial` → `sanity_retry` × N → `user_override` × M), capped at 5 entries.
+
+### 2.7 Phase 3 — Temporal Coverage on Evidence
+
+Every `PreprocessingResult` carries `coverage_start_ts` / `coverage_end_ts` — the earliest and latest timestamps parseable from the evidence's content, or `None` for content without recognisable timestamps (configs, code, screenshots, short pastes that fall through the timestamp scanner).
+
+- Implementation: `extract_time_range_ts(content)` in `extractors/utils.py` walks the first and last 10 lines (Tier 1 budget) against `_TS_PATTERNS` — ISO-8601 (with/without `T`), syslog BSD, epoch seconds, epoch milliseconds, and YYMMDD HHMMSS (Hadoop/HDFS compact format, added v5.7). The first matching pattern wins; no fuzzy parsing.
+- Persistence: `InvestigationService._preprocess_attachment` lifts both fields onto `Evidence.coverage_start_ts` / `coverage_end_ts` at row creation. The pattern that matched is recorded under `evidence.metadata.coverage.source` (one of `iso8601_t`, `iso8601`, `syslog_bsd`, `epoch_s`, `epoch_ms`, `yymmdd`, or absent).
+- Use sites:
+  - The entity registry uses `Evidence.coverage_start_ts` to populate `case_entities.first_seen_ts` (entity-registry.md) — lets the registry answer "did this IP appear before or after the outage?" without re-opening the evidence.
+  - Orchestration's coverage-gap detection (R3, §6.1) uses the time range to flag user queries that target timestamps outside what any evidence in the case actually covers.
+
+Best-effort throughout: extraction errors degrade to `None`; the field is Optional everywhere downstream and consumers tolerate absence.
 
 ---
 
@@ -944,7 +1000,7 @@ Implemented in `faultmaven/core/preprocessing/vector_storage.py`. Section-aware 
 3. **Oversize sections split on paragraph boundaries.** For sections larger than `max_chunk_tokens`, the text is split on `\n\n` and accumulated into a running buffer. When adding the next paragraph would overflow the budget, the buffer is emitted as a chunk and the next buffer is seeded with the **last `overlap_tokens` worth** of the previous chunk (`_get_last_n_tokens`) to preserve cross-chunk context.
 4. **Never split mid-line.**
 
-Token counts are estimated via `_estimate_tokens(text) = len(text) // 4` — a heuristic that avoids a per-chunk tokenizer call.
+Token counts are computed by `_estimate_tokens(text)` in `vector_storage.py`. Primary path: tiktoken's `cl100k_base` encoding (BPE-family, agrees with BGE-M3's XLM-RoBERTa tokenization within ±15% on typical mixed content). Fallback path (only when the tiktoken import fails at startup): the `len(text) // 4` heuristic — lossy by ±40% on realistic log content (long hex strings, CSV rows, non-ASCII text), kept solely so the preprocessor continues to function with degraded chunking precision rather than refusing to start. tiktoken is a hard project dependency in `pyproject.toml`, so the fallback is rarely reached in production.
 
 #### 5.6.2 Per-Chunk Metadata Schema
 
@@ -1450,6 +1506,7 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 | Marker | Triggered when |
 | --- | --- |
 | `page_capture_passthrough` | `source_type == "page_capture"` — content is already structured markdown from the copilot; extractor is skipped |
+| `raw_passthrough` | `line_count < MIN_EXTRACTION_LINES` (200) — small file, raw content stored directly as `file_extract` (no compression value); extractor is skipped |
 | `structure_extraction` | Tier 1 timed out or raised — falls back to a truncated preview with `timeout_fallback=True` or `error_fallback=True` in metadata |
 | `none` | `detailed_data_type == UNANALYZABLE` — placeholder returned, no extractor runs |
 | `classification_failed` | `confidence < 0.50` — placeholder returned with `suggested_types` in metadata; frontend shows modal |
@@ -1465,9 +1522,9 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 ### Shared utilities (`extractors/utils.py`)
 
 - `extract_timestamp(line)` / `extract_time_range(content)` — recognise ISO-8601 (with/without `T`), syslog BSD, epoch seconds, epoch milliseconds, and YYMMDD HHMMSS (Hadoop/HDFS compact format, added v5.7). Scan only the first 10 and last 10 lines to stay within the Tier 1 latency budget.
-- `extract_time_range_ts(content)` — same timestamp recognition, returns a `(first_ts, last_ts)` tuple of `datetime` objects (not strings). Used by `LogsAndErrorsExtractor` to compute log duration and per-event temporal spans.
-- `format_coverage_metadata(**kwargs)` — populates the `file_meta` dict with key-value pairs (Lines, Time range, Format, etc.) so downstream tooling can reason about what the extractor saw. Returns a dict rather than appending separator text.
+- `extract_time_range_ts(content)` — same timestamp recognition, returns a `(first_ts, last_ts)` tuple of `datetime` objects (not strings). Used by `LogsAndErrorsExtractor` to compute log duration and per-event temporal spans, and lifted onto `PreprocessingResult.coverage_start_ts/end_ts` for the case timeline.
 - `has_content()` + `EMPTY_CONTENT_RESPONSE` — uniform empty-input guard.
+- `COVERAGE_SEPARATOR` + `format_coverage_metadata(**kwargs) -> str` — **legacy backward-compat shim, no longer produced by any extractor.** Active extractors emit coverage as the `file_meta` dict on `ExtractResult` (see §2.2 Coverage Metadata). The constant and helper remain because `agent_orchestration_service.py` still parses pre-v5.4 evidence rows by splitting on `COVERAGE_SEPARATOR` (see the `# Legacy: parse old COVERAGE_SEPARATOR format` branch). Do not introduce new callers.
 
 ### Extractor-specific notes
 

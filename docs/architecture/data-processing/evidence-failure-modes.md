@@ -423,10 +423,9 @@ async def retry_evidence_creation(case_id, llm_result, content_ref, content_hash
         )
 ```
 
-**Key: Idempotency via content_hash**
-- UNIQUE constraint on (case_id, content_hash)
-- Retry can safely re-run (duplicate will be rejected by DB)
-- No need to track "retry state" explicitly
+**Key: Idempotency via content_hash (application-layer lookup, not a DB constraint)**
+
+Idempotency is enforced by the `evidence_repo.find_by_content_hash(case_id, content_hash)` short-circuit shown in the snippet above (see also the Status table — "Content-hash deduplication — repository lookup" / **Done**). There is **no** `UNIQUE(case_id, content_hash)` SQL constraint on the `evidence` table; deduplication is purely application-layer. A retry can safely re-run because the lookup short-circuits on match before insert.
 
 ---
 
