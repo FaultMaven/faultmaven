@@ -1,7 +1,7 @@
 # Evidence Flow Architecture
 
-**Version:** 2.6
-**Date:** 2026-03-15
+**Version:** 2.7
+**Date:** 2026-04-26
 **Status:** Design Specification
 
 ---
@@ -668,8 +668,6 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
 
 ## Data Flow: INQUIRY Phase Classification
 
-**Scenario:** User uploads log file during INQUIRY phase (before investigation starts)
-
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │ Turn 1 (INQUIRY Phase)                                           │
@@ -750,7 +748,7 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
                   └───────────────────────┘
 ```
 
-This diagram illustrates the retroactive milestone-advancement flow. The underlying rule (classify by content, not phase) is documented canonically in [Evidence Classification Design → INQUIRY Phase Classification](./evidence-classification-design.md#inquiry-phase-classification-first-class-scenario).
+Retroactive milestone-attribution flow. For the full scenario narrative and the "classify by content, not phase" rule, see [Evidence Classification Design → INQUIRY Phase Classification](./evidence-classification-design.md#inquiry-phase-classification-first-class-scenario).
 
 ---
 
@@ -833,6 +831,8 @@ Return to User          Queue Retry Job
 
 ### DB Insert Failure Scenario
 
+> **Status (2026-04-19):** Same deferred-design caveat as the LLM Timeout diagrams above — the async-retry flow below is **not implemented**. Current behaviour is synchronous in-process retry; terminal failures return a specific error code. Canonical status: [evidence-failure-modes.md → Current Implementation Status](./evidence-failure-modes.md#current-implementation-status-validated-2026-04-19).
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                 Database Insert Failure Handling                │
@@ -914,25 +914,18 @@ The design decisions that govern the taxonomy and classification semantics live 
 
 ### Key Metrics
 
-```
-# Evidence creation
-evidence.created.total
-evidence.created.by_category{category="symptom_evidence"}
-evidence.created.by_category{category="rejected"}
-evidence.rejection_rate
+Canonical Prometheus metric names (defined in `infrastructure/observability/evidence_metrics.py`):
 
-# Failures
-evidence.llm_timeouts
-evidence.llm_errors
-evidence.db_insert_failures
-evidence.retry_attempts
-evidence.retry_successes
-evidence.retry_permanent_failures
+**Live (emit sites active):**
+- `faultmaven_evidence_dedup_hits_total` — per-case content-hash dedup short-circuits
+- `faultmaven_evidence_orphan_files_found_total` — orphan files detected by the storage_cleanup sweep
+- `faultmaven_evidence_orphan_files_deleted_total` — orphan files deleted by the storage_cleanup sweep
 
-# Storage
-evidence.orphaned_files_cleaned
-evidence.storage_size_bytes
-```
+**Scaffolded (registered; emit sites deferred until async-retry plan is justified by telemetry):**
+- `faultmaven_evidence_turn_async_retry_{enqueued,outcome}_total`
+- `faultmaven_evidence_turn_async_retry_latency_seconds`
+
+Alert definitions: `docs/operations/monitoring/evidence-metrics.md`.
 
 ### Dashboards
 

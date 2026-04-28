@@ -1,7 +1,7 @@
 # Evidence Classification Design Specification
 
-**Version:** 2.2
-**Date:** 2026-02-23
+**Version:** 2.3
+**Date:** 2026-04-28
 **Status:** Design Specification
 **Context:** Evidence classification taxonomy, single-phase creation, and milestone advancement attribution
 
@@ -67,13 +67,7 @@ SELECT * FROM evidence WHERE case_id = ? AND category != 'rejected';
 
 **Design Choice:** Evidence table tracks ALL file upload attempts, including those classified as rejected.
 
-**Rationale:**
-
-- **Deduplication**: Prevent re-uploading same rejected file (via `content_hash`)
-- **Audit trail**: Complete record of what was submitted and evaluated
-- **Cost efficiency**: Avoid re-analyzing rejected files with LLM
-- **User feedback**: Explain to user why submission was rejected
-- **Flexibility**: Can "un-reject" if investigation context changes
+**Rationale:** See [Evidence Table Semantics](#evidence-table-semantics) above for the full rationale (deduplication, audit trail, cost efficiency, user feedback, flexibility).
 
 **Implementation:** Add `REJECTED` category to track rejected submissions.
 
@@ -356,7 +350,7 @@ class DataType(str, Enum):
 3. **Fine-grained detail preserved** — preprocessing metadata captures subtypes (e.g., `DataType.LOGS` with `metadata.subtype = "distributed_trace"`)
 4. **`form` field handles input channel** — `DOCUMENT` (attachments: file uploads and pasted data) vs `USER_TEXT` (query-only turns) vs `SUBMITTED_DATA` (agent tool findings)
 
-**CSV/TSV Best-Effort Fallback**: CSV and TSV files that fail the primary metrics check (metrics_score < 2) are classified as `UNSTRUCTURED_TEXT` directly in the best-effort fallback section of `DataClassifier`. This avoids false positives from vocabulary-based scoring, where incidental cell content (e.g., "error", "cpu", "interface") matches log, metric, or code patterns. Reference tables and non-numeric CSVs are correctly classified as text rather than competing across all DataType scores.
+**CSV/TSV Best-Effort Fallback**: CSV and TSV files that fail the metrics structural gate are classified as `UNSTRUCTURED_TEXT` to avoid false positives from vocabulary-based scoring. The precise gate condition (column count, row count, numeric density, and vocabulary keyword checks) is defined canonically in [Data Classification Strategy → Disambiguation Helpers](./data-classification-strategy.md#disambiguation-helpers).
 
 ---
 
@@ -890,6 +884,6 @@ The milestone advancement design uses a hybrid system-inferred approach with opt
 
 ---
 
-**Document Version:** 2.2
-**Last Updated:** 2026-02-23
+**Document Version:** 2.3
+**Last Updated:** 2026-04-28
 **Status:** Design Specification

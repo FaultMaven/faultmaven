@@ -126,7 +126,7 @@ Three changes close a class of first-request cold-start incidents where a 225 KB
 |------|------|------|
 | **Entry point** | Multiple preprocessing entry paths (legacy `process_upload`, `ChunkingService`, `PreprocessingService.preprocess`) cohabited with `classify_and_extract` | Single entry point in §2.4: `PreprocessingService.classify_and_extract()`. Legacy paths deleted (violated Tier 0+1 zero-LLM guarantee or were unreachable). |
 | **Appendix B** | Stub / incomplete extractor reference | Rewritten: per-extractor `strategy_name` table, runtime markers (`page_capture_passthrough`, `structure_extraction`, `none`, `classification_failed`), uniform output budget (`MAX_STRUCTURAL_INDEX_TOKENS=2500`, `MAX_STRUCTURAL_INDEX_CHARS=10000`), shared utilities (`extract_timestamp`, `format_coverage_metadata`), 21 enumerated detect-secrets plugins as a security contract. |
-| **Tier-0 command detection** | Spec implied broad command coverage; code matched only 7 commands with single-pattern detection | Spec and code aligned on the 13-command `COMMAND_OUTPUTS` dict with ≥2-pattern requirement (top/ps/vmstat/iostat/netstat/free/df/lsof → COMMAND_OUTPUT; dmesg/journalctl/strace/ltrace → LOGS_AND_ERRORS; perf → PROFILING_DATA; lscpu → STRUCTURED_CONFIG). Documented in [data-classification-strategy.md v3.0](./data-classification-strategy.md#command-output-classification). |
+| **Tier-0 command detection** | Spec implied broad command coverage; code matched only 7 commands with single-pattern detection | Spec and code aligned on the 14-command `COMMAND_OUTPUTS` dict with ≥2-pattern requirement (top/ps/vmstat/iostat/netstat/free/df/lsof → COMMAND_OUTPUT; dmesg/journalctl/strace/ltrace → LOGS_AND_ERRORS; perf → PROFILING_DATA; lscpu → STRUCTURED_CONFIG). Documented in [data-classification-strategy.md v3.0](./data-classification-strategy.md#command-output-classification). |
 | **Companion: classification strategy** | Documented as 6-level cascade with `AdaptiveClassifier` / `PatternLearner` / `fallback_level` (none of which existed in code) | Rewritten as v3.0: 5-priority signal-source ordering (user_override / agent_hint / source_url / browser_context / rule_based), CSV/TSV structural gate, extension-sensitive LOGS thresholds, `_validate_hint` safety valve. |
 | **Removed dead fields** | `sanitization_applied`, `redactions_count`, `security_flags`, `EXTRACTION_VERSION`, `CONFIDENCE_HIGH/MEDIUM/LOW_THRESHOLD` referenced in spec | Removed — PII redaction runs at the LLM boundary, not at extraction time; replaced with `CONFIDENCE_THRESHOLDS` + `FILE_UPLOAD_CONFIDENCE_BOOST` constants. |
 
@@ -432,7 +432,9 @@ Coverage data is stored as a structured `file_meta` dict in `ExtractResult`, ret
 
 ### 2.3 Classification Fallback: Best-Effort Dispatch
 
-When the classifier has low confidence (< 0.60), it still has partial pattern scores from its rule-based analysis. Instead of always falling back to `UNSTRUCTURED_TEXT`, v4.0 uses the highest-scoring candidate type.
+> **Canonical source:** The confidence thresholds and best-effort dispatch rules are defined in [Data Classification Strategy](./data-classification-strategy.md). This section describes the implementation mechanics; the canonical doc governs threshold values and dispatch semantics.
+
+When the classifier has low confidence (< 0.50), it still has partial pattern scores from its rule-based analysis. Instead of always falling back to `UNSTRUCTURED_TEXT`, v4.0 uses the highest-scoring candidate type.
 
 **v3.2 behavior**: Low confidence → `UNSTRUCTURED_TEXT` with `classification_failed=True` → TEXT extractor (headings + key sentences — minimal value).
 
@@ -475,7 +477,7 @@ return ClassificationResult(
 - `StructuredConfigExtractor`: Parse failure → TEXT extraction with regex secret redaction.
 - `SourceCodeExtractor`: No language detected → TEXT extraction.
 
-The extractor fallback chain (Section 4.9 of v3.2) ensures no extractor propagates errors. Best-effort dispatch gives the specialized extractor a *chance* to find something valuable, with the same safety net as before.
+Each extractor's internal fallback chain ensures no extractor propagates errors upward. Best-effort dispatch gives the specialized extractor a *chance* to find something valuable, with the same safety net as before.
 
 ### 2.4 Pasted Text and Page Capture Processing
 
@@ -537,7 +539,7 @@ investigation_service.process_turn(payload: TurnPayload)
 - `data_type == UNANALYZABLE` → placeholder with `extraction_method="none"`.
 - `classification_failed=True` (confidence < 0.50) → placeholder with `extraction_method="classification_failed"` plus `suggested_types` in `extraction_metadata` for the cooperative-clarification UX (see §2.5 below).
 
-Otherwise the type-specific extractor runs under a 2-second timeout (see §4.9). Output is a `PreprocessingResult` — see §7.1 for the full field list.
+Otherwise the type-specific extractor runs under a 2-second timeout. Output is a `PreprocessingResult` — see §7.1 for the full field list.
 
 **Deduplication is live.** Per-case content-hash deduplication short-circuits duplicate uploads: before creating a new `Evidence` row, `_preprocess_attachment` calls `ICaseRepository.find_by_content_hash(case_id, content_hash)`. A match returns the existing `Evidence` and skips storage (no re-write of the raw file). The per-attachment turn response carries `duplicate_of` and `duplicate_turn` so the frontend can render a non-blocking toast. Scope is per-case only — the same content can be uploaded to different cases without interference. Implementation: `ICaseRepository.find_by_content_hash` contract with implementations on `SessionlessCaseRepository` (production), `SQLiteCaseRepository`, `PostgreSQLHybridCaseRepository`, and `InMemoryCaseRepository`.
 
@@ -551,8 +553,6 @@ The agent still attempts the investigation in the same turn — classification u
 - Plus a **"Something else"** fallback that submits *"Treat the previously uploaded file as unstructured text and try to analyze it."*
 
 The user clicks a card; the next turn runs normally with the pre-composed message. The agent reads the raw file via its existing tools (`search_file`, `deep_analysis`) using the user-provided type hint. There is no re-classification at the classifier layer, no evidence mutation, no new LLM integration — just the existing COOPERATIVE suggestion plumbing driving a deterministic post-turn injector in `InvestigationService`.
-
-Supersedes the rejected **Classifier LLM rescue** proposal (cheaper, user-authoritative, no telemetry prerequisite).
 
 ---
 
@@ -747,7 +747,7 @@ The `search_file` agent tool is a standalone implementation that coexists with o
 |----------|------|-----|
 | "Find all lines containing 'timeout'" | `search_file` (keyword) | Pure text match, no interpretation needed |
 | "Show me errors between 14:00-14:15" | `search_file` (regex: `14:0[0-9].*ERROR\|14:1[0-5].*ERROR`) | Pattern matching on timestamps |
-| "What anomalies are there at z>2?" | `search_file` (extractor, `z_score_threshold=2.0`) | Re-run extractor with different params |
+| "What anomalies are there at z>2?" | `search_file` (keyword: `"anomaly"` or regex: `z[_\s]?score`) | Extractors don't accept per-call overrides — search for anomaly lines directly (§3.3.C) |
 | "What's causing the connection timeouts?" | `deep_analysis` | Needs LLM interpretation |
 | "Summarize the error patterns after the deployment" | `deep_analysis` | Needs LLM synthesis |
 

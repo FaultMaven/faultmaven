@@ -169,7 +169,6 @@ Failing any of the three isn't a rollback signal — it's a tuning signal.
 
 ## References
 
-- Phase 4 plan entry: [WIP-data-processing-improvement-plan.md §Phase 4](../../working/WIP-data-processing-improvement-plan.md).
 - Case-schema table entry: [case-schema.md §4.13](../data-and-storage/schemas/case-schema.md).
 - Migration: `alembic/versions/20260423_1400_d4e5f6a70819_phase_4_case_entities_registry.py`.
 - Producer: `faultmaven/modules/preprocessing/entities/` + `preprocessing_service.py`.
