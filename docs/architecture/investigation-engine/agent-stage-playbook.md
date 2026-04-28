@@ -82,8 +82,8 @@ INVESTIGATING
        └── → TERMINAL/CLOSED    (handshake: user abandons)
 
 TERMINAL — immutable; Q&A only
-  RESOLVED — resolution_summary generated; runbook eligible
-  CLOSED   — closure_summary generated; no runbook
+  RESOLVED — resolution_summary generated; runbook eligible (requires root cause)
+  CLOSED   — closure_summary generated; mitigation_playbook eligible if closure_reason=mitigation_sufficient
 ```
 
 ### Key Definitions
@@ -271,9 +271,11 @@ DIAGNOSIS has three internal zones. Zone membership is determined by the diagnos
 
 | State | Meaning | Requirement |
 | ----- | ------- | ----------- |
-| `ACTIVE` | Under investigation | — |
-| `VALIDATED` | Confidence ≥ 70% with causal evidence | Enables `root_cause_identified` |
+| `CAPTURED` | Just recorded, not yet under investigation | — |
+| `ACTIVE` | Under active investigation | — |
+| `VALIDATED` | likelihood ≥ 0.70 + 2+ supporting evidence | Enables `root_cause_identified` |
 | `REFUTED` | Evidence directly disproves it | Requires `refutation_reason` citing specific evidence |
+| `INCONCLUSIVE` | likelihood 0.3–0.5, stagnant 3+ turns without new evidence | Set by progress monitor |
 | `RETIRED` | Abandoned without disproof | No reason required |
 
 Use `REFUTED` only when disproof exists. When there is no evidence of disproof, use `RETIRED`.

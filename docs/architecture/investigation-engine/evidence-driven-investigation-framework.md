@@ -22,7 +22,7 @@ This document defines the investigation architecture for FaultMaven's investigat
 | **Stage model** | 2 core stages (DIAGNOSIS, TREATMENT) with optional MITIGATION detour |
 | **Stage transitions** | Inference-based (user compliance with proposed action implies acceptance) |
 | **Progress tracking** | 7 investigation milestones: 4 gate milestones (drive transitions) + 3 progress indicators (LLM context, non-driving) |
-| **Evidence types** | 5 categories: symptom, causal, mitigation, solution, contextual |
+| **Evidence types** | 6 categories: symptom, causal, mitigation, solution, contextual, rejected |
 | **Hypothesis constraint** | Required before causal_evidence classification |
 | **Mitigation** | Distinct stage with own prompt, evidence type, and iterative verification |
 | **Treatment failure** | Extended diagnosis within TREATMENT (new evidence required, not reprocessing) |
@@ -31,7 +31,7 @@ This document defines the investigation architecture for FaultMaven's investigat
 - Case statuses: INQUIRY → INVESTIGATING → RESOLVED/CLOSED
 - INQUIRY phase and two-step confirmation for entering INVESTIGATING
 - User-Agent Handshake for disposition transitions (RESOLVED/CLOSED)
-- Hypothesis lifecycle (CAPTURED → ACTIVE → VALIDATED/REFUTED/RETIRED)
+- Hypothesis lifecycle (CAPTURED → ACTIVE → VALIDATED/REFUTED/INCONCLUSIVE/RETIRED)
 - Knowledge base pre-check and fast-track resolution
 - Input sanitization and token budget management
 
@@ -471,7 +471,7 @@ No changes to the preprocessing service, context builder, or evidence storage.
 ### 6.1 Hypothesis Lifecycle
 
 The hypothesis lifecycle:
-- **CAPTURED** → **ACTIVE** → **VALIDATED** / **REFUTED** / **RETIRED**
+- **CAPTURED** → **ACTIVE** → **VALIDATED** / **REFUTED** / **INCONCLUSIVE** / **RETIRED**
 - Evidence links with stances: SUPPORTS, REFUTES, NEUTRAL
 - Confidence formula: `initial + (0.15 x supporting) - (0.20 x refuting)`
 - Stagnation decay: `likelihood x 0.85^iterations_without_progress`

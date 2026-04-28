@@ -285,10 +285,7 @@ elif intent_type == "hypothesis_action" and intent_data:
     action = intent_data.get("action")
 
     if hypothesis_id and action:
-        hypothesis = next(
-            (h for h in case.hypotheses if h.hypothesis_id == hypothesis_id),
-            None,
-        )
+        hypothesis = case.hypotheses.get(hypothesis_id)
         if hypothesis:
             if action == "refute":
                 self.hypothesis_manager.refute_hypothesis(
