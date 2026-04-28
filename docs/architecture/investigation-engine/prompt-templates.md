@@ -1,6 +1,20 @@
-# Part 2: Complete Prompt Templates
+# Prompt Templates Reference
 
-## Implementation-Ready Prompt Text
+> **⚠️ OUTDATED — DO NOT USE AS REFERENCE**
+>
+> This document was generated from an earlier version of the investigation engine and no longer reflects the current implementation. The prompt blocks, schemas, function signatures, and state model here are all superseded.
+>
+> **Authoritative sources:**
+>
+> - Prompt text: `faultmaven/core/investigation/prompts/templates.py`
+> - Stage duties and gate conditions: [`agent-stage-playbook.md`](./agent-stage-playbook.md)
+> - Behavioral rules: [`agent-behavioral-rules.md`](./agent-behavioral-rules.md)
+>
+> This file is retained for historical context only and will be rewritten to reflect the current template design.
+
+---
+
+## Implementation-Ready Prompt Text (HISTORICAL — SUPERSEDED)
 
 This document provides the **complete, production-ready prompt templates** as Python template strings. These can be directly integrated into your codebase.
 
@@ -1002,9 +1016,9 @@ verified actual pool metrics yet - that would increase confidence to 85%+."
 • These provide context, they do NOT drive stage transitions
 
 **Gate Milestones (set when you detect user compliance):**
-• mitigation_accepted: Set True when user submits results of executing proposed mitigation
+• mitigation_accepted: Set True when user acknowledges executing proposed mitigation (no evidence required)
 • mitigation_verified: Set True when user confirms mitigation stabilized the situation
-• solution_accepted: Set True when user submits results of executing proposed solution
+• solution_accepted: Set True when user acknowledges executing proposed solution (no evidence required)
 • solution_verified: Set via User-Agent Handshake (not directly settable)
 • ONLY set these when a <pending_action> exists AND the user's message shows they executed it
 

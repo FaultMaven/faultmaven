@@ -1851,3 +1851,220 @@ class TestContradictingIntentCancelsPendingTransition:
         # Case should have transitioned to CLOSED (same intent = confirmation)
         assert updated_case.status == CaseStatus.CLOSED
         assert updated_case.pending_transition is None
+
+
+class TestRootCauseConclusionPersistence:
+    """Verify that root_cause_conclusion from LLM output is saved to the case.
+
+    Added when _apply_investigation_updates gained step 1a: the LLM can now
+    populate root_cause_conclusion in state_updates and the backend must save
+    it with correct field-name mapping (evidence_ids → evidence_basis) and
+    must derive confidence_level from likelihood via ConfidenceLevel.from_score.
+    """
+
+    @pytest.mark.asyncio
+    async def test_root_cause_conclusion_saved_from_llm_output(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """LLM-provided root_cause_conclusion is persisted with correct field mapping."""
+        from faultmaven.modules.case.contracts import ConfidenceLevel
+
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
+
+        base_case.progress.symptom_verified = True
+        base_case.progress.root_cause_identified = True
+
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "Root cause identified.",
+                "internal_reasoning": {
+                    "evidence_analyzed": [],
+                    "conclusions": [
+                        {
+                            "observation": "Config mismatch found",
+                            "inference": "Root cause confirmed",
+                            "confidence": 0.85,
+                        }
+                    ],
+                    "milestone_justifications": {},
+                    "uncertainties": [],
+                },
+                "state_updates": {
+                    "root_cause_conclusion": {
+                        "root_cause": "max_connections set to 10 instead of 100",
+                        "mechanism": "Connection pool exhaustion caused cascading timeouts",
+                        "evidence_ids": ["ev_aabbccdd1122"],
+                        "likelihood": 0.85,
+                    },
+                    "outcome": "conversation",
+                },
+            }
+        )
+
+        result = await engine.process_turn(base_case, "What is the root cause?")
+        updated_case = result["case_updated"]
+
+        rcc = updated_case.root_cause_conclusion
+        assert rcc is not None
+        assert rcc.root_cause == "max_connections set to 10 instead of 100"
+        assert rcc.mechanism == "Connection pool exhaustion caused cascading timeouts"
+        # Schema uses evidence_ids; domain model uses evidence_basis
+        assert rcc.evidence_basis == ["ev_aabbccdd1122"]
+        assert rcc.likelihood == 0.85
+        # confidence_level must be derived from likelihood (0.85 → CONFIDENT)
+        assert rcc.confidence_level == ConfidenceLevel.CONFIDENT
+
+    @pytest.mark.asyncio
+    async def test_root_cause_conclusion_absent_is_noop(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """When LLM omits root_cause_conclusion, case.root_cause_conclusion is unchanged."""
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
+
+        assert base_case.root_cause_conclusion is None
+
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "Still investigating.",
+                "state_updates": {"outcome": "conversation"},
+            }
+        )
+
+        result = await engine.process_turn(base_case, "Any progress?")
+        updated_case = result["case_updated"]
+
+        assert updated_case.root_cause_conclusion is None
+
+
+class TestTerminalTransitionPendingActionCleanup:
+    """Verify that _execute_resolved_transition cleans up orphaned pending actions.
+
+    Added when terminal_transitions.py gained pending-action cleanup to close
+    the audit gap on the TREATMENT failure path: when solution_accepted is already
+    True and a revised fix is proposed, no stage-gate fires for the new
+    ProposedAction, so it must be marked accepted at resolution time.
+    """
+
+    def _make_case(self):
+        return Case(
+            case_id="case_1234567890ab",
+            title="Test Case",
+            status=CaseStatus.INVESTIGATING,
+            user_id="user_123",
+            organization_id="org_123",
+            description="Test description",
+            problem_verification=ProblemVerification(
+                symptom_statement="Test symptom",
+                severity="HIGH",
+                temporal_state="ongoing",
+                urgency_level="high",
+            ),
+            inquiry=InquiryData(
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+                proposed_problem_statement="Test symptom",
+            ),
+        )
+
+    def test_pending_action_marked_accepted_on_resolution(self):
+        """A pending ProposedAction is accepted and audited when the case resolves."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            _execute_resolved_transition,
+        )
+        from faultmaven.modules.case.contracts import (
+            InvestigationActionType,
+            ProposedAction,
+        )
+
+        case = self._make_case()
+        case.proposed_actions.append(
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description="Revised fix after first attempt failed",
+                proposed_in_turn=3,
+                status="pending",
+            )
+        )
+
+        _execute_resolved_transition(case, "user_123", "Fix verified by user")
+
+        assert case.proposed_actions[0].status == "accepted"
+        assert len(case.action_attempts) == 1
+        attempt = case.action_attempts[0]
+        assert attempt.compliance_detected is True
+        assert attempt.compliance_confidence == 1.0
+
+    def test_already_accepted_actions_not_reprocessed(self):
+        """Actions already in accepted state are untouched during resolution."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            _execute_resolved_transition,
+        )
+        from faultmaven.modules.case.contracts import (
+            InvestigationActionType,
+            ProposedAction,
+        )
+
+        case = self._make_case()
+        case.proposed_actions.append(
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description="Original fix — already accepted when solution_accepted fired",
+                proposed_in_turn=2,
+                status="accepted",
+            )
+        )
+
+        _execute_resolved_transition(case, "user_123", "Fix verified by user")
+
+        # Status unchanged, and no ActionAttempt created for it
+        assert case.proposed_actions[0].status == "accepted"
+        assert len(case.action_attempts) == 0
+
+    def test_mixed_actions_only_pending_cleaned_up(self):
+        """With one accepted and one pending action, only the pending one is processed."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            _execute_resolved_transition,
+        )
+        from faultmaven.modules.case.contracts import (
+            InvestigationActionType,
+            ProposedAction,
+        )
+
+        case = self._make_case()
+        case.proposed_actions.append(
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description="Original fix",
+                proposed_in_turn=2,
+                status="accepted",
+            )
+        )
+        case.proposed_actions.append(
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description="Revised fix from failure path",
+                proposed_in_turn=4,
+                status="pending",
+            )
+        )
+
+        _execute_resolved_transition(case, "user_123", "Second fix worked")
+
+        assert case.proposed_actions[0].status == "accepted"  # unchanged
+        assert case.proposed_actions[1].status == "accepted"  # cleaned up
+        assert len(case.action_attempts) == 1
+        assert case.action_attempts[0].action_id == case.proposed_actions[1].action_id

@@ -132,7 +132,7 @@ class InvestigationProgress(BaseModel):
     mitigation_accepted: bool = Field(
         default=False,
         description=(
-            "User complied with proposed temp fix (inferred from submission). "
+            "User acknowledges executing proposed temp fix. "
             "Triggers DIAGNOSIS → MITIGATION transition."
         )
     )
@@ -148,7 +148,7 @@ class InvestigationProgress(BaseModel):
     solution_accepted: bool = Field(
         default=False,
         description=(
-            "User complied with proposed solution (inferred from submission). "
+            "User acknowledges executing proposed solution. "
             "Triggers DIAGNOSIS → TREATMENT transition."
         )
     )
@@ -261,9 +261,9 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 
 | Gate Milestone | Trigger |
 |---------------------|---------|
-| `mitigation_accepted` | User complied with proposed temp fix (inferred from submission) |
-| `mitigation_verified` | User confirmed mitigation worked |
-| `solution_accepted` | User complied with proposed solution (inferred from submission) |
+| `mitigation_accepted` | User acknowledges executing proposed temp fix |
+| `mitigation_verified` | User confirms mitigation worked (subjective confirmation sufficient) |
+| `solution_accepted` | User acknowledges executing proposed solution |
 | `solution_verified` | User confirmed fix worked (User-Agent Handshake) |
 
 **How progress milestone validation works:**

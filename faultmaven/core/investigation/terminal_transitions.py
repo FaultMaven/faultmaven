@@ -26,7 +26,12 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Optional
 
-from faultmaven.modules.case.contracts import Case, CaseAction, CaseStatus
+from faultmaven.modules.case.contracts import (
+    ActionAttempt,
+    Case,
+    CaseAction,
+    CaseStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +164,29 @@ def _execute_resolved_transition(case: Case, user_id: str, reason: str):
     case.progress.solution_verified = True
 
     now = datetime.now(UTC)
+
+    # Mark any remaining pending ProposedActions as accepted and create audit records.
+    # This covers revised fixes proposed during the TREATMENT failure path: when a fix
+    # fails and the LLM proposes a revised solution (SolutionToAdd → ProposedAction),
+    # the user executes it and the case resolves via ProposedTransition rather than a
+    # stage-gate milestone. Because solution_accepted is already True, no stage-gate
+    # fires and _apply_stage_gate_side_effects is never called for the revised action.
+    for action in case.proposed_actions:
+        if action.status == "pending":
+            action.status = "accepted"
+            case.action_attempts.append(
+                ActionAttempt(
+                    action_id=action.action_id,
+                    user_message="Resolution confirmed by user",
+                    submitted_at=now,
+                    compliance_detected=True,
+                    compliance_confidence=1.0,
+                )
+            )
+            logger.info(
+                f"Marked pending ProposedAction {action.action_id} as accepted "
+                f"on resolution of case {case.case_id}"
+            )
     case.atomic_update(
         status=CaseStatus.RESOLVED,
         resolved_at=now,

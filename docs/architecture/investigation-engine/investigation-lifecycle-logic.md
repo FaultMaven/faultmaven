@@ -625,9 +625,9 @@ State updates occur at specific points within a turn to ensure consistency:
 | `root_cause_identified` | Progress indicator | After hypothesis validation | LLM sets when hypothesis validated with high confidence |
 | `solution_proposed` | Progress indicator | After LLM proposes action | Set when ProposedAction with action_type=SOLUTION is created |
 | `path_selection` | — | When `symptom_verified` milestone completes (single trigger point) | Automatic from problem verification data. Reverted if milestone validation invalidates `symptom_verified`. |
-| `mitigation_accepted` | Gate milestone | LLM structured output | LLM detects user complied with proposed temp fix (submitted results) |
-| `mitigation_verified` | Gate milestone | LLM structured output | LLM detects user confirms mitigation worked → return to DIAGNOSIS |
-| `solution_accepted` | Gate milestone | LLM structured output | LLM detects user complied with proposed solution (submitted results) |
+| `mitigation_accepted` | Gate milestone | LLM structured output | User acknowledges executing proposed temp fix |
+| `mitigation_verified` | Gate milestone | LLM structured output | User confirms mitigation worked (subjective confirmation sufficient) → return to DIAGNOSIS |
+| `solution_accepted` | Gate milestone | LLM structured output | User acknowledges executing proposed solution |
 | `solution_verified` | Gate milestone | After user confirms fix | User confirms problem resolved (User-Agent Handshake) |
 | Disposition action | — | End of turn | After all other processing |
 
@@ -1737,9 +1737,10 @@ the agent proposes closure instead. The user can always close via UI at any poin
 **Flow**: `INQUIRY` → `INVESTIGATING` (DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT) → `RESOLVED`
 
 **Gate milestones**:
-*   `mitigation_accepted`: User complied with proposed temp fix (inferred from submission).
+
+*   `mitigation_accepted`: User acknowledges executing proposed temp fix.
 *   `mitigation_verified`: Mitigation verified effective → return to DIAGNOSIS.
-*   `solution_accepted`: User complied with proposed permanent solution (inferred from submission).
+*   `solution_accepted`: User acknowledges executing proposed solution.
 *   `solution_verified`: Permanent fix validated (via User-Agent Handshake).
 
 **Progress indicators** (non-driving):

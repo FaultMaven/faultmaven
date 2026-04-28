@@ -65,6 +65,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
     CaseStatus,
+    ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceForm,
@@ -81,6 +82,7 @@ from faultmaven.modules.case.contracts import (
     KnowledgeResolution,
     ProblemVerification,
     ProposedAction,
+    RootCauseConclusion,
     Solution,
     SolutionType,
     TemporalState,
@@ -4384,6 +4386,19 @@ class MilestoneEngine:
                         "severity": issue.severity,
                     }
                 )
+
+        # 1a. Save Root Cause Conclusion
+        # Must happen before milestone processing so the KB pre-fetch below
+        # can use the conclusion text in the same turn.
+        if hasattr(updates, "root_cause_conclusion") and updates.root_cause_conclusion:
+            rcc = updates.root_cause_conclusion
+            case.root_cause_conclusion = RootCauseConclusion(
+                root_cause=rcc.root_cause,
+                mechanism=rcc.mechanism,
+                evidence_basis=rcc.evidence_ids,
+                likelihood=rcc.likelihood,
+                confidence_level=ConfidenceLevel.from_score(rcc.likelihood),
+            )
 
         # 1. Update Milestones
         # NOTE: solution_verified is excluded — it requires the User-Agent

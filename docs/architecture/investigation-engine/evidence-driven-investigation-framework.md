@@ -340,10 +340,10 @@ Gate milestones drive stage transitions. They are **set by the LLM in structured
 
 | Milestone | Trigger | Effect |
 |-----------|---------|--------|
-| `solution_accepted` | User complies with proposed solution (submits execution results) | DIAGNOSIS → TREATMENT |
+| `solution_accepted` | User acknowledges executing proposed solution | DIAGNOSIS → TREATMENT |
 | `solution_verified` | User confirms fix worked (via User-Agent Handshake) | TREATMENT → RESOLVED |
-| `mitigation_accepted` | User complies with proposed temp fix (submits execution results) | DIAGNOSIS → MITIGATION |
-| `mitigation_verified` | User confirms mitigation worked | MITIGATION → DIAGNOSIS (return for RCA) |
+| `mitigation_accepted` | User acknowledges executing proposed temp fix | DIAGNOSIS → MITIGATION |
+| `mitigation_verified` | User confirms mitigation worked (subjective confirmation sufficient) | MITIGATION → DIAGNOSIS (return for RCA) |
 
 **How inference works**: The system (or classification layer) detects whether the user's input matches the expected evidence of the proposed action. This is distinct from the three other transition types:
 
@@ -807,9 +807,9 @@ class InvestigationProgress(BaseModel):
 # Current: Gate milestones + progress indicators (non-stage-driving)
 class InvestigationProgress(BaseModel):
     # Gate milestones (inferred from user behavior — drive stage transitions)
-    mitigation_accepted: bool = False     # DIAGNOSIS → MITIGATION (inferred from compliance)
+    mitigation_accepted: bool = False     # DIAGNOSIS → MITIGATION (user acknowledges executing temp fix)
     mitigation_verified: bool = False     # MITIGATION → DIAGNOSIS (return)
-    solution_accepted: bool = False       # DIAGNOSIS → TREATMENT (inferred from compliance)
+    solution_accepted: bool = False       # DIAGNOSIS → TREATMENT (user acknowledges executing solution)
     solution_verified: bool = False       # TREATMENT → RESOLVED (User-Agent Handshake)
 
     # Progress indicators (set by LLM — do NOT drive stage transitions)
