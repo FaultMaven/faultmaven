@@ -64,6 +64,10 @@ class DocumentationExtractor:
         procedure_sections = self._find_procedure_sections(sections)
         config_sections = self._find_config_sections(sections)
 
+        # Lead paragraph — README-style metadata that titles often miss
+        # (project description, version label, scope statement).
+        lead_paragraph = self._extract_lead_paragraph(content, is_markdown)
+
         # Generate summary
         result = self._generate_summary(
             title,
@@ -72,6 +76,7 @@ class DocumentationExtractor:
             troubleshooting_sections,
             procedure_sections,
             config_sections,
+            lead_paragraph=lead_paragraph,
         )
 
         # Count commands in code blocks
@@ -110,22 +115,104 @@ class DocumentationExtractor:
             >= 1
         )
 
+    # Truncation cap for title strings — long enough to keep typical
+    # README titles intact (incl. trailing badge links), short enough to
+    # keep the FILE SUMMARY first line scannable.
+    _TITLE_MAX_LEN = 250
+
     def _extract_title(self, content: str, is_markdown: bool) -> str:
-        """Extract document title"""
+        """Extract document title.
+
+        Handles three header styles:
+          - ATX H1:    "# Title"
+          - Setext H1: "Title\n=====" (title underlined with `=`)
+          - Setext H2: "Title\n-----" (title underlined with `-`)
+                      — used as a fallback when no H1 is found
+        Falls through to the first non-empty line for plain-text files.
+        """
         lines = content.split("\n")
 
         if is_markdown:
-            # Look for # Title (H1)
-            for line in lines[:10]:  # Check first 10 lines
+            # ATX-style H1 first (most common).
+            for line in lines[:10]:
                 if line.startswith("# "):
-                    return line[2:].strip()
+                    return line[2:].strip()[: self._TITLE_MAX_LEN]
+            # Setext-style: a non-empty line followed by `===` or `---`.
+            # README files commonly use this form (e.g. NAB README).
+            for i in range(min(len(lines), 10) - 1):
+                title_line = lines[i].strip()
+                underline = lines[i + 1].strip()
+                if not title_line:
+                    continue
+                if len(underline) >= 3 and (
+                    set(underline) == {"="} or set(underline) == {"-"}
+                ):
+                    return title_line[: self._TITLE_MAX_LEN]
 
-        # Fallback: first non-empty line
+        # Fallback: first non-empty line.
         for line in lines[:5]:
             if line.strip():
-                return line.strip()[:100]  # Limit length
+                return line.strip()[: self._TITLE_MAX_LEN]
 
         return "Untitled Document"
+
+    def _extract_lead_paragraph(self, content: str, is_markdown: bool) -> str | None:
+        """Return the first prose paragraph after the title.
+
+        README-style documents put critical identifying metadata in the
+        lead paragraph (project description, version label, scope) — not
+        the title. Surfacing this paragraph in the FILE SUMMARY lets the
+        agent answer "what is this about?" with the metadata-level facts
+        (e.g. "v1.1") that the title alone doesn't expose.
+
+        Heuristic: skip leading whitespace, the title line, any Setext
+        underline, and any ATX header that follows. Take the first
+        contiguous block of non-empty prose lines, capped to ~600 chars.
+        """
+        lines = content.split("\n")
+        # Skip up through the title region.
+        i = 0
+        n = len(lines)
+        # Skip leading blank lines.
+        while i < n and not lines[i].strip():
+            i += 1
+        if i >= n:
+            return None
+        # If this line is an ATX header, advance past it.
+        if is_markdown and lines[i].startswith("# "):
+            i += 1
+        # If this line is a Setext title (next line is === or ---), skip both.
+        elif (
+            is_markdown
+            and i + 1 < n
+            and lines[i].strip()
+            and lines[i + 1].strip()
+            and (
+                set(lines[i + 1].strip()) == {"="} or set(lines[i + 1].strip()) == {"-"}
+            )
+            and len(lines[i + 1].strip()) >= 3
+        ):
+            i += 2
+        else:
+            # Plain text — first prose line IS the title, skip it.
+            i += 1
+        # Skip blank lines between title and lead paragraph.
+        while i < n and not lines[i].strip():
+            i += 1
+        # Skip any subheader (## Section).
+        if is_markdown and i < n and lines[i].lstrip().startswith("#"):
+            return None
+        # Collect the first contiguous prose block.
+        para: list[str] = []
+        while i < n and lines[i].strip():
+            para.append(lines[i].strip())
+            i += 1
+        if not para:
+            return None
+        joined = " ".join(para)
+        if len(joined) > 600:
+            joined = joined[:597] + "..."
+        return joined
 
     def _extract_sections(self, content: str, is_markdown: bool) -> list[dict]:
         """Extract section headings and their content"""
@@ -332,16 +419,24 @@ class DocumentationExtractor:
         troubleshooting_sections: list[dict],
         procedure_sections: list[dict],
         config_sections: list[dict],
+        lead_paragraph: str | None = None,
     ) -> str:
         """Generate structured documentation summary"""
         lines = [
             f"Documentation: {title}",
             "",
-            f"📄 Document Overview:",
-            f"  - Total sections: {len(sections)}",
-            f"  - Code blocks: {len(code_blocks)}",
-            "",
         ]
+        if lead_paragraph:
+            lines.append(f"Abstract: {lead_paragraph}")
+            lines.append("")
+        lines.extend(
+            [
+                f"📄 Document Overview:",
+                f"  - Total sections: {len(sections)}",
+                f"  - Code blocks: {len(code_blocks)}",
+                "",
+            ]
+        )
 
         # Troubleshooting sections
         if troubleshooting_sections:
