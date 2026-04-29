@@ -121,20 +121,47 @@ class SourceCodeExtractor:
             imports, classes, functions, error_handling, todos
         )
 
-    def _extract_imports(self, tree: ast.AST) -> list[str]:
-        """Extract import statements"""
-        imports = []
+    def _extract_imports(self, tree: ast.AST) -> list[dict[str, Any]]:
+        """Extract import statements.
 
+        Walks the entire AST so conditional imports inside ``if``/``try`` blocks
+        and function bodies are counted. Each entry is tagged with
+        ``top_level=True`` when the import sits directly in ``Module.body``
+        (i.e., would execute on every load), otherwise ``False`` (conditional —
+        nested under control flow, function defs, try/except, etc.).
+
+        Returns a list of dicts ``{"statement": str, "top_level": bool}``.
+        Order matches source order for top-level + walk order for the rest.
+        """
+        # Identify nodes that are direct children of the Module body — these
+        # are unconditionally executed when the module loads.
+        top_level_ids: set[int] = set()
+        if isinstance(tree, ast.Module):
+            for node in tree.body:
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    top_level_ids.add(id(node))
+
+        imports: list[dict[str, Any]] = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    imports.append(f"import {alias.name}")
+                    imports.append(
+                        {
+                            "statement": f"import {alias.name}",
+                            "top_level": id(node) in top_level_ids,
+                        }
+                    )
             elif isinstance(node, ast.ImportFrom):
                 module = node.module or ""
                 names = ", ".join(alias.name for alias in node.names)
-                imports.append(f"from {module} import {names}")
+                imports.append(
+                    {
+                        "statement": f"from {module} import {names}",
+                        "top_level": id(node) in top_level_ids,
+                    }
+                )
 
-        return imports[:30]  # Limit
+        return imports
 
     def _extract_classes(self, tree: ast.AST) -> list[dict[str, Any]]:
         """Extract class definitions"""
@@ -236,9 +263,14 @@ class SourceCodeExtractor:
         else:
             return ast.unparse(node) if hasattr(ast, "unparse") else "Unknown"
 
+    # Maximum number of import lines to render in the FILE SUMMARY. Raised
+    # from 15 so realistic files (which routinely cross 15 imports between
+    # top-level and conditional) are fully visible to the LLM.
+    MAX_IMPORT_LINES = 30
+
     def _format_python_output(
         self,
-        imports: list[str],
+        imports: list[dict[str, Any]],
         classes: list[dict[str, Any]],
         functions: list[dict[str, Any]],
         error_handling: list[dict[str, Any]],
@@ -247,13 +279,25 @@ class SourceCodeExtractor:
         """Format Python analysis output"""
         lines = ["=== PYTHON CODE ANALYSIS ===\n"]
 
-        # Imports
+        # Imports — heading carries the accurate total plus a top-level vs
+        # conditional breakdown so counting questions don't depend on the
+        # caller summing the rendered list.
         if imports:
-            lines.append(f"## Imports ({len(imports)})")
-            for imp in imports[:15]:
-                lines.append(f"  {imp}")
-            if len(imports) > 15:
-                lines.append(f"  ... and {len(imports) - 15} more")
+            top_level_count = sum(1 for imp in imports if imp["top_level"])
+            conditional_count = len(imports) - top_level_count
+            lines.append(
+                f"## Imports ({len(imports)} total: "
+                f"{top_level_count} top-level, {conditional_count} conditional)"
+            )
+            # Group: top-level first, then conditional, preserving source order
+            ordered = [imp for imp in imports if imp["top_level"]] + [
+                imp for imp in imports if not imp["top_level"]
+            ]
+            for imp in ordered[: self.MAX_IMPORT_LINES]:
+                marker = "" if imp["top_level"] else " [conditional]"
+                lines.append(f"  {imp['statement']}{marker}")
+            if len(ordered) > self.MAX_IMPORT_LINES:
+                lines.append(f"  ... and {len(ordered) - self.MAX_IMPORT_LINES} more")
             lines.append("")
 
         # Classes
