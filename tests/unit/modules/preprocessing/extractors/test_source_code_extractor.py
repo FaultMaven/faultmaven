@@ -63,6 +63,129 @@ def risky():
         assert "Error Handling" in result.file_extract
         assert "ValueError" in result.file_extract
 
+    # --- Import counting (regression for ISS-021) ---
+
+    def test_python_import_heading_total_count(self, extractor):
+        """Import heading must report the accurate total (top-level + conditional).
+
+        Regression: ISS-021 — extractor previously truncated the per-line
+        listing to 15 with a low-signal "... and N more" tail. The total
+        count in the heading is the load-bearing signal for counting
+        questions and must always reflect every Import/ImportFrom node.
+        """
+        # 6 top-level + 4 conditional + 2 in try/except = 12 import nodes total
+        code = """
+import argparse
+import os
+from foo.runner import Runner
+from foo.util import helper
+try:
+    import simplejson as json
+except ImportError:
+    import json
+
+from bar.module import Thing
+from baz.module import Other
+
+def use_things():
+    pass
+
+if __name__ == "__main__":
+    if condition_a:
+        from pkg.a import A
+    if condition_b:
+        from pkg.b import B
+    if condition_c:
+        from pkg.c import C
+    if condition_d:
+        from pkg.d import D
+"""
+        result = extractor.extract(code)
+
+        # Heading reflects accurate total
+        assert (
+            "## Imports (12 total" in result.file_extract
+        ), f"Heading must show total=12. Got:\n{result.file_extract}"
+        # Heading reflects top-level vs conditional breakdown
+        assert "6 top-level" in result.file_extract
+        assert "6 conditional" in result.file_extract  # 2 try/except + 4 if-blocks
+
+    def test_python_imports_no_truncation_for_realistic_file(self, extractor):
+        """A file with ~17 imports renders all of them (not truncated to 15).
+
+        Mirrors the structure of NAB run.py (the failing benchmark case):
+        a few top-level imports, a try/except import fallback, and
+        many conditional imports inside ``if __name__ == "__main__":``.
+        """
+        # 4 top-level + 2 try/except + 11 conditional in __main__ = 17 imports
+        code = """
+import argparse
+import os
+try:
+    import simplejson as json
+except ImportError:
+    import json
+
+from foo.runner import Runner
+from foo.util import detectorNameToClass, checkInputs
+
+
+def main():
+    pass
+
+
+if __name__ == "__main__":
+    if "a" in detectors:
+        from foo.detectors.a import ADetector
+    if "b" in detectors:
+        from foo.detectors.b import BDetector
+    if "c" in detectors:
+        from foo.detectors.c import CDetector
+    if "d" in detectors:
+        from foo.detectors.d import DDetector
+    if "e" in detectors:
+        from foo.detectors.e import EDetector
+    if "f" in detectors:
+        from foo.detectors.f import FDetector
+    if "g" in detectors:
+        from foo.detectors.g import GDetector
+    if "h" in detectors:
+        from foo.detectors.h import HDetector
+    if "i" in detectors:
+        from foo.detectors.i import IDetector
+    if "j" in detectors:
+        from foo.detectors.j import JDetector
+    if "k" in detectors:
+        from foo.detectors.k import KDetector
+"""
+        result = extractor.extract(code)
+
+        # Total heading is correct
+        assert "## Imports (17 total" in result.file_extract
+        # All 11 conditional detector imports must be visible in the listing —
+        # no "... and N more" truncation for the typical file size.
+        for letter in "abcdefghijk":
+            assert (
+                f"{letter.upper()}Detector" in result.file_extract
+            ), f"{letter.upper()}Detector missing from output:\n{result.file_extract}"
+        assert (
+            "... and" not in result.file_extract
+        ), "17-import file should not be truncated"
+
+    def test_python_conditional_imports_marked(self, extractor):
+        """Conditional (non-top-level) imports get a [conditional] marker."""
+        code = """
+import os
+
+if some_flag:
+    import platform
+"""
+        result = extractor.extract(code)
+        # Top-level: no marker
+        assert "  import os\n" in result.file_extract + "\n"
+        # Conditional: marker present
+        assert "import platform [conditional]" in result.file_extract
+
     # --- JavaScript (tree-sitter path) ---
 
     @pytest.mark.skipif(not TREE_SITTER_AVAILABLE, reason="tree-sitter not installed")

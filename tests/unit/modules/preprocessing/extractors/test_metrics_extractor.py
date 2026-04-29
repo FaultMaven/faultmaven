@@ -4,8 +4,12 @@ Tests for MetricsAndPerformanceExtractor.
 Covers:
 - R4.2: CSV quoting fix (csv.reader)
 - R5.3: Prometheus label parsing (prometheus_client integration)
+- ISS-022: anomaly summary preserves both spikes and drops
 """
 
+import os
+import random
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -383,3 +387,228 @@ class TestSamplingIntervalSurface:
         ex = MetricsAndPerformanceExtractor()
         result = ex.extract(csv)
         assert result.file_meta.get("sampling_interval") == "~5 min"
+
+
+# Candidate locations for the NAB ambient-temperature regression CSV. The
+# preferred path is the sibling fm-data-exam workspace, but the test must not
+# break in environments that don't have it (CI containers, fresh clones).
+_AMBIENT_TEMP_CANDIDATES = (
+    Path(
+        "/home/swhouse/product/fm-data-exam/test-data/NAB/data/realKnownCause/"
+        "ambient_temperature_system_failure.csv"
+    ),
+    Path(__file__).resolve().parents[5]
+    / "fm-data-exam"
+    / "test-data"
+    / "NAB"
+    / "data"
+    / "realKnownCause"
+    / "ambient_temperature_system_failure.csv",
+)
+
+
+def _find_ambient_temperature_csv() -> Path | None:
+    override = os.environ.get("FAULTMAVEN_AMBIENT_TEMP_CSV")
+    if override:
+        candidate = Path(override)
+        if candidate.is_file():
+            return candidate
+    for candidate in _AMBIENT_TEMP_CANDIDATES:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+class TestAnomalyDirectionPreservation:
+    """ISS-022: the surfaced anomaly summary must preserve **both** upward
+    spikes and downward drops in the display window.
+
+    Root cause: the previous implementation sorted anomalies by raw value
+    descending, which pushed every drop (low value) to the tail of the list.
+    With more than ``display_cap`` spikes, drops were silently truncated out
+    of the summary even when the underlying detector flagged them.
+
+    Fix: sort by absolute deviation from the median so the most extreme
+    anomalies in *either* direction surface first, plus mirror the spike
+    IQR-proxy threshold onto the lower side so drops are detected
+    symmetrically (this resolves real-world cases like the NAB ambient
+    temperature dataset where drops are gradual and never trigger the legacy
+    50%-below-mean rule).
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return MetricsAndPerformanceExtractor()
+
+    def test_synthetic_series_surfaces_both_spikes_and_drops(self, extractor):
+        """A synthetic series with mean ~50, std ~5, plus 3 high spikes at
+        value 80 and 3 deep drops at value 5 must surface **both** at least
+        one DROP and one SPIKE within the top-10 display window.
+
+        Before the fix, the value-descending sort would place all 3 spikes
+        and the noise tail before any of the drops — drops at value 5 were
+        ranked dead last by raw value. The synthetic case here would only
+        manifest the bug with more spikes than display_cap, but the key
+        assertion is that direction is preserved regardless.
+        """
+        rng = random.Random(20260429)
+        rows = ["timestamp,value"]
+        # Baseline: 100 points around mean=50, std=5
+        for i in range(100):
+            rows.append(f"2024-01-01T00:{i:02d}:00,{50.0 + rng.gauss(0, 5):.4f}")
+        # 3 high spikes
+        for i in range(3):
+            rows.append(f"2024-01-02T00:{i:02d}:00,80.0")
+        # 3 deep drops (well below the 50%-below-mean rule and the symmetric
+        # IQR-proxy threshold)
+        for i in range(3):
+            rows.append(f"2024-01-03T00:{i:02d}:00,5.0")
+
+        result = extractor.extract("\n".join(rows))
+        summary = result.file_extract
+
+        # Both directions must appear in the formatted summary (display window
+        # is the first 10 anomalies per metric).
+        display_window = summary.split("... and")[0]
+        assert "SPIKE" in display_window, (
+            "expected at least one SPIKE in the displayed anomalies, got:\n"
+            + display_window
+        )
+        assert "DROP" in display_window, (
+            "expected at least one DROP in the displayed anomalies "
+            "(regression: ISS-022 sorted by raw value, hiding all drops), got:\n"
+            + display_window
+        )
+        # The descriptive heading should now include direction counts.
+        assert "spike(s)" in summary and "drop(s)" in summary
+
+    def test_many_spikes_do_not_crowd_out_drops_in_display_window(self, extractor):
+        """Direct ISS-022 reproduction: when the raw spike count exceeds the
+        display cap (10), the previous value-descending sort would push every
+        drop past the truncation boundary. The new abs-deviation sort must
+        keep at least one drop visible.
+        """
+        rng = random.Random(123)
+        rows = ["timestamp,value"]
+        # Large baseline so the spike/drop counts stay below p95 — otherwise
+        # the anomalies themselves dominate the percentiles and slip back
+        # under the threshold.
+        for i in range(2000):
+            rows.append(f"2024-01-01T{i:04d},{50.0 + rng.gauss(0, 5):.4f}")
+        # 12 spikes — more than the display cap
+        for i in range(12):
+            rows.append(f"2024-02-01T{i:04d},90.0")
+        # 3 deep drops
+        for i in range(3):
+            rows.append(f"2024-03-01T{i:04d},5.0")
+
+        result = extractor.extract("\n".join(rows))
+        summary = result.file_extract
+
+        display_window = summary.split("... and")[0]
+        spike_lines = [
+            line for line in display_window.splitlines() if "SPIKE at" in line
+        ]
+        drop_lines = [line for line in display_window.splitlines() if "DROP at" in line]
+        assert spike_lines, (
+            "expected SPIKE entries to be displayed; summary was:\n" + display_window
+        )
+        assert drop_lines, (
+            "expected DROP entries to survive the display cap when there are "
+            "more spikes than the cap (regression: ISS-022); summary was:\n"
+            + display_window
+        )
+
+    def test_anomalies_sorted_by_absolute_deviation_from_median(self, extractor):
+        """Internal contract: ``_detect_anomalies`` must order results so that
+        the largest deviations from the median come first — independent of
+        sign. This is what makes the display cap fair to both directions.
+        """
+        rng = random.Random(7)
+        data_points: list[tuple[str | None, float]] = []
+        for i in range(200):
+            data_points.append((f"t{i}", 50.0 + rng.gauss(0, 5)))
+        # Add bidirectional anomalies with varying magnitudes
+        data_points.append(("t_drop_huge", 1.0))  # |dev| ≈ 49
+        data_points.append(("t_spike_med", 80.0))  # |dev| ≈ 30
+        data_points.append(("t_drop_med", 20.0))  # |dev| ≈ 30
+        data_points.append(("t_spike_huge", 200.0))  # |dev| ≈ 150
+        values = [v for _, v in data_points]
+
+        stats = extractor._calculate_statistics(values)
+        anomalies = extractor._detect_anomalies(data_points, stats)
+
+        assert anomalies, "expected anomalies to be detected"
+        deviations = [abs(a["value"] - stats["p50"]) for a in anomalies]
+        assert deviations == sorted(deviations, reverse=True), (
+            "anomalies must be sorted by |value - p50| descending so the "
+            "display cap surfaces the most extreme anomalies in either "
+            "direction (ISS-022)"
+        )
+        # The top-2 anomalies must include the huge spike and huge drop —
+        # they are the two largest deviations.
+        top_two_timestamps = {a["timestamp"] for a in anomalies[:2]}
+        assert "t_spike_huge" in top_two_timestamps
+        assert "t_drop_huge" in top_two_timestamps
+
+    def test_summary_heading_breaks_down_spike_and_drop_counts(self, extractor):
+        """Cosmetic enhancement (criterion 2): the heading should disclose
+        spike and drop counts so a reader can immediately see the directional
+        composition without scrolling the per-anomaly list.
+        """
+        rng = random.Random(11)
+        rows = ["timestamp,value"]
+        for i in range(100):
+            rows.append(f"t{i},{50.0 + rng.gauss(0, 5):.4f}")
+        rows.extend(["t_s1,90", "t_s2,90", "t_d1,5", "t_d2,5"])
+        result = extractor.extract("\n".join(rows))
+        summary = result.file_extract
+        # Top-level heading
+        assert "spike(s)" in summary
+        assert "drop(s)" in summary
+
+    @pytest.mark.skipif(
+        _find_ambient_temperature_csv() is None,
+        reason=(
+            "NAB ambient_temperature_system_failure.csv not available; set "
+            "FAULTMAVEN_AMBIENT_TEMP_CSV to override path."
+        ),
+    )
+    def test_ambient_temperature_csv_surfaces_dec_spike_and_apr_drop(self, extractor):
+        """ISS-022 regression test against the real failing dataset:
+        NAB ambient_temperature_system_failure.csv (case
+        ``metrics-ambient-temp-01``). The series has a high spike around
+        2013-12-22/23 (peak 86.22°F) and a sustained drop around
+        2014-04-13 (minimum 57.46°F). Both directions must surface in the
+        displayed anomaly list.
+
+        Pre-fix behaviour: 9 spikes were detected and shown, 0 drops — the
+        50%-below-mean rule never fired (drop was only ~19% below mean) and
+        the value-descending sort would have buried any drops anyway. The
+        agent answered q1/q2/q4 framing the dataset as "spike only".
+        """
+        csv_path = _find_ambient_temperature_csv()
+        assert csv_path is not None  # appeasement of type checker; skip handles None
+        content = csv_path.read_text(encoding="utf-8")
+
+        result = extractor.extract(content)
+        summary = result.file_extract
+
+        # Full-window scan (not just first 10) — but we want both within the
+        # display window so the agent actually sees them.
+        display_window = summary.split("... and")[0]
+        assert "SPIKE" in display_window, (
+            "expected the December 2013 spike(s) to surface in the displayed "
+            "anomalies; summary was:\n" + display_window
+        )
+        assert "DROP" in display_window, (
+            "expected the April 2014 drop to surface in the displayed "
+            "anomalies (regression: ISS-022); summary was:\n" + display_window
+        )
+        # December 2013 spike timestamps appear in the summary at all
+        assert "2013-12" in summary
+        # April 2014 drop should be visible too
+        assert "2014-04" in display_window or "2014-05" in display_window, (
+            "expected an April or May 2014 drop timestamp in the displayed "
+            "window; summary was:\n" + display_window
+        )

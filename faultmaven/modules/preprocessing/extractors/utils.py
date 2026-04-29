@@ -100,6 +100,21 @@ def format_coverage_metadata(**kwargs: object) -> str:
 _TS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("iso8601_t", re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")),
     ("iso8601", re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")),
+    # Android HealthApp / similar mobile-app logs (ISS-017):
+    #   YYYYMMDD-HH:MM:SS:mmm  e.g. "20171223-22:15:29:606" or
+    #   "20171224-1:2:35:789" (non-zero-padded hour after midnight).
+    # Listed before yymmdd/epoch_s so it captures the full timestamp
+    # rather than letting a unix-epoch substring in the message body win.
+    # Strict line-anchored format — must be at start of line followed by
+    # a pipe ``|`` field separator, which is the HealthApp delimiter.
+    (
+        "healthapp",
+        re.compile(
+            r"^(\d{4})(\d{2})(\d{2})-"  # YYYYMMDD-
+            r"(\d{1,2}):(\d{1,2}):(\d{1,2}):(\d{1,3})"  # H:M:S:ms (1-2 digits each)
+            r"\|"  # pipe field separator
+        ),
+    ),
     (
         "syslog_bsd",
         re.compile(
@@ -158,6 +173,22 @@ def extract_timestamp(line: str) -> datetime | None:
                 return datetime.strptime(m.group(0), "%Y-%m-%d %H:%M:%S").replace(
                     tzinfo=UTC
                 )
+            if name == "healthapp":
+                # YYYYMMDD-H:M:S:ms (HealthApp). All seven groups are
+                # range-validated; ms is dropped (datetime requires
+                # microseconds, not milliseconds, and the precision is
+                # not load-bearing for time-range computation).
+                yyyy, mo, dd, hh, mi, ss, _ms = (int(x) for x in m.groups())
+                if not (
+                    1970 <= yyyy <= 2100
+                    and 1 <= mo <= 12
+                    and 1 <= dd <= 31
+                    and 0 <= hh <= 23
+                    and 0 <= mi <= 59
+                    and 0 <= ss <= 59
+                ):
+                    continue
+                return datetime(yyyy, mo, dd, hh, mi, ss, tzinfo=UTC)
             if name == "syslog_bsd":
                 # Single parser for the full BSD-syslog family. Use the
                 # explicit year when the input provides one; fall back to the
