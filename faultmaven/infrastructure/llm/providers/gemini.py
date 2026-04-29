@@ -222,13 +222,25 @@ class GeminiProvider(BaseLLMProvider):
         content = ""
         tool_calls = None
         tokens_used = 0
+        raw_assistant_parts: list | None = None
 
         if "candidates" in response_data and response_data["candidates"]:
             candidate = response_data["candidates"][0]
 
             if "content" in candidate and "parts" in candidate["content"]:
-                for part in candidate["content"]["parts"]:
+                # Stash the parts array verbatim so we can echo it back on the
+                # next request. Gemini 3.x with thinking enabled attaches a
+                # thoughtSignature to MULTIPLE part types (text, thought,
+                # functionCall) — preserving the parts as-is is the only safe
+                # way to round-trip every signature. The user-visible content
+                # and tool_calls projections below are derived views; the
+                # source of truth for the next turn is raw_assistant_parts.
+                raw_assistant_parts = candidate["content"]["parts"]
+                for part in raw_assistant_parts:
                     if "text" in part:
+                        # Skip thinking/thought parts — not user-visible.
+                        if part.get("thought"):
+                            continue
                         content += part["text"]
                     elif "functionCall" in part:
                         if tool_calls is None:
@@ -298,6 +310,14 @@ class GeminiProvider(BaseLLMProvider):
             has_valid_tool_calls=has_valid_tool_calls,
         )
 
+        # Stash the raw parts on the response so the orchestrator can
+        # round-trip them verbatim. Only set when the response actually
+        # contained parts — older Gemini paths and non-thinking responses
+        # leave provider_metadata as None.
+        provider_metadata: dict | None = None
+        if raw_assistant_parts is not None:
+            provider_metadata = {"assistant_parts": raw_assistant_parts}
+
         return LLMResponse(
             content=content,
             confidence=confidence,
@@ -307,6 +327,7 @@ class GeminiProvider(BaseLLMProvider):
             response_time_ms=response_time_ms,
             cached=False,
             tool_calls=tool_calls,
+            provider_metadata=provider_metadata,
         )
 
     def _calculate_confidence(
@@ -433,6 +454,19 @@ class GeminiProvider(BaseLLMProvider):
                 )
 
             elif role == "assistant":
+                # When the original response was captured verbatim (Gemini
+                # 3.x with thinking — see provider_metadata.assistant_parts),
+                # echo the parts as-is. This preserves every thoughtSignature
+                # exactly where Gemini placed it, regardless of part type.
+                # The api_response itself is the source of truth for the next
+                # turn; rebuilding from `content` + `tool_calls` would drop
+                # signatures attached to text/thought parts.
+                msg_pmeta = msg.get("provider_metadata") or {}
+                saved_parts = msg_pmeta.get("assistant_parts")
+                if saved_parts:
+                    contents.append({"role": "model", "parts": saved_parts})
+                    continue
+
                 parts: List[Dict[str, Any]] = []
                 if content:
                     parts.append({"text": content})
@@ -445,14 +479,20 @@ class GeminiProvider(BaseLLMProvider):
                             args = json.loads(args)
                         except (json.JSONDecodeError, TypeError):
                             args = {}
-                    parts.append(
-                        {
-                            "functionCall": {
-                                "name": func.get("name", ""),
-                                "args": args,
-                            }
-                        }
-                    )
+                    function_call: Dict[str, Any] = {
+                        "name": func.get("name", ""),
+                        "args": args,
+                    }
+                    # Per-tool-call signature passthrough — used when the
+                    # orchestrator preserves only ToolCall.provider_metadata
+                    # (e.g. test fixtures, or providers that don't preserve
+                    # the full parts array). Older Gemini paths leave this
+                    # absent and the conditional is a no-op.
+                    pmeta = tc.get("provider_metadata") or {}
+                    sig = pmeta.get("thought_signature")
+                    if sig:
+                        function_call["thoughtSignature"] = sig
+                    parts.append({"functionCall": function_call})
 
                 if parts:
                     contents.append({"role": "model", "parts": parts})

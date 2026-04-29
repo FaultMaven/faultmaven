@@ -701,3 +701,266 @@ class TestResolveRefsForGemini:
         items = result["properties"]["tags"]["items"]
         assert "additionalProperties" not in items
         assert "title" not in items
+
+
+# ---------------------------------------------------------------------------
+# thought_signature round-trip (Gemini 3.x) — ISS-010
+# ---------------------------------------------------------------------------
+
+
+class TestThoughtSignatureRoundTrip:
+    """Gemini 3.x with thinking enabled emits a `thoughtSignature` on each
+    functionCall. The provider must:
+      1. Capture it from response parts into ToolCall.provider_metadata.
+      2. Echo it back on the matching functionCall in the next request.
+    Skipping step 2 produces HTTP 400 from Gemini ("Function call is missing
+    a thought_signature"). Skipping step 1 silently degrades reasoning
+    continuity across turns.
+
+    Gemini 2.5 Pro and earlier do not emit thoughtSignature — the field must
+    not be added to outgoing requests when absent (avoids regressions on
+    older models that may reject unknown fields).
+    """
+
+    def _function_call_part(self, name: str, args: dict, sig: str | None = None):
+        fc: dict = {"name": name, "args": args}
+        if sig is not None:
+            fc["thoughtSignature"] = sig
+        return {"functionCall": fc}
+
+    # ----- Echo path: tool_calls dict → request payload -----
+
+    def test_signature_echoed_when_provider_metadata_present(self, provider):
+        """tool_calls carrying provider_metadata.thought_signature must
+        produce a functionCall part with thoughtSignature on the wire."""
+        messages = [
+            {"role": "user", "content": "Search the log."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_file",
+                            "arguments": '{"query": "ERROR"}',
+                        },
+                        "provider_metadata": {"thought_signature": "abc-sig-123"},
+                    }
+                ],
+            },
+        ]
+        result = provider._convert_messages_to_gemini(messages)
+        fc = result["contents"][1]["parts"][0]["functionCall"]
+        assert fc["thoughtSignature"] == "abc-sig-123"
+        assert fc["name"] == "search_file"
+
+    def test_no_signature_field_when_provider_metadata_absent(self, provider):
+        """Backward compat: tool_calls without provider_metadata (Gemini 2.5,
+        OpenAI, etc.) must NOT add thoughtSignature to the wire payload."""
+        messages = [
+            {"role": "user", "content": "Search the log."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_file",
+                            "arguments": '{"query": "ERROR"}',
+                        },
+                    }
+                ],
+            },
+        ]
+        result = provider._convert_messages_to_gemini(messages)
+        fc = result["contents"][1]["parts"][0]["functionCall"]
+        assert "thoughtSignature" not in fc
+
+    def test_no_signature_field_when_provider_metadata_empty_dict(self, provider):
+        """Empty dict in provider_metadata must also produce no field —
+        treats absence and empty equivalently."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                        "provider_metadata": {},
+                    }
+                ],
+            },
+        ]
+        result = provider._convert_messages_to_gemini(messages)
+        fc = result["contents"][0]["parts"][0]["functionCall"]
+        assert "thoughtSignature" not in fc
+
+    def test_signature_attached_per_tool_call(self, provider):
+        """Each tool_call's signature must travel with its own functionCall
+        part — they must not be cross-pollinated when there are multiple."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "f1", "arguments": "{}"},
+                        "provider_metadata": {"thought_signature": "sig-1"},
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "f2", "arguments": "{}"},
+                        "provider_metadata": {"thought_signature": "sig-2"},
+                    },
+                ],
+            },
+        ]
+        result = provider._convert_messages_to_gemini(messages)
+        parts = result["contents"][0]["parts"]
+        assert parts[0]["functionCall"]["thoughtSignature"] == "sig-1"
+        assert parts[1]["functionCall"]["thoughtSignature"] == "sig-2"
+
+    # ----- Capture path: response parsing → ToolCall -----
+
+    @pytest.mark.asyncio
+    async def test_response_preserves_full_parts_with_signatures(self, provider):
+        """Response provider_metadata.assistant_parts must contain the
+        original parts array verbatim — including any thoughtSignatures
+        attached to text/thought/functionCall parts. This is the primary
+        round-trip mechanism for Gemini 3.x; per-tool-call metadata is a
+        secondary fallback."""
+        response_data = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": "thought stream",
+                                "thought": True,
+                                "thoughtSignature": "tsig",
+                            },
+                            self._function_call_part(
+                                "search_file", {"query": "x"}, sig="fsig"
+                            ),
+                        ]
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {"candidatesTokenCount": 10},
+        }
+        mock_session = _mock_aiohttp_session(response_data)
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            resp = await provider.generate("hi")
+        assert resp.tool_calls and len(resp.tool_calls) == 1
+        # Per-tool-call slot intentionally None — signatures live in
+        # assistant_parts now.
+        assert resp.tool_calls[0].provider_metadata is None
+        # Response-level metadata preserves every part with its signature.
+        assert resp.provider_metadata is not None
+        parts = resp.provider_metadata["assistant_parts"]
+        assert len(parts) == 2
+        assert parts[0]["thoughtSignature"] == "tsig"
+        assert parts[1]["functionCall"]["thoughtSignature"] == "fsig"
+        # Thought parts must NOT pollute user-visible content.
+        assert "thought stream" not in resp.content
+
+    @pytest.mark.asyncio
+    async def test_no_metadata_when_response_has_no_parts(self, provider):
+        """Defensive: if a response somehow lacks the parts array, no
+        provider_metadata is set. Practically this happens only on safety
+        blocks or empty candidates."""
+        response_data = {
+            "candidates": [{"content": {}, "finishReason": "STOP"}],
+            "usageMetadata": {"candidatesTokenCount": 0},
+        }
+        mock_session = _mock_aiohttp_session(response_data)
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            resp = await provider.generate("hi")
+        assert resp.provider_metadata is None
+
+
+# ---------------------------------------------------------------------------
+# Verbatim assistant_parts round-trip — Gemini 3.x signatures may be on
+# text/thought parts, not only functionCall parts. The provider preserves
+# the entire parts array via response.provider_metadata.assistant_parts and
+# echoes it as-is on the next request.
+# ---------------------------------------------------------------------------
+
+
+class TestVerbatimAssistantPartsPassthrough:
+    """When provider_metadata.assistant_parts is present on the message,
+    _convert_messages_to_gemini must echo those parts verbatim instead of
+    rebuilding from content + tool_calls. This is the only safe way to
+    preserve thoughtSignatures attached to text/thought parts (Gemini 3.x
+    with thinking enabled)."""
+
+    def test_saved_parts_echoed_verbatim(self, provider):
+        """Saved parts (with their signatures) must reach the wire unchanged."""
+        saved_parts = [
+            {"text": "thought content", "thought": True, "thoughtSignature": "tsig"},
+            {"text": "visible answer", "thoughtSignature": "vsig"},
+            {
+                "functionCall": {
+                    "name": "search_file",
+                    "args": {"query": "x"},
+                    "thoughtSignature": "fsig",
+                }
+            },
+        ]
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "visible answer",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_file",
+                            "arguments": '{"query":"x"}',
+                        },
+                    }
+                ],
+                "provider_metadata": {"assistant_parts": saved_parts},
+            },
+        ]
+        result = provider._convert_messages_to_gemini(messages)
+        # The model turn's parts should equal saved_parts byte-for-byte —
+        # rebuild path must NOT trigger.
+        model_turn = result["contents"][1]
+        assert model_turn["role"] == "model"
+        assert model_turn["parts"] == saved_parts
+
+    def test_falls_back_to_rebuild_when_no_saved_parts(self, provider):
+        """Existing messages (no provider_metadata) keep using the rebuild
+        path — backward compat for non-Gemini-3.x flows."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "hello",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            }
+        ]
+        result = provider._convert_messages_to_gemini(messages)
+        parts = result["contents"][0]["parts"]
+        assert parts[0] == {"text": "hello"}
+        assert parts[1]["functionCall"]["name"] == "f"
+        # No signatures present anywhere — the rebuild path correctly omits them.
+        assert "thoughtSignature" not in parts[1]["functionCall"]

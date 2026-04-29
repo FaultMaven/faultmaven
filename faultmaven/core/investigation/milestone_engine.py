@@ -3580,16 +3580,30 @@ class MilestoneEngine:
 
     @staticmethod
     def _build_assistant_message(response: Any) -> dict:
-        """Convert LLMResponse to OpenAI-format assistant message."""
+        """Convert LLMResponse to OpenAI-format assistant message.
+
+        Round-trips two kinds of provider-specific artifacts when present:
+        1. Per-tool-call `provider_metadata` (e.g. signatures bound to a
+           specific functionCall).
+        2. Response-level `provider_metadata` (e.g. Gemini 3.x's full
+           `assistant_parts` array, which carries thoughtSignatures attached
+           to text/thought/functionCall parts that must all round-trip
+           together — skipping any one produces a 400 on the next turn).
+
+        Both are absent for providers/models that don't emit reasoning
+        artifacts (Gemini 2.5, OpenAI Chat Completions, etc.) — the keys
+        are omitted entirely so downstream serializers see no change.
+        """
         tool_calls_list = []
         for tc in response.tool_calls or []:
-            tool_calls_list.append(
-                {
-                    "id": tc.id,
-                    "type": tc.type,
-                    "function": tc.function,
-                }
-            )
+            entry = {
+                "id": tc.id,
+                "type": tc.type,
+                "function": tc.function,
+            }
+            if getattr(tc, "provider_metadata", None):
+                entry["provider_metadata"] = tc.provider_metadata
+            tool_calls_list.append(entry)
 
         msg = {
             "role": "assistant",
@@ -3597,6 +3611,8 @@ class MilestoneEngine:
         }
         if tool_calls_list:
             msg["tool_calls"] = tool_calls_list
+        if getattr(response, "provider_metadata", None):
+            msg["provider_metadata"] = response.provider_metadata
         return msg
 
     @staticmethod
