@@ -663,8 +663,15 @@ class LogsAndErrorsExtractor:
     # PAM authentication failure lines accompany sshd "Failed password" events —
     # they are separate log lines for the same auth event (two lines per failure).
     # Counting them separately gives a more complete per-IP auth failure tally.
+    #
+    # Two syslog PAM formats exist in the wild:
+    #   A. modern Linux-PAM:  "pam_unix(sshd:auth): authentication failure"
+    #   B. older Red Hat:     "sshd(pam_unix)[19939]: authentication failure"
+    # Both must match — the loghub Linux fixture is format B; OpenSSH and most
+    # post-2010 distros are format A.
     _PAM_AUTH_FAILURE_RE = re.compile(
-        r"pam_unix\([^)]*\):\s*authentication failure", re.IGNORECASE
+        r"(?:pam_unix\([^)]*\)|\(pam_unix\)\[\d+\]):\s*authentication failure",
+        re.IGNORECASE,
     )
     # Numeric state codes (e.g. "error state 6") are internal to the log source;
     # the log itself does not document their meanings. Detection triggers a note
@@ -1064,10 +1071,12 @@ class LogsAndErrorsExtractor:
 
         return ""
 
-    # Event types that are supplementary log-layer duplicates of another event
-    # type (e.g. PAM logs the same auth failure as sshd "Failed password").
-    # Excluded from FILE SUMMARY counts to avoid misrepresenting event volume.
-    _SUMMARY_EXCLUDE_EVENTS: frozenset = frozenset({"pam_auth_failure"})
+    # Event types whose count is a duplicate of another event type and should
+    # be hidden from FILE SUMMARY's dominant-activity picker. PAM is special:
+    # in Format A logs (OpenSSH "pam_unix(sshd:auth):") it duplicates
+    # failed_password, but in Format B logs (loghub Linux "sshd(pam_unix)[PID]:")
+    # failed_password never matches and pam_auth_failure IS the auth signal.
+    # Hence the exclusion is applied conditionally inside _build_summary.
 
     def _build_summary(
         self,
@@ -1117,13 +1126,15 @@ class LogsAndErrorsExtractor:
                 f" record did not match the IP address — reverse-DNS mismatch)."
             )
 
-        # Dominant activity counts — exclude supplementary duplicate event types
+        # Dominant activity counts — exclude supplementary duplicate event types.
+        # pam_auth_failure duplicates failed_password ONLY when both are present
+        # (Format A logs). When failed_password is 0, pam_auth_failure is the
+        # primary auth signal (Format B) and must be surfaced.
+        exclude = set()
+        if event_counts.get("failed_password", 0) > 0:
+            exclude.add("pam_auth_failure")
         summary_events = Counter(
-            {
-                k: v
-                for k, v in event_counts.items()
-                if k not in self._SUMMARY_EXCLUDE_EVENTS
-            }
+            {k: v for k, v in event_counts.items() if k not in exclude}
         )
         top_events = summary_events.most_common(3)
         if top_events:
