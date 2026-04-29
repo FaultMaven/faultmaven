@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    extract_timestamp,
     has_content,
     truncate_output,
 )
@@ -120,8 +121,19 @@ class MetricsAndPerformanceExtractor:
 
         total_anomalies = sum(len(s.get("anomalies", [])) for s in summaries)
 
+        # Compute typical sampling interval from the largest metric series.
+        # Surfaced both in file_meta and prepended to the output so the agent
+        # can answer "what is the cadence of this data?" — a default-question
+        # fact for time-series CSVs that was previously missing.
+        sampling_interval = self._compute_sampling_interval(time_series)
+
         # Combine summaries
         output = self._format_summary(summaries)
+
+        # Prepend interval note to the analysis summary block so it is
+        # visible in the FILE SUMMARY first-line orientation.
+        if sampling_interval:
+            output = self._inject_interval_note(output, sampling_interval)
 
         # Append categorical distributions for non-numeric columns if available
         if csv_summary:
@@ -135,17 +147,109 @@ class MetricsAndPerformanceExtractor:
         time_span = f"{min_ts} to {max_ts}" if min_ts and max_ts else None
 
         metric_names = list(time_series.keys())
+        meta = {
+            "format": format_detected,
+            "metrics": len(metric_names),
+            "total_data_points": total_data_points,
+            "time_span": time_span,
+            "metric_names": ", ".join(metric_names[:10]),
+            "anomalies_found": total_anomalies,
+            "size_bytes": len(content.encode("utf-8", errors="replace")),
+        }
+        if sampling_interval:
+            meta["sampling_interval"] = sampling_interval
+
         return ExtractResult(
             file_extract=output,
-            file_meta={
-                "format": format_detected,
-                "metrics": len(metric_names),
-                "total_data_points": total_data_points,
-                "time_span": time_span,
-                "metric_names": ", ".join(metric_names[:10]),
-                "anomalies_found": total_anomalies,
-                "size_bytes": len(content.encode("utf-8", errors="replace")),
-            },
+            file_meta=meta,
+        )
+
+    def _compute_sampling_interval(
+        self, time_series: Dict[str, List[Tuple[Optional[str], float]]]
+    ) -> Optional[str]:
+        """Compute the typical interval between consecutive samples.
+
+        Picks the largest metric series (most data points), parses its
+        timestamps to datetime, and takes the median of consecutive
+        differences. Median is robust to occasional gaps. Returns a
+        human-readable string ("~5 min", "~1 h", "~30 s") or None when
+        intervals can't be determined (e.g. <2 timestamped points,
+        irregular cadence with no clear median).
+        """
+        if not time_series:
+            return None
+        # Pick the series with the most points — best sample size.
+        biggest = max(time_series.values(), key=len, default=[])
+        if len(biggest) < 2:
+            return None
+
+        # Parse timestamps; skip points without a parsable timestamp.
+        parsed = []
+        for ts, _ in biggest:
+            if not ts:
+                continue
+            dt = extract_timestamp(ts)
+            if dt is not None:
+                parsed.append(dt)
+        if len(parsed) < 2:
+            return None
+        parsed.sort()
+
+        deltas = [
+            (parsed[i + 1] - parsed[i]).total_seconds() for i in range(len(parsed) - 1)
+        ]
+        # Drop zero-deltas (duplicate timestamps) which would skew toward 0.
+        deltas = [d for d in deltas if d > 0]
+        if not deltas:
+            return None
+        deltas.sort()
+        mid = deltas[len(deltas) // 2]
+
+        # Format human-readable. Round to a "tidy" number where the
+        # ratio is within 5% — turns 299.4 sec into "5 min" rather than
+        # "4.99 min". Below that tolerance, show one decimal place.
+        return self._format_interval_seconds(mid)
+
+    @staticmethod
+    def _format_interval_seconds(seconds: float) -> str:
+        if seconds < 60:
+            return f"~{int(round(seconds))} s" if seconds >= 1 else f"~{seconds:.2f} s"
+        minutes = seconds / 60
+        if minutes < 60:
+            tidy = round(minutes)
+            return (
+                f"~{tidy} min"
+                if tidy > 0 and abs(minutes - tidy) / max(minutes, 1) < 0.05
+                else f"~{minutes:.1f} min"
+            )
+        hours = minutes / 60
+        if hours < 48:
+            tidy = round(hours)
+            return (
+                f"~{tidy} h"
+                if tidy > 0 and abs(hours - tidy) / max(hours, 1) < 0.05
+                else f"~{hours:.1f} h"
+            )
+        days = hours / 24
+        return f"~{days:.1f} d"
+
+    @staticmethod
+    def _inject_interval_note(output: str, interval: str) -> str:
+        """Add a sampling-interval note into the METRICS ANALYSIS SUMMARY
+        header so it surfaces in the first-line orientation."""
+        marker = "Analyzed "
+        idx = output.find(marker)
+        if idx < 0:
+            # Fallback: prepend a top line.
+            return f"Sampling interval: {interval} (median of consecutive timestamps)\n{output}"
+        # Insert a follow-up line right after the "Analyzed N metric(s)" line.
+        eol = output.find("\n", idx)
+        if eol < 0:
+            return output + f"\nSampling interval: {interval} (median)"
+        return (
+            output[: eol + 1]
+            + f"Sampling interval: {interval} (median of consecutive timestamps)\n"
+            + output[eol + 1 :]
         )
 
     def _detect_format_name(self, content: str) -> str:

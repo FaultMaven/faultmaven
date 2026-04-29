@@ -300,3 +300,85 @@ class TestFmtVal:
         # CPU percentages like 99.99 should never get scientific notation
         assert "e" not in fmt(99.99).lower()
         assert "e" not in fmt(100.0).lower()
+
+
+class TestSamplingIntervalSurface:
+    """Time-series CSVs answer 'what cadence is this?' as part of the
+    default characterization question. The extractor must compute the
+    typical sampling interval from consecutive timestamps and surface it
+    in both file_meta and the file_extract so the agent can reproduce it
+    in q1-style summaries (ec2-cpu q1, ISS investigation 2026-04-29)."""
+
+    def _csv_at_interval(self, n_points: int, interval_seconds: int) -> str:
+        from datetime import datetime, timedelta
+
+        start = datetime(2024, 1, 1, 0, 0, 0)
+        rows = ["timestamp,value"]
+        for i in range(n_points):
+            ts = start + timedelta(seconds=i * interval_seconds)
+            rows.append(f"{ts.isoformat(sep=' ')},{0.1 + i * 0.001:.4f}")
+        return "\n".join(rows)
+
+    def test_5_minute_interval_detected(self):
+        from faultmaven.modules.preprocessing.extractors.metrics_extractor import (
+            MetricsAndPerformanceExtractor,
+        )
+
+        ex = MetricsAndPerformanceExtractor()
+        result = ex.extract(self._csv_at_interval(n_points=200, interval_seconds=300))
+        assert result.file_meta.get("sampling_interval") == "~5 min"
+        assert "Sampling interval:" in result.file_extract
+        assert "~5 min" in result.file_extract
+
+    def test_30_second_interval_detected(self):
+        from faultmaven.modules.preprocessing.extractors.metrics_extractor import (
+            MetricsAndPerformanceExtractor,
+        )
+
+        ex = MetricsAndPerformanceExtractor()
+        result = ex.extract(self._csv_at_interval(n_points=200, interval_seconds=30))
+        assert result.file_meta.get("sampling_interval") == "~30 s"
+
+    def test_hourly_interval_detected(self):
+        from faultmaven.modules.preprocessing.extractors.metrics_extractor import (
+            MetricsAndPerformanceExtractor,
+        )
+
+        ex = MetricsAndPerformanceExtractor()
+        result = ex.extract(self._csv_at_interval(n_points=100, interval_seconds=3600))
+        assert result.file_meta.get("sampling_interval") == "~1 h"
+
+    def test_no_interval_when_too_few_points(self):
+        from faultmaven.modules.preprocessing.extractors.metrics_extractor import (
+            MetricsAndPerformanceExtractor,
+        )
+
+        # Single data point — can't compute interval.
+        csv = "timestamp,value\n2024-01-01 00:00:00,0.1\n"
+        ex = MetricsAndPerformanceExtractor()
+        result = ex.extract(csv)
+        assert "sampling_interval" not in result.file_meta
+
+    def test_interval_robust_to_one_gap(self):
+        """A single missing sample (gap) should not throw off the median."""
+        from faultmaven.modules.preprocessing.extractors.metrics_extractor import (
+            MetricsAndPerformanceExtractor,
+        )
+        from datetime import datetime, timedelta
+
+        # 100 samples at 5-minute interval, but with one 30-minute gap
+        # in the middle. Median should still report 5 min.
+        start = datetime(2024, 1, 1, 0, 0, 0)
+        rows = ["timestamp,value"]
+        for i in range(50):
+            ts = start + timedelta(seconds=i * 300)
+            rows.append(f"{ts.isoformat(sep=' ')},{i * 0.01:.4f}")
+        # Skip index 50 (gap of 30 min instead of 5 min).
+        gap_start = start + timedelta(seconds=51 * 300 + 1500)
+        for i in range(50):
+            ts = gap_start + timedelta(seconds=i * 300)
+            rows.append(f"{ts.isoformat(sep=' ')},{(i + 51) * 0.01:.4f}")
+        csv = "\n".join(rows)
+        ex = MetricsAndPerformanceExtractor()
+        result = ex.extract(csv)
+        assert result.file_meta.get("sampling_interval") == "~5 min"
