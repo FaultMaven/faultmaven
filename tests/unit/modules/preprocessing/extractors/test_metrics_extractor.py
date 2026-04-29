@@ -361,10 +361,11 @@ class TestSamplingIntervalSurface:
 
     def test_interval_robust_to_one_gap(self):
         """A single missing sample (gap) should not throw off the median."""
+        from datetime import datetime, timedelta
+
         from faultmaven.modules.preprocessing.extractors.metrics_extractor import (
             MetricsAndPerformanceExtractor,
         )
-        from datetime import datetime, timedelta
 
         # 100 samples at 5-minute interval, but with one 30-minute gap
         # in the middle. Median should still report 5 min.
