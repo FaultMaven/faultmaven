@@ -671,9 +671,20 @@ class MetricsAndPerformanceExtractor:
         Detect anomalies using statistical methods
 
         Detects:
-        - Spikes: IQR-proxy threshold, with a minimum-spread guard so nearly
-          constant data doesn't flag every trivial fluctuation.
-        - Drops: Values <50% of baseline (non-zero mean)
+        - Spikes: IQR-proxy threshold (p95 + 1.5 × (p95 - p50)) on the upper
+          side, with a minimum-spread guard so nearly constant data doesn't
+          flag every trivial fluctuation.
+        - Drops: Symmetric IQR-proxy threshold on the lower side
+          (p50 - 1.5 × (p95 - p50)) **plus** the legacy ≥50%-below-baseline
+          rule. The two rules are unioned so we capture both gradual sustained
+          dips (caught by IQR proxy) and catastrophic single-point drops
+          (caught by the percent rule). The same flat-data guard suppresses
+          spurious drops on nearly constant data.
+
+        Anomalies are returned sorted by absolute deviation from the median
+        (largest first) so that the display cap surfaces the most extreme
+        anomalies in **either** direction. Sorting by raw value would push
+        every drop to the tail of the list and hide downward anomalies.
         """
         anomalies = []
         mean = stats["mean"]
@@ -689,7 +700,8 @@ class MetricsAndPerformanceExtractor:
         # the data has a genuine extreme outlier that the flat-data guard would
         # otherwise miss (e.g. a single CPU spike at 18× the baseline).
         min_meaningful_spread = max(abs(p50) * self.MIN_IQR_PROXY_FRACTION, 1e-9)
-        if iqr_proxy < min_meaningful_spread:
+        flat_data = iqr_proxy < min_meaningful_spread
+        if flat_data:
             max_value = stats.get("max", 0)
             if p99 > 0 and max_value > p99 * self.EXTREME_OUTLIER_P99_RATIO:
                 spike_threshold = p99 * self.EXTREME_OUTLIER_P99_RATIO
@@ -700,7 +712,22 @@ class MetricsAndPerformanceExtractor:
             if spike_threshold <= p50:
                 spike_threshold = p50 * 1.5 if p50 > 0 else 1.0
 
-        drop_threshold = mean * (1 - self.DROP_PERCENT_THRESHOLD) if mean > 0 else None
+        # Symmetric drop detection: mirror the IQR-proxy logic onto the lower
+        # side. A value that is as far below the median as the spike threshold
+        # is above is just as anomalous, regardless of direction. The flat-data
+        # guard applies symmetrically — nearly constant data should not flag
+        # tiny downward fluctuations any more than tiny upward ones.
+        if flat_data:
+            iqr_drop_threshold = float("-inf")
+        else:
+            iqr_drop_threshold = p50 - (1.5 * iqr_proxy)
+
+        # Legacy percent-based drop rule retained for catastrophic drops on
+        # series where the IQR proxy is dominated by noise (e.g. a single
+        # service that flatlines from 100% to 0%). Union with the IQR rule.
+        percent_drop_threshold = (
+            mean * (1 - self.DROP_PERCENT_THRESHOLD) if mean > 0 else None
+        )
 
         for timestamp, value in data_points:
             # Detect spikes
@@ -716,9 +743,14 @@ class MetricsAndPerformanceExtractor:
                     }
                 )
 
-            # Detect drops
-            elif drop_threshold is not None and value < drop_threshold:
-                drop_percent = ((mean - value) / mean) * 100
+            # Detect drops (IQR-proxy OR legacy 50%-below rule).
+            elif value < iqr_drop_threshold or (
+                percent_drop_threshold is not None and value < percent_drop_threshold
+            ):
+                if mean > 0:
+                    drop_percent = ((mean - value) / mean) * 100
+                else:
+                    drop_percent = 0.0
                 anomalies.append(
                     {
                         "type": "drop",
@@ -729,9 +761,12 @@ class MetricsAndPerformanceExtractor:
                     }
                 )
 
-        # Sort by value descending so the most extreme anomalies appear first in
-        # the display cap (agent sees the biggest spike, not just the earliest).
-        anomalies.sort(key=lambda a: a["value"], reverse=True)
+        # Sort by absolute deviation from the median (descending) so the most
+        # extreme anomalies surface first in the display cap, regardless of
+        # direction. The previous value-descending sort buried every drop at
+        # the tail of the list — when more than `display_cap` spikes existed
+        # the agent never saw any drops at all.
+        anomalies.sort(key=lambda a: abs(a["value"] - p50), reverse=True)
         return anomalies
 
     def _fmt_val(self, value: float) -> str:
@@ -752,10 +787,19 @@ class MetricsAndPerformanceExtractor:
         lines = ["=== METRICS ANALYSIS SUMMARY ===\n"]
 
         total_metrics = len(summaries)
-        total_anomalies = sum(len(s.get("anomalies", [])) for s in summaries)
+        all_anomalies = [a for s in summaries for a in s.get("anomalies", [])]
+        total_anomalies = len(all_anomalies)
+        total_spikes = sum(1 for a in all_anomalies if a.get("type") == "spike")
+        total_drops = sum(1 for a in all_anomalies if a.get("type") == "drop")
 
         lines.append(f"Analyzed {total_metrics} metric(s)")
-        lines.append(f"Detected {total_anomalies} anomaly/anomalies\n")
+        if total_anomalies:
+            lines.append(
+                f"Detected {total_anomalies} anomaly/anomalies "
+                f"({total_spikes} spike(s), {total_drops} drop(s))\n"
+            )
+        else:
+            lines.append(f"Detected {total_anomalies} anomaly/anomalies\n")
 
         for summary in summaries:
             metric_name = summary["metric"]
@@ -788,7 +832,12 @@ class MetricsAndPerformanceExtractor:
                 )
 
             if anomalies:
-                lines.append(f"   ⚠️  {len(anomalies)} anomaly/anomalies detected:")
+                metric_spikes = sum(1 for a in anomalies if a.get("type") == "spike")
+                metric_drops = sum(1 for a in anomalies if a.get("type") == "drop")
+                lines.append(
+                    f"   ⚠️  {len(anomalies)} anomaly/anomalies detected "
+                    f"({metric_spikes} spike(s), {metric_drops} drop(s)):"
+                )
 
                 for anomaly in anomalies[:10]:  # Show first 10
                     anom_type = anomaly["type"]
