@@ -1429,6 +1429,76 @@ class TestSyslogHostSurfacing:
         assert "host-b: 15 lines" in sm
 
 
+class TestBGLAlertFlagSurfacing:
+    """ISS-015: BGL (BlueGene/L) RAS logs use a structured first-column
+    alert flag that classifies fault types: ``-`` (no class), ``KERNDTLB``,
+    ``KERNSTOR``, ``APPSEV``, ``KERNMNTF``, etc. The extractor previously
+    surfaced none of these, causing the agent to fabricate flag names by
+    reading message bodies.
+
+    BGL line format:
+        FLAG EPOCH YYYY.MM.DD NODE YYYY-MM-DD-HH.MM.SS.usec NODE \
+        SUBSYSTEM COMPONENT SEVERITY message...
+
+    Detection: first whitespace token is either ``-`` or all-uppercase
+    (length 4-12), second token is a 10-digit unix epoch timestamp.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _bgl(self, flag: str, n: int = 1, epoch: int = 1117838570) -> str:
+        lines = []
+        for i in range(n):
+            lines.append(
+                f"{flag} {epoch + i} 2005.06.03 R02-M1-N0-C:J12-U11 "
+                f"2005-06-03-15.42.50.{i:06d} R02-M1-N0-C:J12-U11 "
+                f"RAS KERNEL INFO instruction cache parity error corrected"
+            )
+        return "\n".join(lines)
+
+    def test_alert_flags_surfaced(self, extractor):
+        """Multi-flag fixture: distinct flags + per-flag counts must be present."""
+        content = "\n".join(
+            [
+                self._bgl("-", n=10, epoch=1117838570),
+                self._bgl("KERNDTLB", n=5, epoch=1117838600),
+                self._bgl("APPSEV", n=2, epoch=1117838700),
+            ]
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        # Header naming the column
+        assert "BGL alert flags" in text
+        # Distinct count = 3 (including the dash placeholder)
+        assert "3 distinct" in text
+        # Per-flag counts
+        assert "KERNDTLB: 5" in text
+        assert "APPSEV: 2" in text
+        # The dash placeholder must be reported and labeled
+        assert "- (no alert class): 10" in text or "no alert class" in text
+
+    def test_non_bgl_format_no_surfacing(self, extractor):
+        """Plain syslog must not produce a BGL alert flag block."""
+        content = "\n".join(
+            f"Jun 14 15:{i:02d}:01 host sshd[{1000 + i}]: Failed password for root"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "BGL alert flags" not in text
+
+    def test_dash_only_lines_skipped(self, extractor):
+        """A file with only dash-flag lines is not informative — skip the
+        block to avoid noise. The threshold requires at least one non-dash
+        flag for the block to appear."""
+        content = self._bgl("-", n=20)
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "BGL alert flags" not in text
+
+
 class TestWindowsKBPackageSurfacing:
     """ISS-020: Windows CBS logs reference KB packages via
     ``Package_for_KB<NUMBER>``. The extractor must surface a *distinct* count

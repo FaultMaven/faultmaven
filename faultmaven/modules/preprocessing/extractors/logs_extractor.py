@@ -723,6 +723,19 @@ class LogsAndErrorsExtractor:
     # without conflating substring count with distinct count.
     _KB_PACKAGE_RE = re.compile(r"\bPackage_for_KB(\d+)\b")
 
+    # BGL (BlueGene/L) RAS log alert flag column extractor (ISS-015).
+    # BGL lines have a structured first column carrying the alert-flag
+    # category (``-`` for no class, or ``KERNDTLB``/``APPSEV``/etc.).
+    # Detection requires both a flag-shaped first token AND a 10-digit
+    # unix-epoch second token to avoid false matches on plain text. The
+    # epoch must fall in a sane range (year 2000 onwards) to discriminate
+    # from random 10-digit numbers.
+    _BGL_LINE_RE = re.compile(
+        r"^(?P<flag>-|[A-Z][A-Z0-9]{2,11})\s+"  # flag: dash or 3-12 char ALL-CAPS token
+        r"(?P<epoch>1[0-9]{9}|2[0-9]{9})\s+"  # 10-digit unix epoch in 2001-2065 range
+        r"\d{4}\.\d{2}\.\d{2}\s+"  # YYYY.MM.DD date
+    )
+
     # Minimum fraction of total lines that must match severity keywords for
     # the template counts block to be shown. Below this threshold the block
     # is suppressed — it covers too small a portion of the file to be
@@ -824,6 +837,11 @@ class LogsAndErrorsExtractor:
         # counting prevents the agent from reporting substring occurrences
         # as distinct package count.
         kb_package_counts: Counter = Counter()
+        # BGL alert flag column counts (ISS-015). The BGL RAS log first
+        # column classifies fault types; the agent must read the actual
+        # column values rather than fabricating flag names from message
+        # bodies.
+        bgl_flag_counts: Counter = Counter()
 
         lines = content.split("\n")
         for i, line in enumerate(lines):
@@ -886,6 +904,12 @@ class LogsAndErrorsExtractor:
             # ``sum(kb_package_counts.values())`` the total occurrences.
             for kb_num in self._KB_PACKAGE_RE.findall(line):
                 kb_package_counts[f"KB{kb_num}"] += 1
+            # BGL RAS alert flag column (ISS-015). Detection is anchored on
+            # the full prefix (flag + 10-digit epoch + YYYY.MM.DD) so it
+            # only matches genuine BGL-format lines.
+            bgl_m = self._BGL_LINE_RE.match(line)
+            if bgl_m:
+                bgl_flag_counts[bgl_m.group("flag")] += 1
 
             # Semantic event classification — also track first/last timestamp
             # per event type so the entity profile can report temporal span.
@@ -935,6 +959,11 @@ class LogsAndErrorsExtractor:
                     for ev in matched_events:
                         ip_event_counts[ip][ev] += 1
 
+        # BGL block is only meaningful when at least one non-dash flag is
+        # present (a file with only dash-flag lines is not informative;
+        # surfacing it would be noise).
+        bgl_has_signal = any(flag != "-" for flag in bgl_flag_counts)
+
         if not (
             ip_all_counts
             or user_all_counts
@@ -943,6 +972,7 @@ class LogsAndErrorsExtractor:
             or pid_counts
             or path_counts
             or kb_package_counts
+            or bgl_has_signal
         ):
             return "", "ENTITY PROFILE: No entities found"
 
@@ -1091,6 +1121,21 @@ class LogsAndErrorsExtractor:
             parts.append(f"  HTTP Paths: {len(path_counts)}")
             for path, count in path_counts.most_common(top_n):
                 parts.append(f"    {path}: {count} requests")
+
+        # BGL RAS alert flag column (ISS-015). Surface distinct flag values
+        # with line counts so the agent reads the structured first column
+        # rather than fabricating flag names from message bodies. Only
+        # surfaced when at least one non-dash flag is present.
+        if bgl_has_signal:
+            distinct_flags = len(bgl_flag_counts)
+            parts.append(
+                f"  BGL alert flags (RAS first column, {distinct_flags} distinct):"
+            )
+            for flag, count in bgl_flag_counts.most_common():
+                if flag == "-":
+                    parts.append(f"    - (no alert class): {count}")
+                else:
+                    parts.append(f"    {flag}: {count}")
 
         # Windows Update KB packages (ISS-020). Surface DISTINCT count
         # explicitly so the agent does not conflate substring occurrences
