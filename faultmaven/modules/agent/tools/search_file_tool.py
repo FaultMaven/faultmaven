@@ -148,12 +148,12 @@ class SearchFileTool(AgentTool):
                 evidence_id,
                 context,
             )
-            if resolved is None:
-                return ToolResult(
-                    success=False,
-                    data=None,
-                    error=f"Evidence not found or file not accessible: {evidence_id}",
-                )
+            # ISS-025: helper now returns either a (content, filename, ev_obj)
+            # tuple on success or a human-readable error string on failure that
+            # already enumerates file-backed alternatives the LLM should retry
+            # against. Surface that string verbatim so the LLM can redirect.
+            if isinstance(resolved, str):
+                return ToolResult(success=False, data=None, error=resolved)
             content, filename, evidence_obj = resolved
 
             # Phase 2c — triage-to-escalation counter. Fires when this
@@ -380,7 +380,7 @@ class SearchFileTool(AgentTool):
         self,
         evidence_id: str,
         context: ToolContext,
-    ) -> tuple[str, str, Any] | None:
+    ) -> tuple[str, str, Any] | str:
         """Resolve evidence content from the case-embedded evidence list.
 
         Storage redesign 2026-04 phase 2 deleted the standalone
@@ -389,22 +389,27 @@ class SearchFileTool(AgentTool):
         Case (`case.evidence`) with `content_ref` pointing to the stored file.
 
         Returns:
-            (content_str, filename, evidence_obj) or None if not found
+            On success: (content_str, filename, evidence_obj)
+            On failure: a human-readable error string. When other file-backed
+            evidence exists in the case, the error enumerates those evidence_ids
+            so the LLM can retry against the correct one (ISS-025).
         """
         case = getattr(context, "in_memory_case", None)
         if case is None:
             case_repo = getattr(context, "case_repository", None)
             if case_repo is None:
                 logger.warning("search_file: no case_repository on tool context")
-                return None
+                return "Tool context error: no case_repository available."
             case = await case_repo.get(context.case_id)
             if case is None:
                 logger.warning("search_file: case %s not found", context.case_id)
-                return None
+                return f"Case {context.case_id} not found."
+
+        all_evidence = getattr(case, "evidence", []) or []
 
         # Find evidence in the case's embedded list
         case_evidence = None
-        for ev in getattr(case, "evidence", []) or []:
+        for ev in all_evidence:
             if getattr(ev, "evidence_id", None) == evidence_id:
                 case_evidence = ev
                 break
@@ -414,9 +419,35 @@ class SearchFileTool(AgentTool):
                 "search_file: evidence %s not found in case %s (has %d evidence items)",
                 evidence_id,
                 context.case_id,
-                len(getattr(case, "evidence", []) or []),
+                len(all_evidence),
             )
-            return None
+            alts = self._format_searchable_alternatives(all_evidence, evidence_id)
+            return f"Evidence {evidence_id} not found in this case.{alts}"
+
+        # Reject non-file-backed evidence forms BEFORE hitting storage.
+        # Agent-created symptom_evidence / mitigation_evidence records have
+        # form=submitted_data and a synthetic content_ref like 'file:NAME' that
+        # does not resolve to stored bytes. ISS-025: the LLM was retrying these
+        # against search_file and treating the resulting failure as "the file
+        # is inaccessible", giving up on follow-up questions.
+        from faultmaven.modules.case.contracts import EvidenceForm
+
+        ev_form = getattr(case_evidence, "form", None)
+        if ev_form is not None and ev_form != EvidenceForm.DOCUMENT:
+            ev_form_value = ev_form.value if hasattr(ev_form, "value") else str(ev_form)
+            alts = self._format_searchable_alternatives(all_evidence, evidence_id)
+            logger.warning(
+                "search_file: evidence %s has non-searchable form=%s; pointing "
+                "LLM at file-backed alternatives",
+                evidence_id,
+                ev_form_value,
+            )
+            return (
+                f"Evidence {evidence_id} is form={ev_form_value} (a derived "
+                f"finding or user statement, not a stored file) and cannot be "
+                f"searched directly. Use a file-backed evidence_id "
+                f'(searchable="true") for this search.{alts}'
+            )
 
         # Read raw file via content_ref
         content_ref = getattr(case_evidence, "content_ref", None)
@@ -425,7 +456,11 @@ class SearchFileTool(AgentTool):
                 "search_file: evidence %s has no content_ref (file not stored)",
                 evidence_id,
             )
-            return None
+            alts = self._format_searchable_alternatives(all_evidence, evidence_id)
+            return (
+                f"Evidence {evidence_id} has no stored file content "
+                f"(content_ref is empty).{alts}"
+            )
 
         if self.storage_service is not None and hasattr(
             self.storage_service, "retrieve_file"
@@ -443,7 +478,11 @@ class SearchFileTool(AgentTool):
                     content_ref,
                     e,
                 )
-                return None
+                alts = self._format_searchable_alternatives(all_evidence, evidence_id)
+                return (
+                    f"Evidence {evidence_id}: stored file could not be "
+                    f"retrieved (content_ref={content_ref}, error: {e}).{alts}"
+                )
 
         logger.warning(
             "search_file: storage_service unavailable; cannot read evidence %s "
@@ -451,7 +490,43 @@ class SearchFileTool(AgentTool):
             evidence_id,
             content_ref,
         )
-        return None
+        return f"Evidence {evidence_id}: storage service unavailable."
+
+    def _format_searchable_alternatives(
+        self,
+        all_evidence: list[Any],
+        excluded_evidence_id: str,
+    ) -> str:
+        """Build a redirect hint listing file-backed evidence_ids in this case.
+
+        ISS-025: when the LLM picks a non-file-backed evidence_id (e.g. a
+        symptom_evidence record it created itself), the tool error should
+        point it at the actual searchable upload(s) so the next iteration
+        succeeds.
+        """
+        from faultmaven.modules.case.contracts import EvidenceForm
+
+        alternatives = []
+        for ev in all_evidence:
+            ev_id = getattr(ev, "evidence_id", None)
+            if not ev_id or ev_id == excluded_evidence_id:
+                continue
+            ev_form = getattr(ev, "form", None)
+            if ev_form != EvidenceForm.DOCUMENT:
+                continue
+            content_ref = getattr(ev, "content_ref", None)
+            if not content_ref or str(content_ref).startswith("ev_"):
+                continue
+            filename = getattr(ev, "original_filename", None) or "(unnamed)"
+            alternatives.append(f"{ev_id} ({filename})")
+
+        if not alternatives:
+            return ""
+        return (
+            " Available file-backed evidence in this case: "
+            + ", ".join(alternatives)
+            + "."
+        )
 
     def _keyword_search(self, content: str, query: str) -> list[dict[str, Any]]:
         """Keyword search: tokenize query, find matching lines, return context windows.

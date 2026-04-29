@@ -16,6 +16,40 @@ from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 logger = logging.getLogger(__name__)
 
 
+def _format_searchable_alternatives(
+    all_evidence: list[Any],
+    excluded_evidence_id: str,
+) -> str:
+    """Build a redirect hint listing file-backed evidence_ids in this case.
+
+    ISS-025: when the LLM picks a non-file-backed evidence_id (e.g. a
+    symptom_evidence record it created itself), the tool error should
+    point it at the actual searchable upload(s) so the next iteration
+    succeeds.
+    """
+    from faultmaven.modules.case.contracts import EvidenceForm
+
+    alternatives = []
+    for ev in all_evidence:
+        ev_id = getattr(ev, "evidence_id", None)
+        if not ev_id or ev_id == excluded_evidence_id:
+            continue
+        ev_form = getattr(ev, "form", None)
+        if ev_form != EvidenceForm.DOCUMENT:
+            continue
+        content_ref = getattr(ev, "content_ref", None)
+        if not content_ref or str(content_ref).startswith("ev_"):
+            continue
+        filename = getattr(ev, "original_filename", None) or "(unnamed)"
+        alternatives.append(f"{ev_id} ({filename})")
+
+    if not alternatives:
+        return ""
+    return (
+        " Available file-backed evidence in this case: " + ", ".join(alternatives) + "."
+    )
+
+
 class DeepAnalysisTool(AgentTool):
     """Tool for on-demand deep analysis of raw evidence files.
 
@@ -101,16 +135,43 @@ class DeepAnalysisTool(AgentTool):
                     error=f"Case not found: {context.case_id}",
                 )
 
+            all_evidence = getattr(case, "evidence", []) or []
             evidence = None
-            for ev in getattr(case, "evidence", []) or []:
+            for ev in all_evidence:
                 if getattr(ev, "evidence_id", None) == evidence_id:
                     evidence = ev
                     break
             if evidence is None:
+                alts = _format_searchable_alternatives(all_evidence, evidence_id)
                 return ToolResult(
                     success=False,
                     data=None,
-                    error=f"Evidence {evidence_id} not found.",
+                    error=f"Evidence {evidence_id} not found in this case.{alts}",
+                )
+
+            # Reject non-file-backed evidence forms BEFORE hitting storage.
+            # ISS-025: agent-created symptom_evidence records have form=
+            # submitted_data and a synthetic content_ref like 'file:NAME' that
+            # doesn't resolve to stored bytes. Without this guard the LLM was
+            # passing those evidence_ids to deep_analysis, getting an opaque
+            # storage error, and giving up on follow-up questions.
+            from faultmaven.modules.case.contracts import EvidenceForm
+
+            ev_form = getattr(evidence, "form", None)
+            if ev_form is not None and ev_form != EvidenceForm.DOCUMENT:
+                ev_form_value = (
+                    ev_form.value if hasattr(ev_form, "value") else str(ev_form)
+                )
+                alts = _format_searchable_alternatives(all_evidence, evidence_id)
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error=(
+                        f"Evidence {evidence_id} is form={ev_form_value} (a "
+                        f"derived finding or user statement, not a stored file) "
+                        f"and cannot be analyzed. Use a file-backed evidence_id "
+                        f'(searchable="true") for deep_analysis.{alts}'
+                    ),
                 )
 
             # Get file reference (content_ref from preprocessing)
@@ -118,10 +179,14 @@ class DeepAnalysisTool(AgentTool):
                 evidence, "file_path", None
             )
             if not file_ref:
+                alts = _format_searchable_alternatives(all_evidence, evidence_id)
                 return ToolResult(
                     success=False,
                     data=None,
-                    error=f"Evidence {evidence_id} has no file reference for deep analysis.",
+                    error=(
+                        f"Evidence {evidence_id} has no file reference for "
+                        f"deep analysis.{alts}"
+                    ),
                 )
 
             # Phase 2c — triage-to-escalation counter. Mirrors the

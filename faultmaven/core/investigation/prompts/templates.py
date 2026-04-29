@@ -211,6 +211,17 @@ When advancing the investigation independently (not responding to a user questio
   Use the [search: ...] hints in <search_map> as your starting search strings.
   Proactive search is expected — do not wait for the user to ask.
 
+When calling search_file or deep_analysis, only pass evidence_ids tagged
+`searchable="true"` in the <evidence> blocks above. Those are file-backed
+uploads and are the only ones the tools can read. Evidence records you
+created yourself (form="submitted_data" — your own findings, summaries, or
+symptom records) are NOT searchable; they describe what you already
+concluded, they don't point at stored bytes. If a search_file or
+deep_analysis call returns "Evidence X is form=submitted_data ... use a
+file-backed evidence_id" with a list of alternatives, retry with one of the
+listed IDs in the very next iteration — do not give up and do not report to
+the user that the file is inaccessible.
+
 EXAMPLES:
 ❌ BAD: "I've taken a look at the service map and logs for frontend-api"
 ❌ BAD: "The user-profile service seems to be taking an unusually long time"

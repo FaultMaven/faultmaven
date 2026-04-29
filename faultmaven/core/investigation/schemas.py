@@ -259,7 +259,15 @@ class EvidenceToAdd(BaseModel):
     summary: str
     content_ref: Optional[str] = Field(
         default=None,
-        description="Content reference or snippet. If file, use 'file:FILENAME'. Optional if summary is self-contained.",
+        description=(
+            "Optional human-readable reference snippet (e.g. a quoted log "
+            "line or a short evidence excerpt). Leave empty when the "
+            "summary is self-contained. Do NOT put a filename or "
+            "'file:NAME' here — file-backed evidence is created automatically "
+            "from uploaded attachments by the preprocessing pipeline; "
+            "evidence_to_add is for derived findings the agent draws "
+            "from those uploads, not for re-creating file references."
+        ),
     )
     category: EvidenceCategory
     source_type: EvidenceSourceType
