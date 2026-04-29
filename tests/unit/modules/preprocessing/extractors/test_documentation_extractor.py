@@ -95,3 +95,84 @@ Set `LOG_LEVEL=debug` in the `.env` file.
             or "Commands" in result.file_extract
             or "kubectl" in result.file_extract
         )
+
+
+class TestSetextH1AndLeadParagraph:
+    """README-style markdown: Setext H1 (title underlined with `===` or
+    `---`) and a lead paragraph that contains identifying metadata
+    (version label, project description). The earlier title fallback
+    used `[:100]` truncation which split a long title with badge links
+    mid-URL, and never surfaced the lead paragraph at all — so v1.1-style
+    version labels in README abstracts were invisible to the agent
+    (text-nab-readme-01 q1, ISS investigation 2026-04-29).
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        from faultmaven.modules.preprocessing.extractors.documentation_extractor import (
+            DocumentationExtractor,
+        )
+
+        return DocumentationExtractor()
+
+    def test_setext_h1_with_dashes_detected(self, extractor):
+        content = (
+            "The Numenta Anomaly Benchmark (NAB) v1.1\n"
+            "----------------------------------------\n"
+            "\n"
+            "Welcome. This is the abstract paragraph.\n"
+        )
+        result = extractor.extract(content)
+        # Title must be preserved verbatim (not the underline line).
+        assert "The Numenta Anomaly Benchmark (NAB) v1.1" in result.file_extract
+        # Underline must NOT appear as the title.
+        assert (
+            "Documentation: -----" not in result.file_extract
+            and "Documentation: ====" not in result.file_extract
+        )
+
+    def test_setext_h1_with_equals_detected(self, extractor):
+        content = (
+            "Project Title\n" "=============\n" "\n" "Lead paragraph content here.\n"
+        )
+        result = extractor.extract(content)
+        assert "Documentation: Project Title" in result.file_extract
+
+    def test_lead_paragraph_surfaced_after_title(self, extractor):
+        """Lead paragraph after the title must appear as 'Abstract: ...'
+        so version labels and project metadata are visible in the
+        first-line orientation."""
+        content = (
+            "# My Project\n"
+            "\n"
+            "My Project v2.4.0 is a tool for doing the thing. It supports\n"
+            "multiple platforms and ships under Apache 2.0.\n"
+            "\n"
+            "## Installation\n"
+            "Run `pip install myproject`.\n"
+        )
+        result = extractor.extract(content)
+        assert "Abstract:" in result.file_extract
+        assert "v2.4.0" in result.file_extract
+
+    def test_long_title_with_badges_not_truncated_at_100(self, extractor):
+        """Titles up to ~250 chars must round-trip fully — README badge
+        links commonly push titles past 100 chars and the prior cap was
+        cutting them mid-URL."""
+        long_title = (
+            "The Project (NAME) "
+            "[![Build Status](https://travis-ci.org/org/repo.svg?branch=main)](https://travis-ci.org/org/repo)"
+        )
+        content = f"{long_title}\n{'-' * 30}\n\nAbstract paragraph.\n"
+        result = extractor.extract(content)
+        # Full title should make it into output (length ~140 chars).
+        assert long_title in result.file_extract
+
+    def test_lead_paragraph_skipped_when_only_subheaders_follow(self, extractor):
+        """If no prose immediately follows the title (just subheaders),
+        no Abstract section is emitted — avoids surfacing arbitrary
+        section content as the abstract."""
+        content = "# Bare Title\n" "\n" "## First Section\n" "Content here.\n"
+        result = extractor.extract(content)
+        # No prose paragraph between title and first H2 → no Abstract.
+        assert "Abstract:" not in result.file_extract
