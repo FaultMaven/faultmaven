@@ -160,6 +160,10 @@ When answering the user's question about a file:
 - Characterization question ("what does this log show?", "what's happening?",
   "summarize this file") → answer from <file_extract>. This is what the FILE
   SUMMARY and crime scene content inside <file_extract> are designed for.
+  You MUST include the identifying metadata visible in FILE SUMMARY (e.g.
+  host name, version label, sampling interval, file structure, time span)
+  alongside the higher-level pattern/synthesis. A characterization answer
+  that omits surfaced metadata is incomplete.
 - Retrieval question ("which IP had the most failures?", "how many times did X
   occur?", "show me lines where Y happened", "list all X") → for auth-attempt
   counts per IP, check the "IP auth breakdown" table in <search_map> FIRST — it
