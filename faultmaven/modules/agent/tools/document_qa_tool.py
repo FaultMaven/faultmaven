@@ -164,6 +164,32 @@ class DocumentQATool:
 
         logger.debug(f"Retrieved {len(chunks)} chunks")
 
+        # Refuse synthesis if retrieval is at the noise floor. Without this,
+        # the synthesizer grounds answers in whatever chunks came back —
+        # which for an uncovered topic means citing off-topic runbooks that
+        # share vocabulary (e.g. ZooKeeper query → Kafka chunks via "leader
+        # election"). Opt-in per KB type via KBConfig.relevance_threshold.
+        threshold = self._kb_config.relevance_threshold
+        if threshold is not None:
+            max_score = max(chunk.get("score", 0.0) for chunk in chunks)
+            if max_score < threshold:
+                logger.info(
+                    f"Refusing synthesis: max score {max_score:.3f} < "
+                    f"threshold {threshold:.3f} (off-topic for this KB)"
+                )
+                return {
+                    "answer": (
+                        "No relevant content found in the knowledge base for "
+                        "this query — the KB does not cover this topic. "
+                        "Answer from other available context (file summaries, "
+                        "evidence, entity profile) instead of synthesizing "
+                        "from off-topic chunks."
+                    ),
+                    "sources": [],
+                    "chunk_count": 0,
+                    "confidence": 0.0,
+                }
+
         # Step 3: Build context using config (KB-specific metadata formatting)
         context = self._build_context_from_chunks(chunks)
 

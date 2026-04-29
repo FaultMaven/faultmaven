@@ -150,6 +150,18 @@ class TestSystemPrompt:
         assert "verified" in config.system_prompt.lower()
 
 
+class TestRelevanceThreshold:
+    """Verify the noise-floor cutoff is wired up for the unified KB."""
+
+    def test_threshold_is_set(self, config):
+        assert config.relevance_threshold is not None
+
+    def test_threshold_in_valid_range(self, config):
+        # Cosine similarity range is [-1, 1]; the threshold must sit somewhere
+        # above the noise floor (~0) and below near-perfect-match (~0.9).
+        assert 0.0 < config.relevance_threshold < 0.9
+
+
 class TestFormatResponse:
     """Tests for response formatting."""
 
