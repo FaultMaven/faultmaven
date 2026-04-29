@@ -153,8 +153,17 @@ class TestLogsAndErrorsExtractor:
         assert "panic" in _fe(result).lower()
         assert "CRIME SCENE" in _fe(result)
 
-    def test_severity_ordering_critical_over_warning(self, extractor):
-        """R4.4: Line containing both WARNING and CRITICAL should classify as CRITICAL."""
+    def test_severity_classification_uses_leftmost_field(self, extractor):
+        """ISS-012: leftmost severity keyword wins — the level FIELD is
+        authoritative, body occurrences of severity words are ignored.
+
+        Synthetic line "WARNING: CRITICAL failure in subsystem" was
+        previously expected to classify as CRITICAL (an earlier two-pass
+        rule). That rule over-escalated real log data: 291 of 1318 true
+        WARN lines in the ZooKeeper fixture got reported as ERROR because
+        their bodies contained the trailing field label "error =". Real
+        log parsers (every commercial SIEM, ELK, Splunk, Datadog) trust
+        the level field. We do too."""
         log_lines = (
             ["INFO: Normal"] * 20
             + ["WARNING: CRITICAL failure in subsystem"]
@@ -162,8 +171,28 @@ class TestLogsAndErrorsExtractor:
         )
         content = "\n".join(log_lines)
         result = extractor.extract(content)
-        # The line matches both WARNING and CRITICAL — CRITICAL (severity 90) should win
-        assert "Single CRITICAL" in _fe(result)
+        # WARNING is the leftmost (and only) level-field keyword on that
+        # line; "CRITICAL" appears in the body as prose. The line
+        # classifies as WARNING, not CRITICAL.
+        assert "Single WARNING" in _fe(result)
+        assert "Single CRITICAL" not in _fe(result)
+
+    def test_warn_line_with_trailing_error_field_label_stays_warn(self, extractor):
+        """ISS-012 regression test: the literal log-line shape that exposed
+        the bug. Java/log4j and ZooKeeper QuorumCnxManager emit lines like
+        '... - WARN  [...] - Connection broken ..., error = '. The trailing
+        'error =' is a field label, not a severity assertion — must not
+        escalate WARN to ERROR."""
+        log_lines = ["2015-07-29 19:13:24,282 - INFO  [Thread-1] - startup"] * 5 + [
+            "2015-07-29 19:13:24,282 - WARN  [RecvWorker:188978561024:"
+            "QuorumCnxManager$RecvWorker@762] - Connection broken for "
+            "id 188978561024, my id = 1, error = "
+        ] * 5
+        content = "\n".join(log_lines)
+        result = extractor.extract(content)
+        sev = result.file_meta.get("severity", {})
+        assert sev.get("ERROR", 0) == 0, f"WARN lines escalated to ERROR: {sev}"
+        assert sev.get("WARN", 0) == 5, f"unexpected WARN count: {sev}"
 
     def test_properties(self, extractor):
         """Test extractor properties"""
