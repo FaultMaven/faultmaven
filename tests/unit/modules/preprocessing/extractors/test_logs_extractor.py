@@ -1104,6 +1104,21 @@ class TestSSHSessionOpened:
         # su sessions should not appear as ssh_session_opened
         assert "successful SSH session" not in _fe(result)
 
+    def test_search_hint_includes_sshd_to_exclude_su_pam_events(self, extractor):
+        """ISS-007 (logs-linux-01 q6): the search hint surfaced in FILE SUMMARY
+        must include 'sshd' so keyword-mode AND-matching filters out
+        su(pam_unix)/cron(pam_unix) session-opens. Without 'sshd', the agent's
+        search_file run pulls in unrelated PAM session events and aggregates
+        them as logins."""
+        result = extractor.extract(self._linux_session_log())
+        summary = _fe(result)
+        # The hint must contain 'sshd' AND describe the session-open event.
+        assert "search: 'sshd" in summary
+        assert "session opened for user" in summary
+        # And the *bare* form (without sshd) must not be the surfaced hint —
+        # otherwise we have regressed.
+        assert "search: 'session opened for user'" not in summary
+
 
 class TestYYMMDDTimestamp:
     """YYMMDD HHMMSS format (HDFS / Hadoop ecosystem logs)."""

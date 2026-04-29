@@ -740,7 +740,11 @@ class LogsAndErrorsExtractor:
         "failed_password": "Failed password",
         "pam_auth_failure": "authentication failure; logname=",
         "accepted_login": "Accepted password",
-        "ssh_session_opened": "session opened for user",
+        # Must include 'sshd' so keyword-mode AND-matching excludes
+        # su(pam_unix) / cron(pam_unix) session-open events. Without it the
+        # agent's search_file run pulls in unrelated PAM sessions and
+        # double-counts them as logins (logs-linux-01 q6, ISS-007).
+        "ssh_session_opened": "sshd session opened for user",
         "invalid_user": "Invalid user",
         "connection_closed": "Connection closed",
         "break_in_attempt": "POSSIBLE BREAK-IN ATTEMPT",
@@ -1165,9 +1169,10 @@ class LogsAndErrorsExtractor:
                 prefix = "Despite attack traffic, "
             else:
                 prefix = ""
+            ssh_search = self._EVENT_SEARCH_STRINGS["ssh_session_opened"]
             sentences.append(
                 f"{prefix}{ssh_success} successful SSH session(s) opened"
-                f" (search: 'session opened for user')."
+                f" (search: '{ssh_search}')."
             )
 
         # Per-IP burst pattern for brute-force attacks — each source IP attacks in
