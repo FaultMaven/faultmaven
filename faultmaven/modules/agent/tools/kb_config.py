@@ -23,6 +23,7 @@ class KBConfig(ABC):
     - System prompt
     - Cache TTL
     - Response formatting
+    - Relevance threshold (opt-in noise-floor refuse)
 
     This enables DocumentQATool to remain KB-neutral.
     """
@@ -122,6 +123,25 @@ class KBConfig(ABC):
                 (low-latency path for interactive copilot queries).
         """
         return "vector"
+
+    @property
+    def relevance_threshold(self) -> Optional[float]:
+        """Minimum top-chunk score required to invoke synthesis.
+
+        Score scale is cosine similarity (1.0 - chroma_distance), range
+        [-1, 1]. Off-topic queries land near 0 (orthogonal); on-topic
+        queries score positively.
+
+        Returns:
+            Float in [0, 1] — if no chunk's score reaches this, the tool
+                returns "no relevant content" without calling the synthesis
+                LLM. Prevents grounding answers in off-topic chunks when the
+                KB doesn't cover the queried topic.
+            None — disable the check (always synthesize). Use for stores
+                where returning the closest available content is always
+                desirable (e.g. case evidence for forensic analysis).
+        """
+        return None
 
     @property
     @abstractmethod

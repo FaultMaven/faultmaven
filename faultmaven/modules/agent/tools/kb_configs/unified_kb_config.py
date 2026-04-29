@@ -124,6 +124,18 @@ class UnifiedKBConfig(KBConfig):
         return "hybrid"
 
     @property
+    def relevance_threshold(self) -> Optional[float]:
+        """Refuse synthesis when no chunk clears this cosine-similarity floor.
+
+        Score field is cosine similarity (1.0 - chroma_distance), range [-1, 1].
+        Off-topic queries against an uncovered system land near 0 (orthogonal);
+        on-topic queries with shared vocabulary score >= ~0.4. 0.3 is a
+        conservative cutoff that keeps loose-but-relevant matches and rejects
+        the noise floor. Tune via observed score distributions if needed.
+        """
+        return 0.3
+
+    @property
     def cache_ttl(self) -> int:
         """24-hour cache (KB content is relatively stable)."""
         return 86400
