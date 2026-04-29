@@ -1455,3 +1455,221 @@ class TestSyslogHostSurfacing:
         sm = _sm(result)
         assert "host-a: 20 lines" in sm
         assert "host-b: 15 lines" in sm
+
+
+class TestHealthAppTimestampFormat:
+    """ISS-017: HealthApp logs use ``YYYYMMDD-HH:MM:SS:mmm`` (e.g.
+    ``20171223-22:15:29:606``). The default extractor previously did not
+    recognize this format, so:
+
+    * the ``Log time range`` reported the wrong date (matched a unix-epoch
+      substring embedded in the message body), and
+    * the file_summary missed the late-window events because the time
+      range collapsed to a single misparsed timestamp.
+
+    Expected behaviour: the FILE SUMMARY reports the actual
+    first-line and last-line timestamps in the file's native format, and
+    a midnight-crossing log spans both calendar dates.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def test_healthapp_timestamps_parsed(self, extractor):
+        """HealthApp log spanning ~3 hours including midnight crossover.
+        Time range must reflect both calendar dates, not a single
+        misparsed epoch substring.
+
+        Test relies on file_meta['time_range'] which always reflects
+        timestamp parsing regardless of entity presence.
+        """
+        # Build >10 lines so extract_time_range_ts scans both head + tail.
+        head_lines = [
+            f"20171223-22:15:{i:02d}:606|Step_LSC|30002312|onExtend:1514038530000 14 0 4"
+            for i in range(15, 30)
+        ]
+        tail_lines = [
+            f"20171224-00:{i:02d}:00:000|Step_LSC|30002312|onStandStepChanged {1000 + i}"
+            for i in range(50, 60)
+        ] + ["20171224-01:02:35:789|Step_LSC|30002312|last event"]
+        content = "\n".join(head_lines + tail_lines)
+        result = extractor.extract(content)
+        time_range = result.file_meta.get("time_range", "")
+        # Both calendar dates must be reflected in the file_meta time
+        # range — the misparsed epoch substring 1514038530000 (which would
+        # resolve to 2017-12-23 14:15:30 UTC) must NOT replace the actual
+        # first-line timestamp 22:15:15.
+        assert "2017-12-23" in time_range
+        assert "2017-12-24" in time_range
+        assert "22:15:15" in time_range
+        # The wrong epoch-derived hour must not appear
+        assert "14:15:30" not in time_range
+
+    def test_healthapp_one_digit_hour_after_midnight(self, extractor):
+        """HealthApp uses non-zero-padded hour after midnight
+        (``20171224-1:2:35:789``). Both padded and unpadded forms must parse."""
+        head_lines = [
+            f"20171223-22:15:{i:02d}:606|Step_LSC|30002312|first event"
+            for i in range(15, 30)
+        ]
+        tail_lines = [
+            f"20171224-1:{i}:35:789|Step_LSC|30002312|midnight crossing"
+            for i in range(2, 8)
+        ] + ["20171224-1:2:35:789|Step_LSC|30002312|last"]
+        content = "\n".join(head_lines + tail_lines)
+        result = extractor.extract(content)
+        time_range = result.file_meta.get("time_range", "")
+        assert "2017-12-23" in time_range
+        assert "2017-12-24" in time_range
+
+    def test_healthapp_format_does_not_affect_iso8601(self, extractor):
+        """Standard ISO-8601 logs must not be reinterpreted as HealthApp
+        format. Regression guard for cross-format pollution."""
+        # Need entities for FILE SUMMARY to appear; use Failed password to
+        # produce SSH activity entries.
+        content = "\n".join(
+            f"2026-01-15 10:00:{i:02d} sshd[1234]: Failed password for root from "
+            f"203.0.113.{i} port 22 ssh2"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        fe = _fe(result)
+        # ISO-8601 logs must report 2026-01-15 in the time range
+        assert "2026-01-15" in fe
+        assert "Log time range: 2026-01-15" in fe
+
+
+class TestBGLAlertFlagSurfacing:
+    """ISS-015: BGL (BlueGene/L) RAS logs use a structured first-column
+    alert flag that classifies fault types: ``-`` (no class), ``KERNDTLB``,
+    ``KERNSTOR``, ``APPSEV``, ``KERNMNTF``, etc. The extractor previously
+    surfaced none of these, causing the agent to fabricate flag names by
+    reading message bodies.
+
+    BGL line format:
+        FLAG EPOCH YYYY.MM.DD NODE YYYY-MM-DD-HH.MM.SS.usec NODE \
+        SUBSYSTEM COMPONENT SEVERITY message...
+
+    Detection: first whitespace token is either ``-`` or all-uppercase
+    (length 4-12), second token is a 10-digit unix epoch timestamp.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _bgl(self, flag: str, n: int = 1, epoch: int = 1117838570) -> str:
+        lines = []
+        for i in range(n):
+            lines.append(
+                f"{flag} {epoch + i} 2005.06.03 R02-M1-N0-C:J12-U11 "
+                f"2005-06-03-15.42.50.{i:06d} R02-M1-N0-C:J12-U11 "
+                f"RAS KERNEL INFO instruction cache parity error corrected"
+            )
+        return "\n".join(lines)
+
+    def test_alert_flags_surfaced(self, extractor):
+        """Multi-flag fixture: distinct flags + per-flag counts must be present."""
+        content = "\n".join(
+            [
+                self._bgl("-", n=10, epoch=1117838570),
+                self._bgl("KERNDTLB", n=5, epoch=1117838600),
+                self._bgl("APPSEV", n=2, epoch=1117838700),
+            ]
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        # Header naming the column
+        assert "BGL alert flags" in text
+        # Distinct count = 3 (including the dash placeholder)
+        assert "3 distinct" in text
+        # Per-flag counts
+        assert "KERNDTLB: 5" in text
+        assert "APPSEV: 2" in text
+        # The dash placeholder must be reported and labeled
+        assert "- (no alert class): 10" in text or "no alert class" in text
+
+    def test_non_bgl_format_no_surfacing(self, extractor):
+        """Plain syslog must not produce a BGL alert flag block."""
+        content = "\n".join(
+            f"Jun 14 15:{i:02d}:01 host sshd[{1000 + i}]: Failed password for root"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "BGL alert flags" not in text
+
+    def test_dash_only_lines_skipped(self, extractor):
+        """A file with only dash-flag lines is not informative — skip the
+        block to avoid noise. The threshold requires at least one non-dash
+        flag for the block to appear."""
+        content = self._bgl("-", n=20)
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "BGL alert flags" not in text
+
+
+class TestWindowsKBPackageSurfacing:
+    """ISS-020: Windows CBS logs reference KB packages via
+    ``Package_for_KB<NUMBER>``. The extractor must surface a *distinct* count
+    so the agent doesn't conflate substring occurrences (one per
+    install/uninstall/check event) with distinct package count.
+
+    The Windows 2k fixture has 541 ``Package_for_KB<...>`` substring
+    occurrences but only 271 distinct KB numbers. Earlier the agent
+    hallucinated "over 500 packages" — symptom of the extractor having no
+    KB-package surfacing at all.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _windows_log(self, kb_lines: list[tuple[int, int]]) -> str:
+        """Build a synthetic Windows CBS log with given (KB-number, count) pairs."""
+        lines = []
+        for kb, count in kb_lines:
+            for _ in range(count):
+                lines.append(
+                    f"2016-09-28 04:30:33, Info                  CBS    "
+                    f"Read out cached package applicability for package: "
+                    f"Package_for_KB{kb}~31bf3856ad364e35~amd64~~6.1.1.0, "
+                    f"ApplicableState: 112, CurrentState:112"
+                )
+        return "\n".join(lines)
+
+    def test_distinct_kb_count_surfaced(self, extractor):
+        """3 distinct KBs each appearing twice = 3 distinct, 6 occurrences."""
+        content = self._windows_log([(1234, 2), (5678, 2), (9012, 2)])
+        result = extractor.extract(content)
+        text = _all(result)
+        # A dedicated KB-package summary must be present
+        assert "Distinct KB packages: 3" in text
+
+    def test_kb_distinct_not_occurrence(self, extractor):
+        """Many duplicates of one KB must not inflate the distinct count.
+
+        Regression for ISS-020: agent reported "over 500 packages" when the
+        Windows fixture had 271 distinct KBs but 541 substring occurrences.
+        """
+        # 1 distinct KB, 50 occurrences
+        content = self._windows_log([(2479943, 50)])
+        result = extractor.extract(content)
+        text = _all(result)
+        # Must report 1 distinct
+        assert "Distinct KB packages: 1" in text
+        # Total occurrences should be reported separately so the agent can
+        # answer either question, but must never be presented as the
+        # distinct count.
+        assert "Distinct KB packages: 50" not in text
+
+    def test_no_kb_no_surfacing(self, extractor):
+        """Logs without any Package_for_KB substring should not produce a KB block."""
+        content = "\n".join(
+            f"2016-09-28 04:30:{i:02d}, Info CBS some unrelated message"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "Distinct KB packages" not in text
