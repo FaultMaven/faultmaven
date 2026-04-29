@@ -714,6 +714,15 @@ class LogsAndErrorsExtractor:
     # segments separated by hyphens or dots identify this pattern reliably.
     _REVERSE_DNS_RE = re.compile(r"\d{1,3}(?:[.-]\d{1,3}){2,}")
 
+    # Windows Update KB package extractor (ISS-020). CBS logs reference
+    # packages as ``Package_for_KB<NUMBER>~...``. Each line carries one
+    # ``Package_for_KB<NUMBER>`` per install/uninstall/check event, so the
+    # number of substring occurrences vastly overstates the number of
+    # distinct KB packages. Surface the *distinct* set explicitly so the
+    # agent can answer "how many KB packages are referenced" accurately
+    # without conflating substring count with distinct count.
+    _KB_PACKAGE_RE = re.compile(r"\bPackage_for_KB(\d+)\b")
+
     # Minimum fraction of total lines that must match severity keywords for
     # the template counts block to be shown. Below this threshold the block
     # is suppressed — it covers too small a portion of the file to be
@@ -811,6 +820,10 @@ class LogsAndErrorsExtractor:
         # entity profile so the agent can identify the source host without
         # parsing raw lines (ISS-008).
         host_counts: Counter = Counter()
+        # Windows Update KB package counts (ISS-020). Distinct-value
+        # counting prevents the agent from reporting substring occurrences
+        # as distinct package count.
+        kb_package_counts: Counter = Counter()
 
         lines = content.split("\n")
         for i, line in enumerate(lines):
@@ -867,6 +880,12 @@ class LogsAndErrorsExtractor:
             host_m = self._SYSLOG_HOST_RE.match(line)
             if host_m:
                 host_counts[host_m.group(1)] += 1
+            # Windows Update KB packages (ISS-020). A line may carry multiple
+            # KB references; count each. Counter aggregation makes the
+            # final ``len(kb_package_counts)`` the *distinct* count and
+            # ``sum(kb_package_counts.values())`` the total occurrences.
+            for kb_num in self._KB_PACKAGE_RE.findall(line):
+                kb_package_counts[f"KB{kb_num}"] += 1
 
             # Semantic event classification — also track first/last timestamp
             # per event type so the entity profile can report temporal span.
@@ -923,6 +942,7 @@ class LogsAndErrorsExtractor:
             or port_counts
             or pid_counts
             or path_counts
+            or kb_package_counts
         ):
             return "", "ENTITY PROFILE: No entities found"
 
@@ -1071,6 +1091,23 @@ class LogsAndErrorsExtractor:
             parts.append(f"  HTTP Paths: {len(path_counts)}")
             for path, count in path_counts.most_common(top_n):
                 parts.append(f"    {path}: {count} requests")
+
+        # Windows Update KB packages (ISS-020). Surface DISTINCT count
+        # explicitly so the agent does not conflate substring occurrences
+        # (one per install/uninstall/check event) with distinct package
+        # count. Sample names listed for orientation; full list is
+        # available via search_file with the "Package_for_KB" prefix.
+        if kb_package_counts:
+            distinct_kb = len(kb_package_counts)
+            total_occurrences = sum(kb_package_counts.values())
+            parts.append(
+                f"  Distinct KB packages: {distinct_kb}"
+                f"  ({total_occurrences} total Package_for_KB substring occurrences"
+                f" — multiple events per package; use the distinct count for"
+                f' "how many packages")'
+            )
+            sample = ", ".join(kb for kb, _ in kb_package_counts.most_common(8))
+            parts.append(f"    sample: {sample}")
 
         return summary, "\n".join(parts)
 

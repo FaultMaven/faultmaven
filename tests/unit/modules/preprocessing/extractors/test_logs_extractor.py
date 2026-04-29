@@ -1427,3 +1427,68 @@ class TestSyslogHostSurfacing:
         sm = _sm(result)
         assert "host-a: 20 lines" in sm
         assert "host-b: 15 lines" in sm
+
+
+class TestWindowsKBPackageSurfacing:
+    """ISS-020: Windows CBS logs reference KB packages via
+    ``Package_for_KB<NUMBER>``. The extractor must surface a *distinct* count
+    so the agent doesn't conflate substring occurrences (one per
+    install/uninstall/check event) with distinct package count.
+
+    The Windows 2k fixture has 541 ``Package_for_KB<...>`` substring
+    occurrences but only 271 distinct KB numbers. Earlier the agent
+    hallucinated "over 500 packages" — symptom of the extractor having no
+    KB-package surfacing at all.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _windows_log(self, kb_lines: list[tuple[int, int]]) -> str:
+        """Build a synthetic Windows CBS log with given (KB-number, count) pairs."""
+        lines = []
+        for kb, count in kb_lines:
+            for _ in range(count):
+                lines.append(
+                    f"2016-09-28 04:30:33, Info                  CBS    "
+                    f"Read out cached package applicability for package: "
+                    f"Package_for_KB{kb}~31bf3856ad364e35~amd64~~6.1.1.0, "
+                    f"ApplicableState: 112, CurrentState:112"
+                )
+        return "\n".join(lines)
+
+    def test_distinct_kb_count_surfaced(self, extractor):
+        """3 distinct KBs each appearing twice = 3 distinct, 6 occurrences."""
+        content = self._windows_log([(1234, 2), (5678, 2), (9012, 2)])
+        result = extractor.extract(content)
+        text = _all(result)
+        # A dedicated KB-package summary must be present
+        assert "Distinct KB packages: 3" in text
+
+    def test_kb_distinct_not_occurrence(self, extractor):
+        """Many duplicates of one KB must not inflate the distinct count.
+
+        Regression for ISS-020: agent reported "over 500 packages" when the
+        Windows fixture had 271 distinct KBs but 541 substring occurrences.
+        """
+        # 1 distinct KB, 50 occurrences
+        content = self._windows_log([(2479943, 50)])
+        result = extractor.extract(content)
+        text = _all(result)
+        # Must report 1 distinct
+        assert "Distinct KB packages: 1" in text
+        # Total occurrences should be reported separately so the agent can
+        # answer either question, but must never be presented as the
+        # distinct count.
+        assert "Distinct KB packages: 50" not in text
+
+    def test_no_kb_no_surfacing(self, extractor):
+        """Logs without any Package_for_KB substring should not produce a KB block."""
+        content = "\n".join(
+            f"2016-09-28 04:30:{i:02d}, Info CBS some unrelated message"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "Distinct KB packages" not in text
