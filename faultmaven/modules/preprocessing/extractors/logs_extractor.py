@@ -740,7 +740,11 @@ class LogsAndErrorsExtractor:
         "failed_password": "Failed password",
         "pam_auth_failure": "authentication failure; logname=",
         "accepted_login": "Accepted password",
-        "ssh_session_opened": "session opened for user",
+        # Must include 'sshd' so keyword-mode AND-matching excludes
+        # su(pam_unix) / cron(pam_unix) session-open events. Without it the
+        # agent's search_file run pulls in unrelated PAM sessions and
+        # double-counts them as logins (logs-linux-01 q6, ISS-007).
+        "ssh_session_opened": "sshd session opened for user",
         "invalid_user": "Invalid user",
         "connection_closed": "Connection closed",
         "break_in_attempt": "POSSIBLE BREAK-IN ATTEMPT",
@@ -1165,9 +1169,10 @@ class LogsAndErrorsExtractor:
                 prefix = "Despite attack traffic, "
             else:
                 prefix = ""
+            ssh_search = self._EVENT_SEARCH_STRINGS["ssh_session_opened"]
             sentences.append(
                 f"{prefix}{ssh_success} successful SSH session(s) opened"
-                f" (search: 'session opened for user')."
+                f" (search: '{ssh_search}')."
             )
 
         # Per-IP burst pattern for brute-force attacks — each source IP attacks in
@@ -1236,14 +1241,13 @@ class LogsAndErrorsExtractor:
                     duration_note = f" (~{int(delta_secs / 60)}min duration)"
             sentences.append(f"Log time range: {time_range}{duration_note}.")
             if yearless_timestamps:
-                # Syslog BSD timestamps omit the year; extract_time_range_ts
-                # uses today's year as a fallback. Signal this so the agent
-                # does not present the inferred year as a known fact.
-                inferred_year = time_range[:4] if time_range[0].isdigit() else ""
+                # Syslog BSD timestamps omit the year. The time_range is
+                # rendered without a year (see extract_time_range). Add an
+                # explicit note so the agent does not fabricate one.
                 example_clause = f" (e.g., '{sample_raw_ts}')" if sample_raw_ts else ""
                 sentences.append(
-                    f"[Note: timestamps in this log have no year{example_clause} —"
-                    f" {inferred_year} is inferred from the current date.]"
+                    f"[Note: timestamps in this log have no year{example_clause}."
+                    f" Do not assert a specific calendar year in any answer.]"
                 )
 
         if not sentences:

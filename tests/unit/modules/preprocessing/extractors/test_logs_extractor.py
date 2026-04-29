@@ -1104,6 +1104,21 @@ class TestSSHSessionOpened:
         # su sessions should not appear as ssh_session_opened
         assert "successful SSH session" not in _fe(result)
 
+    def test_search_hint_includes_sshd_to_exclude_su_pam_events(self, extractor):
+        """ISS-007 (logs-linux-01 q6): the search hint surfaced in FILE SUMMARY
+        must include 'sshd' so keyword-mode AND-matching filters out
+        su(pam_unix)/cron(pam_unix) session-opens. Without 'sshd', the agent's
+        search_file run pulls in unrelated PAM session events and aggregates
+        them as logins."""
+        result = extractor.extract(self._linux_session_log())
+        summary = _fe(result)
+        # The hint must contain 'sshd' AND describe the session-open event.
+        assert "search: 'sshd" in summary
+        assert "session opened for user" in summary
+        # And the *bare* form (without sshd) must not be the surfaced hint —
+        # otherwise we have regressed.
+        assert "search: 'session opened for user'" not in summary
+
 
 class TestYYMMDDTimestamp:
     """YYMMDD HHMMSS format (HDFS / Hadoop ecosystem logs)."""
@@ -1199,8 +1214,11 @@ class TestNonAuthForWordFilter:
 
 
 class TestYearlessTimestampNote:
-    """Syslog BSD logs without an explicit year get a FILE SUMMARY note explaining
-    that the displayed year is inferred from the current date."""
+    """Syslog BSD logs without an explicit year render time_range without a year
+    AND get a FILE SUMMARY note instructing the agent not to assert one. The
+    earlier behaviour (formatting yearless timestamps with the current year as
+    if authoritative, then disclaiming via a parenthetical) misled the LLM
+    into reporting the inferred year as fact (logs-linux-01 q3, ISS-006)."""
 
     @pytest.fixture
     def extractor(self):
@@ -1230,14 +1248,32 @@ class TestYearlessTimestampNote:
         result = extractor.extract(self._iso_log())
         assert "timestamps in this log have no year" not in _fe(result).lower()
 
-    def test_yearless_note_contains_inferred_year(self, extractor):
-        """The note should mention the inferred year (a 4-digit number)."""
+    def test_yearless_time_range_omits_year(self, extractor):
+        """time_range must NOT contain a 4-digit year for yearless syslog
+        sources. ISS-006 (logs-linux-01 q3): the previous behaviour formatted
+        time_range as '2025-06-14 ...' which the LLM treated as fact."""
         import re
 
         result = extractor.extract(self._syslog_yearless())
-        note = _fe(result)
-        # The note format: "[Note: timestamps in this log have no year — YYYY is inferred...]"
-        assert re.search(r"is inferred from the current date", note)
+        assert "time_range" in result.file_meta
+        assert not re.search(r"\b\d{4}\b", result.file_meta["time_range"])
+
+    def test_yearless_note_warns_against_year_fabrication(self, extractor):
+        """The note must explicitly tell the agent not to assert a calendar
+        year. ISS-006: the earlier note ('YYYY is inferred from current date')
+        was too weak — the LLM saw the year as factual context."""
+        result = extractor.extract(self._syslog_yearless())
+        note = _fe(result).lower()
+        assert "do not assert" in note
+        assert "calendar year" in note
+
+    def test_iso_time_range_keeps_year(self, extractor):
+        """ISO-8601 sources still get a year-bearing time_range. Only yearless
+        BSD-syslog sources get the year stripped."""
+        import re
+
+        result = extractor.extract(self._iso_log())
+        assert re.search(r"\b\d{4}\b", result.file_meta["time_range"])
 
     def test_yearless_note_includes_sample_raw_timestamp(self, extractor):
         """The note should include a raw sample timestamp so the agent can see the format."""
