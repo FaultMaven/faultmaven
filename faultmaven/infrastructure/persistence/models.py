@@ -1019,7 +1019,7 @@ class UploadedFileModel(Base):
         CheckConstraint(
             "LENGTH(TRIM(filename)) > 0", name="uploaded_files_filename_not_empty"
         ),
-        CheckConstraint("size_bytes > 0", name="uploaded_files_size_positive"),
+        CheckConstraint("size_bytes >= 0", name="uploaded_files_size_nonnegative"),
         CheckConstraint(
             "uploaded_at_turn >= 0", name="uploaded_files_turn_nonnegative"
         ),
