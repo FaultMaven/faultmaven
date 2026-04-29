@@ -1429,6 +1429,89 @@ class TestSyslogHostSurfacing:
         assert "host-b: 15 lines" in sm
 
 
+class TestHealthAppTimestampFormat:
+    """ISS-017: HealthApp logs use ``YYYYMMDD-HH:MM:SS:mmm`` (e.g.
+    ``20171223-22:15:29:606``). The default extractor previously did not
+    recognize this format, so:
+
+    * the ``Log time range`` reported the wrong date (matched a unix-epoch
+      substring embedded in the message body), and
+    * the file_summary missed the late-window events because the time
+      range collapsed to a single misparsed timestamp.
+
+    Expected behaviour: the FILE SUMMARY reports the actual
+    first-line and last-line timestamps in the file's native format, and
+    a midnight-crossing log spans both calendar dates.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def test_healthapp_timestamps_parsed(self, extractor):
+        """HealthApp log spanning ~3 hours including midnight crossover.
+        Time range must reflect both calendar dates, not a single
+        misparsed epoch substring.
+
+        Test relies on file_meta['time_range'] which always reflects
+        timestamp parsing regardless of entity presence.
+        """
+        # Build >10 lines so extract_time_range_ts scans both head + tail.
+        head_lines = [
+            f"20171223-22:15:{i:02d}:606|Step_LSC|30002312|onExtend:1514038530000 14 0 4"
+            for i in range(15, 30)
+        ]
+        tail_lines = [
+            f"20171224-00:{i:02d}:00:000|Step_LSC|30002312|onStandStepChanged {1000 + i}"
+            for i in range(50, 60)
+        ] + ["20171224-01:02:35:789|Step_LSC|30002312|last event"]
+        content = "\n".join(head_lines + tail_lines)
+        result = extractor.extract(content)
+        time_range = result.file_meta.get("time_range", "")
+        # Both calendar dates must be reflected in the file_meta time
+        # range — the misparsed epoch substring 1514038530000 (which would
+        # resolve to 2017-12-23 14:15:30 UTC) must NOT replace the actual
+        # first-line timestamp 22:15:15.
+        assert "2017-12-23" in time_range
+        assert "2017-12-24" in time_range
+        assert "22:15:15" in time_range
+        # The wrong epoch-derived hour must not appear
+        assert "14:15:30" not in time_range
+
+    def test_healthapp_one_digit_hour_after_midnight(self, extractor):
+        """HealthApp uses non-zero-padded hour after midnight
+        (``20171224-1:2:35:789``). Both padded and unpadded forms must parse."""
+        head_lines = [
+            f"20171223-22:15:{i:02d}:606|Step_LSC|30002312|first event"
+            for i in range(15, 30)
+        ]
+        tail_lines = [
+            f"20171224-1:{i}:35:789|Step_LSC|30002312|midnight crossing"
+            for i in range(2, 8)
+        ] + ["20171224-1:2:35:789|Step_LSC|30002312|last"]
+        content = "\n".join(head_lines + tail_lines)
+        result = extractor.extract(content)
+        time_range = result.file_meta.get("time_range", "")
+        assert "2017-12-23" in time_range
+        assert "2017-12-24" in time_range
+
+    def test_healthapp_format_does_not_affect_iso8601(self, extractor):
+        """Standard ISO-8601 logs must not be reinterpreted as HealthApp
+        format. Regression guard for cross-format pollution."""
+        # Need entities for FILE SUMMARY to appear; use Failed password to
+        # produce SSH activity entries.
+        content = "\n".join(
+            f"2026-01-15 10:00:{i:02d} sshd[1234]: Failed password for root from "
+            f"203.0.113.{i} port 22 ssh2"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        fe = _fe(result)
+        # ISO-8601 logs must report 2026-01-15 in the time range
+        assert "2026-01-15" in fe
+        assert "Log time range: 2026-01-15" in fe
+
+
 class TestBGLAlertFlagSurfacing:
     """ISS-015: BGL (BlueGene/L) RAS logs use a structured first-column
     alert flag that classifies fault types: ``-`` (no class), ``KERNDTLB``,
