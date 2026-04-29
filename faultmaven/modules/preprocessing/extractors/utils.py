@@ -261,12 +261,22 @@ def extract_time_range(content: str) -> dict[str, str]:
     kept for backward-compatibility with extractors that embed the
     range in their coverage metadata text block. New code that needs
     the timestamps themselves should call ``extract_time_range_ts``.
+
+    When the source has yearless syslog BSD timestamps (e.g.,
+    ``"Jun 14 15:16:01"``) we omit the year from the output. The
+    underlying ``datetime`` objects do carry a synthetic year (the
+    parser uses ``datetime.now().year`` as a fallback), but emitting
+    that year as an ISO date misleads downstream consumers — the LLM
+    treats the formatted string as a known fact even when accompanied
+    by a hedge. Better to render the format that the source actually
+    has.
     """
     first_ts, last_ts = extract_time_range_ts(content)
+    yearless, _ = has_yearless_timestamps(content)
+    fmt = "%b %d %H:%M:%S" if yearless else "%Y-%m-%d %H:%M:%S"
 
     if first_ts and last_ts:
-        fmt = "%Y-%m-%d %H:%M:%S"
         return {"Time range": f"{first_ts.strftime(fmt)} to {last_ts.strftime(fmt)}"}
     if first_ts:
-        return {"Time range": first_ts.strftime("%Y-%m-%d %H:%M:%S")}
+        return {"Time range": first_ts.strftime(fmt)}
     return {"Time range": "unknown"}

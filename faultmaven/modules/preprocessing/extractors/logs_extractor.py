@@ -1236,14 +1236,13 @@ class LogsAndErrorsExtractor:
                     duration_note = f" (~{int(delta_secs / 60)}min duration)"
             sentences.append(f"Log time range: {time_range}{duration_note}.")
             if yearless_timestamps:
-                # Syslog BSD timestamps omit the year; extract_time_range_ts
-                # uses today's year as a fallback. Signal this so the agent
-                # does not present the inferred year as a known fact.
-                inferred_year = time_range[:4] if time_range[0].isdigit() else ""
+                # Syslog BSD timestamps omit the year. The time_range is
+                # rendered without a year (see extract_time_range). Add an
+                # explicit note so the agent does not fabricate one.
                 example_clause = f" (e.g., '{sample_raw_ts}')" if sample_raw_ts else ""
                 sentences.append(
-                    f"[Note: timestamps in this log have no year{example_clause} —"
-                    f" {inferred_year} is inferred from the current date.]"
+                    f"[Note: timestamps in this log have no year{example_clause}."
+                    f" Do not assert a specific calendar year in any answer.]"
                 )
 
         if not sentences:
