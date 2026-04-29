@@ -21,11 +21,21 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 
 @dataclass
 class ToolCall:
-    """Tool/function call from LLM"""
+    """Tool/function call from LLM.
+
+    `provider_metadata` carries opaque provider-specific artifacts that must
+    round-trip with the tool call across turns — e.g. Gemini 3.x's
+    `thought_signature`, Anthropic's thinking-block signatures, or OpenAI
+    Responses-API reasoning IDs. Stays `None` for providers that don't emit
+    such artifacts (Gemini 2.5, OpenAI Chat Completions, all non-reasoning
+    models). Provider serializers ignore the field when absent — zero
+    behavior change for existing flows.
+    """
 
     id: str
     type: str  # "function"
     function: Dict[str, Any]  # {"name": "...", "arguments": "..."}
+    provider_metadata: Dict[str, Any] | None = None
 
 
 @dataclass
@@ -163,6 +173,12 @@ class LLMResponse:
     tool_calls: Optional[List[ToolCall]] = None  # Function calling support
     sanitized_prompt: Optional[str] = None  # PII-sanitized prompt for telemetry
     raw_prompt: Optional[str] = None  # Raw prompt (local debugging only)
+    # Provider-specific message-level artifacts that must round-trip across
+    # turns. Used by Gemini 3.x to preserve the full `parts[]` array (text +
+    # functionCall + thought) verbatim — each part may carry its own
+    # thoughtSignature, and skipping any one of them produces an HTTP 400 on
+    # the next turn. Stays `None` for providers that don't need this.
+    provider_metadata: Optional[Dict[str, Any]] = None
 
 
 @dataclass
