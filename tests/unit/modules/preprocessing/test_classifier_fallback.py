@@ -107,3 +107,51 @@ class TestCSVFallbackScoring:
 
         result = classifier.classify("metrics.csv", content)
         assert result.data_type == DataType.METRICS_AND_PERFORMANCE
+
+
+class TestEmptyContentClassification:
+    """Empty / whitespace-only content routes to UNANALYZABLE (ISS-024).
+
+    Rationale: a 0-byte file is itself diagnostic information. Forcing it
+    through the rule-based fallback would land on UNSTRUCTURED_TEXT with
+    classification_failed=True, which surfaces a confusing "we couldn't
+    classify your file" modal. Routing to UNANALYZABLE produces a clean
+    "file is empty" message and a reference-only evidence row, while
+    keeping the case and pipeline alive.
+    """
+
+    def test_empty_string_routes_to_unanalyzable(self, classifier):
+        result = classifier.classify("empty.bin", "")
+
+        assert result.data_type == DataType.UNANALYZABLE
+        assert result.classification_failed is False
+        assert result.confidence == 1.0
+        assert result.source == "rule_based"
+
+    def test_whitespace_only_content_routes_to_unanalyzable(self, classifier):
+        result = classifier.classify("blank.txt", "   \n\t\n  \n")
+
+        assert result.data_type == DataType.UNANALYZABLE
+        assert result.classification_failed is False
+
+    def test_empty_content_does_not_emit_classification_failed_modal(self, classifier):
+        """The frontend triggers a clarification modal on classification_failed=True.
+        Empty files should NOT trigger that flow — there's nothing to clarify.
+        """
+        result = classifier.classify("empty.log", "")
+
+        assert result.classification_failed is False
+        assert result.suggested_types is None or result.suggested_types == []
+
+    def test_user_override_still_wins_over_empty_content(self, classifier):
+        """If the user explicitly tagged the empty file as a known type
+        (e.g. via the reclassify endpoint), respect that — they may be
+        recording the empty-file fact under a known category."""
+        result = classifier.classify(
+            "empty.log",
+            "",
+            user_override=DataType.LOGS_AND_ERRORS,
+        )
+
+        assert result.data_type == DataType.LOGS_AND_ERRORS
+        assert result.source == "user_override"

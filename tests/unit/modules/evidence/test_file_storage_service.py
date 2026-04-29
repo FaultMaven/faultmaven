@@ -186,6 +186,30 @@ class TestStoreFile:
         assert os.path.isdir(case_dir)
 
     @pytest.mark.asyncio
+    async def test_store_file_accepts_zero_byte_payload(
+        self, file_storage_service, temp_storage_dir
+    ):
+        """0-byte uploads are stored, not rejected (ISS-024).
+
+        Empty files are valid evidence (a confirmed-empty log is a
+        diagnostic signal). Downstream classification handles them via
+        the UNANALYZABLE path.
+        """
+        result = await file_storage_service.store_file(
+            file_data=b"",
+            original_filename="empty.bin",
+            organization_id="org_123",
+            case_id="case_456",
+            mime_type="application/octet-stream",
+        )
+
+        assert result["file_size"] == 0
+        # File was actually written to disk (0 bytes is fine).
+        full_path = os.path.join(temp_storage_dir, result["file_path"])
+        assert os.path.exists(full_path)
+        assert os.path.getsize(full_path) == 0
+
+    @pytest.mark.asyncio
     async def test_store_file_file_too_large_raises_validation_error(
         self, small_limit_file_storage_service
     ):
@@ -398,18 +422,20 @@ class TestValidateFile:
             original_filename="test.txt",
         )
 
-    def test_validate_file_zero_size_raises_validation_error(
-        self, file_storage_service
-    ):
-        """Test that zero-size file raises ValidationException."""
-        with pytest.raises(ValidationException) as exc_info:
-            file_storage_service.validate_file(
-                file_size=0,
-                mime_type="text/plain",
-                original_filename="test.txt",
-            )
+    def test_validate_file_zero_size_is_accepted(self, file_storage_service):
+        """0-byte files are accepted at storage validation.
 
-        assert "file_size" in str(exc_info.value).lower()
+        ISS-024: an empty file is itself diagnostic information (e.g. a log
+        confirmed to be empty). The classifier downstream routes empty
+        content to the UNANALYZABLE path, so we deliberately do *not* reject
+        at the storage layer — that would short-circuit the graceful path.
+        """
+        # Should not raise any exception
+        file_storage_service.validate_file(
+            file_size=0,
+            mime_type="text/plain",
+            original_filename="empty.bin",
+        )
 
     def test_validate_file_negative_size_raises_validation_error(
         self, file_storage_service

@@ -330,6 +330,23 @@ class DataClassifier:
                 source_type=_origin,
             )
 
+        # Empty-content short-circuit: 0-byte uploads (or whitespace-only
+        # content) carry no analyzable signal. Routing them through the
+        # rule-based fallback would land on a low-confidence
+        # UNSTRUCTURED_TEXT classification with classification_failed=True,
+        # which surfaces a "we couldn't classify your file" modal — wrong
+        # message for a confirmed-empty file. Instead, return UNANALYZABLE
+        # so the preprocessing service emits a clear "file is empty" placeholder
+        # and the rest of the investigation pipeline proceeds gracefully.
+        if not content or not content.strip():
+            return ClassificationResult(
+                data_type=DataType.UNANALYZABLE,
+                confidence=1.0,
+                source="rule_based",
+                classification_failed=False,
+                source_type=_origin,
+            )
+
         # Priority 2: Agent hint (95% confidence if validated)
         if agent_hint and self._validate_hint(filename, content, agent_hint):
             return ClassificationResult(

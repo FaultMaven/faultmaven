@@ -280,17 +280,33 @@ class PreprocessingService:
             f"confidence={classification.confidence:.2f})"
         )
 
-        # Path 1: UNANALYZABLE (user opted out — reference only)
+        # Path 1: UNANALYZABLE — reference only.
+        # Two sub-paths share this branch:
+        #   1. Empty content (0-byte file or whitespace-only paste). The
+        #      classifier short-circuits here so the user gets a clear
+        #      "file is empty" message rather than a misleading
+        #      classification_failed modal.
+        #   2. User explicitly opted out (e.g. VISUAL_EVIDENCE with vision
+        #      disabled). The classifier returns UNANALYZABLE via
+        #      user_override.
         if detailed_data_type == DataType.UNANALYZABLE:
+            is_empty_content = not content or not content.strip()
+            if is_empty_content:
+                placeholder_text = (
+                    f"[File '{filename}' is empty (0 bytes of analyzable "
+                    f"content) — recorded as evidence; nothing to extract]"
+                )
+            else:
+                placeholder_text = (
+                    f"[File '{filename}' marked as UNANALYZABLE — "
+                    f"reference only, no analysis performed]"
+                )
             return self._build_placeholder_result(
                 content=content,
                 classification=classification,
                 detailed_data_type=detailed_data_type,
                 unified_data_type=unified_data_type,
-                placeholder_text=(
-                    f"[File '{filename}' marked as UNANALYZABLE — "
-                    f"reference only, no analysis performed]"
-                ),
+                placeholder_text=placeholder_text,
                 extraction_method="none",
                 start_time=start_time,
             )

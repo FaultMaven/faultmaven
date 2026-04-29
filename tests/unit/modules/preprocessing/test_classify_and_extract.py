@@ -134,3 +134,80 @@ class TestClassifyAndExtract:
 
         assert result.extraction_method == "crime_scene"
         mock_logs_extractor.extract.assert_called_once()
+
+
+class TestEmptyContentGracefulDegradation:
+    """0-byte uploads / empty content route to UNANALYZABLE (ISS-024).
+
+    The classifier short-circuits empty content to UNANALYZABLE; the
+    preprocessing service must produce a non-crashing placeholder with
+    a clear "file is empty" message — not a confusing
+    classification_failed modal.
+    """
+
+    @pytest.fixture
+    def real_classifier_service(self, mock_logs_extractor):
+        """Service wired with the real DataClassifier so we exercise the
+        empty-content short-circuit end-to-end."""
+        from faultmaven.modules.preprocessing.classifier import DataClassifier
+
+        return PreprocessingService(
+            classifier=DataClassifier(),
+            logs_extractor=mock_logs_extractor,
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_content_routes_to_unanalyzable(
+        self, real_classifier_service, mock_logs_extractor
+    ):
+        result = await real_classifier_service.classify_and_extract(
+            content="", filename="empty.bin"
+        )
+
+        # Pipeline must produce a result, not raise.
+        assert isinstance(result, PreprocessingResult)
+        assert result.detailed_data_type == DataType.UNANALYZABLE
+        # Extractor must not be invoked on empty content — it would either
+        # produce a misleading "no errors" tail or waste a Tier 1 budget.
+        mock_logs_extractor.extract.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_content_produces_human_readable_placeholder(
+        self, real_classifier_service
+    ):
+        result = await real_classifier_service.classify_and_extract(
+            content="", filename="server.log"
+        )
+
+        # The structural_index is what surfaces to the agent and (via the
+        # case_ui adapter) to the user. It must clearly say "empty" and
+        # name the file so the user can act on it.
+        assert "empty" in result.structural_index.lower()
+        assert "server.log" in result.structural_index
+        assert result.extraction_method == "none"
+
+    @pytest.mark.asyncio
+    async def test_empty_content_does_not_set_classification_failed(
+        self, real_classifier_service
+    ):
+        """classification_failed=True triggers a frontend clarification
+        modal. For an empty file there's nothing to clarify, so the flag
+        must stay False."""
+        result = await real_classifier_service.classify_and_extract(content="")
+
+        meta = result.extraction_metadata or {}
+        evidence_meta = meta.get("evidence_metadata", {})
+        classification_meta = evidence_meta.get("classification", {})
+        # The classification metadata block records `failed`; must be False
+        # so the case UI doesn't show a "needs clarification" badge.
+        assert classification_meta.get("failed") is False
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_content_also_unanalyzable(
+        self, real_classifier_service
+    ):
+        result = await real_classifier_service.classify_and_extract(
+            content="   \n\t   \n", filename="blank.txt"
+        )
+
+        assert result.detailed_data_type == DataType.UNANALYZABLE
