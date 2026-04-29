@@ -421,10 +421,14 @@ class FileStorageService(BaseService):
         Raises:
             ValidationException: If file invalid
         """
-        # Validate file size
-        if file_size <= 0:
+        # Validate file size.
+        # 0-byte files are accepted: emptiness is itself diagnostic information
+        # (e.g. a log file confirmed to be empty). Downstream classification
+        # routes empty content to the UNANALYZABLE path with a clear rationale,
+        # so the pipeline degrades gracefully instead of rejecting at the API.
+        if file_size < 0:
             raise ValidationException(
-                "file_size: File size must be greater than 0",
+                "file_size: File size cannot be negative",
                 details={"file_size": file_size},
             )
 
