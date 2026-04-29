@@ -400,10 +400,18 @@ class LogsAndErrorsExtractor:
         # Safety check
         snippet = self._truncate_if_needed(snippet, primary_error["line_idx"] - start)
 
+        # burst_size is the LINE SPAN between the first and last burst-keyword
+        # match (inclusive), not the count of burst events themselves and not
+        # the total file-wide count of the keyword. Phrase the header so the
+        # agent doesn't conflate window width with event count — the
+        # authoritative count is in the entity profile / file_meta.severity.
         burst_size = burst_end - burst_start + 1
         return self._format_snippet(
             snippet,
-            f"Error burst detected: {burst_size} lines with {primary_error['keyword']} storm",
+            f"{primary_error['keyword']} burst — context window of "
+            f"{burst_size} surrounding lines "
+            f"(see entity profile for total {primary_error['keyword']} count "
+            f"across the full file)",
         )
 
     def _extract_tail(self, lines: list[str]) -> str:

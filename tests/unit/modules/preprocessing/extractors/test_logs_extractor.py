@@ -106,8 +106,36 @@ class TestLogsAndErrorsExtractor:
 
         result = extractor.extract(content)
 
-        # Should detect burst
-        assert "burst detected" in _fe(result).lower() or "ERROR" in _fe(result)
+        # Should detect burst (header now reads "ERROR burst — ...")
+        fe = _fe(result).lower()
+        assert "burst" in fe or "error" in fe
+
+    def test_burst_header_does_not_imply_event_count(self, extractor):
+        """The crime-scene burst header must NOT phrase its window size as
+        an event count — line span between first and last burst-keyword line
+        is window WIDTH, not the count of those events. Earlier wording
+        ("Error burst detected: 26 lines with WARN storm") caused the agent
+        to read 26 as the WARN count on HDFS q1; ground truth was 80.
+
+        Uses WARN-only events to force the burst path (multiple
+        high-severity ERRORs would route to the multiple-crime-scenes
+        path which has its own header)."""
+        # 12 WARN events in 36 lines triggers ERROR_BURST_THRESHOLD (10)
+        # without crossing the multiple-crime-scenes branch.
+        log_lines = (
+            ["INFO: startup"] * 30
+            + ["WARN: minor issue"] * 12
+            + ["INFO: still running"] * 30
+        )
+        result = extractor.extract("\n".join(log_lines))
+        fe = _fe(result)
+        # New phrasing: burst label + clear "context window of N surrounding
+        # lines" + a pointer to the entity profile for the authoritative count.
+        assert "burst" in fe.lower()
+        assert "context window" in fe.lower()
+        assert "entity profile" in fe.lower()
+        # Old confusing phrasing must not return.
+        assert "lines with WARN storm" not in fe
 
     def test_no_errors_fallback(self, extractor):
         """Test tail extraction when no errors found"""
