@@ -1283,3 +1283,118 @@ class TestYearlessTimestampNote:
         note = _fe(result)
         # The note includes e.g. '(e.g., 'Jun 14 12:00:00')' — check for the month abbreviation
         assert re.search(r"e\.g\.,\s*'Jun\s+\d+\s+\d{2}:\d{2}:\d{2}'", note)
+
+
+class TestPamAuthFailureFormatVariants:
+    """Two PAM authentication-failure syslog formats exist in the wild:
+      Format A (modern Linux-PAM):  "pam_unix(sshd:auth): authentication failure"
+      Format B (older Red Hat):      "sshd(pam_unix)[19939]: authentication failure"
+    Both must match _PAM_AUTH_FAILURE_RE so the count surfaces in the entity
+    profile and FILE SUMMARY. Format B was missed before ISS-008 fix —
+    the loghub Linux fixture's 490 PAM failures were never counted."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _format_a_lines(self, n: int = 30) -> str:
+        return "\n".join(
+            f"Dec 10 06:{i:02d}:46 LabSZ sshd[24200]: pam_unix(sshd:auth): "
+            f"authentication failure; logname= uid=0 euid=0 tty=ssh "
+            f"ruser= rhost=173.234.31.{i + 100} user=root"
+            for i in range(n)
+        )
+
+    def _format_b_lines(self, n: int = 30) -> str:
+        return "\n".join(
+            f"Jun 14 15:{i:02d}:01 combo sshd(pam_unix)[1{i:04d}]: "
+            f"authentication failure; logname= uid=0 euid=0 tty=NODEVssh "
+            f"ruser= rhost=218.188.2.{i}"
+            for i in range(n)
+        )
+
+    def test_format_a_pam_failures_counted(self, extractor):
+        result = extractor.extract(self._format_a_lines())
+        assert "pam_auth_failure: 30" in _sm(result)
+
+    def test_format_b_pam_failures_counted(self, extractor):
+        """ISS-008 root cause: this format was previously matching 0 lines,
+        leaving the 490-line aggregate invisible in the loghub Linux fixture."""
+        result = extractor.extract(self._format_b_lines())
+        assert "pam_auth_failure: 30" in _sm(result)
+
+    def test_format_b_dominant_activity_surfaces_pam(self, extractor):
+        """When failed_password is absent (Format B), pam_auth_failure must
+        appear in the FILE SUMMARY 'Dominant activity' line — it is the
+        primary auth signal, not a duplicate."""
+        result = extractor.extract(self._format_b_lines())
+        assert "pam auth failure" in _fe(result)
+
+    def test_format_a_dominant_activity_hides_pam(self, extractor):
+        """When failed_password is present (Format A logs typically pair
+        Failed-password + pam_unix lines), pam_auth_failure stays hidden
+        from FILE SUMMARY to avoid double-counting the same auth event."""
+        # Mix Format A pam lines + matching Failed-password lines
+        pam = self._format_a_lines(20)
+        failed = "\n".join(
+            f"Dec 10 06:{i:02d}:46 LabSZ sshd[24200]: Failed password "
+            f"for root from 173.234.31.{i + 100} port 22 ssh2"
+            for i in range(20)
+        )
+        result = extractor.extract(pam + "\n" + failed)
+        summary = _fe(result)
+        # failed_password must be in dominant activity; pam_auth_failure must NOT.
+        assert "failed password" in summary
+        # The dominant activity line is the first sentence before the period.
+        # Confirm pam_auth_failure isn't surfaced there even though it's counted.
+        dominant_line = summary.split("Dominant activity:")[1].split(".")[0]
+        assert "pam auth failure" not in dominant_line.lower()
+
+
+class TestSyslogHostSurfacing:
+    """Hostname (BSD-syslog 3rd field) must be surfaced in the entity profile
+    so the agent can identify the source machine without parsing raw lines.
+    Surfaced by /benchmark-fix logs-linux-01 q1 (ISS-008): captured answers
+    omitted the hostname 'combo' even though every log line had it."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _bsd_syslog(self, host: str, n: int = 30) -> str:
+        return "\n".join(
+            f"Jun 14 15:{i:02d}:01 {host} sshd(pam_unix)[{1000 + i}]: "
+            f"authentication failure; logname= uid=0 euid=0 user=root"
+            for i in range(n)
+        )
+
+    def test_syslog_host_surfaced(self, extractor):
+        result = extractor.extract(self._bsd_syslog("combo"))
+        assert "Source host(s)" in _sm(result)
+        assert "combo: 30 lines" in _sm(result)
+
+    def test_below_threshold_not_surfaced(self, extractor):
+        """Fewer than 5 host-matching lines is below noise threshold — skip."""
+        result = extractor.extract(self._bsd_syslog("combo", n=3))
+        assert "Source host(s)" not in _sm(result)
+
+    def test_non_syslog_format_not_surfaced(self, extractor):
+        """log4j-style content (no BSD-syslog prefix) must not produce any
+        spurious host entries."""
+        log4j = "\n".join(
+            f"2026-01-15 10:00:{i:02d},123 - INFO  [Thread-{i}:Class@1] - message"
+            for i in range(30)
+        )
+        result = extractor.extract(log4j)
+        assert "Source host(s)" not in _sm(result)
+
+    def test_multiple_hosts_each_listed(self, extractor):
+        """Multi-host syslog (uncommon but possible — log aggregator) lists
+        each host with its line count."""
+        content = (
+            self._bsd_syslog("host-a", n=20) + "\n" + self._bsd_syslog("host-b", n=15)
+        )
+        result = extractor.extract(content)
+        sm = _sm(result)
+        assert "host-a: 20 lines" in sm
+        assert "host-b: 15 lines" in sm

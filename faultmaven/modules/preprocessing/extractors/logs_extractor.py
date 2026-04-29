@@ -663,8 +663,15 @@ class LogsAndErrorsExtractor:
     # PAM authentication failure lines accompany sshd "Failed password" events —
     # they are separate log lines for the same auth event (two lines per failure).
     # Counting them separately gives a more complete per-IP auth failure tally.
+    #
+    # Two syslog PAM formats exist in the wild:
+    #   A. modern Linux-PAM:  "pam_unix(sshd:auth): authentication failure"
+    #   B. older Red Hat:     "sshd(pam_unix)[19939]: authentication failure"
+    # Both must match — the loghub Linux fixture is format B; OpenSSH and most
+    # post-2010 distros are format A.
     _PAM_AUTH_FAILURE_RE = re.compile(
-        r"pam_unix\([^)]*\):\s*authentication failure", re.IGNORECASE
+        r"(?:pam_unix\([^)]*\)|\(pam_unix\)\[\d+\]):\s*authentication failure",
+        re.IGNORECASE,
     )
     # Numeric state codes (e.g. "error state 6") are internal to the log source;
     # the log itself does not document their meanings. Detection triggers a note
@@ -688,6 +695,17 @@ class LogsAndErrorsExtractor:
     # message bodies) and followed by an optional paren group and a PID bracket.
     # Examples: " sshd(pam_unix)[19939]" → "sshd"; " ftpd[29504]" → "ftpd".
     _SYSLOG_SERVICE_RE = re.compile(r"\s([\w.-]+)(?:\([^)]*\))?\[\d+\]")
+
+    # Syslog hostname extractor — captures the host token in the BSD-syslog
+    # 3rd-field position: "Mon DD HH:MM:SS HOSTNAME service[pid]: msg".
+    # Anchored on the start-of-line BSD timestamp + a service[pid] suffix to
+    # avoid false matches on non-syslog content. Surfacing the host(s) in the
+    # entity profile lets the agent identify the source machine without
+    # having to spot it in raw lines (logs-linux-01 q1, ISS-008).
+    _SYSLOG_HOST_RE = re.compile(
+        r"^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+"
+        r"(\S+)\s+[\w.-]+(?:\([^)]*\))?\[\d+\]"
+    )
 
     # Reverse-DNS hostname pattern — syslog's rhost field stores the PTR record
     # of the connecting IP (e.g. customer-187-141-143-180-sta.) which the entity
@@ -788,6 +806,10 @@ class LogsAndErrorsExtractor:
         has_numeric_state_codes = False
         # Syslog service name counts for multi-service logs
         service_counts: Counter = Counter()
+        # Syslog hostname counts (BSD-syslog 3rd-field position). Surfaced in
+        # entity profile so the agent can identify the source host without
+        # parsing raw lines (ISS-008).
+        host_counts: Counter = Counter()
 
         lines = content.split("\n")
         for i, line in enumerate(lines):
@@ -839,6 +861,11 @@ class LogsAndErrorsExtractor:
             svc_m = self._SYSLOG_SERVICE_RE.search(line)
             if svc_m:
                 service_counts[svc_m.group(1)] += 1
+            # Syslog hostname — only matches BSD-format lines with a
+            # service[pid] suffix, so non-syslog content is naturally skipped.
+            host_m = self._SYSLOG_HOST_RE.match(line)
+            if host_m:
+                host_counts[host_m.group(1)] += 1
 
             # Semantic event classification — also track first/last timestamp
             # per event type so the entity profile can report temporal span.
@@ -922,6 +949,16 @@ class LogsAndErrorsExtractor:
 
         # ENTITY PROFILE body — the search map
         parts: list[str] = ["ENTITY PROFILE (full file scan):"]
+
+        # Source host(s) — BSD-syslog 3rd-field hostnames. Surfaced so the
+        # agent can identify the source machine without having to parse raw
+        # lines. Only shown when ≥5 lines have a recognizable host (avoids
+        # noisy single-line matches from non-syslog content).
+        sig_hosts = [(h, n) for h, n in host_counts.most_common(8) if n >= 5]
+        if sig_hosts:
+            parts.append("  Source host(s) (syslog 3rd-field, line counts):")
+            for host, n in sig_hosts:
+                parts.append(f"    {host}: {n} lines")
 
         # Top services — only shown for multi-service syslog logs (2+ services
         # each with ≥5 lines). A single dominant service adds no value here.
@@ -1064,10 +1101,12 @@ class LogsAndErrorsExtractor:
 
         return ""
 
-    # Event types that are supplementary log-layer duplicates of another event
-    # type (e.g. PAM logs the same auth failure as sshd "Failed password").
-    # Excluded from FILE SUMMARY counts to avoid misrepresenting event volume.
-    _SUMMARY_EXCLUDE_EVENTS: frozenset = frozenset({"pam_auth_failure"})
+    # Event types whose count is a duplicate of another event type and should
+    # be hidden from FILE SUMMARY's dominant-activity picker. PAM is special:
+    # in Format A logs (OpenSSH "pam_unix(sshd:auth):") it duplicates
+    # failed_password, but in Format B logs (loghub Linux "sshd(pam_unix)[PID]:")
+    # failed_password never matches and pam_auth_failure IS the auth signal.
+    # Hence the exclusion is applied conditionally inside _build_summary.
 
     def _build_summary(
         self,
@@ -1117,13 +1156,15 @@ class LogsAndErrorsExtractor:
                 f" record did not match the IP address — reverse-DNS mismatch)."
             )
 
-        # Dominant activity counts — exclude supplementary duplicate event types
+        # Dominant activity counts — exclude supplementary duplicate event types.
+        # pam_auth_failure duplicates failed_password ONLY when both are present
+        # (Format A logs). When failed_password is 0, pam_auth_failure is the
+        # primary auth signal (Format B) and must be surfaced.
+        exclude = set()
+        if event_counts.get("failed_password", 0) > 0:
+            exclude.add("pam_auth_failure")
         summary_events = Counter(
-            {
-                k: v
-                for k, v in event_counts.items()
-                if k not in self._SUMMARY_EXCLUDE_EVENTS
-            }
+            {k: v for k, v in event_counts.items() if k not in exclude}
         )
         top_events = summary_events.most_common(3)
         if top_events:
