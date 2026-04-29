@@ -1673,3 +1673,179 @@ class TestWindowsKBPackageSurfacing:
         result = extractor.extract(content)
         text = _all(result)
         assert "Distinct KB packages" not in text
+
+
+class TestSeverityScaleContext:
+    """ISS-016: When the agent characterizes severity ("normal", "alarming",
+    "systemic", "catastrophic"), it needs the SCALE context to calibrate its
+    wording. 347 FATAL events sounds alarming until you know the file covers
+    a multi-hour or multi-day span across many distinct nodes — at which
+    point per-hour or per-node rates show the activity is well within
+    fault-tolerant background levels.
+
+    The extractor must surface, near the top of FILE SUMMARY:
+    - An "events/hour" rate annotation when the file has a clear time span
+      and ≥50 severity-flagged events.
+    - A distinct BGL node count when the BGL line detector fires.
+
+    And in ENTITY PROFILE event_types, each event with count ≥50 and a
+    non-zero temporal span must carry a `rate:~X/h` annotation alongside
+    the existing `span:` annotation.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _bgl_lines(
+        self,
+        flag: str,
+        n: int,
+        epoch_start: int,
+        epoch_step: int,
+        node: str = "R02-M1-N0-C:J12-U11",
+        body: str = "RAS KERNEL FATAL data tlb error interrupt",
+    ) -> list[str]:
+        """Build n synthetic BGL lines spaced epoch_step seconds apart."""
+        lines = []
+        for i in range(n):
+            ep = epoch_start + i * epoch_step
+            # Use a real-looking date from epoch (use 2005.06.03 for all —
+            # the date is for human readability and doesn't drive parsing
+            # since the extractor's BGL-format lines use the second-column
+            # YYYY-MM-DD-HH.MM.SS field for timestamps).
+            from datetime import datetime, timezone
+
+            dt = datetime.fromtimestamp(ep, tz=timezone.utc)
+            ymd = dt.strftime("%Y.%m.%d")
+            inner = dt.strftime("%Y-%m-%d-%H.%M.%S") + ".000000"
+            lines.append(f"{flag} {ep} {ymd} {node} {inner} {node} {body}")
+        return lines
+
+    def test_events_per_hour_rate_in_file_summary_for_high_count_log(self, extractor):
+        """When ≥50 severity-flagged events span a clear time window, FILE
+        SUMMARY must mention a rate (events/hour or events/min)."""
+        # 100 FATAL lines spanning 10 hours (3600s/100 ≈ ~10 events/h)
+        lines = self._bgl_lines(
+            "KERNDTLB",
+            n=100,
+            epoch_start=1117838570,
+            epoch_step=360,  # 6 minutes apart -> 10 events/hour over 9.9h
+        )
+        result = extractor.extract("\n".join(lines))
+        fe = _fe(result)
+        assert "FILE SUMMARY" in fe
+        # Must contain rate-based phrasing in the summary
+        assert (
+            "events/hour" in fe.lower()
+            or "events/h" in fe.lower()
+            or "/hour" in fe.lower()
+        ), f"Expected events/hour rate phrasing in FILE SUMMARY:\n{fe}"
+
+    def test_no_rate_for_short_log(self, extractor):
+        """Files with <50 severity-flagged events should not get a rate
+        annotation — the rate would be statistically meaningless."""
+        # 10 FATAL lines, 1 minute apart
+        lines = self._bgl_lines(
+            "KERNDTLB",
+            n=10,
+            epoch_start=1117838570,
+            epoch_step=60,
+        )
+        result = extractor.extract("\n".join(lines))
+        fe = _fe(result)
+        # No "Effective rate" / "events/hour" sentence
+        assert "events/hour" not in fe.lower()
+        assert "effective rate" not in fe.lower()
+
+    def test_event_type_rate_annotation_in_entity_profile(self, extractor):
+        """Each event_types row with count ≥50 AND a non-zero span must
+        carry a `rate:~X/h` annotation alongside `span:`."""
+        # Build a syslog-format log with many failed_password events spanning
+        # several hours so the event_types section fires with a rate.
+        lines = []
+        # Generate 60 failed_password events over ~3 hours (180 minutes)
+        # spaced 3 minutes apart -> 20 events/hour
+        from datetime import datetime, timedelta
+
+        start = datetime(2024, 6, 14, 10, 0, 0)
+        for i in range(60):
+            ts = start + timedelta(minutes=i * 3)
+            stamp = ts.strftime("%b %d %H:%M:%S")
+            lines.append(
+                f"{stamp} testhost sshd[{1000 + i}]: "
+                f"Failed password for root from 10.0.0.5 port 2200 ssh2"
+            )
+        result = extractor.extract("\n".join(lines))
+        sm = _sm(result)
+        # The event_types section must list failed_password with a rate annotation
+        assert "failed_password" in sm
+        # span: annotation already present, plus a new rate: annotation
+        assert "rate:" in sm, f"Expected rate: annotation in entity profile:\n{sm}"
+        assert "/h" in sm
+
+    def test_event_type_rate_omitted_for_low_count(self, extractor):
+        """Events with count <50 should not get a rate annotation — the
+        sample is too small for a meaningful per-hour rate."""
+        from datetime import datetime, timedelta
+
+        lines = []
+        start = datetime(2024, 6, 14, 10, 0, 0)
+        for i in range(15):  # only 15 events
+            ts = start + timedelta(minutes=i * 5)
+            stamp = ts.strftime("%b %d %H:%M:%S")
+            lines.append(
+                f"{stamp} testhost sshd[{1000 + i}]: "
+                f"Failed password for root from 10.0.0.5 port 2200 ssh2"
+            )
+        result = extractor.extract("\n".join(lines))
+        sm = _sm(result)
+        # The event_types row exists with span: but should not carry rate:
+        # (anchor on the failed_password event line specifically).
+        for line in sm.splitlines():
+            if "failed_password:" in line:
+                assert (
+                    "rate:" not in line
+                ), f"Did not expect rate: on low-count event line: {line}"
+
+    def test_distinct_bgl_node_count_in_file_summary(self, extractor):
+        """When the BGL line detector fires on enough lines, FILE SUMMARY
+        must mention the count of distinct BGL node identifiers (3rd
+        whitespace-separated token, e.g. R02-M1-N0-C:J12-U11)."""
+        lines = []
+        # 80 BGL lines across 4 distinct nodes
+        nodes = [
+            "R02-M1-N0-C:J12-U11",
+            "R23-M0-NE-C:J05-U01",
+            "R24-M0-N1-C:J13-U11",
+            "R30-M0-N9-C:J16-U01",
+        ]
+        for i in range(80):
+            node = nodes[i % len(nodes)]
+            lines.extend(
+                self._bgl_lines(
+                    "KERNDTLB",
+                    n=1,
+                    epoch_start=1117838570 + i * 300,
+                    epoch_step=1,
+                    node=node,
+                )
+            )
+        result = extractor.extract("\n".join(lines))
+        fe = _fe(result)
+        # Distinct node count — naming may be "Distinct BGL nodes" or "BGL
+        # nodes" — accept either, but the count must be present.
+        assert (
+            "BGL node" in fe or "BGL nodes" in fe
+        ), f"Expected BGL node count in FILE SUMMARY:\n{fe}"
+        assert "4" in fe  # 4 distinct nodes
+
+    def test_non_bgl_log_no_node_count(self, extractor):
+        """A plain syslog file must not produce a BGL node count line."""
+        content = "\n".join(
+            f"Jun 14 15:{i:02d}:01 host sshd[{1000 + i}]: Failed password for root"
+            for i in range(60)
+        )
+        result = extractor.extract(content)
+        fe = _fe(result)
+        assert "BGL node" not in fe

@@ -164,6 +164,18 @@ When answering the user's question about a file:
   host name, version label, sampling interval, file structure, time span)
   alongside the higher-level pattern/synthesis. A characterization answer
   that omits surfaced metadata is incomplete.
+- Severity-scale calibration: when characterizing severity ("normal",
+  "elevated", "alarming", "systemic", "widespread", "catastrophic"),
+  normalize raw counts against the time window and host count surfaced in
+  FILE SUMMARY / ENTITY PROFILE. Prefer rate-based phrasing (e.g.
+  "~X events/hour over Y hours" or "~X per node across N hosts") over
+  absolute counts. If FILE SUMMARY shows an "Effective rate" sentence, use
+  it; if ENTITY PROFILE event_types lines carry a `rate:~X/h` annotation,
+  use that for per-event characterization. Do NOT use words like
+  "systemic", "widespread", or "catastrophic" unless the rate AND
+  distribution (per-host, per-service) actually support that framing —
+  a few events per hour spread across hundreds of hosts is per-node
+  background activity, not "systemic failure".
 - Retrieval question ("which IP had the most failures?", "how many times did X
   occur?", "show me lines where Y happened", "list all X") → for auth-attempt
   counts per IP, check the "IP auth breakdown" table in <search_map> FIRST — it

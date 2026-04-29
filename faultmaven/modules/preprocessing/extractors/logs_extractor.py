@@ -742,6 +742,7 @@ class LogsAndErrorsExtractor:
         r"^(?P<flag>-|[A-Z][A-Z0-9]{2,11})\s+"  # flag: dash or 3-12 char ALL-CAPS token
         r"(?P<epoch>1[0-9]{9}|2[0-9]{9})\s+"  # 10-digit unix epoch in 2001-2065 range
         r"\d{4}\.\d{2}\.\d{2}\s+"  # YYYY.MM.DD date
+        r"(?P<node>\S+)"  # node identifier, e.g. R02-M1-N0-C:J12-U11
     )
 
     # Minimum fraction of total lines that must match severity keywords for
@@ -750,6 +751,15 @@ class LogsAndErrorsExtractor:
     # representative (e.g. SSH brute-force logs where attack lines contain
     # no ERROR/WARN/FATAL keywords).
     MIN_TEMPLATE_COVERAGE_FRACTION = 0.15
+    # Minimum event count (severity-flagged lines or per-event-type) before a
+    # rate annotation (events/hour) is emitted (ISS-016). Below this the rate
+    # is statistically meaningless and the count itself is more informative.
+    MIN_RATE_EVENT_COUNT = 50
+    # Minimum BGL-format lines before the distinct-node count is surfaced in
+    # FILE SUMMARY. Below this the host count is noise (single-line BGL
+    # matches inside other content). Mirrors the host-count threshold used
+    # for syslog 3rd-field hosts.
+    MIN_BGL_NODE_SURFACE_LINES = 5
     # Minimum occurrences for a non-error-keyword line template to be considered
     # "prominent" and included alongside error-only template counts.
     # Set to 20 so that INFO activity like FastLeaderElection (37 lines in a 2k
@@ -850,6 +860,12 @@ class LogsAndErrorsExtractor:
         # column values rather than fabricating flag names from message
         # bodies.
         bgl_flag_counts: Counter = Counter()
+        # BGL distinct node identifiers (ISS-016). Surfaces the per-host
+        # denominator so the agent can normalize event counts against the
+        # number of distinct nodes — a 1778-node BGL cluster generating 347
+        # FATAL events is per-node background, not "systemic".
+        bgl_nodes: set[str] = set()
+        bgl_line_count = 0
 
         lines = content.split("\n")
         for i, line in enumerate(lines):
@@ -918,6 +934,10 @@ class LogsAndErrorsExtractor:
             bgl_m = self._BGL_LINE_RE.match(line)
             if bgl_m:
                 bgl_flag_counts[bgl_m.group("flag")] += 1
+                bgl_line_count += 1
+                # Distinct node identifiers (ISS-016) — surface the per-host
+                # denominator for severity-scale calibration.
+                bgl_nodes.add(bgl_m.group("node"))
 
             # Semantic event classification — also track first/last timestamp
             # per event type so the entity profile can report temporal span.
@@ -1004,6 +1024,8 @@ class LogsAndErrorsExtractor:
             warn_only=warn_only,
             yearless_timestamps=yearless_ts,
             sample_raw_ts=sample_raw_ts,
+            bgl_node_count=len(bgl_nodes),
+            bgl_line_count=bgl_line_count,
         )
 
         # ENTITY PROFILE body — the search map
@@ -1037,6 +1059,7 @@ class LogsAndErrorsExtractor:
                 # Temporal span: full first→last range for this event type.
                 # search_file returns only 20 results — a sample; use this span.
                 span_note = ""
+                rate_note = ""
                 ft = event_first_ts.get(event)
                 lt = event_last_ts.get(event)
                 if ft and lt and ft != lt:
@@ -1051,13 +1074,27 @@ class LogsAndErrorsExtractor:
                         f"  span:{ft.strftime('%H:%M:%S')}→{lt.strftime('%H:%M:%S')}"
                         f" ({span_str})"
                     )
+                    # Rate annotation (ISS-016): events/hour normalized over
+                    # the per-event-type temporal span. Only emit for
+                    # high-count events where the rate is statistically
+                    # meaningful — below MIN_RATE_EVENT_COUNT a per-hour
+                    # extrapolation would be misleading.
+                    if count >= self.MIN_RATE_EVENT_COUNT and delta_secs > 0:
+                        rate_per_hour = count / (delta_secs / 3600)
+                        if rate_per_hour >= 1:
+                            rate_str = f"~{rate_per_hour:.1f}/h"
+                        else:
+                            # Sub-1/hour rate: show /day for readability
+                            rate_per_day = rate_per_hour * 24
+                            rate_str = f"~{rate_per_day:.1f}/day"
+                        rate_note = f"  rate:{rate_str}"
                 rdns_note = (
                     "  [reverse-DNS mismatch trigger]"
                     if event == "break_in_attempt"
                     else ""
                 )
                 parts.append(
-                    f'    {event}: {count}  ["{search_str}"]{span_note}{rdns_note}'
+                    f'    {event}: {count}  ["{search_str}"]{span_note}{rate_note}{rdns_note}'
                 )
 
         if ip_all_counts:
@@ -1216,6 +1253,8 @@ class LogsAndErrorsExtractor:
         warn_only: bool = False,
         yearless_timestamps: bool = False,
         sample_raw_ts: str | None = None,
+        bgl_node_count: int = 0,
+        bgl_line_count: int = 0,
     ) -> str:
         """Return a compact FILE SUMMARY (2–4 sentences) describing dominant
         activity, top source, and key absences.
@@ -1363,14 +1402,15 @@ class LogsAndErrorsExtractor:
 
         # Time range with computed duration — surfaces full log span so agent
         # cross-references correctly and can answer duration questions directly.
+        log_span_secs = 0.0
         if time_range and time_range != "unknown":
             duration_note = ""
             if first_ts and last_ts and last_ts > first_ts:
-                delta_secs = (last_ts - first_ts).total_seconds()
-                if delta_secs >= 3600:
-                    duration_note = f" (~{delta_secs / 3600:.1f}h duration)"
-                elif delta_secs >= 60:
-                    duration_note = f" (~{int(delta_secs / 60)}min duration)"
+                log_span_secs = (last_ts - first_ts).total_seconds()
+                if log_span_secs >= 3600:
+                    duration_note = f" (~{log_span_secs / 3600:.1f}h duration)"
+                elif log_span_secs >= 60:
+                    duration_note = f" (~{int(log_span_secs / 60)}min duration)"
             sentences.append(f"Log time range: {time_range}{duration_note}.")
             if yearless_timestamps:
                 # Syslog BSD timestamps omit the year. The time_range is
@@ -1381,6 +1421,43 @@ class LogsAndErrorsExtractor:
                     f"[Note: timestamps in this log have no year{example_clause}."
                     f" Do not assert a specific calendar year in any answer.]"
                 )
+
+        # Severity-scale calibration (ISS-016): when a clear time span is known
+        # and the file has ≥MIN_RATE_EVENT_COUNT severity-flagged events, surface
+        # an effective per-hour rate. Without this, raw counts read as alarming
+        # ("347 FATAL events!") even when the rate is well within fault-tolerant
+        # background levels (~7/h over 46h on a 1778-node cluster). Fact-based,
+        # not interpretive: the rate is reported, the agent decides what it means.
+        if error_count >= self.MIN_RATE_EVENT_COUNT and log_span_secs > 0:
+            span_hours = log_span_secs / 3600
+            rate_per_hour = error_count / max(span_hours, 1e-9)
+            if rate_per_hour >= 1:
+                rate_phrase = f"~{rate_per_hour:.1f} events/hour"
+            else:
+                rate_per_day = rate_per_hour * 24
+                rate_phrase = f"~{rate_per_day:.1f} events/day"
+            if span_hours >= 1:
+                span_phrase = f"~{span_hours:.1f}h"
+            else:
+                span_phrase = f"~{int(log_span_secs / 60)}min"
+            sentences.append(
+                f"Effective rate: {rate_phrase} of severity-flagged activity"
+                f" over a {span_phrase} span — normalize against this when"
+                f" characterizing severity (use rate, not absolute count)."
+            )
+
+        # Distinct BGL node count (ISS-016): for BlueGene/L RAS logs, the
+        # per-node denominator is essential context — a 1778-node cluster
+        # producing 347 FATAL events is per-node background, not "systemic".
+        # Surface only when the BGL line detector fires on enough lines to
+        # avoid noise from incidental matches in non-BGL content.
+        if bgl_node_count > 0 and bgl_line_count >= self.MIN_BGL_NODE_SURFACE_LINES:
+            sentences.append(
+                f"Distinct BGL nodes: {bgl_node_count}"
+                f" (across {bgl_line_count} BGL-format lines)"
+                f" — events spread across this many hosts; normalize per-node"
+                f" before calling activity 'systemic' or 'widespread'."
+            )
 
         if not sentences:
             return ""
