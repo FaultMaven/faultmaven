@@ -211,12 +211,27 @@ class LogsAndErrorsExtractor:
         """
         Scan all lines for error keywords and track severity.
 
-        Two-pass logic per line:
-        1. Find leftmost keyword. If it has weight=0 (INFO/DEBUG/TRACE/VERBOSE),
-           treat the line as an informational entry and skip it — even if
-           higher-severity words appear in the message body.
-        2. If the leftmost keyword has weight>0, pick the HIGHEST-severity
-           keyword anywhere in the line (e.g. "WARNING: CRITICAL failure" → CRITICAL).
+        Single-pass leftmost-wins: the LEFTMOST severity keyword in each line
+        determines its classification. The level field in syslog/log4j formats
+        is positioned early in the line by convention, so leftmost-position
+        captures the application's authoritative severity choice. Body
+        occurrences of severity words (e.g. trailing "error =" field labels,
+        prose like "to fix this error...") are ignored because they are
+        almost always field labels or prose — not severity assertions.
+
+        Weight-0 keywords (INFO/DEBUG/TRACE/VERBOSE) act as level anchors:
+        when one is leftmost, the line is excluded from the error list
+        regardless of any higher-severity keyword in the body. This prevents
+        e.g. an "INFO ... Error:KeeperErrorCode" line from being counted as
+        ERROR.
+
+        ISS-012 history note: a previous version added a second pass that
+        picked the highest-severity keyword anywhere in a weight>0 line
+        (intent: classify "WARNING: CRITICAL failure" as CRITICAL). That
+        pass over-escalated WARN-level lines whose body contained "error ="
+        as a field label — 291 of 1318 true WARN lines in the ZooKeeper
+        fixture got reported as ERROR. Real log data does not survive the
+        body-escalation rule; level fields are authoritative.
 
         Returns:
             List of dicts with {line_idx, line_text, severity, keyword}
@@ -224,35 +239,21 @@ class LogsAndErrorsExtractor:
         errors = []
 
         for idx, line in enumerate(lines):
-            # Pass 1: find leftmost keyword to detect level anchors
-            leftmost_pos = len(line) + 1
-            leftmost_severity = 0
+            best_keyword: str | None = None
+            best_pos = len(line) + 1
+            best_severity = 0
 
             for keyword, severity in self.SEVERITY_WEIGHTS.items():
                 pattern = rf"\b{re.escape(keyword)}\b"
                 m = re.search(pattern, line, re.IGNORECASE)
-                if m and m.start() < leftmost_pos:
-                    leftmost_pos = m.start()
-                    leftmost_severity = severity
-
-            # If leftmost keyword is a weight=0 anchor (INFO/DEBUG/TRACE/VERBOSE),
-            # this is an informational log entry — skip regardless of body content.
-            if leftmost_severity == 0:
-                continue
-
-            # Pass 2: pick the highest-severity keyword in the line
-            best_keyword: str | None = None
-            best_severity = 0
-
-            for keyword, severity in self.SEVERITY_WEIGHTS.items():
-                if severity == 0:
-                    continue
-                pattern = rf"\b{re.escape(keyword)}\b"
-                if re.search(pattern, line, re.IGNORECASE) and severity > best_severity:
+                if m and m.start() < best_pos:
                     best_keyword = keyword
+                    best_pos = m.start()
                     best_severity = severity
 
-            if best_keyword:
+            # Weight-0 anchor (INFO/DEBUG/TRACE/VERBOSE) at leftmost position
+            # means the line is informational; skip regardless of body content.
+            if best_keyword and best_severity > 0:
                 errors.append(
                     {
                         "line_idx": idx,
