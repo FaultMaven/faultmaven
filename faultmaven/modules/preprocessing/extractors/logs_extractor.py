@@ -696,6 +696,17 @@ class LogsAndErrorsExtractor:
     # Examples: " sshd(pam_unix)[19939]" → "sshd"; " ftpd[29504]" → "ftpd".
     _SYSLOG_SERVICE_RE = re.compile(r"\s([\w.-]+)(?:\([^)]*\))?\[\d+\]")
 
+    # Syslog hostname extractor — captures the host token in the BSD-syslog
+    # 3rd-field position: "Mon DD HH:MM:SS HOSTNAME service[pid]: msg".
+    # Anchored on the start-of-line BSD timestamp + a service[pid] suffix to
+    # avoid false matches on non-syslog content. Surfacing the host(s) in the
+    # entity profile lets the agent identify the source machine without
+    # having to spot it in raw lines (logs-linux-01 q1, ISS-008).
+    _SYSLOG_HOST_RE = re.compile(
+        r"^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+"
+        r"(\S+)\s+[\w.-]+(?:\([^)]*\))?\[\d+\]"
+    )
+
     # Reverse-DNS hostname pattern — syslog's rhost field stores the PTR record
     # of the connecting IP (e.g. customer-187-141-143-180-sta.) which the entity
     # extractor would otherwise count as a login username. Three or more numeric
@@ -795,6 +806,10 @@ class LogsAndErrorsExtractor:
         has_numeric_state_codes = False
         # Syslog service name counts for multi-service logs
         service_counts: Counter = Counter()
+        # Syslog hostname counts (BSD-syslog 3rd-field position). Surfaced in
+        # entity profile so the agent can identify the source host without
+        # parsing raw lines (ISS-008).
+        host_counts: Counter = Counter()
 
         lines = content.split("\n")
         for i, line in enumerate(lines):
@@ -846,6 +861,11 @@ class LogsAndErrorsExtractor:
             svc_m = self._SYSLOG_SERVICE_RE.search(line)
             if svc_m:
                 service_counts[svc_m.group(1)] += 1
+            # Syslog hostname — only matches BSD-format lines with a
+            # service[pid] suffix, so non-syslog content is naturally skipped.
+            host_m = self._SYSLOG_HOST_RE.match(line)
+            if host_m:
+                host_counts[host_m.group(1)] += 1
 
             # Semantic event classification — also track first/last timestamp
             # per event type so the entity profile can report temporal span.
@@ -929,6 +949,16 @@ class LogsAndErrorsExtractor:
 
         # ENTITY PROFILE body — the search map
         parts: list[str] = ["ENTITY PROFILE (full file scan):"]
+
+        # Source host(s) — BSD-syslog 3rd-field hostnames. Surfaced so the
+        # agent can identify the source machine without having to parse raw
+        # lines. Only shown when ≥5 lines have a recognizable host (avoids
+        # noisy single-line matches from non-syslog content).
+        sig_hosts = [(h, n) for h, n in host_counts.most_common(8) if n >= 5]
+        if sig_hosts:
+            parts.append("  Source host(s) (syslog 3rd-field, line counts):")
+            for host, n in sig_hosts:
+                parts.append(f"    {host}: {n} lines")
 
         # Top services — only shown for multi-service syslog logs (2+ services
         # each with ≥5 lines). A single dominant service adds no value here.

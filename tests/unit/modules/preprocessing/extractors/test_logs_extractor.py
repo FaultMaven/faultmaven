@@ -1349,3 +1349,52 @@ class TestPamAuthFailureFormatVariants:
         # Confirm pam_auth_failure isn't surfaced there even though it's counted.
         dominant_line = summary.split("Dominant activity:")[1].split(".")[0]
         assert "pam auth failure" not in dominant_line.lower()
+
+
+class TestSyslogHostSurfacing:
+    """Hostname (BSD-syslog 3rd field) must be surfaced in the entity profile
+    so the agent can identify the source machine without parsing raw lines.
+    Surfaced by /benchmark-fix logs-linux-01 q1 (ISS-008): captured answers
+    omitted the hostname 'combo' even though every log line had it."""
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _bsd_syslog(self, host: str, n: int = 30) -> str:
+        return "\n".join(
+            f"Jun 14 15:{i:02d}:01 {host} sshd(pam_unix)[{1000 + i}]: "
+            f"authentication failure; logname= uid=0 euid=0 user=root"
+            for i in range(n)
+        )
+
+    def test_syslog_host_surfaced(self, extractor):
+        result = extractor.extract(self._bsd_syslog("combo"))
+        assert "Source host(s)" in _sm(result)
+        assert "combo: 30 lines" in _sm(result)
+
+    def test_below_threshold_not_surfaced(self, extractor):
+        """Fewer than 5 host-matching lines is below noise threshold — skip."""
+        result = extractor.extract(self._bsd_syslog("combo", n=3))
+        assert "Source host(s)" not in _sm(result)
+
+    def test_non_syslog_format_not_surfaced(self, extractor):
+        """log4j-style content (no BSD-syslog prefix) must not produce any
+        spurious host entries."""
+        log4j = "\n".join(
+            f"2026-01-15 10:00:{i:02d},123 - INFO  [Thread-{i}:Class@1] - message"
+            for i in range(30)
+        )
+        result = extractor.extract(log4j)
+        assert "Source host(s)" not in _sm(result)
+
+    def test_multiple_hosts_each_listed(self, extractor):
+        """Multi-host syslog (uncommon but possible — log aggregator) lists
+        each host with its line count."""
+        content = (
+            self._bsd_syslog("host-a", n=20) + "\n" + self._bsd_syslog("host-b", n=15)
+        )
+        result = extractor.extract(content)
+        sm = _sm(result)
+        assert "host-a: 20 lines" in sm
+        assert "host-b: 15 lines" in sm
