@@ -28,6 +28,14 @@ EMPTY_CONTENT_RESPONSE = "[No content to analyze]"
 # Minimum content length to attempt extraction
 _MIN_CONTENT_LENGTH = 10
 
+# Head/tail scan windows for ``extract_time_range_ts``. The tail window is
+# walked backwards line-by-line until a parseable timestamp is found, so a
+# wider window only matters when a file has many trailing blank lines —
+# ISS-036 widened it from 10 to 100 so trailing whitespace cannot mask the
+# end-of-range value while keeping the scan cost bounded.
+_HEAD_SCAN_LINES = 10
+_TAIL_SCAN_LINES = 100
+
 
 def has_content(content: str) -> bool:
     """Check if content is non-empty and worth analyzing.
@@ -279,10 +287,15 @@ def extract_time_range_ts(
 ) -> tuple[Optional["datetime"], Optional["datetime"]]:
     """Return ``(start_ts, end_ts)`` datetime objects from *content*.
 
-    Scans only the first 10 and last 10 lines for performance. Returns
-    ``(None, None)`` when no timestamps are found, ``(ts, None)`` when
-    only the head has a timestamp, ``(None, None)`` when only the tail
-    does (since a meaningful time range needs both bounds).
+    Scans the first ``_HEAD_SCAN_LINES`` lines and walks backwards through
+    the trailing ``_TAIL_SCAN_LINES`` lines, returning the first parseable
+    timestamp from each end. Walking backwards (rather than capping at the
+    last 10 lines) means a small amount of trailing blank/whitespace
+    content does not collapse the end-of-range value to ``None`` —
+    real-world log files re-emitted by tooling routinely carry a few
+    trailing newlines, and HealthApp ``YYYYMMDD-H:M:S:ms`` files in
+    particular surface their last timestamp via FILE SUMMARY (ISS-036).
+    Files shorter than the tail window are scanned end-to-start.
 
     Phase 3 — promoted from an internal helper so PreprocessingService
     can populate ``evidence.coverage_start_ts`` / ``coverage_end_ts``
@@ -290,17 +303,35 @@ def extract_time_range_ts(
     ``extract_time_range``.
     """
     lines = content.split("\n")
-    head = lines[:10]
-    tail = lines[-10:] if len(lines) > 10 else []
+    head = lines[:_HEAD_SCAN_LINES]
 
     first_ts: datetime | None = None
-    for line in head:
-        first_ts = extract_timestamp(line)
-        if first_ts:
+    head_match_idx: int | None = None
+    for i, line in enumerate(head):
+        ts = extract_timestamp(line)
+        if ts:
+            first_ts = ts
+            head_match_idx = i
             break
 
+    # Walk backwards through the trailing window so trailing blank lines
+    # do not mask the actual final timestamp. ISS-036: a fixed
+    # ``lines[-10:]`` slice returned ``None`` whenever the last 10 lines
+    # were non-timestamped, even when the real final line sat at index
+    # ``[-11]``. The wider scan keeps short files (<10 lines) behaving
+    # correctly too — the previous ``len(lines) > 10`` guard returned an
+    # empty tail for any file under 10 lines and so left ``last_ts``
+    # always ``None``.
+    #
+    # The tail scan stops one line past the head's matched index so that
+    # a single-timestamped-line file does not double-count itself as both
+    # start and end. The previous fixed-window implementation achieved
+    # this implicitly via the disjoint head/tail slicing; with
+    # walk-backward semantics we need an explicit floor.
+    tail_floor = (head_match_idx + 1) if head_match_idx is not None else 0
+    tail_start = max(tail_floor, len(lines) - _TAIL_SCAN_LINES)
     last_ts: datetime | None = None
-    for line in reversed(tail):
+    for line in reversed(lines[tail_start:]):
         last_ts = extract_timestamp(line)
         if last_ts:
             break

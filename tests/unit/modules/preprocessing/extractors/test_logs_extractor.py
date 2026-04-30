@@ -1540,6 +1540,80 @@ class TestHealthAppTimestampFormat:
         assert "Log time range: 2026-01-15" in fe
 
 
+class TestTailTimestampBoundary:
+    """ISS-036: ``extract_time_range_ts`` previously scanned only the last
+    10 lines of content for the end timestamp, treating "no parseable
+    timestamp in the last 10 lines" as "no end of range".
+
+    Two real-world fixtures hit this boundary:
+
+    * Trailing blank lines (any tooling that re-emits a log with extra
+      trailing newlines) — the actual final timestamped line is at index
+      ``[-11:]`` or further back, so ``last_ts`` collapses to ``None`` and
+      ``Time range`` reports only the start.
+    * HealthApp ``YYYYMMDD-H:M:S:ms`` files where the agent's downstream
+      4 KB context cap on file_extract surfaces only the head of the tail
+      snippet — the FILE SUMMARY header is the only place the file's
+      actual final timestamp is exposed, so it must be correct even when
+      the trailing 10 lines are not the last 10 timestamped lines.
+
+    The fix scans further back through the trailing window when the last
+    10 lines have no parseable timestamp, so that a small amount of trailing
+    blank/header noise does not collapse the end-of-range value.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def test_healthapp_actual_final_timestamp_in_summary(self, extractor):
+        """The FILE SUMMARY's ``Log time range`` end value must reflect
+        the file's actual final timestamped line, not an earlier one
+        that happens to fall in the trailing window."""
+        # Mid-file timestamps (large block) followed by the real last
+        # timestamp, then a handful of trailing blank/whitespace lines —
+        # mimics tools that re-emit a log with extra trailing newlines.
+        head_lines = [
+            f"20171223-22:15:{i:02d}:606|Step_LSC|30002312|first event"
+            for i in range(15, 30)
+        ]
+        body_lines = [
+            f"20171224-0:{m}:0:000|Step_LSC|30002312|midnight crossing"
+            for m in range(1, 60)
+        ]
+        actual_final = "20171224-1:2:35:789|Step_LSC|30002312|last event"
+        # 12 trailing blank lines push the actual final timestamp out of
+        # the original 10-line tail window.
+        trailing_blanks = [""] * 12
+        content = "\n".join(head_lines + body_lines + [actual_final] + trailing_blanks)
+
+        result = extractor.extract(content)
+        time_range = result.file_meta.get("time_range", "")
+        # Must report the actual file end, not the head's last in-window
+        # value (which would otherwise be ``00:59:00``).
+        assert (
+            "2017-12-24 01:02:35" in time_range
+        ), f"Expected end timestamp 01:02:35 in time_range, got: {time_range!r}"
+        # Sanity: the start timestamp is also correctly set.
+        assert "2017-12-23 22:15:15" in time_range
+
+    def test_short_file_under_ten_lines_resolves_end_ts(self, extractor):
+        """Files with ≤10 lines must still resolve end_ts. The previous
+        ``tail = lines[-10:] if len(lines) > 10 else []`` clause set
+        ``tail`` to ``[]`` for short files, so ``last_ts`` was always
+        ``None``. Add Failed password lines so an entity profile + FILE
+        SUMMARY is emitted for the assertion target."""
+        content = "\n".join(
+            f"2026-01-15 10:00:{i:02d} sshd[1234]: Failed password for root "
+            f"from 203.0.113.{i} port 22 ssh2"
+            for i in range(5)
+        )
+        result = extractor.extract(content)
+        fe = _fe(result)
+        # Both endpoints present — no collapse to single-point start.
+        assert "Log time range: 2026-01-15 10:00:00 to 2026-01-15 10:00:04" in fe
+
+
 class TestBGLAlertFlagSurfacing:
     """ISS-015: BGL (BlueGene/L) RAS logs use a structured first-column
     alert flag that classifies fault types: ``-`` (no class), ``KERNDTLB``,
