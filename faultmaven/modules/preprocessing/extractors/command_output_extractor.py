@@ -71,15 +71,27 @@ class CommandOutputExtractor:
         }
 
         parser = parsers.get(command_type, self._fallback_extraction)
-        result = parser(content)
+        parser_output = parser(content)
+
+        # Parsers may return either a plain summary string (legacy contract)
+        # or a (summary, extra_meta) tuple. The latter is used by parsers that
+        # need to surface structured facts the agent should read from FILE
+        # SUMMARY without re-parsing the raw output.
+        if isinstance(parser_output, tuple):
+            summary_text, extra_meta = parser_output
+        else:
+            summary_text, extra_meta = parser_output, {}
+
+        file_meta = {
+            "command": command_type,
+            "lines": total_lines,
+            "size_bytes": len(content.encode("utf-8", errors="replace")),
+        }
+        file_meta.update(extra_meta)
 
         return ExtractResult(
-            file_extract=result,
-            file_meta={
-                "command": command_type,
-                "lines": total_lines,
-                "size_bytes": len(content.encode("utf-8", errors="replace")),
-            },
+            file_extract=summary_text,
+            file_meta=file_meta,
         )
 
     def _detect_command_type(self, content: str) -> str:
@@ -108,17 +120,33 @@ class CommandOutputExtractor:
 
         return "unknown"
 
-    def _parse_top(self, content: str) -> str:
-        """Parse top command output"""
+    def _parse_top(self, content: str) -> tuple[str, dict]:
+        """Parse top command output.
+
+        Returns a (summary, extra_meta) tuple. ``extra_meta`` carries the
+        two distinct counts that ``top`` exposes:
+
+        - ``task_summary_total``: system-wide task count from the
+          ``Tasks: N total, ...`` header line.
+        - ``process_table_rows``: number of rows displayed below the
+          ``PID USER ... COMMAND`` header.
+
+        These are separate facts and must not be conflated. ``top`` only
+        shows a screen-height subset of all processes by default, so the
+        table row count is almost always smaller than the task total. The
+        agent reads both from FILE SUMMARY to answer counting questions
+        correctly.
+        """
         lines = content.split("\n")
 
         # Extract system load
         load_avg = self._extract_load_average(lines)
         cpu_usage = self._extract_cpu_usage(lines)
         mem_usage = self._extract_memory_usage_top(lines)
+        task_summary = self._extract_task_summary(lines)
 
         # Extract processes
-        processes = self._extract_top_processes(lines)
+        processes, process_table_rows = self._extract_top_processes(lines)
 
         # Find resource hogs
         cpu_hogs = [
@@ -128,10 +156,63 @@ class CommandOutputExtractor:
             p for p in processes if p.get("mem", 0) > self.THRESHOLDS["mem_high"]
         ]
 
-        # Generate summary
-        return self._generate_top_summary(
-            load_avg, cpu_usage, mem_usage, cpu_hogs, mem_hogs, processes
+        summary = self._generate_top_summary(
+            load_avg,
+            cpu_usage,
+            mem_usage,
+            cpu_hogs,
+            mem_hogs,
+            processes,
+            task_summary,
+            process_table_rows,
         )
+
+        extra_meta: dict = {}
+        if task_summary:
+            extra_meta["task_summary_total"] = task_summary.get("total")
+            breakdown = {
+                k: v
+                for k, v in task_summary.items()
+                if k in ("running", "sleeping", "stopped", "zombie")
+            }
+            if breakdown:
+                extra_meta["task_summary_breakdown"] = breakdown
+        extra_meta["process_table_rows"] = process_table_rows
+
+        return summary, extra_meta
+
+    def _extract_task_summary(self, lines: list[str]) -> dict[str, int]:
+        """Parse the ``Tasks: N total, ...`` header line.
+
+        This is the system-wide task count, NOT the number of rows shown
+        in the process table below. ``top`` only displays a screen-height
+        subset of processes by default — typical desktop snapshots show
+        ~17 rows even though the system has hundreds of tasks.
+
+        Returns an empty dict if the line is missing or malformed.
+        """
+        for line in lines[:10]:
+            # Match: "Tasks: 318 total,   4 running, 314 sleeping,
+            #         0 stopped,   0 zombie"
+            match = re.search(
+                r"Tasks:\s*(\d+)\s*total"
+                r"(?:,\s*(\d+)\s*running)?"
+                r"(?:,\s*(\d+)\s*sleeping)?"
+                r"(?:,\s*(\d+)\s*stopped)?"
+                r"(?:,\s*(\d+)\s*zombie)?",
+                line,
+                re.IGNORECASE,
+            )
+            if match:
+                summary: dict[str, int] = {"total": int(match.group(1))}
+                for idx, key in enumerate(
+                    ("running", "sleeping", "stopped", "zombie"), start=2
+                ):
+                    raw = match.group(idx)
+                    if raw is not None:
+                        summary[key] = int(raw)
+                return summary
+        return {}
 
     def _extract_load_average(self, lines: list[str]) -> str | None:
         """Extract load average from top output"""
@@ -183,9 +264,21 @@ class CommandOutputExtractor:
                 }
         return {}
 
-    def _extract_top_processes(self, lines: list[str]) -> list[dict]:
-        """Extract process list from top or ps output"""
-        processes = []
+    def _extract_top_processes(self, lines: list[str]) -> tuple[list[dict], int]:
+        """Extract process list from top or ps output.
+
+        Returns ``(processes, total_rows)`` where:
+
+        - ``processes`` is the parsed list (capped at 20 entries to keep
+          downstream summary formatting bounded).
+        - ``total_rows`` is the count of *all* valid data rows below the
+          column header. This is the actual number of processes ``top``
+          displayed and is the answer to "how many processes are in the
+          process table?" — distinct from the system-wide ``Tasks: N
+          total`` header count.
+        """
+        processes: list[dict] = []
+        total_rows = 0
 
         # Find header line with flexible matching
         header_idx = None
@@ -215,7 +308,7 @@ class CommandOutputExtractor:
                 break
 
         if header_idx is None or "pid" not in col_map or "command" not in col_map:
-            return []
+            return [], 0
 
         # Parse process lines. If COMMAND is the last column, use maxsplit so
         # the rest of the line (which may contain spaces) stays joined as a
@@ -237,6 +330,13 @@ class CommandOutputExtractor:
 
             pid_str = parts[col_map["pid"]]
             if not pid_str.isdigit():
+                continue
+
+            # Count every valid data row, even after we stop appending
+            # parsed dicts to keep the displayed-row count accurate.
+            total_rows += 1
+
+            if len(processes) >= 20:
                 continue
 
             try:
@@ -266,12 +366,13 @@ class CommandOutputExtractor:
                         "command": parts[command_idx],
                     }
                 )
-                if len(processes) >= 20:
-                    break
             except ValueError:
+                # Failed to parse a numeric field but the row was still a
+                # valid process line (PID was a digit), so it stays counted
+                # in total_rows.
                 continue
 
-        return processes
+        return processes, total_rows
 
     def _generate_top_summary(
         self,
@@ -281,9 +382,35 @@ class CommandOutputExtractor:
         cpu_hogs: list[dict],
         mem_hogs: list[dict],
         all_processes: list[dict],
+        task_summary: dict[str, int] | None = None,
+        process_table_rows: int = 0,
     ) -> str:
         """Generate natural language summary for top output"""
         lines = ["System State Analysis (top command)", ""]
+
+        # Counting block: keep the system-wide task summary and the
+        # displayed process-table row count visibly distinct so the agent
+        # never conflates them when answering counting questions.
+        if task_summary or process_table_rows:
+            lines.append("TOP COMMAND SUMMARY:")
+            if task_summary and "total" in task_summary:
+                breakdown_bits = []
+                for key in ("running", "sleeping", "stopped", "zombie"):
+                    if key in task_summary:
+                        breakdown_bits.append(f"{task_summary[key]} {key}")
+                breakdown_str = (
+                    f" ({', '.join(breakdown_bits)})" if breakdown_bits else ""
+                )
+                lines.append(
+                    f"  Task summary (header): {task_summary['total']} total tasks"
+                    f"{breakdown_str}"
+                )
+            lines.append(f"  Process table rows displayed: {process_table_rows}")
+            lines.append(
+                "  NOTE: 'top' shows a screen-height subset of processes by "
+                "default — the row count above is NOT the total task count."
+            )
+            lines.append("")
 
         # System load
         if load_avg:
@@ -341,11 +468,15 @@ class CommandOutputExtractor:
     def _parse_ps(self, content: str) -> str:
         """Parse ps command output"""
         lines = content.split("\n")
-        processes = self._extract_top_processes(lines)  # Reuse top parser
+        # Reuse the top parser. ``_extract_top_processes`` returns
+        # ``(processes, total_rows)``; for ``ps`` the displayed row count
+        # is the authoritative process count for this snapshot since
+        # ``ps`` is not screen-height limited.
+        processes, total_rows = self._extract_top_processes(lines)
 
         summary = [
             "Process List (ps command)",
-            f"Total processes: {len(processes)}",
+            f"Total processes: {total_rows}",
             "",
         ]
 
