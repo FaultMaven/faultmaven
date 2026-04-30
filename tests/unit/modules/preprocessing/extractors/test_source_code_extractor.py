@@ -5,8 +5,10 @@ Covers:
 - R5.1: tree-sitter multi-language parsing
 - Python AST path (unchanged behavior)
 - Regex fallback when tree-sitter unavailable
+- ISS-041: argparse CLI argument enumeration (short+long flag pairs)
 """
 
+import os
 from unittest.mock import patch
 
 import pytest
@@ -185,6 +187,129 @@ if some_flag:
         assert "  import os\n" in result.file_extract + "\n"
         # Conditional: marker present
         assert "import platform [conditional]" in result.file_extract
+
+    # --- ISS-041: argparse CLI argument enumeration ---
+
+    def test_argparse_synthetic_mixed_forms(self, extractor):
+        """Synthetic argparse code: long-only, short+long, default, store_true.
+
+        Regression for ISS-041 — argparse scanner must enumerate calls
+        whose first positional is the long form AND calls that pair a
+        short flag with a long form. Both must surface in the output,
+        with the short flag preserved as an alias.
+        """
+        code = """
+import argparse
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--verbose",
+                        action="store_true",
+                        help="Enable verbose logging")
+    parser.add_argument("-o", "--output",
+                        default="out.txt",
+                        help="Output file path")
+    parser.add_argument("--count",
+                        type=int,
+                        default=10,
+                        help="Number of items")
+    parser.add_argument("-d", "--debug",
+                        action="store_true",
+                        help="Enable debug mode")
+    args = parser.parse_args()
+"""
+        result = extractor.extract(code)
+
+        # file_meta records the count
+        assert (
+            result.file_meta.get("cli_arguments") == 4
+        ), f"file_meta.cli_arguments must be 4. Got: {result.file_meta}"
+
+        # All 4 long-form names rendered
+        for name in ("--verbose", "--output", "--count", "--debug"):
+            assert name in result.file_extract, (
+                f"{name} missing from CLI arguments listing:\n" f"{result.file_extract}"
+            )
+
+        # Short flags preserved as aliases for paired arguments
+        assert "-o" in result.file_extract
+        assert "-d" in result.file_extract
+
+        # Section heading mentions the total
+        assert "## CLI Arguments (4" in result.file_extract
+
+    def test_argparse_real_nab_run_py(self, extractor):
+        """Against the real NAB run.py fixture, all 12 argparse args enumerate.
+
+        Regression for ISS-041 — the LLM previously saw only 9 of 12
+        because the scanner skipped the calls that paired a short flag
+        with a long-form name (-p/--profilesFile, -t/--thresholdsFile,
+        -n/--numCPUs).
+
+        Skipped gracefully when fm-data-exam fixture absent (e.g., CI
+        without the sibling repo checkout).
+        """
+        fixture_path = "/home/swhouse/product/fm-data-exam/test-data/NAB/run.py"
+        if not os.path.exists(fixture_path):
+            pytest.skip(f"NAB run.py fixture not available at {fixture_path}")
+
+        with open(fixture_path) as f:
+            content = f.read()
+        result = extractor.extract(content)
+
+        # 12 argparse calls total in NAB run.py
+        assert (
+            result.file_meta.get("cli_arguments") == 12
+        ), f"NAB run.py has 12 add_argument calls. Got: {result.file_meta}"
+
+        # The three previously dropped (paired short+long) must be present
+        # with their short-form aliases preserved.
+        extract = result.file_extract
+        assert "--profilesFile" in extract and "-p" in extract
+        assert "--thresholdsFile" in extract and "-t" in extract
+        assert "--numCPUs" in extract and "-n" in extract
+
+        # Plus all the long-only and the existing short+long ones
+        for long_name in (
+            "--detect",
+            "--optimize",
+            "--score",
+            "--normalize",
+            "--skipConfirmation",
+            "--dataDir",
+            "--resultsDir",
+            "--windowsFile",
+            "--detectors",
+        ):
+            assert long_name in extract, f"{long_name} missing from output"
+
+    def test_argparse_no_calls_no_section(self, extractor):
+        """Files without argparse calls don't render an empty section."""
+        code = """
+import os
+
+def main():
+    return os.getcwd()
+"""
+        result = extractor.extract(code)
+        assert "CLI Arguments" not in result.file_extract
+        # cli_arguments either absent or 0 — both acceptable
+        assert result.file_meta.get("cli_arguments", 0) == 0
+
+    def test_argparse_short_only_form(self, extractor):
+        """A bare positional arg (no leading dashes) is treated as positional name."""
+        code = """
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("filename", help="Input file")
+parser.add_argument("--flag", action="store_true")
+"""
+        result = extractor.extract(code)
+        # Both should be enumerated
+        assert result.file_meta.get("cli_arguments") == 2
+        assert "filename" in result.file_extract
+        assert "--flag" in result.file_extract
 
     # --- JavaScript (tree-sitter path) ---
 
