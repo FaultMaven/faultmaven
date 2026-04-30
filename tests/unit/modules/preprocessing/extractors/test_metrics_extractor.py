@@ -5,6 +5,7 @@ Covers:
 - R4.2: CSV quoting fix (csv.reader)
 - R5.3: Prometheus label parsing (prometheus_client integration)
 - ISS-022: anomaly summary preserves both spikes and drops
+- ISS-039: anomaly region clustering (contiguous outliers fold to regions)
 """
 
 import os
@@ -483,11 +484,13 @@ class TestAnomalyDirectionPreservation:
         assert "spike(s)" in summary and "drop(s)" in summary
 
     def test_many_spikes_do_not_crowd_out_drops_in_display_window(self, extractor):
-        """Direct ISS-022 reproduction: when the raw spike count exceeds the
-        display cap (10), the previous value-descending sort would push every
-        drop past the truncation boundary. The new abs-deviation sort must
-        keep at least one drop visible.
-        """
+        """Direct ISS-022 reproduction (now expressed in ISS-039 region
+        terms): when the raw outlier count is large in either direction,
+        the abs-deviation sort must keep at least one region of each
+        direction visible. With clustering, 12 contiguous spikes fold to
+        one region and 3 drops fold to one region — so the display cap
+        only ever needs to host two entries minimum, but we still verify
+        that direction is preserved."""
         rng = random.Random(123)
         rows = ["timestamp,value"]
         # Large baseline so the spike/drop counts stay below p95 — otherwise
@@ -495,10 +498,11 @@ class TestAnomalyDirectionPreservation:
         # under the threshold.
         for i in range(2000):
             rows.append(f"2024-01-01T{i:04d},{50.0 + rng.gauss(0, 5):.4f}")
-        # 12 spikes — more than the display cap
+        # 12 spikes — more than the display cap, but contiguous so they
+        # fold into one region under ISS-039 clustering.
         for i in range(12):
             rows.append(f"2024-02-01T{i:04d},90.0")
-        # 3 deep drops
+        # 3 deep drops, also contiguous → one region.
         for i in range(3):
             rows.append(f"2024-03-01T{i:04d},5.0")
 
@@ -506,17 +510,15 @@ class TestAnomalyDirectionPreservation:
         summary = result.file_extract
 
         display_window = summary.split("... and")[0]
-        spike_lines = [
-            line for line in display_window.splitlines() if "SPIKE at" in line
-        ]
-        drop_lines = [line for line in display_window.splitlines() if "DROP at" in line]
+        spike_lines = [line for line in display_window.splitlines() if "SPIKE" in line]
+        drop_lines = [line for line in display_window.splitlines() if "DROP" in line]
         assert spike_lines, (
             "expected SPIKE entries to be displayed; summary was:\n" + display_window
         )
         assert drop_lines, (
             "expected DROP entries to survive the display cap when there are "
-            "more spikes than the cap (regression: ISS-022); summary was:\n"
-            + display_window
+            "more spikes than the cap (regression: ISS-022/ISS-039); summary "
+            "was:\n" + display_window
         )
 
     def test_anomalies_sorted_by_absolute_deviation_from_median(self, extractor):
@@ -612,3 +614,176 @@ class TestAnomalyDirectionPreservation:
             "expected an April or May 2014 drop timestamp in the displayed "
             "window; summary was:\n" + display_window
         )
+
+
+class TestAnomalyRegionClustering:
+    """ISS-039: contiguous outlier readings should fold into a single
+    anomaly *region* with a peak value/timestamp, start/end bounds, and
+    severity. Reporting per-row outliers as separate "anomalies" creates
+    a dimensional mismatch — an investigator chasing 20 separate events
+    looks for 20 different root causes when the data has only 1-2
+    contiguous regions.
+
+    The NAB ``ambient_temperature_system_failure.csv`` fixture has exactly
+    two NAB-labeled anomalous regions: a short heat-event spike around
+    Dec 22 2013 and a sustained cooling-failure drop around April 13 2014.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return MetricsAndPerformanceExtractor()
+
+    def test_contiguous_outliers_fold_to_single_region(self, extractor):
+        """Five consecutive hourly samples that are all spikes must be
+        reported as ONE region, not five separate anomalies."""
+        from datetime import datetime, timedelta
+
+        rng = random.Random(20260430)
+        rows = ["timestamp,value"]
+        start = datetime(2024, 1, 1, 0, 0, 0)
+        # 200 hourly baseline samples around mean=50, std=5
+        for i in range(200):
+            ts = start + timedelta(hours=i)
+            rows.append(f"{ts.isoformat(sep=' ')},{50.0 + rng.gauss(0, 5):.4f}")
+        # Five consecutive hourly spikes well above the noise floor
+        spike_start = start + timedelta(hours=210)
+        spike_values = [85.0, 86.0, 87.0, 86.5, 85.5]
+        for i, v in enumerate(spike_values):
+            ts = spike_start + timedelta(hours=i)
+            rows.append(f"{ts.isoformat(sep=' ')},{v}")
+        result = extractor.extract("\n".join(rows))
+
+        anomalies = result.file_meta.get("anomalies")
+        assert (
+            anomalies is not None
+        ), "expected file_meta to expose region anomalies (ISS-039); " "got: " + repr(
+            result.file_meta
+        )
+        assert len(anomalies) == 1, (
+            f"expected 5 contiguous spike samples to fold into 1 region, "
+            f"got {len(anomalies)} regions: {anomalies}"
+        )
+        region = anomalies[0]
+        # Region must carry start/end/peak fields, not be a single-point dict
+        for key in ("start_ts", "end_ts", "peak_value", "peak_ts", "direction"):
+            assert (
+                key in region
+            ), f"region dict missing '{key}' (ISS-039 schema): {region}"
+        assert region["direction"] == "spike"
+        # Peak value is the maximum-deviation sample inside the region
+        assert region["peak_value"] == max(spike_values)
+
+    def test_distant_outliers_remain_separate_regions(self, extractor):
+        """Two outlier clusters separated by many normal samples must
+        remain distinct regions. Uses a deterministic sinusoidal baseline
+        (no random tails) so a stray ±3σ excursion in the noise can't
+        leak in as a third region."""
+        import math
+        from datetime import datetime, timedelta
+
+        rows = ["timestamp,value"]
+        start = datetime(2024, 1, 1, 0, 0, 0)
+        # Deterministic small daily oscillation around 50 with amplitude 3 —
+        # the IQR proxy is well-defined and no values cross the spike or
+        # drop threshold by accident.
+        for i in range(500):
+            ts = start + timedelta(hours=i)
+            value = 50.0 + 3.0 * math.sin(i * math.pi / 12)
+            rows.append(f"{ts.isoformat(sep=' ')},{value:.4f}")
+        # Cluster 1: three high spikes well above baseline.
+        for i, v in enumerate([90.0, 91.0, 90.5]):
+            ts = start + timedelta(hours=600 + i)
+            rows.append(f"{ts.isoformat(sep=' ')},{v}")
+        # Cluster 2: three deep drops, separated from cluster 1 by far
+        # more than MAX_REGION_GAP_SAMPLES.
+        for i, v in enumerate([10.0, 9.0, 11.0]):
+            ts = start + timedelta(hours=900 + i)
+            rows.append(f"{ts.isoformat(sep=' ')},{v}")
+        result = extractor.extract("\n".join(rows))
+
+        anomalies = result.file_meta.get("anomalies")
+        assert anomalies is not None
+        assert len(anomalies) == 2, (
+            f"expected 2 distinct regions (one spike cluster, one drop "
+            f"cluster), got {len(anomalies)}: {anomalies}"
+        )
+        directions = sorted(a["direction"] for a in anomalies)
+        assert directions == ["drop", "spike"]
+
+    def test_region_extract_summary_uses_region_format(self, extractor):
+        """The formatted file_extract should describe regions with
+        start/end/peak, not individual readings."""
+        from datetime import datetime, timedelta
+
+        rng = random.Random(20260430)
+        rows = ["timestamp,value"]
+        start = datetime(2024, 1, 1, 0, 0, 0)
+        for i in range(200):
+            ts = start + timedelta(hours=i)
+            rows.append(f"{ts.isoformat(sep=' ')},{50.0 + rng.gauss(0, 5):.4f}")
+        for i, v in enumerate([90.0, 91.0, 92.0, 91.0]):
+            ts = start + timedelta(hours=210 + i)
+            rows.append(f"{ts.isoformat(sep=' ')},{v}")
+        result = extractor.extract("\n".join(rows))
+        text = result.file_extract
+        # Region keywords should be present
+        assert "region" in text.lower() or "REGION" in text, (
+            "expected region-formatted output; got:\n" + text[:1500]
+        )
+        # Peak should be surfaced (the max value in the cluster)
+        assert "92" in text
+
+    @pytest.mark.skipif(
+        _find_ambient_temperature_csv() is None,
+        reason=(
+            "NAB ambient_temperature_system_failure.csv not available; set "
+            "FAULTMAVEN_AMBIENT_TEMP_CSV to override path."
+        ),
+    )
+    def test_ambient_temperature_csv_collapses_to_few_regions(self, extractor):
+        """ISS-039 regression against the real fixture. The dataset has
+        roughly 2 NAB-labeled anomalous regions (Dec 22 spike, April 13
+        drop). The extractor should report a small number of regions
+        (<=10) instead of dozens of per-row outliers, AND should still
+        surface the canonical spike and drop directions.
+        """
+        csv_path = _find_ambient_temperature_csv()
+        assert csv_path is not None
+        content = csv_path.read_text(encoding="utf-8")
+        result = extractor.extract(content)
+        anomalies = result.file_meta.get("anomalies")
+        assert (
+            anomalies is not None
+        ), "expected file_meta['anomalies'] regions (ISS-039); got: " + repr(
+            result.file_meta
+        )
+        # Expect a small number of regions, not 20 per-row outliers.
+        assert len(anomalies) <= 10, (
+            f"expected <=10 anomaly regions on NAB ambient-temp fixture, "
+            f"got {len(anomalies)}: {[a.get('start_ts') for a in anomalies]}"
+        )
+        # Both directions should still be represented after clustering.
+        directions = {a["direction"] for a in anomalies}
+        assert "spike" in directions, (
+            f"expected at least one spike region (Dec 22 heat event); "
+            f"directions={directions}"
+        )
+        assert "drop" in directions, (
+            f"expected at least one drop region (Apr 13 cooling failure); "
+            f"directions={directions}"
+        )
+        # The Dec 22 spike region should cover Dec 22 timestamps.
+        spike_regions = [a for a in anomalies if a["direction"] == "spike"]
+        assert any(
+            "2013-12-22" in str(r.get("start_ts", ""))
+            or "2013-12-22" in str(r.get("peak_ts", ""))
+            for r in spike_regions
+        ), f"expected Dec 22 spike region; got spike regions: {spike_regions}"
+        # The April 13 drop region should cover April 13 timestamps.
+        drop_regions = [a for a in anomalies if a["direction"] == "drop"]
+        assert any(
+            "2014-04" in str(r.get("start_ts", ""))
+            or "2014-04" in str(r.get("peak_ts", ""))
+            or "2014-04" in str(r.get("end_ts", ""))
+            for r in drop_regions
+        ), f"expected April 2014 drop region; got drop regions: {drop_regions}"

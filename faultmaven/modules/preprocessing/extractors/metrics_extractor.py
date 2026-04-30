@@ -50,6 +50,17 @@ class MetricsAndPerformanceExtractor:
     # distributed data (max ≈ 1.5× p99) while catching genuine outliers like
     # a single CPU spike that is 10×+ the 99th percentile.
     EXTREME_OUTLIER_P99_RATIO = 3.0
+    # ISS-039: maximum number of consecutive non-anomalous samples that can
+    # sit between two outliers before they are split into separate regions.
+    # 5 samples is enough to keep brief gaps (one normal reading between two
+    # spikes) within a single region while preventing a daily heat spike from
+    # silently merging with one a week later. Hourly data → ~5 hours of slack.
+    MAX_REGION_GAP_SAMPLES = 5
+    # ISS-039: cap on how many regions to surface in the formatted summary
+    # block. Regions are far coarser than per-row outliers, so 10 is a
+    # comfortable upper bound for almost every real-world case while still
+    # bounded for output budget.
+    MAX_REGIONS_REPORTED = 10
 
     @property
     def strategy_name(self) -> str:
@@ -120,6 +131,20 @@ class MetricsAndPerformanceExtractor:
             summaries.append(summary)
 
         total_anomalies = sum(len(s.get("anomalies", [])) for s in summaries)
+        # ISS-039: collect clustered regions across all metrics so the agent
+        # has the structured form (start/end/peak/direction/severity) in
+        # file_meta. Per-row outlier counts are still surfaced in
+        # `anomalies_found` for backwards compatibility.
+        all_regions: list[dict[str, Any]] = []
+        for s in summaries:
+            metric_name = s.get("metric", "")
+            for r in s.get("regions", []):
+                # Stamp the metric name on each region so multi-metric
+                # files (e.g., Prometheus exports) remain disambiguable.
+                tagged = dict(r)
+                tagged["metric"] = metric_name
+                all_regions.append(tagged)
+        total_regions = len(all_regions)
 
         # Compute typical sampling interval from the largest metric series.
         # Surfaced both in file_meta and prepended to the output so the agent
@@ -154,6 +179,8 @@ class MetricsAndPerformanceExtractor:
             "time_span": time_span,
             "metric_names": ", ".join(metric_names[:10]),
             "anomalies_found": total_anomalies,
+            "anomaly_count": total_regions,
+            "anomalies": all_regions,
             "size_bytes": len(content.encode("utf-8", errors="replace")),
         }
         if sampling_interval:
@@ -606,7 +633,8 @@ class MetricsAndPerformanceExtractor:
         """
         Analyze single metric time-series
 
-        Returns summary dict with stats and anomalies.
+        Returns summary dict with stats, per-row anomalies, and clustered
+        anomaly regions (ISS-039).
 
         Non-finite values (``NaN`` / ``±Inf``) are excluded from statistics
         because ``sum`` / ``min`` / ``sorted`` would silently propagate
@@ -635,15 +663,126 @@ class MetricsAndPerformanceExtractor:
         # Detect anomalies only on finite data points.
         anomalies = self._detect_anomalies(finite_points, stats)
 
+        # ISS-039: cluster contiguous outlier readings into regions so a
+        # short heat-event "spike" with 5 consecutive samples surfaces as
+        # one event, not five. Regions are the primary unit reported in
+        # file_meta and the formatted summary; per-row anomalies remain
+        # available internally for callers that need raw outliers.
+        regions = self._cluster_anomalies_to_regions(finite_points, anomalies, stats)
+
         summary = {
             "metric": metric_name,
             "count": len(data_points),
             "stats": stats,
             "anomalies": anomalies[: self.MAX_ANOMALIES_REPORTED],
+            "regions": regions[: self.MAX_REGIONS_REPORTED],
         }
         if non_finite_count:
             summary["non_finite"] = non_finite_count
         return summary
+
+    def _cluster_anomalies_to_regions(
+        self,
+        finite_points: list[tuple[str | None, float]],
+        anomalies: list[dict[str, Any]],
+        stats: dict[str, float],
+    ) -> list[dict[str, Any]]:
+        """Cluster per-row outliers into contiguous regions (ISS-039).
+
+        Two outliers are placed in the same region when:
+        1. They share the same direction (both spikes or both drops), and
+        2. They are within ``MAX_REGION_GAP_SAMPLES`` sample positions of
+           one another in the time-ordered series.
+
+        Each region surfaces:
+        - ``start_ts`` / ``end_ts``: bounds of the contiguous outlier run
+        - ``peak_value`` / ``peak_ts``: the most extreme reading inside it
+        - ``direction``: "spike" or "drop"
+        - ``severity``: max absolute deviation in std-dev units (sigma)
+        - ``sample_count``: number of outlier samples that folded into the
+          region
+
+        The output is sorted by absolute peak deviation from the median,
+        descending — so the display cap surfaces the most extreme region
+        in either direction first.
+        """
+        if not anomalies:
+            return []
+
+        # Map every anomaly back to its sample position in finite_points so
+        # we can measure gaps by sample distance (not wall-clock time).
+        # _detect_anomalies returns dicts keyed by (timestamp, value, type)
+        # and walks finite_points in order, so we re-resolve positions by
+        # scanning finite_points once and matching the anomaly key set.
+        anomaly_keys = {
+            (a.get("timestamp"), a.get("value"), a.get("type")) for a in anomalies
+        }
+        outliers: list[tuple[int, str | None, float, str]] = []
+        for i, (ts, value) in enumerate(finite_points):
+            # Match against either spike or drop type at this (ts, value).
+            for direction in ("spike", "drop"):
+                if (ts, value, direction) in anomaly_keys:
+                    outliers.append((i, ts, value, direction))
+                    break
+
+        if not outliers:
+            return []
+
+        # Sort by sample position so contiguous runs are adjacent.
+        outliers.sort(key=lambda x: x[0])
+
+        p50 = stats.get("p50", 0.0)
+        std_dev = stats.get("std_dev", 0.0) or 1e-9
+
+        regions: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        last_pos = -1
+        last_direction: str | None = None
+
+        for pos, ts, value, direction in outliers:
+            if (
+                current is None
+                or direction != last_direction
+                or (pos - last_pos) > self.MAX_REGION_GAP_SAMPLES
+            ):
+                # Open a new region.
+                if current is not None:
+                    regions.append(current)
+                current = {
+                    "direction": direction,
+                    "start_ts": ts,
+                    "end_ts": ts,
+                    "peak_value": value,
+                    "peak_ts": ts,
+                    "sample_count": 1,
+                    "_peak_dev": abs(value - p50),
+                }
+                last_direction = direction
+            else:
+                # Extend current region.
+                current["end_ts"] = ts
+                current["sample_count"] += 1
+                dev = abs(value - p50)
+                if dev > current["_peak_dev"]:
+                    current["_peak_dev"] = dev
+                    current["peak_value"] = value
+                    current["peak_ts"] = ts
+            last_pos = pos
+
+        if current is not None:
+            regions.append(current)
+
+        # Compute severity (sigma) and clean up scratch fields.
+        for r in regions:
+            r["severity_sigma"] = round(r.pop("_peak_dev") / std_dev, 2)
+
+        # Sort by absolute peak deviation from the median, descending —
+        # mirrors the per-row sort so the display cap is direction-fair.
+        regions.sort(
+            key=lambda r: abs(r["peak_value"] - p50),
+            reverse=True,
+        )
+        return regions
 
     def _calculate_statistics(self, values: list[float]) -> dict[str, float]:
         """Calculate statistical measures"""
@@ -783,23 +922,30 @@ class MetricsAndPerformanceExtractor:
         return formatted or "0"
 
     def _format_summary(self, summaries: list[dict[str, Any]]) -> str:
-        """Format analysis results as natural language summary"""
+        """Format analysis results as natural language summary.
+
+        ISS-039: anomalies are reported as **regions** (contiguous outlier
+        runs) rather than per-row outliers. A short heat-event spike with
+        five hourly samples surfaces as one region, not five "anomalies".
+        """
         lines = ["=== METRICS ANALYSIS SUMMARY ===\n"]
 
         total_metrics = len(summaries)
-        all_anomalies = [a for s in summaries for a in s.get("anomalies", [])]
-        total_anomalies = len(all_anomalies)
-        total_spikes = sum(1 for a in all_anomalies if a.get("type") == "spike")
-        total_drops = sum(1 for a in all_anomalies if a.get("type") == "drop")
+        all_regions = [r for s in summaries for r in s.get("regions", [])]
+        total_regions = len(all_regions)
+        total_spike_regions = sum(
+            1 for r in all_regions if r.get("direction") == "spike"
+        )
+        total_drop_regions = sum(1 for r in all_regions if r.get("direction") == "drop")
 
         lines.append(f"Analyzed {total_metrics} metric(s)")
-        if total_anomalies:
+        if total_regions:
             lines.append(
-                f"Detected {total_anomalies} anomaly/anomalies "
-                f"({total_spikes} spike(s), {total_drops} drop(s))\n"
+                f"Detected {total_regions} anomaly region(s) "
+                f"({total_spike_regions} spike(s), {total_drop_regions} drop(s))\n"
             )
         else:
-            lines.append(f"Detected {total_anomalies} anomaly/anomalies\n")
+            lines.append("Detected 0 anomaly region(s)\n")
 
         for summary in summaries:
             metric_name = summary["metric"]
@@ -813,7 +959,7 @@ class MetricsAndPerformanceExtractor:
                 continue
 
             stats = summary["stats"]
-            anomalies = summary["anomalies"]
+            regions = summary.get("regions", [])
 
             lines.append(f"📊 {metric_name} ({count} data points):")
             lines.append(
@@ -828,35 +974,40 @@ class MetricsAndPerformanceExtractor:
             non_finite = summary.get("non_finite", 0)
             if non_finite:
                 lines.append(
-                    f"   Non-finite values: {non_finite} (NaN/±Inf, excluded from statistics)"
+                    f"   Non-finite values: {non_finite} "
+                    "(NaN/±Inf, excluded from statistics)"
                 )
 
-            if anomalies:
-                metric_spikes = sum(1 for a in anomalies if a.get("type") == "spike")
-                metric_drops = sum(1 for a in anomalies if a.get("type") == "drop")
+            if regions:
+                metric_spikes = sum(1 for r in regions if r.get("direction") == "spike")
+                metric_drops = sum(1 for r in regions if r.get("direction") == "drop")
                 lines.append(
-                    f"   ⚠️  {len(anomalies)} anomaly/anomalies detected "
+                    f"   ⚠️  {len(regions)} anomaly region(s) detected "
                     f"({metric_spikes} spike(s), {metric_drops} drop(s)):"
                 )
 
-                for anomaly in anomalies[:10]:  # Show first 10
-                    anom_type = anomaly["type"]
-                    timestamp = anomaly.get("timestamp", "unknown")
-                    value = anomaly["value"]
+                for region in regions[:10]:
+                    direction = region.get("direction", "unknown")
+                    label = "SPIKE" if direction == "spike" else "DROP"
+                    start_ts = region.get("start_ts") or "unknown"
+                    end_ts = region.get("end_ts") or "unknown"
+                    peak_ts = region.get("peak_ts") or "unknown"
+                    peak_value = region.get("peak_value", 0.0)
+                    samples = region.get("sample_count", 1)
+                    sigma = region.get("severity_sigma", 0.0)
 
-                    if anom_type == "spike":
-                        ratio = anomaly.get("ratio", anomaly.get("sigma", 0))
-                        lines.append(
-                            f"      • SPIKE at {timestamp}: {self._fmt_val(value)} ({ratio}x median)"
-                        )
-                    elif anom_type == "drop":
-                        drop_pct = anomaly["drop_percent"]
-                        lines.append(
-                            f"      • DROP at {timestamp}: {self._fmt_val(value)} ({drop_pct}% below baseline)"
-                        )
+                    if start_ts == end_ts:
+                        span = f"at {start_ts}"
+                    else:
+                        span = f"from {start_ts} to {end_ts}"
+                    lines.append(
+                        f"      • {label} REGION {span} "
+                        f"({samples} sample(s), peak={self._fmt_val(peak_value)} "
+                        f"at {peak_ts}, severity={sigma}σ)"
+                    )
 
-                if len(anomalies) > 10:
-                    lines.append(f"      ... and {len(anomalies) - 10} more")
+                if len(regions) > 10:
+                    lines.append(f"      ... and {len(regions) - 10} more")
             else:
                 lines.append("   ✓ No anomalies detected")
 
