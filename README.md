@@ -6,7 +6,7 @@
 
 **Open-Source AI Troubleshooting Copilot for Modern Engineering**
 
-FaultMaven correlates your live telemetry with your runbooks, docs, and past fixes. It delivers answers grounded in your actual system—not generic guesses. Resolve incidents faster with an AI copilot that understands both your stack and your organization.
+FaultMaven is an AI-powered troubleshooting copilot. It correlates live telemetry with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation — answers grounded in your actual system, not generic guesses. Resolve incidents faster with a copilot that understands both your stack and your organization.
 
 Traditional observability tools tell you **what** broke. Generic LLMs guess **why**, but can't see your infrastructure. FaultMaven bridges this gap. Where predictive AIOps platforms act like actuaries — forecasting next quarter's outage probabilities from historical patterns — FaultMaven is the ER surgeon for systems already on the table.
 

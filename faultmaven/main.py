@@ -768,7 +768,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI application with disabled automatic redirects
 app = FastAPI(
     title="FaultMaven API",
-    description="AI-powered troubleshooting assistant for Engineers, "
+    description="AI-powered troubleshooting copilot for Engineers, "
     "SREs, and DevOps professionals",
     version="1.0.0",
     docs_url="/docs",
