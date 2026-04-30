@@ -79,6 +79,7 @@ class SourceCodeExtractor:
             classes = self._extract_classes(tree)
             functions = self._extract_functions(tree)
             error_handling = self._extract_error_handling(tree)
+            cli_arguments = self._extract_argparse_args(tree)
             return ExtractResult(
                 file_extract=python_result,
                 file_meta={
@@ -87,6 +88,7 @@ class SourceCodeExtractor:
                     "functions": len(functions),
                     "classes": len(classes),
                     "error_handlers": len(error_handling),
+                    "cli_arguments": len(cli_arguments),
                     "size_bytes": len(content.encode("utf-8", errors="replace")),
                 },
             )
@@ -116,9 +118,10 @@ class SourceCodeExtractor:
         functions = self._extract_functions(tree)
         error_handling = self._extract_error_handling(tree)
         todos = self._extract_todos_from_ast(tree, content)
+        cli_arguments = self._extract_argparse_args(tree)
 
         return self._format_python_output(
-            imports, classes, functions, error_handling, todos
+            imports, classes, functions, error_handling, todos, cli_arguments
         )
 
     def _extract_imports(self, tree: ast.AST) -> list[dict[str, Any]]:
@@ -250,6 +253,116 @@ class SourceCodeExtractor:
 
         return todos
 
+    # Maximum number of CLI arguments to render in the output. Real-world
+    # CLIs rarely exceed 30 add_argument calls; cap protects against
+    # generated/templated code with hundreds.
+    MAX_CLI_ARGS = 50
+
+    def _extract_argparse_args(self, tree: ast.AST) -> list[dict[str, Any]]:
+        """Extract argparse ``add_argument`` calls (ISS-041).
+
+        Walks the entire AST so calls inside ``if __name__ == "__main__":``
+        and other non-top-level blocks are included (mirrors the import
+        walker for the same reason — see ISS-021 fix).
+
+        For each ``*.add_argument(...)`` Call:
+          - Collect every string-literal positional argument.
+          - Long form (``--longname``) is canonical when present;
+            otherwise the first positional becomes the name.
+          - Short form (single-dash like ``-x``) is preserved as alias.
+          - Best-effort extraction of ``default=``, ``help=``, ``action=``,
+            ``type=`` keyword arguments.
+
+        Returns a list of dicts:
+            {"name": str, "short": str | None, "default": str | None,
+             "help": str | None, "action": str | None, "type": str | None}
+        """
+        args: list[dict[str, Any]] = []
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            # Only attribute calls named add_argument (e.g. parser.add_argument)
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+                continue
+
+            # Collect string-literal positional args (Python 3.8+: ast.Constant)
+            string_positionals: list[str] = []
+            for pos in node.args:
+                if isinstance(pos, ast.Constant) and isinstance(pos.value, str):
+                    string_positionals.append(pos.value)
+                else:
+                    # Non-literal positional — skip but don't abort
+                    pass
+
+            if not string_positionals:
+                continue
+
+            # Determine canonical name and short alias.
+            #   --longname  -> long form, canonical
+            #   -x          -> short form (alias if there's also a long form)
+            #   bare word   -> positional argument; keep as-is
+            long_form: str | None = None
+            short_form: str | None = None
+            positional_name: str | None = None
+            for s in string_positionals:
+                if s.startswith("--"):
+                    if long_form is None:
+                        long_form = s
+                elif s.startswith("-") and len(s) > 1:
+                    if short_form is None:
+                        short_form = s
+                else:
+                    if positional_name is None:
+                        positional_name = s
+
+            name = long_form or short_form or positional_name
+            if name is None:
+                continue
+            # If only a short form was supplied, don't duplicate it under "short"
+            short_alias = short_form if (long_form and short_form) else None
+
+            # Best-effort kwarg extraction
+            kw = {kw.arg: kw.value for kw in node.keywords if kw.arg is not None}
+            default_val = self._stringify_const(kw.get("default"))
+            help_val = self._stringify_const(kw.get("help"))
+            action_val = self._stringify_const(kw.get("action"))
+            type_val = self._stringify_const(kw.get("type"))
+
+            args.append(
+                {
+                    "name": name,
+                    "short": short_alias,
+                    "default": default_val,
+                    "help": help_val,
+                    "action": action_val,
+                    "type": type_val,
+                    "lineno": getattr(node, "lineno", 0),
+                }
+            )
+
+            if len(args) >= self.MAX_CLI_ARGS:
+                break
+
+        return args
+
+    def _stringify_const(self, node: ast.AST | None) -> str | None:
+        """Best-effort stringify of an AST kwarg value for display.
+
+        Returns None if node is None. Returns the literal value for simple
+        constants, otherwise an ``ast.unparse`` rendering for inspection.
+        """
+        if node is None:
+            return None
+        if isinstance(node, ast.Constant):
+            # Literal: keep simple repr for non-strings, raw value for strings
+            return node.value if isinstance(node.value, str) else repr(node.value)
+        try:
+            return ast.unparse(node)
+        except Exception:
+            return None
+
     def _get_name(self, node: ast.AST | None) -> str:
         """Get name from AST node"""
         if node is None:
@@ -275,6 +388,7 @@ class SourceCodeExtractor:
         functions: list[dict[str, Any]],
         error_handling: list[dict[str, Any]],
         todos: list[tuple[int, str]],
+        cli_arguments: list[dict[str, Any]] | None = None,
     ) -> str:
         """Format Python analysis output"""
         lines = ["=== PYTHON CODE ANALYSIS ===\n"]
@@ -323,6 +437,33 @@ class SourceCodeExtractor:
                 lines.append(
                     f"  • {async_prefix}{func['name']}({args_str}){returns_str} (line {func['lineno']})"
                 )
+            lines.append("")
+
+        # CLI Arguments (argparse) — ISS-041
+        if cli_arguments:
+            lines.append(f"## CLI Arguments ({len(cli_arguments)})")
+            for arg in cli_arguments:
+                short = arg.get("short")
+                flags = f"{short}, {arg['name']}" if short else arg["name"]
+                meta_parts: list[str] = []
+                if arg.get("default") is not None:
+                    default_str = arg["default"]
+                    # Trim long defaults for legibility
+                    if isinstance(default_str, str) and len(default_str) > 80:
+                        default_str = default_str[:77] + "..."
+                    meta_parts.append(f"default={default_str}")
+                if arg.get("action"):
+                    meta_parts.append(f"action={arg['action']}")
+                if arg.get("type"):
+                    meta_parts.append(f"type={arg['type']}")
+                meta_str = f" [{', '.join(meta_parts)}]" if meta_parts else ""
+                help_str = ""
+                if arg.get("help"):
+                    help_text = arg["help"]
+                    if len(help_text) > 100:
+                        help_text = help_text[:97] + "..."
+                    help_str = f" — {help_text}"
+                lines.append(f"  • {flags}{meta_str}{help_str}")
             lines.append("")
 
         # Error Handling
