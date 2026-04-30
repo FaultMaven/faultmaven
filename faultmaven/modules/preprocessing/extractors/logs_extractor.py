@@ -741,6 +741,23 @@ class LogsAndErrorsExtractor:
     # without conflating substring count with distinct count.
     _KB_PACKAGE_RE = re.compile(r"\bPackage_for_KB(\d+)\b")
 
+    # Windows CBS HRESULT extractor (ISS-037). CBS lines carry
+    # ``[HRESULT = 0x<hex> - SYMBOL]`` codes where the same code/symbol
+    # pair appears across multiple distinct message templates ("Expecting
+    # attribute name", "Failed to get next element", etc.). The template
+    # counts block reports per-template occurrences, so a code that occurs
+    # 448 times split across two templates renders as ``[224x]`` in two
+    # places — and the agent reports the per-template number as the
+    # per-HRESULT total. Aggregating by HRESULT/symbol gives the agent a
+    # single authoritative count per code, independent of message-template
+    # variation. The hex literal is uppercase-folded so ``0x800F080D`` and
+    # ``0x800f080d`` aggregate to the same key.
+    _HRESULT_RE = re.compile(
+        r"\bHRESULT\s*=\s*"
+        r"(0x[0-9a-fA-F]+)"  # hex code
+        r"(?:\s*-\s*([A-Z][A-Z0-9_]{2,}))?"  # optional symbolic name
+    )
+
     # BGL (BlueGene/L) RAS log alert flag column extractor (ISS-015).
     # BGL lines have a structured first column carrying the alert-flag
     # category (``-`` for no class, or ``KERNDTLB``/``APPSEV``/etc.).
@@ -872,6 +889,13 @@ class LogsAndErrorsExtractor:
         # counting prevents the agent from reporting substring occurrences
         # as distinct package count.
         kb_package_counts: Counter = Counter()
+        # Windows CBS HRESULT counts (ISS-037). Aggregates by HRESULT hex
+        # code so the agent sees a single file-wide total per error code,
+        # not per-template halves it has to add together. Symbol mapping
+        # is captured separately so the per-HRESULT line can render the
+        # canonical symbolic name alongside the code.
+        hresult_counts: Counter = Counter()
+        hresult_symbols: dict[str, str] = {}
         # BGL alert flag column counts (ISS-015). The BGL RAS log first
         # column classifies fault types; the agent must read the actual
         # column values rather than fabricating flag names from message
@@ -945,6 +969,16 @@ class LogsAndErrorsExtractor:
             # ``sum(kb_package_counts.values())`` the total occurrences.
             for kb_num in self._KB_PACKAGE_RE.findall(line):
                 kb_package_counts[f"KB{kb_num}"] += 1
+            # Windows CBS HRESULTs (ISS-037). Aggregate by hex code so the
+            # per-HRESULT total survives message-template fragmentation.
+            # Hex is normalised to lowercase so ``0x800F080D`` and
+            # ``0x800f080d`` collapse to one key; the symbolic name (if
+            # present) is recorded for display alongside the count.
+            for hresult_hex, hresult_sym in self._HRESULT_RE.findall(line):
+                key = hresult_hex.lower()
+                hresult_counts[key] += 1
+                if hresult_sym and key not in hresult_symbols:
+                    hresult_symbols[key] = hresult_sym
             # BGL RAS alert flag column (ISS-015). Detection is anchored on
             # the full prefix (flag + 10-digit epoch + YYYY.MM.DD) so it
             # only matches genuine BGL-format lines.
@@ -1018,6 +1052,7 @@ class LogsAndErrorsExtractor:
             or path_counts
             or kb_package_counts
             or bgl_has_signal
+            or hresult_counts
         ):
             return "", "ENTITY PROFILE: No entities found"
 
@@ -1258,6 +1293,30 @@ class LogsAndErrorsExtractor:
             )
             sample = ", ".join(kb for kb, _ in kb_package_counts.most_common(8))
             parts.append(f"    sample: {sample}")
+
+        # Windows CBS HRESULTs (ISS-037). The template-counts block reports
+        # per-template halves of any HRESULT that appears across multiple
+        # message templates (e.g. ``Expecting attribute name`` AND ``Failed
+        # to get next element`` both carry ``CBS_E_MANIFEST_INVALID_ITEM``).
+        # Surface the per-HRESULT aggregate here so the agent has a single
+        # authoritative file-wide total for each code, not two halves it
+        # has to recognise as the same error.
+        if hresult_counts:
+            distinct_codes = len(hresult_counts)
+            total_hresult_occurrences = sum(hresult_counts.values())
+            parts.append(
+                f"  HRESULT codes (file-wide totals across all message"
+                f" templates, {distinct_codes} distinct,"
+                f" {total_hresult_occurrences} occurrences): [use these"
+                f" totals — the per-template counts in the search map split"
+                f" the same code across multiple templates]"
+            )
+            for code, count in hresult_counts.most_common(top_n):
+                symbol = hresult_symbols.get(code)
+                if symbol:
+                    parts.append(f"    {code} ({symbol}): {count}")
+                else:
+                    parts.append(f"    {code}: {count}")
 
         return summary, "\n".join(parts)
 

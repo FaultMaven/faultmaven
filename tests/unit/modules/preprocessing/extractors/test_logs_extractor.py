@@ -1749,6 +1749,129 @@ class TestWindowsKBPackageSurfacing:
         assert "Distinct KB packages" not in text
 
 
+class TestWindowsHRESULTSurfacing:
+    """ISS-037: CBS log lines carry ``[HRESULT = 0x<hex> - SYMBOL]`` codes,
+    where the same HRESULT/symbol pair appears across multiple distinct
+    message templates (``Expecting attribute name``, ``Failed to get next
+    element``, etc.). The template-counts block reports per-template
+    occurrences, so a code that occurs 448 times split across two templates
+    (224 each) renders as ``[224x]`` in two places — and the agent reports
+    the per-template number as the per-HRESULT total.
+
+    The Windows 2k fixture has 448 lines containing
+    ``CBS_E_MANIFEST_INVALID_ITEM`` (``0x800f080d``), but the template
+    counts only ever surface 224 in any single line of the search map.
+
+    Fix: surface a per-HRESULT aggregate in the entity profile so the agent
+    has a single authoritative count per HRESULT/symbol independent of
+    message-template variation.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _cbs_lines(
+        self, count: int, hresult: str, symbol: str, template: str
+    ) -> list[str]:
+        return [
+            f"2016-09-28 04:30:{i % 60:02d}, Info                  CBS    "
+            f"{template} [HRESULT = {hresult} - {symbol}]"
+            for i in range(count)
+        ]
+
+    def test_hresult_total_aggregated_across_templates(self, extractor):
+        """448 occurrences of CBS_E_MANIFEST_INVALID_ITEM split across two
+        message templates must surface as a single 448 in the entity
+        profile, not as two 224s the agent has to add together."""
+        # 215 + 233 = 448 — uneven split so the per-HRESULT aggregate (448)
+        # cannot accidentally match a per-template count, and so neither
+        # half coincides with the total line count of the test fixture
+        # (which would otherwise let "448 of 448" satisfy the assertion).
+        a = self._cbs_lines(
+            215,
+            "0x800f080d",
+            "CBS_E_MANIFEST_INVALID_ITEM",
+            "Expecting attribute name",
+        )
+        b = self._cbs_lines(
+            233,
+            "0x800f080d",
+            "CBS_E_MANIFEST_INVALID_ITEM",
+            "Failed to get next element",
+        )
+        # Pad the file with unrelated lines so total_lines != 448 — defeats
+        # spurious matches against template-counts headers like "X of N".
+        padding = [
+            f"2016-09-28 05:00:{i % 60:02d}, Info CBS unrelated activity {i}"
+            for i in range(100)
+        ]
+        content = "\n".join(a + b + padding)
+        result = extractor.extract(content)
+        text = _all(result)
+        # The per-HRESULT block must associate the code/symbol with the
+        # file-wide total directly — not as two halves the agent has to
+        # add together. Anchor on "<hresult>: <count>" near the symbol.
+        import re as _re
+
+        # Match "0x800f080d ... CBS_E_MANIFEST_INVALID_ITEM ... 448" or
+        # any close proximity layout — the assertion is that the agent
+        # sees one authoritative line for this HRESULT carrying 448.
+        pat = _re.compile(
+            r"0x800f080d[^\n]{0,80}CBS_E_MANIFEST_INVALID_ITEM[^\n]{0,80}\b448\b"
+            r"|"
+            r"0x800f080d[^\n]{0,80}\b448\b[^\n]{0,80}CBS_E_MANIFEST_INVALID_ITEM"
+            r"|"
+            r"CBS_E_MANIFEST_INVALID_ITEM[^\n]{0,80}\b448\b"
+        )
+        assert pat.search(text), (
+            "Expected per-HRESULT aggregate associating 0x800f080d / "
+            "CBS_E_MANIFEST_INVALID_ITEM with total count 448; got:\n"
+            f"{text[:3000]}"
+        )
+
+    def test_multiple_distinct_hresults_each_aggregated(self, extractor):
+        """Multiple HRESULTs with different totals must each appear with
+        their own per-HRESULT aggregate count."""
+        content = "\n".join(
+            self._cbs_lines(
+                100, "0x800f080d", "CBS_E_MANIFEST_INVALID_ITEM", "Expecting"
+            )
+            + self._cbs_lines(50, "0x800f0805", "CBS_E_INVALID_PACKAGE", "Failed")
+            + self._cbs_lines(10, "0x80004005", "E_FAIL", "Generic failure")
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        # Find the HRESULT block and verify each code+count pair.
+        for hresult, count in (
+            ("0x800f080d", 100),
+            ("0x800f0805", 50),
+            ("0x80004005", 10),
+        ):
+            # Each code must appear adjacent to its aggregate count.
+            # Look for "<hresult>: <count>" pattern (standard Counter formatting).
+            assert hresult in text
+            # Find the section showing this hresult and its aggregate count.
+            # Allow flexible separators between hresult and count.
+            import re as _re
+
+            pat = _re.compile(rf"{_re.escape(hresult)}[^\n]*\b{count}\b")
+            assert pat.search(text), (
+                f"Expected per-HRESULT aggregate showing {hresult}: {count}; "
+                f"got:\n{text[:3000]}"
+            )
+
+    def test_no_hresult_no_surfacing(self, extractor):
+        """Logs without any HRESULT codes must not produce an HRESULT block."""
+        content = "\n".join(
+            f"2016-09-28 04:30:{i % 60:02d}, Info CBS unrelated message {i}"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "HRESULT" not in text
+
+
 class TestSeverityScaleContext:
     """ISS-016: When the agent characterizes severity ("normal", "alarming",
     "systemic", "catastrophic"), it needs the SCALE context to calibrate its
