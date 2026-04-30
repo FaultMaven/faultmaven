@@ -771,6 +771,11 @@ class LogsAndErrorsExtractor:
         r"\d{4}\.\d{2}\.\d{2}\s+"  # YYYY.MM.DD date
         r"(?P<node>\S+)"  # node identifier, e.g. R02-M1-N0-C:J12-U11
     )
+    # BGL FATAL severity matcher (ISS-038). Anchored on the canonical
+    # ``RAS <COMPONENT> FATAL`` token sequence that appears in the BGL
+    # message header — narrower than a bare ``\bFATAL\b`` so message-body
+    # text mentioning the word "fatal" cannot trigger a false FATAL count.
+    _BGL_FATAL_RE = re.compile(r"\bRAS\s+\S+\s+FATAL\b")
 
     # Minimum fraction of total lines that must match severity keywords for
     # the template counts block to be shown. Below this threshold the block
@@ -901,6 +906,15 @@ class LogsAndErrorsExtractor:
         # column values rather than fabricating flag names from message
         # bodies.
         bgl_flag_counts: Counter = Counter()
+        # BGL FATAL-only counts per alert flag (ISS-038). The dominant
+        # single FATAL bucket in the BGL 2k fixture is the ``-`` (no
+        # alert class) flag carrying APP FATAL ciod control-stream
+        # messages — invisible when alert flags are ranked by total
+        # line count because the same flag also carries thousands of
+        # non-FATAL entries. Splitting FATAL out into its own per-flag
+        # breakdown surfaces ciod APP FATAL alongside KERN-prefixed
+        # buckets without losing the existing total-line ranking.
+        bgl_fatal_flag_counts: Counter = Counter()
         # BGL distinct node identifiers (ISS-016). Surfaces the per-host
         # denominator so the agent can normalize event counts against the
         # number of distinct nodes — a 1778-node BGL cluster generating 347
@@ -984,11 +998,23 @@ class LogsAndErrorsExtractor:
             # only matches genuine BGL-format lines.
             bgl_m = self._BGL_LINE_RE.match(line)
             if bgl_m:
-                bgl_flag_counts[bgl_m.group("flag")] += 1
+                flag_value = bgl_m.group("flag")
+                bgl_flag_counts[flag_value] += 1
                 bgl_line_count += 1
                 # Distinct node identifiers (ISS-016) — surface the per-host
                 # denominator for severity-scale calibration.
                 bgl_nodes.add(bgl_m.group("node"))
+                # FATAL-by-flag breakdown (ISS-038). The BGL severity
+                # column sits at the 9th whitespace-separated token in
+                # the canonical format ("FLAG EPOCH DATE NODE TS NODE
+                # RAS COMPONENT SEVERITY ..."). Match ``\bFATAL\b`` in
+                # the structured prefix only — sufficient to discriminate
+                # FATAL lines without a full token-position parser, and
+                # robust to the dash-flag variant where the leading ``-``
+                # consumes the flag column but the rest of the structure
+                # is preserved.
+                if self._BGL_FATAL_RE.search(line):
+                    bgl_fatal_flag_counts[flag_value] += 1
 
             # Semantic event classification — also track first/last timestamp
             # per event type so the entity profile can report temporal span.
@@ -1276,6 +1302,30 @@ class LogsAndErrorsExtractor:
                     parts.append(f"    - (no alert class): {count}")
                 else:
                     parts.append(f"    {flag}: {count}")
+            # FATAL-by-flag breakdown (ISS-038). The total-line ranking
+            # above hides the dominant single FATAL bucket whenever the
+            # heaviest flag also carries lots of non-FATAL traffic — in
+            # the BGL 2k fixture, ``-`` (no alert class) tops the total
+            # ranking with 1857 lines but its 204 FATAL entries (all APP
+            # FATAL ciod control-stream messages) are the largest single
+            # FATAL bucket in the file. Splitting FATAL out here keeps
+            # the existing ranking intact while making the FATAL
+            # distribution directly readable.
+            if bgl_fatal_flag_counts:
+                total_fatal = sum(bgl_fatal_flag_counts.values())
+                parts.append(
+                    f"  BGL FATAL by alert flag ({total_fatal} FATAL lines"
+                    f" total, ranked by FATAL count — independent of the"
+                    f" total-line ranking above):"
+                )
+                for flag, count in bgl_fatal_flag_counts.most_common():
+                    if flag == "-":
+                        parts.append(
+                            f"    - (no alert class — typically APP FATAL"
+                            f" ciod control-stream messages): {count}"
+                        )
+                    else:
+                        parts.append(f"    {flag}: {count}")
 
         # Windows Update KB packages (ISS-020). Surface DISTINCT count
         # explicitly so the agent does not conflate substring occurrences

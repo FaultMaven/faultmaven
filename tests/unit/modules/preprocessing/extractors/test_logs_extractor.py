@@ -1684,6 +1684,137 @@ class TestBGLAlertFlagSurfacing:
         assert "BGL alert flags" not in text
 
 
+class TestBGLFatalFlagBreakdown:
+    """ISS-038: BGL FATAL-severity lines are distributed across alert
+    flags — ``KERNDTLB``, ``KERNSTOR``, ``APPSEV``, and the ``-`` (no
+    alert class) bucket which carries ``RAS APP FATAL ciod:`` control-
+    stream messages. In the BGL 2k fixture the dominant single FATAL
+    bucket is ``-`` with 204 entries (the ciod APP FATAL traffic), well
+    ahead of any KERN flag.
+
+    The existing alert-flag block sorts all flags by *total* line count
+    (FATAL + non-FATAL together), so the ``-`` bucket's FATAL traffic
+    is invisible: ``-`` shows up as 1857 lines total — the agent reads
+    "no alert class" and skips it, focusing on the KERN flags.
+
+    Fix: surface a FATAL-only breakdown by alert flag so the agent sees
+    the 204 entries in ``-`` directly. Without this the dominant FATAL
+    bucket is structurally invisible.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _bgl(
+        self,
+        flag: str,
+        severity: str = "INFO",
+        n: int = 1,
+        epoch: int = 1117838570,
+        component: str = "KERNEL",
+        message: str = "instruction cache parity error corrected",
+    ) -> str:
+        """Build a BGL-format snippet. SEVERITY is the 9th whitespace
+        token in the canonical format and is what the FATAL-by-flag
+        breakdown groups against."""
+        lines = []
+        for i in range(n):
+            lines.append(
+                f"{flag} {epoch + i} 2005.06.03 R02-M1-N0-C:J12-U11 "
+                f"2005-06-03-15.42.50.{i:06d} R02-M1-N0-C:J12-U11 "
+                f"RAS {component} {severity} {message}"
+            )
+        return "\n".join(lines)
+
+    def test_fatal_breakdown_includes_dash_bucket(self, extractor):
+        """The ``-`` (no alert class) bucket carries APP FATAL ciod
+        control-stream messages. Its FATAL count must be visible in the
+        FATAL-by-flag breakdown even though the bucket is dominated by
+        non-FATAL entries when measured by total line count."""
+        # 204 dash-flag FATAL APP ciod lines (mirrors BGL 2k fixture's
+        # dominant single FATAL bucket), 1653 dash-flag INFO non-FATAL,
+        # 60 KERNDTLB FATAL kernel-error lines. Total dash = 1857.
+        # Without a FATAL-by-flag breakdown the agent ranks "-" first by
+        # total count, labels it "no alert class", and never sees the
+        # 204 FATAL traffic underneath.
+        content = "\n".join(
+            [
+                self._bgl(
+                    "-",
+                    severity="FATAL",
+                    component="APP",
+                    n=204,
+                    epoch=1117800000,
+                    message="ciod: LOGIN chdir failed: No such file or directory",
+                ),
+                self._bgl(
+                    "-",
+                    severity="INFO",
+                    n=1653,
+                    epoch=1117810000,
+                    message="instruction cache parity error corrected",
+                ),
+                self._bgl(
+                    "KERNDTLB",
+                    severity="FATAL",
+                    n=60,
+                    epoch=1117820000,
+                    message="data TLB error interrupt",
+                ),
+            ]
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        # FATAL-by-flag breakdown must exist
+        import re as _re
+
+        fatal_section = _re.search(
+            r"FATAL[^\n]*by[^\n]*alert[^\n]*flag.*?(?=\n\n|\Z)",
+            text,
+            _re.IGNORECASE | _re.DOTALL,
+        )
+        assert fatal_section, (
+            "Expected a FATAL-by-flag breakdown block; got:\n" + text[:3000]
+        )
+        section_text = fatal_section.group(0)
+        # The dominant FATAL bucket must be reported with its count.
+        # ``-`` flag's 204 FATAL entries must surface independently of
+        # its 1653 non-FATAL entries.
+        assert "204" in section_text, (
+            "Expected dash-flag FATAL count 204 in breakdown; got:\n" + section_text
+        )
+        # KERNDTLB also has FATAL entries — both must be present.
+        assert "KERNDTLB" in section_text
+        assert "60" in section_text
+
+    def test_fatal_breakdown_skipped_when_no_fatal(self, extractor):
+        """A BGL log with no FATAL-severity entries must not produce a
+        FATAL-by-flag breakdown. The block is conditional on FATAL
+        traffic being present."""
+        content = self._bgl(
+            "KERNDTLB", severity="WARNING", n=20, message="warning condition"
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        # Existing alert-flag block should still appear
+        assert "BGL alert flags" in text
+        # FATAL breakdown must not — there are no FATAL entries to surface
+        assert "FATAL by alert flag" not in text
+        assert "FATAL-by-flag" not in text
+
+    def test_non_bgl_no_fatal_breakdown(self, extractor):
+        """Plain syslog with FATAL keywords must not produce a BGL FATAL
+        breakdown — the breakdown is BGL-format-specific."""
+        content = "\n".join(
+            f"Jun 14 15:{i:02d}:01 host service[{1000 + i}]: FATAL configuration error"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "FATAL by alert flag" not in text
+
+
 class TestWindowsKBPackageSurfacing:
     """ISS-020: Windows CBS logs reference KB packages via
     ``Package_for_KB<NUMBER>``. The extractor must surface a *distinct* count
