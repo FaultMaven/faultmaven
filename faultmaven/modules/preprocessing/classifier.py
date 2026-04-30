@@ -887,8 +887,24 @@ class DataClassifier:
                 classification_failed=False,
             )
 
-        # UNSTRUCTURED_TEXT: Generic text without clear structure
+        # UNSTRUCTURED_TEXT: Generic text without clear structure.
+        #
+        # ISS-023: short, mixed-pattern text files (e.g., a maintenance notice
+        # carrying a datetime + URL + email + version tag) genuinely don't
+        # have a single dominant type. Rather than asserting UNSTRUCTURED_TEXT
+        # at confidence=0.72, detect the ambiguity and lower confidence below
+        # the classification_failed threshold so the cooperative-clarification
+        # UX surfaces candidate types and asks the user what the file is.
         if ext in text_exts or markdown_score >= 1:
+            ambiguity = self._assess_short_text_ambiguity(content, sample)
+            if ambiguity is not None:
+                return ClassificationResult(
+                    data_type=DataType.UNSTRUCTURED_TEXT,
+                    confidence=ambiguity["confidence"],
+                    source="rule_based_best_effort",
+                    classification_failed=True,
+                    suggested_types=ambiguity["suggested_types"],
+                )
             return ClassificationResult(
                 data_type=DataType.UNSTRUCTURED_TEXT,
                 confidence=0.72,
@@ -1004,6 +1020,133 @@ class DataClassifier:
     # =========================================================================
     # Named disambiguation helpers
     # =========================================================================
+
+    # Short-text ambiguity gate (ISS-023): only fires for files that are too
+    # small to provide stable type signals. The maintenance-notice fixture
+    # (low-signal-text.txt) is 362 chars / 8 lines.
+    _SHORT_TEXT_MAX_CHARS = 1500
+    _SHORT_TEXT_MAX_LINES = 25
+    # Need at least this many *distinct* type-suggestive pattern categories
+    # firing for the file to count as genuinely ambiguous. Two would be too
+    # permissive (any prose with a URL would qualify); three matches the
+    # design intent of "no single category dominates".
+    _AMBIGUITY_MIN_DISTINCT_CATEGORIES = 3
+
+    def _assess_short_text_ambiguity(
+        self,
+        content: str,
+        sample: str,
+    ) -> Optional[dict]:
+        """Detect short, mixed-pattern .txt files for which UNSTRUCTURED_TEXT
+        cannot be asserted with confidence.
+
+        The classifier's default branch returns UNSTRUCTURED_TEXT @ 0.72
+        for any .txt file, regardless of how heterogeneous the contents
+        are. For a short maintenance notice that mixes a datetime, a URL,
+        an email, and a version tag, none of those signals dominates and
+        the file resembles UNSTRUCTURED_TEXT and DOCUMENTATION roughly
+        equally. Asserting one type at 0.72 prevents the
+        classification_failed gate from firing — the agent never sees
+        ambiguity and silently proceeds with whichever type was assigned.
+
+        Returns:
+            dict with `confidence` (sub-threshold) and `suggested_types`
+            list when the file is short AND has signals from at least
+            ``_AMBIGUITY_MIN_DISTINCT_CATEGORIES`` distinct type-suggestive
+            categories. None when the file is long enough or
+            unambiguous enough for the default UNSTRUCTURED_TEXT path.
+        """
+        if not content:
+            return None
+
+        char_count = len(content)
+        line_count = content.count("\n") + 1
+        if (
+            char_count > self._SHORT_TEXT_MAX_CHARS
+            and line_count > self._SHORT_TEXT_MAX_LINES
+        ):
+            return None
+
+        # Type-suggestive pattern categories. Each category fires at most
+        # once even if multiple patterns match — we want breadth (how many
+        # different types the file resembles) not depth.
+        categories: dict[DataType, str] = {}
+
+        # ISO datetime / date in a maintenance window or event header.
+        # Suggests a log line or a structured event record.
+        if re.search(r"\d{4}-\d{2}-\d{2}[T\s]\d{1,2}:\d{2}", sample) or re.search(
+            r"\d{4}-\d{2}-\d{2}\b", sample
+        ):
+            categories[DataType.LOGS_AND_ERRORS] = "datetime"
+
+        # URL → typical of documentation / runbooks.
+        if re.search(r"https?://", sample):
+            categories[DataType.DOCUMENTATION] = "url"
+
+        # Email address — communication metadata, often appears in operational
+        # docs but doesn't strongly belong to any single data type. Counted as
+        # its own category (UNSTRUCTURED_TEXT) so it pushes the breadth count.
+        if re.search(r"\b[\w._%+-]+@[\w.-]+\.[A-Za-z]{2,}\b", sample):
+            categories.setdefault(DataType.UNSTRUCTURED_TEXT, "email")
+
+        # Software artifact tag like "v2.3.8" or "tag: v1.0" — suggests
+        # release notes / source code context.
+        if re.search(r"\bv\d+\.\d+(?:\.\d+)?\b", sample):
+            categories[DataType.SOURCE_CODE] = "version_tag"
+
+        # `key: value` lines — common in config files. Require ≥2 distinct
+        # keys before counting, so a single "Contact: foo@bar" line doesn't
+        # falsely flag it as STRUCTURED_CONFIG.
+        kv_keys = set(
+            m.group(1).lower()
+            for m in re.finditer(r"(?m)^\s*([A-Za-z][\w\-\s]{2,30})\s*:\s*\S", sample)
+        )
+        if len(kv_keys) >= 2:
+            categories[DataType.STRUCTURED_CONFIG] = "key_value_lines"
+
+        # Numeric column / pipe-separated tabular data — would suggest METRICS.
+        # Match conservatively: ≥2 rows of comma- or pipe-separated numerics.
+        if len(re.findall(r"(?m)^\s*-?\d+(?:\.\d+)?\s*[,|]\s*-?\d+", sample)) >= 2:
+            categories[DataType.METRICS_AND_PERFORMANCE] = "numeric_columns"
+
+        if len(categories) < self._AMBIGUITY_MIN_DISTINCT_CATEGORIES:
+            return None
+
+        # File is short AND ambiguous. Surface the top two candidates that
+        # the cooperative-clarification UX is most likely to be correct
+        # about. UNSTRUCTURED_TEXT and DOCUMENTATION are always reasonable
+        # defaults for prose-shaped text; emit them in priority order
+        # alongside whatever else fired so the agent can offer a small
+        # ranked menu.
+        priority_order = [
+            DataType.UNSTRUCTURED_TEXT,
+            DataType.DOCUMENTATION,
+            DataType.LOGS_AND_ERRORS,
+            DataType.STRUCTURED_CONFIG,
+            DataType.SOURCE_CODE,
+            DataType.METRICS_AND_PERFORMANCE,
+        ]
+        suggested = [
+            dt
+            for dt in priority_order
+            if dt in categories or dt == DataType.UNSTRUCTURED_TEXT
+        ]
+        # Always include DOCUMENTATION as a candidate if a URL is present —
+        # it's the standard's expected pairing for runbook-shaped notices.
+        if DataType.DOCUMENTATION in categories and (
+            DataType.DOCUMENTATION not in suggested
+        ):
+            suggested.append(DataType.DOCUMENTATION)
+        suggested = suggested[:3]
+
+        return {
+            # Just below the classification_failed threshold (0.50). Not so
+            # low that downstream confidence-boost paths overshoot it back
+            # over the line; not so high that a small content tweak pushes
+            # the result into auto-accept.
+            "confidence": 0.40,
+            "suggested_types": suggested,
+        }
 
     def _disambiguate_profiling_vs_trace(
         self, sample: str, confidence_boost: float
