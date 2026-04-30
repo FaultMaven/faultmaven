@@ -8,7 +8,7 @@
 
 FaultMaven correlates your live telemetry with your runbooks, docs, and past fixes. It delivers answers grounded in your actual system—not generic guesses. Resolve incidents faster with an AI copilot that understands both your stack and your organization.
 
-Traditional observability tools tell you **what** broke. Generic LLMs guess **why**, but can't see your infrastructure. FaultMaven bridges this gap.
+Traditional observability tools tell you **what** broke. Generic LLMs guess **why**, but can't see your infrastructure. FaultMaven bridges this gap. Where predictive AIOps platforms act like actuaries — forecasting next quarter's outage probabilities from historical patterns — FaultMaven is the ER surgeon for systems already on the table.
 
 ---
 
@@ -186,7 +186,7 @@ For more detailed setup instructions, see [Development Setup](docs/development/l
 
 ## Why FaultMaven?
 
-FaultMaven is not just a chatbot wrapper; it is a context-aware investigation engine designed to get smarter with every incident.
+FaultMaven is not just a chatbot wrapper; it is a context-aware investigation engine designed to get smarter with every incident. It is a copilot, not an autopilot — every step it suggests is yours to run, review, or reject. You stay in command of the keyboard.
 
 ### 1. Deep Context Awareness
 
@@ -196,7 +196,7 @@ Generic chatbots can't access your logs, configs, or deployments. FaultMaven cor
 
 ### 2. Zero Context-Switching
 
-Stop copying errors between browser tabs. The **[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** browser extension overlays AI troubleshooting directly onto your existing tools—AWS Console, Datadog, Grafana, or localhost. No backend agents, webhooks, or complex integrations required.
+Stop copying errors between browser tabs. The **[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** browser extension overlays AI troubleshooting directly onto your existing tools—AWS Console, Datadog, Grafana, or localhost. No backend agents, webhooks, or complex integrations required. Because the Copilot lives in your browser, it never asks for production API keys, root credentials, or read/write access to your live systems — you supply the context it sees, nothing more.
 
 **How it works:** FaultMaven lives in your browser, not your cluster. As you view logs in CloudWatch, traces in Datadog, or pods in the Kubernetes dashboard, the Copilot extension captures the relevant context and correlates it with your Knowledge Base in real-time.
 
