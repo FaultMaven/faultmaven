@@ -101,88 +101,179 @@ class ProfilingDataExtractor:
     def _extract_cprofile(self, content: str) -> tuple[str, dict]:
         """Extract insights from Python cProfile output.
 
+        cProfile output may contain multiple sorted views over the same
+        function table (e.g. ``pstats.print_stats('cumulative')`` followed
+        by ``pstats.print_stats('time')``). Each view replays the same
+        functions, so naive row counting double-counts. This parser
+        deduplicates rows by qualname (``filename:lineno(function)``) and,
+        for duplicates, keeps the row with the larger cumtime/tottime —
+        the cumulative-view row is authoritative for cumtime, the
+        internal-view row for tottime, but they should match.
+
         Returns:
             (summary, metadata) where metadata carries
-            ``functions_profiled`` and ``top_function`` when available.
+            ``functions_profiled`` (distinct functions, not row count) and
+            ``top_function`` (highest-cumtime non-wrapper function).
         """
         lines = content.split("\n")
 
-        # Find the header line
-        header_idx = None
-        for i, line in enumerate(lines):
-            if "ncalls" in line and "cumtime" in line:
-                header_idx = i
-                break
+        # Find each header line — there can be multiple (one per view).
+        header_indices = [
+            i for i, line in enumerate(lines) if "ncalls" in line and "cumtime" in line
+        ]
 
-        if header_idx is None:
+        if not header_indices:
             return self._fallback_extraction(content)
 
-        # Parse function entries
-        functions = []
-        data_lines = lines[
-            header_idx + 1 : header_idx + 101
-        ]  # Parse up to 100 functions
+        # Parse function entries from every view, deduplicating by location.
+        functions: dict[str, dict] = {}
+        for header_idx in header_indices:
+            # Parse up to 100 rows per view.
+            data_lines = lines[header_idx + 1 : header_idx + 101]
+            for line in data_lines:
+                if not line.strip():
+                    continue
 
-        for line in data_lines:
-            if not line.strip():
-                continue
+                # Stop at the next view's header (defensive — slice should already
+                # exclude it, but views can be closer together than 100 rows).
+                if "ncalls" in line and "cumtime" in line:
+                    break
 
-            # cProfile format: ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-            match = re.match(
-                r"\s*(\d+(?:/\d+)?)\s+([\d\.]+)\s+([\d\.]+)\s+([\d\.]+)\s+([\d\.]+)\s+(.+)",
-                line,
-            )
-
-            if match:
-                ncalls, tottime, _, cumtime, _, location = match.groups()
-                functions.append(
-                    {
-                        "ncalls": ncalls,
-                        "tottime": float(tottime),
-                        "cumtime": float(cumtime),
-                        "location": location.strip(),
-                    }
+                # cProfile format: ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+                match = re.match(
+                    r"\s*(\d+(?:/\d+)?)\s+([\d\.]+)\s+([\d\.]+)\s+([\d\.]+)\s+([\d\.]+)\s+(.+)",
+                    line,
                 )
+
+                if not match:
+                    continue
+
+                ncalls, tottime, _, cumtime, _, location = match.groups()
+                location = location.strip()
+                tottime_f = float(tottime)
+                cumtime_f = float(cumtime)
+
+                existing = functions.get(location)
+                if existing is None:
+                    functions[location] = {
+                        "ncalls": ncalls,
+                        "tottime": tottime_f,
+                        "cumtime": cumtime_f,
+                        "location": location,
+                    }
+                else:
+                    # Merge: prefer the larger cumtime/tottime across views.
+                    if cumtime_f > existing["cumtime"]:
+                        existing["cumtime"] = cumtime_f
+                    if tottime_f > existing["tottime"]:
+                        existing["tottime"] = tottime_f
 
         if not functions:
             return self._fallback_extraction(content)
 
-        # Calculate total time
-        total_time = max(fn["cumtime"] for fn in functions) if functions else 0
+        functions_list = list(functions.values())
 
-        # Find hotspots (> 5% of total time)
-        hotspots = (
-            [fn for fn in functions if (fn["cumtime"] / total_time) > 0.05]
-            if total_time > 0
-            else []
-        )
+        # Calculate total time
+        total_time = max(fn["cumtime"] for fn in functions_list)
+
+        # Find hotspots (> 5% of total time), excluding wrappers.
+        if total_time > 0:
+            hotspot_candidates = [
+                fn
+                for fn in functions_list
+                if (fn["cumtime"] / total_time) > 0.05
+                and not self._is_wrapper(fn, total_time)
+            ]
+        else:
+            hotspot_candidates = []
 
         # Sort by cumulative time
-        hotspots.sort(key=lambda x: x["cumtime"], reverse=True)
+        hotspot_candidates.sort(key=lambda x: x["cumtime"], reverse=True)
 
-        summary = self._generate_cprofile_summary(functions, hotspots, total_time)
-        metadata = {
-            "functions_profiled": len(functions),
-            "top_function": (
-                self._simplify_function_name(functions[0]["location"])
-                if functions
-                else None
-            ),
-        }
-        # Reorder: when hotspots exist, top function is the highest-cumtime one,
-        # not just the first parsed entry.
-        if hotspots:
+        summary = self._generate_cprofile_summary(
+            functions_list, hotspot_candidates, total_time
+        )
+        metadata: dict = {"functions_profiled": len(functions_list)}
+        if hotspot_candidates:
             metadata["top_function"] = self._simplify_function_name(
-                hotspots[0]["location"]
+                hotspot_candidates[0]["location"]
+            )
+        else:
+            # No real hotspots after wrapper-filtering. Fall back to the
+            # first parsed entry so coverage metadata still has a value.
+            metadata["top_function"] = self._simplify_function_name(
+                functions_list[0]["location"]
             )
         return summary, metadata
+
+    def _is_wrapper(self, fn: dict, total_time: float) -> bool:
+        """Return True if a function is a structural wrapper, not a hotspot.
+
+        Wrappers are functions whose runtime is essentially all spent in
+        callees rather than in their own body. Two cases:
+
+        1. ``<module>`` — the script entry point. By definition wraps the
+           entire run, always shows ~100% cumtime. Never actionable.
+        2. ``cumtime_pct >= 99%`` AND ``self_time_pct <= 5%`` — pure
+           wrapper (e.g. a ``main()`` function that does nothing but call
+           the real workhorse).
+        """
+        location = fn.get("location", "")
+        if "<module>" in location:
+            return True
+        if total_time <= 0:
+            return False
+        cumtime_pct = (fn["cumtime"] / total_time) * 100
+        self_time_pct = (fn["tottime"] / total_time) * 100
+        return cumtime_pct >= 99.0 and self_time_pct <= 5.0
+
+    def _is_builtin_location(self, location: str) -> bool:
+        """Return True if the location refers to a built-in / C extension.
+
+        cProfile renders these as ``{built-in method ...}`` or
+        ``{method '...' of '...' objects}`` — they have no Python source
+        to optimize directly, so optimization suggestions should target
+        the Python caller instead.
+        """
+        return location.startswith("{") and location.endswith("}")
+
+    def _select_optimization_target(self, hotspots: list[dict]) -> dict | None:
+        """Pick the function to recommend optimizing.
+
+        The recommendation should target the highest-tottime (self-time)
+        leaf function, since that's where wall time is actually spent.
+        If the leaf is a built-in/C extension, fall back to the highest-
+        tottime non-builtin function — i.e. the Python caller — because
+        that's the code path the user can realistically modify.
+
+        Returns the chosen function dict, or ``None`` if no hotspots.
+        """
+        if not hotspots:
+            return None
+        by_self = sorted(hotspots, key=lambda f: f["tottime"], reverse=True)
+        leaf = by_self[0]
+        if not self._is_builtin_location(leaf["location"]):
+            return leaf
+        # Leaf is a built-in. Fall back to the highest-tottime non-builtin.
+        for fn in by_self[1:]:
+            if not self._is_builtin_location(fn["location"]):
+                # Mark so the summary can frame the recommendation around
+                # the C extension that this Python function calls into.
+                fn = dict(fn)
+                fn["_calls_builtin"] = leaf["location"]
+                return fn
+        # Everything is a builtin — return the leaf as a last resort.
+        return leaf
 
     def _generate_cprofile_summary(
         self, functions: list[dict], hotspots: list[dict], total_time: float
     ) -> str:
-        """Generate natural language summary for cProfile data"""
+        """Generate natural language summary for cProfile data.
+
+        ``hotspots`` is already wrapper-filtered by ``_extract_cprofile``.
+        """
         lines = [
-            f"Profiling Analysis (cProfile format)",
+            "Profiling Analysis (cProfile format)",
             f"- Total functions analyzed: {len(functions)}",
             f"- Total execution time: {total_time:.2f}s",
             f"- Performance hotspots identified: {len(hotspots)}",
@@ -206,24 +297,36 @@ class ProfilingDataExtractor:
                         f"   ⚠️  CRITICAL: This function consumes {pct:.1f}% of execution time"
                     )
                 elif pct > 15:
-                    lines.append(f"   ⚡ Significant optimization opportunity")
+                    lines.append("   ⚡ Significant optimization opportunity")
 
                 lines.append("")
 
             # Add optimization suggestions
             lines.append("💡 Optimization Suggestions:")
-            top_hotspot = hotspots[0]
-            top_pct = (
-                (top_hotspot["cumtime"] / total_time) * 100 if total_time > 0 else 0
-            )
-
-            if top_pct > 40:
-                lines.append(
-                    f"  - Focus on optimizing {self._simplify_function_name(top_hotspot['location'])}"
+            target = self._select_optimization_target(hotspots)
+            if target is not None:
+                target_name = self._simplify_function_name(target["location"])
+                self_pct = (
+                    (target["tottime"] / total_time) * 100 if total_time > 0 else 0
                 )
-                lines.append(
-                    f"    This single function accounts for {top_pct:.1f}% of execution time"
-                )
+                calls_builtin = target.get("_calls_builtin")
+                if calls_builtin:
+                    builtin_simple = self._simplify_function_name(calls_builtin)
+                    lines.append(
+                        f"  - Optimize the code path in {target_name} that calls "
+                        f"{builtin_simple}"
+                    )
+                    lines.append(
+                        f"    The C extension {builtin_simple} dominates self-time, "
+                        f"but is reached through {target_name} "
+                        f"({target['tottime']:.2f}s self, {self_pct:.1f}% of total)"
+                    )
+                else:
+                    lines.append(f"  - Focus on optimizing {target_name}")
+                    lines.append(
+                        f"    Highest self-time function "
+                        f"({target['tottime']:.2f}s, {self_pct:.1f}% of total)"
+                    )
 
             # Check for I/O operations
             io_functions = [
