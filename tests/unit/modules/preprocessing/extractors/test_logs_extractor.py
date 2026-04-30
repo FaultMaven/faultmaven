@@ -1964,3 +1964,77 @@ class TestAcceptedLoginAttackerDisambiguation:
         text = _all(result)
         assert "from attacker IPs" not in text
         assert "from non-attacker IPs" not in text
+
+
+class TestSparkTimestampFormat:
+    """ISS-027: Spark logs use 'YY/MM/DD HH:MM:SS' which the timestamp
+    extractor previously did not match — falling back to embedded body
+    timestamps and clipping the actual span by several seconds.
+
+    Spark format example: '17/06/09 20:10:40 INFO executor.Executor: ...'
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _spark_log(self) -> str:
+        # Mirrors real Spark_2k.log — leading line carries 20:10:40, last
+        # line carries 20:11:11, with embedded IPs that trigger the entity
+        # profile (and therefore FILE SUMMARY) so the time-range note
+        # appears.
+        early = (
+            "17/06/09 20:10:40 INFO executor.CoarseGrainedExecutorBackend:"
+            " Driver address 10.10.34.11"
+        )
+        mid = (
+            "17/06/09 20:10:55 INFO executor.Executor: "
+            "Running task 0.0 in stage 0.0 (TID 0) on 10.10.34.12"
+        )
+        late = (
+            "17/06/09 20:11:11 INFO storage.BlockManager: "
+            "Found block rdd_42_32 locally on 10.10.34.13"
+        )
+        return "\n".join([early] * 5 + [mid] * 5 + [late] * 5)
+
+    def _time_range_sentence(self, text: str) -> str:
+        """Extract the FILE SUMMARY sentence that contains 'Log time range'."""
+        # Drop the crime-scene block — only inspect FILE SUMMARY content.
+        if "CRIME SCENE EXTRACTION" in text:
+            text = text.split("CRIME SCENE EXTRACTION")[0]
+        return next(
+            (s for s in text.split(". ") if "Log time range" in s),
+            "",
+        )
+
+    def test_spark_time_range_first_line_captured(self, extractor):
+        """The actual first timestamp (20:10:40) must drive 'Log time range'."""
+        result = extractor.extract(self._spark_log())
+        sentence = self._time_range_sentence(_fe(result))
+        assert "20:10:40" in sentence, (
+            f"Spark first timestamp 20:10:40 must drive 'Log time range'.\n"
+            f"Got time-range sentence: {sentence!r}\n"
+            f"Full output:\n{_fe(result)[:2000]}"
+        )
+
+    def test_spark_time_range_last_line_captured(self, extractor):
+        """The actual last timestamp (20:11:11) must drive 'Log time range'."""
+        result = extractor.extract(self._spark_log())
+        sentence = self._time_range_sentence(_fe(result))
+        assert "20:11:11" in sentence, (
+            f"Spark last timestamp 20:11:11 must drive 'Log time range'.\n"
+            f"Got time-range sentence: {sentence!r}\n"
+            f"Full output:\n{_fe(result)[:2000]}"
+        )
+
+    def test_spark_time_range_not_unknown(self, extractor):
+        """Spark-format logs must produce a real time range, not 'unknown'."""
+        result = extractor.extract(self._spark_log())
+        text = _fe(result)
+        # Either an explicit "unknown" string or no time-range line at all
+        # would mean the format is unrecognized.
+        assert "Log time range" in text, (
+            f"FILE SUMMARY must include a populated 'Log time range:' line.\n"
+            f"Output:\n{text[:2000]}"
+        )
+        assert "Log time range: unknown" not in text
