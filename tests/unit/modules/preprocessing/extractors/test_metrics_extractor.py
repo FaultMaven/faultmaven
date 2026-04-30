@@ -6,6 +6,7 @@ Covers:
 - R5.3: Prometheus label parsing (prometheus_client integration)
 - ISS-022: anomaly summary preserves both spikes and drops
 - ISS-039: anomaly region clustering (contiguous outliers fold to regions)
+- ISS-040: P25/P75 IQR baseline framing in statistical summary
 """
 
 import os
@@ -787,3 +788,66 @@ class TestAnomalyRegionClustering:
             or "2014-04" in str(r.get("end_ts", ""))
             for r in drop_regions
         ), f"expected April 2014 drop region; got drop regions: {drop_regions}"
+
+
+class TestIQRBaselineFraming:
+    """ISS-040: surface P25/P75/IQR alongside existing mean/median/P95 so
+    readers can frame the typical operating range without overweighting
+    P95 (which produces too-wide baseline estimates and too-narrow
+    alerting thresholds).
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return MetricsAndPerformanceExtractor()
+
+    def test_p25_p75_in_statistics_dict(self, extractor):
+        """``_calculate_statistics`` must compute P25 / P75 / IQR."""
+        rng = random.Random(20260430)
+        values = [50.0 + rng.gauss(0, 5) for _ in range(500)]
+        stats = extractor._calculate_statistics(values)
+        for key in ("p25", "p75", "iqr"):
+            assert key in stats, f"stats missing '{key}' (ISS-040): {stats}"
+        assert stats["p25"] < stats["p50"] < stats["p75"]
+        assert stats["iqr"] == pytest.approx(stats["p75"] - stats["p25"])
+
+    def test_typical_operating_range_in_summary(self, extractor):
+        """The formatted summary should explicitly surface a P25-P75
+        ``Typical operating range`` line — distinct from full data range
+        and from the P95 outlier threshold."""
+        rng = random.Random(7)
+        rows = ["timestamp,value"]
+        for i in range(200):
+            rows.append(f"t{i},{50.0 + rng.gauss(0, 5):.4f}")
+        result = extractor.extract("\n".join(rows))
+        text = result.file_extract.lower()
+        assert "typical operating range" in text or "p25-p75" in text, (
+            "expected P25-P75 baseline line in summary; got:\n"
+            + result.file_extract[:2000]
+        )
+        # Existing mean / median / P95 lines must remain (additive change).
+        assert "p50=" in result.file_extract.lower() or "p50:" in result.file_extract
+        assert "p95=" in result.file_extract.lower() or "p95:" in result.file_extract
+        assert "mean:" in result.file_extract.lower()
+
+    def test_bimodal_distribution_flagged(self, extractor):
+        """When IQR is wide relative to std_dev, the distribution may be
+        bimodal — the summary should flag this so the agent doesn't
+        misframe the baseline as a single cluster."""
+        rng = random.Random(11)
+        rows = ["timestamp,value"]
+        # Two clusters: one around 0.07, one around 0.13. Median falls
+        # between them, IQR captures both, std_dev is dominated by the
+        # cluster spread plus the gap.
+        for i in range(150):
+            rows.append(f"t_lo_{i},{0.07 + rng.gauss(0, 0.005):.6f}")
+        for i in range(150):
+            rows.append(f"t_hi_{i},{0.13 + rng.gauss(0, 0.005):.6f}")
+        result = extractor.extract("\n".join(rows))
+        text = result.file_extract.lower()
+        # Heuristic: (P75 - P25) > 1.5 * std_dev → flag bimodality.
+        # Verify the heuristic is exposed as a flag/note.
+        assert "bimodal" in text or "two cluster" in text or "two modes" in text, (
+            "expected bimodal distribution heuristic flag in summary; got:\n"
+            + result.file_extract[:2500]
+        )

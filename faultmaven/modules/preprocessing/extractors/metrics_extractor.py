@@ -61,6 +61,12 @@ class MetricsAndPerformanceExtractor:
     # comfortable upper bound for almost every real-world case while still
     # bounded for output budget.
     MAX_REGIONS_REPORTED = 10
+    # ISS-040: bimodal-distribution heuristic. When the inter-quartile range
+    # is wider than ``BIMODAL_IQR_TO_STD_RATIO * std_dev`` the distribution
+    # likely has two clusters (P25 anchored to the low cluster, P75 anchored
+    # to the high cluster, median sitting in the gap). 1.5× is a conservative
+    # threshold that keeps single-mode noise from triggering the flag.
+    BIMODAL_IQR_TO_STD_RATIO = 1.5
 
     @property
     def strategy_name(self) -> str:
@@ -785,7 +791,14 @@ class MetricsAndPerformanceExtractor:
         return regions
 
     def _calculate_statistics(self, values: list[float]) -> dict[str, float]:
-        """Calculate statistical measures"""
+        """Calculate statistical measures.
+
+        ISS-040: includes P25 / P75 / IQR so the formatted summary can
+        surface a "Typical operating range (P25-P75)" line distinct from
+        the existing P95-anchored outlier threshold. Using P95 alone to
+        frame the baseline produces too-wide bands and too-narrow alerting
+        thresholds — operators end up missing real regressions.
+        """
         n = len(values)
         sorted_values = sorted(values)
 
@@ -793,12 +806,20 @@ class MetricsAndPerformanceExtractor:
         variance = sum((x - mean) ** 2 for x in values) / n
         std_dev = variance**0.5
 
+        # P25 / P75 are calculated from the sorted index. Floor at 0 and
+        # ceiling at n-1 so very small series (n < 4) don't IndexError.
+        p25 = sorted_values[max(0, int(n * 0.25))]
+        p75 = sorted_values[min(n - 1, int(n * 0.75))]
+
         return {
             "min": min(values),
             "max": max(values),
             "mean": mean,
             "std_dev": std_dev,
+            "p25": p25,
             "p50": sorted_values[n // 2],
+            "p75": p75,
+            "iqr": p75 - p25,
             "p95": sorted_values[int(n * 0.95)] if n > 20 else sorted_values[-1],
             "p99": sorted_values[int(n * 0.99)] if n > 100 else sorted_values[-1],
         }
@@ -927,6 +948,10 @@ class MetricsAndPerformanceExtractor:
         ISS-039: anomalies are reported as **regions** (contiguous outlier
         runs) rather than per-row outliers. A short heat-event spike with
         five hourly samples surfaces as one region, not five "anomalies".
+        ISS-040: the stats block adds a P25-P75 typical operating range
+        line (distinct from full data range and the P95 outlier
+        threshold) and a bimodal-distribution note when the IQR is wide
+        relative to std_dev.
         """
         lines = ["=== METRICS ANALYSIS SUMMARY ===\n"]
 
@@ -963,14 +988,40 @@ class MetricsAndPerformanceExtractor:
 
             lines.append(f"📊 {metric_name} ({count} data points):")
             lines.append(
-                f"   Range: {self._fmt_val(stats['min'])} - {self._fmt_val(stats['max'])}"
+                f"   Full data range: {self._fmt_val(stats['min'])} - "
+                f"{self._fmt_val(stats['max'])}"
             )
             lines.append(
-                f"   Mean: {self._fmt_val(stats['mean'])} (±{self._fmt_val(stats['std_dev'])})"
+                f"   Mean: {self._fmt_val(stats['mean'])} "
+                f"(±{self._fmt_val(stats['std_dev'])})"
             )
+            # ISS-040: surface the P25-P75 IQR band as the typical
+            # operating range. This gives the agent a tight baseline to
+            # answer "what's normal?" without overweighting P95.
+            if "p25" in stats and "p75" in stats:
+                lines.append(
+                    f"   Typical operating range (P25-P75): "
+                    f"{self._fmt_val(stats['p25'])} - "
+                    f"{self._fmt_val(stats['p75'])} "
+                    f"(IQR={self._fmt_val(stats.get('iqr', 0.0))})"
+                )
             lines.append(
-                f"   Percentiles: p50={self._fmt_val(stats['p50'])}, p95={self._fmt_val(stats['p95'])}, p99={self._fmt_val(stats['p99'])}"
+                f"   Percentiles: p50={self._fmt_val(stats['p50'])}, "
+                f"p95={self._fmt_val(stats['p95'])} (outlier threshold), "
+                f"p99={self._fmt_val(stats['p99'])}"
             )
+            # ISS-040: bimodal heuristic. If IQR is wide relative to
+            # std_dev, the data likely has two clusters and the agent
+            # should not frame the median as a single baseline.
+            iqr = stats.get("iqr", 0.0)
+            std_dev = stats.get("std_dev", 0.0)
+            if std_dev > 0 and iqr > self.BIMODAL_IQR_TO_STD_RATIO * std_dev:
+                lines.append(
+                    "   Distribution note: IQR is wide vs std_dev — "
+                    "data may be bimodal (two clusters around "
+                    f"P25={self._fmt_val(stats['p25'])} and "
+                    f"P75={self._fmt_val(stats['p75'])})."
+                )
             non_finite = summary.get("non_finite", 0)
             if non_finite:
                 lines.append(
