@@ -698,6 +698,16 @@ class LogsAndErrorsExtractor:
     _AUTH_EVENTS: frozenset = frozenset(
         {"failed_password", "pam_auth_failure", "invalid_user", "accepted_login"}
     )
+    # Event types that mark a source IP as an "attacker" for the purpose of
+    # disambiguating Accepted password lines (ISS-026). An IP that ONLY
+    # appears in accepted_login (and never in any of these) is treated as a
+    # legitimate session — typically an admin login on the same host whose
+    # IP happens to share the file with brute-force traffic. Crucially,
+    # accepted_login is NOT in this set, so a clean admin login does not
+    # mark its own IP as an attacker.
+    _ATTACK_EVENTS: frozenset = frozenset(
+        {"failed_password", "pam_auth_failure", "invalid_user", "break_in_attempt"}
+    )
     # Syslog service name extractor — captures the base program name from
     # "service[PID]:" and "service(module)[PID]:" prefixes. Matches only
     # when the token is preceded by whitespace (avoids false matches inside
@@ -1049,6 +1059,21 @@ class LogsAndErrorsExtractor:
             for svc, n in sig_services:
                 parts.append(f"    {svc}: {n} lines")
 
+        # Attacker IP set (ISS-026): any IP that appears in at least one
+        # failed_password / invalid_user / break_in_attempt / pam_auth_failure
+        # event. Used to split accepted_login lines into attacker-sourced
+        # (suspicious) and non-attacker-sourced (likely legitimate)
+        # categories — the OpenSSH 2k fixture contains exactly one
+        # Accepted password line from an IP that NEVER appears in attack
+        # events; without the split the agent describes it as
+        # "one successful login among the attempts" and trips the
+        # forbidden_claim "claims the attacks succeeded".
+        attacker_ips: set[str] = {
+            ip
+            for ip, counts in ip_event_counts.items()
+            if any(counts.get(ev, 0) > 0 for ev in self._ATTACK_EVENTS)
+        }
+
         if event_counts:
             parts.append(
                 "  Event types"
@@ -1096,6 +1121,33 @@ class LogsAndErrorsExtractor:
                 parts.append(
                     f'    {event}: {count}  ["{search_str}"]{span_note}{rate_note}{rdns_note}'
                 )
+                # ISS-026: per-IP attacker-vs-legitimate breakdown for
+                # accepted_login lines. Surfaces directly under the headline
+                # event count so the LLM reads the disambiguation as part
+                # of the same fact, not as a separate signal it might miss.
+                # Skipped when there are no accepted_login events or when
+                # no accepted IPs are recorded (e.g. PAM-style "session
+                # opened" logs where rhost is on a different line).
+                if event == "accepted_login":
+                    attacker_accepted = 0
+                    legitimate_accepted = 0
+                    for ip, ev_counts in ip_event_counts.items():
+                        n = ev_counts.get("accepted_login", 0)
+                        if not n:
+                            continue
+                        if ip in attacker_ips:
+                            attacker_accepted += n
+                        else:
+                            legitimate_accepted += n
+                    if attacker_accepted or legitimate_accepted:
+                        parts.append(
+                            f"      {attacker_accepted} from attacker IPs"
+                            " (IPs that also have failed/invalid/break-in events)"
+                        )
+                        parts.append(
+                            f"      {legitimate_accepted} from non-attacker IPs"
+                            " (likely legitimate sessions)"
+                        )
 
         if ip_all_counts:
             parts.append(

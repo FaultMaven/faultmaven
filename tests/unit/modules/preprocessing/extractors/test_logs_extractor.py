@@ -1849,3 +1849,118 @@ class TestSeverityScaleContext:
         result = extractor.extract(content)
         fe = _fe(result)
         assert "BGL node" not in fe
+
+
+class TestAcceptedLoginAttackerDisambiguation:
+    """ISS-026: Accepted password lines must be disambiguated by source IP.
+
+    OpenSSH 'Accepted password' surfaces 1 successful login alongside hundreds
+    of failed_password / invalid_user / break_in_attempt events. When the
+    accepted login's source IP appears NOWHERE in failed/invalid/break-in
+    events, that is a legitimate session unrelated to the brute-force
+    activity — not 'one successful login among the attempts'. The agent
+    framing it as 'attack succeeded' trips the forbidden_claim 'claims the
+    attacks succeeded'.
+
+    The extractor must annotate accepted_login with a per-IP breakdown:
+    how many came from attacker IPs (those with failed/invalid/break-in
+    events) vs non-attacker IPs (likely legitimate sessions).
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _make_log(self, lines: list[str], pad: int = 12) -> str:
+        # Pad with neutral filler to clear the >10-line scan threshold.
+        filler = "Dec 10 06:55:00 LabSZ kernel: tick benign info"
+        return "\n".join(lines + [filler] * pad)
+
+    def test_legitimate_accepted_login_split_from_attackers(self, extractor):
+        """Accepted-password from a non-attacker IP labelled as legitimate.
+
+        Mirrors the OpenSSH_2k.log layout: many failed/invalid attempts from
+        attacker IPs, plus a single Accepted password from an IP that NEVER
+        appears in any attack event.
+        """
+        attack_ip = "183.62.140.253"
+        legit_ip = "119.137.62.142"
+        attack_lines = [
+            f"Dec 10 06:55:46 LabSZ sshd[100{i:02d}]: Failed password for root from {attack_ip} port 33{i:03d} ssh2"
+            for i in range(20)
+        ] + [
+            f"Dec 10 06:56:{i:02d} LabSZ sshd[200{i:02d}]: Invalid user webmaster from {attack_ip}"
+            for i in range(20)
+        ]
+        accepted_line = (
+            f"Dec 10 09:32:20 LabSZ sshd[24680]: "
+            f"Accepted password for fztu from {legit_ip} port 49116 ssh2"
+        )
+        content = self._make_log(attack_lines + [accepted_line])
+        result = extractor.extract(content)
+        text = _all(result)
+        # The breakdown must call out attacker vs non-attacker totals.
+        assert "0 from attacker IPs" in text, (
+            f"Expected 0-from-attacker breakdown for legitimate accepted_login.\n"
+            f"Output:\n{text[:2000]}"
+        )
+        assert "1 from non-attacker IPs" in text, (
+            f"Expected 1-from-non-attacker breakdown for legitimate accepted_login.\n"
+            f"Output:\n{text[:2000]}"
+        )
+
+    def test_attacker_accepted_login_flagged(self, extractor):
+        """When the accepted IP also has failed/invalid events, count it as attacker."""
+        attack_ip = "1.2.3.4"
+        attack_lines = [
+            f"Dec 10 06:55:{i:02d} LabSZ sshd[100{i:02d}]: Failed password for root from {attack_ip} port 33{i:03d} ssh2"
+            for i in range(20)
+        ]
+        accepted_line = (
+            f"Dec 10 09:32:20 LabSZ sshd[24680]: "
+            f"Accepted password for root from {attack_ip} port 49116 ssh2"
+        )
+        content = self._make_log(attack_lines + [accepted_line])
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "1 from attacker IPs" in text, (
+            f"Accepted from an attacker IP must be flagged as attacker-sourced.\n"
+            f"Output:\n{text[:2000]}"
+        )
+        assert "0 from non-attacker IPs" in text
+
+    def test_top_level_accepted_count_unchanged(self, extractor):
+        """The headline accepted_login count must remain accurate (event count,
+        not replaced by the breakdown).
+        """
+        legit_ip = "10.0.0.5"
+        attack_ip = "1.2.3.4"
+        attack_lines = [
+            f"Dec 10 06:55:{i:02d} LabSZ sshd[200{i:02d}]: Failed password for root from {attack_ip} port 33{i:03d} ssh2"
+            for i in range(15)
+        ]
+        accepted_line = (
+            f"Dec 10 09:32:20 LabSZ sshd[24680]: "
+            f"Accepted password for fztu from {legit_ip} port 49116 ssh2"
+        )
+        content = self._make_log(attack_lines + [accepted_line])
+        result = extractor.extract(content)
+        text = _all(result)
+        # The headline count must still appear ("accepted_login: 1")
+        # somewhere in the entity profile.
+        assert "accepted_login: 1" in text, (
+            f"Top-level accepted_login event count must remain unchanged.\n"
+            f"Output:\n{text[:2000]}"
+        )
+
+    def test_no_breakdown_when_no_accepted_login(self, extractor):
+        """No accepted_login lines → no breakdown emitted."""
+        attack_lines = [
+            f"Dec 10 06:55:{i:02d} LabSZ sshd[100{i:02d}]: Failed password for root from 1.2.3.4"
+            for i in range(15)
+        ]
+        content = self._make_log(attack_lines)
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "from attacker IPs" not in text
+        assert "from non-attacker IPs" not in text
