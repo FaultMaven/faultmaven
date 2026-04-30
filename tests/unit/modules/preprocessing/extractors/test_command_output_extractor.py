@@ -7,6 +7,8 @@ Covers:
 - Existing commands (top, df) still work
 """
 
+from pathlib import Path
+
 import pytest
 
 from faultmaven.modules.preprocessing.extractors.command_output_extractor import (
@@ -314,3 +316,190 @@ MiB Swap:   8192.0 total,   6041.4 free,   2150.6 used.   2184.7 avail Mem
         result = extractor.extract(content)
         assert result.file_meta.get("task_summary_total") == 318
         assert result.file_meta.get("process_table_rows") == 17
+
+
+# Real fixture path used by the regression test. Guarded so the test still
+# runs cleanly outside the monorepo where this fixture isn't checked in.
+_IOSTAT_FIXTURE = Path(
+    "/home/swhouse/product/fm-data-exam/test-data/synthetic/iostat-x-output.txt"
+)
+
+
+class TestIostatExtraction:
+    """ISS-032: ``iostat -x`` extractor must surface read-side metrics and
+    sample count, not just write-side and a flattened device list.
+
+    Earlier behaviour:
+    - flattened all per-sample device rows into a single device list, so
+      the agent saw "Devices: 20" for a 3-sample × 6-device capture;
+    - dropped read-side columns (r/s, rkB/s) entirely from the summary;
+    - had no sample count, so questions like "how many samples did this
+      capture cover?" had no anchor.
+
+    The fix routes ``iostat -x`` (header has ``r/s w/s rkB/s wkB/s``) to a
+    dedicated projection that emits ``sample_count``, ``distinct_devices``,
+    ``saturated_devices`` (≥50% %util in any sample), ``idle_devices``
+    (≈0% %util across all samples) in ``file_meta`` and writes a typed
+    FILE SUMMARY block at the start of ``file_extract``.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return CommandOutputExtractor()
+
+    @pytest.fixture
+    def two_sample_iostat(self):
+        """Synthetic iostat -x with two samples and one saturated device."""
+        return """\
+Linux 5.15.0 (host)   01/15/2024  _x86_64_  (8 CPU)
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           3.00    0.00    1.00   12.00    0.00   84.00
+
+Device            r/s     w/s     rkB/s     wkB/s   rrqm/s   wrqm/s  %rrqm  %wrqm r_await w_await aqu-sz rareq-sz wareq-sz  svctm  %util
+sda              2.00    5.00     20.00     50.00     0.00     0.00   0.00   0.00    1.00    1.50   0.01    10.00    10.00   0.20   0.30
+sdb             30.00  150.00    400.00   2500.00     0.20     1.00   0.50   0.50    7.00   25.00   4.00    13.33    16.67   3.00  88.00
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           3.10    0.00    1.10   12.50    0.00   83.30
+
+Device            r/s     w/s     rkB/s     wkB/s   rrqm/s   wrqm/s  %rrqm  %wrqm r_await w_await aqu-sz rareq-sz wareq-sz  svctm  %util
+sda              2.10    5.20     21.00     52.00     0.00     0.00   0.00   0.00    1.10    1.55   0.01    10.00    10.00   0.20   0.32
+sdb             32.00  155.00    410.00   2600.00     0.20     1.00   0.50   0.50    7.10   26.00   4.20    12.81    16.77   3.05  90.00
+"""
+
+    @pytest.fixture
+    def single_sample_iostat(self):
+        """Synthetic iostat -x with a single sample, no saturated devices."""
+        return """\
+Linux 5.15.0 (host)
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           1.00    0.00    0.50    0.10    0.00   98.40
+
+Device            r/s     w/s     rkB/s     wkB/s   rrqm/s   wrqm/s  %rrqm  %wrqm r_await w_await aqu-sz rareq-sz wareq-sz  svctm  %util
+nvme0n1          0.50    1.50     10.00     20.00     0.00     0.00   0.00   0.00    0.20    0.30   0.00    20.00    13.33   0.10   0.05
+"""
+
+    # ----- file_meta: structured facts ---------------------------------
+
+    def test_two_sample_meta_sample_count(self, extractor, two_sample_iostat):
+        """``sample_count`` reflects the number of avg-cpu blocks."""
+        result = extractor.extract(two_sample_iostat)
+        assert result.file_meta.get("sample_count") == 2
+
+    def test_two_sample_meta_distinct_devices(self, extractor, two_sample_iostat):
+        """Devices are deduplicated across samples and listed in input order."""
+        result = extractor.extract(two_sample_iostat)
+        devices = result.file_meta.get("distinct_devices")
+        assert devices == ["sda", "sdb"]
+
+    def test_two_sample_meta_saturated_devices(self, extractor, two_sample_iostat):
+        """sdb crosses ≥50% %util in both samples — both crossings recorded
+        with their sample index."""
+        result = extractor.extract(two_sample_iostat)
+        sat = result.file_meta.get("saturated_devices")
+        assert sat is not None
+        assert {entry["name"] for entry in sat} == {"sdb"}
+        # Two crossings, one per sample.
+        sample_indices = sorted(entry["sample_index"] for entry in sat)
+        assert sample_indices == [0, 1]
+        utils = sorted(entry["util_pct"] for entry in sat)
+        assert utils == [88.0, 90.0]
+
+    def test_two_sample_meta_idle_devices(self, extractor, two_sample_iostat):
+        """Active devices (sda has ~0.3% util) are NOT classified idle —
+        only devices at ≈0% across every sample qualify."""
+        result = extractor.extract(two_sample_iostat)
+        assert result.file_meta.get("idle_devices") == []
+
+    def test_single_sample_meta(self, extractor, single_sample_iostat):
+        """Single-sample iostat -x still yields a coherent projection."""
+        result = extractor.extract(single_sample_iostat)
+        assert result.file_meta.get("sample_count") == 1
+        assert result.file_meta.get("distinct_devices") == ["nvme0n1"]
+        assert result.file_meta.get("saturated_devices") == []
+
+    # ----- file_extract: FILE SUMMARY content --------------------------
+
+    def test_two_sample_summary_header(self, extractor, two_sample_iostat):
+        """FILE SUMMARY explicitly states sample count and device count."""
+        result = extractor.extract(two_sample_iostat)
+        assert "IOSTAT SUMMARY:" in result.file_extract
+        assert "Samples: 2" in result.file_extract
+        assert "Devices observed: 2" in result.file_extract
+
+    def test_two_sample_summary_calls_out_saturated(self, extractor, two_sample_iostat):
+        """Saturated device line names sdb and shows util range."""
+        result = extractor.extract(two_sample_iostat)
+        sat_lines = [
+            ln
+            for ln in result.file_extract.splitlines()
+            if ln.lstrip().startswith("Saturated")
+        ]
+        assert sat_lines, "No 'Saturated' line in FILE SUMMARY"
+        assert "sdb" in sat_lines[0]
+
+    def test_two_sample_extract_includes_read_metrics(
+        self, extractor, two_sample_iostat
+    ):
+        """Read-side columns (r/s, rkB/s) survive into the per-device dump.
+        The legacy parser dropped them entirely — this is the central bug
+        ISS-032 set out to fix."""
+        result = extractor.extract(two_sample_iostat)
+        assert "rkB/s=" in result.file_extract
+        assert "r/s=" in result.file_extract
+
+    def test_two_sample_extract_includes_write_metrics(
+        self, extractor, two_sample_iostat
+    ):
+        """Write-side metrics already worked, but pin the contract so a
+        future refactor can't silently remove them."""
+        result = extractor.extract(two_sample_iostat)
+        assert "wkB/s=" in result.file_extract
+        assert "w/s=" in result.file_extract
+        assert "w_await=" in result.file_extract
+
+    # ----- Real fixture regression -------------------------------------
+
+    @pytest.mark.skipif(
+        not _IOSTAT_FIXTURE.exists(),
+        reason="fm-data-exam fixture not available in this checkout",
+    )
+    def test_real_fixture_three_samples_six_devices(self, extractor):
+        """End-to-end on the fm-data-exam fixture that motivated the bug:
+        3 samples on a 16-CPU host, 6 devices, sda5 saturated 92-96% across
+        every sample, nvme1n1 idle. The summary must mention "3 samples"
+        and "6 devices" by name so q1 (overview) and q2 (saturated device
+        key metrics) can be answered without re-reading the raw file."""
+        content = _IOSTAT_FIXTURE.read_text()
+        result = extractor.extract(content)
+
+        meta = result.file_meta
+        assert meta.get("sample_count") == 3
+        assert meta.get("distinct_devices") == [
+            "nvme0n1",
+            "nvme1n1",
+            "sda",
+            "sda1",
+            "sda5",
+            "sdb",
+        ]
+        # sda5 saturated in every sample.
+        sat = meta.get("saturated_devices")
+        assert sat is not None
+        assert {entry["name"] for entry in sat} == {"sda5"}
+        assert len(sat) == 3
+        # nvme1n1 is the only device at ≈0% in every sample.
+        assert meta.get("idle_devices") == ["nvme1n1"]
+
+        summary = result.file_extract
+        assert "IOSTAT SUMMARY:" in summary
+        assert "Samples: 3" in summary
+        # Must mention 6 devices and call them out by name.
+        assert "Devices observed: 6" in summary
+        for dev in ("nvme0n1", "nvme1n1", "sda", "sda1", "sda5", "sdb"):
+            assert dev in summary
+        # Read-side metrics for the saturated device: rkB/s ~520-560.
+        assert "rkB/s=520.0" in summary
+        assert "rkB/s=560.0" in summary
