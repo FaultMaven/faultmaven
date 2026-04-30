@@ -155,3 +155,108 @@ class TestEmptyContentClassification:
 
         assert result.data_type == DataType.LOGS_AND_ERRORS
         assert result.source == "user_override"
+
+
+class TestShortAmbiguousTextClassification:
+    """Short, mixed-pattern .txt files trigger classification_failed (ISS-023).
+
+    Rationale: when a small text file carries signals from many different
+    type-suggestive categories (datetime + URL + email + version tag +
+    key-value lines) without any single category dominating, asserting
+    UNSTRUCTURED_TEXT at confidence=0.72 prevents the cooperative
+    clarification UX from firing. The agent then silently proceeds with
+    UNSTRUCTURED_TEXT and can't surface candidate types to the user.
+
+    The fix lowers confidence to 0.40 (below the 0.50 threshold) and
+    populates suggested_types so the frontend modal can offer a small
+    ranked menu.
+    """
+
+    # The benchmark fixture from fm-data-exam (failure-mode-low-signal-01).
+    LOW_SIGNAL_NOTICE = (
+        "Maintenance window scheduled: 2024-03-15 02:00 UTC to 04:00 UTC\n"
+        "Services affected: auth, payments, notifications\n"
+        "Expected downtime: up to 120 minutes\n"
+        "Runbook: https://wiki.internal/runbooks/maintenance-q1-2024\n"
+        "Contact: ops-oncall@example.com\n"
+        "\n"
+        "Action required: drain traffic from us-east-1 before 01:45 UTC\n"
+        "Rollback plan: redeploy previous artifact (tag: v2.3.8)\n"
+    )
+
+    def test_low_signal_maintenance_notice_triggers_ambiguity_gate(self, classifier):
+        """The benchmark fixture: 8-line maintenance notice carrying datetime,
+        URL, email, version tag, and key-value lines. Should classify with
+        confidence < 0.50 so the cooperative-clarification UX fires."""
+        result = classifier.classify("low-signal-text.txt", self.LOW_SIGNAL_NOTICE)
+
+        assert result.classification_failed is True
+        assert result.confidence < 0.50
+        assert result.data_type == DataType.UNSTRUCTURED_TEXT
+        assert result.source == "rule_based_best_effort"
+        # Cooperative-clarification UX needs candidates to offer the user
+        assert result.suggested_types is not None
+        assert DataType.UNSTRUCTURED_TEXT in result.suggested_types
+        assert DataType.DOCUMENTATION in result.suggested_types
+
+    def test_pure_prose_does_not_trigger_ambiguity_gate(self, classifier):
+        """Pure prose (no datetimes, URLs, version tags) should still land
+        on UNSTRUCTURED_TEXT @ 0.72, classification_failed=False — this is
+        the existing default and we want it preserved."""
+        prose = (
+            "This file describes the deployment of our service.\n"
+            "It runs on three replicas and handles incoming traffic.\n"
+            "The team monitors it through dashboards.\n"
+            "Please contact the on-call engineer for any production issues.\n"
+        )
+        result = classifier.classify("notes.txt", prose)
+
+        assert result.classification_failed is False
+        assert result.confidence == 0.72
+        assert result.data_type == DataType.UNSTRUCTURED_TEXT
+
+    def test_two_categories_does_not_trigger_gate(self, classifier):
+        """Only two type-suggestive categories firing isn't enough breadth
+        to call the file ambiguous — most operational notes carry both a
+        datetime and a URL without being genuinely unclassifiable."""
+        two_signal = (
+            "Maintenance scheduled for 2024-03-15.\n"
+            "See https://wiki.example.com/runbooks for the procedure.\n"
+        )
+        result = classifier.classify("m.txt", two_signal)
+
+        assert result.classification_failed is False
+        assert result.confidence == 0.72
+
+    def test_long_text_does_not_trigger_gate(self, classifier):
+        """A long .txt file is structurally different — there's enough
+        content for the existing UNSTRUCTURED_TEXT classification to be
+        meaningful, even if it carries the same mixed-pattern surface
+        features. Gate only fires for short files."""
+        # Repeat the notice 10x to exceed both length thresholds
+        long_content = self.LOW_SIGNAL_NOTICE * 10
+        result = classifier.classify("long.txt", long_content)
+
+        assert result.classification_failed is False
+        assert result.confidence == 0.72
+
+    def test_suggested_types_capped_at_three(self, classifier):
+        """Even with many categories firing, the ranked menu stays small —
+        a 5+ option modal would be hostile UX."""
+        result = classifier.classify("low-signal-text.txt", self.LOW_SIGNAL_NOTICE)
+
+        assert result.suggested_types is not None
+        assert len(result.suggested_types) <= 3
+
+    def test_user_override_still_wins_over_ambiguity(self, classifier):
+        """Explicit user override trumps the ambiguity gate (same precedence
+        as the empty-content path)."""
+        result = classifier.classify(
+            "low-signal-text.txt",
+            self.LOW_SIGNAL_NOTICE,
+            user_override=DataType.DOCUMENTATION,
+        )
+
+        assert result.data_type == DataType.DOCUMENTATION
+        assert result.source == "user_override"
+        assert result.classification_failed is False
