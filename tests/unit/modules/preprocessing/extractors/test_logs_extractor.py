@@ -1540,6 +1540,80 @@ class TestHealthAppTimestampFormat:
         assert "Log time range: 2026-01-15" in fe
 
 
+class TestTailTimestampBoundary:
+    """ISS-036: ``extract_time_range_ts`` previously scanned only the last
+    10 lines of content for the end timestamp, treating "no parseable
+    timestamp in the last 10 lines" as "no end of range".
+
+    Two real-world fixtures hit this boundary:
+
+    * Trailing blank lines (any tooling that re-emits a log with extra
+      trailing newlines) — the actual final timestamped line is at index
+      ``[-11:]`` or further back, so ``last_ts`` collapses to ``None`` and
+      ``Time range`` reports only the start.
+    * HealthApp ``YYYYMMDD-H:M:S:ms`` files where the agent's downstream
+      4 KB context cap on file_extract surfaces only the head of the tail
+      snippet — the FILE SUMMARY header is the only place the file's
+      actual final timestamp is exposed, so it must be correct even when
+      the trailing 10 lines are not the last 10 timestamped lines.
+
+    The fix scans further back through the trailing window when the last
+    10 lines have no parseable timestamp, so that a small amount of trailing
+    blank/header noise does not collapse the end-of-range value.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def test_healthapp_actual_final_timestamp_in_summary(self, extractor):
+        """The FILE SUMMARY's ``Log time range`` end value must reflect
+        the file's actual final timestamped line, not an earlier one
+        that happens to fall in the trailing window."""
+        # Mid-file timestamps (large block) followed by the real last
+        # timestamp, then a handful of trailing blank/whitespace lines —
+        # mimics tools that re-emit a log with extra trailing newlines.
+        head_lines = [
+            f"20171223-22:15:{i:02d}:606|Step_LSC|30002312|first event"
+            for i in range(15, 30)
+        ]
+        body_lines = [
+            f"20171224-0:{m}:0:000|Step_LSC|30002312|midnight crossing"
+            for m in range(1, 60)
+        ]
+        actual_final = "20171224-1:2:35:789|Step_LSC|30002312|last event"
+        # 12 trailing blank lines push the actual final timestamp out of
+        # the original 10-line tail window.
+        trailing_blanks = [""] * 12
+        content = "\n".join(head_lines + body_lines + [actual_final] + trailing_blanks)
+
+        result = extractor.extract(content)
+        time_range = result.file_meta.get("time_range", "")
+        # Must report the actual file end, not the head's last in-window
+        # value (which would otherwise be ``00:59:00``).
+        assert (
+            "2017-12-24 01:02:35" in time_range
+        ), f"Expected end timestamp 01:02:35 in time_range, got: {time_range!r}"
+        # Sanity: the start timestamp is also correctly set.
+        assert "2017-12-23 22:15:15" in time_range
+
+    def test_short_file_under_ten_lines_resolves_end_ts(self, extractor):
+        """Files with ≤10 lines must still resolve end_ts. The previous
+        ``tail = lines[-10:] if len(lines) > 10 else []`` clause set
+        ``tail`` to ``[]`` for short files, so ``last_ts`` was always
+        ``None``. Add Failed password lines so an entity profile + FILE
+        SUMMARY is emitted for the assertion target."""
+        content = "\n".join(
+            f"2026-01-15 10:00:{i:02d} sshd[1234]: Failed password for root "
+            f"from 203.0.113.{i} port 22 ssh2"
+            for i in range(5)
+        )
+        result = extractor.extract(content)
+        fe = _fe(result)
+        # Both endpoints present — no collapse to single-point start.
+        assert "Log time range: 2026-01-15 10:00:00 to 2026-01-15 10:00:04" in fe
+
+
 class TestBGLAlertFlagSurfacing:
     """ISS-015: BGL (BlueGene/L) RAS logs use a structured first-column
     alert flag that classifies fault types: ``-`` (no class), ``KERNDTLB``,
@@ -1610,6 +1684,137 @@ class TestBGLAlertFlagSurfacing:
         assert "BGL alert flags" not in text
 
 
+class TestBGLFatalFlagBreakdown:
+    """ISS-038: BGL FATAL-severity lines are distributed across alert
+    flags — ``KERNDTLB``, ``KERNSTOR``, ``APPSEV``, and the ``-`` (no
+    alert class) bucket which carries ``RAS APP FATAL ciod:`` control-
+    stream messages. In the BGL 2k fixture the dominant single FATAL
+    bucket is ``-`` with 204 entries (the ciod APP FATAL traffic), well
+    ahead of any KERN flag.
+
+    The existing alert-flag block sorts all flags by *total* line count
+    (FATAL + non-FATAL together), so the ``-`` bucket's FATAL traffic
+    is invisible: ``-`` shows up as 1857 lines total — the agent reads
+    "no alert class" and skips it, focusing on the KERN flags.
+
+    Fix: surface a FATAL-only breakdown by alert flag so the agent sees
+    the 204 entries in ``-`` directly. Without this the dominant FATAL
+    bucket is structurally invisible.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _bgl(
+        self,
+        flag: str,
+        severity: str = "INFO",
+        n: int = 1,
+        epoch: int = 1117838570,
+        component: str = "KERNEL",
+        message: str = "instruction cache parity error corrected",
+    ) -> str:
+        """Build a BGL-format snippet. SEVERITY is the 9th whitespace
+        token in the canonical format and is what the FATAL-by-flag
+        breakdown groups against."""
+        lines = []
+        for i in range(n):
+            lines.append(
+                f"{flag} {epoch + i} 2005.06.03 R02-M1-N0-C:J12-U11 "
+                f"2005-06-03-15.42.50.{i:06d} R02-M1-N0-C:J12-U11 "
+                f"RAS {component} {severity} {message}"
+            )
+        return "\n".join(lines)
+
+    def test_fatal_breakdown_includes_dash_bucket(self, extractor):
+        """The ``-`` (no alert class) bucket carries APP FATAL ciod
+        control-stream messages. Its FATAL count must be visible in the
+        FATAL-by-flag breakdown even though the bucket is dominated by
+        non-FATAL entries when measured by total line count."""
+        # 204 dash-flag FATAL APP ciod lines (mirrors BGL 2k fixture's
+        # dominant single FATAL bucket), 1653 dash-flag INFO non-FATAL,
+        # 60 KERNDTLB FATAL kernel-error lines. Total dash = 1857.
+        # Without a FATAL-by-flag breakdown the agent ranks "-" first by
+        # total count, labels it "no alert class", and never sees the
+        # 204 FATAL traffic underneath.
+        content = "\n".join(
+            [
+                self._bgl(
+                    "-",
+                    severity="FATAL",
+                    component="APP",
+                    n=204,
+                    epoch=1117800000,
+                    message="ciod: LOGIN chdir failed: No such file or directory",
+                ),
+                self._bgl(
+                    "-",
+                    severity="INFO",
+                    n=1653,
+                    epoch=1117810000,
+                    message="instruction cache parity error corrected",
+                ),
+                self._bgl(
+                    "KERNDTLB",
+                    severity="FATAL",
+                    n=60,
+                    epoch=1117820000,
+                    message="data TLB error interrupt",
+                ),
+            ]
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        # FATAL-by-flag breakdown must exist
+        import re as _re
+
+        fatal_section = _re.search(
+            r"FATAL[^\n]*by[^\n]*alert[^\n]*flag.*?(?=\n\n|\Z)",
+            text,
+            _re.IGNORECASE | _re.DOTALL,
+        )
+        assert fatal_section, (
+            "Expected a FATAL-by-flag breakdown block; got:\n" + text[:3000]
+        )
+        section_text = fatal_section.group(0)
+        # The dominant FATAL bucket must be reported with its count.
+        # ``-`` flag's 204 FATAL entries must surface independently of
+        # its 1653 non-FATAL entries.
+        assert "204" in section_text, (
+            "Expected dash-flag FATAL count 204 in breakdown; got:\n" + section_text
+        )
+        # KERNDTLB also has FATAL entries — both must be present.
+        assert "KERNDTLB" in section_text
+        assert "60" in section_text
+
+    def test_fatal_breakdown_skipped_when_no_fatal(self, extractor):
+        """A BGL log with no FATAL-severity entries must not produce a
+        FATAL-by-flag breakdown. The block is conditional on FATAL
+        traffic being present."""
+        content = self._bgl(
+            "KERNDTLB", severity="WARNING", n=20, message="warning condition"
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        # Existing alert-flag block should still appear
+        assert "BGL alert flags" in text
+        # FATAL breakdown must not — there are no FATAL entries to surface
+        assert "FATAL by alert flag" not in text
+        assert "FATAL-by-flag" not in text
+
+    def test_non_bgl_no_fatal_breakdown(self, extractor):
+        """Plain syslog with FATAL keywords must not produce a BGL FATAL
+        breakdown — the breakdown is BGL-format-specific."""
+        content = "\n".join(
+            f"Jun 14 15:{i:02d}:01 host service[{1000 + i}]: FATAL configuration error"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "FATAL by alert flag" not in text
+
+
 class TestWindowsKBPackageSurfacing:
     """ISS-020: Windows CBS logs reference KB packages via
     ``Package_for_KB<NUMBER>``. The extractor must surface a *distinct* count
@@ -1673,6 +1878,129 @@ class TestWindowsKBPackageSurfacing:
         result = extractor.extract(content)
         text = _all(result)
         assert "Distinct KB packages" not in text
+
+
+class TestWindowsHRESULTSurfacing:
+    """ISS-037: CBS log lines carry ``[HRESULT = 0x<hex> - SYMBOL]`` codes,
+    where the same HRESULT/symbol pair appears across multiple distinct
+    message templates (``Expecting attribute name``, ``Failed to get next
+    element``, etc.). The template-counts block reports per-template
+    occurrences, so a code that occurs 448 times split across two templates
+    (224 each) renders as ``[224x]`` in two places — and the agent reports
+    the per-template number as the per-HRESULT total.
+
+    The Windows 2k fixture has 448 lines containing
+    ``CBS_E_MANIFEST_INVALID_ITEM`` (``0x800f080d``), but the template
+    counts only ever surface 224 in any single line of the search map.
+
+    Fix: surface a per-HRESULT aggregate in the entity profile so the agent
+    has a single authoritative count per HRESULT/symbol independent of
+    message-template variation.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _cbs_lines(
+        self, count: int, hresult: str, symbol: str, template: str
+    ) -> list[str]:
+        return [
+            f"2016-09-28 04:30:{i % 60:02d}, Info                  CBS    "
+            f"{template} [HRESULT = {hresult} - {symbol}]"
+            for i in range(count)
+        ]
+
+    def test_hresult_total_aggregated_across_templates(self, extractor):
+        """448 occurrences of CBS_E_MANIFEST_INVALID_ITEM split across two
+        message templates must surface as a single 448 in the entity
+        profile, not as two 224s the agent has to add together."""
+        # 215 + 233 = 448 — uneven split so the per-HRESULT aggregate (448)
+        # cannot accidentally match a per-template count, and so neither
+        # half coincides with the total line count of the test fixture
+        # (which would otherwise let "448 of 448" satisfy the assertion).
+        a = self._cbs_lines(
+            215,
+            "0x800f080d",
+            "CBS_E_MANIFEST_INVALID_ITEM",
+            "Expecting attribute name",
+        )
+        b = self._cbs_lines(
+            233,
+            "0x800f080d",
+            "CBS_E_MANIFEST_INVALID_ITEM",
+            "Failed to get next element",
+        )
+        # Pad the file with unrelated lines so total_lines != 448 — defeats
+        # spurious matches against template-counts headers like "X of N".
+        padding = [
+            f"2016-09-28 05:00:{i % 60:02d}, Info CBS unrelated activity {i}"
+            for i in range(100)
+        ]
+        content = "\n".join(a + b + padding)
+        result = extractor.extract(content)
+        text = _all(result)
+        # The per-HRESULT block must associate the code/symbol with the
+        # file-wide total directly — not as two halves the agent has to
+        # add together. Anchor on "<hresult>: <count>" near the symbol.
+        import re as _re
+
+        # Match "0x800f080d ... CBS_E_MANIFEST_INVALID_ITEM ... 448" or
+        # any close proximity layout — the assertion is that the agent
+        # sees one authoritative line for this HRESULT carrying 448.
+        pat = _re.compile(
+            r"0x800f080d[^\n]{0,80}CBS_E_MANIFEST_INVALID_ITEM[^\n]{0,80}\b448\b"
+            r"|"
+            r"0x800f080d[^\n]{0,80}\b448\b[^\n]{0,80}CBS_E_MANIFEST_INVALID_ITEM"
+            r"|"
+            r"CBS_E_MANIFEST_INVALID_ITEM[^\n]{0,80}\b448\b"
+        )
+        assert pat.search(text), (
+            "Expected per-HRESULT aggregate associating 0x800f080d / "
+            "CBS_E_MANIFEST_INVALID_ITEM with total count 448; got:\n"
+            f"{text[:3000]}"
+        )
+
+    def test_multiple_distinct_hresults_each_aggregated(self, extractor):
+        """Multiple HRESULTs with different totals must each appear with
+        their own per-HRESULT aggregate count."""
+        content = "\n".join(
+            self._cbs_lines(
+                100, "0x800f080d", "CBS_E_MANIFEST_INVALID_ITEM", "Expecting"
+            )
+            + self._cbs_lines(50, "0x800f0805", "CBS_E_INVALID_PACKAGE", "Failed")
+            + self._cbs_lines(10, "0x80004005", "E_FAIL", "Generic failure")
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        # Find the HRESULT block and verify each code+count pair.
+        for hresult, count in (
+            ("0x800f080d", 100),
+            ("0x800f0805", 50),
+            ("0x80004005", 10),
+        ):
+            # Each code must appear adjacent to its aggregate count.
+            # Look for "<hresult>: <count>" pattern (standard Counter formatting).
+            assert hresult in text
+            # Find the section showing this hresult and its aggregate count.
+            # Allow flexible separators between hresult and count.
+            import re as _re
+
+            pat = _re.compile(rf"{_re.escape(hresult)}[^\n]*\b{count}\b")
+            assert pat.search(text), (
+                f"Expected per-HRESULT aggregate showing {hresult}: {count}; "
+                f"got:\n{text[:3000]}"
+            )
+
+    def test_no_hresult_no_surfacing(self, extractor):
+        """Logs without any HRESULT codes must not produce an HRESULT block."""
+        content = "\n".join(
+            f"2016-09-28 04:30:{i % 60:02d}, Info CBS unrelated message {i}"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "HRESULT" not in text
 
 
 class TestSeverityScaleContext:
