@@ -491,13 +491,60 @@ class CommandOutputExtractor:
 
         return "\n".join(summary)
 
-    def _parse_iostat(self, content: str) -> str:
-        """Parse iostat -x command output.
+    # iostat -x detection: header includes r/s, w/s, rkB/s, wkB/s columns
+    # (i.e. the extended layout) rather than the basic tps/kB_read/s columns.
+    _IOSTAT_X_HEADER_RE = re.compile(
+        r"Device\b.*\br/s\b.*\bw/s\b.*\brkB/s\b.*\bwkB/s\b",
+    )
+    # %util threshold for "saturated" classification on iostat -x. Distinct
+    # from THRESHOLDS["cpu_high"] etc. because disk saturation is the
+    # standard ≥50% busy heuristic — well below the 80% level used for
+    # individual-device anomaly flagging in the legacy parser.
+    _IOSTAT_SATURATED_UTIL_PCT = 50.0
+    # %util ≤ this in *every* sample → idle. Set tight so we report only
+    # devices that are unambiguously doing nothing (≈0% across the whole
+    # capture). Devices with even a fractional percent of activity are
+    # treated as "near-idle but live" and listed in the per-device dump
+    # rather than in the idle_devices roll-up.
+    _IOSTAT_IDLE_UTIL_PCT = 0.05
 
-        Extracts avg-cpu summary and per-device I/O statistics.
-        Flags devices with high utilization (>80%) or high await (>20ms).
+    def _parse_iostat(self, content: str) -> "str | tuple[str, dict]":
+        """Parse iostat command output.
+
+        Two layouts are supported:
+
+        - **iostat -x** (extended): header row contains
+          ``r/s w/s rkB/s wkB/s ... %util``. The output is one or more
+          *samples*, each with its own ``avg-cpu:`` block followed by a
+          per-device table. We project this into a structured FILE SUMMARY
+          + ``file_meta`` so the agent can answer counting questions
+          (sample count, device count, saturated devices) without re-reading
+          the raw file. Read-side metrics (r/s, rkB/s) and write-side
+          metrics (w/s, wkB/s) are both surfaced — the legacy fallback
+          dropped reads entirely.
+
+        - **iostat (basic)**: single-sample ``Device tps kB_read/s ...``
+          layout. Falls through to the legacy formatter, which flags
+          high-await/high-util devices.
+
+        Routing is by header signature; the -x layout is detected by the
+        presence of ``r/s`` and ``w/s`` columns in the device header.
         """
         lines = content.split("\n")
+
+        # Detect iostat -x by scanning header lines.
+        if any(self._IOSTAT_X_HEADER_RE.search(ln) for ln in lines):
+            return self._parse_iostat_x(lines)
+
+        return self._parse_iostat_basic(lines)
+
+    def _parse_iostat_basic(self, lines: list[str]) -> str:
+        """Parse the basic ``iostat`` layout (tps/kB_read/s columns).
+
+        Single-sample, device-anomaly-focused. Kept verbatim from the
+        legacy implementation so existing tests against the basic layout
+        keep passing.
+        """
 
         summary = ["I/O Statistics (iostat command)", ""]
 
@@ -617,6 +664,279 @@ class CommandOutputExtractor:
                 summary.append(f"  - {a}")
 
         return "\n".join(summary)
+
+    def _parse_iostat_x(self, lines: list[str]) -> tuple[str, dict]:
+        """Parse the extended ``iostat -x`` layout — multi-sample, per-device.
+
+        Each sample is an ``avg-cpu:`` block followed by a per-device table.
+        We project the whole capture into:
+
+        - A FILE SUMMARY block at the top of ``file_extract`` listing
+          sample count, distinct device names, saturated devices (≥50%
+          %util), idle devices (~0% %util across all samples), and an
+          explicit note that both read- and write-side metrics are
+          captured per-device per-sample.
+        - ``file_meta`` carrying the same facts in machine-readable form
+          (``sample_count``, ``distinct_devices``, ``saturated_devices``,
+          ``idle_devices``).
+
+        Why this exists: the legacy parser flattened all samples into a
+        single device list, double-counted devices appearing in multiple
+        samples, dropped read-side metrics (rkB/s, r/s) entirely, and
+        offered no sample count. Counting questions like "how many samples
+        and how many devices" got incoherent answers.
+        """
+        # Locate every sample. A "sample" starts at an ``avg-cpu:`` header
+        # and ends at the next one (or EOF). Each sample contains a single
+        # Device table whose header includes r/s / w/s / rkB/s / wkB/s.
+        sample_starts: list[int] = [i for i, ln in enumerate(lines) if "avg-cpu:" in ln]
+        # Tolerate output without explicit avg-cpu headers (rare): treat
+        # the first iostat -x device-table header as the sole sample.
+        if not sample_starts:
+            for i, ln in enumerate(lines):
+                if self._IOSTAT_X_HEADER_RE.search(ln):
+                    sample_starts = [i]
+                    break
+
+        sample_bounds: list[tuple[int, int]] = []
+        for idx, start in enumerate(sample_starts):
+            end = sample_starts[idx + 1] if idx + 1 < len(sample_starts) else len(lines)
+            sample_bounds.append((start, end))
+
+        # device_name -> list of {util, w_await, r_await} dicts (one per sample)
+        per_device: dict[str, list[dict[str, float]]] = {}
+        # Preserve first-seen order so the SUMMARY device list is
+        # deterministic and matches input order rather than dict iteration
+        # order (which is insertion order on CPython 3.7+ but worth
+        # documenting).
+        device_order: list[str] = []
+        cpu_summary: dict[str, float] | None = None
+
+        for sample_idx, (start, end) in enumerate(sample_bounds):
+            block = lines[start:end]
+            # First sample: also capture the avg-cpu numbers for the
+            # summary line.
+            if sample_idx == 0:
+                for j, ln in enumerate(block[:5]):
+                    if "avg-cpu:" in ln and j + 1 < len(block):
+                        for k in range(j + 1, min(j + 4, len(block))):
+                            cells = block[k].split()
+                            if len(cells) >= 6:
+                                try:
+                                    cpu_summary = {
+                                        "user": float(cells[0]),
+                                        "system": float(cells[2]),
+                                        "iowait": float(cells[3]),
+                                        "idle": float(cells[5]),
+                                    }
+                                except ValueError:
+                                    cpu_summary = None
+                                break
+                        break
+
+            # Find the per-device table header inside this sample.
+            header_idx_in_block = None
+            for j, ln in enumerate(block):
+                if self._IOSTAT_X_HEADER_RE.search(ln):
+                    header_idx_in_block = j
+                    break
+            if header_idx_in_block is None:
+                continue
+
+            header_parts = block[header_idx_in_block].split()
+            col_map: dict[str, int] = {}
+            for col_idx, col in enumerate(header_parts):
+                key = col.lower().lstrip("%")
+                if key in (
+                    "device",
+                    "r/s",
+                    "w/s",
+                    "rkb/s",
+                    "wkb/s",
+                    "r_await",
+                    "w_await",
+                    "aqu-sz",
+                    "svctm",
+                    "util",
+                ):
+                    col_map[key] = col_idx
+
+            for ln in block[header_idx_in_block + 1 :]:
+                row = ln.strip()
+                if not row:
+                    continue
+                parts = row.split()
+                # Must have at least as many columns as the header and the
+                # first cell must be a plausible device name (not another
+                # header line, e.g. when samples are separated by a blank
+                # line followed directly by the next avg-cpu).
+                if len(parts) < len(header_parts):
+                    continue
+                if parts[0].lower() in ("device", "avg-cpu:"):
+                    continue
+
+                name = parts[0]
+
+                def _f(
+                    key: str,
+                    _parts: list[str] = parts,
+                    _col_map: dict[str, int] = col_map,
+                ) -> float | None:
+                    """Read column ``key`` from the current row as float.
+
+                    ``_parts`` and ``_col_map`` are bound as default args
+                    so this closure cannot accidentally capture a later
+                    iteration's ``parts``/``col_map`` (B023). Each call
+                    site passes today's row implicitly via these defaults.
+                    """
+                    idx = _col_map.get(key)
+                    if idx is None or idx >= len(_parts):
+                        return None
+                    try:
+                        return float(_parts[idx])
+                    except ValueError:
+                        return None
+
+                util = _f("util")
+                if util is None:
+                    # No %util means this isn't a device row we can reason
+                    # about for saturation/idle. Skip rather than poison
+                    # the per-device dict.
+                    continue
+
+                record = {
+                    "util": util,
+                    "r_per_s": _f("r/s") or 0.0,
+                    "w_per_s": _f("w/s") or 0.0,
+                    "rkB_per_s": _f("rkb/s") or 0.0,
+                    "wkB_per_s": _f("wkb/s") or 0.0,
+                    "r_await": _f("r_await") or 0.0,
+                    "w_await": _f("w_await") or 0.0,
+                    "aqu_sz": _f("aqu-sz") or 0.0,
+                    "svctm": _f("svctm") or 0.0,
+                }
+
+                if name not in per_device:
+                    per_device[name] = []
+                    device_order.append(name)
+                per_device[name].append(record)
+
+        sample_count = len(sample_bounds)
+        distinct_devices = list(device_order)
+
+        # Classify devices.
+        saturated: list[dict] = []
+        idle: list[str] = []
+        for name in device_order:
+            samples = per_device[name]
+            for s_idx, rec in enumerate(samples):
+                if rec["util"] >= self._IOSTAT_SATURATED_UTIL_PCT:
+                    saturated.append(
+                        {
+                            "name": name,
+                            "util_pct": rec["util"],
+                            "sample_index": s_idx,
+                        }
+                    )
+            if samples and all(
+                rec["util"] <= self._IOSTAT_IDLE_UTIL_PCT for rec in samples
+            ):
+                idle.append(name)
+
+        # ----- Build FILE SUMMARY block -----
+        out: list[str] = ["IOSTAT SUMMARY:"]
+        out.append(f"  Samples: {sample_count} (1-second intervals)")
+        if distinct_devices:
+            out.append(
+                f"  Devices observed: {len(distinct_devices)} ("
+                + ", ".join(distinct_devices)
+                + ")"
+            )
+        else:
+            out.append("  Devices observed: 0")
+
+        if saturated:
+            # Group by device for the human-facing line.
+            by_dev: dict[str, list[dict]] = {}
+            for entry in saturated:
+                by_dev.setdefault(entry["name"], []).append(entry)
+            sat_bits: list[str] = []
+            for dname, entries in by_dev.items():
+                utils = [e["util_pct"] for e in entries]
+                samples = per_device[dname]
+                w_awaits = [s["w_await"] for s in samples if s["w_await"] > 0]
+                if len(utils) == len(samples):
+                    util_phrase = (
+                        f"{min(utils):.1f}-{max(utils):.1f}% across all samples"
+                    )
+                else:
+                    util_phrase = (
+                        f"{min(utils):.1f}-{max(utils):.1f}% in "
+                        f"{len(utils)} of {len(samples)} samples"
+                    )
+                if w_awaits:
+                    sat_bits.append(
+                        f"{dname} ({util_phrase}; "
+                        f"w_await {min(w_awaits):.0f}-{max(w_awaits):.0f}ms)"
+                    )
+                else:
+                    sat_bits.append(f"{dname} ({util_phrase})")
+            out.append(
+                f"  Saturated (>={int(self._IOSTAT_SATURATED_UTIL_PCT)}% util): "
+                + "; ".join(sat_bits)
+            )
+        else:
+            out.append(
+                f"  Saturated (>={int(self._IOSTAT_SATURATED_UTIL_PCT)}% util): none"
+            )
+
+        if idle:
+            out.append(f"  Idle (~0% util): {', '.join(idle)}")
+        else:
+            out.append("  Idle (~0% util): none")
+
+        out.append("  Read-side metrics: per-sample r/s and rkB/s captured per device.")
+        out.append(
+            "  Write-side metrics: per-sample w/s and wkB/s captured per device."
+        )
+
+        if cpu_summary:
+            out.append("")
+            out.append(
+                "CPU (sample 1): "
+                f"{cpu_summary['user']:.2f}% user, "
+                f"{cpu_summary['system']:.2f}% system, "
+                f"{cpu_summary['iowait']:.2f}% iowait, "
+                f"{cpu_summary['idle']:.2f}% idle"
+            )
+
+        # Per-device per-sample dump so the agent can quote concrete
+        # numbers (rkB/s, w/s, w_await, etc.) without re-reading the raw
+        # file. Kept compact: one line per device per sample.
+        out.append("")
+        out.append("Per-device samples:")
+        for name in device_order:
+            for s_idx, rec in enumerate(per_device[name], start=1):
+                out.append(
+                    f"  - {name} [sample {s_idx}/{sample_count}]: "
+                    f"r/s={rec['r_per_s']:.1f}, w/s={rec['w_per_s']:.1f}, "
+                    f"rkB/s={rec['rkB_per_s']:.1f}, "
+                    f"wkB/s={rec['wkB_per_s']:.1f}, "
+                    f"r_await={rec['r_await']:.2f}ms, "
+                    f"w_await={rec['w_await']:.2f}ms, "
+                    f"aqu-sz={rec['aqu_sz']:.2f}, "
+                    f"svctm={rec['svctm']:.2f}, "
+                    f"%util={rec['util']:.2f}%"
+                )
+
+        extra_meta: dict = {
+            "sample_count": sample_count,
+            "distinct_devices": distinct_devices,
+            "saturated_devices": saturated,
+            "idle_devices": idle,
+        }
+
+        return "\n".join(out), extra_meta
 
     def _parse_netstat(self, content: str) -> str:
         """Parse netstat command output"""

@@ -6,7 +6,7 @@ No LLM calls required - pure stack trace parsing and pattern matching.
 """
 
 import re
-from typing import TYPE_CHECKING, Dict, List, Tuple
+from typing import TYPE_CHECKING
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
@@ -18,6 +18,27 @@ if TYPE_CHECKING:
     from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
+# Block split detection patterns. Each language has a regex that, when
+# matched at the start of a line, marks the beginning of a new independent
+# error block. Files often pack multiple unrelated errors back-to-back
+# (timestamped log dumps, multi-traceback Python output, panic followed by
+# panic). Splitting before per-language parsing ensures every top-level
+# exception is surfaced — without this the parser conflates frames from
+# different errors into one bogus call path and silently drops every
+# exception type after the first one matched by ``_parse_exception``.
+_BLOCK_START_PATTERNS: dict[str, re.Pattern[str]] = {
+    # ISO-like timestamp + ERROR/FATAL/Exception level (Spring, log4j, etc.)
+    # Example: "2024-01-15 10:23:47.842 ERROR [order-service-pool-3] ..."
+    "java": re.compile(
+        r"^\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}:\d{2}[.,]\d+\s+(?:ERROR|FATAL|Exception)"
+    ),
+    # Python tracebacks always start with this exact header.
+    "python": re.compile(r"^Traceback \(most recent call last\):"),
+    # Go panic header.
+    "go": re.compile(r"^panic:"),
+}
+
+
 class ErrorReportExtractor:
     """Exception context extraction for standalone error reports (0 LLM calls)"""
 
@@ -26,7 +47,11 @@ class ErrorReportExtractor:
         "python": {
             "traceback_header": r"Traceback \(most recent call last\):",
             "stack_frame": r'File "([^"]+)", line (\d+), in (.+)',
-            "exception_line": r"^(\w+(?:Error|Exception)): (.+)$",
+            # Allow dotted module prefixes (e.g. ``jinja2.exceptions.TemplateNotFound``,
+            # ``httpx.ConnectTimeout``, ``app.exceptions.ReportGenerationError``).
+            # The class name itself must end in ``Error`` or ``Exception`` to avoid
+            # false positives on ordinary log lines.
+            "exception_line": r"^([\w\.]+(?:Error|Exception)): (.+)$",
         },
         "java": {
             "stack_frame": r"at ([\w\.$]+)\(([\w\.]+):(\d+)\)",
@@ -50,16 +75,15 @@ class ErrorReportExtractor:
     def llm_calls_used(self) -> int:
         return 0
 
-    def extract(self, content: str) -> str:
+    def extract(self, content: str) -> ExtractResult:
         """
         Exception Context Extraction algorithm:
         1. Detect programming language
-        2. Parse exception type and message
-        3. Parse stack trace frames
-        4. Identify root cause (innermost frame)
-        5. Filter user code vs library code
-        6. Extract variable values if present
-        7. Generate actionable summary with fix suggestions
+        2. Split content into independent error blocks
+        3. Per block: parse exception type/message, parse stack frames,
+           identify root cause (innermost frame)
+        4. Combine per-block summaries into a single ``file_extract``
+        5. Append fix suggestions (computed once over the full content)
         """
         if not has_content(content):
             return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
@@ -67,30 +91,136 @@ class ErrorReportExtractor:
         # Detect language
         language = self._detect_language(content)
 
-        # Parse exception data
-        exception_type, exception_msg = self._parse_exception(content, language)
+        # Split into independent error blocks (≥1 always)
+        blocks = self._split_into_blocks(content, language)
 
-        # Parse stack frames
-        stack_frames = self._parse_stack_frames(content, language)
+        # Parse each block independently
+        parsed_blocks: list[dict] = []
+        for block_text, block_header in blocks:
+            exception_type, exception_msg = self._parse_exception(block_text, language)
+            stack_frames = self._parse_stack_frames(block_text, language)
 
-        # Generate summary
-        result = self._generate_summary(
-            language, exception_type, exception_msg, stack_frames, content
-        )
+            root_cause = None
+            if stack_frames:
+                root_frame = stack_frames[-1]
+                root_cause = root_frame.get("file", root_frame.get("class_method", "?"))
 
-        root_cause = None
-        if stack_frames:
-            root_frame = stack_frames[-1]
-            root_cause = root_frame.get("file", root_frame.get("class_method", "?"))
+            parsed_blocks.append(
+                {
+                    "header": block_header,
+                    "exception_type": exception_type,
+                    "exception_msg": exception_msg,
+                    "stack_frames": stack_frames,
+                    "root_cause": root_cause,
+                }
+            )
+
+        # Generate combined summary
+        result_text = self._generate_summary(language, parsed_blocks, content)
+
+        # Build file_meta
+        exception_types = [
+            b["exception_type"]
+            for b in parsed_blocks
+            if b["exception_type"] not in ("Unknown", None)
+        ]
+        total_frames = sum(len(b["stack_frames"]) for b in parsed_blocks)
         file_meta: dict = {
             "language": language,
-            "exception_type": exception_type,
-            "stack_frames": len(stack_frames),
+            "exception_count": len(parsed_blocks),
+            "exception_types": exception_types,
+            # Backward-compat: ``exception_type`` and ``root_cause`` reflect
+            # the FIRST block (the one a single-block file would have produced).
+            "exception_type": parsed_blocks[0]["exception_type"],
+            "stack_frames": total_frames,
             "size_bytes": len(content.encode("utf-8", errors="replace")),
         }
-        if root_cause:
-            file_meta["root_cause"] = root_cause
-        return ExtractResult(file_extract=result, file_meta=file_meta)
+        if parsed_blocks[0]["root_cause"]:
+            file_meta["root_cause"] = parsed_blocks[0]["root_cause"]
+
+        return ExtractResult(file_extract=result_text, file_meta=file_meta)
+
+    def _split_into_blocks(
+        self, content: str, language: str
+    ) -> list[tuple[str, str | None]]:
+        """Split ``content`` into independent error blocks.
+
+        A block is the contiguous text spanning from one block-start marker
+        (exclusive of the previous one) up to the next marker or end-of-file.
+        For each block we also capture an optional header — the block-start
+        line itself — so the summary can label sections with their original
+        timestamp / context.
+
+        When the language has no block-start pattern, or no marker is found,
+        the whole content is returned as a single block. This preserves the
+        single-error case unchanged.
+        """
+        pattern = _BLOCK_START_PATTERNS.get(language)
+        if pattern is None:
+            return [(content, None)]
+
+        lines = content.split("\n")
+        # Indices of lines that mark the start of a new block.
+        starts = [i for i, line in enumerate(lines) if pattern.match(line)]
+
+        # Python: a "Traceback (most recent call last):" preceded (within
+        # ~3 lines, ignoring blanks) by the chaining marker
+        # "During handling of the above exception, another exception
+        # occurred:" or "The above exception was the direct cause of the
+        # following exception:" is NOT a new top-level block — it is the
+        # second half of a chained exception pair belonging to the previous
+        # block. Filter those out so the count matches the user's intuition
+        # of "distinct top-level exceptions".
+        if language == "python" and len(starts) > 1:
+            chain_markers = (
+                "During handling of the above exception",
+                "The above exception was the direct cause",
+            )
+            filtered: list[int] = []
+            for idx in starts:
+                # Look back up to 3 non-blank lines for a chain marker.
+                is_chained = False
+                non_blank_seen = 0
+                for back in range(idx - 1, -1, -1):
+                    line = lines[back].strip()
+                    if not line:
+                        continue
+                    non_blank_seen += 1
+                    if any(marker in line for marker in chain_markers):
+                        is_chained = True
+                        break
+                    if non_blank_seen >= 3:
+                        break
+                if not is_chained or not filtered:
+                    # Always keep the FIRST traceback start, even if its
+                    # immediate predecessor matches (defensive).
+                    filtered.append(idx)
+            starts = filtered
+
+        if not starts:
+            return [(content, None)]
+
+        # If the first marker is not at line 0, prepend an "intro" block
+        # spanning lines [0:starts[0]] only when it contains an exception
+        # itself. Most timestamped logs have nothing meaningful before the
+        # first ERROR line, so dropping it keeps the summary clean.
+        blocks: list[tuple[str, str | None]] = []
+        for idx, start in enumerate(starts):
+            end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+            block_lines = lines[start:end]
+            block_text = "\n".join(block_lines).rstrip()
+            if not block_text.strip():
+                continue
+            # Header = the marker line itself, trimmed for display.
+            header = block_lines[0].strip() if block_lines else None
+            blocks.append((block_text, header))
+
+        # Defensive fallback: if splitting somehow produced nothing
+        # (e.g. all blocks were whitespace), return the full content.
+        if not blocks:
+            return [(content, None)]
+
+        return blocks
 
     def _detect_language(self, content: str) -> str:
         """Detect programming language from exception format"""
@@ -231,63 +361,86 @@ class ErrorReportExtractor:
     def _generate_summary(
         self,
         language: str,
-        exception_type: str,
-        exception_msg: str,
-        stack_frames: list[dict],
+        parsed_blocks: list[dict],
         full_content: str,
     ) -> str:
-        """Generate actionable exception summary"""
-        lines = [
-            "Exception Analysis",
-            "",
-            f"Language: {language.capitalize()}",
-            f"Exception: {exception_type}",
-            f"Message: {exception_msg}",
+        """Generate actionable exception summary across all parsed blocks."""
+        block_count = len(parsed_blocks)
+        noun = "exception" if block_count == 1 else "exceptions"
+        lines: list[str] = [
+            f"Exception Analysis ({block_count} {noun} detected)",
             "",
         ]
 
-        # Find root cause
-        if stack_frames:
-            # Root cause is the innermost frame (last in stack)
-            root_frame = stack_frames[-1]
-
-            lines.append("🎯 Root Cause:")
-            if language == "python":
-                lines.append(f"  - Location: {root_frame['file']}:{root_frame['line']}")
-                lines.append(f"  - Function: {root_frame['function']}")
-            elif language == "java":
-                lines.append(f"  - Location: {root_frame['file']}:{root_frame['line']}")
-                lines.append(f"  - Method: {root_frame['class_method']}")
-            elif language == "javascript":
-                lines.append(
-                    f"  - Location: {root_frame['file']}:{root_frame['line']}:{root_frame.get('column', 0)}"
-                )
-                lines.append(f"  - Function: {root_frame.get('function', 'anonymous')}")
-
-            # Extract user code frames only
-            user_frames = [f for f in stack_frames if f.get("is_user_code", True)]
-
-            if user_frames:
+        for idx, block in enumerate(parsed_blocks, start=1):
+            # Section heading. For multi-block files include the originating
+            # log line (timestamped header) so the agent can disambiguate.
+            if block_count > 1:
+                if block["header"]:
+                    lines.append(f"### Exception {idx} ({block['header']})")
+                else:
+                    lines.append(f"### Exception {idx}")
                 lines.append("")
-                lines.append("Call Path (user code only):")
-                for i, frame in enumerate(user_frames, 1):
-                    if language == "python":
-                        lines.append(
-                            f"{i}. {frame['function']} ({frame['file']}:{frame['line']})"
-                        )
-                    elif language == "java":
-                        lines.append(
-                            f"{i}. {frame['class_method']} ({frame['file']}:{frame['line']})"
-                        )
-                    elif language == "javascript":
-                        func = frame.get("function", "anonymous")
-                        lines.append(f"{i}. {func} ({frame['file']}:{frame['line']})")
+            lines.append(f"Language: {language.capitalize()}")
+            lines.append(f"Exception: {block['exception_type']}")
+            lines.append(f"Message: {block['exception_msg']}")
+            lines.append("")
 
-        # Add fix suggestions based on exception type
+            stack_frames = block["stack_frames"]
+            if stack_frames:
+                root_frame = stack_frames[-1]
+
+                lines.append("🎯 Root Cause:")
+                if language == "python":
+                    lines.append(
+                        f"  - Location: {root_frame['file']}:{root_frame['line']}"
+                    )
+                    lines.append(f"  - Function: {root_frame['function']}")
+                elif language == "java":
+                    lines.append(
+                        f"  - Location: {root_frame['file']}:{root_frame['line']}"
+                    )
+                    lines.append(f"  - Method: {root_frame['class_method']}")
+                elif language == "javascript":
+                    lines.append(
+                        f"  - Location: {root_frame['file']}:{root_frame['line']}:{root_frame.get('column', 0)}"
+                    )
+                    lines.append(
+                        f"  - Function: {root_frame.get('function', 'anonymous')}"
+                    )
+
+                user_frames = [f for f in stack_frames if f.get("is_user_code", True)]
+                if user_frames:
+                    lines.append("")
+                    lines.append("Call Path (user code only):")
+                    for i, frame in enumerate(user_frames, 1):
+                        if language == "python":
+                            lines.append(
+                                f"{i}. {frame['function']} ({frame['file']}:{frame['line']})"
+                            )
+                        elif language == "java":
+                            lines.append(
+                                f"{i}. {frame['class_method']} ({frame['file']}:{frame['line']})"
+                            )
+                        elif language == "javascript":
+                            func = frame.get("function", "anonymous")
+                            lines.append(
+                                f"{i}. {func} ({frame['file']}:{frame['line']})"
+                            )
+
+            # Spacer between sections in multi-block output.
+            if block_count > 1 and idx < block_count:
+                lines.append("")
+
+        # Fix suggestions: computed once over the full content. For
+        # multi-block files we feed the FIRST block's exception type/message
+        # to keep the heuristic deterministic — but the suggestion list is
+        # advisory and the heading hints that all blocks should be reviewed.
+        primary = parsed_blocks[0]
         lines.append("")
         lines.append("💡 Likely Fixes:")
         fix_suggestions = self._get_fix_suggestions(
-            exception_type, exception_msg, full_content
+            primary["exception_type"], primary["exception_msg"], full_content
         )
         for suggestion in fix_suggestions:
             lines.append(f"  - {suggestion}")
