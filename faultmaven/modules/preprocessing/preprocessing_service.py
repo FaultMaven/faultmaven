@@ -121,6 +121,90 @@ def _build_alternative_chain(
     return alternatives
 
 
+# =============================================================================
+# Content preview for the classification_failed placeholder (ISS-030)
+# =============================================================================
+
+# Hard caps on the preview block so it never overflows context budgets.
+# CSV/TSV: header + up to 2 data rows; other text: up to 3 lines.
+# Per-line cell value truncation prevents single-row overflows.
+_PREVIEW_MAX_DATA_ROWS_TABULAR = 2
+_PREVIEW_MAX_LINES_TEXT = 3
+_PREVIEW_MAX_CELL_CHARS = 80
+_PREVIEW_MAX_LINE_CHARS = 240
+
+
+def _truncate(value: str, limit: int) -> str:
+    """Trim a string to ``limit`` chars, appending an ellipsis when shortened."""
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 1)] + "…"
+
+
+def _build_content_preview(filename: str, content: str) -> Optional[str]:
+    """Build a small orienting preview for the classification_failed placeholder.
+
+    The preview is what lets the agent answer "what columns / structure did
+    you detect?" with concrete content. Without it the agent only sees the
+    placeholder text and the suggested types — no actual file substance.
+
+    For CSV/TSV files: emits an explicit ``Columns:`` line followed by up to
+    two sample data rows. For other text inputs: emits a ``Preview:`` block
+    with the first 2-3 non-empty lines.
+
+    Returns ``None`` for empty / whitespace-only content (the UNANALYZABLE
+    branch handles that case separately and shouldn't carry a preview).
+    """
+    if not content or not content.strip():
+        return None
+
+    ext = ""
+    if "." in filename:
+        ext = "." + filename.rsplit(".", 1)[-1].lower()
+
+    # --- Tabular path: CSV / TSV — surface columns + sample row(s) ---
+    if ext in (".csv", ".tsv"):
+        delimiter = "\t" if ext == ".tsv" else ","
+        # Split by raw newlines but keep only non-empty lines to skip blank
+        # leading/trailing rows. Cap the scan to the first ~5KB so massive
+        # files don't waste cycles building a preview we'll truncate anyway.
+        lines = [line for line in content[:5000].splitlines() if line.strip()]
+        if not lines:
+            return None
+        header_cells = [
+            _truncate(c.strip().strip('"'), _PREVIEW_MAX_CELL_CHARS)
+            for c in lines[0].split(delimiter)
+        ]
+        # Drop empty trailing cells from a stray delimiter at end-of-line.
+        while header_cells and not header_cells[-1]:
+            header_cells.pop()
+        if not header_cells:
+            return None
+        columns_line = "Columns: " + ", ".join(header_cells)
+        sample_lines: list[str] = []
+        for raw in lines[1 : 1 + _PREVIEW_MAX_DATA_ROWS_TABULAR]:
+            cells = [
+                _truncate(c.strip().strip('"'), _PREVIEW_MAX_CELL_CHARS)
+                for c in raw.split(delimiter)
+            ]
+            sample_lines.append(_truncate(", ".join(cells), _PREVIEW_MAX_LINE_CHARS))
+        block_lines = [columns_line]
+        if sample_lines:
+            block_lines.append("Sample row(s): " + " | ".join(sample_lines))
+        return "\n".join(block_lines)
+
+    # --- Generic text path: first few non-empty lines ---
+    text_lines = [
+        _truncate(line.rstrip(), _PREVIEW_MAX_LINE_CHARS)
+        for line in content.splitlines()
+        if line.strip()
+    ]
+    if not text_lines:
+        return None
+    preview_lines = text_lines[:_PREVIEW_MAX_LINES_TEXT]
+    return "Preview:\n" + "\n".join(preview_lines)
+
+
 class PreprocessingService:
     """Tier 0+1 pipeline orchestrator for data preprocessing."""
 
@@ -321,15 +405,25 @@ class PreprocessingService:
             suggested = ", ".join(
                 str(t.value) for t in (classification.suggested_types or [])
             )
+            # ISS-030: surface a small content preview (header + sample row for
+            # CSV/TSV; first few lines otherwise) so the agent can describe
+            # *what* about the file is ambiguous when the user asks q4-style
+            # questions ("what columns/structure was detected?"). Without this,
+            # the placeholder text alone has no concrete data for the agent to
+            # cite — it can only repeat the suggested types.
+            preview_block = _build_content_preview(filename, content)
+            placeholder_text = (
+                f"[Classification uncertain for '{filename}' — "
+                f"requesting user input]\nSuggested types: {suggested}"
+            )
+            if preview_block:
+                placeholder_text = f"{placeholder_text}\n{preview_block}"
             return self._build_placeholder_result(
                 content=content,
                 classification=classification,
                 detailed_data_type=detailed_data_type,
                 unified_data_type=unified_data_type,
-                placeholder_text=(
-                    f"[Classification uncertain for '{filename}' — "
-                    f"requesting user input]\nSuggested types: {suggested}"
-                ),
+                placeholder_text=placeholder_text,
                 extraction_method="classification_failed",
                 start_time=start_time,
             )
