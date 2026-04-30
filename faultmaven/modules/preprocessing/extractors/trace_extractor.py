@@ -102,7 +102,13 @@ class TraceDataExtractor:
 
         # Generate summary
         summary = self._generate_summary(
-            trace_id, total_duration, critical_path, slow_spans, error_spans, call_tree
+            trace_id,
+            total_duration,
+            critical_path,
+            slow_spans,
+            error_spans,
+            call_tree,
+            span_count=len(spans),
         )
 
         services = sorted(set(s["service"] for s in spans))
@@ -148,6 +154,7 @@ class TraceDataExtractor:
         # Normalize span format
         normalized_spans = []
         for span in spans:
+            tags = self._extract_tags_dict(span)
             normalized_spans.append(
                 {
                     "span_id": span.get("spanId") or span.get("spanID", "unknown"),
@@ -158,10 +165,40 @@ class TraceDataExtractor:
                     "service": self._extract_service_name(span),
                     "duration_ms": self._extract_duration_ms(span, is_jaeger=is_jaeger),
                     "has_error": self._check_error(span),
+                    "tags": tags,
                 }
             )
 
         return normalized_spans
+
+    def _extract_tags_dict(self, span: dict) -> dict:
+        """Extract tags as a flat dict {key: value}.
+
+        Supports both Jaeger ([{key,value}, ...]) and OpenTelemetry
+        ({key: value, ...}) tag formats. Used to surface error.message,
+        http.status_code, etc. in the summary block.
+        """
+        tags_field = span.get("tags")
+        if not tags_field:
+            return {}
+
+        # Jaeger: list of {key, value} dicts
+        if isinstance(tags_field, list):
+            result = {}
+            for tag in tags_field:
+                if not isinstance(tag, dict):
+                    continue
+                key = tag.get("key")
+                if key is None:
+                    continue
+                result[key] = tag.get("value")
+            return result
+
+        # OpenTelemetry: dict
+        if isinstance(tags_field, dict):
+            return dict(tags_field)
+
+        return {}
 
     def _extract_service_name(self, span: dict) -> str:
         """Extract service name from span"""
@@ -315,19 +352,36 @@ class TraceDataExtractor:
         slow_spans: list[dict],
         error_spans: list[dict],
         call_tree: str,
+        span_count: int = 0,
     ) -> str:
         """Generate natural language summary"""
         lines = [
             f"Trace Analysis (traceId: {trace_id}...)",
+            f"SPAN INVENTORY ({span_count} total)",
             f"- Total duration: {total_duration:.1f}ms",
             f"- Service call chain: {call_tree}",
             "",
         ]
 
         if error_spans:
-            lines.append(f"⚠️  Errors detected: {len(error_spans)} failed span(s)")
-            for span in error_spans[:3]:  # Show top 3 errors
-                lines.append(f"   - {span['service']}.{span['operation']} (FAILED)")
+            lines.append(
+                f"❌ Error Spans ({len(error_spans)} failed span(s) — verbatim error messages below):"
+            )
+            for span in error_spans[:5]:  # Show top 5 errors
+                tags = span.get("tags") or {}
+                status_code = tags.get("http.status_code")
+                error_message = tags.get("error.message") or tags.get("error.msg")
+
+                detail_parts: list[str] = []
+                if status_code is not None:
+                    detail_parts.append(f"HTTP {status_code}")
+                if error_message:
+                    detail_parts.append(f'error.message="{error_message}"')
+
+                detail_suffix = f" — {'; '.join(detail_parts)}" if detail_parts else ""
+                lines.append(
+                    f"   - {span['service']}.{span['operation']} (FAILED){detail_suffix}"
+                )
             lines.append("")
 
         if slow_spans:
