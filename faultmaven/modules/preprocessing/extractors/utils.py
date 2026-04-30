@@ -133,6 +133,19 @@ _TS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         "yymmdd",
         re.compile(r"\b(\d{2})(\d{2})(\d{2}) (\d{2})(\d{2})(\d{2})\b"),
     ),
+    # Spark / log4j compact form: YY/MM/DD HH:MM:SS
+    #   e.g. "17/06/09 20:10:40 INFO executor.Executor: ..."
+    # ISS-027: previously fell through to epoch_s and similar fallback
+    # patterns, which never matched the 8-digit numeric prefix, leaving
+    # Spark logs with time_range="unknown" and the agent inferring the
+    # span from later embedded HH:MM:SS fragments — clipping by ~5s on
+    # both ends.
+    (
+        "yy_slash_mmdd",
+        re.compile(
+            r"\b(\d{2})/(\d{2})/(\d{2}) (\d{2}):(\d{2}):(\d{2})\b",
+        ),
+    ),
     ("epoch_ms", re.compile(r"\b([12]\d{12})\b")),
     ("epoch_s", re.compile(r"\b([12]\d{9})\b")),
 ]
@@ -209,6 +222,21 @@ def extract_timestamp(line: str) -> datetime | None:
             if name == "yymmdd":
                 yy, mo, dd, hh, mm, ss = (int(x) for x in m.groups())
                 year = 2000 + yy
+                if not (
+                    1 <= mo <= 12
+                    and 1 <= dd <= 31
+                    and 0 <= hh <= 23
+                    and 0 <= mm <= 59
+                    and 0 <= ss <= 59
+                ):
+                    continue
+                return datetime(year, mo, dd, hh, mm, ss, tzinfo=UTC)
+            if name == "yy_slash_mmdd":
+                yy, mo, dd, hh, mm, ss = (int(x) for x in m.groups())
+                # Two-digit year: 00-69 → 2000s, 70-99 → 1900s. Spark and
+                # most modern log4j configs emit this format with current
+                # decade values, so the cutoff lands well in the past.
+                year = 2000 + yy if yy <= 69 else 1900 + yy
                 if not (
                     1 <= mo <= 12
                     and 1 <= dd <= 31

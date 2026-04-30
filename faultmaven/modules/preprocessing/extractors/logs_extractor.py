@@ -698,6 +698,16 @@ class LogsAndErrorsExtractor:
     _AUTH_EVENTS: frozenset = frozenset(
         {"failed_password", "pam_auth_failure", "invalid_user", "accepted_login"}
     )
+    # Event types that mark a source IP as an "attacker" for the purpose of
+    # disambiguating Accepted password lines (ISS-026). An IP that ONLY
+    # appears in accepted_login (and never in any of these) is treated as a
+    # legitimate session — typically an admin login on the same host whose
+    # IP happens to share the file with brute-force traffic. Crucially,
+    # accepted_login is NOT in this set, so a clean admin login does not
+    # mark its own IP as an attacker.
+    _ATTACK_EVENTS: frozenset = frozenset(
+        {"failed_password", "pam_auth_failure", "invalid_user", "break_in_attempt"}
+    )
     # Syslog service name extractor — captures the base program name from
     # "service[PID]:" and "service(module)[PID]:" prefixes. Matches only
     # when the token is preceded by whitespace (avoids false matches inside
@@ -760,6 +770,13 @@ class LogsAndErrorsExtractor:
     # matches inside other content). Mirrors the host-count threshold used
     # for syslog 3rd-field hosts.
     MIN_BGL_NODE_SURFACE_LINES = 5
+    # Minimum distinct ``Package_for_KB<N>`` packages before the CBS-format
+    # note is added to FILE SUMMARY (ISS-028). 5 is well above the
+    # incidental-mention floor (a misclassified pasted line containing
+    # 'Package_for_KB' would appear once or twice) but well below the
+    # ~271 distinct KBs in the Windows fixture, so any genuine CBS log
+    # trips it.
+    MIN_KB_PACKAGES_FOR_CBS_NOTE = 5
     # Minimum occurrences for a non-error-keyword line template to be considered
     # "prominent" and included alongside error-only template counts.
     # Set to 20 so that INFO activity like FastLeaderElection (37 lines in a 2k
@@ -1026,6 +1043,7 @@ class LogsAndErrorsExtractor:
             sample_raw_ts=sample_raw_ts,
             bgl_node_count=len(bgl_nodes),
             bgl_line_count=bgl_line_count,
+            kb_package_count=len(kb_package_counts),
         )
 
         # ENTITY PROFILE body — the search map
@@ -1048,6 +1066,21 @@ class LogsAndErrorsExtractor:
             parts.append("  Top services (syslog process names, line counts):")
             for svc, n in sig_services:
                 parts.append(f"    {svc}: {n} lines")
+
+        # Attacker IP set (ISS-026): any IP that appears in at least one
+        # failed_password / invalid_user / break_in_attempt / pam_auth_failure
+        # event. Used to split accepted_login lines into attacker-sourced
+        # (suspicious) and non-attacker-sourced (likely legitimate)
+        # categories — the OpenSSH 2k fixture contains exactly one
+        # Accepted password line from an IP that NEVER appears in attack
+        # events; without the split the agent describes it as
+        # "one successful login among the attempts" and trips the
+        # forbidden_claim "claims the attacks succeeded".
+        attacker_ips: set[str] = {
+            ip
+            for ip, counts in ip_event_counts.items()
+            if any(counts.get(ev, 0) > 0 for ev in self._ATTACK_EVENTS)
+        }
 
         if event_counts:
             parts.append(
@@ -1096,6 +1129,33 @@ class LogsAndErrorsExtractor:
                 parts.append(
                     f'    {event}: {count}  ["{search_str}"]{span_note}{rate_note}{rdns_note}'
                 )
+                # ISS-026: per-IP attacker-vs-legitimate breakdown for
+                # accepted_login lines. Surfaces directly under the headline
+                # event count so the LLM reads the disambiguation as part
+                # of the same fact, not as a separate signal it might miss.
+                # Skipped when there are no accepted_login events or when
+                # no accepted IPs are recorded (e.g. PAM-style "session
+                # opened" logs where rhost is on a different line).
+                if event == "accepted_login":
+                    attacker_accepted = 0
+                    legitimate_accepted = 0
+                    for ip, ev_counts in ip_event_counts.items():
+                        n = ev_counts.get("accepted_login", 0)
+                        if not n:
+                            continue
+                        if ip in attacker_ips:
+                            attacker_accepted += n
+                        else:
+                            legitimate_accepted += n
+                    if attacker_accepted or legitimate_accepted:
+                        parts.append(
+                            f"      {attacker_accepted} from attacker IPs"
+                            " (IPs that also have failed/invalid/break-in events)"
+                        )
+                        parts.append(
+                            f"      {legitimate_accepted} from non-attacker IPs"
+                            " (likely legitimate sessions)"
+                        )
 
         if ip_all_counts:
             parts.append(
@@ -1255,6 +1315,7 @@ class LogsAndErrorsExtractor:
         sample_raw_ts: str | None = None,
         bgl_node_count: int = 0,
         bgl_line_count: int = 0,
+        kb_package_count: int = 0,
     ) -> str:
         """Return a compact FILE SUMMARY (2–4 sentences) describing dominant
         activity, top source, and key absences.
@@ -1274,6 +1335,23 @@ class LogsAndErrorsExtractor:
             if "brute-force" in pattern and n_distinct_ips > 1:
                 pattern = f"{pattern} ({n_distinct_ips} distinct source IPs)"
             sentences.append(f"{pattern}.")
+
+        # Windows CBS format note (ISS-028). When the file references
+        # ≥MIN_KB_PACKAGES_FOR_CBS_NOTE distinct ``Package_for_KB<N>``
+        # packages it is a Component-Based Servicing log — HRESULT
+        # entries here are servicing results logged at Info severity,
+        # not application crashes or network/firewall events. Without
+        # this note the agent describes 0x800f080d / 0x80004005 lines
+        # as "application-level failures" or "network connectivity
+        # events" (logs-windows-01 q5), tripping the forbidden_claims
+        # "claims application crashes appear" and "fabricates network
+        # or firewall events".
+        if kb_package_count >= self.MIN_KB_PACKAGES_FOR_CBS_NOTE:
+            sentences.append(
+                "Format: Windows CBS (Component-Based Servicing) log."
+                " HRESULT entries are Info-severity Windows Update servicing"
+                " results, not application crashes or network events."
+            )
 
         # Break-in attempt trigger IMMEDIATELY after the pattern — POSSIBLE BREAK-IN
         # ATTEMPT is a specific OpenSSH warning; placing it early ensures agents see

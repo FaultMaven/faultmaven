@@ -1849,3 +1849,266 @@ class TestSeverityScaleContext:
         result = extractor.extract(content)
         fe = _fe(result)
         assert "BGL node" not in fe
+
+
+class TestAcceptedLoginAttackerDisambiguation:
+    """ISS-026: Accepted password lines must be disambiguated by source IP.
+
+    OpenSSH 'Accepted password' surfaces 1 successful login alongside hundreds
+    of failed_password / invalid_user / break_in_attempt events. When the
+    accepted login's source IP appears NOWHERE in failed/invalid/break-in
+    events, that is a legitimate session unrelated to the brute-force
+    activity — not 'one successful login among the attempts'. The agent
+    framing it as 'attack succeeded' trips the forbidden_claim 'claims the
+    attacks succeeded'.
+
+    The extractor must annotate accepted_login with a per-IP breakdown:
+    how many came from attacker IPs (those with failed/invalid/break-in
+    events) vs non-attacker IPs (likely legitimate sessions).
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _make_log(self, lines: list[str], pad: int = 12) -> str:
+        # Pad with neutral filler to clear the >10-line scan threshold.
+        filler = "Dec 10 06:55:00 LabSZ kernel: tick benign info"
+        return "\n".join(lines + [filler] * pad)
+
+    def test_legitimate_accepted_login_split_from_attackers(self, extractor):
+        """Accepted-password from a non-attacker IP labelled as legitimate.
+
+        Mirrors the OpenSSH_2k.log layout: many failed/invalid attempts from
+        attacker IPs, plus a single Accepted password from an IP that NEVER
+        appears in any attack event.
+        """
+        attack_ip = "183.62.140.253"
+        legit_ip = "119.137.62.142"
+        attack_lines = [
+            f"Dec 10 06:55:46 LabSZ sshd[100{i:02d}]: Failed password for root from {attack_ip} port 33{i:03d} ssh2"
+            for i in range(20)
+        ] + [
+            f"Dec 10 06:56:{i:02d} LabSZ sshd[200{i:02d}]: Invalid user webmaster from {attack_ip}"
+            for i in range(20)
+        ]
+        accepted_line = (
+            f"Dec 10 09:32:20 LabSZ sshd[24680]: "
+            f"Accepted password for fztu from {legit_ip} port 49116 ssh2"
+        )
+        content = self._make_log(attack_lines + [accepted_line])
+        result = extractor.extract(content)
+        text = _all(result)
+        # The breakdown must call out attacker vs non-attacker totals.
+        assert "0 from attacker IPs" in text, (
+            f"Expected 0-from-attacker breakdown for legitimate accepted_login.\n"
+            f"Output:\n{text[:2000]}"
+        )
+        assert "1 from non-attacker IPs" in text, (
+            f"Expected 1-from-non-attacker breakdown for legitimate accepted_login.\n"
+            f"Output:\n{text[:2000]}"
+        )
+
+    def test_attacker_accepted_login_flagged(self, extractor):
+        """When the accepted IP also has failed/invalid events, count it as attacker."""
+        attack_ip = "1.2.3.4"
+        attack_lines = [
+            f"Dec 10 06:55:{i:02d} LabSZ sshd[100{i:02d}]: Failed password for root from {attack_ip} port 33{i:03d} ssh2"
+            for i in range(20)
+        ]
+        accepted_line = (
+            f"Dec 10 09:32:20 LabSZ sshd[24680]: "
+            f"Accepted password for root from {attack_ip} port 49116 ssh2"
+        )
+        content = self._make_log(attack_lines + [accepted_line])
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "1 from attacker IPs" in text, (
+            f"Accepted from an attacker IP must be flagged as attacker-sourced.\n"
+            f"Output:\n{text[:2000]}"
+        )
+        assert "0 from non-attacker IPs" in text
+
+    def test_top_level_accepted_count_unchanged(self, extractor):
+        """The headline accepted_login count must remain accurate (event count,
+        not replaced by the breakdown).
+        """
+        legit_ip = "10.0.0.5"
+        attack_ip = "1.2.3.4"
+        attack_lines = [
+            f"Dec 10 06:55:{i:02d} LabSZ sshd[200{i:02d}]: Failed password for root from {attack_ip} port 33{i:03d} ssh2"
+            for i in range(15)
+        ]
+        accepted_line = (
+            f"Dec 10 09:32:20 LabSZ sshd[24680]: "
+            f"Accepted password for fztu from {legit_ip} port 49116 ssh2"
+        )
+        content = self._make_log(attack_lines + [accepted_line])
+        result = extractor.extract(content)
+        text = _all(result)
+        # The headline count must still appear ("accepted_login: 1")
+        # somewhere in the entity profile.
+        assert "accepted_login: 1" in text, (
+            f"Top-level accepted_login event count must remain unchanged.\n"
+            f"Output:\n{text[:2000]}"
+        )
+
+    def test_no_breakdown_when_no_accepted_login(self, extractor):
+        """No accepted_login lines → no breakdown emitted."""
+        attack_lines = [
+            f"Dec 10 06:55:{i:02d} LabSZ sshd[100{i:02d}]: Failed password for root from 1.2.3.4"
+            for i in range(15)
+        ]
+        content = self._make_log(attack_lines)
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "from attacker IPs" not in text
+        assert "from non-attacker IPs" not in text
+
+
+class TestSparkTimestampFormat:
+    """ISS-027: Spark logs use 'YY/MM/DD HH:MM:SS' which the timestamp
+    extractor previously did not match — falling back to embedded body
+    timestamps and clipping the actual span by several seconds.
+
+    Spark format example: '17/06/09 20:10:40 INFO executor.Executor: ...'
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _spark_log(self) -> str:
+        # Mirrors real Spark_2k.log — leading line carries 20:10:40, last
+        # line carries 20:11:11, with embedded IPs that trigger the entity
+        # profile (and therefore FILE SUMMARY) so the time-range note
+        # appears.
+        early = (
+            "17/06/09 20:10:40 INFO executor.CoarseGrainedExecutorBackend:"
+            " Driver address 10.10.34.11"
+        )
+        mid = (
+            "17/06/09 20:10:55 INFO executor.Executor: "
+            "Running task 0.0 in stage 0.0 (TID 0) on 10.10.34.12"
+        )
+        late = (
+            "17/06/09 20:11:11 INFO storage.BlockManager: "
+            "Found block rdd_42_32 locally on 10.10.34.13"
+        )
+        return "\n".join([early] * 5 + [mid] * 5 + [late] * 5)
+
+    def _time_range_sentence(self, text: str) -> str:
+        """Extract the FILE SUMMARY sentence that contains 'Log time range'."""
+        # Drop the crime-scene block — only inspect FILE SUMMARY content.
+        if "CRIME SCENE EXTRACTION" in text:
+            text = text.split("CRIME SCENE EXTRACTION")[0]
+        return next(
+            (s for s in text.split(". ") if "Log time range" in s),
+            "",
+        )
+
+    def test_spark_time_range_first_line_captured(self, extractor):
+        """The actual first timestamp (20:10:40) must drive 'Log time range'."""
+        result = extractor.extract(self._spark_log())
+        sentence = self._time_range_sentence(_fe(result))
+        assert "20:10:40" in sentence, (
+            f"Spark first timestamp 20:10:40 must drive 'Log time range'.\n"
+            f"Got time-range sentence: {sentence!r}\n"
+            f"Full output:\n{_fe(result)[:2000]}"
+        )
+
+    def test_spark_time_range_last_line_captured(self, extractor):
+        """The actual last timestamp (20:11:11) must drive 'Log time range'."""
+        result = extractor.extract(self._spark_log())
+        sentence = self._time_range_sentence(_fe(result))
+        assert "20:11:11" in sentence, (
+            f"Spark last timestamp 20:11:11 must drive 'Log time range'.\n"
+            f"Got time-range sentence: {sentence!r}\n"
+            f"Full output:\n{_fe(result)[:2000]}"
+        )
+
+    def test_spark_time_range_not_unknown(self, extractor):
+        """Spark-format logs must produce a real time range, not 'unknown'."""
+        result = extractor.extract(self._spark_log())
+        text = _fe(result)
+        # Either an explicit "unknown" string or no time-range line at all
+        # would mean the format is unrecognized.
+        assert "Log time range" in text, (
+            f"FILE SUMMARY must include a populated 'Log time range:' line.\n"
+            f"Output:\n{text[:2000]}"
+        )
+        assert "Log time range: unknown" not in text
+
+
+class TestCBSFormatNote:
+    """ISS-028: When the extractor detects a Windows CBS log via the
+    Package_for_KB substring, it must add a one-line CBS-format note in
+    FILE SUMMARY so the agent doesn't characterize HRESULT entries as
+    application crashes or network events. Q5 of logs-windows-01 trips
+    the forbidden_claims 'claims application crashes appear' and
+    'fabricates network or firewall events' without this clarification.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _cbs_log(self, distinct_kbs: int = 8, copies: int = 3) -> str:
+        lines = []
+        for kb in range(2479000, 2479000 + distinct_kbs):
+            for _ in range(copies):
+                lines.append(
+                    f"2016-09-28 04:30:33, Info                  CBS    "
+                    f"Read out cached package applicability for package: "
+                    f"Package_for_KB{kb}~31bf3856ad364e35~amd64~~6.1.1.0, "
+                    f"ApplicableState: 112, CurrentState:112"
+                )
+        return "\n".join(lines)
+
+    def test_cbs_format_note_in_file_summary(self, extractor):
+        """The CBS-format note must appear in FILE SUMMARY (file_extract),
+        not merely in the search map.
+        """
+        content = self._cbs_log(distinct_kbs=8, copies=3)
+        result = extractor.extract(content)
+        fe = _fe(result)
+        # The note should mention CBS / Component-Based Servicing and call
+        # out that HRESULT lines are Info-severity servicing results.
+        assert "CBS" in fe, (
+            f"FILE SUMMARY must mention CBS for Windows servicing logs.\n"
+            f"Output:\n{fe[:2000]}"
+        )
+        assert "Component-Based Servicing" in fe
+        assert "HRESULT" in fe, (
+            f"FILE SUMMARY must call out HRESULT semantics for CBS logs.\n"
+            f"Output:\n{fe[:2000]}"
+        )
+        # The note must clarify HRESULT entries are not crashes/network events.
+        text_lower = fe.lower()
+        assert "not application crashes" in text_lower or (
+            "not" in text_lower
+            and "application crash" in text_lower
+            and "network" in text_lower
+        )
+
+    def test_cbs_note_absent_for_non_cbs_logs(self, extractor):
+        """A plain syslog file must not get the CBS note."""
+        content = "\n".join(
+            f"Jun 14 15:{i:02d}:01 host sshd[{1000 + i}]: Failed password for root"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        fe = _fe(result)
+        assert "Component-Based Servicing" not in fe
+        # Don't false-trigger on bare 'CBS' substrings if any might appear.
+        assert "CBS log" not in fe and "CBS (Component" not in fe
+
+    def test_cbs_note_does_not_change_kb_counts(self, extractor):
+        """ISS-028 fix is annotation-only — KB counting behavior must
+        remain identical to ISS-020 expectations.
+        """
+        # 5 distinct KBs, 4 copies each = 5 distinct, 20 total occurrences.
+        content = self._cbs_log(distinct_kbs=5, copies=4)
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "Distinct KB packages: 5" in text
