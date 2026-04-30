@@ -2038,3 +2038,77 @@ class TestSparkTimestampFormat:
             f"Output:\n{text[:2000]}"
         )
         assert "Log time range: unknown" not in text
+
+
+class TestCBSFormatNote:
+    """ISS-028: When the extractor detects a Windows CBS log via the
+    Package_for_KB substring, it must add a one-line CBS-format note in
+    FILE SUMMARY so the agent doesn't characterize HRESULT entries as
+    application crashes or network events. Q5 of logs-windows-01 trips
+    the forbidden_claims 'claims application crashes appear' and
+    'fabricates network or firewall events' without this clarification.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _cbs_log(self, distinct_kbs: int = 8, copies: int = 3) -> str:
+        lines = []
+        for kb in range(2479000, 2479000 + distinct_kbs):
+            for _ in range(copies):
+                lines.append(
+                    f"2016-09-28 04:30:33, Info                  CBS    "
+                    f"Read out cached package applicability for package: "
+                    f"Package_for_KB{kb}~31bf3856ad364e35~amd64~~6.1.1.0, "
+                    f"ApplicableState: 112, CurrentState:112"
+                )
+        return "\n".join(lines)
+
+    def test_cbs_format_note_in_file_summary(self, extractor):
+        """The CBS-format note must appear in FILE SUMMARY (file_extract),
+        not merely in the search map.
+        """
+        content = self._cbs_log(distinct_kbs=8, copies=3)
+        result = extractor.extract(content)
+        fe = _fe(result)
+        # The note should mention CBS / Component-Based Servicing and call
+        # out that HRESULT lines are Info-severity servicing results.
+        assert "CBS" in fe, (
+            f"FILE SUMMARY must mention CBS for Windows servicing logs.\n"
+            f"Output:\n{fe[:2000]}"
+        )
+        assert "Component-Based Servicing" in fe
+        assert "HRESULT" in fe, (
+            f"FILE SUMMARY must call out HRESULT semantics for CBS logs.\n"
+            f"Output:\n{fe[:2000]}"
+        )
+        # The note must clarify HRESULT entries are not crashes/network events.
+        text_lower = fe.lower()
+        assert "not application crashes" in text_lower or (
+            "not" in text_lower
+            and "application crash" in text_lower
+            and "network" in text_lower
+        )
+
+    def test_cbs_note_absent_for_non_cbs_logs(self, extractor):
+        """A plain syslog file must not get the CBS note."""
+        content = "\n".join(
+            f"Jun 14 15:{i:02d}:01 host sshd[{1000 + i}]: Failed password for root"
+            for i in range(20)
+        )
+        result = extractor.extract(content)
+        fe = _fe(result)
+        assert "Component-Based Servicing" not in fe
+        # Don't false-trigger on bare 'CBS' substrings if any might appear.
+        assert "CBS log" not in fe and "CBS (Component" not in fe
+
+    def test_cbs_note_does_not_change_kb_counts(self, extractor):
+        """ISS-028 fix is annotation-only — KB counting behavior must
+        remain identical to ISS-020 expectations.
+        """
+        # 5 distinct KBs, 4 copies each = 5 distinct, 20 total occurrences.
+        content = self._cbs_log(distinct_kbs=5, copies=4)
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "Distinct KB packages: 5" in text

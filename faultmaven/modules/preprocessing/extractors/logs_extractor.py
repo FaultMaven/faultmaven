@@ -770,6 +770,13 @@ class LogsAndErrorsExtractor:
     # matches inside other content). Mirrors the host-count threshold used
     # for syslog 3rd-field hosts.
     MIN_BGL_NODE_SURFACE_LINES = 5
+    # Minimum distinct ``Package_for_KB<N>`` packages before the CBS-format
+    # note is added to FILE SUMMARY (ISS-028). 5 is well above the
+    # incidental-mention floor (a misclassified pasted line containing
+    # 'Package_for_KB' would appear once or twice) but well below the
+    # ~271 distinct KBs in the Windows fixture, so any genuine CBS log
+    # trips it.
+    MIN_KB_PACKAGES_FOR_CBS_NOTE = 5
     # Minimum occurrences for a non-error-keyword line template to be considered
     # "prominent" and included alongside error-only template counts.
     # Set to 20 so that INFO activity like FastLeaderElection (37 lines in a 2k
@@ -1036,6 +1043,7 @@ class LogsAndErrorsExtractor:
             sample_raw_ts=sample_raw_ts,
             bgl_node_count=len(bgl_nodes),
             bgl_line_count=bgl_line_count,
+            kb_package_count=len(kb_package_counts),
         )
 
         # ENTITY PROFILE body — the search map
@@ -1307,6 +1315,7 @@ class LogsAndErrorsExtractor:
         sample_raw_ts: str | None = None,
         bgl_node_count: int = 0,
         bgl_line_count: int = 0,
+        kb_package_count: int = 0,
     ) -> str:
         """Return a compact FILE SUMMARY (2–4 sentences) describing dominant
         activity, top source, and key absences.
@@ -1326,6 +1335,23 @@ class LogsAndErrorsExtractor:
             if "brute-force" in pattern and n_distinct_ips > 1:
                 pattern = f"{pattern} ({n_distinct_ips} distinct source IPs)"
             sentences.append(f"{pattern}.")
+
+        # Windows CBS format note (ISS-028). When the file references
+        # ≥MIN_KB_PACKAGES_FOR_CBS_NOTE distinct ``Package_for_KB<N>``
+        # packages it is a Component-Based Servicing log — HRESULT
+        # entries here are servicing results logged at Info severity,
+        # not application crashes or network/firewall events. Without
+        # this note the agent describes 0x800f080d / 0x80004005 lines
+        # as "application-level failures" or "network connectivity
+        # events" (logs-windows-01 q5), tripping the forbidden_claims
+        # "claims application crashes appear" and "fabricates network
+        # or firewall events".
+        if kb_package_count >= self.MIN_KB_PACKAGES_FOR_CBS_NOTE:
+            sentences.append(
+                "Format: Windows CBS (Component-Based Servicing) log."
+                " HRESULT entries are Info-severity Windows Update servicing"
+                " results, not application crashes or network events."
+            )
 
         # Break-in attempt trigger IMMEDIATELY after the pattern — POSSIBLE BREAK-IN
         # ATTEMPT is a specific OpenSSH warning; placing it early ensures agents see
