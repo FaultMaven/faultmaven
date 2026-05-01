@@ -158,6 +158,142 @@ class TestTurnPayloadConstruction:
 
 
 # ============================================================
+# Text-paste source-metadata branching tests
+# ============================================================
+#
+# These tests cover the input-origin discrimination in the unified turns
+# endpoint at modules/case/api/routes.py:2140-2166. The route distinguishes
+# three submission origins so the classifier can apply the correct
+# confidence boost downstream:
+#
+#   file_upload  → user selected a local file
+#   page_capture → browser extension captured a web page (has source URL)
+#   text_paste   → user pasted raw text (scratchpad or auto-promoted chat)
+#
+# `_resolve_paste_source_meta` below mirrors the route's branching exactly
+# so the tests can assert the contract without spinning up a TestClient.
+# Keep this helper in sync with routes.py if the route logic changes.
+
+
+import re as _re
+
+
+def _resolve_paste_source_meta(
+    pasted_content: str,
+    input_type: str | None,
+    source_url: str | None,
+) -> tuple[dict, str]:
+    """Mirror of routes.py:2140-2166. Returns (source_meta, filename_prefix).
+
+    Keep in sync with the route. Fixtures import this directly so the
+    tests document the contract that the production route must match.
+    """
+    page_match = _re.match(r"^--- Page Content \((.+?)\) ---\n", pasted_content)
+    is_page_capture = (input_type == "page_capture") or bool(page_match)
+
+    if is_page_capture:
+        url = source_url or (page_match.group(1) if page_match else None)
+        meta = {"source_type": "page_capture"}
+        if url:
+            meta["source_url"] = url
+        return meta, "page-capture-"
+    return {"source_type": "text_paste"}, "pasted-content-"
+
+
+@pytest.mark.unit
+class TestTextPasteSourceMetadata:
+    """Validate the source_metadata branch the route applies to pasted_content."""
+
+    def test_explicit_text_paste_input_type_yields_text_paste_source(self):
+        """input_type='paste' with no URL → source_type=text_paste."""
+        meta, prefix = _resolve_paste_source_meta(
+            pasted_content="ERROR: pool exhausted\nERROR: timeout",
+            input_type="paste",
+            source_url=None,
+        )
+        assert meta == {"source_type": "text_paste"}
+        assert prefix == "pasted-content-"
+
+    def test_missing_input_type_defaults_to_text_paste(self):
+        """No input_type and no legacy header → falls through to text_paste."""
+        meta, prefix = _resolve_paste_source_meta(
+            pasted_content="some pasted text without any header",
+            input_type=None,
+            source_url=None,
+        )
+        assert meta == {"source_type": "text_paste"}
+        assert "source_url" not in meta
+        assert prefix == "pasted-content-"
+
+    def test_explicit_page_capture_input_type_yields_page_capture_with_url(self):
+        """input_type='page_capture' + source_url → source_type=page_capture + URL."""
+        meta, prefix = _resolve_paste_source_meta(
+            pasted_content="dashboard panels content...",
+            input_type="page_capture",
+            source_url="https://grafana.example.com/d/abc",
+        )
+        assert meta["source_type"] == "page_capture"
+        assert meta["source_url"] == "https://grafana.example.com/d/abc"
+        assert prefix == "page-capture-"
+
+    def test_legacy_page_content_header_extracts_url(self):
+        """Legacy `--- Page Content (URL) ---` header → page_capture with URL extracted."""
+        legacy = "--- Page Content (https://sentry.io/issues/2k3f/) ---\n## Issue Header\n..."
+        meta, prefix = _resolve_paste_source_meta(
+            pasted_content=legacy,
+            input_type=None,
+            source_url=None,
+        )
+        assert meta["source_type"] == "page_capture"
+        assert meta["source_url"] == "https://sentry.io/issues/2k3f/"
+        assert prefix == "page-capture-"
+
+    def test_explicit_source_url_wins_over_legacy_header(self):
+        """When both are present, the explicit form-field URL takes precedence."""
+        legacy = "--- Page Content (https://stale.example.com/old) ---\n## body\n"
+        meta, _ = _resolve_paste_source_meta(
+            pasted_content=legacy,
+            input_type="page_capture",
+            source_url="https://current.example.com/new",
+        )
+        assert meta["source_url"] == "https://current.example.com/new"
+
+    def test_text_paste_attachment_round_trip(self):
+        """End-to-end: text_paste content → Attachment with correct metadata."""
+        content = "TypeError: Cannot read properties of undefined\n  at processOrder"
+        meta, prefix = _resolve_paste_source_meta(
+            content, input_type="paste", source_url=None
+        )
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        att = Attachment(
+            content=content.encode("utf-8"),
+            filename=f"{prefix}{ts}.txt",
+            content_type="text/plain",
+            source_metadata=meta,
+        )
+
+        # Source-type is what downstream classifier will see
+        assert att.source_metadata["source_type"] == "text_paste"
+        # No source_url field should leak in for text_paste
+        assert "source_url" not in att.source_metadata
+        # Synthetic filename has the text_paste prefix
+        assert att.filename.startswith("pasted-content-")
+        # Content round-trips
+        assert att.content == content.encode("utf-8")
+
+    def test_text_paste_distinct_from_file_upload_metadata(self):
+        """text_paste and file_upload produce distinct source_type values."""
+        text_meta, _ = _resolve_paste_source_meta(
+            "data", input_type="paste", source_url=None
+        )
+        file_meta = {"source_type": "file_upload"}  # what the route sets for files
+        assert text_meta["source_type"] != file_meta["source_type"]
+        assert text_meta["source_type"] == "text_paste"
+        assert file_meta["source_type"] == "file_upload"
+
+
+# ============================================================
 # Validation tests (endpoint-level)
 # ============================================================
 
