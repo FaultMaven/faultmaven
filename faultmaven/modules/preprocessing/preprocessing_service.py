@@ -75,7 +75,14 @@ MIN_EXTRACTION_LINES = 200
 # UNSTRUCTURED_TEXT, whose extractor always produces valid-looking
 # output for any text content. If that also fails sanity (rare), the
 # retry loop terminates and direct-truncation ships.
-_FALLBACK_ALT_TYPES: tuple[DataType, ...] = (DataType.UNSTRUCTURED_TEXT,)
+# Two-step degrade chain. UNSTRUCTURED_TEXT is the safest pure-text fallback
+# (its extractor produces a valid result for any string), DOCUMENTATION is
+# tried after that for markdown- or note-shaped content where the headings/
+# title heuristics may add value over straight unstructured truncation.
+_FALLBACK_ALT_TYPES: tuple[DataType, ...] = (
+    DataType.UNSTRUCTURED_TEXT,
+    DataType.DOCUMENTATION,
+)
 
 # Hard cap on retries per the plan (Phase 2). Total attempts ≤ initial
 # + this many alternatives.
@@ -428,28 +435,71 @@ class PreprocessingService:
                 start_time=start_time,
             )
 
-        # Path 3: page capture — already structured, pass through with char cap
+        # Path 3: page capture — already structured, pass through with char cap.
+        # Validate the structural shape before bypassing the extractor so a
+        # mislabeled or maliciously-shaped paste cannot use the page_capture
+        # source_type to skip Tier-1 extraction. Real Copilot captures from
+        # htmlToStructuredText emit either a `[captured_at: …]` preamble or
+        # `## ` markdown headings (typically both); inputs lacking BOTH
+        # signals fall through to standard dispatch with a logged warning.
         if classification.source_type == "page_capture":
-            logger.info(
-                "classify_and_extract: page_capture detected, "
-                "skipping extractor (content already structured)"
+            has_captured_at = "[captured_at:" in content[:512]
+            # Match a `## ` heading either at the start of content or after a newline
+            has_h2_heading = content.startswith("## ") or "\n## " in content
+            shape_valid = has_captured_at or has_h2_heading
+
+            if shape_valid:
+                logger.info(
+                    "classify_and_extract: page_capture detected, "
+                    "skipping extractor (content already structured)"
+                )
+                extraction = ExtractionResult(
+                    method="page_capture_passthrough",
+                    content=self._fallback_direct_extraction(content),
+                    metadata={
+                        "passthrough": True,
+                        "source_type": "page_capture",
+                        "shape_signals": {
+                            "captured_at_preamble": has_captured_at,
+                            "h2_heading": has_h2_heading,
+                        },
+                    },
+                )
+                return self._build_result(
+                    content=content,
+                    extraction=extraction,
+                    detailed_data_type=detailed_data_type,
+                    unified_data_type=unified_data_type,
+                    classification=classification,
+                    start_time=start_time,
+                    triggered_by=(
+                        "user_override" if user_override is not None else "initial"
+                    ),
+                )
+
+            # Shape invalid — log and fall through to standard dispatch.
+            # Counter for ops visibility: spikes here indicate either a
+            # producer-side change in htmlToStructuredText or a misuse of
+            # `input_type=page_capture` from a non-Copilot client.
+            logger.warning(
+                "classify_and_extract: page_capture shape invalid, "
+                "falling through to standard extractor dispatch",
+                extra={
+                    "attachment_filename": filename,
+                    "content_prefix": content[:120],
+                    "captured_at_preamble": has_captured_at,
+                    "h2_heading": has_h2_heading,
+                },
             )
-            extraction = ExtractionResult(
-                method="page_capture_passthrough",
-                content=self._fallback_direct_extraction(content),
-                metadata={"passthrough": True, "source_type": "page_capture"},
-            )
-            return self._build_result(
-                content=content,
-                extraction=extraction,
-                detailed_data_type=detailed_data_type,
-                unified_data_type=unified_data_type,
-                classification=classification,
-                start_time=start_time,
-                triggered_by=(
-                    "user_override" if user_override is not None else "initial"
-                ),
-            )
+            try:
+                from faultmaven.infrastructure.observability.evidence_metrics import (
+                    PAGE_CAPTURE_SHAPE_INVALID_TOTAL,
+                )
+
+                PAGE_CAPTURE_SHAPE_INVALID_TOTAL.inc()
+            except ImportError:
+                # Counter is optional; don't fail extraction on metrics absence.
+                pass
 
         # Path 4: small-file passthrough — raw content is a better file
         # extract than any compressed representation, and extraction adds

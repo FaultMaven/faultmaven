@@ -155,6 +155,21 @@ if PROMETHEUS_AVAILABLE:
         "truncated. Labelled by entity_type.",
         labelnames=["entity_type"],
     )
+
+    # 2026-05-01 review fix: page_capture passthrough shape validation.
+    # Increments when an attachment classified as source_type=page_capture
+    # lacks the structural-shape signals (no [captured_at:] preamble AND
+    # no `\n## ` heading) and falls through to standard extractor dispatch
+    # instead of bypassing Tier-1 extraction. A spike here indicates either
+    # a producer-side change in Copilot's htmlToStructuredText format, or
+    # a non-Copilot client misusing input_type=page_capture.
+    PAGE_CAPTURE_SHAPE_INVALID_TOTAL = Counter(
+        "faultmaven_page_capture_shape_invalid_total",
+        "Number of attachments tagged source_type=page_capture that "
+        "failed structural-shape validation and fell through to standard "
+        "extractor dispatch. Spikes indicate producer-side format drift "
+        "or misuse of the page_capture intake path.",
+    )
 else:
     EVIDENCE_DEDUP_HITS_TOTAL = _NoOpMetric()
     EVIDENCE_ORPHAN_FILES_FOUND_TOTAL = _NoOpMetric()
@@ -166,6 +181,7 @@ else:
     PREPROCESSING_EXTRACTION_YIELD_RATIO = _NoOpMetric()
     AGENT_TRIAGE_ESCALATION_TOTAL = _NoOpMetric()
     CASE_ENTITIES_OVERFLOW_TOTAL = _NoOpMetric()
+    PAGE_CAPTURE_SHAPE_INVALID_TOTAL = _NoOpMetric()
 
 
 __all__ = [
@@ -179,6 +195,7 @@ __all__ = [
     "PREPROCESSING_EXTRACTION_YIELD_RATIO",
     "AGENT_TRIAGE_ESCALATION_TOTAL",
     "CASE_ENTITIES_OVERFLOW_TOTAL",
+    "PAGE_CAPTURE_SHAPE_INVALID_TOTAL",
     "PROMETHEUS_AVAILABLE",
     "record_triage_escalation_if_same_turn",
 ]

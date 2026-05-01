@@ -7,16 +7,12 @@ No LLM calls required - pure JSON parsing and graph analysis.
 
 import json
 import re
-from typing import TYPE_CHECKING, Dict, List
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
     has_content,
 )
-
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class TraceDataExtractor:
@@ -30,7 +26,7 @@ class TraceDataExtractor:
     def llm_calls_used(self) -> int:
         return 0
 
-    def extract(self, content: str) -> str:
+    def extract(self, content: str) -> ExtractResult:
         """
         Trace Correlation algorithm:
         1. Parse trace JSON (OpenTelemetry/Jaeger format)

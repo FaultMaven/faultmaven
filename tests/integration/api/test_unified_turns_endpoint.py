@@ -175,9 +175,6 @@ class TestTurnPayloadConstruction:
 # Keep this helper in sync with routes.py if the route logic changes.
 
 
-import re as _re
-
-
 def _resolve_paste_source_meta(
     pasted_content: str,
     input_type: str | None,
@@ -187,15 +184,17 @@ def _resolve_paste_source_meta(
 
     Keep in sync with the route. Fixtures import this directly so the
     tests document the contract that the production route must match.
-    """
-    page_match = _re.match(r"^--- Page Content \((.+?)\) ---\n", pasted_content)
-    is_page_capture = (input_type == "page_capture") or bool(page_match)
 
-    if is_page_capture:
-        url = source_url or (page_match.group(1) if page_match else None)
+    Note: ``pasted_content`` is unused since the legacy
+    ``--- Page Content (URL) ---`` header was removed (the dual-source
+    detection is no longer accepted as a page-capture signal). The
+    parameter remains in the signature so call sites that document the
+    full input shape stay readable.
+    """
+    if input_type == "page_capture":
         meta = {"source_type": "page_capture"}
-        if url:
-            meta["source_url"] = url
+        if source_url:
+            meta["source_url"] = source_url
         return meta, "page-capture-"
     return {"source_type": "text_paste"}, "pasted-content-"
 
@@ -236,26 +235,34 @@ class TestTextPasteSourceMetadata:
         assert meta["source_url"] == "https://grafana.example.com/d/abc"
         assert prefix == "page-capture-"
 
-    def test_legacy_page_content_header_extracts_url(self):
-        """Legacy `--- Page Content (URL) ---` header → page_capture with URL extracted."""
+    def test_legacy_page_content_header_no_longer_promotes_to_page_capture(self):
+        """Legacy `--- Page Content (URL) ---` header is now treated as text_paste.
+
+        The dual-source page-capture detection was removed because it
+        formed a write-around: a paste that happened to start with the
+        marker bypassed Tier-1 extraction. The frontend now always sets
+        an explicit ``input_type`` form field, so the body-regex branch
+        is gone.
+        """
         legacy = "--- Page Content (https://sentry.io/issues/2k3f/) ---\n## Issue Header\n..."
         meta, prefix = _resolve_paste_source_meta(
             pasted_content=legacy,
             input_type=None,
             source_url=None,
         )
-        assert meta["source_type"] == "page_capture"
-        assert meta["source_url"] == "https://sentry.io/issues/2k3f/"
-        assert prefix == "page-capture-"
+        # Without explicit input_type=page_capture, this routes as text_paste
+        assert meta == {"source_type": "text_paste"}
+        assert prefix == "pasted-content-"
 
-    def test_explicit_source_url_wins_over_legacy_header(self):
-        """When both are present, the explicit form-field URL takes precedence."""
+    def test_legacy_header_with_explicit_page_capture_uses_explicit_url(self):
+        """Explicit input_type='page_capture' + source_url is now the only path."""
         legacy = "--- Page Content (https://stale.example.com/old) ---\n## body\n"
         meta, _ = _resolve_paste_source_meta(
             pasted_content=legacy,
             input_type="page_capture",
             source_url="https://current.example.com/new",
         )
+        # Body content is not consulted for URL extraction anymore
         assert meta["source_url"] == "https://current.example.com/new"
 
     def test_text_paste_attachment_round_trip(self):

@@ -6,17 +6,12 @@ No LLM calls required - pure stack trace parsing and pattern matching.
 """
 
 import re
-from typing import TYPE_CHECKING
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
     has_content,
 )
-
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
-
 
 # Block split detection patterns. Each language has a regex that, when
 # matched at the start of a line, marks the beginning of a new independent
