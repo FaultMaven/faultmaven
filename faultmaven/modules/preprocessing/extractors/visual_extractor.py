@@ -9,16 +9,11 @@ The extractor uses the MULTIMODAL_PROVIDER setting from .env, which allows
 specifying a different LLM provider for visual processing than text chat.
 """
 
-from typing import TYPE_CHECKING, Optional
-
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
     has_content,
 )
-
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class VisualEvidenceExtractor:
@@ -43,45 +38,43 @@ class VisualEvidenceExtractor:
         # Phase 3 implementation will use 1 LLM call per image
         return 0  # Placeholder returns 0
 
-    def extract(self, content: str, filename: str | None = None) -> str:
+    def extract(self, content: str) -> ExtractResult:
         """
-        Extract information from visual evidence
+        Extract information from visual evidence.
 
-        Phase 2 Implementation: Returns metadata placeholder
-        Phase 3 Implementation: Will use multimodal LLM to:
-        - Describe screenshot content
-        - Extract text from images (OCR)
-        - Identify UI elements and error messages
-        - Detect graphs/charts and extract key metrics
-        - Identify error states in UI screenshots
+        Phase 2 Implementation: Returns metadata placeholder.
+        Phase 3 Implementation: Will use multimodal LLM via MULTIMODAL_PROVIDER.
+
+        Per the Extractor Protocol the dispatch only passes ``content``; the
+        original filename and content_type live on the upstream Attachment
+        and are surfaced in the ``file_meta`` populated by the orchestrator,
+        not by this extractor. Phase 3 will receive raw bytes (see
+        investigation_service._is_binary_content) rather than a UTF-8-replaced
+        string; until then the placeholder runs over the metadata-only string
+        produced by _binary_placeholder.
 
         Args:
-            content: Binary image data (base64 encoded in production)
-            filename: Image filename for format detection
+            content: Metadata-only placeholder string today; raw image bytes
+                in Phase 3.
 
         Returns:
-            Placeholder message indicating vision processing required
+            Placeholder ExtractResult indicating vision processing is pending.
         """
         if not has_content(content):
             return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
-        # Detect image format
-        file_ext = ""
-        if filename:
-            file_ext = filename.split(".")[-1].lower()
-
-        # Phase 2: Return placeholder
+        # Phase 2: Return placeholder. The content here is the metadata
+        # string from _binary_placeholder (filename/content_type/size live in
+        # there for human inspection); Phase 3 will swap in real bytes.
         placeholder = f"""=== VISUAL EVIDENCE ANALYSIS ===
 
 ⚠️  Vision processing not yet implemented (Phase 3)
 
-File Information:
-  • Filename: {filename or 'unknown'}
-  • Format: {file_ext or 'unknown'}
-  • Size: {len(content)} bytes
+Content metadata:
+{content}
 
 Phase 3 Implementation:
-This extractor will use multimodal LLM configured via MULTIMODAL_PROVIDER to:
+This extractor will use a multimodal LLM (configured via MULTIMODAL_PROVIDER) to:
   1. Analyze screenshot content
   2. Extract visible text and error messages
   3. Identify UI elements and states
@@ -90,25 +83,19 @@ This extractor will use multimodal LLM configured via MULTIMODAL_PROVIDER to:
 
 Configuration (.env):
   MULTIMODAL_PROVIDER=openai  # or anthropic, gemini
-  OPENAI_API_KEY=your_key      # API key for chosen provider
-  OPENAI_MODEL=gpt-4o          # Vision-capable model
+  <PROVIDER>_API_KEY=...      # API key for chosen provider
+  <PROVIDER>_MODEL=...        # vision-capable model
 
-Supported Providers:
-  • OpenAI: gpt-4o, gpt-4-turbo (GPT-4 Vision)
-  • Anthropic: claude-3-5-sonnet-20241022, claude-3-opus-20240229
-  • Google: gemini-1.5-pro, gemini-2.0-flash-exp
-
-Current Status: Placeholder - requires vision-capable LLM integration
+Current Status: Placeholder — requires vision-capable LLM integration.
 
 Recommendation:
-For now, please provide textual description of the visual evidence alongside
-the image file, or extract text from screenshots manually.
+For now, provide a textual description alongside the image, or extract text
+from the screenshot manually.
 """
         return ExtractResult(
             file_extract=placeholder,
             file_meta={
-                "format": file_ext or "unknown",
-                "filename": filename,
                 "size_bytes": len(content),
+                "phase": "phase_2_placeholder",
             },
         )

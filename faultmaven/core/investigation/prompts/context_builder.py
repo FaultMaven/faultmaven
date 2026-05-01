@@ -41,15 +41,39 @@ from faultmaven.modules.case.contracts import (
     InvestigationStage,
 )
 
+
 # =============================================================================
 # Evidence Context Sliding Window Configuration
 # =============================================================================
-# How many recent data evidence items get full file_extract (Tier A)
-EVIDENCE_CONTEXT_RECENT_COUNT = 3
-# Max chars per Tier A evidence item's file_extract
-EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM = 4000
-# Max total chars for the entire evidence context section
-EVIDENCE_CONTEXT_MAX_TOTAL_CHARS = 16000
+# These constants are tunable via InvestigationContextSettings (see
+# faultmaven.config.settings). The module-level names are preserved so
+# importing tests / call-sites continue to work; they pull the live values
+# from settings at import time. To change at runtime, set the env vars
+# EVIDENCE_CONTEXT_RECENT_COUNT / EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM /
+# EVIDENCE_CONTEXT_MAX_TOTAL_CHARS and restart.
+def _load_context_caps() -> tuple[int, int, int]:
+    """Return (recent_count, max_chars_per_item, max_total_chars).
+
+    Imported here (not at module top) to keep the import graph cheap and
+    to avoid forcing a settings load in every test that imports a single
+    helper from this module.
+    """
+    try:
+        from faultmaven.config.settings import get_settings
+
+        s = get_settings().investigation_context
+        return s.recent_count, s.max_chars_per_item, s.max_total_chars
+    except Exception:
+        # Settings may not be available in some test contexts; fall back
+        # to the documented defaults.
+        return 3, 4000, 16000
+
+
+(
+    EVIDENCE_CONTEXT_RECENT_COUNT,
+    EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM,
+    EVIDENCE_CONTEXT_MAX_TOTAL_CHARS,
+) = _load_context_caps()
 
 # =============================================================================
 # Graduated Conversation History Configuration

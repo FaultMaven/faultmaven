@@ -7,7 +7,6 @@ detection - no LLM calls required.
 """
 
 import re
-from typing import TYPE_CHECKING, List, Tuple
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
@@ -15,9 +14,6 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     has_content,
     truncate_output,
 )
-
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class UnstructuredTextExtractor:
@@ -36,19 +32,27 @@ class UnstructuredTextExtractor:
     def llm_calls_used(self) -> int:
         return 0
 
-    def extract(self, content: str) -> str:
-        """
-        Extract key information from unstructured text
+    def extract(self, content: str) -> ExtractResult:
+        """Extract key information from unstructured text.
 
         Strategy:
-        1. Detect document structure (markdown, plain text, mixed)
-        2. Extract high-value content:
-           - Error messages and stack traces
-           - Code blocks
-           - Headings and their content
-           - Lists (especially troubleshooting steps)
-        3. Prioritize by relevance (errors > code > structure)
-        4. Format for readability
+            1. Detect document structure (markdown, plain text, mixed)
+            2. Extract high-value content:
+               - Error messages and stack traces
+               - Code blocks
+               - Headings and their content
+               - Lists (especially troubleshooting steps)
+            3. Prioritize by relevance (errors > code > structure)
+            4. Format for readability
+
+        Args:
+            content: Raw text content (UTF-8 string).
+
+        Returns:
+            ExtractResult with ``file_extract`` carrying the prioritised
+            digest and ``file_meta`` containing line-count metadata.
+            The dispatch in ``preprocessing_service._run_single_dispatch``
+            unwraps the ``ExtractResult`` for downstream tiers.
         """
         content = content.lstrip("\ufeff")
         if len(content) > 50_000_000:

@@ -133,8 +133,12 @@ class TestPageCapturePassthrough:
         index — no extractor mangling, no parsing artifacts."""
         # Build content that clears MIN_EXTRACTION_LINES (200) but stays
         # under the 10,000-char direct-truncation cap so we can pin
-        # verbatim preservation.
-        content = "\n".join(f"line {i:03d}" for i in range(220))
+        # verbatim preservation. Content must include either a
+        # `[captured_at:` preamble or a `## ` heading to satisfy the
+        # passthrough shape validation (added by a 2026-05-01 review fix
+        # — see preprocessing_service.py:431-...).
+        body_lines = "\n".join(f"line {i:03d}" for i in range(220))
+        content = f"## Page Body\n{body_lines}"
         assert len(content) < 10_000
 
         result = await service.classify_and_extract(

@@ -2088,6 +2088,32 @@ async def submit_turn(
                 headers={"x-correlation-id": correlation_id},
             )
 
+        # Size cap on text-shaped form fields. Multipart files are bounded by
+        # Starlette via `_upload_max_bytes`, but `query` and `pasted_content`
+        # are raw form fields — without this guard a 50MB paste would be
+        # accepted, decoded, classified, and copied through the pipeline
+        # before any extractor's own cap fired. Trivial DoS surface otherwise.
+        from faultmaven.config.settings import get_settings as _get_settings
+
+        _max_text_bytes = _get_settings().upload.max_upload_size_mb * 1024 * 1024
+        if pasted_content and len(pasted_content.encode("utf-8")) > _max_text_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"pasted_content exceeds the {_max_text_bytes // (1024 * 1024)}MB "
+                    f"limit. Upload as a file instead."
+                ),
+                headers={"x-correlation-id": correlation_id},
+            )
+        if query and len(query.encode("utf-8")) > _max_text_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"query exceeds the {_max_text_bytes // (1024 * 1024)}MB limit."
+                ),
+                headers={"x-correlation-id": correlation_id},
+            )
+
         # Verify case exists and user has access
         case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
@@ -2140,17 +2166,20 @@ async def submit_turn(
         if pasted_content:
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
-            # Determine source type — prefer explicit field sent by the frontend,
-            # then fall back to the legacy header embedded in the content body.
-            page_match = re.match(r"^--- Page Content \((.+?)\) ---\n", pasted_content)
-            is_page_capture = (input_type == "page_capture") or bool(page_match)
-
-            if is_page_capture:
-                # URL: prefer explicit form field, fall back to header extraction
-                url = source_url or (page_match.group(1) if page_match else None)
+            # Determine source type from the explicit `input_type` form field.
+            # The frontend (UnifiedInputBar.tsx) always sets this since the
+            # text_paste pathway shipped — see faultmaven-copilot:
+            # src/shared/ui/components/UnifiedInputBar.tsx:226-256.
+            #
+            # The legacy `--- Page Content (URL) ---` body header is no
+            # longer recognized as a page-capture signal: it was a write-
+            # around (a paste shaped that way bypassed Tier-1 extraction by
+            # entering the page-capture passthrough), and the explicit
+            # `input_type` field has fully replaced it.
+            if input_type == "page_capture":
                 source_meta = {"source_type": "page_capture"}
-                if url:
-                    source_meta["source_url"] = url
+                if source_url:
+                    source_meta["source_url"] = source_url
                 filename = f"page-capture-{ts}.txt"
             else:
                 source_meta = {"source_type": "text_paste"}

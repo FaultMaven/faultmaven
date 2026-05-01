@@ -10,7 +10,7 @@ regex-based pattern matching.
 
 import ast
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
@@ -18,9 +18,6 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     has_content,
     truncate_output,
 )
-
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 try:
     import tree_sitter as _ts

@@ -1693,6 +1693,50 @@ class PreprocessingSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+class InvestigationContextSettings(BaseSettings):
+    """Token-budget caps for the LLM context window assembly.
+
+    These knobs control how much evidence + extract content is packaged
+    into each LLM turn. Defaults are tuned for prose / mixed pages; ops
+    may want a larger ``max_chars_per_item`` for dashboard-style page
+    captures with many small panels (a Grafana dashboard with 12 panels
+    averaging 600 chars each loses half its content under the 4000-char
+    default, since the per-item slice is content-shape-blind).
+
+    Surfaced as a tunable per a 2026-05-01 system code review (review
+    finding "MEDIUM 4: per-item cap content-shape-blind").
+    """
+
+    recent_count: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        validation_alias="EVIDENCE_CONTEXT_RECENT_COUNT",
+        description="How many most-recent data evidence items get full file_extract (Tier A).",
+    )
+
+    max_chars_per_item: int = Field(
+        default=4000,
+        ge=500,
+        le=200_000,
+        validation_alias="EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM",
+        description=(
+            "Per-item cap on file_extract chars after rerank. Increase for "
+            "dashboard-style captures with many small panels."
+        ),
+    )
+
+    max_total_chars: int = Field(
+        default=16000,
+        ge=2000,
+        le=400_000,
+        validation_alias="EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
+        description="Hard cap on the entire <evidence_collected> block.",
+    )
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
 class DeepAnalysisSettings(BaseSettings):
     """Interpreted search configuration.
 
@@ -2064,6 +2108,9 @@ class FaultMavenSettings(BaseSettings):
     features: FeatureSettings = Field(default_factory=FeatureSettings)
     tools: ToolsSettings = Field(default_factory=ToolsSettings)
     preprocessing: PreprocessingSettings = Field(default_factory=PreprocessingSettings)
+    investigation_context: InvestigationContextSettings = Field(
+        default_factory=InvestigationContextSettings
+    )
     deep_analysis: DeepAnalysisSettings = Field(default_factory=DeepAnalysisSettings)
 
     # Enhanced configuration sections merged into main sections above

@@ -298,11 +298,19 @@ class TestFlagOnRetryPath:
     @pytest.mark.asyncio
     async def test_all_retries_fail_falls_back_to_direct(self):
         """When every candidate fails sanity, the service lands on
-        direct_fallback and records chosen_type so ops can tell."""
+        direct_fallback and records chosen_type so ops can tell.
+
+        The fallback chain is ``_FALLBACK_ALT_TYPES`` =
+        ``(UNSTRUCTURED_TEXT, DOCUMENTATION)`` after the LOW-priority
+        review fix expanded it from a single-element tuple. Both must
+        be wired to fail to exercise the direct_fallback exit.
+        """
         degenerate_metrics = "=== METRICS ANALYSIS SUMMARY ===\nTotal data points: 1\n"
         empty_text = ""  # UNSTRUCTURED_TEXT fallback produces empty → fails sanity
+        empty_doc = ""  # DOCUMENTATION fallback produces empty → fails sanity
         metrics_extractor = _make_extractor(degenerate_metrics, "statistical")
         text_extractor = _make_extractor(empty_text, "direct")
+        documentation_extractor = _make_extractor(empty_doc, "documentation_structure")
         classifier = _make_classifier(
             data_type=DataType.METRICS_AND_PERFORMANCE,
             suggested_types=None,
@@ -313,6 +321,7 @@ class TestFlagOnRetryPath:
             logs_extractor=_make_extractor("logs"),
             metrics_extractor=metrics_extractor,
             text_extractor=text_extractor,
+            documentation_extractor=documentation_extractor,
         )
         with _enable_retry(True):
             result = await service.classify_and_extract(content=_LONG_CONTENT)

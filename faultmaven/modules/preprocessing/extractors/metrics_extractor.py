@@ -12,7 +12,7 @@ import csv
 import io
 import json
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
@@ -21,9 +21,6 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     has_content,
     truncate_output,
 )
-
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 try:
     from prometheus_client.parser import text_string_to_metric_families

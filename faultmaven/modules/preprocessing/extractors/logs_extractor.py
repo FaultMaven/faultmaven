@@ -7,7 +7,6 @@ No LLM calls required - pure keyword-based extraction.
 
 import re
 from collections import Counter
-from typing import TYPE_CHECKING
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
@@ -18,9 +17,6 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     has_content,
     has_yearless_timestamps,
 )
-
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 # ---------------------------------------------------------------------------
 # Log-template normalisation — strips per-line variable parts so that

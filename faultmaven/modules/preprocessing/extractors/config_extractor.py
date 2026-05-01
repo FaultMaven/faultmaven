@@ -10,7 +10,7 @@ falling back to regex patterns.
 
 import json
 import re
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import Any
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
@@ -18,9 +18,6 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     has_content,
     truncate_output,
 )
-
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 try:
     from detect_secrets import settings as _ds_settings

@@ -7,7 +7,6 @@ No LLM calls required - pure markdown/text parsing.
 """
 
 import re
-from typing import TYPE_CHECKING, Dict, List
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
@@ -16,9 +15,6 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     has_content,
     truncate_output,
 )
-
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class DocumentationExtractor:
@@ -32,7 +28,7 @@ class DocumentationExtractor:
     def llm_calls_used(self) -> int:
         return 0
 
-    def extract(self, content: str) -> str:
+    def extract(self, content: str) -> ExtractResult:
         """
         Documentation Structure Extraction algorithm:
         1. Detect documentation format (Markdown, reStructuredText, plain text)

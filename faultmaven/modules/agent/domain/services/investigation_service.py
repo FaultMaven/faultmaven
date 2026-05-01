@@ -720,7 +720,7 @@ class InvestigationService:
             logger.info(
                 "binary attachment: skipping UTF-8 decode",
                 extra={
-                    "filename": attachment.filename,
+                    "attachment_filename": attachment.filename,
                     "content_type": attachment.content_type,
                     "size_bytes": len(attachment.content),
                 },
@@ -1276,7 +1276,7 @@ class InvestigationService:
             content = _binary_placeholder(filename, None, len(raw_bytes))
             logger.info(
                 "binary evidence: skipping UTF-8 decode on reclassify",
-                extra={"filename": filename, "size_bytes": len(raw_bytes)},
+                extra={"evidence_filename": filename, "size_bytes": len(raw_bytes)},
             )
         else:
             content = raw_bytes.decode("utf-8", errors="replace")
