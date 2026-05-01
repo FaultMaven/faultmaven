@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from faultmaven.modules.case.domain.models import EntityType
+from faultmaven.modules.case.contracts import EntityType
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
 
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")

@@ -74,6 +74,86 @@ def _infer_source_type(data_type: DataType) -> EvidenceSourceType:
     return _DATA_TYPE_TO_SOURCE_TYPE.get(data_type, EvidenceSourceType.TEXT)
 
 
+# Filename extensions and MIME prefixes for content known to be binary.
+# Decoding such content as UTF-8 with errors="replace" produces a string of
+# replacement chars that destroys the original bytes for any downstream
+# multimodal/binary-aware extractor (Phase 3+). When detected, we skip the
+# destructive decode and pass a metadata-only placeholder string to the
+# classifier; the original bytes remain accessible via the storage layer.
+_BINARY_EXTENSIONS = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".webp",
+        ".tiff",
+        ".ico",
+        ".pdf",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".7z",
+        ".rar",
+        ".mp4",
+        ".mov",
+        ".avi",
+        ".webm",
+        ".mp3",
+        ".wav",
+        ".flac",
+        ".bin",
+        ".exe",
+        ".dll",
+        ".so",
+    }
+)
+_BINARY_MIME_PREFIXES = (
+    "image/",
+    "video/",
+    "audio/",
+    "application/pdf",
+    "application/zip",
+    "application/x-",
+    "application/octet-stream",
+)
+
+
+def _is_binary_content(filename: Optional[str], content_type: Optional[str]) -> bool:
+    """Return True when filename or MIME signals binary content.
+
+    Checked at attachment-intake time so we do not destructively UTF-8 decode
+    image/video/PDF bytes into a string of replacement characters before the
+    visual extractor (or other binary-aware extractor) ever sees them.
+    """
+    fname = (filename or "").lower()
+    if any(fname.endswith(ext) for ext in _BINARY_EXTENSIONS):
+        return True
+    ctype = (content_type or "").lower()
+    if any(ctype.startswith(prefix) for prefix in _BINARY_MIME_PREFIXES):
+        return True
+    return False
+
+
+def _binary_placeholder(
+    filename: Optional[str], content_type: Optional[str], size_bytes: int
+) -> str:
+    """Metadata-only string fed to the classifier for binary content.
+
+    The original bytes remain in attachment.content / storage; this string
+    only exists so the classifier has something to route on. Including the
+    filename and content_type lets the rule-based classifier still pick
+    VISUAL_EVIDENCE via filename-extension matching.
+    """
+    size_kb = size_bytes / 1024
+    return (
+        f"[binary attachment: filename={filename or 'unknown'}, "
+        f"content_type={content_type or 'unknown'}, "
+        f"size={size_kb:.1f}KB]"
+    )
+
+
 # DataType string value → human-friendly phrasing for cooperative clarification
 # suggestions. Users see `label` on the suggestion card; `long` goes into the
 # pre-composed query_submit payload. UNANALYZABLE is intentionally omitted —
@@ -626,7 +706,27 @@ class InvestigationService:
         """
         from uuid import uuid4
 
-        content = attachment.content.decode("utf-8", errors="replace")
+        # Skip destructive UTF-8 decode for known-binary content (images,
+        # PDFs, video, etc.). The classifier still sees a metadata string
+        # (filename, MIME, size) so it can route to VISUAL_EVIDENCE; the
+        # raw bytes are preserved in attachment.content / file storage for
+        # multimodal/binary-aware extractors downstream.
+        if _is_binary_content(attachment.filename, attachment.content_type):
+            content = _binary_placeholder(
+                attachment.filename,
+                attachment.content_type,
+                len(attachment.content),
+            )
+            logger.info(
+                "binary attachment: skipping UTF-8 decode",
+                extra={
+                    "filename": attachment.filename,
+                    "content_type": attachment.content_type,
+                    "size_bytes": len(attachment.content),
+                },
+            )
+        else:
+            content = attachment.content.decode("utf-8", errors="replace")
 
         # Convert dict source_metadata to SourceMetadata for classifier compatibility
         source_meta = None
@@ -1168,9 +1268,18 @@ class InvestigationService:
 
         # Fetch raw bytes + decode. Storage returns bytes; extractors
         # operate on strings (UTF-8 is the convention per the upload path).
+        # Skip destructive decode for binary evidence (see _is_binary_content).
         raw_bytes = await self.file_storage_service.retrieve_file(evidence.content_ref)
-        content = raw_bytes.decode("utf-8", errors="replace")
         filename = evidence.original_filename or "evidence"
+        # Reclassify path doesn't carry a separate content_type; rely on filename.
+        if _is_binary_content(filename, None):
+            content = _binary_placeholder(filename, None, len(raw_bytes))
+            logger.info(
+                "binary evidence: skipping UTF-8 decode on reclassify",
+                extra={"filename": filename, "size_bytes": len(raw_bytes)},
+            )
+        else:
+            content = raw_bytes.decode("utf-8", errors="replace")
 
         previous_metadata = evidence.metadata
 

@@ -271,30 +271,97 @@ _RERANK_STOPWORDS = frozenset(
 )
 
 
+# Heading patterns the rerank tries, in priority order. The primary contract
+# is `\n## ` (level-2 markdown headings), which is what the Copilot extension's
+# `htmlToStructuredText` emits for `<h2>` elements (see
+# faultmaven-copilot/src/lib/utils/html-to-structured-text.ts:171). Fallbacks
+# accept other markdown heading levels so a producer-side change to `### ` or
+# `#### ` degrades to "less precise reranking" rather than "no reranking".
+_RERANK_HEADING_PATTERNS = (
+    "\n## ",  # primary: htmlToStructuredText H2 contract
+    "\n### ",  # fallback: H3 (htmlToStructuredText H4 → '### ' inverted-indent)
+    "\n#### ",  # fallback: H4
+)
+
+
+def _split_rerank_sections(content: str) -> tuple[str, list[str], str]:
+    """Find the first heading style that produces >= 2 sections.
+
+    Returns ``(delimiter, sections, preamble)``. If no heading style matches,
+    returns ``("", [], content)`` so the caller can no-op gracefully and log
+    the format-drift signal.
+    """
+    for delim in _RERANK_HEADING_PATTERNS:
+        parts = content.split(delim)
+        if len(parts) > 1:
+            return delim, parts[1:], parts[0]
+    return "", [], content
+
+
 def _rerank_page_capture_sections(content: str, query: str) -> str:
     """Rerank page-capture sections by relevance to the user's query.
 
-    Page captures from ``htmlToStructuredText`` use ``## `` headings as section
-    delimiters.  This function splits on those headings, scores each section by
-    normalised keyword overlap with *query*, and reassembles in descending
-    relevance order so that the most pertinent panels/messages survive the
-    per-item character cap applied downstream.
+    **Contract with the producer:** page captures from
+    ``htmlToStructuredText`` (faultmaven-copilot) emit ``## `` markdown
+    headings to delimit sections (one heading per ``<h2>``). This function
+    splits on those headings, scores each section by normalised keyword
+    overlap with *query*, and reassembles in descending relevance order so
+    the most pertinent panels/messages survive the 4000-char per-item cap
+    applied downstream at :data:`EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM`.
 
-    The **preamble** (everything before the first ``## ``) is always pinned at
-    position 0 — it contains ``[captured_at: …]`` and the page title which
-    provide essential temporal context.
+    The **preamble** (everything before the first heading) is always pinned
+    at position 0 — it contains ``[captured_at: …]`` and the page title,
+    which provide essential temporal context.
 
     Scoring: ``len(query_terms ∩ section_terms) / len(query_terms)``.
     Ties preserve original document order (stable sort).
+
+    **Format-drift handling:** if the primary ``## `` delimiter is absent,
+    the function tries ``### `` and ``#### `` before giving up. A complete
+    no-split (no markdown headings of any depth, or empty content) is
+    logged at INFO level via the structured ``rerank.no_op`` event so
+    operators can spot drift between this function and the Copilot
+    serializer. The function returns the original content unchanged in
+    that case — it does NOT raise.
+
+    Example contract input::
+
+        [captured_at: 2024-03-15T19:50:00Z]
+        # Grafana - payments-api / Production Overview
+
+        ## Row 1: Health Overview
+
+        ### Panel: Service Up
+        ...
+
+        ## Row 2: Request Volume
+        ...
     """
-    # Split on heading boundaries, keeping the delimiter with its section
-    parts = content.split("\n## ")
-    if len(parts) <= 1:
-        # No headings or single section — nothing to reorder
+    delim, sections, preamble = _split_rerank_sections(content)
+    if not delim:
+        # Format drift: no recognized heading delimiter found. Emit a
+        # structured log so a Copilot serializer change (or a non-page-
+        # capture fuel sneaking through this code path) is visible.
+        logger.info(
+            "rerank.no_op",
+            extra={
+                "reason": "no_heading_delimiter",
+                "content_length": len(content),
+                "first_120_chars": content[:120],
+            },
+        )
         return content
 
-    preamble = parts[0]
-    sections = parts[1:]  # each starts with the heading text (after "## ")
+    if delim != "\n## ":
+        # Recoverable drift: primary contract violated, fallback engaged.
+        logger.info(
+            "rerank.fallback_delimiter",
+            extra={
+                "primary": "\\n## ",
+                "fallback_used": delim.strip(),
+                "section_count": len(sections),
+            },
+        )
 
     # Tokenise query into meaningful keywords
     query_terms = {
@@ -317,7 +384,7 @@ def _rerank_page_capture_sections(content: str, query: str) -> str:
     # Stable sort descending by score (preserves original order on ties)
     scored.sort(key=lambda t: -t[1])
 
-    return preamble + "\n## " + "\n## ".join(s[2] for s in scored)
+    return preamble + delim + delim.join(s[2] for s in scored)
 
 
 def _smart_truncate_agent_response(

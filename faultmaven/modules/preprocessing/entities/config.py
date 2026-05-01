@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from faultmaven.modules.case.domain.models import EntityType
+from faultmaven.modules.case.contracts import EntityType
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
 
 # Separator regexes use ``[ \t]*`` instead of ``\s*`` on purpose: a
