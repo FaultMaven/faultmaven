@@ -12,12 +12,11 @@ returns the per-provider override when one is set and falls back to
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from faultmaven.config.settings import LLMSettings
-
-
-import json
 
 
 def _mk_settings(
