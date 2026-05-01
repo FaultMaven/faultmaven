@@ -44,8 +44,8 @@ from faultmaven.modules.preprocessing.extractors.profiling_extractor import (
     ProfilingDataExtractor,
 )
 from faultmaven.modules.preprocessing.extractors.protocol import (
-    ExtractResult,
     Extractor,
+    ExtractResult,
 )
 from faultmaven.modules.preprocessing.extractors.source_code_extractor import (
     SourceCodeExtractor,
