@@ -443,11 +443,15 @@ class TestToolAugmentedGenerate:
         assert result.agent_response == "done"
         assert mock_provider.generate.call_count == 2
 
-    async def test_no_tool_calls_on_final_iteration_raises(self):
-        """When LLM returns no tool calls on forced final iteration, raises error."""
-        # Arrange
+    async def test_no_tool_calls_on_forced_schema_escalates_to_fallback(self):
+        """When LLM ignores tool_choice=required under forced-schema, raise
+        ToolCallingUnsupportedError so _generate_structured_output's fallback
+        path retries via the non-tool route (instead of 500-ing the request).
+        """
+        from faultmaven.exceptions import ToolCallingUnsupportedError
+
+        # Arrange — every iteration returns text only, no tool calls
         mock_provider = AsyncMock()
-        # All iterations return no tool calls
         no_tool_responses = [_make_no_tool_call_response() for _ in range(5)]
         mock_provider.generate = AsyncMock(side_effect=no_tool_responses)
 
@@ -459,9 +463,123 @@ class TestToolAugmentedGenerate:
         ]
 
         # Act & Assert
-        with pytest.raises(
-            MilestoneEngineError, match="no tool calls on forced final iteration"
-        ):
+        with pytest.raises(ToolCallingUnsupportedError):
+            await engine._tool_augmented_generate(
+                prompt="Search",
+                schema_model=SampleResponse,
+                investigation_tools=investigation_tools,
+                tool_context=tool_context,
+            )
+
+    async def test_inline_json_text_parsed_as_schema_under_forced_schema(self):
+        """When the LLM ignores tool_choice=required but inlines schema JSON
+        as text, the loop recovers by parsing the text as the schema."""
+        # Arrange — iter 0 returns text (no tool call), iter 1 (forced schema)
+        # returns inline JSON wrapped in a ```json fence
+        inline_json = (
+            "Here you go:\n```json\n"
+            '{"agent_response": "recovered", "next_action": "continue"}\n'
+            "```"
+        )
+        first = _make_no_tool_call_response()
+        second = LLMResponse(
+            content=inline_json,
+            confidence=0.7,
+            provider="test",
+            model="test-model",
+            tokens_used=80,
+            response_time_ms=400,
+            tool_calls=None,
+        )
+        mock_provider = AsyncMock()
+        mock_provider.generate = AsyncMock(side_effect=[first, second])
+
+        engine = _make_engine(mock_provider=mock_provider)
+        tool_context = MagicMock()
+        investigation_tools = [
+            {"type": "function", "function": {"name": "search_file", "parameters": {}}},
+        ]
+
+        # Act
+        result = await engine._tool_augmented_generate(
+            prompt="Search",
+            schema_model=SampleResponse,
+            investigation_tools=investigation_tools,
+            tool_context=tool_context,
+        )
+
+        # Assert
+        assert result.agent_response == "recovered"
+        assert mock_provider.generate.call_count == 2
+
+    async def test_recovery_appends_user_nudge_after_text_response(self):
+        """When iter N returns text (no tool calls), the loop appends both the
+        assistant text AND a user-role nudge directing the schema-tool call.
+        Without the user nudge the conversation ends on an assistant message
+        and the LLM treats it as 'already answered'."""
+        no_tool = _make_no_tool_call_response()
+        schema_resp = _make_schema_response(
+            {"agent_response": "ok", "next_action": "continue"}
+        )
+        mock_provider = AsyncMock()
+        mock_provider.generate = AsyncMock(side_effect=[no_tool, schema_resp])
+
+        engine = _make_engine(mock_provider=mock_provider)
+        tool_context = MagicMock()
+        investigation_tools = [
+            {"type": "function", "function": {"name": "search_file", "parameters": {}}},
+        ]
+
+        await engine._tool_augmented_generate(
+            prompt="Search",
+            schema_model=SampleResponse,
+            investigation_tools=investigation_tools,
+            tool_context=tool_context,
+        )
+
+        second_call = mock_provider.generate.call_args_list[1]
+        messages = second_call.kwargs.get("messages") or second_call[1].get("messages")
+        # Last two messages should be the assistant text, then a user nudge
+        assert messages[-2]["role"] == "assistant"
+        assert messages[-1]["role"] == "user"
+        assert "SampleResponse" in messages[-1]["content"]
+        assert "tool" in messages[-1]["content"].lower()
+
+    async def test_inline_json_with_empty_agent_response_escalates(self):
+        """Defensive guard: prose embedding a structurally-valid JSON block
+        with an empty `agent_response` must NOT be returned as-is. The schema
+        validates (Pydantic accepts empty strings) but the response would be
+        meaningless to the user. The loop must escalate to ToolCallingUnsupported
+        so the non-tool fallback runs."""
+        from faultmaven.exceptions import ToolCallingUnsupportedError
+
+        # Both iterations return text. The forced-schema iteration's text is
+        # a valid JSON block — but agent_response is empty whitespace.
+        prose_with_empty_schema = (
+            "Sure, the schema looks like:\n```json\n"
+            '{"agent_response": "   ", "next_action": "continue"}\n'
+            "```\n(That was just an example.)"
+        )
+        first = _make_no_tool_call_response()
+        second = LLMResponse(
+            content=prose_with_empty_schema,
+            confidence=0.6,
+            provider="test",
+            model="test-model",
+            tokens_used=70,
+            response_time_ms=400,
+            tool_calls=None,
+        )
+        mock_provider = AsyncMock()
+        mock_provider.generate = AsyncMock(side_effect=[first, second])
+
+        engine = _make_engine(mock_provider=mock_provider)
+        tool_context = MagicMock()
+        investigation_tools = [
+            {"type": "function", "function": {"name": "search_file", "parameters": {}}},
+        ]
+
+        with pytest.raises(ToolCallingUnsupportedError):
             await engine._tool_augmented_generate(
                 prompt="Search",
                 schema_model=SampleResponse,
@@ -583,6 +701,87 @@ class TestGenerateStructuredOutputRouting:
         # Assert
         assert isinstance(result, SampleResponse)
         assert result.agent_response == "tool augmented"
+
+    async def test_tool_loop_unsupported_error_falls_back_to_non_tool_path(self):
+        """Integration: when the tool loop escalates with ToolCallingUnsupportedError
+        (provider ignored tool_choice=required and produced no parseable text),
+        _generate_structured_output must catch it and re-run the LLM via the
+        non-tool single-shot path. Without this, the user gets a 500."""
+        from faultmaven.exceptions import ToolCallingUnsupportedError
+        from faultmaven.infrastructure.llm.structured_output_capability import (
+            StructuredOutputCapability,
+            StructuredOutputMode,
+            StructuredOutputStrategy,
+        )
+
+        # Arrange — provider passes the supports_tool_calling pre-check, but
+        # _tool_augmented_generate raises ToolCallingUnsupportedError. The
+        # subsequent single-shot generate returns a valid schema response.
+        mock_provider = AsyncMock()
+        mock_provider.supports_tool_calling = Mock(return_value=True)
+
+        fallback_response = LLMResponse(
+            content="",
+            confidence=0.9,
+            provider="test",
+            model="test-model",
+            tokens_used=120,
+            response_time_ms=300,
+            tool_calls=[
+                ToolCall(
+                    id="call_fc",
+                    type="function",
+                    function={
+                        "name": "SampleResponse",
+                        "arguments": json.dumps(
+                            {
+                                "agent_response": "fell back ok",
+                                "next_action": "done",
+                            }
+                        ),
+                    },
+                )
+            ],
+        )
+        mock_provider.generate = AsyncMock(return_value=fallback_response)
+        mock_provider.get_structured_output_strategy = MagicMock(
+            return_value=StructuredOutputStrategy(
+                capability=StructuredOutputCapability.FUNCTION_CALLING,
+                mode=StructuredOutputMode.FUNCTION_CALLING,
+                include_schema_in_prompt=False,
+                response_format=None,
+                extra_config={},
+            )
+        )
+
+        engine = _make_engine(mock_provider=mock_provider)
+        engine._tool_augmented_generate = AsyncMock(
+            side_effect=ToolCallingUnsupportedError(
+                message="provider ignored tool_choice=required",
+                provider="test",
+                model="test-model",
+            )
+        )
+
+        investigation_tools = [
+            {"type": "function", "function": {"name": "search_file", "parameters": {}}},
+        ]
+        tool_context = MagicMock()
+
+        # Act
+        result = await engine._generate_structured_output(
+            prompt="Test prompt",
+            schema_model=SampleResponse,
+            investigation_tools=investigation_tools,
+            tool_context=tool_context,
+        )
+
+        # Assert — the request did NOT 500; the fallback path produced a
+        # valid response from the non-tool single-shot route.
+        assert isinstance(result, SampleResponse)
+        assert result.agent_response == "fell back ok"
+        engine._tool_augmented_generate.assert_awaited_once()
+        mock_provider.generate.assert_awaited()
 
 
 # =========================================================================

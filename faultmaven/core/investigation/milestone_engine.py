@@ -2845,12 +2845,46 @@ class MilestoneEngine:
 
             # Check for tool calls in response
             if not hasattr(response, "tool_calls") or not response.tool_calls:
-                # No tool calls — shouldn't happen with tool_choice=auto/required
-                # but handle gracefully by appending to messages and forcing schema
+                # No tool calls. Two scenarios:
+                # 1. Recoverable (force_schema_next=False): the LLM emitted text
+                #    instead of calling a tool. Append the text plus a user-role
+                #    nudge directing the schema-tool call, then retry with only
+                #    schema tools. The nudge is what makes the next turn coherent
+                #    — without it, the LLM "already answered" and won't act.
+                # 2. Unrecoverable (force_schema_next=True or is_final): we already
+                #    nudged once and the LLM still won't call the schema tool. Try
+                #    parsing the text as schema JSON; if that fails, raise
+                #    ToolCallingUnsupportedError so _generate_structured_output's
+                #    fallback path retries via the non-tool structured-output route.
                 if is_final or force_schema_next:
-                    raise MilestoneEngineError(
-                        "Tool loop: LLM returned no tool calls on forced final iteration"
+                    from faultmaven.exceptions import ToolCallingUnsupportedError
+
+                    text = (response.content or "").strip()
+                    if text:
+                        try:
+                            return self._parse_text_as_schema(text, schema_model)
+                        except Exception as parse_err:
+                            logger.warning(
+                                "Tool loop: text content after forced-schema "
+                                "iteration not parseable as schema (%s)",
+                                parse_err,
+                            )
+                    logger.warning(
+                        "Tool loop: provider %s ignored tool_choice=required "
+                        "with only the schema tool exposed; escalating to "
+                        "non-tool fallback path",
+                        provider_name,
                     )
+                    raise ToolCallingUnsupportedError(
+                        message=(
+                            f"Provider {provider_name} returned no tool calls "
+                            f"under tool_choice=required with the schema tool "
+                            f"as the only option. Falling back to non-tool path."
+                        ),
+                        provider=provider_name,
+                        model=self.da_model,
+                    )
+
                 logger.warning(
                     "Tool loop: LLM returned no tool calls at iteration %d, "
                     "will force schema on next iteration",
@@ -2863,6 +2897,23 @@ class MilestoneEngine:
                         "role": "assistant",
                         "content": response.content
                         or "I should use a tool to proceed.",
+                    }
+                )
+                # Append a user nudge that explicitly directs the schema-tool
+                # call. Without this the conversation ends on an assistant
+                # message with no fresh user instruction — most models read that
+                # as "already answered" and either repeat themselves or return
+                # empty content, defeating the recovery.
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"You must now produce your structured response by "
+                            f"calling the `{schema_tool_name}` tool. Use the text "
+                            f"above as the `agent_response` field and fill in the "
+                            f"remaining required fields. Do not reply with plain "
+                            f"text — only a tool call is acceptable."
+                        ),
                     }
                 )
 
@@ -3578,6 +3629,61 @@ class MilestoneEngine:
         content = json.dumps(content_obj)
         return schema_model.model_validate_json(content)
 
+    def _parse_text_as_schema(
+        self,
+        text: str,
+        schema_model: Any,
+    ) -> BaseInteractionResponse:
+        """Parse free-form LLM text as a schema instance.
+
+        Last-resort path used when a provider ignores tool_choice=required and
+        emits the structured response inline as text (often wrapped in a
+        ```json fence). Mirrors the markdown stripping + nested-JSON +
+        enum-fix logic in _generate_structured_output's single-shot path.
+
+        Raises ValueError if the parsed object is structurally valid but
+        semantically empty (e.g., agent_response blank). This guards against
+        false positives where prose happens to embed a JSON block that fits
+        the schema but doesn't represent a real response — those should
+        escalate to the non-tool fallback path, not be returned as-is.
+        """
+        cleaned = text.strip()
+        if "```" in cleaned:
+            match = re.search(r"```(?:json|JSON)?\s*\n(.*?)\n```", cleaned, re.DOTALL)
+            if match:
+                cleaned = match.group(1).strip()
+            elif cleaned.startswith("```"):
+                lines = cleaned.split("\n")
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                cleaned = "\n".join(lines).strip()
+
+        content_obj = json.loads(cleaned, strict=False)
+        content_obj = self._parse_nested_json(content_obj)
+        schema_dict = schema_model.model_json_schema()
+        content_obj = self._fix_enum_violations(
+            content_obj,
+            schema_dict,
+            root_defs=schema_dict.get("$defs"),
+        )
+        parsed = schema_model.model_validate_json(json.dumps(content_obj))
+
+        # Semantic guard: agent_response is the user-facing payload of every
+        # BaseInteractionResponse subclass. An empty value means the recovered
+        # JSON was structurally valid but contained no actual response — most
+        # likely we picked up an example block from the LLM's prose. Reject
+        # it so the caller escalates to the non-tool fallback path instead of
+        # surfacing an empty bubble to the user.
+        agent_response = getattr(parsed, "agent_response", None)
+        if not agent_response or not str(agent_response).strip():
+            raise ValueError(
+                "parsed schema has empty agent_response — likely a prose-embedded "
+                "JSON example, not a real response"
+            )
+        return parsed
+
     @staticmethod
     def _build_assistant_message(response: Any) -> dict:
         """Convert LLMResponse to OpenAI-format assistant message.
@@ -3633,17 +3739,18 @@ class MilestoneEngine:
             )
             logger.info(f"kb_qa result: {len(content)} chars")
             return (
-                "KNOWLEDGE BASE RESULT — Include the detailed content below "
-                "in your response to the user. Do NOT summarize it into a "
-                "single sentence. Preserve the key details, diagnostic steps, "
-                "and resolution procedures.\n\n"
+                "KNOWLEDGE BASE RESULT — Place the content below into the "
+                "`agent_response` field of your structured response. Preserve "
+                "key details, diagnostic steps, and resolution procedures — do "
+                "NOT collapse it into a single sentence.\n\n"
                 f"{content}\n\n"
-                "SOURCE CITATION: At the very end of your response, add a "
+                "SOURCE CITATION: At the end of `agent_response`, append a "
                 "compact source line in italic markdown using this exact format:\n"
                 "*Sources: [title1], [title2]*\n"
                 "Use only the primary source title(s) from the content above. "
-                "Keep it to one short line. Do NOT write a verbose paragraph "
-                "about where the information came from."
+                "One short line — no verbose attribution paragraph.\n\n"
+                "Then return the structured response by calling the response "
+                "schema tool. Do not reply with plain text."
             )
 
         # search_file results: append citation guidance so the LLM cites
