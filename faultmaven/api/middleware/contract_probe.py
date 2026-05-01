@@ -60,6 +60,13 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         query_params = dict(request.query_params) if request.query_params else {}
 
+        # Capture pre-call request signals the violation rules need.
+        # Specifically: AUTH_500_VIOLATION distinguishes "endpoint should
+        # have rejected the request as unauthorized" from "endpoint
+        # accepted the auth then crashed downstream" — only the first is
+        # a real auth-contract violation.
+        had_auth_header = bool(request.headers.get("Authorization"))
+
         response = await call_next(request)
 
         # Calculate response time
@@ -67,7 +74,13 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
 
         # Probe contract-critical data points
         probe_data = self._extract_probe_data(
-            method, path, query_params, response, correlation_id, response_time
+            method,
+            path,
+            query_params,
+            response,
+            correlation_id,
+            response_time,
+            had_auth_header=had_auth_header,
         )
 
         # Log contract compliance data
@@ -83,6 +96,7 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
         response: Response,
         correlation_id: str,
         response_time: float,
+        had_auth_header: bool = False,
     ) -> Dict[str, Any]:
         """Extract contract-critical data points"""
 
@@ -93,6 +107,7 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
             "status_code": response.status_code,
             "response_time_ms": round(response_time * 1000, 2),
             "timestamp": time.time(),
+            "had_auth_header": had_auth_header,
         }
 
         # Extract critical headers
@@ -161,12 +176,25 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
         status_code = probe_data["status_code"]
         headers = probe_data.get("headers", {})
 
-        # Critical violation: 500 for auth issues (should be 401/403)
-        if status_code == 500 and any(
-            auth_path in path for auth_path in ["/cases", "/sessions"]
+        # Critical violation: 500 for an UNAUTHENTICATED request to a
+        # protected endpoint. The middleware should have rejected this
+        # with 401 before reaching the handler. A 500 here means an
+        # auth-contract bug.
+        #
+        # Previously this rule fired on ANY 500 against /cases or
+        # /sessions paths, conflating downstream errors (e.g. milestone-
+        # engine MilestoneEngineError on the turns endpoint) with auth
+        # violations. Tightened on 2026-05-01 to require absence of an
+        # Authorization header — authenticated 500s are downstream
+        # errors, not auth-contract bugs.
+        if (
+            status_code == 500
+            and not probe_data.get("had_auth_header")
+            and any(auth_path in path for auth_path in ["/cases", "/sessions"])
         ):
             violations.append(
-                "AUTH_500_VIOLATION: Protected endpoint returned 500, should be 401/403"
+                "AUTH_500_VIOLATION: Protected endpoint returned 500 for "
+                "unauthenticated request, should be 401/403"
             )
 
         # Critical violation: Missing Location header on 201/202
