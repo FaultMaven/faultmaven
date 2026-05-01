@@ -313,6 +313,37 @@ class LLMSettings(BaseSettings):
     max_retries: int = Field(default=3, validation_alias="LLM_MAX_RETRIES")
     retry_delay: float = Field(default=1.0, validation_alias="LLM_RETRY_DELAY")
 
+    # Per-provider request_timeout overrides. Some providers/models are
+    # systematically slower than others (e.g. Fireworks DeepSeek V4 Pro can
+    # exceed 90s on schema-forced tool-loop iterations; local Ollama on
+    # CPU can take 5+ min). Mapping {provider_name: timeout_seconds}; any
+    # provider not listed falls back to ``request_timeout``.
+    #
+    # Set via env as JSON, e.g.:
+    #   LLM_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 180, "ollama": 600}'
+    #
+    # Surfaced as a tunable per a 2026-05-01 system code review (a
+    # DeepSeek run on text-paste-stacktrace q6 hit the 90s ceiling).
+    provider_timeout_overrides: Dict[str, int] = Field(
+        default_factory=dict,
+        validation_alias="LLM_PROVIDER_TIMEOUT_OVERRIDES",
+        description=(
+            "Per-provider timeout overrides in seconds. JSON object keyed "
+            "by provider name (e.g. 'fireworks', 'gemini', 'ollama'). "
+            "Empty default — providers fall back to request_timeout."
+        ),
+    )
+
+    def timeout_for_provider(self, provider_name: Optional[str]) -> int:
+        """Return the per-provider timeout if set, else the global default.
+
+        Centralised so callers don't have to dict-lookup + fall back themselves.
+        Empty / unknown provider names return ``request_timeout`` unchanged.
+        """
+        if not provider_name:
+            return self.request_timeout
+        return self.provider_timeout_overrides.get(provider_name, self.request_timeout)
+
     # Provider behavior
     strict_provider_mode: bool = Field(
         default=True,  # Changed to True for predictability and transparency

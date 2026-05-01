@@ -71,7 +71,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         self.confidence_threshold = confidence_threshold
         self._router_initialized = False  # Track router initialization separately
 
-        # Get timeout from settings with environment variable override
+        # Get timeout from settings with environment variable override.
+        # Per-provider overrides (LLMSettings.provider_timeout_overrides /
+        # LLM_PROVIDER_TIMEOUT_OVERRIDES) are resolved at call time in
+        # ``_resolve_timeout`` below, since the chosen provider may differ
+        # from the configured default when fallback chains fire.
         self.settings = get_settings()
         self.request_timeout = float(
             os.getenv("LLM_REQUEST_TIMEOUT", str(self.settings.llm.request_timeout))
@@ -79,7 +83,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
         # Don't initialize registry immediately - wait for first use
         self.logger.info(
-            f"🔍 LLMRouter created, request timeout: {self.request_timeout}s"
+            f"🔍 LLMRouter created, base request timeout: {self.request_timeout}s; "
+            f"per-provider overrides: {self.settings.llm.provider_timeout_overrides or 'none'}"
         )
         self.logger.info("🔍 LLMRouter registry will be initialized on first use")
 
@@ -87,6 +92,31 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
     def registry(self):
         """Always fetch the current global registry so hot-reloads take effect."""
         return get_registry()
+
+    def _resolve_timeout(self) -> float:
+        """Return the request timeout for the currently-active primary provider.
+
+        Looks up the configured CHAT_PROVIDER name and applies any per-
+        provider override from ``LLMSettings.provider_timeout_overrides``.
+        Falls back to ``self.request_timeout`` (the env-overridden default)
+        for unknown providers, so behaviour is unchanged when overrides
+        are empty (the common case).
+
+        Provider-aware timeouts let slow models (Fireworks DeepSeek V4 Pro,
+        local Ollama on CPU) exceed the global 30-90s ceiling without
+        widening it for everyone.
+        """
+        provider_name = getattr(self.settings.llm, "chat_provider", None) or os.getenv(
+            "CHAT_PROVIDER"
+        )
+        # str enums need .value; raw strings pass through unchanged.
+        if provider_name is not None and not isinstance(provider_name, str):
+            provider_name = getattr(provider_name, "value", str(provider_name))
+
+        override = self.settings.llm.timeout_for_provider(provider_name)
+        # If the user has explicitly raised the env var above the override,
+        # respect that ceiling (env is the operator's last word).
+        return float(max(override, self.request_timeout))
 
     @_opik_track_llm("llm_router_route")
     async def route(
@@ -164,7 +194,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 response_format=response_format,
                 messages=sanitized_messages,
                 confidence_threshold=self.confidence_threshold,
-                timeout=self.request_timeout,  # Enforce router-level timeout ceiling
+                timeout=self._resolve_timeout(),  # Provider-aware ceiling
                 retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
                 retry_delay=1.0,
             )
