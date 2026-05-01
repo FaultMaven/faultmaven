@@ -114,6 +114,28 @@ FILE_UPLOAD_CONFIDENCE_BOOST = 0.03
 PAGE_CAPTURE_CONFIDENCE_BOOST = 0.02
 
 
+# Text-paste submissions intentionally receive NO confidence boost. The
+# rationale is that pasted text carries no trustworthy origin signal:
+#  - filename is synthetic ("pasted-content-{ts}.txt"), so extension lies
+#  - source_url is absent (unlike page_capture)
+#  - browser_context is absent (unlike page_capture)
+# Classification therefore relies entirely on rule-based content matching
+# (priority-5 in the 5-priority chain at the top of this module). This is
+# deliberate — boosting text_paste would inflate confidence on user content
+# whose shape is essentially unknown until the rules match it.
+#
+# KNOWN GAP (ISS-053 in fm-data-exam): a paste shaped like SOURCE_CODE that
+# sits below MIN_EXTRACTION_LINES (200, in preprocessing_service.py) takes
+# the raw-passthrough route, suppressing both extraction AND sanity checks.
+# Mitigation paths if this becomes a problem in production:
+#   1. Add a TEXT_PASTE-specific MIN_EXTRACTION_LINES (e.g., 50) so pastes
+#      pass through the extractor more eagerly than file uploads.
+#   2. Track a separate confidence floor for text_paste that requires
+#      stronger rule signals than file_upload before auto-accepting.
+# See ISS-053 for monitoring + decision context.
+TEXT_PASTE_CONFIDENCE_BOOST = 0.0  # intentionally zero — see comment above
+
+
 def _top_suggested_types(scores: dict, n: int = 3) -> List[DataType]:
     """Top N data types by score, excluding UNANALYZABLE.
 

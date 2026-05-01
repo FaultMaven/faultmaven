@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from faultmaven.modules.case.domain.models import EntityType
+from faultmaven.modules.case.contracts import EntityType
 
 
 @dataclass(frozen=True)

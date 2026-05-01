@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from faultmaven.modules.case.domain.models import EntityType
+from faultmaven.modules.case.contracts import EntityType
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
 
 # Keys in trace dumps come both as JSON (``"key":"value"``) and as

@@ -293,3 +293,30 @@ ignore_imports =
 # forbidden_modules =
 #     faultmaven.modules.case.infrastructure
 # allow_indirect_imports = false
+
+# ============================================================================
+# CONTRACT 14: Preprocessing Module Uses Case Contracts Only
+# ============================================================================
+# Preprocessing is a Domain Service that depends on shared Case models
+# (notably EntityType for entity profiles). It must import these through
+# faultmaven.modules.case.contracts, not from case.domain.* or
+# case.infrastructure.*. The contracts module re-exports the relevant
+# symbols (EntityType is available at case.contracts:512).
+#
+# Originally enforced informally by code review; tightened after a system
+# review surfaced 5 entity extractors importing EntityType directly from
+# case.domain.models (commit-ref: fix/data-pipeline-review-highs).
+[importlinter:contract:14]
+name = Preprocessing uses Case contracts not domain or infrastructure
+type = forbidden
+source_modules =
+    faultmaven.modules.preprocessing
+forbidden_modules =
+    faultmaven.modules.case.domain
+    faultmaven.modules.case.infrastructure
+# Indirect imports allowed: case.contracts itself re-exports from
+# case.domain.models, and models.api transitively reaches it through
+# agent/case domain models. Direct preprocessing → case.domain or
+# case.infrastructure imports are still blocked, which is the contract
+# we actually need.
+allow_indirect_imports = true
