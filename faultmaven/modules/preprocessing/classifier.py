@@ -1094,12 +1094,20 @@ class DataClassifier:
         # different types the file resembles) not depth.
         categories: dict[DataType, str] = {}
 
-        # ISO datetime / date in a maintenance window or event header.
-        # Suggests a log line or a structured event record.
-        if re.search(r"\d{4}-\d{2}-\d{2}[T\s]\d{1,2}:\d{2}", sample) or re.search(
-            r"\d{4}-\d{2}-\d{2}\b", sample
-        ):
-            categories[DataType.LOGS_AND_ERRORS] = "datetime"
+        # Log-line shape: timestamp at *start* of multiple lines is the only
+        # signal strong enough to suggest LOGS_AND_ERRORS in short ambiguous
+        # content. ISS-050: a single datetime inside prose (e.g. a maintenance
+        # window header) is too weak — a one-off datetime would otherwise mark
+        # any short notice mentioning a date as a log candidate, which trips
+        # the rubric's forbidden_claim "suggests LOG as a candidate type" for
+        # short ambiguous text.
+        log_line_pat = re.compile(
+            r"(?m)^(?:\d{4}-\d{2}-\d{2}[T\s]\d{1,2}:\d{2}"  # ISO datetime
+            r"|\d{2}/\d{2}/\d{2}\s+\d{1,2}:\d{2}:\d{2}"  # YY/MM/DD HH:MM:SS
+            r"|\d{8}-\d{1,2}:\d{1,2}:\d{1,2})"  # YYYYMMDD-H:M:S (HealthApp)
+        )
+        if len(log_line_pat.findall(sample)) >= 2:
+            categories[DataType.LOGS_AND_ERRORS] = "log_line_shape"
 
         # URL → typical of documentation / runbooks.
         if re.search(r"https?://", sample):
