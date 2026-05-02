@@ -1473,10 +1473,30 @@ class LogsAndErrorsExtractor:
         ]
         for state, count in state_counts.most_common():
             lines.append(f"      {state}: {count}")
+        # Annotate the spawn-coverage gap. ``goroutine 1`` (the entry-point
+        # main goroutine) and any goroutine present in the dump but lacking
+        # a ``created by`` line have no spawn provenance — call this out so
+        # the agent does not assume the listed spawners account for every
+        # goroutine.
+        spawned_total = sum(spawn_counts.values())
+        unknown_spawn = goroutine_count - spawned_total
         if spawn_counts:
-            lines.append("    spawned by (created-by provenance):")
+            header = "    spawned by (created-by provenance"
+            if unknown_spawn > 0:
+                header += (
+                    f"; {unknown_spawn} of {goroutine_count} goroutines"
+                    f" have no created-by line — typically goroutine 1 / main"
+                )
+            header += "):"
+            lines.append(header)
             for func, count in spawn_counts.most_common():
                 lines.append(f"      {func}: {count}")
+        elif unknown_spawn > 0:
+            lines.append(
+                f"    spawned by: unknown for all {goroutine_count} goroutines"
+                f" (no created-by lines present — typically a single-goroutine"
+                f" panic)"
+            )
         return "\n".join(lines)
 
     @staticmethod
@@ -1716,7 +1736,9 @@ class LogsAndErrorsExtractor:
                     minutes = int((log_span_secs % 3600) // 60)
                     duration_note = f" ({hours}h {minutes}m duration)"
                 elif log_span_secs >= 60:
-                    duration_note = f" (~{int(log_span_secs / 60)}min duration)"
+                    # Match the ``Xh Ym`` format above — both branches use
+                    # exact integer division, so neither needs a ``~`` prefix.
+                    duration_note = f" ({int(log_span_secs / 60)}m duration)"
                 if first_ts.date() != last_ts.date():
                     days_spanned = (last_ts.date() - first_ts.date()).days + 1
                     midnight_clause = (

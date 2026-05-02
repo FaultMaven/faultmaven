@@ -2539,6 +2539,20 @@ class TestMidnightCrossingFileSummary:
         assert "spans" not in fe or "calendar dates" not in fe
         assert "session crosses midnight" not in fe
 
+    def test_minute_scale_duration_no_tilde_prefix(self, extractor):
+        """Sub-hour durations must use the same ``Xm duration`` format as
+        the ``Xh Ym duration`` branch — neither uses a ``~`` prefix
+        because both are exact integer arithmetic. Format consistency
+        keeps grep / dashboard parsing simple."""
+        lines = [
+            "20171223-08:00:00:000|App|port 8080|start",
+            "20171223-08:30:00:000|App|port 8080|stop",
+        ]
+        result = extractor.extract("\n".join(lines))
+        fe = _fe(result)
+        assert "30m duration" in fe
+        assert "~30min" not in fe  # old format must be gone
+
     def test_multi_day_drops_midnight_clause(self, extractor):
         """For 3+ days the ``crosses midnight`` clause is suppressed
         (reads oddly when the span is wider than a single midnight)."""
@@ -2615,6 +2629,38 @@ class TestGoroutineBlockSummary:
         text = _all(result)
         assert "Go goroutine blocks" not in text
 
+    def test_partial_spawn_coverage_annotated(self, extractor):
+        """Goroutines without a ``created by`` line (typically goroutine 1 /
+        main) must be surfaced so the agent does not assume the listed
+        spawners account for every goroutine."""
+        content = (
+            "goroutine 1 [running]:\n"
+            "main.processData(0x100)\n"
+            "\t/app/main.go:42 +0x10\n"
+            "\n"
+            "goroutine 5 [waiting]:\n"
+            "runtime.gopark(...)\n"
+            "\t/usr/local/go/src/runtime/runtime2.go:331\n"
+            "created by main.startWorker\n"
+            "\t/app/main.go:78 +0x20\n"
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        # 1 of 2 goroutines lacks created-by — annotation must mention it
+        assert "1 of 2 goroutines have no created-by line" in text
+        assert "main.startWorker: 1" in text
+
+    def test_zero_spawn_coverage_uses_dedicated_message(self, extractor):
+        """When NO goroutine in the dump has a ``created by`` line — the
+        single-goroutine panic case — use a dedicated message instead of
+        a partial-coverage annotation hanging off an empty list."""
+        content = (
+            "goroutine 1 [running]:\n" "main.crash(0x100)\n" "\t/app/main.go:42 +0x10\n"
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "spawned by: unknown for all 1 goroutines" in text
+
 
 class TestShortAmbiguousLogClassifierFilter:
     """ISS-050: Short ambiguous text (e.g. a maintenance notice with a
@@ -2650,8 +2696,10 @@ class TestShortAmbiguousLogClassifierFilter:
         from faultmaven.models.api import DataType
 
         c = DataClassifier()
-        # Two log-line-shaped entries plus a URL and a version tag and an
-        # email so the breadth threshold is met.
+        # Fixture is engineered to hit four ambiguity categories
+        # (≥3 required to fire the gate): two timestamp-prefixed lines
+        # → LOGS_AND_ERRORS, a URL → DOCUMENTATION, a version tag →
+        # SOURCE_CODE, and an email → UNSTRUCTURED_TEXT.
         content = (
             "2024-03-15 02:00:00 INFO server starting\n"
             "2024-03-15 02:00:01 INFO listening on :8080\n"
@@ -2660,7 +2708,13 @@ class TestShortAmbiguousLogClassifierFilter:
             "Service version: v2.3.8\n"
         )
         result = c.classify("short-log.txt", content)
-        # If the breadth threshold is met, LOG is in suggested_types because
-        # ≥2 log-shaped lines fired the LOGS_AND_ERRORS category.
-        if result.classification_failed:
-            assert DataType.LOGS_AND_ERRORS in result.suggested_types
+        # The gate MUST fire (otherwise this test silently degrades to a
+        # no-op): assert classification_failed unconditionally, then assert
+        # LOG is present — the new ≥2-log-line rule must NOT suppress LOG
+        # when actual log lines are present.
+        assert result.classification_failed is True, (
+            "ambiguity gate must fire for this fixture; if it doesn't, the "
+            "fixture or the gate has drifted and this test no longer pins "
+            "the positive case"
+        )
+        assert DataType.LOGS_AND_ERRORS in result.suggested_types
