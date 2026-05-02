@@ -1891,6 +1891,42 @@ class AgentSettings(BaseSettings):
         description="Request timeout for LLM calls (seconds)",
     )
 
+    # Per-provider overrides for the agent-level (turn-wide) timeout. The
+    # turn endpoint wraps the entire process_turn call in asyncio.wait_for
+    # using this ceiling; providers that take longer per turn (e.g.
+    # Fireworks DeepSeek V4 Pro on log-heavy cases, local Ollama on CPU)
+    # need more headroom but raising the global default hurts faster
+    # providers. Mirrors LLMSettings.provider_timeout_overrides; resolved
+    # at call time in modules/case/api/routes.py.
+    #
+    # Set via env as JSON, e.g.:
+    #   AGENT_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 300, "ollama": 900}'
+    #
+    # Surfaced by ISS-058 — DeepSeek run on logs-windows q3 hit the 120s
+    # ceiling. Pairs stylistically with ISS-054 (LLM-router timeout).
+    provider_timeout_overrides: Dict[str, int] = Field(
+        default_factory=dict,
+        validation_alias="AGENT_PROVIDER_TIMEOUT_OVERRIDES",
+        description=(
+            "Per-provider agent-level timeout overrides in seconds. JSON "
+            "object keyed by provider name (e.g. 'fireworks', 'gemini', "
+            "'ollama'). Empty default — providers fall back to "
+            "agent_request_timeout."
+        ),
+    )
+
+    def timeout_for_provider(self, provider_name: Optional[str]) -> int:
+        """Return the per-provider agent timeout if set, else the global default.
+
+        Centralised so callers don't have to dict-lookup + fall back themselves.
+        Empty / unknown provider names return ``agent_request_timeout`` unchanged.
+        """
+        if not provider_name:
+            return self.agent_request_timeout
+        return self.provider_timeout_overrides.get(
+            provider_name, self.agent_request_timeout
+        )
+
     # Token budget defaults
     default_session_token_budget: Optional[int] = Field(
         default=None,

@@ -17,6 +17,7 @@ Key Endpoints:
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import time
 import uuid
@@ -143,6 +144,27 @@ def _safe_enum_value(value):
     if hasattr(value, "value"):
         return value.value
     return str(value)
+
+
+def _resolve_agent_timeout(settings) -> tuple[float, str]:
+    """Resolve the per-provider agent-level timeout for the active CHAT_PROVIDER.
+
+    Mirrors the LLM-router's ``_resolve_timeout`` shape (ISS-054) but applies to
+    the agent-level (turn-wide) ceiling enforced via ``asyncio.wait_for``.
+
+    Returns a ``(timeout_seconds, provider_name_for_logging)`` tuple. The
+    returned name is the resolved provider string (or ``"default"`` when the
+    setting is missing entirely) so log lines can attribute timeouts.
+
+    See ISS-058.
+    """
+    provider_name = getattr(settings.llm, "chat_provider", None) or os.getenv(
+        "CHAT_PROVIDER"
+    )
+    if provider_name is not None and not isinstance(provider_name, str):
+        provider_name = getattr(provider_name, "value", str(provider_name))
+    timeout = float(settings.agent.timeout_for_provider(provider_name))
+    return timeout, provider_name or "default"
 
 
 # Configurable banned words list - minimal but extensible
@@ -2204,13 +2226,14 @@ async def submit_turn(
 
         payload = TurnPayload(query=query, attachments=attachments, intent=intent)
 
-        # Process turn with configurable timeout
+        # Process turn with configurable timeout (provider-aware — see ISS-058).
         try:
             from faultmaven.config.settings import get_settings
 
-            agent_timeout = float(get_settings().agent.agent_request_timeout)
+            agent_timeout, provider_name = _resolve_agent_timeout(get_settings())
             logger.info(
-                f"Processing turn for case {case_id} with {agent_timeout}s timeout"
+                f"Processing turn for case {case_id} with {agent_timeout}s timeout "
+                f"(provider={provider_name})"
             )
             response = await asyncio.wait_for(
                 investigation_service.process_turn(
@@ -2234,9 +2257,10 @@ async def submit_turn(
         except asyncio.TimeoutError:
             from faultmaven.config.settings import get_settings
 
-            agent_timeout = float(get_settings().agent.agent_request_timeout)
+            agent_timeout, provider_name = _resolve_agent_timeout(get_settings())
             logger.error(
-                f"Turn processing timed out for case {case_id} after {agent_timeout}s"
+                f"Turn processing timed out for case {case_id} after {agent_timeout}s "
+                f"(provider={provider_name})"
             )
             raise HTTPException(
                 status_code=504,
