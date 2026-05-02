@@ -2672,8 +2672,8 @@ class TestShortAmbiguousLogClassifierFilter:
 
     def test_maintenance_notice_does_not_suggest_log(self):
         """Maintenance window text with one datetime in prose must omit LOG."""
-        from faultmaven.modules.preprocessing.classifier import DataClassifier
         from faultmaven.models.api import DataType
+        from faultmaven.modules.preprocessing.classifier import DataClassifier
 
         c = DataClassifier()
         content = (
@@ -2692,8 +2692,8 @@ class TestShortAmbiguousLogClassifierFilter:
     def test_real_log_lines_still_suggest_log(self):
         """A short file with ≥2 timestamp-prefixed lines IS log-shaped — the
         filter must not suppress LOG when the evidence is present."""
-        from faultmaven.modules.preprocessing.classifier import DataClassifier
         from faultmaven.models.api import DataType
+        from faultmaven.modules.preprocessing.classifier import DataClassifier
 
         c = DataClassifier()
         # Fixture is engineered to hit four ambiguity categories
