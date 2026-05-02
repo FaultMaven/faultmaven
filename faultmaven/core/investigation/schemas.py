@@ -273,6 +273,17 @@ class EvidenceToAdd(BaseModel):
     source_type: EvidenceSourceType
     likelihood: float = Field(0.8, ge=0.0, le=1.0)
 
+    @field_validator("summary", mode="before")
+    @classmethod
+    def truncate_summary(cls, v):
+        # Domain Evidence.summary caps at 500 chars (modules/case/domain/models.py).
+        # Verbose providers (e.g. DeepSeek on logs-zookeeper) overshoot; truncate
+        # softly here so the turn does not 500. Same graceful-degrade pattern as
+        # the binary-decode placeholder. See ISS-057.
+        if isinstance(v, str) and len(v) > 500:
+            return v[:489] + " [...trunc]"
+        return v
+
     @field_validator("content_ref", mode="before")
     @classmethod
     def stringify_content_ref(cls, v):
