@@ -2440,3 +2440,227 @@ class TestCBSFormatNote:
         result = extractor.extract(content)
         text = _all(result)
         assert "Distinct KB packages: 5" in text
+
+
+class TestModJkWorkerStateSurfacing:
+    """ISS-045: Apache mod_jk error_log lines like ``mod_jk child workerEnv
+    in error state N`` carry a numeric state code that distinguishes
+    different upstream Tomcat connection failure modes. Without a structured
+    block, the agent estimates per-state counts from sample snippets and
+    mis-attributes the aggregate to a single state. The Apache 2k fixture
+    has 539 such lines split across 5 states (state 6 dominant at 369).
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _mod_jk(self, state: int, n: int = 1) -> str:
+        return "\n".join(
+            f"[Sun Dec 04 04:51:18 2005] [error] mod_jk child workerEnv in error state {state}"
+            for _ in range(n)
+        )
+
+    def test_per_state_breakdown_surfaced(self, extractor):
+        """Multi-state fixture: distinct count + per-state counts present."""
+        content = "\n".join(
+            [
+                self._mod_jk(state=6, n=369),
+                self._mod_jk(state=7, n=101),
+                self._mod_jk(state=8, n=44),
+                self._mod_jk(state=9, n=20),
+                self._mod_jk(state=10, n=5),
+            ]
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "mod_jk worker error states" in text
+        assert "5 distinct" in text
+        assert "539 lines total" in text
+        assert "state 6: 369" in text
+        assert "state 7: 101" in text
+        assert "state 10: 5" in text
+
+    def test_states_sorted_numerically(self, extractor):
+        """States must appear in numeric order, not by count."""
+        content = "\n".join([self._mod_jk(state=10, n=5), self._mod_jk(state=6, n=369)])
+        result = extractor.extract(content)
+        text = _all(result)
+        idx_6 = text.index("state 6: 369")
+        idx_10 = text.index("state 10: 5")
+        assert idx_6 < idx_10  # state 6 listed before state 10
+
+    def test_no_mod_jk_no_block(self, extractor):
+        """Plain syslog without workerEnv lines must not produce the block."""
+        content = "Jun 14 15:16:01 host sshd[1000]: Failed password for root\n" * 20
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "mod_jk worker error states" not in text
+
+
+class TestMidnightCrossingFileSummary:
+    """ISS-049: When a log session crosses midnight, the underlying time
+    range extraction is correct (returns the LATER end_ts), but the LLM
+    silently collapses the start/end to same-day arithmetic and reports a
+    drastically-shorter session. Surface the cross-date span explicitly in
+    FILE SUMMARY: ``Xh Ym duration`` (concrete) + ``[spans N calendar
+    dates ...]`` (so the LLM cannot miss the date change).
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def test_midnight_crossing_surfaced(self, extractor):
+        """HealthApp-style YYYYMMDD-H:M:S log crossing midnight."""
+        # Lines must carry an entity (port number) for the FILE SUMMARY
+        # path to fire — _build_entity_profile early-returns on entityless
+        # content. This mirrors real HealthApp logs which always carry PIDs.
+        lines = [
+            "20171223-22:15:29:606|App|port 8080|start",
+            "20171223-23:00:00:000|App|port 8080|tick",
+            "20171224-1:02:35:789|App|port 8080|stop",
+        ]
+        result = extractor.extract("\n".join(lines))
+        fe = _fe(result)
+        assert "2h 47m duration" in fe
+        assert "spans 2 calendar dates" in fe
+        assert "session crosses midnight" in fe
+
+    def test_same_day_no_crossing_tag(self, extractor):
+        """A same-day log must NOT carry the cross-date tag."""
+        lines = [
+            "20171223-08:00:00:000|App|port 8080|start",
+            "20171223-09:30:00:000|App|port 8080|stop",
+        ]
+        result = extractor.extract("\n".join(lines))
+        fe = _fe(result)
+        # Either no time-range line at all, or one without the tag
+        assert "spans" not in fe or "calendar dates" not in fe
+        assert "session crosses midnight" not in fe
+
+    def test_multi_day_drops_midnight_clause(self, extractor):
+        """For 3+ days the ``crosses midnight`` clause is suppressed
+        (reads oddly when the span is wider than a single midnight)."""
+        lines = [
+            "20171220-08:00:00:000|App|port 8080|start",
+            "20171225-10:00:00:000|App|port 8080|stop",
+        ]
+        result = extractor.extract("\n".join(lines))
+        fe = _fe(result)
+        assert "spans 6 calendar dates" in fe
+        assert "session crosses midnight" not in fe
+
+
+class TestGoroutineBlockSummary:
+    """ISS-052: Go runtime panic dumps carry one or more
+    ``goroutine N [state]:`` blocks with an indented stack trace and an
+    optional trailing ``created by <FUNC>`` provenance line. Without a
+    structural pass, the agent loses the relational structure (which
+    frames belong to which goroutine, which spawn point produced the
+    racing goroutines). Surface state distribution + spawn-source counts
+    so the agent can answer "where do the racing goroutines come from?"
+    directly from the entity profile.
+    """
+
+    @pytest.fixture
+    def extractor(self):
+        return LogsAndErrorsExtractor()
+
+    def _go_panic(self, n_runnable: int = 0, n_running: int = 0) -> str:
+        chunks = []
+        for i in range(n_running):
+            chunks.append(
+                f"goroutine {100 + i} [running]:\n"
+                f"runtime.throw(...)\n"
+                f"\t/usr/local/go/src/runtime/panic.go:1047 +0x5d\n"
+                f"created by net/http.(*Server).Serve\n"
+                f"\t/usr/local/go/src/net/http/server.go:3089 +0x4cf\n"
+            )
+        for i in range(n_runnable):
+            chunks.append(
+                f"goroutine {200 + i} [runnable]:\n"
+                f"github.com/x/y.(*MemCache).Set(...)\n"
+                f"\t/build/internal/cache/memcache.go:54 +0x9c\n"
+                f"created by github.com/x/y/scheduler.(*Worker).Start\n"
+                f"\t/build/internal/scheduler/worker.go:42 +0x9c\n"
+            )
+        return "\n".join(chunks)
+
+    def test_state_counts_surfaced(self, extractor):
+        """3 runnable + 1 running → state counts visible in output."""
+        content = self._go_panic(n_runnable=3, n_running=1)
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "Go goroutine blocks (4 total" in text
+        assert "running: 1" in text
+        assert "runnable: 3" in text
+
+    def test_created_by_provenance_surfaced(self, extractor):
+        """The ``created by`` line must be aggregated as spawn provenance."""
+        content = self._go_panic(n_runnable=3, n_running=1)
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "spawned by (created-by provenance)" in text
+        assert "scheduler.(*Worker).Start" in text
+        assert "net/http.(*Server).Serve" in text
+
+    def test_no_goroutine_no_block(self, extractor):
+        """A regular log without goroutine headers must not produce the block."""
+        content = (
+            "2024-03-15T14:37:22Z INFO  service starting\n"
+            "2024-03-15T14:38:00Z ERROR connection refused to upstream\n"
+        )
+        result = extractor.extract(content)
+        text = _all(result)
+        assert "Go goroutine blocks" not in text
+
+
+class TestShortAmbiguousLogClassifierFilter:
+    """ISS-050: Short ambiguous text (e.g. a maintenance notice with a
+    single datetime mentioned in prose) must NOT trigger LOGS_AND_ERRORS as
+    a candidate type. The standard's forbidden_claim is "suggests LOG as a
+    candidate type". Require ≥2 log-line-shaped lines (timestamp at start
+    of line) before LOGS_AND_ERRORS counts as an ambiguity signal.
+    """
+
+    def test_maintenance_notice_does_not_suggest_log(self):
+        """Maintenance window text with one datetime in prose must omit LOG."""
+        from faultmaven.modules.preprocessing.classifier import DataClassifier
+        from faultmaven.models.api import DataType
+
+        c = DataClassifier()
+        content = (
+            "Maintenance window scheduled: 2024-03-15 02:00 UTC to 04:00 UTC\n"
+            "Services affected: auth, payments, notifications\n"
+            "Expected downtime: up to 120 minutes\n"
+            "Runbook: https://wiki.internal/runbooks/maintenance-q1-2024\n"
+            "Contact: ops-oncall@example.com\n"
+            "Action required: drain traffic from us-east-1 before 01:45 UTC\n"
+            "Rollback plan: redeploy previous artifact (tag: v2.3.8)\n"
+        )
+        result = c.classify("low-signal-text.txt", content)
+        assert result.classification_failed is True
+        assert DataType.LOGS_AND_ERRORS not in result.suggested_types
+
+    def test_real_log_lines_still_suggest_log(self):
+        """A short file with ≥2 timestamp-prefixed lines IS log-shaped — the
+        filter must not suppress LOG when the evidence is present."""
+        from faultmaven.modules.preprocessing.classifier import DataClassifier
+        from faultmaven.models.api import DataType
+
+        c = DataClassifier()
+        # Two log-line-shaped entries plus a URL and a version tag and an
+        # email so the breadth threshold is met.
+        content = (
+            "2024-03-15 02:00:00 INFO server starting\n"
+            "2024-03-15 02:00:01 INFO listening on :8080\n"
+            "Runbook: https://wiki.internal/maintenance\n"
+            "Contact: oncall@example.com\n"
+            "Service version: v2.3.8\n"
+        )
+        result = c.classify("short-log.txt", content)
+        # If the breadth threshold is met, LOG is in suggested_types because
+        # ≥2 log-shaped lines fired the LOGS_AND_ERRORS category.
+        if result.classification_failed:
+            assert DataType.LOGS_AND_ERRORS in result.suggested_types

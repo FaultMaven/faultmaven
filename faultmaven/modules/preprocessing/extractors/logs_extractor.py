@@ -754,6 +754,33 @@ class LogsAndErrorsExtractor:
         r"(?:\s*-\s*([A-Z][A-Z0-9_]{2,}))?"  # optional symbolic name
     )
 
+    # Go panic goroutine block markers (ISS-052). A Go runtime panic dump
+    # carries one or more ``goroutine N [state]:`` headers, followed by an
+    # indented stack trace, optionally terminated by a ``created by ...``
+    # provenance line that names the spawn site. The relational structure
+    # (which frames belong to which goroutine, which spawn site produced
+    # which goroutine) carries the operationally relevant signal — "the
+    # racing goroutines all came from scheduler.Worker.Start" is the
+    # answer to "where does the race come from?". Without a structural
+    # pass, the extractor keeps the leaf panic-site frames and the
+    # ``created by`` lines as free-floating fragments, and the agent has
+    # to reconstruct the relationship from the body. Mirrors ISS-015 (BGL
+    # alert flags) and ISS-038 (BGL FATAL by alert flag) — surface the
+    # relational summary as structured counts.
+    _GOROUTINE_HEADER_RE = re.compile(r"^goroutine (\d+) \[([^\]]+)\]:")
+    _GOROUTINE_CREATED_BY_RE = re.compile(r"^created by (\S+)")
+
+    # Apache mod_jk worker-state code extractor (ISS-045). Apache error_log
+    # lines like ``mod_jk child workerEnv in error state 6`` carry a numeric
+    # state code at the end. State distribution (per-state line counts) is the
+    # operational signal an oncall reads — different states correspond to
+    # different upstream Tomcat connection failure modes — but the raw text
+    # is repetitive, so an extractor that surfaces only crime-scene snippets
+    # leaves the agent estimating per-state counts from samples and
+    # mis-attributing aggregates. Mirrors ISS-015 (BGL alert flags) and
+    # ISS-020 (Windows KB packages).
+    _MOD_JK_STATE_RE = re.compile(r"workerEnv in error state (\d+)\b")
+
     # BGL (BlueGene/L) RAS log alert flag column extractor (ISS-015).
     # BGL lines have a structured first column carrying the alert-flag
     # category (``-`` for no class, or ``KERNDTLB``/``APPSEV``/etc.).
@@ -897,6 +924,9 @@ class LogsAndErrorsExtractor:
         # canonical symbolic name alongside the code.
         hresult_counts: Counter = Counter()
         hresult_symbols: dict[str, str] = {}
+        # Apache mod_jk worker-state counts (ISS-045). Per-state line counts
+        # for ``workerEnv in error state N`` lines.
+        mod_jk_state_counts: Counter = Counter()
         # BGL alert flag column counts (ISS-015). The BGL RAS log first
         # column classifies fault types; the agent must read the actual
         # column values rather than fabricating flag names from message
@@ -979,6 +1009,9 @@ class LogsAndErrorsExtractor:
             # ``sum(kb_package_counts.values())`` the total occurrences.
             for kb_num in self._KB_PACKAGE_RE.findall(line):
                 kb_package_counts[f"KB{kb_num}"] += 1
+            # Apache mod_jk worker-state codes (ISS-045). Per-state counts.
+            for state_num in self._MOD_JK_STATE_RE.findall(line):
+                mod_jk_state_counts[state_num] += 1
             # Windows CBS HRESULTs (ISS-037). Aggregate by hex code so the
             # per-HRESULT total survives message-template fragmentation.
             # Hex is normalised to lowercase so ``0x800F080D`` and
@@ -1075,6 +1108,7 @@ class LogsAndErrorsExtractor:
             or kb_package_counts
             or bgl_has_signal
             or hresult_counts
+            or mod_jk_state_counts
         ):
             return "", "ENTITY PROFILE: No entities found"
 
@@ -1323,6 +1357,28 @@ class LogsAndErrorsExtractor:
                     else:
                         parts.append(f"    {flag}: {count}")
 
+        # Apache mod_jk worker-state codes (ISS-045). The Apache 2k fixture
+        # carries 539 ``workerEnv in error state N`` lines split across 5
+        # states (state 6 dominant at 369, then 7/8/9/10). Without an
+        # extractor block, the agent estimates per-state counts from sample
+        # snippets and mis-attributes the aggregate. Surface the full
+        # per-state breakdown plus the total so summary turns can quote
+        # exact magnitudes.
+        if mod_jk_state_counts:
+            distinct_states = len(mod_jk_state_counts)
+            total_state_lines = sum(mod_jk_state_counts.values())
+            parts.append(
+                f"  mod_jk worker error states ({distinct_states} distinct,"
+                f" {total_state_lines} lines total — Apache → Tomcat connector"
+                f" failure modes; specific state-code meanings are not"
+                f" documented in the log itself):"
+            )
+            # Sort numerically (state 6, 7, 8, 9, 10) rather than by count
+            # so the listing reflects state-code ordering.
+            for state in sorted(mod_jk_state_counts, key=lambda s: int(s)):
+                count = mod_jk_state_counts[state]
+                parts.append(f"    state {state}: {count}")
+
         # Windows Update KB packages (ISS-020). Surface DISTINCT count
         # explicitly so the agent does not conflate substring occurrences
         # (one per install/uninstall/check event) with distinct package
@@ -1364,7 +1420,64 @@ class LogsAndErrorsExtractor:
                 else:
                     parts.append(f"    {code}: {count}")
 
+        # Go panic goroutine block summary (ISS-052). Detect ``goroutine N
+        # [state]:`` headers + their trailing ``created by`` provenance.
+        # Surface state distribution (which scheduler/state mix is panicking)
+        # and spawn-source distribution (where the racing goroutines come
+        # from). The leaf panic frames are already in the crime-scene
+        # snippets; this block is about the relational structure.
+        goroutine_block = self._summarize_goroutine_blocks(content)
+        if goroutine_block:
+            parts.append(goroutine_block)
+
         return summary, "\n".join(parts)
+
+    def _summarize_goroutine_blocks(self, content: str) -> str:
+        """Parse Go runtime panic goroutine blocks. Return a structured
+        summary block, or ``""`` when no goroutine headers are present.
+
+        A goroutine block starts at a ``goroutine N [state]:`` line and runs
+        until the next blank line OR the next goroutine header. The trailing
+        ``created by <FUNC>`` line, if present, names the spawn site for that
+        goroutine — preserved as a tagged field so the agent can answer
+        "where do the racing goroutines come from?" without re-parsing the
+        body. ISS-052 (Go panic structural pass).
+        """
+        state_counts: Counter[str] = Counter()
+        spawn_counts: Counter[str] = Counter()
+        goroutine_count = 0
+        in_block = False
+
+        for line in content.split("\n"):
+            header = self._GOROUTINE_HEADER_RE.match(line)
+            if header:
+                state_counts[header.group(2)] += 1
+                goroutine_count += 1
+                in_block = True
+                continue
+            if in_block:
+                if not line.strip():
+                    in_block = False
+                    continue
+                spawn = self._GOROUTINE_CREATED_BY_RE.match(line)
+                if spawn:
+                    spawn_counts[spawn.group(1)] += 1
+
+        if goroutine_count == 0:
+            return ""
+
+        lines = [
+            f"  Go goroutine blocks ({goroutine_count} total"
+            f" — runtime panic dump structure):",
+            "    states:",
+        ]
+        for state, count in state_counts.most_common():
+            lines.append(f"      {state}: {count}")
+        if spawn_counts:
+            lines.append("    spawned by (created-by provenance):")
+            for func, count in spawn_counts.most_common():
+                lines.append(f"      {func}: {count}")
+        return "\n".join(lines)
 
     @staticmethod
     def _detect_log_pattern(
@@ -1585,16 +1698,36 @@ class LogsAndErrorsExtractor:
 
         # Time range with computed duration — surfaces full log span so agent
         # cross-references correctly and can answer duration questions directly.
+        # ISS-049 (HIGH operator-misdirection): the underlying boundary-scan
+        # already returns the correct end_ts when a session crosses midnight,
+        # but the agent ignored the implicit date-change in the formatted
+        # range string. Surface (a) duration in ``Xh Ym`` form (concrete) and
+        # (b) an explicit "spans N calendar dates" tag when start.date !=
+        # end.date so the LLM cannot collapse the duration to the same-day
+        # arithmetic.
         log_span_secs = 0.0
         if time_range and time_range != "unknown":
             duration_note = ""
+            cross_date_note = ""
             if first_ts and last_ts and last_ts > first_ts:
                 log_span_secs = (last_ts - first_ts).total_seconds()
                 if log_span_secs >= 3600:
-                    duration_note = f" (~{log_span_secs / 3600:.1f}h duration)"
+                    hours = int(log_span_secs // 3600)
+                    minutes = int((log_span_secs % 3600) // 60)
+                    duration_note = f" ({hours}h {minutes}m duration)"
                 elif log_span_secs >= 60:
                     duration_note = f" (~{int(log_span_secs / 60)}min duration)"
-            sentences.append(f"Log time range: {time_range}{duration_note}.")
+                if first_ts.date() != last_ts.date():
+                    days_spanned = (last_ts.date() - first_ts.date()).days + 1
+                    midnight_clause = (
+                        " — session crosses midnight" if days_spanned == 2 else ""
+                    )
+                    cross_date_note = (
+                        f" [spans {days_spanned} calendar dates{midnight_clause}]"
+                    )
+            sentences.append(
+                f"Log time range: {time_range}{duration_note}{cross_date_note}."
+            )
             if yearless_timestamps:
                 # Syslog BSD timestamps omit the year. The time_range is
                 # rendered without a year (see extract_time_range). Add an
