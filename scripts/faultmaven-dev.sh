@@ -84,6 +84,14 @@ check_env() {
 # Process Management
 #######################################
 
+# Returns:
+#   0 — managed process is running and listening on the expected port
+#   1 — nothing is running and nothing else holds the port
+#   2 — port is held by an unmanaged process (no PID file, or PID file was
+#       stale and the port has since been claimed by something this script
+#       did not start: stale uvicorn, Docker, manual run). UNMANAGED_PORT_HOLDER
+#       is set to the holder's PID so callers can report it cleanly instead
+#       of telling the user "not running" while the port is occupied.
 is_running() {
     if [ -f "$PID_FILE" ]; then
         local pid=$(cat "$PID_FILE")
@@ -111,11 +119,24 @@ is_running() {
             print_warning "Process $pid exists but not detected on port $port"
             return 1
         else
-            # Process is dead — PID file is stale, clean up
+            # Process is dead — PID file is stale; clean up and fall through
+            # to the unmanaged-port check below (something else may have
+            # claimed the port after the crash).
             rm -f "$PID_FILE"
-            return 1
         fi
     fi
+
+    # No managed process. Before reporting "not running", check whether the
+    # port is held by some other process — without this, health/start would
+    # disagree (health says "not running"; start says "port in use") and
+    # mislead the user about the actual state.
+    local check_port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+    check_port=${check_port:-$DEFAULT_PORT}
+    UNMANAGED_PORT_HOLDER=$(ss -tlnp 2>/dev/null | grep ":$check_port " | grep -oP 'pid=\K[0-9]+' | head -1)
+    if [ -n "$UNMANAGED_PORT_HOLDER" ]; then
+        return 2
+    fi
+    UNMANAGED_PORT_HOLDER=""
     return 1
 }
 
@@ -203,26 +224,41 @@ start_app() {
     ensure_venv
     check_env
 
-    if is_running; then
+    local running_state=0
+    is_running || running_state=$?
+
+    # Extract port from .env (used by all branches below)
+    local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+    port=${port:-$DEFAULT_PORT}
+
+    if [ "$running_state" -eq 0 ]; then
         local existing_pid=$(cat "$PID_FILE")
         print_warning "FaultMaven is already running (PID $existing_pid)"
 
-        # Show connection info
-        local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
-        port=${port:-$DEFAULT_PORT}
         echo ""
         print_info "Access points:"
         echo "  • API:      http://localhost:$port"
         echo "  • API Docs: http://localhost:$port/docs"
         echo "  • Logs:     tail -f $LOG_FILE"
         return 0
+    elif [ "$running_state" -eq 2 ]; then
+        # Port held but no PID file. Surface this clearly instead of falling
+        # through to check_port_available, which would just say "Port in use"
+        # without distinguishing it from a fresh conflict.
+        print_warning "FaultMaven appears to be running but unmanaged — port $port held by PID $UNMANAGED_PORT_HOLDER (not started via $0)"
+        echo ""
+        echo "Process details:"
+        ps -p "$UNMANAGED_PORT_HOLDER" -o pid,ppid,comm,args 2>/dev/null || true
+        echo ""
+        echo "Resolve before starting:"
+        echo "  • If it's a previous FaultMaven instance: $0 stop"
+        echo "  • If it's Docker: ./faultmaven.sh stop"
+        echo "  • Or use a different port in .env: PORT=$((port+1))"
+        exit 1
     fi
 
-    # Extract port from .env
-    local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
-    port=${port:-$DEFAULT_PORT}
-
-    # Check if port is available
+    # Not running — verify port is free before starting (covers a race where
+    # something grabs the port between is_running and the bind).
     if ! check_port_available "$port"; then
         exit 1
     fi
@@ -375,12 +411,27 @@ health_check() {
 
     # Check if process is running
     echo -n "Checking process... "
-    if is_running; then
+    local running_state=0
+    is_running || running_state=$?
+
+    if [ "$running_state" -eq 0 ]; then
         local pid=$(cat "$PID_FILE")
         print_success "Running (PID $pid)"
+    elif [ "$running_state" -eq 2 ]; then
+        print_warning "Running but unmanaged (port $port held by PID $UNMANAGED_PORT_HOLDER)"
+        echo ""
+        echo "This script didn't start the process holding the port. Likely causes:"
+        echo "  • Stale uvicorn from a previous crash"
+        echo "  • Docker-based FaultMaven (./faultmaven.sh)"
+        echo "  • A manually-started instance"
+        echo ""
+        echo "Process details:"
+        ps -p "$UNMANAGED_PORT_HOLDER" -o pid,ppid,comm,args 2>/dev/null || true
+        echo ""
+        echo "Reclaim with: $0 stop"
+        exit 1
     else
         print_error "Not running"
-        ((failed++))
         echo ""
         echo "Start it with: $0 start"
         exit 1
