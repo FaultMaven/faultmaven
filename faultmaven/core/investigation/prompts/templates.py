@@ -482,6 +482,36 @@ NOTE: action_type MUST be exactly "COOPERATIVE", "EVIDENCE", or "FREE_SPEECH".
 
 Remember: Be reactive. Don't force investigation if the user just wants information.
 Use the natural, conversational response for the agent_response field and update state in state_updates.
+
+**TURN WHERE THE USER EXPRESSES TRANSITION INTENT:**
+Route the signal through the structured field; do not narrate the
+transition itself.
+
+- INQUIRY → INVESTIGATING (non-destructive, fires immediately):
+  Set user_confirmed_investigation=true when the user signals acceptance
+  of the proposed problem statement and asks to proceed. Examples
+  (non-exhaustive): "let's investigate", "investigate this", "look into
+  this", "yes, dig in". Only do this if a proposed_problem_statement
+  already exists; otherwise propose one this turn and wait for the next
+  message.
+  In agent_response, begin the first investigative step (e.g., requesting
+  the most decisive evidence, confirming scope) — this transition does
+  not require a confirmation handshake, so respond as if the
+  investigation has already begun.
+
+- INQUIRY → CLOSED (handshake required):
+  Set proposed_transition with to_status="closed" when the user signals
+  they don't want to investigate. Examples (non-exhaustive): "close this",
+  "never mind", "cancel", "don't need help". Do not set closure_reason —
+  the engine decides.
+  In agent_response, write a brief contextual lead-in acknowledging the
+  user's intent and framing the case as awaiting confirmation. Examples:
+    - "Understood — I'll record this as ready to close without
+       investigation."
+    - "Got it. Marking this as ready to close since you don't need to
+       pursue it."
+  Do NOT write the confirmation question itself. Do NOT write phrases
+  that assert completion.
 """
 )
 
@@ -1416,12 +1446,47 @@ If you cannot formulate a new hypothesis or identify new evidence to request:
 This is a two-step process. You MUST follow these steps exactly:
 
 **TURN WHERE YOU DETECT SOLUTION SUCCESS (solution_verified is not yet True):**
-→ Set proposed_transition to RESOLVED in your response
-→ Offer exactly two COOPERATIVE suggestions (query_submit):
-  1. Positive: "Yes, mark as resolved" — confirms the resolution
-  2. Mild negative: "Not yet, I want to investigate further" — lets user continue
-→ Do NOT suggest evidence collection (logs, metrics, monitoring) as alternatives.
-  If the user declines, they want to continue investigation, not collect more data.
+→ Set proposed_transition with to_status="resolved".
+→ In agent_response, write a brief contextual lead-in framing the situation
+  as awaiting confirmation, not completed. Examples:
+    - "Based on the verification evidence, the fix appears to have resolved
+       the issue."
+    - "The behavior you described matches what we'd expect after the fix
+       was applied."
+  Do NOT write the confirmation question itself ("Should I mark this
+  resolved?", "Confirm to close?") — the engine emits the canonical
+  confirm/decline pair as follow-ups.
+  Do NOT write phrases that assert completion ("Case closed.", "Marking as
+  resolved.") — the transition has not happened until the user confirms on
+  the next turn.
+→ Do NOT suggest evidence collection (logs, metrics, monitoring) as
+  alternatives. If the user declines, they want to continue investigation,
+  not collect more data.
+
+**TURN WHERE THE USER EXPRESSES TRANSITION INTENT:**
+Distinct from detecting solution success — here the user, not your own
+analysis, asks for a state change. Route the signal through the structured
+field; do not narrate the transition.
+
+- Set proposed_transition with to_status="resolved" when the user signals
+  the problem is solved, the fix worked, or asks to mark the case resolved.
+  Examples (non-exhaustive): "mark as resolved", "the fix worked", "issue
+  is gone", "all good now".
+- Set proposed_transition with to_status="closed" when the user signals
+  giving up, escalating, or closing without a solution. Examples
+  (non-exhaustive): "abandon this", "give up", "escalate this case",
+  "close as unresolved".
+- Do not set closure_reason. The engine decides it.
+- In agent_response, write a brief contextual lead-in acknowledging the
+  user's intent and framing the case as awaiting confirmation, not
+  completed. Examples:
+    - "Sounds like you've confirmed the fix worked."
+    - "Understood — I'll record this as ready to close; there's no further
+       investigation to pursue here."
+  Do NOT write the confirmation question itself — the engine emits the
+  canonical confirm/decline pair as follow-ups. Do NOT write phrases that
+  assert completion. The transition has not happened until the user
+  confirms on the next turn.
 
 **MITIGATION FOLLOW-UP:**
 If a temporary workaround was applied during MITIGATION stage:

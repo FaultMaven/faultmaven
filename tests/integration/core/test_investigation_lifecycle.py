@@ -902,80 +902,20 @@ class TestTurnHistoryAndProgress:
 
 
 # ============================================================
-# Test: Natural language intent detection
+# Test: Natural-language intent detection (REMOVED)
 # ============================================================
-
-
-@pytest.mark.asyncio
-class TestNaturalLanguageIntentDetection:
-    """Test pattern-based intent detection for status transitions."""
-
-    async def test_close_from_inquiry_via_natural_language(self, engine, case_repo):
-        """User says 'never mind' during INQUIRY → pending transition proposed."""
-        case = _make_inquiry_case(current_turn=1)
-        await case_repo.save(case)
-
-        with patch.object(
-            engine,
-            "_generate_structured_output",
-            return_value=_inquiry_response_low_urgency(),
-        ):
-            result = await engine.process_turn(case, "close this case, never mind")
-
-        updated = result["case_updated"]
-        assert updated.pending_transition is not None
-        assert updated.pending_transition["to_status"] == "closed"
-
-    async def test_abandon_investigation_via_natural_language(self, engine, case_repo):
-        """User says 'abandon this case' during INVESTIGATING → pending transition proposed."""
-        case = _make_investigating_case(current_turn=5)
-        await case_repo.save(case)
-
-        # "abandon this case" now proposes CLOSED via handshake
-        with patch.object(
-            engine,
-            "_generate_structured_output",
-            return_value=_investigation_no_progress_response(),
-        ):
-            result = await engine.process_turn(case, "I want to abandon this case")
-
-        updated = result["case_updated"]
-        assert updated.pending_transition is not None
-        assert updated.pending_transition["to_status"] == "closed"
-
-    async def test_resolve_proposal_via_natural_language(self, engine, case_repo):
-        """User says 'the fix worked' → proposes transition (User-Agent Handshake)."""
-        from faultmaven.modules.case.contracts import (
-            RootCauseConclusion,
-            Solution,
-            SolutionType,
-        )
-
-        case = _make_investigating_case(current_turn=5)
-        # Add root cause + solution so readiness check passes
-        case.root_cause_conclusion = RootCauseConclusion(
-            root_cause="Stale cache entries after deploy",
-            confidence_level="verified",
-            likelihood=0.9,
-            mechanism="Cache not invalidated on deployment",
-        )
-        case.solutions = [
-            Solution(
-                solution_type=SolutionType.RESTART,
-                title="Flush cache after deploy",
-                longterm_fix="Add cache flush to deployment pipeline",
-            )
-        ]
-        await case_repo.save(case)
-
-        result = await engine.process_turn(case, "the fix worked")
-
-        updated = result["case_updated"]
-        # Should propose transition, not immediately resolve
-        assert updated.pending_transition is not None
-        assert updated.pending_transition["to_status"] == "resolved"
-        # Case should still be INVESTIGATING until user confirms
-        assert updated.status == CaseStatus.INVESTIGATING
+# The engine no longer pattern-matches typed transition phrases — that
+# duplicate path was deleted in favor of routing typed text through the
+# LLM via the proposed_transition mechanism (see InvestigationService and
+# the prompt rules in INQUIRY_TEMPLATE / INVESTIGATION_BASE).
+#
+# Coverage migrated:
+# - Structured-intent path: tests/unit/core/investigation/
+#   test_milestone_engine.py::test_explicit_status_transition_*
+# - Alignment of UI/agent/NL trigger paths:
+#   tests/unit/core/investigation/test_transition_alignment.py
+# - End-to-end LLM compliance for typed NL (Tier-2 prompt eval):
+#   fm-sre-simulator/prompt-evals/transition-intent/
 
 
 # ============================================================

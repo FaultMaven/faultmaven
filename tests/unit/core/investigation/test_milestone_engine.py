@@ -430,145 +430,12 @@ class TestMilestoneEngine:
         assert result["case_updated"] is not None
         assert result["agent_response"] == "Found evidence but quality is limited"
 
-    @pytest.mark.asyncio
-    async def test_user_intent_detection_proposes_transition(
-        self, mock_llm, mock_repo, base_case
-    ):
-        """Test that NLP-detected resolution intent proposes a transition (User-Agent Handshake)
-
-        Design Decision B: Terminal transitions require explicit user confirmation.
-        NLP-detected intent sets pending_transition, NOT an immediate state change.
-        The user must confirm in the next turn for the transition to execute.
-        """
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
-        )
-
-        # Set case to INVESTIGATING status with resolution-ready data
-        base_case.status = CaseStatus.INVESTIGATING
-        _make_resolution_ready(base_case)
-
-        # Test various resolution phrases — all should PROPOSE, not execute.
-        # Note: "close this case" is ambiguous and handled separately
-        # (asks for clarification without setting pending_transition).
-        resolution_phrases = [
-            "mark as resolved",
-            "case is resolved",
-            "problem solved",
-            "issue fixed",
-            "solution worked",
-        ]
-
-        for phrase in resolution_phrases:
-            # Reset case status
-            base_case.atomic_update(
-                status=CaseStatus.INVESTIGATING,
-                resolved_at=None,
-                closed_at=None,
-            )
-            base_case.pending_transition = None
-            base_case.progress.solution_verified = False
-
-            result = await engine.process_turn(base_case, phrase)
-
-            updated_case = result["case_updated"]
-
-            # Verify case did NOT transition — pending_transition is set instead
-            assert (
-                updated_case.status == CaseStatus.INVESTIGATING
-            ), f"Case should remain INVESTIGATING for phrase: '{phrase}'"
-            assert (
-                updated_case.progress.solution_verified is False
-            ), f"solution_verified should not be set for phrase: '{phrase}'"
-            assert (
-                hasattr(updated_case, "pending_transition")
-                and updated_case.pending_transition is not None
-            ), f"pending_transition should be set for phrase: '{phrase}'"
-            assert (
-                updated_case.pending_transition["to_status"] == "resolved"
-            ), f"pending_transition target should be 'resolved' for phrase: '{phrase}'"
-
-    @pytest.mark.asyncio
-    async def test_user_intent_detection_case_insensitive(
-        self, mock_llm, mock_repo, base_case
-    ):
-        """Test that user intent detection is case-insensitive (proposes transition)"""
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
-        )
-
-        base_case.status = CaseStatus.INVESTIGATING
-        _make_resolution_ready(base_case)
-
-        # Test uppercase, mixed case, with punctuation
-        result = await engine.process_turn(
-            base_case, "CLOSE THIS CASE! The solution worked perfectly."
-        )
-
-        updated_case = result["case_updated"]
-        # User-Agent Handshake: NLP detection proposes, does not execute
-        assert updated_case.status == CaseStatus.INVESTIGATING
-        assert updated_case.progress.solution_verified is False
-        assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_status"] == "resolved"
-
-    @pytest.mark.asyncio
-    async def test_user_intent_detection_no_false_positives(
-        self, mock_llm, mock_repo, base_case
-    ):
-        """Test that user intent detection doesn't trigger on unrelated phrases"""
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
-        )
-
-        base_case.status = CaseStatus.INVESTIGATING
-
-        # Mock LLM response
-        mock_response_content = json.dumps(
-            {
-                "agent_response": "Continuing investigation.",
-                "state_updates": {"outcome": "conversation"},
-            }
-        )
-        mock_llm.generate.return_value = mock_response_content
-
-        # Test phrases that should NOT trigger resolution or propose transition
-        non_resolution_phrases = [
-            "I want to resolve this issue",
-            "How do I close cases?",
-            "The problem is not solved yet",
-            "Please help me solve this",
-        ]
-
-        for phrase in non_resolution_phrases:
-            base_case.status = CaseStatus.INVESTIGATING
-            base_case.progress.solution_verified = False
-            base_case.pending_transition = None
-
-            result = await engine.process_turn(base_case, phrase)
-
-            updated_case = result["case_updated"]
-
-            # Verify case did NOT transition and no pending_transition proposed
-            assert (
-                updated_case.status == CaseStatus.INVESTIGATING
-            ), f"False positive for phrase: '{phrase}'"
-            assert (
-                updated_case.progress.solution_verified is False
-            ), f"False positive for phrase: '{phrase}'"
-            assert (
-                not hasattr(updated_case, "pending_transition")
-                or updated_case.pending_transition is None
-            ), f"False positive pending_transition for phrase: '{phrase}'"
+    # NL transition detection (resolve/close phrases, case insensitivity,
+    # false-positive guards) moved to InvestigationService._detect_transition_intent.
+    # See tests/unit/modules/agent/test_transition_intent_detection.py for
+    # the layer-correct coverage. The engine now sees only structured
+    # status_transition intents — exercised by the
+    # test_explicit_status_transition_* tests below.
 
     @pytest.mark.asyncio
     async def test_reasoning_validation_skipped_when_pending_transition_exists(
@@ -626,12 +493,12 @@ class TestMilestoneEngine:
     ):
         """Integration test: Complete User-Agent Handshake flow for terminal transition
 
-        This test exercises the complete two-step handshake:
-        1. Turn N: User says "the fix worked" → readiness check passes → system proposes transition
-        2. Turn N+1: User says "yes" → system confirms and executes transition
-
-        Design Decision B: Terminal transitions are irreversible, so the agent
-        proposes and the user explicitly confirms.
+        Drives the engine via structured status_transition intents (the
+        same shape produced by both UI clicks and
+        InvestigationService._detect_transition_intent for typed text):
+        1. Turn N: status_transition → resolved → engine proposes transition
+        2. Turn N+1: status_transition → resolved with pending exists →
+           engine confirms and executes the transition.
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -645,9 +512,18 @@ class TestMilestoneEngine:
         base_case.progress.symptom_verified = True
         _make_resolution_ready(base_case)
 
-        # ===== TURN N: User says "the fix worked" → proposes transition =====
+        # ===== TURN N: structured RESOLVED request → proposes transition =====
 
-        result_turn_n = await engine.process_turn(base_case, "the fix worked")
+        result_turn_n = await engine.process_turn(
+            base_case,
+            "the fix worked",
+            intent_type="status_transition",
+            intent_data={
+                "from_status": CaseStatus.INVESTIGATING,
+                "to_status": "resolved",
+                "user_confirmed": False,
+            },
+        )
 
         updated_case = result_turn_n["case_updated"]
 
@@ -668,8 +544,18 @@ class TestMilestoneEngine:
         )
         mock_llm.generate.return_value = mock_response_content_confirm
 
-        # User explicitly confirms
-        result_turn_n1 = await engine.process_turn(updated_case, "yes, go ahead")
+        # User explicitly confirms via structured status_transition
+        # (same shape a UI confirm button would produce).
+        result_turn_n1 = await engine.process_turn(
+            updated_case,
+            "yes, go ahead",
+            intent_type="status_transition",
+            intent_data={
+                "from_status": CaseStatus.INVESTIGATING,
+                "to_status": "resolved",
+                "user_confirmed": True,
+            },
+        )
 
         final_case = result_turn_n1["case_updated"]
 
@@ -698,89 +584,11 @@ class TestMilestoneEngine:
         assert last_transition.from_status == CaseStatus.INVESTIGATING
         assert last_transition.to_status == CaseStatus.RESOLVED
 
-    @pytest.mark.asyncio
-    async def test_user_intent_close_as_unresolved_proposes_closed(
-        self, mock_llm, mock_repo, base_case
-    ):
-        """Test user intent: 'Close as unresolved' should propose CLOSED via handshake.
-
-        NLP abandonment patterns now propose a pending transition instead of
-        immediately executing the CLOSED transition. The user must confirm.
-
-        Pattern matching order:
-        1. Abandonment patterns (highest priority) → propose CLOSED
-        2. Resolution patterns (medium priority) → propose RESOLVED
-        3. Ambiguous close patterns (lowest priority) → ask clarification
-        """
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
-        )
-
-        # Start in INVESTIGATING with some progress
-        base_case.status = CaseStatus.INVESTIGATING
-        base_case.progress.symptom_verified = True
-
-        # Mock LLM response (still goes through LLM after proposing)
-        mock_response_content = json.dumps(
-            {
-                "agent_response": "Understood. I've noted your intent to close.",
-                "state_updates": {"outcome": "conversation"},
-            }
-        )
-        mock_llm.generate.return_value = mock_response_content
-
-        # User explicitly says "close as unresolved" - should propose CLOSED, not execute immediately
-        result = await engine.process_turn(base_case, "Close this case as unresolved")
-
-        updated_case = result["case_updated"]
-
-        # Case should still be INVESTIGATING with a pending transition
-        assert updated_case.status == CaseStatus.INVESTIGATING
-        assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_status"] == "closed"
-
-        # Solution milestone NOT completed
-        assert updated_case.progress.solution_verified is False
-
-    @pytest.mark.asyncio
-    async def test_user_intent_ambiguous_close_asks_for_clarification(
-        self, mock_llm, mock_repo, base_case
-    ):
-        """Ambiguous 'close this case' asks for clarification without setting pending_transition.
-
-        When user says "close this case" without indicating resolved vs closed,
-        the system asks for clarification. No pending_transition is set because
-        we don't know the user's intent yet. Their next message will route
-        through resolve_patterns or abandonment_patterns.
-        """
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
-        )
-
-        base_case.status = CaseStatus.INVESTIGATING
-        base_case.progress.symptom_verified = True
-
-        result = await engine.process_turn(base_case, "close this case")
-
-        updated_case = result["case_updated"]
-
-        # Case stays INVESTIGATING — no transition proposed
-        assert updated_case.status == CaseStatus.INVESTIGATING
-        assert updated_case.progress.solution_verified is False
-        assert updated_case.pending_transition is None  # NOT set — clarification needed
-
-        # Response asks for clarification
-        assert "resolved" in result["agent_response"].lower()
-        assert "closed" in result["agent_response"].lower()
-
-        # LLM is NOT called
-        assert not mock_llm.generate.called
+    # Engine-level NL pattern matching for CLOSED-from-INVESTIGATING and the
+    # "ambiguous close" clarification dialog were removed. NL transition
+    # detection now lives in InvestigationService._detect_transition_intent
+    # and structured CLOSED proposals are exercised by
+    # test_explicit_status_transition_investigating_to_closed below.
 
     @pytest.mark.asyncio
     async def test_explicit_status_transition_inquiry_to_closed(
@@ -841,6 +649,21 @@ class TestMilestoneEngine:
         # 4. LLM should NOT be called (deterministic response)
         assert not mock_llm.generate.called
 
+        # 5. Canonical CLOSE confirm/decline pair emitted (alignment with
+        #    agent-initiated path: every propose_transition surface offers
+        #    deterministic COOPERATIVE confirmation suggestions).
+        suggestions = result["suggested_follow_ups"]
+        assert len(suggestions) == 2
+        assert suggestions[0]["intent"] == {
+            "type": "confirmation",
+            "confirmation_value": True,
+        }
+        assert suggestions[1]["intent"] == {
+            "type": "confirmation",
+            "confirmation_value": False,
+        }
+        assert all(s["action_type"] == "COOPERATIVE" for s in suggestions)
+
     @pytest.mark.asyncio
     async def test_explicit_status_transition_investigating_to_closed(
         self, mock_llm, mock_repo, base_case
@@ -887,6 +710,19 @@ class TestMilestoneEngine:
 
         # 4. LLM should NOT be called (deterministic response)
         assert not mock_llm.generate.called
+
+        # 5. Canonical CLOSE confirm/decline pair emitted (alignment).
+        suggestions = result["suggested_follow_ups"]
+        assert len(suggestions) == 2
+        assert suggestions[0]["intent"] == {
+            "type": "confirmation",
+            "confirmation_value": True,
+        }
+        assert suggestions[1]["intent"] == {
+            "type": "confirmation",
+            "confirmation_value": False,
+        }
+        assert all(s["action_type"] == "COOPERATIVE" for s in suggestions)
 
     @pytest.mark.asyncio
     async def test_explicit_status_transition_inquiry_to_investigating(
