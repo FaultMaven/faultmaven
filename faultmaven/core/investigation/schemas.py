@@ -738,6 +738,16 @@ class InquiryResponse(BaseInteractionResponse):
                 "(answer the question first), or message is unrelated."
             ),
         )
+        proposed_transition: Optional[ProposedTransition] = Field(
+            None,
+            description=(
+                "Propose INQUIRY → CLOSED for user confirmation when the user "
+                "asks to close/cancel without investigating. Use to_status='closed' "
+                "(only target valid from INQUIRY). The transition is NOT executed "
+                "until the user explicitly confirms. The engine sets closure_reason "
+                "and emits the canonical confirm/decline pair."
+            ),
+        )
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(
             default_factory=list,
             description="Evidence to create from agent findings during this turn",
@@ -789,6 +799,13 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
             default_factory=list,
             description="Quality issues with evidence that may limit investigation.",
         )
+        proposed_transition: Optional[ProposedTransition] = Field(
+            None,
+            description=(
+                "Propose a terminal transition (RESOLVED/CLOSED) for user confirmation. "
+                "The transition is NOT executed until the user explicitly confirms."
+            ),
+        )
         outcome: TurnOutcome
 
     internal_reasoning: Optional[InternalReasoning] = Field(
@@ -819,6 +836,13 @@ class InvestigationResponse_Mitigation(BaseInteractionResponse):
         evidence_quality_issues: Optional[List[EvidenceQualityIssue]] = Field(
             default_factory=list,
             description="Quality issues with evidence that may limit investigation.",
+        )
+        proposed_transition: Optional[ProposedTransition] = Field(
+            None,
+            description=(
+                "Propose a terminal transition (RESOLVED/CLOSED) for user confirmation. "
+                "The transition is NOT executed until the user explicitly confirms."
+            ),
         )
         outcome: TurnOutcome
 

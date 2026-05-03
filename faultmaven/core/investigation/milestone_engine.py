@@ -1614,14 +1614,15 @@ class MilestoneEngine:
                         f"(pending user confirmation)"
                     )
 
-                    # Save and return with closure summary
+                    # Save and return with closure summary + canonical
+                    # confirm/decline pair (alignment with agent-initiated path).
                     self._record_deterministic_turn(
                         case, user_message or "", closure.message
                     )
                     await self.repository.save(case)
                     return {
                         "agent_response": closure.message,
-                        "suggested_follow_ups": [],
+                        "suggested_follow_ups": _close_confirmation_suggestions(),
                         "case_updated": case,
                         "metadata": {
                             "turn_number": case.current_turn,
@@ -1717,7 +1718,7 @@ class MilestoneEngine:
                         await self.repository.save(case)
                         return {
                             "agent_response": readiness.message,
-                            "suggested_follow_ups": [],
+                            "suggested_follow_ups": _resolution_confirmation_suggestions(),
                             "case_updated": case,
                             "metadata": {
                                 "turn_number": case.current_turn,
@@ -1740,7 +1741,8 @@ class MilestoneEngine:
                         f"case {case.case_id} (pending user confirmation)"
                     )
 
-                    # Return immediately with confirmation prompt.
+                    # Return immediately with confirmation prompt + canonical
+                    # confirm/decline pair (alignment with agent-initiated path).
                     _resp = (
                         "You've indicated this issue is resolved.\n\n"
                         + _build_resolution_confirmation(case)
@@ -1749,7 +1751,7 @@ class MilestoneEngine:
                     await self.repository.save(case)
                     return {
                         "agent_response": _resp,
-                        "suggested_follow_ups": [],
+                        "suggested_follow_ups": _resolution_confirmation_suggestions(),
                         "case_updated": case,
                         "metadata": {
                             "turn_number": case.current_turn,
@@ -1873,264 +1875,12 @@ class MilestoneEngine:
 
                 # Fall through to normal LLM processing for acknowledgment
 
-            # ============================================================
-            # USER INTENT DETECTION - PATTERN MATCHING (Natural Language)
-            # ============================================================
-            # Two complementary paths:
-            # 1. Explicit intent (frontend buttons) → Handled above with intent_data
-            # 2. Natural language (user types) → Pattern matching below
-            #
-            # SKIP PATTERN MATCHING if explicit intent provided by frontend
-            # UNLESS intent is "conversation" (which is default for user typing)
-            if user_message and (not intent_type or intent_type == "conversation"):
-                user_msg_lower = user_message.lower().strip()
-
-                # ========================================
-                # INQUIRY STATUS - CLOSE FROM INQUIRY
-                # ========================================
-                if case.status == CaseStatus.INQUIRY:
-                    # User wants to close from INQUIRY without starting investigation
-                    close_inquiry_patterns = [
-                        "close this",
-                        "close the case",
-                        "don't need",
-                        "don't want",
-                        "no need",
-                        "not needed",
-                        "cancel this",
-                        "never mind",
-                        "nevermind",
-                    ]
-
-                    if any(
-                        pattern in user_msg_lower for pattern in close_inquiry_patterns
-                    ):
-                        logger.info(
-                            f"Detected user intent to CLOSE from INQUIRY for case {case.case_id}: '{user_message[:50]}...'"
-                        )
-                        from faultmaven.core.investigation.terminal_transitions import (
-                            assess_closure_readiness,
-                            propose_transition,
-                        )
-
-                        closure = assess_closure_readiness(case)
-                        propose_transition(
-                            case=case,
-                            to_status="closed",
-                            reason="User expressed close intent from INQUIRY via NLP",
-                            summary=closure.message,
-                            closure_reason="inquiry_only",
-                        )
-
-                        logger.info(
-                            f"Proposed CLOSED transition for case {case.case_id} (inquiry_only) based on user intent"
-                        )
-
-                # ========================================
-                # INVESTIGATING STATUS - ABANDONMENT / RESOLUTION
-                # ========================================
-                elif case.status == CaseStatus.INVESTIGATING:
-                    # Pattern matching for ABANDONMENT intent (CLOSED without solution)
-                    # These patterns indicate user wants to close WITHOUT confirming solution.
-                    # Use multi-word phrases to avoid false positives from contextual mentions.
-                    # e.g., "abandon" alone would match "I don't want to abandon this".
-                    abandonment_patterns = [
-                        "as unresolved",  # "close as unresolved"
-                        "without solution",  # "close without solution"
-                        "without resolving",  # "close without resolving"
-                        "abandon this case",
-                        "abandon the case",
-                        "abandon this investigation",
-                        "give up on this",
-                        "i give up",
-                        "let's give up",
-                        "can't solve this",
-                        "cannot solve this",
-                        "unable to resolve this",
-                        "escalate this case",
-                        "escalate this to",
-                    ]
-
-                    # Negation patterns that indicate the user does NOT want to abandon
-                    abandonment_negations = [
-                        "don't abandon",
-                        "do not abandon",
-                        "don't want to abandon",
-                        "not abandon",
-                        "don't give up",
-                        "do not give up",
-                        "don't want to give up",
-                        "shouldn't escalate",
-                    ]
-
-                    # Pattern matching for RESOLUTION intent (RESOLVED with solution)
-                    # These patterns indicate user confirms problem is fixed.
-                    # Use specific phrases that clearly indicate solution/resolution.
-                    resolve_patterns = [
-                        "mark as resolved",
-                        "mark this resolved",
-                        "case is resolved",
-                        "case resolved",
-                        "this is resolved",
-                        "problem is solved",
-                        "problem solved",
-                        "issue is fixed",
-                        "issue fixed",
-                        "solution worked",
-                        "solution works",
-                        "it's fixed now",
-                        "that fixed it",
-                        "the fix worked",
-                    ]
-
-                    # Ambiguous patterns that need context from abandonment keywords
-                    # "close this case" could mean either CLOSED or RESOLVED
-                    # Check if combined with abandonment indicators
-                    close_patterns = [
-                        "close this case",
-                        "close the case",
-                    ]
-
-                    # CHECK ABANDONMENT FIRST (highest priority)
-                    # Guard: skip if message contains negation ("don't abandon", etc.)
-                    has_abandonment = any(
-                        pattern in user_msg_lower for pattern in abandonment_patterns
-                    )
-                    has_negation = any(
-                        neg in user_msg_lower for neg in abandonment_negations
-                    )
-                    if has_abandonment and not has_negation:
-                        logger.info(
-                            f"Detected explicit user intent to ABANDON case {case.case_id} (CLOSED): '{user_message[:50]}...'"
-                        )
-                        from faultmaven.core.investigation.terminal_transitions import (
-                            assess_closure_readiness,
-                            propose_transition,
-                        )
-
-                        closure = assess_closure_readiness(case)
-                        propose_transition(
-                            case=case,
-                            to_status="closed",
-                            reason="User expressed abandonment intent via NLP",
-                            summary=closure.message,
-                            closure_reason="abandoned",
-                        )
-
-                        logger.info(
-                            f"Proposed CLOSED transition for case {case.case_id} (abandoned) based on user intent"
-                        )
-
-                    # CHECK RESOLUTION (medium priority)
-                    # User-Agent Handshake: NLP-detected intent to resolve.
-                    # Instead of directly setting solution_verified, propose the
-                    # transition. The LLM will include the proposal in its response
-                    # and the user confirms on the next turn.
-                    elif any(pattern in user_msg_lower for pattern in resolve_patterns):
-                        logger.info(
-                            f"Detected NLP intent to RESOLVE case {case.case_id}: '{user_message[:50]}...'"
-                        )
-                        from faultmaven.core.investigation.terminal_transitions import (
-                            assess_resolution_readiness,
-                            propose_transition,
-                        )
-
-                        readiness = assess_resolution_readiness(case)
-
-                        if readiness.verdict in (
-                            readiness.SUGGEST_CLOSE,
-                            readiness.NEEDS_INFO,
-                        ):
-                            logger.info(
-                                f"NLP resolve for case {case.case_id}: "
-                                f"verdict={readiness.verdict} (missing: {readiness.missing}). "
-                                f"Remembering resolve intent."
-                            )
-                            propose_transition(
-                                case=case,
-                                to_status="resolved",
-                                reason=f"User indicated resolution via NLP ({readiness.verdict})",
-                                summary=readiness.message,
-                            )
-                            case.pending_transition["needs_info"] = True
-                            self._record_deterministic_turn(
-                                case, user_message, readiness.message
-                            )
-                            await self.repository.save(case)
-                            return {
-                                "agent_response": readiness.message,
-                                "suggested_follow_ups": [],
-                                "case_updated": case,
-                                "metadata": {
-                                    "turn_number": case.current_turn,
-                                    "milestones_completed": [],
-                                    "progress_made": False,
-                                },
-                            }
-
-                        # READY — propose transition
-                        propose_transition(
-                            case=case,
-                            to_status="resolved",
-                            reason="User indicated the problem is resolved",
-                            summary="Case meets resolution criteria. Awaiting user confirmation.",
-                        )
-
-                        logger.info(
-                            f"Proposed RESOLVED transition for case {case.case_id} (pending user confirmation)"
-                        )
-                        metadata["transition_proposed_this_turn"] = True
-
-                        _resp = (
-                            "It sounds like the issue is resolved.\n\n"
-                            + _build_resolution_confirmation(case)
-                        )
-                        self._record_deterministic_turn(case, user_message, _resp)
-                        await self.repository.save(case)
-                        return {
-                            "agent_response": _resp,
-                            "suggested_follow_ups": [],
-                            "case_updated": case,
-                            "metadata": {
-                                "turn_number": case.current_turn,
-                                "milestones_completed": [],
-                                "progress_made": True,
-                            },
-                        }
-
-                    # CHECK AMBIGUOUS CLOSE PATTERNS (lowest priority)
-                    # "close this case" is ambiguous — could mean CLOSED (abandoned) or RESOLVED.
-                    # Propose resolution and let the LLM ask user to clarify.
-                    elif any(pattern in user_msg_lower for pattern in close_patterns):
-                        logger.info(
-                            f"Detected ambiguous close intent for case {case.case_id}: '{user_message[:50]}...'"
-                        )
-
-                        # Do NOT set pending_transition here — we don't know
-                        # whether the user wants RESOLVED or CLOSED yet.
-                        # Just ask for clarification. Their next message will
-                        # route through the resolve_patterns or abandonment_patterns.
-
-                        # Return immediately with clarification request.
-                        _resp = (
-                            "You'd like to close this case. Before I do, I need to know:\n\n"
-                            "- **Resolved** — The problem is fixed. I'll document the solution.\n"
-                            "- **Closed** — The investigation is ending without a solution "
-                            "(abandoned, escalated, or mitigation was sufficient).\n\n"
-                            "Which would you like?"
-                        )
-                        self._record_deterministic_turn(case, user_message, _resp)
-                        await self.repository.save(case)
-                        return {
-                            "agent_response": _resp,
-                            "suggested_follow_ups": [],
-                            "case_updated": case,
-                            "metadata": {
-                                "turn_number": case.current_turn,
-                                "milestones_completed": [],
-                                "progress_made": False,
-                            },
-                        }
+            # NL transition detection happens upstream in
+            # InvestigationService._detect_transition_intent — typed
+            # transition requests reach this point as
+            # intent_type == "status_transition" (handled above), never as
+            # "conversation". Conversation that does not request a
+            # transition flows directly into the LLM block below.
 
             # 1. Gather Context & Build Prompt
             # KB retrieval during turns is handled by the kb_qa tool in the
@@ -2618,6 +2368,14 @@ class MilestoneEngine:
                 # User didn't provide required info — suggest Close instead.
                 agent_response_text = metadata["resolution_readiness_message"]
                 follow_ups = _close_confirmation_suggestions()
+            elif metadata.get("override_suggestions"):
+                # ProposedTransition was emitted by the LLM this turn (either
+                # detecting solution success or routing user-expressed
+                # transition intent). Replace the LLM's follow-ups with the
+                # canonical confirm/decline pair so all three trigger paths
+                # (UI click, NL via this branch, agent-initiated) converge on
+                # the same deterministic confirmation UX.
+                follow_ups = metadata["override_suggestions"]
 
             # Offer runbook suggestion when case just transitioned to RESOLVED.
             # Evaluation (readiness + dedup) happens when user accepts,
@@ -2629,6 +2387,51 @@ class MilestoneEngine:
                     follow_ups = _closed_suggestions(
                         getattr(case_updated, "closure_reason", "") or ""
                     )
+
+            # Compliance instrumentation: per-turn signal on whether the LLM
+            # is honoring the transition-handling prompt rules. Used for
+            # quarterly drift review across model-version changes and prompt
+            # growth. Cheap regex on agent_response checks for completion
+            # phrases the rule explicitly forbids.
+            _completion_phrases = (
+                "case closed",
+                "case is closed",
+                "case is now closed",
+                "marking as resolved",
+                "marking this as resolved",
+                "marking this resolved",
+                "marked as resolved",
+                "case resolved",
+                "case is resolved",
+                "case is now resolved",
+                "i have resolved",
+                "i've resolved",
+                "i have closed",
+                "i've closed",
+            )
+            _agent_text_lower = (agent_response_text or "").lower()
+            logger.info(
+                "transition_compliance",
+                extra={
+                    "case_id": case_updated.case_id,
+                    "turn": case_updated.current_turn,
+                    "status": case_updated.status.value,
+                    "proposed_transition_emitted": bool(
+                        metadata.get("transition_proposed")
+                    ),
+                    "user_confirmed_investigation_emitted": bool(
+                        getattr(
+                            getattr(response_obj, "state_updates", None),
+                            "user_confirmed_investigation",
+                            False,
+                        )
+                    ),
+                    "agent_response_contains_completion_phrase": any(
+                        p in _agent_text_lower for p in _completion_phrases
+                    ),
+                    "status_transitioned": bool(metadata.get("status_transitioned")),
+                },
+            )
 
             return {
                 "agent_response": agent_response_text,
@@ -3627,7 +3430,74 @@ class MilestoneEngine:
 
         # Validate with Pydantic
         content = json.dumps(content_obj)
-        return schema_model.model_validate_json(content)
+        parsed = schema_model.model_validate_json(content)
+
+        # Dropped-field detection: compare what the LLM emitted to what the
+        # schema accepted. Any key the LLM put in the dict that isn't a
+        # field on the schema gets silently dropped by Pydantic's default
+        # extra="ignore". Log it so prompt-schema drift becomes observable.
+        # Motivated by the prompt-instructs/schema-rejects bug class found
+        # via behavioral eval — see ADR / docs.
+        self._log_dropped_fields(content_obj, parsed, schema_model)
+        return parsed
+
+    def _log_dropped_fields(
+        self,
+        raw: Any,
+        parsed: Any,
+        schema_model: Any,
+    ) -> None:
+        """Log when the LLM emitted top-level or state_updates fields that
+        the schema doesn't accept (and thus silently dropped). One log line
+        per dropped field — feed observability/quarterly review.
+
+        TODO: walk depth limited to top-level + state_updates. Drops nested
+        deeper (e.g., state_updates.hypotheses_to_add[].some_unknown_field)
+        are invisible. Generalize to recursive descent if state schemas
+        grow more nested or if the runtime signal misses real drift.
+        """
+        try:
+            top_known = set(getattr(schema_model, "model_fields", {}).keys())
+            if isinstance(raw, dict):
+                top_dropped = [k for k in raw.keys() if k not in top_known]
+                for k in top_dropped:
+                    logger.warning(
+                        "structured_output_dropped_field",
+                        extra={
+                            "schema": schema_model.__name__,
+                            "level": "top",
+                            "field": k,
+                        },
+                    )
+
+                # Walk one level into state_updates (the most common drop site).
+                state_updates = raw.get("state_updates")
+                if isinstance(state_updates, dict):
+                    su_field = getattr(schema_model, "model_fields", {}).get(
+                        "state_updates"
+                    )
+                    su_schema = (
+                        getattr(su_field, "annotation", None) if su_field else None
+                    )
+                    su_known = (
+                        set(getattr(su_schema, "model_fields", {}).keys())
+                        if su_schema
+                        else set()
+                    )
+                    if su_known:
+                        for k in state_updates.keys():
+                            if k not in su_known:
+                                logger.warning(
+                                    "structured_output_dropped_field",
+                                    extra={
+                                        "schema": getattr(su_schema, "__name__", "?"),
+                                        "level": "state_updates",
+                                        "field": k,
+                                    },
+                                )
+        except Exception:
+            # Logging must never break the response path.
+            logger.debug("dropped-field detection failed", exc_info=True)
 
     def _parse_text_as_schema(
         self,
@@ -3669,6 +3539,7 @@ class MilestoneEngine:
             root_defs=schema_dict.get("$defs"),
         )
         parsed = schema_model.model_validate_json(json.dumps(content_obj))
+        self._log_dropped_fields(content_obj, parsed, schema_model)
 
         # Semantic guard: agent_response is the user-facing payload of every
         # BaseInteractionResponse subclass. An empty value means the recovered
@@ -5220,6 +5091,18 @@ class MilestoneEngine:
                     evidence_ids=proposed.evidence_ids,
                 )
                 metadata["transition_proposed"] = True
+                # Override LLM-emitted suggestions with the canonical
+                # confirm/decline pair, so all three trigger paths
+                # (UI click, NL via this branch, agent-initiated) produce
+                # the same structured COOPERATIVE confirmation UX. The
+                # response builder consumes metadata["override_suggestions"]
+                # at the final assembly point.
+                if proposed.to_status == "resolved":
+                    metadata["override_suggestions"] = (
+                        _resolution_confirmation_suggestions()
+                    )
+                elif proposed.to_status == "closed":
+                    metadata["override_suggestions"] = _close_confirmation_suggestions()
                 logger.info(
                     f"Agent proposed transition → {proposed.to_status} "
                     f"(pending user confirmation)"
