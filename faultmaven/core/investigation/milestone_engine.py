@@ -209,14 +209,9 @@ def _apply_stage_gate_side_effects(
     # When mitigation_verified is set, both mitigation flags reset so the
     # mitigation path can be re-entered if a future mitigation is needed.
     if "mitigation_verified" in completed_gates:
-        case.progress.mitigation_accepted = False
-        case.progress.mitigation_verified = False
-
-        # Check rca_infeasible advisory signal for post-mitigation behavior.
-        # Scaffolding for a future propose-closure flow on RCA-infeasible
-        # cases: the metadata keys set below are not yet consumed downstream.
-        # The intent is for a follow-up commit to wire propose_transition()
-        # against these signals.
+        # rca_infeasible advisory signal: propose closure as mitigated rather
+        # than push RCA on a problem the LLM has flagged as intractable.
+        # Reference: investigation-lifecycle-logic.md §2.4.
         rca_infeasible = case.problem_verification and getattr(
             case.problem_verification, "rca_infeasible", False
         )
@@ -225,14 +220,35 @@ def _apply_stage_gate_side_effects(
                 getattr(case.problem_verification, "rca_infeasible_rationale", None)
                 or "root cause analysis is not feasible for this problem"
             )
-            metadata["rca_infeasible_closure_proposed"] = True
-            metadata["rca_infeasible_rationale"] = rationale
-            logger.info(
-                f"Reset mitigation flags for case {case.case_id}. "
-                f"rca_infeasible=True — will propose closure instead of RCA "
-                f"(rationale: {rationale})"
+            closure_message = (
+                "The mitigation is verified and stable. "
+                f"Since {rationale}, shall we close this case as mitigated?"
             )
-        else:
+            # Propose BEFORE the flag reset so derive_closure_reason reads
+            # mitigation_verified=True and snapshots closure_reason as
+            # "mitigation_sufficient" into pending_transition.
+            from faultmaven.core.investigation.terminal_transitions import (
+                propose_transition,
+            )
+
+            propose_transition(
+                case=case,
+                to_status="closed",
+                summary=closure_message,
+            )
+            metadata["transition_proposed"] = True
+            metadata["override_suggestions"] = _close_confirmation_suggestions()
+            metadata["rca_infeasible_closure_message"] = closure_message
+            logger.info(
+                f"Proposed CLOSED transition for case {case.case_id} "
+                f"(rca_infeasible=True, closure_reason=mitigation_sufficient, "
+                f"rationale: {rationale})"
+            )
+
+        case.progress.mitigation_accepted = False
+        case.progress.mitigation_verified = False
+
+        if not rca_infeasible:
             logger.info(
                 f"Reset mitigation flags for case {case.case_id} "
                 f"(return to DIAGNOSIS for RCA)"
@@ -2387,6 +2403,13 @@ class MilestoneEngine:
                 # so the prompt the user sees matches the missing-info ask
                 # the UI dropdown path produces in the same situation.
                 agent_response_text = metadata["resolution_needs_info_message"]
+                follow_ups = metadata["override_suggestions"]
+            elif metadata.get("rca_infeasible_closure_message"):
+                # Stage-gate side effect: mitigation_verified + rca_infeasible=True.
+                # Replace the LLM's mitigation-confirmation reply with the engine-
+                # built closure proposal so the user sees a coherent prompt + the
+                # canonical close confirm/decline pair.
+                agent_response_text = metadata["rca_infeasible_closure_message"]
                 follow_ups = metadata["override_suggestions"]
             elif metadata.get("override_suggestions"):
                 # ProposedTransition was emitted by the LLM this turn (either
