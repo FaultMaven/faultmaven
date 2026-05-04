@@ -252,14 +252,16 @@ class TestSaveAndGet:
             created_at=now - timedelta(hours=1),
             resolved_at=now,
             closed_at=now,
-            closure_reason="resolved",
+            # closure_reason is None for RESOLVED cases — sub-categorization
+            # would be redundant with the status itself.
+            closure_reason=None,
         )
 
         await repository.save(case)
 
         retrieved = await repository.get(case.case_id)
         assert retrieved.status == CaseStatus.RESOLVED
-        assert retrieved.closure_reason == "resolved"
+        assert retrieved.closure_reason is None
         # closed_at and resolved_at are stashed in metadata JSON for SQLite
         assert retrieved.closed_at is not None
         assert retrieved.resolved_at is not None

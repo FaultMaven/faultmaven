@@ -226,12 +226,15 @@ class TestCaseLifecycle:
         closed = await case_service.close_case(
             case.case_id,
             organization_id,
-            "Root cause: Missing index on users table. Added index, performance restored.",
         )
 
         assert closed.status == CaseStatus.RESOLVED
         assert closed.resolved_at is not None
-        assert "Missing index" in closed.closure_reason
+        # closure_reason is None for RESOLVED — sub-categorization would
+        # be redundant with the status itself. The free-form resolution
+        # text is logged but not stored on the case directly; it would
+        # live in the resolution_summary Report when generated.
+        assert closed.closure_reason is None
 
     @pytest.mark.asyncio
     async def test_case_lifecycle_with_assignment(self, case_service):
@@ -374,7 +377,7 @@ class TestAuthorizationEnforcement:
 
         # Attempt to close with org B
         with pytest.raises(NotFoundError):
-            await case_service.close_case(case.case_id, org_b, "Unauthorized close")
+            await case_service.close_case(case.case_id, org_b)
 
     @pytest.mark.asyncio
     async def test_authorization_allows_same_org_access(self, case_service):
@@ -547,9 +550,7 @@ class TestCaseStateTransitions:
             case.case_id, organization_id, {"status": CaseStatus.INVESTIGATING}
         )
 
-        closed = await case_service.close_case(
-            case.case_id, organization_id, "Issue resolved"
-        )
+        closed = await case_service.close_case(case.case_id, organization_id)
 
         assert closed.status == CaseStatus.RESOLVED
 
@@ -567,10 +568,10 @@ class TestCaseStateTransitions:
             severity=CaseSeverity.LOW,
         )
 
-        await case_service.close_case(case.case_id, organization_id, "resolved")
+        await case_service.close_case(case.case_id, organization_id)
 
         with pytest.raises(ConflictError):
-            await case_service.close_case(case.case_id, organization_id, "resolved")
+            await case_service.close_case(case.case_id, organization_id)
 
 
 # ============================================================

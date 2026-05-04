@@ -87,17 +87,17 @@ class CaseStatus(str, Enum):
     DISPOSITION: Case closed WITH solution.
     Problem was fixed and verified.
 
-    closure_reason = "resolved"
+    closure_reason = None  (resolution itself is the categorization)
     """
 
     CLOSED = "closed"
     """
     DISPOSITION: Case closed WITHOUT solution.
-    Investigation abandoned, escalated, or inquiry-only.
+    Investigation completed without a verified fix, or inquiry-only.
 
-    closure_reason = "abandoned" | "escalated" | "mitigation_sufficient" | "inquiry_only" | "duplicate" | "other"
+    closure_reason = "inquiry_only" | "closed_after_investigation" | "mitigation_sufficient"
+    Engine-derived via derive_closure_reason(). Never authored by the LLM.
     Note: "mitigation_sufficient" = user closed after mitigation without pursuing RCA.
-    UI renders as "Closed - Mitigated" (distinct from "Closed - Abandoned").
     """
 ```
 
@@ -474,7 +474,7 @@ class Case(BaseModel):
 
     closure_reason: Optional[str] = Field(
         default=None,
-        description="resolved | abandoned | escalated | mitigation_sufficient | inquiry_only | duplicate | other"
+        description="None for RESOLVED. For CLOSED: inquiry_only | closed_after_investigation | mitigation_sufficient. Engine-derived via derive_closure_reason(); never set by the LLM."
     )
 
     # ============================================================
@@ -597,12 +597,11 @@ class ReportType(str, Enum):
     """Type of case documentation report"""
 
     # Auto-generated on terminal transition
-    RESOLUTION_SUMMARY = "resolution_summary"  # RESOLVED cases
-    CLOSURE_SUMMARY = "closure_summary"        # CLOSED cases
+    RESOLUTION_SUMMARY = "resolution_summary"  # RESOLVED cases (always generated)
+    CLOSURE_SUMMARY = "closure_summary"        # CLOSED cases (subject to skip-if-trivial guardrail)
 
     # User-requested via ConversionService
-    RUNBOOK = "runbook"                        # From RESOLVED cases (requires root cause)
-    MITIGATION_PLAYBOOK = "mitigation_playbook"  # From CLOSED(mitigation_sufficient) cases
+    RUNBOOK = "runbook"                        # From RESOLVED cases only (requires root cause)
 
 
 # Illustrative subset — see faultmaven/modules/case/domain/owned_models/report.py for the canonical model.
@@ -652,9 +651,9 @@ Two validation checks gate the resolve and runbook generation flows. Both are in
 # Constructor: ResolutionReadiness(verdict, message, missing)
 class ResolutionReadiness:
     # Verdict values:
-    #   "ready"          — Root cause + solution present → propose transition
+    #   "ready"          — Root cause + solution present → propose RESOLVED transition
     #   "needs_info"     — One missing (e.g., root cause but no solution) → propose with needs_info=True
-    #   "suggest_close"  — No root cause, no solution, no evidence → propose with needs_info=True
+    #   "suggest_close"  — No root cause, no solution, no evidence → pivot to CLOSED (both UI-dropdown and LLM-emit paths)
     verdict: str
     message: str        # Human-facing explanation
     missing: List[str]  # Field names that need to be filled before READY
@@ -662,7 +661,9 @@ class ResolutionReadiness:
 
 Checks: `root_cause_conclusion` (or `working_conclusion` with likelihood ≥0.6), `solutions` list, `problem_verification`, `evidence` list.
 
-For `NEEDS_INFO` and `SUGGEST_CLOSE`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, `_check_automatic_transitions` re-evaluates readiness. When the case becomes READY, the LLM response is overridden with a deterministic confirmation prompt.
+For `NEEDS_INFO`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, `_check_automatic_transitions` re-evaluates readiness. When the case becomes READY, the LLM response is overridden with a deterministic confirmation prompt.
+
+For `SUGGEST_CLOSE`, the engine pivots the pending proposal to CLOSED immediately (both UI-dropdown and LLM-emit paths). The user sees the close confirmation pair rather than a resolve prompt.
 
 **RunbookReadiness** (`assess_runbook_readiness(case)`) — higher bar for quality runbook generation.
 

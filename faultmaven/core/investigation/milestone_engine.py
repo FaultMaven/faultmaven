@@ -213,7 +213,10 @@ def _apply_stage_gate_side_effects(
         case.progress.mitigation_verified = False
 
         # Check rca_infeasible advisory signal for post-mitigation behavior.
-        # When RCA is infeasible, propose closure instead of returning to DIAGNOSIS.
+        # Scaffolding for a future propose-closure flow on RCA-infeasible
+        # cases: the metadata keys set below are not yet consumed downstream.
+        # The intent is for a follow-up commit to wire propose_transition()
+        # against these signals.
         rca_infeasible = case.problem_verification and getattr(
             case.problem_verification, "rca_infeasible", False
         )
@@ -751,10 +754,13 @@ def _resolved_suggestions() -> list:
 def _closed_suggestions(closure_reason: str = "") -> list:
     """Suggestions offered after a case is CLOSED.
 
-    Report viewing is via Dashboard. Runbook generation is only available
-    for closure_reason=mitigation_sufficient.
+    Report viewing is via Dashboard. Runbook generation is intentionally
+    not offered on CLOSED cases — runbooks codify complete troubleshooting
+    scenarios (root cause + verified solution) and only RESOLVED cases
+    qualify. The ``closure_reason`` parameter is kept for caller symmetry
+    with potential future closure-specific suggestions.
     """
-    suggestions = [
+    return [
         {
             "label": "Regenerate closure summary",
             "action_type": "COOPERATIVE",
@@ -763,17 +769,6 @@ def _closed_suggestions(closure_reason: str = "") -> list:
             "body": "Re-create the closure report. View the current report in the Dashboard.",
         },
     ]
-    if closure_reason == "mitigation_sufficient":
-        suggestions.append(
-            {
-                "label": "Generate runbook from this case",
-                "action_type": "COOPERATIVE",
-                "cooperative_action": "query_submit",
-                "payload": "Generate a runbook from this resolved case",
-                "body": "Create a reusable troubleshooting runbook from the mitigation steps.",
-            }
-        )
-    return suggestions
 
 
 # =============================================================================
@@ -958,9 +953,8 @@ class MilestoneEngine:
         Three scenarios:
           1. User requests report regeneration → regenerate summary.
           2. User accepts runbook suggestion → evaluate, create draft.
-             Eligible: RESOLVED cases and CLOSED(mitigation_sufficient) cases.
-             The backend routes to the appropriate readiness check and template
-             based on case type (see evaluate_runbook_suggestion).
+             Eligible: RESOLVED cases only — runbooks codify complete
+             troubleshooting scenarios (root cause + verified solution).
           3. User asks questions about the case → answer via TERMINAL_TEMPLATE.
         """
         msg_lower = user_message.lower()
@@ -969,11 +963,10 @@ class MilestoneEngine:
         if any(p in msg_lower for p in self._REPORT_REGEN_PATTERNS):
             return await self._handle_report_regeneration(case, metadata)
 
-        # Scenario 2: Runbook creation (RESOLVED or CLOSED mitigation_sufficient)
-        is_runbook_eligible = case.status == CaseStatus.RESOLVED or (
-            case.status == CaseStatus.CLOSED
-            and getattr(case, "closure_reason", None) == "mitigation_sufficient"
-        )
+        # Scenario 2: Runbook creation. Runbooks codify complete
+        # troubleshooting scenarios (root cause + verified solution),
+        # so only RESOLVED cases are eligible.
+        is_runbook_eligible = case.status == CaseStatus.RESOLVED
         if is_runbook_eligible and any(
             p in msg_lower for p in self._RUNBOOK_CREATION_PATTERNS
         ):
@@ -1041,13 +1034,12 @@ class MilestoneEngine:
     ) -> dict[str, Any]:
         """Evaluate readiness + dedup, then create runbook draft (fire-and-forget).
 
-        Handles both RESOLVED cases and CLOSED(mitigation_sufficient) cases.
-        Both produce a "runbook" from the user's perspective. The backend
-        routes to the appropriate readiness check (assess_runbook_readiness
-        vs assess_playbook_readiness) and template based on case type.
+        Only RESOLVED cases reach this path — runbooks codify complete
+        troubleshooting scenarios (root cause + verified solution).
+        Eligibility is gated by the caller (`_process_terminal_turn`).
 
         Flow:
-        1. Check content readiness (routed by evaluate_runbook_suggestion)
+        1. Check content readiness (assess_runbook_readiness via evaluate_runbook_suggestion)
         2. Check deduplication
         3. If eligible: call ConversionService.convert_from_case() in background
         4. Return immediately with a message directing user to Dashboard Drafts
@@ -1595,18 +1587,13 @@ class MilestoneEngine:
 
                     # Use closure readiness for a meaningful summary
                     closure = assess_closure_readiness(case)
-                    closure_reason = (
-                        "inquiry_only"
-                        if case.status == CaseStatus.INQUIRY
-                        else "abandoned"
-                    )
-
+                    # closure_reason derived inside propose_transition from
+                    # case state — engine handles the enum; caller never
+                    # specifies it.
                     propose_transition(
                         case=case,
                         to_status="closed",
-                        reason=f"User requested closure via dropdown ({closure_reason})",
                         summary=closure.message,
-                        closure_reason=closure_reason,
                     )
 
                     logger.info(
@@ -1695,20 +1682,47 @@ class MilestoneEngine:
 
                     readiness = assess_resolution_readiness(case)
 
-                    if readiness.verdict in (
-                        readiness.SUGGEST_CLOSE,
-                        readiness.NEEDS_INFO,
-                    ):
-                        # Not ready — tell user what's missing, remember their intent
+                    if readiness.verdict == readiness.SUGGEST_CLOSE:
+                        # Case lacks fundamentals — pivot to CLOSED. Propose the
+                        # closed transition so the COOPERATIVE pair the user
+                        # sees matches what they will be confirming.
                         logger.info(
                             f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} "
-                            f"verdict={readiness.verdict} (missing: {readiness.missing}). "
+                            f"verdict=SUGGEST_CLOSE (missing: {readiness.missing}). "
+                            f"Pivoting to CLOSED."
+                        )
+                        propose_transition(
+                            case=case,
+                            to_status="closed",
+                            summary=readiness.message,
+                        )
+                        self._record_deterministic_turn(
+                            case, user_message or "", readiness.message
+                        )
+                        await self.repository.save(case)
+                        return {
+                            "agent_response": readiness.message,
+                            "suggested_follow_ups": _close_confirmation_suggestions(),
+                            "case_updated": case,
+                            "metadata": {
+                                "turn_number": case.current_turn,
+                                "milestones_completed": [],
+                                "progress_made": False,
+                            },
+                        }
+
+                    if readiness.verdict == readiness.NEEDS_INFO:
+                        # Partially ready — ask user for the missing pieces but
+                        # remember their resolve intent so a follow-up turn
+                        # with the missing detail can move forward.
+                        logger.info(
+                            f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} "
+                            f"verdict=NEEDS_INFO (missing: {readiness.missing}). "
                             f"Remembering resolve intent."
                         )
                         propose_transition(
                             case=case,
                             to_status="resolved",
-                            reason=f"User indicated resolution via dropdown ({readiness.verdict})",
                             summary=readiness.message,
                         )
                         case.pending_transition["needs_info"] = True
@@ -1731,7 +1745,6 @@ class MilestoneEngine:
                     propose_transition(
                         case=case,
                         to_status="resolved",
-                        reason="User indicated resolution via status dropdown",
                         summary="Case meets resolution criteria. Awaiting user confirmation.",
                     )
                     metadata["transition_proposed_this_turn"] = True
@@ -2368,6 +2381,13 @@ class MilestoneEngine:
                 # User didn't provide required info — suggest Close instead.
                 agent_response_text = metadata["resolution_readiness_message"]
                 follow_ups = _close_confirmation_suggestions()
+            elif metadata.get("resolution_needs_info_first_pass"):
+                # LLM proposed RESOLVED but readiness check returned NEEDS_INFO.
+                # Override the LLM's agent_response with the readiness message
+                # so the prompt the user sees matches the missing-info ask
+                # the UI dropdown path produces in the same situation.
+                agent_response_text = metadata["resolution_needs_info_message"]
+                follow_ups = metadata["override_suggestions"]
             elif metadata.get("override_suggestions"):
                 # ProposedTransition was emitted by the LLM this turn (either
                 # detecting solution success or routing user-expressed
@@ -2410,6 +2430,29 @@ class MilestoneEngine:
                 "i've closed",
             )
             _agent_text_lower = (agent_response_text or "").lower()
+            # Capture LLM-vs-engine drift on the proposed-transition path.
+            # When the LLM emits to_status=resolved on a thin case, the engine
+            # pivots to closed (see _check_automatic_transitions). Recording
+            # the pivot here lets us compare LLM intent against engine action
+            # over time without diffing log lines.
+            _llm_proposed = getattr(
+                getattr(response_obj, "state_updates", None),
+                "proposed_transition",
+                None,
+            )
+            _llm_proposed_to_status = (
+                getattr(_llm_proposed, "to_status", None) if _llm_proposed else None
+            )
+            _engine_to_status = (
+                case_updated.pending_transition.get("to_status")
+                if case_updated.pending_transition
+                else None
+            )
+            _transition_pivoted = bool(
+                _llm_proposed_to_status
+                and _engine_to_status
+                and _llm_proposed_to_status != _engine_to_status
+            )
             logger.info(
                 "transition_compliance",
                 extra={
@@ -2419,6 +2462,9 @@ class MilestoneEngine:
                     "proposed_transition_emitted": bool(
                         metadata.get("transition_proposed")
                     ),
+                    "llm_proposed_to_status": _llm_proposed_to_status,
+                    "engine_effective_to_status": _engine_to_status,
+                    "transition_pivoted": _transition_pivoted,
                     "user_confirmed_investigation_emitted": bool(
                         getattr(
                             getattr(response_obj, "state_updates", None),
@@ -5080,16 +5126,64 @@ class MilestoneEngine:
             proposed = getattr(response_obj.state_updates, "proposed_transition", None)
             if proposed:
                 from faultmaven.core.investigation.terminal_transitions import (
+                    assess_closure_readiness,
+                    assess_resolution_readiness,
                     propose_transition,
                 )
 
+                # The LLM emits only to_status (and optional evidence_ids).
+                # Engine handles everything else: closure_reason is derived
+                # inside propose_transition; summary is built programmatically
+                # via the same helpers the UI dropdown path uses, so all
+                # three trigger paths produce identical confirmation prompts.
+                #
+                # When the LLM proposes RESOLVED, run the same readiness
+                # check the UI dropdown path uses so the user sees a
+                # coherent prompt + suggestion pair:
+                #   SUGGEST_CLOSE → pivot to CLOSED (close suggestion pair)
+                #   NEEDS_INFO    → keep RESOLVED but flag needs_info; the
+                #                   response builder overrides agent_response
+                #                   with the readiness message
+                #   READY         → propose RESOLVED with confirmation prompt
+                effective_to_status = proposed.to_status
+                needs_info_message: str | None = None
+
+                if proposed.to_status == "resolved":
+                    readiness = assess_resolution_readiness(case)
+                    if readiness.verdict == readiness.SUGGEST_CLOSE:
+                        effective_to_status = "closed"
+                        summary = readiness.message
+                        logger.info(
+                            f"Agent proposed RESOLVED but case {case.case_id} "
+                            f"verdict=SUGGEST_CLOSE (missing: {readiness.missing}); "
+                            f"pivoting to CLOSED."
+                        )
+                    elif readiness.verdict == readiness.NEEDS_INFO:
+                        summary = readiness.message
+                        needs_info_message = readiness.message
+                        logger.info(
+                            f"Agent proposed RESOLVED but case {case.case_id} "
+                            f"verdict=NEEDS_INFO (missing: {readiness.missing}); "
+                            f"keeping RESOLVED intent with needs_info flag."
+                        )
+                    else:
+                        summary = _build_resolution_confirmation(case)
+                else:  # closed
+                    summary = assess_closure_readiness(case).message
+
                 propose_transition(
                     case=case,
-                    to_status=proposed.to_status,
-                    reason=proposed.reason,
-                    summary=proposed.summary,
-                    evidence_ids=proposed.evidence_ids,
+                    to_status=effective_to_status,
+                    summary=summary,
+                    evidence_ids=getattr(proposed, "evidence_ids", None),
                 )
+                if needs_info_message is not None:
+                    case.pending_transition["needs_info"] = True
+                    # The response builder reads this to override the LLM's
+                    # agent_response with the readiness message, matching the
+                    # UI dropdown path's first-pass behavior.
+                    metadata["resolution_needs_info_first_pass"] = True
+                    metadata["resolution_needs_info_message"] = needs_info_message
                 metadata["transition_proposed"] = True
                 # Override LLM-emitted suggestions with the canonical
                 # confirm/decline pair, so all three trigger paths
@@ -5097,14 +5191,14 @@ class MilestoneEngine:
                 # the same structured COOPERATIVE confirmation UX. The
                 # response builder consumes metadata["override_suggestions"]
                 # at the final assembly point.
-                if proposed.to_status == "resolved":
+                if effective_to_status == "resolved":
                     metadata["override_suggestions"] = (
                         _resolution_confirmation_suggestions()
                     )
-                elif proposed.to_status == "closed":
+                else:  # closed
                     metadata["override_suggestions"] = _close_confirmation_suggestions()
                 logger.info(
-                    f"Agent proposed transition → {proposed.to_status} "
+                    f"Agent proposed transition → {effective_to_status} "
                     f"(pending user confirmation)"
                 )
 

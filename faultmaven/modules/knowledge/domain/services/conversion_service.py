@@ -430,28 +430,6 @@ class ConversionService:
         if request.evidence_summary:
             source_parts.append(f"KEY EVIDENCE:\n{request.evidence_summary}")
 
-        # For mitigated cases: provide context so the LLM can write a proper
-        # Root Cause Resolution section. The mitigation IS the permanent
-        # resolution — framed using the standard "If X then Y" + code block
-        # template structure, same as any other runbook.
-        if request.is_mitigation_only:
-            if request.rca_infeasible_rationale:
-                source_parts.append(f"CONSTRAINT: {request.rca_infeasible_rationale}")
-            if request.mitigation_actions:
-                actions_text = "\n\n".join(request.mitigation_actions)
-                source_parts.append(f"MITIGATION ACTIONS PERFORMED:\n{actions_text}")
-            if not request.root_cause:
-                # No formal root_cause_conclusion — guide the LLM to treat the
-                # mitigation as the resolution, using the standard template.
-                source_parts.append(
-                    "NOTE: This case was closed with mitigation as the accepted "
-                    "permanent strategy. For the Root Cause Resolution section, "
-                    "use the standard 'If X then Y' structure where the "
-                    "diagnostic finding is the identified constraint and the "
-                    "resolution is the mitigation implementation with its "
-                    "configuration. Include the code/commands used."
-                )
-
         source_text = "\n\n".join(source_parts)
 
         source_filename = f"Case {request.case_id}"

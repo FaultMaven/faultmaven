@@ -650,17 +650,20 @@ class APICaseService(BaseService):
         self,
         case_id: str,
         organization_id: str,
-        resolution: str,
     ) -> Case:
-        """Close case with resolution.
+        """Mark case as RESOLVED (terminal).
+
+        Resolution narrative — root cause, solution, evidence — lives in
+        the case itself (root_cause_conclusion, solutions, evidence) and
+        in the auto-generated resolution_summary Report. This method is
+        purely the state transition; it carries no free-form text input.
 
         Args:
             case_id: Case ID
             organization_id: Organization for authorization
-            resolution: Resolution description
 
         Returns:
-            Updated case with status=CLOSED or RESOLVED
+            Updated case with status=RESOLVED
 
         Raises:
             NotFoundError: If case not found
@@ -672,9 +675,6 @@ class APICaseService(BaseService):
             case_id=case_id,
             organization_id=organization_id,
         )
-
-        if not resolution or not resolution.strip():
-            raise ValidationException("resolution: Resolution description is required")
 
         # Get case with authorization check
         case = await self.get_case(case_id, organization_id)
@@ -691,16 +691,15 @@ class APICaseService(BaseService):
             )
 
         try:
-            # Update case to closed status
-            # Use model_copy to update all fields atomically to satisfy Pydantic validators
-            # which require both status=RESOLVED and timestamps to be set together
+            # closure_reason is None for RESOLVED — sub-categorization
+            # would be redundant with the status itself.
             now = datetime.now(timezone.utc)
             updated_case = case.model_copy(
                 update={
                     "status": CaseStatus.RESOLVED,
                     "resolved_at": now,
                     "closed_at": now,
-                    "closure_reason": resolution.strip(),
+                    "closure_reason": None,
                     "updated_at": now,
                 }
             )

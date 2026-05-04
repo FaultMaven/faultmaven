@@ -419,9 +419,7 @@ class TestCloseBenchmark:
         times = []
         for case in cases:
             start = time.perf_counter()
-            await case_service.close_case(
-                case.case_id, organization_id, f"Resolution for {case.case_id}"
-            )
+            await case_service.close_case(case.case_id, organization_id)
             elapsed = (time.perf_counter() - start) * 1000
             times.append(elapsed)
 

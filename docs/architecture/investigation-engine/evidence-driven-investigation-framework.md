@@ -558,7 +558,7 @@ See **[Investigation Lifecycle Logic §2.1 Path Selection Matrix](./investigatio
 
 **New symptoms emerge in TREATMENT**: User discovers the fix caused a new problem. Agent stays in TREATMENT, treats this as failure evidence requiring extended diagnosis, and follows the same process: failure analysis → gap identification → targeted evidence request → new hypothesis → corrective action.
 
-**Mitigation-only resolution**: After MITIGATION, the case can close without RCA in two ways: (1) When `rca_infeasible=True`, the agent proactively proposes closure after mitigation is verified — *"The mitigation is verified. Since [rationale], shall we close this as mitigated?"* (2) The user can always close via UI regardless of `rca_infeasible`. Both paths lead to CLOSED with `closure_reason="mitigation_sufficient"`. The UI renders this as "Closed - Mitigated" (distinct from "Closed - Abandoned"). The agent offers runbook generation to capture operational knowledge from these cases.
+**Mitigation-only resolution**: After MITIGATION, the case can close without RCA in two ways: (1) When `rca_infeasible=True`, the agent proactively proposes closure after mitigation is verified — *"The mitigation is verified. Since [rationale], shall we close this as mitigated?"* (2) The user can always close via UI regardless of `rca_infeasible`. Both paths lead to CLOSED with `closure_reason="mitigation_sufficient"`. The UI renders this as "Closed - Mitigated". The auto-generated Closure Summary captures what was learned; no runbook is generated for CLOSED cases.
 
 ---
 
@@ -567,13 +567,13 @@ See **[Investigation Lifecycle Logic §2.1 Path Selection Matrix](./investigatio
 When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine stops but the case remains interactive until archived. The post-terminal lifecycle has two phases:
 
 1. **Terminal transition** — Investigation stops. Active sessions completed. Auto-generated summary created (Resolution Summary for RESOLVED, Closure Summary for CLOSED). Terminal metrics emitted.
-2. **Terminal mode** — Case state is immutable, but users can interact via the copilot chat (text-only, attachments disabled). Three capabilities: ask questions about the investigation (TERMINAL_TEMPLATE), regenerate the summary report, or generate runbooks (RESOLVED and `CLOSED(mitigation_sufficient)` cases). Report viewing is via Dashboard. Users archive the case from Dashboard when done.
+2. **Terminal mode** — Case state is immutable, but users can interact via the copilot chat (text-only, attachments disabled). Three capabilities: ask questions about the investigation (TERMINAL_TEMPLATE), regenerate the summary report, or generate a runbook (RESOLVED cases only). Report viewing is via Dashboard. Users archive the case from Dashboard when done.
 
 See [Investigation Lifecycle Logic §1.7](./investigation-lifecycle-logic.md#17-post-terminal-lifecycle) for full specification including interaction mode derivation, session cleanup, and auto-summary content.
 
 ### 7.5.1 Knowledge Flywheel
 
-The knowledge flywheel converts investigations into reusable knowledge. RESOLVED cases and `CLOSED(mitigation_sufficient)` cases are eligible — both have actionable procedures worth preserving.
+The knowledge flywheel converts investigations into reusable knowledge. Only RESOLVED cases are eligible for runbook generation — they carry a confirmed root-cause-to-solution chain that a future investigator can apply.
 
 ```
 RESOLVED case
@@ -593,11 +593,11 @@ RESOLVED case
               PII scan → Admin review → Approve → KnowledgeItem
 ```
 
-**Why not all CLOSED cases**: Only `CLOSED(mitigation_sufficient)` cases have actionable procedures worth preserving. Abandoned or escalated cases lack verified solutions — the auto-generated Closure Summary captures what was learned without risking low-quality knowledge base entries.
+**Only RESOLVED cases are runbook-eligible.** Runbooks codify a complete root-cause-to-solution chain. CLOSED cases — including those with `closure_reason=mitigation_sufficient` — lack a confirmed root cause, so they do not qualify. The auto-generated Closure Summary captures what was learned without risking low-quality knowledge base entries.
 
 **Runbook generation is never automatic.** Design: suggest first, evaluate on acceptance.
 
-1. **Agent offers at terminal transition** — COOPERATIVE suggestions: "Regenerate resolution/closure summary" and "Generate runbook from this case" (runbook only for RESOLVED and `CLOSED(mitigation_sufficient)`). Report viewing is via Dashboard link. No evaluation happens at suggestion time.
+1. **Agent offers at terminal transition** — For RESOLVED cases: COOPERATIVE suggestions "Regenerate resolution summary" and "Generate runbook from this case." For CLOSED cases: "Regenerate closure summary" only. Report viewing is via Dashboard link. No evaluation happens at suggestion time.
 2. **Evaluation on acceptance** — When the user accepts, the system checks readiness + deduplication. Four outcomes: `SUCCESS` (draft created), `NOT_SUITABLE` (not enough data), `EXISTING_COVERS` (similar runbook exists), `GENERATION_FAILED`.
 3. **User requests** — Via copilot chat or Dashboard KB page, same evaluation applies.
 
@@ -1139,7 +1139,7 @@ All open questions from the initial draft have been resolved.
 
 1. **Progress indicators trimmed to 3.** Three original flags (scope_assessed, timeline_established, changes_identified) were removed from InvestigationProgress. They failed both design tests: (a) their absence does not block forward progress (mandatory-gate test), and (b) they do not require an independent evidence search — scope and timeline are facts extracted as byproducts of symptom evidence, and change events are contextual triggers (classified as `contextual_evidence`), not a distinct mandatory milestone. The three retained flags (symptom_verified, root_cause_identified, solution_proposed) each require their own evidence search and each signals a distinct diagnostic shift. These are called "progress indicators" rather than "progress milestones" to avoid confusion with the gate milestones (solution_accepted, solution_verified, mitigation_accepted, mitigation_verified) that drive stage transitions.
 
-2. **Mitigation returns to DIAGNOSIS for RCA by default; `rca_infeasible` overrides.** After mitigation is verified, the default behavior directs the user back to root cause analysis. However, when `rca_infeasible=True` on `ProblemVerification` (set by the LLM when the problem involves uncontrollable external dependencies, deprecated systems, or known intractable conditions), the agent proposes closure instead of pushing RCA. This is an advisory signal, not a forced path — the user can still request RCA. The terminal state for these cases is `CLOSED(mitigation_sufficient)`, and the agent offers Mitigation Playbook generation to capture operational knowledge. See [Investigation Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal).
+2. **Mitigation returns to DIAGNOSIS for RCA by default; `rca_infeasible` overrides.** After mitigation is verified, the default behavior directs the user back to root cause analysis. However, when `rca_infeasible=True` on `ProblemVerification` (set by the LLM when the problem involves uncontrollable external dependencies, deprecated systems, or known intractable conditions), the agent proposes closure instead of pushing RCA. This is an advisory signal, not a forced path — the user can still request RCA. The terminal state for these cases is `CLOSED(mitigation_sufficient)`, and an auto-generated Closure Summary captures the operational knowledge. See [Investigation Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal).
 
 3. **Escalation via capability exhaustion, not a fixed counter.** The agent suggests escalation when it has no more viable options — not after a fixed number of cycles. The principle: do not repeat a task without new input. For genuine external blockers (limited data, hypothesis deadlock, external dependencies), the agent communicates limitations naturally in its responses and suggests escalation. Simple lack of progress (5+ turns) receives a gentle stagnation nudge — a prompt hint, not a mode change. FaultMaven is a copilot that patiently serves the user while keeping the diagnostic thread visible.
 

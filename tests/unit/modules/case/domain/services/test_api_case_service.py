@@ -697,27 +697,31 @@ class TestCloseCase:
         result = await case_service.close_case(
             sample_case.case_id,
             sample_case.organization_id,
-            "Issue resolved by restarting service",
         )
 
         assert result.status == CaseStatus.RESOLVED
         assert result.resolved_at is not None
 
     @pytest.mark.asyncio
-    async def test_close_case_sets_closure_reason(
+    async def test_close_case_resolved_clears_closure_reason(
         self, case_service, mock_case_repo, sample_case
     ):
-        """Test that close_case sets closure_reason."""
+        """close_case → RESOLVED leaves closure_reason=None.
+
+        closure_reason is the engine-derived CLOSED sub-category
+        ('inquiry_only' / 'closed_after_investigation' / 'mitigation_sufficient')
+        and is meaningless for RESOLVED.
+        """
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.save.side_effect = lambda case: case
 
         result = await case_service.close_case(
             sample_case.case_id,
             sample_case.organization_id,
-            "Root cause identified and fixed",
         )
 
-        assert result.closure_reason == "Root cause identified and fixed"
+        assert result.status == CaseStatus.RESOLVED
+        assert result.closure_reason is None
 
     @pytest.mark.asyncio
     async def test_close_case_already_closed_raises_conflict_error(
@@ -728,7 +732,7 @@ class TestCloseCase:
             update={
                 "status": CaseStatus.RESOLVED,
                 "resolved_at": datetime.now(timezone.utc),
-                "closure_reason": "Already resolved",
+                "closure_reason": None,
             }
         )
         mock_case_repo.get.return_value = closed_case
@@ -737,7 +741,6 @@ class TestCloseCase:
             await case_service.close_case(
                 sample_case.case_id,
                 sample_case.organization_id,
-                "Resolution",
             )
 
         assert "already closed" in str(exc_info.value).lower()
@@ -750,17 +753,7 @@ class TestCloseCase:
         mock_case_repo.get.return_value = None
 
         with pytest.raises(NotFoundError):
-            await case_service.close_case("nonexistent", "org_1", "Resolution")
-
-    @pytest.mark.asyncio
-    async def test_close_case_empty_resolution_raises_validation_error(
-        self, case_service
-    ):
-        """Test that empty resolution raises ValidationException."""
-        with pytest.raises(ValidationException) as exc_info:
-            await case_service.close_case("case_1", "org_1", "")
-
-        assert "resolution" in str(exc_info.value).lower()
+            await case_service.close_case("nonexistent", "org_1")
 
 
 # ============================================================

@@ -82,8 +82,8 @@ INVESTIGATING
        └── → TERMINAL/CLOSED    (handshake: user abandons)
 
 TERMINAL — immutable; Q&A only
-  RESOLVED — resolution_summary generated; runbook eligible (requires root cause)
-  CLOSED   — closure_summary generated; mitigation_playbook eligible if closure_reason=mitigation_sufficient
+  RESOLVED — resolution_summary always generated; runbook eligible (requires root cause)
+  CLOSED   — closure_summary generated (subject to skip-if-trivial guardrail); no runbook generation
 ```
 
 ### Key Definitions

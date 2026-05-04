@@ -607,7 +607,7 @@ class TestInvestigationServiceCloseCase:
         sample_case.user_id = sample_user_id
         await mock_case_repository.save(sample_case)
 
-        closure_reason = "resolved"
+        closure_reason = "closed_after_investigation"
         updated_case = await service.close_case(
             case_id=sample_case.case_id,
             user_id=sample_user_id,
@@ -630,7 +630,7 @@ class TestInvestigationServiceCloseCase:
             await service.close_case(
                 case_id=non_existent_case_id,
                 user_id=sample_user_id,
-                closure_reason="resolved",
+                closure_reason="closed_after_investigation",
             )
 
     @pytest.mark.asyncio
@@ -647,7 +647,7 @@ class TestInvestigationServiceCloseCase:
             await service.close_case(
                 case_id=sample_case.case_id,
                 user_id=unauthorized_user_id,
-                closure_reason="resolved",
+                closure_reason="closed_after_investigation",
             )
 
     @pytest.mark.asyncio
@@ -662,7 +662,7 @@ class TestInvestigationServiceCloseCase:
         updated_case = await service.close_case(
             case_id=sample_case.case_id,
             user_id=sample_user_id,
-            closure_reason="resolved",
+            closure_reason="closed_after_investigation",
         )
 
         assert updated_case.closed_at is not None

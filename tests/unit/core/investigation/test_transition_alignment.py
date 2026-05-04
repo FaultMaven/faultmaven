@@ -19,8 +19,16 @@ from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
+    ConfidenceLevel,
+    Evidence,
+    EvidenceCategory,
+    EvidenceForm,
+    EvidenceSourceType,
     InvestigationProgress,
     ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    SolutionType,
 )
 
 
@@ -57,6 +65,25 @@ def _make_investigating_case():
     case.inquiry.decision_made_at = datetime.now(timezone.utc)
     case.status = CaseStatus.INVESTIGATING
     case.progress = InvestigationProgress()
+    return case
+
+
+def _fill_for_resolution_ready(case):
+    """Promote an investigating case to assess_resolution_readiness=READY:
+    root cause + at least one solution. Mutates and returns ``case``."""
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="Alignment test root cause",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.8,
+        mechanism="Test mechanism",
+    )
+    case.solutions.append(
+        Solution(
+            solution_type=SolutionType.CONFIG_CHANGE,
+            title="Alignment test solution",
+            longterm_fix="Apply correct configuration",
+        )
+    )
     return case
 
 
@@ -132,9 +159,9 @@ async def test_ui_dropdown_investigating_to_closed_emits_canonical_close_pair():
 
 
 @pytest.mark.asyncio
-async def test_ui_dropdown_investigating_to_resolved_emits_canonical_resolve_pair():
-    """INVESTIGATING → RESOLVED via dropdown — both ready and not-ready
-    branches must emit the canonical confirm/decline pair."""
+async def test_ui_dropdown_investigating_to_resolved_ready_emits_resolve_pair():
+    """READY case (root cause + solution): dropdown lands in the READY branch
+    and emits the canonical RESOLVED confirm/decline pair."""
     engine = MilestoneEngine(
         MagicMock(),
         _make_repo(),
@@ -143,6 +170,7 @@ async def test_ui_dropdown_investigating_to_resolved_emits_canonical_resolve_pai
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
+    _fill_for_resolution_ready(case)
 
     result = await engine.process_turn(
         case=case,
@@ -154,11 +182,93 @@ async def test_ui_dropdown_investigating_to_resolved_emits_canonical_resolve_pai
             "user_confirmed": True,
         },
     )
-    # In an unfilled case this typically lands in the not-ready (needs_info)
-    # branch; both branches return the canonical RESOLVED pair under
-    # alignment.
     assert result["case_updated"].pending_transition is not None
     assert result["case_updated"].pending_transition["to_status"] == "resolved"
+    assert not result["case_updated"].pending_transition.get("needs_info")
+    _assert_canonical_confirm_pair(result["suggested_follow_ups"], "resolved")
+
+
+@pytest.mark.asyncio
+async def test_ui_dropdown_resolve_pivots_to_close_when_thin():
+    """SUGGEST_CLOSE pivot: when the user picks Resolve via dropdown but the
+    case has no root cause / solution / evidence, the engine must propose
+    CLOSED (not RESOLVED) and emit the canonical CLOSE pair so the user's
+    confirm click matches what they're actually being asked to do."""
+    engine = MilestoneEngine(
+        MagicMock(),
+        _make_repo(),
+        investigation_tools=MagicMock(),
+        evidence_service=MagicMock(),
+    )
+    case = _make_investigating_case()
+    case.progress.symptom_verified = True
+    # Deliberately no root_cause_conclusion, no solutions, no evidence.
+
+    result = await engine.process_turn(
+        case=case,
+        user_message="Mark as resolved.",
+        intent_type="status_transition",
+        intent_data={
+            "from_status": "investigating",
+            "to_status": "resolved",
+            "user_confirmed": True,
+        },
+    )
+    pending = result["case_updated"].pending_transition
+    assert pending is not None
+    assert pending["to_status"] == "closed"
+    # closure_reason engine-derived: investigating + no mitigation
+    assert pending.get("closure_reason") == "closed_after_investigation"
+    _assert_canonical_confirm_pair(result["suggested_follow_ups"], "close")
+
+
+@pytest.mark.asyncio
+async def test_ui_dropdown_resolve_needs_info_keeps_resolve_pair():
+    """NEEDS_INFO branch: case has evidence (one of the four readiness checks)
+    but is missing root cause / solution. Engine keeps the resolve intent so a
+    follow-up turn carrying the missing detail can move forward, and shows the
+    RESOLVED confirm pair while flagging needs_info."""
+    engine = MilestoneEngine(
+        MagicMock(),
+        _make_repo(),
+        investigation_tools=MagicMock(),
+        evidence_service=MagicMock(),
+    )
+    case = _make_investigating_case()
+    case.progress.symptom_verified = True
+    # Add a piece of evidence so we're missing root cause + solution but
+    # have_evidence=True → readiness routes to NEEDS_INFO instead of
+    # SUGGEST_CLOSE.
+    case.evidence.append(
+        Evidence(
+            summary="Test evidence",
+            category=EvidenceCategory.SYMPTOM_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at=datetime.now(timezone.utc),
+            collected_by="user_test",
+            primary_purpose="Alignment test",
+            preprocessed_content="Sample log line",
+            content_size_bytes=100,
+            preprocessing_method="manual",
+            form=EvidenceForm.USER_TEXT,
+            collected_at_turn=1,
+        )
+    )
+
+    result = await engine.process_turn(
+        case=case,
+        user_message="Mark as resolved.",
+        intent_type="status_transition",
+        intent_data={
+            "from_status": "investigating",
+            "to_status": "resolved",
+            "user_confirmed": True,
+        },
+    )
+    pending = result["case_updated"].pending_transition
+    assert pending is not None
+    assert pending["to_status"] == "resolved"
+    assert pending.get("needs_info") is True
     _assert_canonical_confirm_pair(result["suggested_follow_ups"], "resolved")
 
 
@@ -188,12 +298,11 @@ async def test_check_automatic_transitions_sets_override_for_resolved():
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
+    _fill_for_resolution_ready(case)
 
     fake_response = MagicMock()
     fake_response.state_updates.proposed_transition = MagicMock(
         to_status="resolved",
-        reason="User indicated the fix worked",
-        summary="Resolution criteria appear to be met.",
         evidence_ids=[],
     )
     metadata: dict = {"response_obj": fake_response}
@@ -221,8 +330,6 @@ async def test_check_automatic_transitions_sets_override_for_closed():
     fake_response = MagicMock()
     fake_response.state_updates.proposed_transition = MagicMock(
         to_status="closed",
-        reason="User asked to close without resolving",
-        summary="Closing without solution.",
         evidence_ids=[],
     )
     metadata: dict = {"response_obj": fake_response}
@@ -233,7 +340,188 @@ async def test_check_automatic_transitions_sets_override_for_closed():
 
     assert case.pending_transition is not None
     assert case.pending_transition["to_status"] == "closed"
+    # Regression guard: closure_reason is engine-derived from
+    # (case.status, mitigation_verified). Investigating + no mitigation
+    # → closed_after_investigation.
+    assert case.pending_transition.get("closure_reason") == "closed_after_investigation"
     _assert_canonical_confirm_pair(metadata["override_suggestions"], "close")
+
+
+@pytest.mark.asyncio
+async def test_check_automatic_transitions_closure_reason_inquiry_only():
+    """Regression guard for closure_reason on the inquiry→closed path —
+    must be 'inquiry_only', mirroring the UI dropdown branch."""
+    engine = MilestoneEngine(
+        MagicMock(),
+        _make_repo(),
+        investigation_tools=MagicMock(),
+        evidence_service=MagicMock(),
+    )
+    case = _make_inquiry_case()
+
+    fake_response = MagicMock()
+    fake_response.state_updates.proposed_transition = MagicMock(
+        to_status="closed",
+        evidence_ids=[],
+    )
+    metadata: dict = {"response_obj": fake_response}
+
+    await engine._check_automatic_transitions(
+        case=case, metadata=metadata, user_message="never mind, close this case."
+    )
+
+    assert case.pending_transition is not None
+    assert case.pending_transition["to_status"] == "closed"
+    assert case.pending_transition.get("closure_reason") == "inquiry_only"
+
+
+@pytest.mark.asyncio
+async def test_check_automatic_transitions_closure_reason_mitigation_sufficient():
+    """Regression guard for the mitigation-sufficient case: closing a case
+    where mitigation_verified=True must yield closure_reason='mitigation_sufficient'
+    (engine-derived). This gates the runbook-generation suggestion downstream."""
+    engine = MilestoneEngine(
+        MagicMock(),
+        _make_repo(),
+        investigation_tools=MagicMock(),
+        evidence_service=MagicMock(),
+    )
+    case = _make_investigating_case()
+    case.progress.mitigation_verified = True
+
+    fake_response = MagicMock()
+    fake_response.state_updates.proposed_transition = MagicMock(
+        to_status="closed",
+        evidence_ids=[],
+    )
+    metadata: dict = {"response_obj": fake_response}
+
+    await engine._check_automatic_transitions(
+        case=case, metadata=metadata, user_message="ok closing — mitigation worked"
+    )
+
+    assert case.pending_transition is not None
+    assert case.pending_transition["to_status"] == "closed"
+    assert case.pending_transition.get("closure_reason") == "mitigation_sufficient"
+
+
+@pytest.mark.asyncio
+async def test_llm_emit_resolved_pivots_to_close_when_thin():
+    """LLM proposes RESOLVED on a thin case (no root cause / solution /
+    evidence). Engine must pivot to CLOSED, propose closed, and override
+    suggestions with the close pair. Mirrors the UI dropdown SUGGEST_CLOSE
+    behavior so the user sees a coherent prompt + suggestion pair."""
+    engine = MilestoneEngine(
+        MagicMock(),
+        _make_repo(),
+        investigation_tools=MagicMock(),
+        evidence_service=MagicMock(),
+    )
+    case = _make_investigating_case()
+    case.progress.symptom_verified = True
+    # Deliberately thin — no root cause, no solutions, no evidence.
+
+    fake_response = MagicMock()
+    fake_response.state_updates.proposed_transition = MagicMock(
+        to_status="resolved",
+        evidence_ids=[],
+    )
+    metadata: dict = {"response_obj": fake_response}
+
+    await engine._check_automatic_transitions(
+        case=case, metadata=metadata, user_message="The fix worked."
+    )
+
+    assert case.pending_transition is not None
+    assert case.pending_transition["to_status"] == "closed"
+    assert case.pending_transition.get("closure_reason") == "closed_after_investigation"
+    # NEEDS_INFO first-pass flag must NOT be set on a SUGGEST_CLOSE pivot —
+    # the response builder distinguishes the two paths.
+    assert not metadata.get("resolution_needs_info_first_pass")
+    _assert_canonical_confirm_pair(metadata["override_suggestions"], "close")
+
+
+@pytest.mark.asyncio
+async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
+    """LLM proposes RESOLVED on a case with evidence but no root cause /
+    solution (NEEDS_INFO). Engine keeps the resolve intent, sets
+    needs_info=True, and surfaces the readiness message via the
+    resolution_needs_info_first_pass metadata so the response builder can
+    override the LLM's agent_response."""
+    engine = MilestoneEngine(
+        MagicMock(),
+        _make_repo(),
+        investigation_tools=MagicMock(),
+        evidence_service=MagicMock(),
+    )
+    case = _make_investigating_case()
+    case.progress.symptom_verified = True
+    case.evidence.append(
+        Evidence(
+            summary="Test evidence",
+            category=EvidenceCategory.SYMPTOM_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at=datetime.now(timezone.utc),
+            collected_by="user_test",
+            primary_purpose="Alignment test",
+            preprocessed_content="Sample log line",
+            content_size_bytes=100,
+            preprocessing_method="manual",
+            form=EvidenceForm.USER_TEXT,
+            collected_at_turn=1,
+        )
+    )
+
+    fake_response = MagicMock()
+    fake_response.state_updates.proposed_transition = MagicMock(
+        to_status="resolved",
+        evidence_ids=[],
+    )
+    metadata: dict = {"response_obj": fake_response}
+
+    await engine._check_automatic_transitions(
+        case=case, metadata=metadata, user_message="The fix worked."
+    )
+
+    assert case.pending_transition is not None
+    assert case.pending_transition["to_status"] == "resolved"
+    assert case.pending_transition.get("needs_info") is True
+    assert metadata.get("resolution_needs_info_first_pass") is True
+    assert metadata.get("resolution_needs_info_message")
+    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved")
+
+
+@pytest.mark.asyncio
+async def test_llm_emit_resolved_ready_keeps_resolve_pair():
+    """LLM proposes RESOLVED on a READY case (root cause + solution).
+    Engine proposes RESOLVED with the canonical resolve confirmation
+    pair, no needs_info, no pivot."""
+    engine = MilestoneEngine(
+        MagicMock(),
+        _make_repo(),
+        investigation_tools=MagicMock(),
+        evidence_service=MagicMock(),
+    )
+    case = _make_investigating_case()
+    case.progress.symptom_verified = True
+    _fill_for_resolution_ready(case)
+
+    fake_response = MagicMock()
+    fake_response.state_updates.proposed_transition = MagicMock(
+        to_status="resolved",
+        evidence_ids=[],
+    )
+    metadata: dict = {"response_obj": fake_response}
+
+    await engine._check_automatic_transitions(
+        case=case, metadata=metadata, user_message="The fix worked."
+    )
+
+    assert case.pending_transition is not None
+    assert case.pending_transition["to_status"] == "resolved"
+    assert not case.pending_transition.get("needs_info")
+    assert not metadata.get("resolution_needs_info_first_pass")
+    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved")
 
 
 @pytest.mark.asyncio

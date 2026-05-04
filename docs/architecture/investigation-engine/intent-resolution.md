@@ -386,10 +386,9 @@ After a case reaches terminal state, the agent offers appropriate actions:
 | Case status | Suggestions |
 |---|---|
 | RESOLVED | "Regenerate resolution summary" + "Generate runbook" |
-| CLOSED (mitigation_sufficient) | "Regenerate closure summary" + "Generate runbook" |
-| CLOSED (other reasons) | "Regenerate closure summary" only |
+| CLOSED (any reason) | "Regenerate closure summary" only |
 
-Report viewing is via Dashboard link (in `ResolutionActionsCard`). Runbook generation is evaluated on click via `evaluate_runbook_suggestion` which checks readiness + deduplication.
+Report viewing is via Dashboard link (in `ResolutionActionsCard`). Runbook generation is evaluated on click via `evaluate_runbook_suggestion` which checks readiness + deduplication. Only RESOLVED cases are eligible for runbook generation.
 
 ---
 
