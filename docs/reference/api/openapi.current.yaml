@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: FaultMaven API
-  description: AI-powered troubleshooting assistant for Engineers, SREs, and DevOps
+  description: AI-powered troubleshooting copilot for Engineers, SREs, and DevOps
     professionals
   version: 1.0.0
 paths:
@@ -1543,6 +1543,65 @@ paths:
               schema:
                 type: object
                 title: Response Get Case Service Health Api V1 Cases Health Get
+  /api/v1/cases/{case_id}/evidence/{evidence_id}/classification:
+    patch:
+      tags:
+      - cases
+      summary: Reclassify Evidence
+      description: "Reclassify an existing evidence row under a user-specified data\
+        \ type.\n\nPhase 1.5 \u2014 the escape hatch for \"the classifier was confidently\n\
+        wrong\". Re-runs the preprocessing pipeline on the stored raw file\nwith ``user_override=data_type``,\
+        \ overwrites the evidence's\nstructural index, and appends to its extractor.attempts\
+        \ history.\n\nGated by ``FAULTMAVEN_RECLASSIFY_ENABLED``. Returns 404 when\
+        \ the\nflag is off so the endpoint is invisible in production by default.\n\
+        \nError responses:\n\n- ``404`` \u2014 feature disabled, case not found, or\
+        \ evidence not in case.\n- ``409`` \u2014 evidence has no ``content_ref``\
+        \ (can't re-extract).\n- ``400`` \u2014 invalid ``data_type`` string, or missing\
+        \ ``data_type``."
+      operationId: reclassify_evidence_api_v1_cases__case_id__evidence__evidence_id__classification_patch
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: evidence_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Evidence Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: 'Request body: {''data_type'': ''<DataType value>''}. The
+                data_type must be one of the enum values in faultmaven.models.api.DataType
+                (e.g. ''logs_and_errors'', ''structured_config'').'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/cases/{case_id}/data:
     get:
       tags:
@@ -2794,268 +2853,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/evidence:
-    post:
-      tags:
-      - evidence
-      summary: Upload Evidence
-      description: "Upload evidence file.\n\nArgs:\n    file: Evidence file to upload\n\
-        \    description: Optional description of the evidence\n    tags: Optional\
-        \ comma-separated tags\n    case_id: Optional case UUID to auto-link\n   \
-        \ current_user: Authenticated user\n    service: Evidence service\n\nReturns:\n\
-        \    Created evidence record"
-      operationId: upload_evidence_api_v1_evidence_post
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/Body_upload_evidence_api_v1_evidence_post'
-      responses:
-        '201':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EvidenceArtifact'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    get:
-      tags:
-      - evidence
-      summary: List Evidence
-      description: "List evidence with optional filters.\n\nArgs:\n    case_id: Filter\
-        \ by case UUID\n    uploaded_by: Filter by uploader user ID\n    tags: Filter\
-        \ by tags (comma-separated)\n    filename_contains: Filter by filename substring\n\
-        \    limit: Max results (default 50, max 200)\n    offset: Pagination offset\n\
-        \    current_user: Authenticated user\n    service: Evidence service\n\nReturns:\n\
-        \    List of evidence records"
-      operationId: list_evidence_api_v1_evidence_get
-      parameters:
-      - name: case_id
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Case Id
-      - name: uploaded_by
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Uploaded By
-      - name: tags
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Tags
-      - name: filename_contains
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Filename Contains
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          default: 50
-          title: Limit
-      - name: offset
-        in: query
-        required: false
-        schema:
-          type: integer
-          default: 0
-          title: Offset
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/EvidenceArtifact'
-                title: Response List Evidence Api V1 Evidence Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/evidence/case/{case_id}:
-    get:
-      tags:
-      - evidence
-      summary: Get Evidence For Case
-      description: "Get all evidence linked to a specific case.\n\nArgs:\n    case_id:\
-        \ Case UUID\n    current_user: Authenticated user\n    service: Evidence service\n\
-        \nReturns:\n    List of evidence records for the case"
-      operationId: get_evidence_for_case_api_v1_evidence_case__case_id__get
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Case Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/EvidenceArtifact'
-                title: Response Get Evidence For Case Api V1 Evidence Case  Case Id  Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/evidence/{evidence_id}:
-    get:
-      tags:
-      - evidence
-      summary: Get Evidence
-      description: "Get evidence details by ID.\n\nArgs:\n    evidence_id: Evidence\
-        \ UUID\n    current_user: Authenticated user\n    service: Evidence service\n\
-        \nReturns:\n    Evidence record\n\nRaises:\n    HTTPException: 404 if evidence\
-        \ not found, 503 if service unavailable"
-      operationId: get_evidence_api_v1_evidence__evidence_id__get
-      parameters:
-      - name: evidence_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Evidence Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EvidenceArtifact'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    delete:
-      tags:
-      - evidence
-      summary: Delete Evidence
-      description: "Delete evidence file and record.\n\nArgs:\n    evidence_id: Evidence\
-        \ UUID\n    current_user: Authenticated user\n    service: Evidence service\n\
-        \nRaises:\n    HTTPException: 404 if evidence not found, 503 if service unavailable"
-      operationId: delete_evidence_api_v1_evidence__evidence_id__delete
-      parameters:
-      - name: evidence_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Evidence Id
-      responses:
-        '204':
-          description: Successful Response
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/evidence/{evidence_id}/download:
-    get:
-      tags:
-      - evidence
-      summary: Download Evidence
-      description: "Download evidence file.\n\nArgs:\n    evidence_id: Evidence UUID\n\
-        \    current_user: Authenticated user\n    service: Evidence service\n\nReturns:\n\
-        \    Redirect to download URL\n\nRaises:\n    HTTPException: 404 if evidence\
-        \ not found, 503 if service unavailable"
-      operationId: download_evidence_api_v1_evidence__evidence_id__download_get
-      parameters:
-      - name: evidence_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Evidence Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/evidence/{evidence_id}/link:
-    post:
-      tags:
-      - evidence
-      summary: Link Evidence To Case
-      description: "Link evidence to a case.\n\nArgs:\n    evidence_id: Evidence UUID\n\
-        \    link_request: Case ID to link to\n    current_user: Authenticated user\n\
-        \    service: Evidence service\n\nReturns:\n    Updated evidence record\n\n\
-        Raises:\n    HTTPException: 404 if evidence not found"
-      operationId: link_evidence_to_case_api_v1_evidence__evidence_id__link_post
-      parameters:
-      - name: evidence_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Evidence Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/EvidenceLinkRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EvidenceArtifact'
         '422':
           description: Validation Error
           content:
@@ -7192,6 +6989,20 @@ components:
           title: Source Type
           description: 'Input origin: file_upload | text_paste | page_capture'
           default: file_upload
+        duplicate_of:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Duplicate Of
+          description: If set, this attachment was a per-case content-hash duplicate
+            of an earlier upload. No new Evidence was created; this field carries
+            the existing evidence_id. Frontend should render a non-blocking toast.
+        duplicate_turn:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Duplicate Turn
+          description: Turn number where the original was uploaded (for toast text).
       type: object
       required:
       - evidence_id
@@ -7494,32 +7305,6 @@ components:
       - title
       - document_type
       title: Body_upload_document_api_v1_knowledge_documents_post
-    Body_upload_evidence_api_v1_evidence_post:
-      properties:
-        file:
-          type: string
-          format: binary
-          title: File
-        description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
-        tags:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Tags
-        case_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Case Id
-      type: object
-      required:
-      - file
-      title: Body_upload_evidence_api_v1_evidence_post
     Case:
       properties:
         case_id:
@@ -7594,6 +7379,28 @@ components:
             \ was proposed (str ISO datetime)\n        - proposed_by: Who proposed\
             \ it (\"agent\" | \"user\" | user_id)\n\n        Cleared after transition\
             \ executes or is cancelled.\n        "
+        last_suggestions:
+          anyOf:
+          - items:
+              type: object
+            type: array
+          - type: 'null'
+          title: Last Suggestions
+          description: COOPERATIVE suggestions with intent metadata from the last
+            agent turn. Used by the intent resolver to match typed responses against
+            offered choices. Updated after each turn; only suggestions carrying intent
+            metadata are stored.
+        kb_context:
+          anyOf:
+          - items:
+              type: object
+            type: array
+          - type: 'null'
+          title: Kb Context
+          description: "Deterministic KB pre-fetch results injected at key transitions.\
+            \ Populated at INQUIRY\u2192INVESTIGATING (symptom search) and when root_cause_identified\
+            \ completes (remediation search). Included in the LLM context as historical\
+            \ suggestions, not absolute truths."
         progress:
           $ref: '#/components/schemas/InvestigationProgress'
           description: Milestone-based progress tracking
@@ -7712,6 +7519,13 @@ components:
           - $ref: '#/components/schemas/RootCauseConclusion'
           - type: 'null'
           description: Final root cause determination
+        investigation_journal:
+          items:
+            $ref: '#/components/schemas/JournalEntry'
+          type: array
+          title: Investigation Journal
+          description: Structured log of key findings, decisions, and context. Append-only.
+            Always included in full in LLM context.
         escalation_state:
           anyOf:
           - $ref: '#/components/schemas/EscalationState'
@@ -7735,6 +7549,16 @@ components:
           format: date-time
           title: Last Activity At
           description: Most recent user/agent interaction (for 'updated Xm ago' display)
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+          description: "Optimistic concurrency control token. Incremented on every\
+            \ successful aggregate save. Callers that read-modify-write a case must\
+            \ pass the loaded version back through save(case); `save` raises StaleCaseException\
+            \ on mismatch. Scoped single-row UPDATEs (update_evidence_vectorized,\
+            \ etc.) do NOT bump this field \u2014 they operate on child tables."
+          default: 1
         resolved_at:
           anyOf:
           - type: string
@@ -9113,7 +8937,7 @@ components:
           - type: 'null'
           title: Data Type
           description: Unified data type from preprocessing (logs, metrics, configuration,
-            code, text, image). Maps to UnifiedDataType enum. None for legacy evidence.
+            code, text, image). None for legacy evidence without preprocessing.
         content_hash:
           anyOf:
           - type: string
@@ -9138,13 +8962,6 @@ components:
           - type: 'null'
           title: Processing Mode
           description: 'Processing mode: triage | directed_analysis | semantic_search'
-        da_invocation_count:
-          type: integer
-          minimum: 0.0
-          title: Da Invocation Count
-          description: 'DA invocations across turns for this evidence (failure trigger
-            #4)'
-          default: 0
         source_type:
           $ref: '#/components/schemas/EvidenceSourceType'
           description: Type of evidence source
@@ -9166,6 +8983,15 @@ components:
           title: Original Filename
           description: Original filename when uploaded (e.g., 'OpenSSH_2k.log'). Used
             by search_file tool for display.
+        vectorized:
+          type: boolean
+          title: Vectorized
+          description: Whether this evidence's structural index has been persisted
+            into the case vector store. Set to True by the investigation engine after
+            a successful vectorize_file run; persisted across turns so proactive and
+            reactive vectorization paths skip already-indexed evidence instead of
+            re-embedding on every turn.
+          default: false
         advances_milestones:
           items:
             type: string
@@ -9186,6 +9012,32 @@ components:
           minimum: 0.0
           title: Collected At Turn
           description: Turn number when evidence was collected
+        metadata:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Metadata
+          description: "Structured diagnostic metadata from the preprocessing pipeline.\
+            \ Top-level keys are namespaced \u2014 see docs/architecture/data-and-storage/schemas/case-schema.md\
+            \ \xA74.3 'evidence.metadata JSON contract'. Canonical shape in faultmaven/core/preprocessing/evidence_metadata.py::EvidenceMetadata.\
+            \ Optional for backward compatibility with evidence rows that predate\
+            \ the Phase 1 classifier-confidence work."
+        coverage_start_ts:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Coverage Start Ts
+          description: Earliest timestamp parsed from the evidence's content. None
+            when the content has no parseable timestamps.
+        coverage_end_ts:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Coverage End Ts
+          description: Latest timestamp parsed from the evidence's content. None when
+            the content has no parseable timestamps.
       type: object
       required:
       - category
@@ -9220,105 +9072,6 @@ components:
         LLM evaluates: stance per hypothesis (creates hypothesis_evidence links)
 
         System infers: category, advances_milestones'
-    EvidenceArtifact:
-      properties:
-        evidence_id:
-          type: string
-          title: Evidence Id
-        case_id:
-          type: string
-          title: Case Id
-        user_id:
-          type: string
-          title: User Id
-        organization_id:
-          type: string
-          title: Organization Id
-        original_filename:
-          type: string
-          title: Original Filename
-        stored_filename:
-          type: string
-          title: Stored Filename
-        file_path:
-          type: string
-          title: File Path
-        evidence_type:
-          $ref: '#/components/schemas/EvidenceArtifactType'
-        mime_type:
-          type: string
-          title: Mime Type
-        file_size:
-          type: integer
-          title: File Size
-        storage_backend:
-          $ref: '#/components/schemas/StorageBackend'
-          default: local_filesystem
-        created_at:
-          type: string
-          format: date-time
-          title: Created At
-        updated_at:
-          type: string
-          format: date-time
-          title: Updated At
-        metadata:
-          anyOf:
-          - type: object
-          - type: 'null'
-          title: Metadata
-        description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
-        is_primary:
-          type: boolean
-          title: Is Primary
-          default: false
-        tags:
-          items:
-            type: string
-          type: array
-          title: Tags
-        linked_case_ids:
-          items:
-            type: string
-          type: array
-          title: Linked Case Ids
-      type: object
-      required:
-      - evidence_id
-      - case_id
-      - user_id
-      - organization_id
-      - original_filename
-      - stored_filename
-      - file_path
-      - evidence_type
-      - mime_type
-      - file_size
-      title: EvidenceArtifact
-    EvidenceArtifactType:
-      type: string
-      enum:
-      - screenshot
-      - log_file
-      - network_trace
-      - code_snippet
-      - configuration
-      - video_recording
-      - har_file
-      - crash_dump
-      - heap_dump
-      - thread_dump
-      - metrics_export
-      - other
-      title: EvidenceArtifactType
-      description: 'Types of evidence artifacts.
-
-
-        Categorizes the kind of evidence artifact stored.'
     EvidenceCategory:
       type: string
       enum:
@@ -9424,17 +9177,6 @@ components:
         - USER_TEXT: Query-only turn, no attachments
 
         - SUBMITTED_DATA: Evidence created by agent tools (search_file, deep_analysis)'
-    EvidenceLinkRequest:
-      properties:
-        case_id:
-          type: string
-          format: uuid
-          title: Case Id
-      type: object
-      required:
-      - case_id
-      title: EvidenceLinkRequest
-      description: Request to link evidence to a case.
     EvidenceSourceType:
       type: string
       enum:
@@ -9676,6 +9418,17 @@ components:
           - type: 'null'
           title: Retirement Reason
           description: Reason if hypothesis was retired
+        refutation_reason:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Refutation Reason
+          description: "Evidence or reasoning that disproves the hypothesis. REQUIRED\
+            \ when status=REFUTED (enforced via model validator). Not used for other\
+            \ statuses. status=REFUTED and refutation_reason travel together \u2014\
+            \ an update carrying one without the other is rejected at the orchestration\
+            \ layer."
         rationale:
           type: string
           maxLength: 1000
@@ -9830,6 +9583,14 @@ components:
           minimum: 0.0
           title: Evidence Count
           description: Number of evidence items related to this hypothesis
+        refutation_reason:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Refutation Reason
+          description: Reason the hypothesis was refuted. Populated only when status=REFUTED;
+            None otherwise. Mirrors the domain model's pair-integrity invariant.
       type: object
       required:
       - hypothesis_id
@@ -10045,21 +9806,6 @@ components:
           description: Symptom confirmed with concrete evidence (logs, metrics, user
             reports)
           default: false
-        scope_assessed:
-          type: boolean
-          title: Scope Assessed
-          description: 'Scope determined: affected users/services/regions, blast radius'
-          default: false
-        timeline_established:
-          type: boolean
-          title: Timeline Established
-          description: 'Timeline determined: when problem started, when noticed, duration'
-          default: false
-        changes_identified:
-          type: boolean
-          title: Changes Identified
-          description: 'Recent changes identified: deployments, configs, scaling events'
-          default: false
         root_cause_identified:
           type: boolean
           title: Root Cause Identified
@@ -10092,8 +9838,7 @@ components:
             format: date-time
           - type: 'null'
           title: Verification Completed At
-          description: When all verification milestones (symptom, scope, timeline,
-            changes) were completed
+          description: When symptom verification milestone was completed
         investigation_completed_at:
           anyOf:
           - type: string
@@ -10124,7 +9869,7 @@ components:
             type: string
           type: array
           title: Completed Indicators
-          description: Completed progress indicators (e.g. symptom_verified, scope_assessed)
+          description: Completed progress indicators (e.g. symptom_verified, root_cause_identified)
         completed_stage_gates:
           items:
             type: string
@@ -10209,6 +9954,54 @@ components:
       type: object
       title: InvestigationStrategyData
       description: Investigation strategy details for INVESTIGATING phase.
+    JournalEntry:
+      properties:
+        turn:
+          type: integer
+          title: Turn
+          description: Turn number when this entry was created
+        entry_type:
+          type: string
+          enum:
+          - finding
+          - decision
+          - user_context
+          - ruled_out
+          - blocker
+          - milestone
+          title: Entry Type
+          description: Type of journal entry
+        content:
+          type: string
+          maxLength: 200
+          title: Content
+          description: The distilled insight (max 200 chars)
+        evidence_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Evidence Id
+          description: Evidence ID this entry relates to, if any
+        hypothesis_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Hypothesis Id
+          description: Hypothesis ID this entry relates to, if any
+      type: object
+      required:
+      - turn
+      - entry_type
+      - content
+      title: JournalEntry
+      description: 'A single entry in the investigation journal.
+
+
+        Captures a distilled insight, decision, or context that the agent
+
+        needs to remember across the entire investigation. Entries are
+
+        append-only and always included in the LLM context.'
     KnowledgeBaseDocument:
       properties:
         document_id:
@@ -11666,7 +11459,6 @@ components:
       - resolution_summary
       - closure_summary
       - runbook
-      - mitigation_playbook
       title: ReportType
       description: Type of case documentation report
     ReportUpdateRequest:
@@ -12413,18 +12205,6 @@ components:
       - uploaded_at_turn
       title: SourceFileReference
       description: Reference to source file that evidence was derived from.
-    StorageBackend:
-      type: string
-      enum:
-      - local_filesystem
-      - s3
-      - azure_blob
-      - gcs
-      title: StorageBackend
-      description: 'Storage backend types.
-
-
-        Defines where evidence files are stored.'
     SuggestedActionResponse:
       properties:
         label:
@@ -12453,6 +12233,11 @@ components:
             type: array
           - type: 'null'
           title: Hints
+        intent:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Intent
       type: object
       required:
       - label
