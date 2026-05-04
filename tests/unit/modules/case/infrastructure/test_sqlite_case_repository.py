@@ -16,6 +16,7 @@ Coverage:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock
@@ -1264,12 +1265,12 @@ class TestCheckpoints:
 
 
 # ============================================================
-# Stubbed operations (share, agent executions)
+# Stubbed operations (case sharing — out of scope for SQLite)
 # ============================================================
 
 
 class TestStubbedOperations:
-    """Stubbed methods should raise NotImplementedError to signal unsupported-in-SQLite."""
+    """share_case et al remain NotImplementedError in SQLite."""
 
     @pytest.mark.asyncio
     async def test_share_case_stub(self, repository):
@@ -1286,60 +1287,301 @@ class TestStubbedOperations:
         with pytest.raises(NotImplementedError):
             await repository.get_case_participants("c")
 
-    @pytest.mark.asyncio
-    async def test_create_agent_execution_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.create_agent_execution(object())
+
+# ============================================================
+# Agent execution & tool call persistence
+# ============================================================
+
+
+class TestAgentExecutionPersistence:
+    """Round-trip tests for the 11 agent_execution / agent_tool_call methods."""
+
+    @staticmethod
+    def _make_execution(case_id: str, organization_id: str = "org_alpha", **overrides):
+        from faultmaven.modules.case.domain.owned_models.agent_execution import (
+            AgentExecution,
+            AgentType,
+            ExecutionStatus,
+        )
+
+        kwargs = {
+            "execution_id": f"exec_{uuid4().hex[:12]}",
+            "case_id": case_id,
+            "organization_id": organization_id,
+            "agent_type": AgentType.INVESTIGATOR,
+            "agent_model": "gpt-4",
+            "status": ExecutionStatus.QUEUED,
+            "prompt": "Investigate this issue",
+            "tool_calls": [],
+        }
+        kwargs.update(overrides)
+        return AgentExecution(**kwargs)
+
+    @staticmethod
+    def _make_tool_call(
+        execution_id: str, organization_id: str = "org_alpha", **overrides
+    ):
+        from faultmaven.modules.case.domain.owned_models.agent_execution import (
+            AgentToolCall,
+        )
+
+        kwargs = {
+            "tool_call_id": f"tc_{uuid4().hex[:12]}",
+            "execution_id": execution_id,
+            "organization_id": organization_id,
+            "tool_name": "web_search",
+            "tool_input": {"query": "redis latency"},
+            "status": "pending",
+        }
+        kwargs.update(overrides)
+        return AgentToolCall(**kwargs)
 
     @pytest.mark.asyncio
-    async def test_get_agent_execution_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.get_agent_execution("x")
+    async def test_create_then_get_round_trips_all_fields(self, repository):
+        case = _make_case()
+        await repository.save(case)
+
+        execution = self._make_execution(
+            case.case_id,
+            organization_id=case.organization_id,
+            metadata={"session_id": "sess_xyz", "scope": "team"},
+            token_usage={
+                "prompt_tokens": 12,
+                "completion_tokens": 34,
+                "total_tokens": 46,
+            },
+        )
+        execution.mark_started()
+        saved = await repository.create_agent_execution(execution)
+        assert saved.execution_id == execution.execution_id
+        assert saved.organization_id == case.organization_id
+
+        loaded = await repository.get_agent_execution(execution.execution_id)
+        assert loaded is not None
+        assert loaded.case_id == case.case_id
+        assert loaded.organization_id == case.organization_id
+        assert loaded.agent_model == "gpt-4"
+        assert loaded.token_usage == {
+            "prompt_tokens": 12,
+            "completion_tokens": 34,
+            "total_tokens": 46,
+        }
+        assert loaded.metadata == {"session_id": "sess_xyz", "scope": "team"}
+        assert loaded.tool_calls == []
 
     @pytest.mark.asyncio
-    async def test_list_agent_executions_by_case_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.list_agent_executions_by_case("c")
+    async def test_create_falls_back_to_case_organization_when_omitted(
+        self, repository
+    ):
+        """Production path provides org_id explicitly; legacy path falls back."""
+        case = _make_case(organization_id="org_legacy")
+        await repository.save(case)
+
+        execution = self._make_execution(case.case_id, organization_id=None)
+        saved = await repository.create_agent_execution(execution)
+        assert saved.organization_id == "org_legacy"
 
     @pytest.mark.asyncio
-    async def test_list_agent_executions_by_session_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.list_agent_executions_by_session("s")
+    async def test_create_raises_when_case_missing_and_org_id_unset(self, repository):
+        execution = self._make_execution("case_does_not_exist", organization_id=None)
+        with pytest.raises(RepositoryException, match="Cannot resolve organization_id"):
+            await repository.create_agent_execution(execution)
 
     @pytest.mark.asyncio
-    async def test_update_agent_execution_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.update_agent_execution(object())
+    async def test_get_returns_none_for_unknown_execution(self, repository):
+        assert await repository.get_agent_execution("missing") is None
 
     @pytest.mark.asyncio
-    async def test_delete_agent_execution_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.delete_agent_execution("x")
+    async def test_update_mutates_status_and_response(self, repository):
+        from faultmaven.modules.case.domain.owned_models.agent_execution import (
+            ExecutionStatus,
+        )
+
+        case = _make_case()
+        await repository.save(case)
+        execution = self._make_execution(
+            case.case_id, organization_id=case.organization_id
+        )
+        await repository.create_agent_execution(execution)
+
+        execution.mark_completed("Final response")
+        execution.set_token_usage(prompt_tokens=10, completion_tokens=20)
+        await repository.update_agent_execution(execution)
+
+        loaded = await repository.get_agent_execution(execution.execution_id)
+        assert loaded.status == ExecutionStatus.COMPLETED
+        assert loaded.response == "Final response"
+        assert loaded.token_usage["total_tokens"] == 30
 
     @pytest.mark.asyncio
-    async def test_create_agent_tool_call_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.create_agent_tool_call(object())
+    async def test_update_unknown_raises(self, repository):
+        execution = self._make_execution("case_x")
+        with pytest.raises(RepositoryException, match="not found"):
+            await repository.update_agent_execution(execution)
 
     @pytest.mark.asyncio
-    async def test_update_agent_tool_call_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.update_agent_tool_call(object())
+    async def test_delete_removes_execution_and_cascades_tool_calls(self, repository):
+        case = _make_case()
+        await repository.save(case)
+        execution = self._make_execution(
+            case.case_id, organization_id=case.organization_id
+        )
+        await repository.create_agent_execution(execution)
+        tc = self._make_tool_call(
+            execution.execution_id, organization_id=case.organization_id
+        )
+        await repository.create_agent_tool_call(tc)
+
+        deleted = await repository.delete_agent_execution(execution.execution_id)
+        assert deleted is True
+        assert await repository.get_agent_execution(execution.execution_id) is None
+        # Tool call should be removed via explicit two-phase delete (SQLite FK
+        # cascades aren't enforced because the foreign_keys pragma is off).
+        assert (
+            await repository.get_agent_tool_calls_for_execution(execution.execution_id)
+            == []
+        )
 
     @pytest.mark.asyncio
-    async def test_get_agent_tool_calls_for_execution_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.get_agent_tool_calls_for_execution("x")
+    async def test_delete_returns_false_for_missing_execution(self, repository):
+        assert await repository.delete_agent_execution("missing") is False
 
     @pytest.mark.asyncio
-    async def test_count_agent_executions_by_case_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.count_agent_executions_by_case("c")
+    async def test_create_and_update_tool_call(self, repository):
+        case = _make_case()
+        await repository.save(case)
+        execution = self._make_execution(
+            case.case_id, organization_id=case.organization_id
+        )
+        await repository.create_agent_execution(execution)
+
+        tc = self._make_tool_call(
+            execution.execution_id, organization_id=case.organization_id
+        )
+        tc.mark_started()
+        await repository.create_agent_tool_call(tc)
+
+        tc.mark_success({"result": "ok"})
+        await repository.update_agent_tool_call(tc)
+
+        loaded = await repository.get_agent_tool_calls_for_execution(
+            execution.execution_id
+        )
+        assert len(loaded) == 1
+        assert loaded[0].status == "success"
+        assert loaded[0].tool_output == {"result": "ok"}
+        assert loaded[0].duration_ms is not None and loaded[0].duration_ms >= 0
 
     @pytest.mark.asyncio
-    async def test_get_latest_agent_execution_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.get_latest_agent_execution("c")
+    async def test_create_tool_call_falls_back_to_execution_organization(
+        self, repository
+    ):
+        case = _make_case(organization_id="org_legacy")
+        await repository.save(case)
+        execution = self._make_execution(
+            case.case_id, organization_id=case.organization_id
+        )
+        await repository.create_agent_execution(execution)
+
+        tc = self._make_tool_call(execution.execution_id, organization_id=None)
+        saved = await repository.create_agent_tool_call(tc)
+        assert saved.organization_id == "org_legacy"
+
+    @pytest.mark.asyncio
+    async def test_list_by_case_paginates_and_filters(self, repository):
+        from faultmaven.modules.case.domain.owned_models.agent_execution import (
+            AgentType,
+            ExecutionStatus,
+        )
+
+        case = _make_case()
+        await repository.save(case)
+        for i in range(3):
+            ex = self._make_execution(
+                case.case_id,
+                organization_id=case.organization_id,
+                agent_type=(AgentType.INVESTIGATOR if i < 2 else AgentType.RESEARCHER),
+                status=(
+                    ExecutionStatus.COMPLETED if i == 0 else ExecutionStatus.QUEUED
+                ),
+            )
+            await repository.create_agent_execution(ex)
+
+        all_execs, total = await repository.list_agent_executions_by_case(case.case_id)
+        assert total == 3
+        assert len(all_execs) == 3
+
+        completed, count = await repository.list_agent_executions_by_case(
+            case.case_id, status="completed"
+        )
+        assert count == 1
+        assert completed[0].status == ExecutionStatus.COMPLETED
+
+        researchers, count = await repository.list_agent_executions_by_case(
+            case.case_id, agent_type="researcher"
+        )
+        assert count == 1
+        assert researchers[0].agent_type == AgentType.RESEARCHER
+
+        page, total = await repository.list_agent_executions_by_case(
+            case.case_id, limit=2, offset=0
+        )
+        assert total == 3
+        assert len(page) == 2
+
+    @pytest.mark.asyncio
+    async def test_list_by_session_uses_session_id_column(self, repository):
+        case = _make_case()
+        await repository.save(case)
+        ex_in_session = self._make_execution(
+            case.case_id,
+            organization_id=case.organization_id,
+            metadata={"session_id": "sess_target"},
+        )
+        await repository.create_agent_execution(ex_in_session)
+
+        ex_other = self._make_execution(
+            case.case_id, organization_id=case.organization_id
+        )
+        await repository.create_agent_execution(ex_other)
+
+        result, total = await repository.list_agent_executions_by_session("sess_target")
+        assert total == 1
+        assert result[0].execution_id == ex_in_session.execution_id
+
+    @pytest.mark.asyncio
+    async def test_count_and_latest(self, repository):
+        from faultmaven.modules.case.domain.owned_models.agent_execution import (
+            AgentType,
+        )
+
+        case = _make_case()
+        await repository.save(case)
+        first = self._make_execution(case.case_id, organization_id=case.organization_id)
+        await repository.create_agent_execution(first)
+
+        await asyncio.sleep(0.01)  # ensure created_at differs
+        second = self._make_execution(
+            case.case_id,
+            organization_id=case.organization_id,
+            agent_type=AgentType.RESEARCHER,
+        )
+        await repository.create_agent_execution(second)
+
+        assert await repository.count_agent_executions_by_case(case.case_id) == 2
+        latest = await repository.get_latest_agent_execution(case.case_id)
+        assert latest is not None
+        assert latest.execution_id == second.execution_id
+
+        researcher_latest = await repository.get_latest_agent_execution(
+            case.case_id, agent_type="researcher"
+        )
+        assert researcher_latest is not None
+        assert researcher_latest.execution_id == second.execution_id
+
+    @pytest.mark.asyncio
+    async def test_count_zero_for_empty_case(self, repository):
+        assert await repository.count_agent_executions_by_case("case_empty") == 0
 
 
 # ============================================================
