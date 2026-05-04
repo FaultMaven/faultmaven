@@ -75,11 +75,11 @@ All data submitted to the API is processed through privacy-first pipelines with:
 - **Throughput**: Supports 100+ concurrent requests
 - **Availability**: 99.9% uptime target with health monitoring
 - **Scalability**: Horizontal scaling support via stateless design
+        
 
-
-**Version:** 1.0.0
-**Base URL:** `/`
-**Generated:** 2026-02-11T07:42:01.351963Z
+**Version:** 1.0.0  
+**Base URL:** `/`  
+**Generated:** 2026-05-04T19:28:24.785550Z
 
 ## Authentication
 
@@ -112,6 +112,435 @@ Trigger comprehensive system cleanup and optimization.
 **Responses:**
 
 **200** - Successful Response
+
+---
+
+### `/api/v1/admin/config/status`
+
+#### GET
+
+**Get Env Config Status**
+
+Get environment configuration status (read-only).
+
+Returns the current deployment configuration including auth mode,
+storage backends, and security settings. This is informational only —
+configuration changes require editing environment variables and restarting.
+
+Returns:
+    EnvConfigStatusResponse with current environment configuration
+
+Raises:
+    401 Unauthorized: No valid JWT token
+
+**Tags:** `Admin - Configuration`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/admin/debug/llm-routing`
+
+#### GET
+
+**Get Llm Routing Health**
+
+Get LLM provider health and routing status (admin only).
+
+Returns detailed health metrics for all LLM providers including:
+- Current health status (HEALTHY, DEGRADED, UNHEALTHY, UNKNOWN)
+- Consecutive failure counts
+- Average latency
+- Sticky routing status
+- Last success/failure timestamps
+
+Returns:
+    Dict with provider health summary and routing configuration
+
+Raises:
+    401 Unauthorized: No valid JWT token
+    403 Forbidden: User lacks admin role
+    503 Service Unavailable: LLM provider not configured
+
+**Tags:** `Admin - User Management`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/admin/llm/config`
+
+#### GET
+
+**Get Llm Config**
+
+Get LLM provider configuration and status.
+
+Returns the current primary provider, fallback chain, and per-provider
+status including health, connectivity, and available models. API keys
+are never exposed — only a boolean indicating whether one is configured.
+
+Available to any authenticated user (local deployment) or admin (cloud).
+Route-level access control is handled by the dashboard's LLMConfigRoute guard.
+
+Returns:
+    LLMConfigResponse with provider details and fallback chain
+
+Raises:
+    401 Unauthorized: No valid JWT token
+    503 Service Unavailable: LLM provider not initialized
+
+**Tags:** `Admin - Configuration`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+#### PUT
+
+**Update Llm Config**
+
+Update LLM provider configuration.
+
+Persists configuration changes to the database as overrides that take
+precedence over environment variables. After saving, the settings
+singleton and provider registry are reset so changes take effect
+immediately without a restart.
+
+Accepts partial updates — only provided fields are changed.
+
+Returns:
+    LLMConfigUpdateResponse with list of updated keys
+
+Raises:
+    401 Unauthorized: No valid JWT token
+    403 Forbidden: Local deployment (config is read-only)
+    422 Unprocessable Entity: Invalid provider name
+    503 Service Unavailable: LLM provider not initialized
+
+**Tags:** `Admin - Configuration`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/admin/llm/config/test`
+
+#### POST
+
+**Check Llm Connection**
+
+Test connectivity to a specific LLM provider.
+
+Sends a minimal prompt to the specified provider to verify that:
+1. The API key is valid
+2. The provider endpoint is reachable
+3. The configured model responds
+
+This does NOT use the fallback chain — it tests the specific provider directly.
+
+Returns:
+    LLMConnectionTestResponse with connectivity result and latency
+
+Raises:
+    401 Unauthorized: No valid JWT token
+    422 Unprocessable Entity: Unknown provider name
+    503 Service Unavailable: LLM provider not initialized
+
+**Tags:** `Admin - Configuration`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/admin/users`
+
+#### GET
+
+**List Users**
+
+List all users in organization (admin only).
+
+Returns paginated list of users with filtering options.
+Admin can only see users in their own organization.
+
+Query Parameters:
+    is_active: Filter by active/inactive status
+    role: Filter by role (admin, member, viewer)
+    search: Search email or full_name (case-insensitive, partial match)
+    limit: Max results per page (default 50, max 100)
+    offset: Pagination offset
+
+Returns:
+    AdminUserListResponse with users, total, limit, offset
+
+Raises:
+    401 Unauthorized: No valid JWT token
+    403 Forbidden: User lacks admin role
+    422 Unprocessable Entity: Invalid query parameters
+
+**Tags:** `Admin - User Management`
+
+**Parameters:**
+
+- `is_active` (query) ❌ - Filter by active/inactive status
+- `role` (query) ❌ - Filter by role (admin, member, viewer)
+- `search` (query) ❌ - Search email or full_name (case-insensitive)
+- `limit` (query) ❌ - Max results per page
+- `offset` (query) ❌ - Pagination offset
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/admin/users/{user_id}`
+
+#### GET
+
+**Get User Details**
+
+Get detailed user information (admin only).
+
+Returns complete user information including derived permissions.
+Admin can only view users in their own organization.
+
+Path Parameters:
+    user_id: User ID to retrieve
+
+Returns:
+    UserDetailResponse with full user details
+
+Raises:
+    401 Unauthorized: No valid JWT token
+    403 Forbidden: User lacks admin role OR user belongs to different organization
+    404 Not Found: User does not exist
+
+**Tags:** `Admin - User Management`
+
+**Parameters:**
+
+- `user_id` (path) ✅ - User ID to retrieve
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/admin/users/{user_id}/activate`
+
+#### POST
+
+**Activate User**
+
+Activate user account (admin only).
+
+Sets user is_active=True. User can log in after activation.
+
+Path Parameters:
+    user_id: User ID to activate
+
+Returns:
+    UserStatusResponse confirming activation
+
+Raises:
+    401 Unauthorized: No valid JWT token
+    403 Forbidden: User lacks admin role
+    404 Not Found: User does not exist
+    409 Conflict: User already active
+
+**Tags:** `Admin - User Management`
+
+**Parameters:**
+
+- `user_id` (path) ✅ - User ID to activate
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/admin/users/{user_id}/deactivate`
+
+#### POST
+
+**Deactivate User**
+
+Deactivate user account (admin only).
+
+Sets user is_active=False and revokes all JWT tokens.
+Admin cannot deactivate themselves.
+
+Path Parameters:
+    user_id: User ID to deactivate
+
+Returns:
+    UserStatusResponse confirming deactivation
+
+Raises:
+    401 Unauthorized: No valid JWT token
+    403 Forbidden: User lacks admin role OR trying to deactivate self
+    404 Not Found: User does not exist
+    409 Conflict: User already deactivated
+
+**Tags:** `Admin - User Management`
+
+**Parameters:**
+
+- `user_id` (path) ✅ - User ID to deactivate
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/admin/users/{user_id}/roles`
+
+#### POST
+
+**Assign Role**
+
+Assign role to user (admin only).
+
+Replaces existing roles with the new role. Revokes all JWT tokens.
+Admin cannot modify their own roles.
+
+Path Parameters:
+    user_id: User ID to assign role to
+
+Request Body:
+    role: Role to assign (admin, member, viewer)
+
+Returns:
+    RoleAssignmentResponse confirming role assignment
+
+Raises:
+    401 Unauthorized: No valid JWT token
+    403 Forbidden: User lacks admin role OR trying to modify own roles
+    404 Not Found: User does not exist
+    409 Conflict: User already has this role
+    422 Unprocessable Entity: Invalid role
+
+**Tags:** `Admin - User Management`
+
+**Parameters:**
+
+- `user_id` (path) ✅ - User ID to assign role to
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/admin/users/{user_id}/roles/{role}`
+
+#### DELETE
+
+**Remove Role**
+
+Remove role from user (admin only).
+
+Downgrades user to viewer (minimum privilege). Revokes all JWT tokens.
+Admin cannot remove their own admin role.
+
+Path Parameters:
+    user_id: User ID to remove role from
+    role: Role to remove (admin, member)
+
+Returns:
+    RoleAssignmentResponse confirming role removal
+
+Raises:
+    401 Unauthorized: No valid JWT token
+    403 Forbidden: User lacks admin role OR trying to remove own admin role
+    404 Not Found: User does not exist OR user doesn't have this role
+    422 Unprocessable Entity: Invalid role or attempting to remove viewer role
+
+**Tags:** `Admin - User Management`
+
+**Parameters:**
+
+- `user_id` (path) ✅ - User ID to remove role from
+- `role` (path) ✅ - Role to remove (admin, member)
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
 
 ---
 
@@ -561,7 +990,7 @@ Returns CaseListResponse with:
 
 Default Filtering Behavior:
 - INCLUDES empty cases (current_turn == 0) - newly created cases are visible
-- EXCLUDES archived/closed cases unless include_archived=true
+- INCLUDES closed/resolved cases (frontend categorizes by status)
 - Use include_empty=false to hide cases with no conversation yet
 - Use status filter to further refine results
 
@@ -640,7 +1069,7 @@ including connectivity and performance metrics.
 
 Search cases by content
 
-Searches case titles, descriptions, case IDs, and optionally message content
+Searches case titles, descriptions, and optionally message content
 for the specified query terms.
 
 **Tags:** `cases`
@@ -855,6 +1284,35 @@ resolution time, and other case metrics.
 
 ---
 
+### `/api/v1/cases/{case_id}/archive`
+
+#### POST
+
+**Archive Case**
+
+Archive a case — hide it from the default list view.
+
+Only terminal cases (RESOLVED or CLOSED) can be archived.
+Archived cases remain fully accessible and can be unarchived.
+
+Returns:
+    {"case_id": str, "is_archived": true}
+
+**Tags:** `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
 ### `/api/v1/cases/{case_id}/close`
 
 #### POST
@@ -918,8 +1376,21 @@ Always returns 200 with empty array if no data exists.
 
 #### POST
 
-> **REMOVED (2026-02-22)**: This endpoint has been replaced by `POST /cases/{case_id}/turns`.
-> Returns `410 Gone`. See the unified turns endpoint below.
+**Upload Case Data Gone**
+
+DELETED: Use POST /{case_id}/turns with file attachments instead.
+
+**Tags:** `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
 
 ---
 
@@ -1020,6 +1491,48 @@ Retrieve detailed evidence information including source file reference and hypot
 
 ---
 
+### `/api/v1/cases/{case_id}/evidence/{evidence_id}/classification`
+
+#### PATCH
+
+**Reclassify Evidence**
+
+Reclassify an existing evidence row under a user-specified data type.
+
+Phase 1.5 — the escape hatch for "the classifier was confidently
+wrong". Re-runs the preprocessing pipeline on the stored raw file
+with ``user_override=data_type``, overwrites the evidence's
+structural index, and appends to its extractor.attempts history.
+
+Gated by ``FAULTMAVEN_RECLASSIFY_ENABLED``. Returns 404 when the
+flag is off so the endpoint is invisible in production by default.
+
+Error responses:
+
+- ``404`` — feature disabled, case not found, or evidence not in case.
+- ``409`` — evidence has no ``content_ref`` (can't re-extract).
+- ``400`` — invalid ``data_type`` string, or missing ``data_type``.
+
+**Tags:** `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `evidence_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
 ### `/api/v1/cases/{case_id}/extract-knowledge`
 
 #### POST
@@ -1099,83 +1612,23 @@ Get all participants who have access to this case.
 
 ### `/api/v1/cases/{case_id}/queries`
 
-#### GET
+#### POST
 
-**List Case Queries**
+**Submit Case Query Gone**
 
-List queries for a specific case with pagination.
-
-CRITICAL: Must return 200 [] for empty results, NOT 404
+DELETED: Use POST /{case_id}/turns instead.
 
 **Tags:** `cases`
 
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
-- `limit` (query) ❌ - No description
-- `offset` (query) ❌ - No description
-- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
 **200** - Successful Response
 
 **422** - Validation Error
-
----
-
-#### POST
-
-> **REMOVED (2026-02-22)**: This endpoint has been replaced by `POST /cases/{case_id}/turns`.
-> Returns `410 Gone`. See the unified turns endpoint below.
-
----
-
-### `/api/v1/cases/{case_id}/turns`
-
-#### POST
-
-**Submit Turn**
-
-Submit a turn to a case investigation. Replaces the old `/queries` and `/data` endpoints.
-
-A turn consists of an optional query and/or optional attachments. Attachments are
-preprocessed through Tier 0+1 before the LLM sees them. If no query is provided
-with attachments, an implicit query is generated.
-
-**Tags:** `cases`
-
-**Parameters:**
-
-- `case_id` (path) ✅ - Case identifier
-- `Authorization` (header) ✅ - Bearer token
-
-**Request Body:**
-
-Content-Type: `multipart/form-data`
-
-- `query` (string, optional) - User's message text
-- `files` (file[], optional) - File attachments
-- `pasted_content` (string, optional) - Pasted text data (treated as attachment)
-- `intent_type` (string, optional) - Intent type (conversation, status_transition, confirmation, hypothesis_action)
-- `intent_data` (string, optional) - JSON-encoded intent metadata
-
-**Responses:**
-
-**200** - TurnResponse with:
-- `agent_response`: Agent's response text
-- `turn_number`: Current turn number
-- `milestones_completed`: List of completed milestone names
-- `case_status`: Current case status
-- `progress_made`: Whether investigation progressed
-- `is_stuck`: Whether investigation is stuck
-- `attachments_processed`: List of AttachmentResult objects
-
-**404** - Case not found
-
-**422** - Validation Error
-
-**503** - Investigation service unavailable
 
 ---
 
@@ -1192,8 +1645,8 @@ intelligent runbook suggestions based on similarity search of existing
 runbooks (both incident-driven and document-driven sources).
 
 Recommendation Logic:
-- Always available: Resolution Summary / Closure Summary (auto-generated at terminal transition)
-- Conditional: Runbook (based on readiness + similarity search)
+- Always available: Incident Report, Post-Mortem (unique per incident)
+- Conditional: Runbook (based on similarity search)
     - ≥85% similarity: Recommend reuse existing runbook
     - 70-84% similarity: Offer both review OR generate options
     - <70% similarity: Recommend generate new runbook
@@ -1237,7 +1690,7 @@ Retrieve generated reports for a case.
 Args:
     case_id: Case identifier
     include_history: If True, return all report versions; if False, only current
-    report_type: Optional filter by report type (incident_report, runbook, post_mortem)
+    report_type: Optional filter by report type (resolution_summary, closure_summary, runbook)
 
 Returns:
     List of CaseReport objects
@@ -1263,7 +1716,10 @@ Returns:
 
 **Generate Case Reports**
 
-Generate case documentation reports.
+Regenerate reports for a terminal case.
+
+Reports are auto-generated when a case reaches terminal state.
+This endpoint allows regeneration if the original was missing or needs refresh.
 
 **Tags:** `cases`
 
@@ -1945,6 +2401,37 @@ Content-Type: `application/json`
 
 ---
 
+### `/api/v1/cases/{case_id}/turns`
+
+#### POST
+
+**Submit Turn**
+
+Submit a turn to a case investigation.
+
+A turn consists of an optional query and/or optional attachments.
+Attachments are preprocessed through Tier 0+1 before the LLM sees them.
+If no query is provided with attachments, an implicit query is generated.
+
+**Tags:** `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `multipart/form-data`
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
 ### `/api/v1/cases/{case_id}/ui`
 
 #### GET
@@ -1960,6 +2447,32 @@ Returns different response schemas based on case status:
 
 This endpoint eliminates multiple API calls by returning all UI state
 in a single response optimized for the current investigation phase.
+
+**Tags:** `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/unarchive`
+
+#### POST
+
+**Unarchive Case**
+
+Unarchive a case — restore it to the default list view.
+
+Returns:
+    {"case_id": str, "is_archived": false}
 
 **Tags:** `cases`
 
@@ -2023,239 +2536,6 @@ Retrieve detailed information about an uploaded file including all evidence deri
 
 ---
 
-### `/api/v1/evidence`
-
-#### GET
-
-**List Evidence**
-
-List evidence with optional filters.
-
-Args:
-    case_id: Filter by case UUID
-    uploaded_by: Filter by uploader user ID
-    tags: Filter by tags (comma-separated)
-    filename_contains: Filter by filename substring
-    limit: Max results (default 50, max 200)
-    offset: Pagination offset
-    current_user: Authenticated user
-    service: Evidence service
-
-Returns:
-    List of evidence records
-
-**Tags:** `evidence`
-
-**Parameters:**
-
-- `case_id` (query) ❌ - No description
-- `uploaded_by` (query) ❌ - No description
-- `tags` (query) ❌ - No description
-- `filename_contains` (query) ❌ - No description
-- `limit` (query) ❌ - No description
-- `offset` (query) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-#### POST
-
-**Upload Evidence**
-
-Upload evidence file.
-
-Args:
-    file: Evidence file to upload
-    description: Optional description of the evidence
-    tags: Optional comma-separated tags
-    case_id: Optional case UUID to auto-link
-    current_user: Authenticated user
-    service: Evidence service
-
-Returns:
-    Created evidence record
-
-**Tags:** `evidence`
-
-**Request Body:**
-
-Content-Type: `multipart/form-data`
-
-**Responses:**
-
-**201** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/evidence/case/{case_id}`
-
-#### GET
-
-**Get Evidence For Case**
-
-Get all evidence linked to a specific case.
-
-Args:
-    case_id: Case UUID
-    current_user: Authenticated user
-    service: Evidence service
-
-Returns:
-    List of evidence records for the case
-
-**Tags:** `evidence`
-
-**Parameters:**
-
-- `case_id` (path) ✅ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/evidence/{evidence_id}`
-
-#### GET
-
-**Get Evidence**
-
-Get evidence details by ID.
-
-Args:
-    evidence_id: Evidence UUID
-    current_user: Authenticated user
-    service: Evidence service
-
-Returns:
-    Evidence record
-
-Raises:
-    HTTPException: 404 if evidence not found, 503 if service unavailable
-
-**Tags:** `evidence`
-
-**Parameters:**
-
-- `evidence_id` (path) ✅ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-#### DELETE
-
-**Delete Evidence**
-
-Delete evidence file and record.
-
-Args:
-    evidence_id: Evidence UUID
-    current_user: Authenticated user
-    service: Evidence service
-
-Raises:
-    HTTPException: 404 if evidence not found, 503 if service unavailable
-
-**Tags:** `evidence`
-
-**Parameters:**
-
-- `evidence_id` (path) ✅ - No description
-
-**Responses:**
-
-**204** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/evidence/{evidence_id}/download`
-
-#### GET
-
-**Download Evidence**
-
-Download evidence file.
-
-Args:
-    evidence_id: Evidence UUID
-    current_user: Authenticated user
-    service: Evidence service
-
-Returns:
-    Redirect to download URL
-
-Raises:
-    HTTPException: 404 if evidence not found, 503 if service unavailable
-
-**Tags:** `evidence`
-
-**Parameters:**
-
-- `evidence_id` (path) ✅ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/evidence/{evidence_id}/link`
-
-#### POST
-
-**Link Evidence To Case**
-
-Link evidence to a case.
-
-Args:
-    evidence_id: Evidence UUID
-    link_request: Case ID to link to
-    current_user: Authenticated user
-    service: Evidence service
-
-Returns:
-    Updated evidence record
-
-Raises:
-    HTTPException: 404 if evidence not found
-
-**Tags:** `evidence`
-
-**Parameters:**
-
-- `evidence_id` (path) ✅ - No description
-
-**Request Body:**
-
-Content-Type: `application/json`
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
 ### `/api/v1/knowledge/analytics/search`
 
 #### GET
@@ -2272,6 +2552,205 @@ Get search analytics and insights.
 
 ---
 
+### `/api/v1/knowledge/conversions`
+
+#### GET
+
+**List Conversions**
+
+List the current user's conversion jobs.
+
+**Tags:** `knowledge-conversion`
+
+**Parameters:**
+
+- `limit` (query) ❌ - No description
+- `offset` (query) ❌ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/knowledge/conversions/by-case/{case_id}`
+
+#### GET
+
+**Get Conversion By Case**
+
+Get the conversion job and drafts for a specific case.
+
+**Tags:** `knowledge-conversion`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/knowledge/conversions/{conversion_id}`
+
+#### GET
+
+**Get Conversion**
+
+Get conversion job details with all drafts.
+
+**Tags:** `knowledge-conversion`
+
+**Parameters:**
+
+- `conversion_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}`
+
+#### PUT
+
+**Update Draft**
+
+Update draft content. Re-runs validation and quality scoring.
+
+**Tags:** `knowledge-conversion`
+
+**Parameters:**
+
+- `conversion_id` (path) ✅ - No description
+- `draft_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+#### DELETE
+
+**Delete Draft**
+
+Delete a conversion draft.
+
+**Tags:** `knowledge-conversion`
+
+**Parameters:**
+
+- `conversion_id` (path) ✅ - No description
+- `draft_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**204** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify`
+
+#### POST
+
+**Verify Draft**
+
+Promote draft to verified status and trigger ingestion into ChromaDB.
+
+**Tags:** `knowledge-conversion`
+
+**Parameters:**
+
+- `conversion_id` (path) ✅ - No description
+- `draft_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/knowledge/convert`
+
+#### POST
+
+**Convert Document**
+
+Upload a document and convert it to one or more runbook drafts.
+
+**Tags:** `knowledge-conversion`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `multipart/form-data`
+
+**Responses:**
+
+**201** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/knowledge/convert-from-case`
+
+#### POST
+
+**Convert From Case**
+
+Generate a runbook draft from a resolved case using the canonical template.
+
+The generated runbook enters the same draft workflow as document-driven
+conversions: edit → verify → ingest into KB.
+
+**Tags:** `knowledge-conversion`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**201** - Successful Response
+
+**422** - Validation Error
+
+---
+
 ### `/api/v1/knowledge/documents`
 
 #### GET
@@ -2283,6 +2762,7 @@ List knowledge base documents with optional filtering
 Args:
     document_type: Filter by document type
     tags: Filter by tags (comma-separated)
+    scope: Filter by scope (global, team, personal)
     limit: Maximum number of documents to return
     offset: Number of documents to skip
 
@@ -2295,8 +2775,10 @@ Returns:
 
 - `document_type` (query) ❌ - No description
 - `tags` (query) ❌ - No description
+- `scope` (query) ❌ - No description
 - `limit` (query) ❌ - No description
 - `offset` (query) ❌ - No description
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -2484,6 +2966,10 @@ and content, useful when semantic understanding is not required.
 
 **Tags:** `knowledge_base`
 
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
 **Request Body:**
 
 Content-Type: `application/json`
@@ -2617,25 +3103,96 @@ Returns:
 
 ---
 
-### `/api/v1/knowledge/jobs/{job_id}`
+### `/api/v1/knowledge/drafts`
 
 #### GET
 
-**Get Job Status**
+**List All Drafts**
 
-Get the status of a knowledge base ingestion job
+List all non-deleted drafts across all conversion jobs.
 
-Args:
-    job_id: Job identifier
-
-Returns:
-    Job status information
-
-**Tags:** `knowledge_base`
+**Tags:** `knowledge-conversion`
 
 **Parameters:**
 
-- `job_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/knowledge/drafts/verify-batch`
+
+#### POST
+
+**Verify Batch**
+
+Activate multiple drafts sequentially (verify + ingest into KB).
+
+**Tags:** `knowledge-conversion`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/knowledge/runbooks/create`
+
+#### POST
+
+**Create Runbook Manually**
+
+Create a runbook manually from template fields. Returns a draft for review.
+
+**Tags:** `knowledge-conversion`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**201** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/knowledge/scan`
+
+#### POST
+
+**Scan For Runbooks**
+
+Scan data/knowledge/ for .md files not tracked in the database.
+
+Discovers runbooks created by the KB Toolkit or placed on disk manually.
+Creates draft records so they appear in the Drafts tab for review.
+
+**Tags:** `knowledge-conversion`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -2660,6 +3217,10 @@ Returns:
     Search results
 
 **Tags:** `knowledge_base`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
 
 **Request Body:**
 
@@ -4150,77 +4711,22 @@ Check if user is member of team.
 
 ---
 
-### `/api/v1/admin/llm/config`
-
-#### GET
-
-**Get LLM Configuration**
-
-Returns the current primary provider, fallback chain, and per-provider status including health, connectivity, and available models. API keys are never exposed — only a boolean indicating whether one is configured.
-
-Available to any authenticated user. Dashboard-side route guard handles deployment-aware access control.
-
-**Auth:** Bearer token (any authenticated user)
-
-**Responses:**
-
-**200** - `LLMConfigResponse` with `primary_provider`, `strict_mode`, `fallback_chain`, and `providers` (map of provider name → `LLMProviderDetail`)
-
-**401** - Unauthorized
-
-**503** - LLM provider not initialized
-
----
-
-### `/api/v1/admin/llm/config/test`
-
-#### POST
-
-**Test LLM Provider Connection**
-
-Sends a minimal prompt to the specified provider to verify API key validity, endpoint reachability, and model response. Does NOT use the fallback chain — tests the specific provider directly.
-
-**Auth:** Bearer token (any authenticated user)
-
-**Request Body:** `LLMConnectionTestRequest` — `{ "provider": "anthropic" }`
-
-**Responses:**
-
-**200** - `LLMConnectionTestResponse` with `connected`, `response_time_ms`, `model_used`, `error_message`
-
-**401** - Unauthorized
-
-**422** - Unknown provider name
-
-**503** - LLM provider not initialized
-
----
-
-### `/api/v1/admin/config/status`
-
-#### GET
-
-**Get Environment Configuration Status**
-
-Returns the current deployment configuration including auth mode, storage backends, and security settings. Read-only — configuration changes require editing environment variables and restarting.
-
-**Auth:** Bearer token (any authenticated user)
-
-**Responses:**
-
-**200** - `EnvConfigStatusResponse` with `auth_mode`, `environment`, `db_backend`, `session_storage`, `vector_storage`, `llm_provider`, `pii_redaction_enabled`, `rate_limit_enabled`
-
-**401** - Unauthorized
-
----
-
 ### `/debug/config`
 
 #### GET
 
-**Debug Config** *(development only)*
+**Debug Config**
 
-Get current configuration summary including active preset. Not available in production — use `GET /api/v1/admin/config/status` instead.
+Get current configuration summary including active preset.
+
+Returns information about:
+- Active configuration preset (if any)
+- Environment settings
+- Storage backend types
+- LLM provider configuration
+- Protection settings
+
+Useful for debugging configuration issues and verifying preset application.
 
 **Responses:**
 
@@ -4232,7 +4738,7 @@ Get current configuration summary including active preset. Not available in prod
 
 #### GET
 
-**Debug Health** *(development only)*
+**Debug Health**
 
 Minimal debug health endpoint.
 
@@ -4246,9 +4752,9 @@ Minimal debug health endpoint.
 
 #### GET
 
-**Debug LLM Providers** *(development only)*
+**Debug Llm Providers**
 
-Get current LLM provider status and fallback chain. Not available in production — use `GET /api/v1/admin/llm/config` instead.
+Get current LLM provider status and fallback chain.
 
 **Responses:**
 
@@ -4260,7 +4766,7 @@ Get current LLM provider status and fallback chain. Not available in production 
 
 #### GET
 
-**Debug Routes** *(development only)*
+**Debug Routes**
 
 List all registered routes (path + methods).
 
@@ -4458,6 +4964,57 @@ Returns:
 
 ## Data Models
 
+### ActionAttempt
+
+Records a user's attempt to execute a ProposedAction.
+
+When the user submits results after executing (or attempting to execute)
+a proposed action, an ActionAttempt is created. Compliance detection
+analyzes the attempt to determine if stage-gate milestones should be set.
+
+**Properties:**
+
+- `attempt_id` (string) ❌ - Unique attempt identifier
+- `action_id` (string) ✅ - ProposedAction this attempt relates to
+- `user_message` (string) ✅ - The user's message containing attempt results
+- `submitted_at` (string) ❌ - When the attempt was submitted
+- `compliance_detected` (boolean) ❌ - Whether the user appears to have executed the proposed action
+- `compliance_confidence` (number) ❌ - Confidence that user complied with the proposed action
+
+---
+
+### AdminUserListItem
+
+User list item for admin endpoints (with full info).
+
+**Properties:**
+
+- `user_id` (string) ✅ - No description
+- `organization_id` (string) ✅ - No description
+- `email` (string) ✅ - No description
+- `full_name` (string) ✅ - No description
+- `roles` (array) ✅ - No description
+- `is_active` (boolean) ✅ - No description
+- `is_verified` (boolean) ✅ - No description
+- `last_login_at` (unknown) ❌ - No description
+- `created_at` (string) ✅ - No description
+- `updated_at` (string) ✅ - No description
+
+---
+
+### AdminUserListResponse
+
+Admin user list response with pagination.
+
+**Properties:**
+
+- `users` (array) ✅ - No description
+- `total` (integer) ✅ - No description
+- `limit` (integer) ✅ - No description
+- `offset` (integer) ✅ - No description
+
+---
+
 ### AgentExecutionRequest
 
 Request model for executing an AI agent.
@@ -4501,25 +5058,21 @@ Used when stream=false in the request.
 
 ---
 
-### AgentResponse
+### AttachmentResult
 
-The single, unified JSON payload returned from the backend (v3.1.0 - Evidence-Centric).
+Result of preprocessing a single attachment.
 
 **Properties:**
 
-- `schema_version` (string) ❌ - No description
-- `content` (string) ✅ - No description
-- `response_type` (unknown) ✅ - No description
-- `session_id` (string) ✅ - No description
-- `case_id` (unknown) ❌ - No description
-- `likelihood` (unknown) ❌ - No description
-- `sources` (array) ❌ - No description
-- `next_action_hint` (unknown) ❌ - No description
-- `view_state` (unknown) ❌ - No description
-- `plan` (unknown) ❌ - No description
-- `evidence_requests` (array) ❌ - Active evidence requests for this turn
-- `investigation_mode` (unknown) ❌ - Current investigation approach (speed vs depth)
-- `case_status` (unknown) ❌ - Current case investigation state
+- `evidence_id` (string) ✅ - No description
+- `filename` (string) ✅ - No description
+- `data_type` (string) ✅ - No description
+- `file_size` (integer) ✅ - No description
+- `processing_status` (string) ✅ - No description
+- `uploaded_at` (string) ❌ - ISO 8601 timestamp of when the attachment was processed
+- `source_type` (string) ❌ - Input origin: file_upload | text_paste | page_capture
+- `duplicate_of` (unknown) ❌ - If set, this attachment was a per-case content-hash duplicate of an earlier upload. No new Evidence was created; this field carries the existing evidence_id. Frontend should render a non-blocking toast.
+- `duplicate_turn` (unknown) ❌ - Turn number where the original was uploaded (for toast text).
 
 ---
 
@@ -4605,11 +5158,38 @@ Includes token, expiration, user information, and session ID.
 
 ---
 
+### BatchDraftRef
+
+**Properties:**
+
+- `conversion_id` (string) ✅ - No description
+- `draft_id` (string) ✅ - No description
+
+---
+
+### BatchVerifyRequest
+
+**Properties:**
+
+- `draft_ids` (array) ✅ - No description
+
+---
+
 ### Body_complete_session_api_v1_cases__case_id__sessions__session_id__complete_post
 
 **Properties:**
 
 - `findings_summary` (string) ✅ - No description
+
+---
+
+### Body_convert_document_api_v1_knowledge_convert_post
+
+**Properties:**
+
+- `file` (string) ✅ - No description
+- `scope` (string) ✅ - No description
+- `team_id` (unknown) ❌ - No description
 
 ---
 
@@ -4622,13 +5202,17 @@ Includes token, expiration, user information, and session ID.
 
 ---
 
-### Body_upload_case_data_api_v1_cases__case_id__data_post
+### Body_submit_turn_api_v1_cases__case_id__turns_post
 
 **Properties:**
 
-- `file` (string) ✅ - No description
-- `session_id` (unknown) ❌ - No description
-- `description` (unknown) ❌ - No description
+- `query` (unknown) ❌ - No description
+- `files` (array) ❌ - No description
+- `pasted_content` (unknown) ❌ - No description
+- `intent_type` (unknown) ❌ - No description
+- `intent_data` (unknown) ❌ - No description
+- `input_type` (unknown) ❌ - No description
+- `source_url` (unknown) ❌ - No description
 
 ---
 
@@ -4646,32 +5230,129 @@ Includes token, expiration, user information, and session ID.
 
 ---
 
-### Body_upload_evidence_api_v1_evidence_post
+### Case
+
+Root case entity.
+Represents one complete troubleshooting investigation.
 
 **Properties:**
 
-- `file` (string) ✅ - No description
-- `description` (unknown) ❌ - No description
-- `tags` (unknown) ❌ - No description
-- `case_id` (unknown) ❌ - No description
+- `case_id` (string) ❌ - Unique case identifier
+- `user_id` (string) ✅ - User who created the case
+- `organization_id` (string) ✅ - Organization this case belongs to
+- `title` (string) ✅ - Short case title for list views and headers (e.g., 'API Performance Issue')
+- `description` (string) ❌ - 
+        Confirmed problem description - canonical, user-facing, displayed prominently in UI.
+
+        Lifecycle:
+        1. Empty initially during INQUIRY (while agent formalizes problem)
+        2. Set when user confirms proposed_problem_statement and decides to investigate
+        3. Immutable after status becomes INVESTIGATING (provides stable reference)
+        4. Used for UI display, search, and documentation
+
+        Example: "API experiencing slowness with 30% of requests taking >5s response time
+                  across all US regions, started 2 hours ago coinciding with v2.1.3 deployment"
+        
+- `status` (unknown) ❌ - Current lifecycle status (phase or disposition)
+- `action_history` (array) ❌ - Complete history of case actions (phase transitions and dispositions)
+- `closure_reason` (unknown) ❌ - Why case was closed: resolved | abandoned | escalated | inquiry_only | duplicate | other
+- `pending_transition` (unknown) ❌ - 
+        Pending status transition awaiting user confirmation (User-Agent Handshake pattern).
+
+        Used for terminal transitions that require explicit user confirmation:
+        - to_status: Target status (str)
+        - reason: Why transition is being proposed (str)
+        - summary: Agent's explanation to user (str)
+        - evidence_ids: Supporting evidence (List[str])
+        - proposed_at: When transition was proposed (str ISO datetime)
+        - proposed_by: Who proposed it ("agent" | "user" | user_id)
+
+        Cleared after transition executes or is cancelled.
+        
+- `last_suggestions` (unknown) ❌ - COOPERATIVE suggestions with intent metadata from the last agent turn. Used by the intent resolver to match typed responses against offered choices. Updated after each turn; only suggestions carrying intent metadata are stored.
+- `kb_context` (unknown) ❌ - Deterministic KB pre-fetch results injected at key transitions. Populated at INQUIRY→INVESTIGATING (symptom search) and when root_cause_identified completes (remediation search). Included in the LLM context as historical suggestions, not absolute truths.
+- `progress` (unknown) ❌ - Milestone-based progress tracking
+- `current_turn` (integer) ❌ - Current turn number (increments with each user-agent exchange)
+- `turns_without_progress` (integer) ❌ - Consecutive turns with no milestone advancement (for stuck detection)
+- `turn_history` (array) ❌ - Complete history of all turns
+- `messages` (array) ❌ - 
+        Complete conversation history (user queries + agent responses).
+
+        Per case-storage-design.md Section 4.7, each message contains:
+        - message_id: str - Unique identifier
+        - case_id: str - Case this message belongs to
+        - turn_number: int - Which turn this message belongs to
+        - role: str - "user" | "assistant" | "system"
+        - content: str - The actual message text
+        - created_at: datetime - When message was created (ISO format)
+        - token_count: Optional[int] - Number of tokens in content
+        - metadata: dict - Additional data (sources, tools used, etc.)
+
+        NOTE: Does NOT contain session_id (per case-and-session-concepts.md)
+        Sessions provide authentication only, not message ownership.
+
+        Relationship to turn_history:
+        - messages[i].turn_number references turn_history[j].turn_number
+        - Provides the "what was said" to complement turn_history's "what happened"
+        
+- `message_count` (integer) ❌ - Total number of messages (user + agent combined)
+- `path_selection` (unknown) ❌ - Selected investigation path (MITIGATION vs ROOT_CAUSE)
+- `investigation_strategy` (unknown) ❌ - Investigation approach: ACTIVE_INCIDENT (speed) vs POST_MORTEM (thoroughness)
+- `inquiry` (unknown) ❌ - Pre-investigation INQUIRY status data
+- `problem_verification` (unknown) ❌ - Consolidated verification data (symptom, scope, timeline, changes)
+- `uploaded_files` (array) ❌ - 
+        All files uploaded to this case (raw file metadata).
+
+        Files can be uploaded at ANY phase (INQUIRY or INVESTIGATING).
+        Evidence is DERIVED from uploaded files after analysis during INVESTIGATING phase.
+
+        Difference from evidence:
+        - uploaded_files: Raw file metadata (file_id, filename, size, upload time)
+        - evidence: Investigation data linked to hypotheses (only in INVESTIGATING phase)
+        
+- `evidence` (array) ❌ - All evidence collected during investigation
+- `hypotheses` (object) ❌ - Generated hypotheses (key = hypothesis_id)
+- `solutions` (array) ❌ - Proposed and applied solutions
+- `proposed_actions` (array) ❌ - Actions proposed by agent for user to execute (evidence-driven framework)
+- `action_attempts` (array) ❌ - User attempts to execute proposed actions (compliance tracking)
+- `working_conclusion` (unknown) ❌ - Agent current best understanding (updated iteratively)
+- `root_cause_conclusion` (unknown) ❌ - Final root cause determination
+- `investigation_journal` (array) ❌ - Structured log of key findings, decisions, and context. Append-only. Always included in full in LLM context.
+- `escalation_state` (unknown) ❌ - Escalated to human expert
+- `documentation` (unknown) ❌ - Generated documentation and lessons learned
+- `created_at` (string) ❌ - When case was created
+- `updated_at` (string) ❌ - Last modification timestamp
+- `last_activity_at` (string) ❌ - Most recent user/agent interaction (for 'updated Xm ago' display)
+- `version` (integer) ❌ - Optimistic concurrency control token. Incremented on every successful aggregate save. Callers that read-modify-write a case must pass the loaded version back through save(case); `save` raises StaleCaseException on mismatch. Scoped single-row UPDATEs (update_evidence_vectorized, etc.) do NOT bump this field — they operate on child tables.
+- `resolved_at` (unknown) ❌ - When case reached RESOLVED status
+- `closed_at` (unknown) ❌ - When case reached terminal state (RESOLVED or CLOSED)
+- `is_archived` (boolean) ❌ - Whether the case has been archived by the user. Archived cases are hidden from the default list view but remain fully accessible. Independent of case status.
+- `archived_at` (unknown) ❌ - When the case was archived
 
 ---
 
-### Case
+### CaseAction
 
-Represents a troubleshooting case.
+Record of one case action (phase transition or disposition change).
+Provides audit trail for case lifecycle.
 
 **Properties:**
 
-- `case_id` (string) ✅ - No description
-- `title` (string) ✅ - No description
-- `description` (unknown) ❌ - No description
-- `status` (string) ❌ - No description
-- `priority` (string) ❌ - No description
-- `created_at` (string) ❌ - No description
-- `updated_at` (string) ❌ - No description
-- `message_count` (integer) ❌ - No description
-- `owner_id` (string) ✅ - No description
+- `from_status` (unknown) ✅ - Status before the action
+- `to_status` (unknown) ✅ - Status after the action
+- `triggered_at` (string) ❌ - When the action occurred
+- `triggered_by` (string) ✅ - Who triggered: user_id or 'system' for automatic actions
+- `reason` (string) ✅ - Human-readable reason for the action
+
+---
+
+### CaseConversionAPIRequest
+
+**Properties:**
+
+- `case_id` (string) ✅ - ID of the resolved case
+- `scope` (string) ❌ - KB scope: global, team, personal
+- `team_id` (unknown) ❌ - No description
 
 ---
 
@@ -4717,9 +5398,7 @@ Detailed case information for single case view.
 - `evidence_count` (integer) ✅ - No description
 - `hypothesis_count` (integer) ✅ - No description
 - `solution_count` (integer) ✅ - No description
-- `is_stuck` (boolean) ✅ - No description
 - `is_terminal` (boolean) ✅ - No description
-- `degraded_mode_active` (boolean) ✅ - No description
 - `escalated` (boolean) ✅ - No description
 - `valid_next_states` (array) ❌ - Allowed status transitions from current state for user-initiated changes
 
@@ -4754,51 +5433,6 @@ Enhanced response model for case message retrieval with debugging support.
 
 ---
 
-### ~~CaseQueryRequest~~ (REMOVED)
-
-> Removed in Unified Ingestion Pipeline (2026-02-22). Replaced by `TurnPayload` (internal dataclass).
-> Clients now use `POST /cases/{case_id}/turns` with multipart form data.
-
----
-
-### ~~CaseQueryResponse~~ (REMOVED)
-
-> Removed in Unified Ingestion Pipeline (2026-02-22). Replaced by `TurnResponse`.
-
----
-
-### TurnResponse
-
-Response for turn submission.
-
-Returned by `POST /cases/{case_id}/turns` endpoint.
-
-**Properties:**
-
-- `agent_response` (string) ✅ - Agent's response text
-- `turn_number` (integer) ✅ - Current turn number
-- `milestones_completed` (array) ✅ - Completed milestone names
-- `case_status` (CaseStatus) ✅ - Current case status
-- `progress_made` (boolean) ✅ - Whether investigation progressed
-- `is_stuck` (boolean) ✅ - Whether investigation is stuck
-- `attachments_processed` (AttachmentResult[]) ❌ - Results of preprocessed attachments
-
----
-
-### AttachmentResult
-
-Result of preprocessing a single attachment.
-
-**Properties:**
-
-- `evidence_id` (string) ✅ - Evidence ID created from the attachment
-- `filename` (string) ✅ - Original filename
-- `data_type` (string) ✅ - Classified data type (logs, metrics, etc.)
-- `file_size` (integer) ✅ - File size in bytes
-- `processing_status` (string) ✅ - Processing status (completed/failed)
-
----
-
 ### CaseReport
 
 Generated case documentation report (DR-005).
@@ -4821,6 +5455,7 @@ Supports DUAL runbook sources:
 - `is_current` (boolean) ❌ - Latest version for this report_type
 - `version` (integer) ❌ - Version number
 - `linked_to_closure` (boolean) ❌ - Linked to case closure
+- `auto_generated` (boolean) ❌ - True for auto-generated terminal summaries, False for user-requested reports
 - `metadata` (unknown) ❌ - Runbook-specific metadata
 
 ---
@@ -4841,29 +5476,18 @@ Request to search cases.
 
 ### CaseStatus
 
-Case lifecycle status.
+Case lifecycle status — passive label describing a case's current condition.
 
-Lifecycle Flow:
-  INQUIRY -> INVESTIGATING -> RESOLVED (terminal)
-                             -> CLOSED (terminal)
-           -> CLOSED (terminal)
+Values fall into two categories:
+- **Phases** (active work): INQUIRY, INVESTIGATING
+- **Dispositions** (terminal resolution): RESOLVED, CLOSED
 
-Terminal States: RESOLVED, CLOSED (no further transitions)
-
----
-
-### CaseStatusTransition
-
-Record of one status change.
-Provides audit trail for case lifecycle.
-
-**Properties:**
-
-- `from_status` (unknown) ✅ - Status before transition
-- `to_status` (unknown) ✅ - Status after transition
-- `triggered_at` (string) ❌ - When transition occurred
-- `triggered_by` (string) ✅ - Who triggered: user_id or 'system' for automatic transitions
-- `reason` (string) ✅ - Human-readable reason for transition
+Case Actions (phase transitions and dispositions):
+  INQUIRY → INVESTIGATING  (phase transition)
+  INQUIRY → RESOLVED       (fast-track disposition)
+  INQUIRY → CLOSED         (disposition)
+  INVESTIGATING → RESOLVED (disposition)
+  INVESTIGATING → CLOSED   (disposition)
 
 ---
 
@@ -4888,7 +5512,7 @@ Minimal case information for list views.
 - `current_turn` (integer) ✅ - No description
 - `milestones_completed` (integer) ✅ - No description
 - `total_milestones` (integer) ❌ - No description
-- `is_stuck` (boolean) ✅ - No description
+- `is_archived` (boolean) ❌ - No description
 - `is_terminal` (boolean) ✅ - No description
 - `valid_next_states` (array) ❌ - Allowed status transitions from current state for user-initiated changes
 
@@ -4930,6 +5554,7 @@ User has committed to investigation and agent is working through milestones.
 - `current_turn` (integer) ✅ - Current turn counter
 - `created_at` (string) ✅ - When case was created
 - `updated_at` (string) ✅ - Last update timestamp
+- `uploaded_files_count` (integer) ❌ - Number of uploaded files
 - `valid_next_states` (array) ❌ - Allowed status transitions from current state for user-initiated changes
 - `working_conclusion` (unknown) ❌ - Agent's current understanding of the problem
 - `progress` (unknown) ✅ - Milestone-based progress tracking
@@ -4937,10 +5562,9 @@ User has committed to investigation and agent is working through milestones.
 - `latest_evidence` (array) ❌ - Most recent evidence collected (last 5)
 - `next_actions` (array) ❌ - Suggested next steps for investigation
 - `agent_status` (string) ✅ - What agent is currently doing
-- `is_stuck` (boolean) ❌ - Whether investigation is stuck (no progress for 3+ turns)
-- `degraded_mode` (boolean) ❌ - Whether investigation is in degraded mode
 - `investigation_strategy` (unknown) ❌ - Investigation strategy with approach and next steps
 - `problem_verification` (unknown) ❌ - Problem verification details (urgency, severity, impact)
+- `progress_transparency` (unknown) ❌ - Progress transparency state. Present when investigation has stalled and agent is surfacing milestone dependencies.
 
 ---
 
@@ -4960,6 +5584,7 @@ Investigation complete, case closed with solution.
 - `created_at` (string) ✅ - When case was created
 - `updated_at` (string) ✅ - Last update timestamp
 - `resolved_at` (string) ✅ - When case was resolved
+- `uploaded_files_count` (integer) ❌ - Number of uploaded files
 - `valid_next_states` (array) ❌ - Allowed status transitions from current state for user-initiated changes
 - `root_cause` (unknown) ✅ - What caused the problem
 - `solution_applied` (unknown) ✅ - Solution that fixed the problem
@@ -5016,44 +5641,6 @@ Correlation between a change and the symptom.
 
 ---
 
-### DataType
-
-12 purpose-driven data classifications for preprocessing pipeline.
-
----
-
-### ~~DataUploadResponse~~ (REMOVED)
-
-> Removed in Unified Ingestion Pipeline (2026-02-22). File uploads are now handled
-> through `POST /cases/{case_id}/turns` with multipart form data. Results are returned
-> in `TurnResponse.attachments_processed` as `AttachmentResult` objects.
-
----
-
-### DegradedMode
-
-Investigation is blocked or struggling.
-Agent offers fallback options.
-
-**Properties:**
-
-- `mode_type` (unknown) ✅ - Why investigation degraded
-- `entered_at` (string) ❌ - When degraded mode was entered
-- `reason` (string) ✅ - Detailed explanation of why investigation degraded
-- `attempted_actions` (array) ❌ - What agent tried before degrading
-- `fallback_offered` (unknown) ❌ - Fallback option presented to user
-- `user_choice` (unknown) ❌ - How user responded: 'accept_fallback' | 'provide_more_data' | 'escalate' | 'abandon'
-- `exited_at` (unknown) ❌ - When degraded mode was exited (if recovered)
-- `exit_reason` (unknown) ❌ - How investigation recovered from degraded mode
-
----
-
-### DegradedModeType
-
-Reason for entering degraded mode
-
----
-
 ### DeleteResponse
 
 Generic delete response
@@ -5076,6 +5663,10 @@ Summary of evidence derived from an uploaded file.
 - `summary` (string) ✅ - No description
 - `category` (string) ✅ - SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER
 - `collected_at_turn` (integer) ✅ - No description
+- `source_type` (string) ✅ - LOGS | METRICS | TRACES | etc.
+- `content_hash` (unknown) ❌ - No description
+- `preprocessing_method` (unknown) ❌ - No description
+- `primary_purpose` (unknown) ❌ - No description
 - `related_hypothesis_ids` (array) ❌ - No description
 
 ---
@@ -5127,7 +5718,7 @@ Supports both line-based and semantic snippet extraction.
 
 ### DocumentType
 
-Type of generated document
+Type of generated document.
 
 ---
 
@@ -5140,7 +5731,6 @@ Captures lessons learned and artifacts.
 
 - `documents_generated` (array) ❌ - All documents generated for this case
 - `runbook_entry` (unknown) ❌ - Runbook entry created from this case
-- `post_mortem_id` (unknown) ❌ - Link to post-mortem doc if created
 - `lessons_learned` (array) ❌ - Key takeaways from investigation
 - `what_went_well` (array) ❌ - Positive aspects of investigation
 - `what_could_improve` (array) ❌ - Areas for improvement
@@ -5148,6 +5738,33 @@ Captures lessons learned and artifacts.
 - `monitoring_recommendations` (array) ❌ - Monitoring/alerts to add
 - `generated_at` (unknown) ❌ - When documentation was generated
 - `generated_by` (string) ❌ - Who generated: 'agent' or user_id
+
+---
+
+### DraftUpdateRequest
+
+**Properties:**
+
+- `content` (string) ✅ - Full runbook markdown content including frontmatter
+
+---
+
+### EnvConfigStatusResponse
+
+Read-only environment configuration status for dashboard display.
+
+**Properties:**
+
+- `auth_mode` (string) ✅ - 'local' or 'oauth'
+- `deployment` (string) ✅ - 'local' or 'cloud' — derived from auth_mode
+- `db_backend` (string) ✅ - 'sqlite' or 'postgresql'
+- `session_storage` (string) ✅ - 'inmemory' or 'redis'
+- `vector_storage` (string) ✅ - 'inmemory' or 'chromadb'
+- `llm_provider` (string) ✅ - Primary LLM provider name
+- `pii_redaction_enabled` (boolean) ✅ - No description
+- `rate_limit_enabled` (boolean) ✅ - No description
+- `features` (object) ❌ - Optional features and their configuration status
+- `timestamp` (string) ✅ - No description
 
 ---
 
@@ -5196,7 +5813,7 @@ System infers: category, advances_milestones
 - `category` (unknown) ✅ - System-inferred category: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER
 - `primary_purpose` (string) ✅ - What this evidence validates (milestone name or hypothesis ID)
 - `summary` (string) ✅ - Brief summary of evidence content (<500 chars) for UI display and quick scanning
-- `preprocessed_content` (string) ✅ -
+- `preprocessed_content` (string) ✅ - 
         Extracted relevant diagnostic information from preprocessing pipeline.
 
         This is what the agent uses for hypothesis evaluation and evidence analysis.
@@ -5214,55 +5831,32 @@ System infers: category, advances_milestones
         Compression ratios: 200:1 for logs, 167:1 for metrics, 50:1 for code.
 
         This field is REQUIRED for all evidence. Raw files remain in S3 for audit/deep dive.
-
+        
 - `content_ref` (unknown) ❌ - S3 URI to original raw file (1-10MB) for audit, compliance, and deep dive analysis. May be None for user-typed evidence.
 - `content_size_bytes` (integer) ✅ - Size of original raw file in bytes
-- `preprocessing_method` (string) ✅ -
+- `preprocessing_method` (string) ✅ - 
         Preprocessing method used to extract preprocessed_content from raw file.
         Examples: crime_scene_extraction, anomaly_detection, parse_and_sanitize,
         ast_extraction, vision_analysis, single_shot_summary, map_reduce_summary
-
+        
 - `compression_ratio` (unknown) ❌ - Ratio of preprocessed to raw content size (e.g., 0.005 = 200:1 compression)
 - `analysis` (unknown) ❌ - Agent analysis of this evidence and its significance to the investigation
+- `data_type` (unknown) ❌ - Unified data type from preprocessing (logs, metrics, configuration, code, text, image). None for legacy evidence without preprocessing.
+- `content_hash` (unknown) ❌ - SHA-256 hash of raw file content for deduplication. Computed from raw bytes before any extraction. UNIQUE per (case_id, content_hash) — prevents duplicate uploads.
+- `extraction_method` (unknown) ❌ - Extraction method used: structural_index, statistical_profile, parse_and_sanitize, ast_extraction, structure_extraction, metadata_extraction
+- `processing_mode` (unknown) ❌ - Processing mode: triage | directed_analysis | semantic_search
 - `source_type` (unknown) ✅ - Type of evidence source
-- `form` (unknown) ✅ - How evidence was provided: DOCUMENT (uploaded) or USER_INPUT (typed)
+- `form` (unknown) ✅ - How evidence was provided: DOCUMENT, USER_TEXT, or SUBMITTED_DATA
+- `source_file_id` (unknown) ❌ - ID of the UploadedFile this evidence was derived from (None if from user input)
+- `original_filename` (unknown) ❌ - Original filename when uploaded (e.g., 'OpenSSH_2k.log'). Used by search_file tool for display.
+- `vectorized` (boolean) ❌ - Whether this evidence's structural index has been persisted into the case vector store. Set to True by the investigation engine after a successful vectorize_file run; persisted across turns so proactive and reactive vectorization paths skip already-indexed evidence instead of re-embedding on every turn.
 - `advances_milestones` (array) ❌ - Which milestones this evidence helped complete
 - `collected_at` (string) ❌ - When evidence was collected
 - `collected_by` (string) ✅ - Who collected: user_id or 'system' for automated collection
 - `collected_at_turn` (integer) ✅ - Turn number when evidence was collected
-
----
-
-### EvidenceArtifact
-
-**Properties:**
-
-- `evidence_id` (string) ✅ - No description
-- `case_id` (string) ✅ - No description
-- `user_id` (string) ✅ - No description
-- `organization_id` (string) ✅ - No description
-- `original_filename` (string) ✅ - No description
-- `stored_filename` (string) ✅ - No description
-- `file_path` (string) ✅ - No description
-- `evidence_type` (unknown) ✅ - No description
-- `mime_type` (string) ✅ - No description
-- `file_size` (integer) ✅ - No description
-- `storage_backend` (unknown) ❌ - No description
-- `created_at` (string) ❌ - No description
-- `updated_at` (string) ❌ - No description
-- `metadata` (unknown) ❌ - No description
-- `description` (unknown) ❌ - No description
-- `is_primary` (boolean) ❌ - No description
-- `tags` (array) ❌ - No description
-- `linked_case_ids` (array) ❌ - No description
-
----
-
-### EvidenceArtifactType
-
-Types of evidence artifacts.
-
-Categorizes the kind of evidence artifact stored.
+- `metadata` (unknown) ❌ - Structured diagnostic metadata from the preprocessing pipeline. Top-level keys are namespaced — see docs/architecture/data-and-storage/schemas/case-schema.md §4.3 'evidence.metadata JSON contract'. Canonical shape in faultmaven/core/preprocessing/evidence_metadata.py::EvidenceMetadata. Optional for backward compatibility with evidence rows that predate the Phase 1 classifier-confidence work.
+- `coverage_start_ts` (unknown) ❌ - Earliest timestamp parsed from the evidence's content. None when the content has no parseable timestamps.
+- `coverage_end_ts` (unknown) ❌ - Latest timestamp parsed from the evidence's content. None when the content has no parseable timestamps.
 
 ---
 
@@ -5303,31 +5897,12 @@ Detailed evidence information with source and hypothesis linkage.
 
 ### EvidenceForm
 
-How evidence was provided by user
+How evidence entered the system.
 
----
-
-### EvidenceLinkRequest
-
-Request to link evidence to a case.
-
-**Properties:**
-
-- `case_id` (string) ✅ - No description
-
----
-
-### EvidenceRequestToAdd
-
-Evidence request the LLM wants to make to the user.
-
-Example: "Please upload logs from the API gateway between 10:00-10:30 UTC"
-
-**Properties:**
-
-- `request_text` (string) ✅ - What evidence is requested
-- `priority` (string) ❌ - How critical this evidence is
-- `purpose` (string) ✅ - Why this evidence is needed
+Form is determined by payload context:
+- DOCUMENT: Turn had attachments (file upload or pasted data)
+- USER_TEXT: Query-only turn, no attachments
+- SUBMITTED_DATA: Evidence created by agent tools (search_file, deep_analysis)
 
 ---
 
@@ -5335,14 +5910,15 @@ Example: "Please upload logs from the API gateway between 10:00-10:30 UTC"
 
 Fundamental type of data source.
 
-Post-redesign (2026-02-11): Simplified from 12 types to 5 clear categories.
+Post-redesign (2026-02-14): Updated to align with data-classification-strategy.md (6 types).
 
 Migration mapping:
 - log_file, command_output, trace_data, api_response, other → LOGS
 - metrics_data, monitoring_alert → METRICS
-- config_file, code_review, database_query → CONFIGURATION
-- screenshot → VISUAL
-- user_report → USER_DESCRIPTION
+- config_file, database_query → CONFIGURATION
+- code_review → CODE
+- user_report → TEXT
+- screenshot → IMAGE
 
 ---
 
@@ -5365,18 +5941,22 @@ Summary of evidence for INVESTIGATING phase UI.
 - `summary` (string) ✅ - Brief summary of evidence content
 - `timestamp` (string) ✅ - When evidence was collected
 - `relevance_score` (number) ✅ - Relevance to current investigation (0.0-1.0)
+- `collected_at_turn` (integer) ❌ - Turn number when evidence was collected
+- `category` (string) ❌ - Evidence purpose: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER
+- `source_filename` (unknown) ❌ - Original filename of the source file, if evidence originated from an attachment.
 
 ---
 
-### FileAnalysis
+### FeatureStatus
 
-Detailed AI analysis of file.
+Status of an optional feature that depends on configuration.
 
 **Properties:**
 
-- `key_findings` (array) ❌ - No description
-- `timeline_events` (array) ❌ - No description
-- `relevance` (unknown) ❌ - No description
+- `enabled` (boolean) ✅ - Feature is active and usable
+- `has_api_key` (boolean) ❌ - Required API key is configured
+- `description` (string) ❌ - Brief explanation of the feature
+- `config_hint` (string) ❌ - What the user needs to set to enable this feature
 
 ---
 
@@ -5420,7 +6000,7 @@ Philosophy: Hypotheses are OPTIONAL. Agent may:
 - `status` (unknown) ❌ - Current hypothesis status
 - `likelihood` (number) ❌ - Estimated likelihood this hypothesis is correct (0.0-1.0)
 - `initial_likelihood` (number) ❌ - Original likelihood when hypothesis was generated
-- `evidence_links` (object) ❌ -
+- `evidence_links` (object) ❌ - 
         Maps evidence_id to relationship details.
 
         ONE evidence can:
@@ -5430,13 +6010,14 @@ Philosophy: Hypotheses are OPTIONAL. Agent may:
 
         Backed by hypothesis_evidence junction table in database.
         LLM evaluates each evidence against ALL active hypotheses after submission.
-
+        
 - `generated_at_turn` (integer) ✅ - Turn number when hypothesis was generated
 - `last_updated_turn` (integer) ❌ - Turn number when hypothesis was last updated
 - `last_progress_at_turn` (integer) ❌ - Turn number when hypothesis last showed progress
 - `iterations_without_progress` (integer) ❌ - Count of consecutive iterations without progress
 - `generation_mode` (unknown) ✅ - No description
 - `retirement_reason` (unknown) ❌ - Reason if hypothesis was retired
+- `refutation_reason` (unknown) ❌ - Evidence or reasoning that disproves the hypothesis. REQUIRED when status=REFUTED (enforced via model validator). Not used for other statuses. status=REFUTED and refutation_reason travel together — an update carrying one without the other is rejected at the orchestration layer.
 - `rationale` (string) ✅ - Why this hypothesis was generated
 - `tested_at` (unknown) ❌ - When hypothesis testing began
 - `concluded_at` (unknown) ❌ - When hypothesis was validated/refuted/retired
@@ -5481,19 +6062,6 @@ How hypothesis was generated
 
 ---
 
-### HypothesisRelationship
-
-How a file relates to a hypothesis.
-
-**Properties:**
-
-- `hypothesis_id` (string) ✅ - No description
-- `hypothesis_description` (string) ✅ - No description
-- `stance` (string) ✅ - strongly_supports | supports | neutral | contradicts | strongly_contradicts | irrelevant
-- `reasoning` (string) ✅ - No description
-
----
-
 ### HypothesisStatus
 
 Hypothesis lifecycle status
@@ -5511,6 +6079,7 @@ Summary of a hypothesis for INVESTIGATING phase UI.
 - `likelihood` (number) ✅ - Likelihood score (0.0-1.0)
 - `status` (unknown) ✅ - Status: CAPTURED | ACTIVE | VALIDATED | REFUTED | INCONCLUSIVE | RETIRED
 - `evidence_count` (integer) ✅ - Number of evidence items related to this hypothesis
+- `refutation_reason` (unknown) ❌ - Reason the hypothesis was refuted. Populated only when status=REFUTED; None otherwise. Mirrors the domain model's pair-integrity invariant.
 
 ---
 
@@ -5534,7 +6103,7 @@ Captures early problem exploration before formal investigation commitment.
 **Properties:**
 
 - `problem_confirmation` (unknown) ❌ - Agent initial understanding of the problem
-- `proposed_problem_statement` (unknown) ❌ -
+- `proposed_problem_statement` (unknown) ❌ - 
         Agent formalized problem statement (clear, specific, actionable) - ITERATIVE REFINEMENT pattern.
 
         UI Display:
@@ -5548,7 +6117,7 @@ Captures early problem exploration before formal investigation commitment.
         4. Copied to case.description when investigation starts
 
         Pattern: Iterative Refinement - refine until user confirms without reservation
-
+        
 - `problem_statement_confirmed` (boolean) ❌ - User confirmed the formalized problem statement
 - `problem_statement_confirmed_at` (unknown) ❌ - When user confirmed the problem statement
 - `decided_to_investigate` (boolean) ❌ - Whether user committed to formal investigation
@@ -5574,12 +6143,9 @@ Nested inquiry data for INQUIRY phase response.
 
 ---
 
-### IntentType
+### InvestigationActionType
 
-Intent types for query routing.
-
-Enables reliable intent detection without keyword matching.
-Each type routes to specialized handling logic.
+Type of action proposed during investigation.
 
 ---
 
@@ -5594,60 +6160,41 @@ Calculated from recent progress patterns (evidence collection, hypothesis update
 
 ### InvestigationPath
 
-Investigation routing strategy (4-stage workflow).
+Investigation routing strategy (2-stage model with mitigation detour).
 
 IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
-LLM provides inputs (temporal_state, urgency_level) during verification.
+LLM provides inputs (temporal_state, urgency_level) during DIAGNOSIS.
 System calls determine_investigation_path() to select path deterministically.
 
-INVESTIGATING phase has 4 stages:
-- Stage 1: Symptom verification (where and when)
-- Stage 2: Hypotheses formulation (why)
-- Stage 3: Hypothesis validation (why really)
-- Stage 4: Solution (how)
-
-Two paths based on urgency:
-- MITIGATION_FIRST: 1-4-2-3-4 (quick mitigation, then RCA)
-- ROOT_CAUSE: 1-2-3-4 (traditional RCA)
+Two paths through the 2-stage model:
+- MITIGATION_FIRST: DIAGNOSIS → MITIGATION (detour) → DIAGNOSIS → TREATMENT
+- ROOT_CAUSE: DIAGNOSIS → TREATMENT
 
 ---
 
 ### InvestigationProgress
 
-Milestone-based progress tracking.
+Evidence-driven progress tracking with two distinct milestone types:
 
-Philosophy: Track what's completed, not what phase we're in.
-Agent completes milestones opportunistically based on data availability.
+1. STAGE-GATE MILESTONES (4): Drive stage transitions.
+   Set by the LLM in structured output when it detects user compliance
+   with a ProposedAction (Framework §4.1). The LLM is the compliance
+   detector — the user's action is the trigger; the LLM recognizes it.
+2. PROGRESS INDICATORS (6): Provide LLM context and analytics.
+   Set by LLM in structured output. Do NOT drive stage transitions.
 
 **Properties:**
 
+- `mitigation_accepted` (boolean) ❌ - User complied with proposed temp fix (inferred from submission). Triggers DIAGNOSIS → MITIGATION transition.
+- `mitigation_verified` (boolean) ❌ - User confirmed mitigation worked. Triggers MITIGATION → DIAGNOSIS return for RCA.
+- `solution_accepted` (boolean) ❌ - User complied with proposed solution (inferred from submission). Triggers DIAGNOSIS → TREATMENT transition.
+- `solution_verified` (boolean) ❌ - Solution effectiveness verified via User-Agent Handshake. NOT directly settable by LLM — requires explicit user confirmation. Triggers TREATMENT → RESOLVED transition.
 - `symptom_verified` (boolean) ❌ - Symptom confirmed with concrete evidence (logs, metrics, user reports)
 - `root_cause_identified` (boolean) ❌ - Root cause determined (directly or via hypothesis validation)
+- `solution_proposed` (boolean) ❌ - Set programmatically when ProposedAction with action_type=SOLUTION is created. Not directly set by LLM.
 - `root_cause_likelihood` (number) ❌ - Likelihood in root cause identification (0.0 = unknown, 1.0 = certain)
 - `root_cause_method` (unknown) ❌ - How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | user_provided | other
-- `solution_proposed` (boolean) ❌ - Solution or mitigation has been proposed
-- `solution_applied` (boolean) ❌ - Solution has been applied by user
-- `solution_verified` (boolean) ❌ - Solution effectiveness verified (error rate decreased, metrics improved)
-- `mitigation_applied` (boolean) ❌ -
-        MITIGATION_FIRST path: Quick mitigation applied (stage 1 -> 4 complete).
-
-        Used to track progress in MITIGATION_FIRST path (1-4-2-3-4):
-        - Stage 1: Symptom verified
-        - Stage 4: Quick mitigation applied (mitigation_applied = True)
-        - Stage 2: Return to hypothesis formulation for RCA
-        - Stage 3: Hypothesis validation
-        - Stage 4: Permanent solution applied (solution_applied = True)
-
-        When True: Agent should return to stage 2 (hypothesis formulation) for full RCA
-        When False: Either ROOT_CAUSE path, or MITIGATION_FIRST has not applied mitigation yet
-
-        Note: Different from solution_applied - mitigation is quick correlation-based fix,
-        solution is comprehensive permanent fix after RCA.
-
-- `mitigation_verified` (boolean) ❌ - Mitigation effectiveness confirmed (problem stopped)
-- `mitigation_effectiveness` (unknown) ❌ - How well mitigation worked: 1.0 = fully resolved, 0.5 = partially, 0.0 = ineffective
-- `mitigation_solution_id` (unknown) ❌ - Solution ID of applied mitigation (links to case.solutions)
-- `verification_completed_at` (unknown) ❌ - When all verification milestones (symptom, scope, timeline, changes) were completed
+- `verification_completed_at` (unknown) ❌ - When symptom verification milestone was completed
 - `investigation_completed_at` (unknown) ❌ - When root cause was identified
 - `resolution_completed_at` (unknown) ❌ - When solution was verified
 
@@ -5657,32 +6204,42 @@ Agent completes milestones opportunistically based on data availability.
 
 Progress metrics for INVESTIGATING phase.
 
+Purely descriptive — all backward-looking facts, no speculative
+forward-looking predictions. The frontend derives "what's next"
+from current_stage if needed.
+
 **Properties:**
 
-- `milestones_completed` (integer) ✅ - Number of milestones completed
-- `total_milestones` (integer) ✅ - Total milestones (always 8)
-- `completed_milestone_ids` (array) ❌ - IDs of completed milestones
-- `current_stage` (unknown) ✅ - Current stage: UNDERSTANDING | DIAGNOSING | RESOLVING
+- `completed_indicators` (array) ❌ - Completed progress indicators (e.g. symptom_verified, root_cause_identified)
+- `completed_stage_gates` (array) ❌ - Completed stage-gate milestones (e.g. mitigation_accepted, solution_verified)
+- `current_stage` (unknown) ✅ - Current stage: DIAGNOSIS | MITIGATION | TREATMENT
+- `turns_without_progress` (integer) ❌ - Consecutive turns without milestone, evidence, or hypothesis progress
+- `total_evidence` (integer) ❌ - Total evidence items collected
+- `active_hypotheses` (integer) ❌ - Number of hypotheses currently being tested
 
 ---
 
 ### InvestigationStage
 
-Investigation stage within INVESTIGATING phase (4 stages).
+Investigation stage within the Investigating Phase.
 
-Purpose: User-facing progress label computed from completed milestones.
-NOT used for workflow control - milestones drive advancement opportunistically.
-Only relevant when case status = INVESTIGATING.
+2-stage model with mitigation detour:
+- DIAGNOSIS: Understand, diagnose, propose actions (core stage)
+- TREATMENT: Verify permanent fix, resolve case (core stage)
+- MITIGATION: Apply and verify temporary fix (optional detour)
 
-Stage Progression (Path-Dependent):
-- MITIGATION_FIRST: 1 -> 4 -> 2 -> 3 -> 4 (quick mitigation, then return for RCA)
-- ROOT_CAUSE: 1 -> 2 -> 3 -> 4 (traditional RCA)
+DIAGNOSIS and TREATMENT are the two core stages every investigation
+passes through. MITIGATION is an optional detour that temporarily
+narrows focus to "stop the bleeding" before returning to DIAGNOSIS.
 
-Stage determines the investigation focus based on what has been completed:
-- Stage 1: Where and when (symptom verification)
-- Stage 2: Why (hypothesis formulation)
-- Stage 3: Why really (hypothesis validation)
-- Stage 4: How (solution application)
+Computed from stage-gate milestones. Stage transitions are
+inference-based — user compliance with proposed actions triggers
+transitions via compliance detection. The stage determines which
+prompt template the LLM receives.
+
+Investigation Paths:
+- ROOT_CAUSE: DIAGNOSIS → TREATMENT
+- MITIGATION_FIRST: DIAGNOSIS → MITIGATION (detour) → DIAGNOSIS → TREATMENT
 
 ---
 
@@ -5704,6 +6261,24 @@ Investigation strategy details for INVESTIGATING phase.
 
 ---
 
+### JournalEntry
+
+A single entry in the investigation journal.
+
+Captures a distilled insight, decision, or context that the agent
+needs to remember across the entire investigation. Entries are
+append-only and always included in the LLM context.
+
+**Properties:**
+
+- `turn` (integer) ✅ - Turn number when this entry was created
+- `entry_type` (string) ✅ - Type of journal entry
+- `content` (string) ✅ - The distilled insight (max 200 chars)
+- `evidence_id` (unknown) ❌ - Evidence ID this entry relates to, if any
+- `hypothesis_id` (unknown) ❌ - Hypothesis ID this entry relates to, if any
+
+---
+
 ### KnowledgeBaseDocument
 
 Response model for knowledge base document operations.
@@ -5718,6 +6293,9 @@ Response model for knowledge base document operations.
 - `status` (string) ❌ - No description
 - `tags` (array) ❌ - No description
 - `source_url` (unknown) ❌ - No description
+- `scope` (string) ❌ - No description
+- `owner_id` (unknown) ❌ - No description
+- `team_id` (unknown) ❌ - No description
 - `created_at` (string) ✅ - No description
 - `updated_at` (string) ✅ - No description
 - `metadata` (unknown) ❌ - No description
@@ -5753,6 +6331,94 @@ Records instant resolution via KB match during INQUIRY phase.
 - `solution_applied` (string) ✅ - No description
 - `user_confirmation` (string) ✅ - No description
 - `resolution_turn` (integer) ✅ - No description
+
+---
+
+### LLMConfigResponse
+
+LLM configuration and provider status response.
+
+**Properties:**
+
+- `deployment` (string) ✅ - Deployment mode: 'local' or 'cloud'
+- `config_readonly` (boolean) ✅ - True in local mode (config managed via .env file)
+- `primary_provider` (string) ✅ - No description
+- `strict_mode` (boolean) ✅ - No description
+- `fallback_chain` (array) ✅ - No description
+- `providers` (object) ✅ - No description
+- `timestamp` (string) ✅ - No description
+
+---
+
+### LLMConfigUpdateRequest
+
+Request to update LLM configuration.
+
+**Properties:**
+
+- `primary_provider` (unknown) ❌ - New primary provider name
+- `fallback_chain` (unknown) ❌ - New fallback chain order
+- `provider_name` (unknown) ❌ - Provider to update API key or model for
+- `api_key` (unknown) ❌ - New API key value for the specified provider
+- `model` (unknown) ❌ - Model to use for the specified provider (requires provider_name)
+
+---
+
+### LLMConfigUpdateResponse
+
+Response after updating LLM configuration.
+
+**Properties:**
+
+- `updated_keys` (array) ✅ - Config keys that were updated
+- `message` (string) ✅ - No description
+- `timestamp` (string) ✅ - No description
+
+---
+
+### LLMConnectionTestRequest
+
+Request to test an LLM provider connection.
+
+**Properties:**
+
+- `provider` (string) ✅ - Provider name to test (e.g. 'anthropic', 'openai')
+
+---
+
+### LLMConnectionTestResponse
+
+Result of an LLM provider connection test.
+
+**Properties:**
+
+- `provider` (string) ✅ - No description
+- `connected` (boolean) ✅ - No description
+- `response_time_ms` (integer) ❌ - No description
+- `error_message` (unknown) ❌ - No description
+- `model_used` (unknown) ❌ - No description
+- `timestamp` (string) ✅ - No description
+
+---
+
+### LLMProviderDetail
+
+Individual LLM provider status for dashboard display.
+
+**Properties:**
+
+- `name` (string) ✅ - No description
+- `display_name` (string) ✅ - No description
+- `enabled` (boolean) ✅ - Provider is initialized and in the fallback chain
+- `connected` (boolean) ✅ - Provider responded to last health check
+- `has_api_key` (boolean) ✅ - API key is configured (value never exposed)
+- `state` (string) ❌ - Provider lifecycle state: not_configured, configured, or active
+- `models` (array) ❌ - No description
+- `selected_model` (unknown) ❌ - Currently active model for this provider
+- `available_models` (array) ❌ - Models the user can choose from for this provider
+- `error_message` (unknown) ❌ - No description
+- `health` (string) ❌ - HEALTHY, DEGRADED, UNHEALTHY, or UNKNOWN
+- `avg_latency_ms` (number) ❌ - No description
 
 ---
 
@@ -5882,7 +6548,7 @@ Response for updating member role
 
 Message model for conversation endpoints.
 
-Schema matches docs/architecture/data-and-storage/schemas/case-schema.md Section 4.7 (case_messages table).
+Schema matches case-storage-design.md Section 4.7 (case_messages table).
 
 **Properties:**
 
@@ -6041,16 +6707,6 @@ Permission check result
 
 ---
 
-### PlanStep
-
-Represents one step in a multi-step plan.
-
-**Properties:**
-
-- `description` (string) ✅ - No description
-
----
-
 ### PreliminaryUrgency
 
 Early urgency assessment using semantic business impact.
@@ -6058,6 +6714,8 @@ Early urgency assessment using semantic business impact.
 **Properties:**
 
 - `level` (unknown) ✅ - No description
+- `is_ongoing` (boolean) ❌ - No description
+- `is_incident_report` (boolean) ❌ - No description
 - `impact_assessment` (string) ✅ - No description
 - `assessed_at_turn` (integer) ✅ - No description
 
@@ -6106,6 +6764,8 @@ Contains all data gathered during verification phase:
 - `correlation_confidence` (number) ❌ - Confidence in change-symptom correlation (0.0 = no correlation, 1.0 = certain)
 - `urgency_level` (unknown) ❌ - Urgency classification for path routing
 - `urgency_factors` (array) ❌ - Factors contributing to urgency assessment
+- `rca_infeasible` (boolean) ❌ - Advisory signal: root cause analysis is infeasible for this problem. Set by the LLM during verification when the problem involves uncontrollable external dependencies, deprecated/EOL systems, or known intractable conditions where mitigation is the accepted strategy. Does NOT affect path selection — influences post-mitigation agent behavior only.
+- `rca_infeasible_rationale` (unknown) ❌ - Why RCA is infeasible. Populated by the LLM when rca_infeasible=True. E.g., 'Black-box 3rd-party API with no internal telemetry'.
 - `verified_at` (unknown) ❌ - When verification was completed
 - `verification_confidence` (number) ❌ - Overall confidence in verification accuracy
 
@@ -6125,32 +6785,44 @@ Problem verification details for INVESTIGATING phase.
 
 ---
 
-### ProcessingStatus
+### ProgressTransparencyInfo
 
-Defines the status of data processing operations.
+Progress transparency state for the current turn.
 
----
+When active, the investigation has stalled (N investigative turns
+without milestone progress) and the agent is surfacing what evidence
+is needed to advance. The frontend should visually highlight the
+pending milestone.
 
-### QueryIntent
-
-Structured intent metadata for programmatic query handling.
-
-Enables reliable intent detection without keyword matching.
-All queries must specify their intent type for proper routing.
-
-Design Reference: Intent-based routing eliminates ambiguity in pattern matching
-and provides single code path for all interactions (conversation history unified).
+See: docs/architecture/investigation-engine/progress-transparency.md
 
 **Properties:**
 
-- `type` (unknown) ✅ - Intent type for routing - determines which handler processes this query
-- `from_status` (unknown) ❌ - For status_transition: source status (validation)
-- `to_status` (unknown) ❌ - For status_transition: target status (REQUIRED for status_transition)
-- `user_confirmed` (unknown) ❌ - User explicitly confirmed action via UI button/dialog
-- `hypothesis_id` (unknown) ❌ - For hypothesis_action: target hypothesis ID
-- `action` (unknown) ❌ - Action to perform: validate | refute | retire
-- `evidence_id` (unknown) ❌ - For evidence_request: target evidence ID
-- `confirmation_value` (unknown) ❌ - For confirmation: yes/no value
+- `active` (boolean) ✅ - Whether transparent mode is active this turn
+- `pending_milestone` (unknown) ❌ - Milestone that progress is stalled on (e.g., 'root_cause_identified')
+- `milestone_description` (unknown) ❌ - Human-readable description of what the pending milestone requires
+- `repair_type` (unknown) ❌ - Agent state repair pattern detected, if any: hypothesis_anchoring, hypothesis_deadlock, exhausted, fix_failure_cycle, action_loop
+
+---
+
+### ProposedAction
+
+A concrete action proposed by the agent for the user to execute.
+
+ProposedActions are the mechanism by which the agent communicates
+actionable next steps. User compliance with a proposed action
+triggers stage-gate milestone transitions via compliance detection.
+
+**Properties:**
+
+- `action_id` (string) ❌ - Unique action identifier
+- `case_id` (string) ✅ - Case this action belongs to
+- `action_type` (unknown) ✅ - Whether this is a mitigation or solution action
+- `description` (string) ✅ - Human-readable description of the proposed action
+- `commands` (array) ❌ - Specific commands for the user to execute
+- `proposed_at` (string) ❌ - When the action was proposed
+- `proposed_in_turn` (integer) ✅ - Turn number when this action was proposed
+- `status` (string) ❌ - pending | accepted | rejected | superseded
 
 ---
 
@@ -6172,7 +6844,7 @@ Report generation availability status for RESOLVED phase.
 
 **Properties:**
 
-- `report_type` (string) ✅ - Type: incident_report | post_mortem | runbook | timeline
+- `report_type` (string) ✅ - Type: resolution_summary | closure_summary | runbook
 - `status` (string) ✅ - Status: available | recommended | in_progress | not_applicable
 - `reason` (unknown) ❌ - Reason for status (e.g., why recommended)
 
@@ -6309,12 +6981,26 @@ Overall resolution metrics for RESOLVED phase.
 
 ---
 
-### ResponseType
+### RoleAssignmentRequest
 
-Defines the agent's primary intent for this turn - v3.0 Response-Format-Driven Design
+Role assignment request.
 
-9 response formats designed to serve 16 QueryIntent categories (1.8:1 ratio).
-Each format has strict structural requirements for frontend parsing.
+**Properties:**
+
+- `role` (string) ✅ - Role to assign (admin, member, or viewer)
+
+---
+
+### RoleAssignmentResponse
+
+Role assignment response.
+
+**Properties:**
+
+- `user_id` (string) ✅ - No description
+- `roles` (array) ✅ - No description
+- `updated_at` (string) ✅ - No description
+- `message` (string) ✅ - No description
 
 ---
 
@@ -6347,6 +7033,28 @@ Root cause information for RESOLVED phase.
 - `root_cause_id` (string) ✅ - Root cause identifier
 - `category` (string) ✅ - Category: code | config | environment | network | data | hardware | external | human | other
 - `severity` (string) ✅ - Severity: critical | high | medium | low
+
+---
+
+### RunbookCreateRequest
+
+**Properties:**
+
+- `title` (string) ✅ - No description
+- `domain` (string) ✅ - No description
+- `service` (string) ✅ - No description
+- `symptom_class` (array) ✅ - No description
+- `severity` (string) ✅ - No description
+- `scope` (string) ✅ - No description
+- `tags` (array) ❌ - No description
+- `difficulty` (string) ❌ - No description
+- `problem_definition` (string) ✅ - No description
+- `diagnostic_steps` (string) ✅ - No description
+- `mitigation` (string) ✅ - No description
+- `root_cause_resolution` (string) ✅ - No description
+- `verification` (string) ✅ - No description
+- `prevention` (string) ✅ - No description
+- `team_id` (unknown) ❌ - No description
 
 ---
 
@@ -6400,22 +7108,6 @@ Request model for creating investigation session.
 - `session_goal` (unknown) ❌ - No description
 - `token_budget_limit` (unknown) ❌ - No description
 - `metadata` (unknown) ❌ - No description
-
----
-
-### SessionResponse
-
-**Properties:**
-
-- `session_id` (string) ✅ - Unique session identifier
-- `user_id` (string) ❌ - Associated user identifier
-- `client_id` (string) ❌ - Client/device identifier for session resumption
-- `status` (string) ✅ - Current session status
-- `created_at` (string) ❌ - Session creation timestamp
-- `session_resumed` (boolean) ❌ - Indicates if this was an existing session resumed
-- `session_type` (string) ❌ - Type of session (e.g., troubleshooting)
-- `message` (string) ❌ - Status message about session creation/resumption
-- `metadata` (object) ❌ - Session metadata and context
 
 ---
 
@@ -6536,21 +7228,6 @@ Type of solution/mitigation
 
 ---
 
-### Source
-
-Represents a single piece of citable evidence to build user trust.
-
-**Properties:**
-
-- `type` (unknown) ✅ - No description
-- `content` (string) ✅ - No description
-- `confidence` (unknown) ❌ - No description
-- `metadata` (unknown) ❌ - No description
-- `verification_status` (unknown) ❌ - No description
-- `verification_reason` (unknown) ❌ - No description
-
----
-
 ### SourceFileReference
 
 Reference to source file that evidence was derived from.
@@ -6563,17 +7240,19 @@ Reference to source file that evidence was derived from.
 
 ---
 
-### SourceType
+### SuggestedActionResponse
 
-Defines the origin of a piece of evidence.
+A follow-up suggestion returned with agent responses.
 
----
+**Properties:**
 
-### StorageBackend
-
-Storage backend types.
-
-Defines where evidence files are stored.
+- `label` (string) ✅ - No description
+- `type` (string) ✅ - No description
+- `payload` (string) ✅ - No description
+- `body` (unknown) ❌ - No description
+- `cooperative_action` (unknown) ❌ - No description
+- `hints` (unknown) ❌ - No description
+- `intent` (unknown) ❌ - No description
 
 ---
 
@@ -6623,7 +7302,6 @@ Team details response
 - `organization_id` (string) ✅ - No description
 - `name` (string) ✅ - No description
 - `description` (unknown) ✅ - No description
-- `settings` (object) ✅ - No description
 - `created_at` (string) ✅ - No description
 - `updated_at` (string) ✅ - No description
 
@@ -6637,7 +7315,6 @@ Request to update team details
 
 - `name` (unknown) ❌ - Updated team name
 - `description` (unknown) ❌ - Updated description
-- `settings` (unknown) ❌ - Team settings
 
 ---
 
@@ -6657,17 +7334,6 @@ Temporal information about problem occurrence.
 - `started_at` (unknown) ❌ - When the problem started
 - `last_occurrence_at` (unknown) ❌ - Most recent occurrence of the problem
 - `state` (unknown) ❌ - Temporal state: ongoing | historical | intermittent
-
----
-
-### TimelineEvent
-
-Timeline event extracted from file.
-
-**Properties:**
-
-- `timestamp` (string) ✅ - No description
-- `event` (string) ✅ - No description
 
 ---
 
@@ -6701,7 +7367,7 @@ Response model for a tool call within an execution.
 Turn outcome classification.
 
 NOTE: Outcomes are LLM-observable only (what happened this turn).
-Workflow control uses direct metrics (turns_without_progress, degraded_mode).
+Workflow control uses direct metrics (turns_without_progress).
 Outcomes are for analytics and prompt context, not control flow.
 
 ---
@@ -6721,7 +7387,6 @@ Turn = one user message + one agent response.
 - `hypotheses_validated` (array) ❌ - Hypothesis IDs validated this turn
 - `solutions_proposed` (array) ❌ - Solution IDs proposed this turn
 - `progress_made` (boolean) ✅ - Did investigation advance this turn?
-- `actions_taken` (array) ❌ - Agent actions: 'verified_symptom', 'requested_logs', 'generated_hypothesis', etc.
 - `outcome` (unknown) ✅ - Turn outcome classification
 - `user_message_summary` (unknown) ❌ - Summary of user message
 - `agent_response_summary` (unknown) ❌ - Summary of agent response
@@ -6729,25 +7394,25 @@ Turn = one user message + one agent response.
 - `momentum` (unknown) ❌ - Investigation momentum indicator for this turn
 - `blocked_reasons` (array) ❌ - Reasons why investigation is blocked or progressing slowly
 - `next_steps` (array) ❌ - Suggested next steps for the investigation
-- `stagnation_detected` (unknown) ❌ - Stagnation type detected this turn: no_progress, hypothesis_anchoring, action_loop, hypothesis_deadlock
+- `repair_pattern` (unknown) ❌ - Agent state repair pattern detected this turn: hypothesis_anchoring, hypothesis_deadlock, exhausted, fix_failure_cycle, action_loop
 - `validation_repairs` (array) ❌ - State repairs made by StateValidator this turn (e.g., 'Fixed milestone ordering')
 
 ---
 
-### UploadedData
+### TurnResponse
 
-A strongly-typed model for data uploaded by the user.
+Response for POST /cases/{id}/turns.
 
 **Properties:**
 
-- `id` (string) ✅ - No description
-- `name` (string) ✅ - No description
-- `type` (unknown) ✅ - No description
-- `size_bytes` (integer) ✅ - No description
-- `upload_timestamp` (string) ✅ - No description
-- `processing_status` (unknown) ✅ - No description
-- `processing_summary` (unknown) ❌ - No description
-- `likelihood` (unknown) ❌ - No description
+- `agent_response` (string) ✅ - No description
+- `turn_number` (integer) ✅ - No description
+- `milestones_completed` (array) ✅ - No description
+- `case_status` (unknown) ✅ - No description
+- `progress_made` (boolean) ✅ - No description
+- `attachments_processed` (array) ❌ - No description
+- `suggested_actions` (array) ❌ - No description
+- `progress_transparency` (unknown) ❌ - Progress transparency state. Present when investigation has stalled and agent is surfacing milestone dependencies.
 
 ---
 
@@ -6756,11 +7421,19 @@ A strongly-typed model for data uploaded by the user.
 Raw file metadata for files uploaded to a case.
 
 Key Distinction:
-- UploadedFile: Raw file metadata, exists in ANY case phase (INQUIRY or INVESTIGATING)
-- Evidence: Investigation-linked data derived from files, ONLY exists in INVESTIGATING phase
+- UploadedFile: Raw file metadata, exists in ANY case state (INQUIRY, INVESTIGATING, etc.)
+- Evidence: Data classified by the LLM based on content. Created via evidence_to_add
+  when the LLM evaluates the submission.
 
-Files uploaded during INQUIRY are tracked here but do NOT become evidence until
-the case transitions to INVESTIGATING and hypotheses are formulated.
+Evidence classification is content-based, not stage-based (see Section 5.2 of
+evidence-driven-investigation-framework.md). The LLM evaluates the data and
+classifies it by what it contains:
+- Error logs → symptom_evidence (even during INQUIRY)
+- Normal configs → contextual_evidence
+- Post-fix metrics → solution_evidence
+
+UploadedFile records exist independently of Evidence. Not all uploaded files
+produce Evidence — the LLM decides what is relevant during its analysis.
 
 **Properties:**
 
@@ -6773,27 +7446,6 @@ the case transitions to INVESTIGATING and hypotheses are formulated.
 - `source_type` (string) ❌ - file_upload | paste | screenshot | page_injection | agent_generated
 - `preprocessing_summary` (unknown) ❌ - Brief summary from preprocessing pipeline (<500 chars)
 - `content_ref` (unknown) ❌ - Reference to stored file content (S3 URI or data_id). May be None if processing pending.
-
----
-
-### UploadedFileDetails
-
-Detailed file information including analysis.
-
-**Properties:**
-
-- `file_id` (string) ✅ - Evidence/File identifier
-- `filename` (string) ✅ - Original or generated filename
-- `size_bytes` (integer) ✅ - File size in bytes
-- `size_display` (string) ✅ - Human-readable size (e.g., '2.3 MB')
-- `uploaded_at_turn` (integer) ✅ - Turn when file was uploaded
-- `uploaded_at` (string) ✅ - Upload timestamp
-- `source_type` (string) ✅ - file_upload | paste | screenshot | page_injection | agent_generated
-- `analysis_status` (string) ✅ - pending | processing | completed | failed
-- `summary` (unknown) ❌ - AI-generated summary (1-2 sentences)
-- `source_metadata` (unknown) ❌ - Additional metadata for page injections
-- `full_analysis` (unknown) ❌ - Detailed AI analysis
-- `hypothesis_relationships` (unknown) ❌ - How this file relates to hypotheses (investigating phase only)
 
 ---
 
@@ -6832,7 +7484,7 @@ Metadata for uploaded files (evidence) - List view.
 - `source_type` (string) ✅ - file_upload | paste | screenshot | page_injection | agent_generated
 - `analysis_status` (string) ✅ - pending | processing | completed | failed
 - `summary` (unknown) ❌ - AI-generated summary (1-2 sentences)
-- `source_metadata` (unknown) ❌ - Additional metadata for page injections
+- `source_metadata` (unknown) ❌ - Source origin metadata (e.g. page capture URL)
 
 ---
 
@@ -6872,17 +7524,24 @@ Used with TemporalState to determine investigation path:
 
 ---
 
-### User
+### UserDetailResponse
 
-Represents a user in the system.
+Detailed user information (admin only).
 
 **Properties:**
 
 - `user_id` (string) ✅ - No description
+- `organization_id` (string) ✅ - No description
 - `email` (string) ✅ - No description
-- `name` (string) ✅ - No description
-- `created_at` (string) ❌ - No description
-- `last_login` (unknown) ❌ - No description
+- `full_name` (string) ✅ - No description
+- `roles` (array) ✅ - No description
+- `permissions` (array) ✅ - No description
+- `is_active` (boolean) ✅ - No description
+- `is_verified` (boolean) ✅ - No description
+- `last_login_at` (unknown) ❌ - No description
+- `created_at` (string) ✅ - No description
+- `updated_at` (string) ✅ - No description
+- `metadata` (object) ❌ - No description
 
 ---
 
@@ -6961,6 +7620,19 @@ Excludes sensitive information like hashed passwords.
 
 ---
 
+### UserStatusResponse
+
+User activation/deactivation response.
+
+**Properties:**
+
+- `user_id` (string) ✅ - No description
+- `is_active` (boolean) ✅ - No description
+- `updated_at` (string) ✅ - No description
+- `message` (string) ✅ - No description
+
+---
+
 ### ValidationError
 
 **Properties:**
@@ -6980,28 +7652,6 @@ Solution verification status for RESOLVED phase.
 - `verified` (boolean) ✅ - Whether solution effectiveness was verified
 - `verification_method` (string) ✅ - How verification was done
 - `details` (string) ✅ - Verification details and metrics
-
----
-
-### ViewState
-
-Comprehensive view state representing the complete frontend rendering state.
-This is the single source of truth for what the frontend should display.
-
-**Properties:**
-
-- `session_id` (string) ✅ - No description
-- `user` (unknown) ✅ - No description
-- `active_case` (unknown) ❌ - No description
-- `cases` (array) ❌ - No description
-- `messages` (array) ❌ - No description
-- `uploaded_data` (array) ❌ - No description
-- `show_case_selector` (boolean) ❌ - No description
-- `show_data_upload` (boolean) ❌ - No description
-- `loading_state` (unknown) ❌ - No description
-- `memory_context` (unknown) ❌ - No description
-- `planning_state` (unknown) ❌ - No description
-- `investigation_progress` (unknown) ❌ - Investigation progress (milestones, evidence, hypotheses)
 
 ---
 
@@ -7061,84 +7711,21 @@ Response model for investigation session.
 
 ---
 
-### faultmaven__modules__case__domain__models__Case
+### faultmaven__models__api__SessionResponse
 
-Root case entity.
-Represents one complete troubleshooting investigation.
+Response payload for auth session operations - API spec compliance.
 
 **Properties:**
 
-- `case_id` (string) ❌ - Unique case identifier
-- `user_id` (string) ✅ - User who created the case
-- `organization_id` (string) ✅ - Organization this case belongs to
-- `title` (string) ✅ - Short case title for list views and headers (e.g., 'API Performance Issue')
-- `description` (string) ❌ -
-        Confirmed problem description - canonical, user-facing, displayed prominently in UI.
-
-        Lifecycle:
-        1. Empty initially during INQUIRY (while agent formalizes problem)
-        2. Set when user confirms proposed_problem_statement and decides to investigate
-        3. Immutable after status becomes INVESTIGATING (provides stable reference)
-        4. Used for UI display, search, and documentation
-
-        Example: "API experiencing slowness with 30% of requests taking >5s response time
-                  across all US regions, started 2 hours ago coinciding with v2.1.3 deployment"
-
-- `status` (unknown) ❌ - Current lifecycle status
-- `status_history` (array) ❌ - Complete history of status changes
-- `closure_reason` (unknown) ❌ - Why case was closed: resolved | abandoned | escalated | inquiry_only | duplicate | other
-- `progress` (unknown) ❌ - Milestone-based progress tracking
-- `current_turn` (integer) ❌ - Current turn number (increments with each user-agent exchange)
-- `turns_without_progress` (integer) ❌ - Consecutive turns with no milestone advancement (for stuck detection)
-- `turn_history` (array) ❌ - Complete history of all turns
-- `messages` (array) ❌ -
-        Complete conversation history (user queries + agent responses).
-
-        Per docs/architecture/data-and-storage/schemas/case-schema.md Section 4.7, each message contains:
-        - message_id: str - Unique identifier
-        - case_id: str - Case this message belongs to
-        - turn_number: int - Which turn this message belongs to
-        - role: str - "user" | "assistant" | "system"
-        - content: str - The actual message text
-        - created_at: datetime - When message was created (ISO format)
-        - token_count: Optional[int] - Number of tokens in content
-        - metadata: dict - Additional data (sources, tools used, etc.)
-
-        NOTE: Does NOT contain session_id (per case-and-session-concepts.md)
-        Sessions provide authentication only, not message ownership.
-
-        Relationship to turn_history:
-        - messages[i].turn_number references turn_history[j].turn_number
-        - Provides the "what was said" to complement turn_history's "what happened"
-
-- `message_count` (integer) ❌ - Total number of messages (user + agent combined)
-- `path_selection` (unknown) ❌ - Selected investigation path (MITIGATION vs ROOT_CAUSE)
-- `investigation_strategy` (unknown) ❌ - Investigation approach: ACTIVE_INCIDENT (speed) vs POST_MORTEM (thoroughness)
-- `inquiry` (unknown) ❌ - Pre-investigation INQUIRY status data
-- `problem_verification` (unknown) ❌ - Consolidated verification data (symptom, scope, timeline, changes)
-- `uploaded_files` (array) ❌ -
-        All files uploaded to this case (raw file metadata).
-
-        Files can be uploaded at ANY phase (INQUIRY or INVESTIGATING).
-        Evidence is DERIVED from uploaded files after analysis during INVESTIGATING phase.
-
-        Difference from evidence:
-        - uploaded_files: Raw file metadata (file_id, filename, size, upload time)
-        - evidence: Investigation data linked to hypotheses (only in INVESTIGATING phase)
-
-- `evidence` (array) ❌ - All evidence collected during investigation
-- `hypotheses` (object) ❌ - Generated hypotheses (key = hypothesis_id)
-- `solutions` (array) ❌ - Proposed and applied solutions
-- `working_conclusion` (unknown) ❌ - Agent current best understanding (updated iteratively)
-- `root_cause_conclusion` (unknown) ❌ - Final root cause determination
-- `degraded_mode` (unknown) ❌ - Investigation is stuck or blocked
-- `escalation_state` (unknown) ❌ - Escalated to human expert
-- `documentation` (unknown) ❌ - Generated documentation and lessons learned
-- `created_at` (string) ❌ - When case was created
-- `updated_at` (string) ❌ - Last modification timestamp
-- `last_activity_at` (string) ❌ - Most recent user/agent interaction (for 'updated Xm ago' display)
-- `resolved_at` (unknown) ❌ - When case reached RESOLVED status
-- `closed_at` (unknown) ❌ - When case reached terminal state (RESOLVED or CLOSED)
+- `schema_version` (string) ❌ - No description
+- `session_id` (string) ✅ - No description
+- `user_id` (unknown) ❌ - No description
+- `client_id` (unknown) ❌ - No description
+- `status` (unknown) ❌ - No description
+- `created_at` (string) ✅ - No description
+- `expires_at` (unknown) ❌ - No description
+- `metadata` (unknown) ❌ - No description
+- `session_resumed` (unknown) ❌ - No description
 
 ---
 
@@ -7270,3 +7857,20 @@ Represents one complete troubleshooting investigation.
 ```
 
 ---
+
+### SessionResponse
+
+**Properties:**
+
+- `session_id` (string) ✅ - Unique session identifier
+- `user_id` (string) ❌ - Associated user identifier
+- `client_id` (string) ❌ - Client/device identifier for session resumption
+- `status` (string) ✅ - Current session status
+- `created_at` (string) ❌ - Session creation timestamp
+- `session_resumed` (boolean) ❌ - Indicates if this was an existing session resumed
+- `session_type` (string) ❌ - Type of session (e.g., troubleshooting)
+- `message` (string) ❌ - Status message about session creation/resumption
+- `metadata` (object) ❌ - Session metadata and context
+
+---
+
