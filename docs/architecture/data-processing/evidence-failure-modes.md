@@ -1,8 +1,8 @@
 # Evidence Creation Failure Modes and Recovery
 
-**Version:** 1.4
-**Date:** 2026-04-19
-**Status:** Design Specification — implemented (dedup, orphan cleanup, monitoring); Scenario 2 async retry deferred pending telemetry signal
+**Version:** 1.5
+**Date:** 2026-05-04
+**Status:** Design Specification — implemented (dedup, orphan cleanup, monitoring); Scenario 2 async retry deferred pending telemetry signal; placeholder `evidence_retry.py` removed 2026-05-04
 **Context:** Failure analysis and recovery strategies for single-phase evidence creation
 
 ---
@@ -12,7 +12,7 @@
 | Area | Status | Notes |
 | --- | --- | --- |
 | Scenario 1 — File upload fails | Implicit (no code change needed) | Storage failures raise before any evidence object exists. No orphan state. |
-| Scenario 2 — LLM call timeout | **Deferred** | Current turn-submission path (`modules/case/api/routes.py:2234-2269`) already returns specific error codes (`LLM_OVER_CAPACITY`, `RATE_LIMIT_EXCEEDED`, `LLM_TIMEOUT`) with `Retry-After` headers and in-process synchronous retries via `BaseExternalClient`. An async-retry path was designed and discarded (see former `PLAN-async-turn-retry.md`, deleted 2026-04-19) — the additional machinery (forward-only schema migration, 202 polling, cancellation semantics) isn't justified without production evidence that the current error-path UX harms users. Revisit on telemetry signal. |
+| Scenario 2 — LLM call timeout | **Deferred** | Current turn-submission path (`modules/case/api/routes.py:2234-2269`) already returns specific error codes (`LLM_OVER_CAPACITY`, `RATE_LIMIT_EXCEEDED`, `LLM_TIMEOUT`) with `Retry-After` headers and in-process synchronous retries via `BaseExternalClient`. An async-retry path was designed and discarded (see former `PLAN-async-turn-retry.md`, deleted 2026-04-19) — the additional machinery (forward-only schema migration, 202 polling, cancellation semantics) isn't justified without production evidence that the current error-path UX harms users. Revisit on telemetry signal. A partially-scaffolded `faultmaven/modules/agent/jobs/evidence_retry.py` (with a placeholder LLM call returning hardcoded `symptom_evidence` and an in-memory `asyncio.sleep` "queue") was a leftover from the original Option B recommendation and was **removed on 2026-05-04** to prevent it being mistakenly wired up. The scaffolded `evidence_turn_async_retry_*` Prometheus metrics remain registered as a tripwire if/when the design is revisited. |
 | Scenario 3 — LLM returns invalid category | **Done** | `EvidenceToAdd.validate_category` in `core/investigation/schemas.py:306` falls back to `CONTEXTUAL_EVIDENCE` with a warning log. |
 | Scenario 4 — DB insert fails after LLM / storage | **Partial** | Orphan-file cleanup (below) handles the "storage succeeded, evidence didn't persist" case. Idempotency on evidence creation itself is not implemented. |
 | Content-hash deduplication — hash consistency | **Done** | `PreprocessingService.classify_and_extract` computes `SHA-256(UTF-8 text)` uniformly for file uploads and pasted content. Both paths produce the same hash for the same content. |
@@ -763,6 +763,6 @@ Current state is summarised in the "Current Implementation Status" table at the 
 
 ---
 
-**Document Version:** 1.4
-**Last Updated:** 2026-04-19
+**Document Version:** 1.5
+**Last Updated:** 2026-05-04
 **Status:** Design Specification — implemented (dedup, orphan cleanup, monitoring); Scenario 2 async retry deferred. See "Current Implementation Status" table above.
