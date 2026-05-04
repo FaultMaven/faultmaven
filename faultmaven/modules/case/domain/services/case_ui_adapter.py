@@ -549,14 +549,41 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         key_insights=key_insights,
     )
 
-    # Report availability
-    reports_available = [
-        ReportAvailability(
-            report_type="resolution_summary",
-            status="auto_generated",
-            reason="Auto-generated on resolution",
-        ),
-    ]
+    # Report availability — different per terminal status.
+    # RESOLVED: resolution summary is always generated (Change 1).
+    # CLOSED: closure summary may be skipped if the case lacks substance;
+    # surface the skip reason so the Report tab can render a note instead
+    # of an empty state.
+    if case.status == CaseStatus.RESOLVED:
+        reports_available = [
+            ReportAvailability(
+                report_type="resolution_summary",
+                status="auto_generated",
+                reason="Auto-generated on resolution",
+            ),
+        ]
+    else:  # CaseStatus.CLOSED
+        from faultmaven.core.investigation.terminal_transitions import (
+            terminal_summary_skip_reason,
+        )
+
+        skip_reason = terminal_summary_skip_reason(case)
+        if skip_reason is None:
+            reports_available = [
+                ReportAvailability(
+                    report_type="closure_summary",
+                    status="auto_generated",
+                    reason="Auto-generated on closure",
+                ),
+            ]
+        else:
+            reports_available = [
+                ReportAvailability(
+                    report_type="closure_summary",
+                    status="skipped",
+                    reason=skip_reason,
+                ),
+            ]
 
     return CaseUIResponse_Resolved(
         case_id=case.case_id,

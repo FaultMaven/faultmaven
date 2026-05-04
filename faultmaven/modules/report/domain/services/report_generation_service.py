@@ -196,7 +196,13 @@ class ReportGenerationService:
     async def _generate_single_report(
         self, case: Case, report_type: ReportType
     ) -> CaseReport:
-        """Generate a single report using LLM."""
+        """Generate a single report by routing to the type-specific generator.
+
+        Both RESOLUTION_SUMMARY and CLOSURE_SUMMARY are produced
+        deterministically from case fields (markdown templated by Python),
+        not via an LLM call. PII redaction runs over the rendered content
+        if a redactor is configured.
+        """
         start_time = time.time()
 
         # Extract case context

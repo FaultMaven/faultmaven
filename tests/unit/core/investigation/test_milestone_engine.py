@@ -569,8 +569,10 @@ class TestMilestoneEngine:
         assert final_case.resolved_at is not None
         assert final_case.closed_at is not None
 
-        # 3. Correct closure reason
-        assert final_case.closure_reason == "resolved"
+        # 3. Correct closure reason — None for RESOLVED
+        # (resolution itself is the categorization; closure_reason is a
+        # sub-categorization of CLOSED only).
+        assert final_case.closure_reason is None
 
         # 4. Solution milestone set via handshake confirmation
         assert final_case.progress.solution_verified is True
@@ -909,11 +911,12 @@ class TestMilestoneEngine:
     async def test_resolved_dropdown_suggests_close_when_not_ready(
         self, mock_llm, mock_repo, base_case
     ):
-        """Dropdown RESOLVED with missing info sets pending_transition with needs_info.
+        """Dropdown RESOLVED on a thin case pivots to CLOSED.
 
-        The system remembers the user's resolve intent so that when they provide
-        the missing info, the next turn shows a confirmation prompt without
-        requiring another dropdown click or LLM call.
+        When the case lacks root cause / solution / evidence, the readiness
+        verdict is SUGGEST_CLOSE. The engine pivots to a CLOSED proposal so
+        the prompt the user sees and the COOPERATIVE confirmation pair both
+        align with what they're actually being asked to do.
         """
         # base_case has no root_cause_conclusion, no solutions, no evidence
         engine = MilestoneEngine(
@@ -930,13 +933,15 @@ class TestMilestoneEngine:
             intent_data={"from_status": "investigating", "to_status": "resolved"},
         )
 
-        # Case should still be INVESTIGATING with pending transition + needs_info
+        # Case stays INVESTIGATING; pending transition pivots to CLOSED
+        # (not RESOLVED) so the user's confirm click closes the case.
         assert result["case_updated"].status == CaseStatus.INVESTIGATING
         assert result["case_updated"].pending_transition is not None
-        assert result["case_updated"].pending_transition["to_status"] == "resolved"
-        assert result["case_updated"].pending_transition["needs_info"] is True
+        assert result["case_updated"].pending_transition["to_status"] == "closed"
+        # No needs_info flag — pivot path doesn't carry resolve intent forward.
+        assert not result["case_updated"].pending_transition.get("needs_info")
 
-        # Response suggests closing instead
+        # Response suggests closing
         assert "close" in result["agent_response"].lower()
 
         # LLM is NOT called
@@ -1384,7 +1389,7 @@ class TestReadinessAssessments:
 
         case = MagicMock()
         case.case_id = "case_trivial"
-        case.closure_reason = "abandoned"
+        case.closure_reason = "closed_after_investigation"
         case.evidence = []
         case.hypotheses = {}
         case.description = ""
@@ -1400,7 +1405,9 @@ class TestReadinessAssessments:
 
         case = MagicMock()
         case.case_id = "case_real"
-        case.closure_reason = "resolved"
+        # RESOLVED cases have closure_reason=None (resolution itself is
+        # the categorization). The substance check below is what matters.
+        case.closure_reason = None
         case.evidence = [MagicMock()]  # Has at least one evidence item
         case.hypotheses = {}
         case.description = "API latency issue"
@@ -1408,19 +1415,84 @@ class TestReadinessAssessments:
         case.message_count = 8
         assert should_generate_terminal_summary(case) is True
 
-    def test_summary_guardrail_skips_duplicates(self):
-        """Duplicate cases → always skip regardless of content."""
+    # test_summary_guardrail_skips_duplicates removed — the 'duplicate'
+    # short-circuit was deleted when closure_reason was simplified to 3
+    # engine-derived values. Duplicate-tracking, if reintroduced, will
+    # use a separate field rather than an enum value the engine can't
+    # reliably assign.
+
+    def test_skip_reason_resolved_case_returns_none(self):
+        """Resolved cases always generate a summary — skip reason is None
+        regardless of conversation length or substance."""
         from faultmaven.core.investigation.terminal_transitions import (
-            should_generate_terminal_summary,
+            terminal_summary_skip_reason,
         )
 
         case = MagicMock()
-        case.case_id = "case_dup"
-        case.closure_reason = "duplicate"
-        case.evidence = [MagicMock(), MagicMock()]
-        case.hypotheses = {"h1": MagicMock()}
-        case.message_count = 10
-        assert should_generate_terminal_summary(case) is False
+        case.case_id = "case_resolved"
+        case.status = CaseStatus.RESOLVED
+        # Even with thin content, RESOLVED never skips
+        case.evidence = []
+        case.hypotheses = {}
+        case.description = ""
+        case.progress.completed_milestones = []
+        case.message_count = 1
+        assert terminal_summary_skip_reason(case) is None
+
+    def test_skip_reason_closed_thin_conversation(self):
+        """Closed case with <4 messages → skip reason mentions conversation."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            terminal_summary_skip_reason,
+        )
+
+        case = MagicMock()
+        case.case_id = "case_short"
+        case.status = CaseStatus.CLOSED
+        case.evidence = [MagicMock()]
+        case.hypotheses = {}
+        case.description = "A real problem"
+        case.progress.completed_milestones = []
+        case.message_count = 2
+        reason = terminal_summary_skip_reason(case)
+        assert reason is not None
+        assert "meaningful conversation" in reason
+
+    def test_skip_reason_closed_no_substance(self):
+        """Closed case with enough messages but no substance → skip reason
+        mentions the missing substance signals."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            terminal_summary_skip_reason,
+        )
+
+        case = MagicMock()
+        case.case_id = "case_trivial"
+        case.status = CaseStatus.CLOSED
+        case.evidence = []
+        case.hypotheses = {}
+        case.description = ""
+        case.progress.completed_milestones = []
+        case.message_count = 8
+        reason = terminal_summary_skip_reason(case)
+        assert reason is not None
+        assert "evidence" in reason
+        assert "milestones" in reason
+
+    def test_skip_reason_closed_with_substance_returns_none(self):
+        """Closed case that meets the heuristic — no skip note (summary will
+        be auto-generated)."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            terminal_summary_skip_reason,
+        )
+
+        case = MagicMock()
+        case.case_id = "case_real"
+        case.status = CaseStatus.CLOSED
+        case.evidence = [MagicMock()]
+        case.hypotheses = {}
+        case.description = "API latency issue"
+        case.progress.completed_milestones = ["symptom_verified"]
+        case.message_count = 8
+        assert terminal_summary_skip_reason(case) is None
 
 
 @pytest.mark.asyncio
@@ -1597,14 +1669,14 @@ class TestContradictingIntentCancelsPendingTransition:
             ),
         )
 
-        # Set up a pending CLOSE transition
+        # Set up a pending CLOSE transition (post-simplification shape:
+        # closure_reason is engine-derived enum; reason/proposed_by removed).
         case.pending_transition = {
             "to_status": "closed",
-            "reason": "User wants to close",
             "summary": "Close without resolution",
             "evidence_ids": [],
             "proposed_at": "2026-04-23T00:00:00+00:00",
-            "proposed_by": "agent",
+            "closure_reason": "closed_after_investigation",
         }
 
         # Mock LLM response for the new intent processing
@@ -1664,14 +1736,14 @@ class TestContradictingIntentCancelsPendingTransition:
             ),
         )
 
-        # Set up a pending CLOSE transition
+        # Set up a pending CLOSE transition (post-simplification shape:
+        # closure_reason is engine-derived enum; reason/proposed_by removed).
         case.pending_transition = {
             "to_status": "closed",
-            "reason": "User wants to close",
             "summary": "Close without resolution",
             "evidence_ids": [],
             "proposed_at": "2026-04-23T00:00:00+00:00",
-            "proposed_by": "agent",
+            "closure_reason": "closed_after_investigation",
         }
 
         # User submits SAME status_transition intent → confirmation
@@ -1833,7 +1905,7 @@ class TestTerminalTransitionPendingActionCleanup:
             )
         )
 
-        _execute_resolved_transition(case, "user_123", "Fix verified by user")
+        _execute_resolved_transition(case, "user_123")
 
         assert case.proposed_actions[0].status == "accepted"
         assert len(case.action_attempts) == 1
@@ -1862,7 +1934,7 @@ class TestTerminalTransitionPendingActionCleanup:
             )
         )
 
-        _execute_resolved_transition(case, "user_123", "Fix verified by user")
+        _execute_resolved_transition(case, "user_123")
 
         # Status unchanged, and no ActionAttempt created for it
         assert case.proposed_actions[0].status == "accepted"
@@ -1898,7 +1970,7 @@ class TestTerminalTransitionPendingActionCleanup:
             )
         )
 
-        _execute_resolved_transition(case, "user_123", "Second fix worked")
+        _execute_resolved_transition(case, "user_123")
 
         assert case.proposed_actions[0].status == "accepted"  # unchanged
         assert case.proposed_actions[1].status == "accepted"  # cleaned up

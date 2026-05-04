@@ -241,18 +241,22 @@ If multiple solutions exist, the agent proposes resolution when AT LEAST ONE
 solution appears effective. The user confirms which solution resolved the issue.
 
 ```python
-def propose_transition(case, to_status, reason, summary, evidence_ids=None, closure_reason=None):
-    """Store a pending transition proposal. Does NOT execute."""
+def propose_transition(case, to_status, summary, evidence_ids=None):
+    """Store a pending transition proposal. Does NOT execute.
+
+    For CLOSED transitions, closure_reason is derived by the engine via
+    derive_closure_reason() and stored in pending_transition automatically.
+    The caller never passes closure_reason directly.
+    """
     case.pending_transition = {
         "to_status": to_status,
-        "reason": reason,
         "summary": summary,
         "evidence_ids": evidence_ids or [],
         "proposed_at": datetime.now(UTC).isoformat(),
         "proposed_by": "agent",
     }
-    if closure_reason:
-        case.pending_transition["closure_reason"] = closure_reason
+    if to_status == "closed":
+        case.pending_transition["closure_reason"] = derive_closure_reason(case)
 
 def confirm_pending_transition(case, user_id):
     """Execute transition after user confirms.
@@ -262,10 +266,10 @@ def confirm_pending_transition(case, user_id):
     pending_transition is only cleared after successful execution.
     """
     if pending["to_status"] == "resolved":
-        _execute_resolved_transition(case, user_id, pending["reason"])
+        _execute_resolved_transition(case, user_id)
+        # closure_reason is None for RESOLVED
     elif pending["to_status"] == "closed":
-        close_reason = pending.get("closure_reason", pending["reason"])
-        _execute_closed_transition(case, user_id, close_reason)
+        _execute_closed_transition(case, user_id, pending["closure_reason"])
     case.pending_transition = None
     # DISPOSITION - no further case actions
 ```
@@ -279,10 +283,9 @@ don't need readiness checks, but `assess_closure_readiness(case)` produces a
 meaningful investigation summary for the confirmation prompt. This gives the user a
 chance to see what was accomplished before committing to an irreversible action.
 
-**needs_info flag for RESOLVED:** When resolution readiness returns `NEEDS_INFO` or
-`SUGGEST_CLOSE`, the system stores the pending transition with `needs_info=True`.
-This remembers the user's intent to resolve. On subsequent turns, the system
-re-evaluates readiness via `assess_resolution_readiness()`:
+**SUGGEST_CLOSE pivot for RESOLVED:** When resolution readiness returns `SUGGEST_CLOSE` (no root cause, no solution, no evidence), both the UI-dropdown path and the LLM-emit path immediately pivot the pending proposal to CLOSED and present the close confirmation pair. The user sees the close prompt rather than a resolve prompt.
+
+**needs_info flag for RESOLVED:** When resolution readiness returns `NEEDS_INFO`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, the system re-evaluates readiness via `assess_resolution_readiness()`:
 - **READY** → clears `needs_info`, overrides LLM response with confirmation prompt
 - **Still not ready** → cancels pending transition, suggests Close instead (no re-ask loop — the user was already asked once and couldn't provide the info)
 
@@ -322,11 +325,11 @@ closure = assess_closure_readiness(case)
 propose_transition(
     case=case,
     to_status="closed",
-    reason="User expressed abandonment intent",
     summary=closure.message,
-    closure_reason="abandoned",  # "abandoned" | "escalated" | "mitigation_sufficient" | "other"
+    # closure_reason derived by engine via derive_closure_reason():
+    # "inquiry_only" | "closed_after_investigation" | "mitigation_sufficient"
 )
-# User confirms → _execute_closed_transition(case, user_id, "abandoned")
+# User confirms → _execute_closed_transition(case, user_id, closure_reason)
 ```
 
 #### INQUIRY → CLOSED (Disposition)
@@ -570,10 +573,10 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
     case.atomic_update(
         status=CaseStatus.CLOSED,
         closed_at=datetime.now(UTC),
-        closure_reason=reason,  # "abandoned" | "escalated" | "mitigation_sufficient" | "other"
+        closure_reason=reason,  # engine-derived: "closed_after_investigation" | "mitigation_sufficient"
     )
     # Note: "mitigation_sufficient" is used when user closes after mitigation
-    # without pursuing RCA. UI renders as "Closed - Mitigated" (distinct from abandoned).
+    # without pursuing RCA. UI renders as "Closed - Mitigated".
     case.action_history.append(CaseAction(
         from_status=CaseStatus.INVESTIGATING,
         to_status=CaseStatus.CLOSED,
@@ -857,13 +860,15 @@ Before presenting the confirmation, the system runs `assess_resolution_readiness
 
 - **READY** — Root cause and solution present. System shows what's on record and asks user to confirm.
 - **NEEDS_INFO** — Partially ready (e.g., root cause but no solution). System asks user to provide the missing piece.
-- **SUGGEST_CLOSE** — No root cause, no solution, no evidence. System tells user the case can't be resolved and suggests closing instead. If the issue was actually fixed, user can provide the root cause and solution.
+- **SUGGEST_CLOSE** — No root cause, no solution, no evidence. Both the UI-dropdown branch and the LLM-emit branch pivot the pending proposal to CLOSED and emit the close confirmation pair. If the issue was actually fixed, the user can provide root cause and solution to reopen the resolve path.
 
 ```python
 readiness = assess_resolution_readiness(case)
 
 if readiness.verdict == "suggest_close":
-    return readiness.message  # Suggests closing; offers to accept resolution info
+    # Pivot: propose CLOSED instead of RESOLVED, emit close confirmation pair
+    propose_transition(case=case, to_status="closed", summary=readiness.message)
+    return readiness.message
 
 if readiness.verdict == "needs_info":
     return readiness.message  # Asks for missing root cause or solution
@@ -1103,7 +1108,7 @@ Recommendation            — If escalated: what the next investigator should lo
 
 **Skip-if-trivial guardrail** (`should_generate_terminal_summary()` in `terminal_transitions.py`):
 
-Auto-summary generation is scheduled for ALL terminal transition paths. The guardrail skips generation when a case lacks meaningful content. Two independent checks must both pass:
+RESOLVED transitions always generate a summary — a confirmed solution is meaningful content by definition. The guardrail applies only to CLOSED transitions, and skips generation when a case lacks meaningful content. Two independent checks must both pass:
 
 1. **Minimum conversation depth**: At least 4 messages (enough to summarize)
 2. **Investigation substance** (at least one must be true):
@@ -1113,6 +1118,8 @@ Auto-summary generation is scheduled for ALL terminal transition paths. The guar
    - Has completed milestones (investigation made progress)
 
 Always skipped for `closure_reason == "duplicate"` — parent case has the real content.
+
+**Skip-reason surfacing**: When a closed case fails the guardrail and has no summary, `terminal_summary_skip_reason(case)` in `terminal_transitions.py` returns a human-readable note. The case UI adapter populates the Report tab with `status="skipped"` and this derived note, so the tab explains why rather than appearing blank.
 
 #### 1.7.4 Session Cleanup on Terminal Transition
 
@@ -1820,25 +1827,24 @@ are both `False`. To determine whether mitigation occurred, query the
 | `solution_verified` | True | False | True |
 | `root_cause_identified` | True | May be partial | True |
 | `CaseStatus` | RESOLVED | CLOSED | RESOLVED |
-| `closure_reason` | "resolved" | "mitigation_sufficient" | "resolved" |
+| `closure_reason` | None | "mitigation_sufficient" | None |
 | `rca_infeasible` | False | True or False | False |
 | `action_attempts` has MITIGATION | Yes | Yes | No |
-| **Knowledge artifact** | **Runbook** | **Runbook** (mitigation-focused) | **Runbook** |
+| **Knowledge artifact** | **Runbook** | **Closure Summary only** | **Runbook** |
 
 The combination of `CaseStatus`, `closure_reason`, and `action_attempts` history
 provides the full classification. Analytics should query `action_attempts` to
 determine mitigation involvement, not the boolean flags.
 
-**Distinguishing mitigation-only scenarios**: The Mitigation-Only column covers two
-sub-cases: feasibility-driven (`rca_infeasible=True`) and decision-driven
-(`rca_infeasible=False`). Both share the same terminal state and playbook type.
-Query `rca_infeasible` for analytics; the playbook content is the same regardless.
+`closure_reason` is `None` for all RESOLVED cases — resolution itself is the
+categorization. Only CLOSED cases carry a `closure_reason` value
+(`inquiry_only`, `closed_after_investigation`, or `mitigation_sufficient`).
 
 ---
 
 ### 4.5 Post-Terminal Operations
 
-After a case reaches RESOLVED or CLOSED, the system auto-generates a terminal summary. For resolved cases and `CLOSED(mitigation_sufficient)` cases, the user may request runbook generation.
+After a case reaches RESOLVED or CLOSED, the system auto-generates a terminal summary. For resolved cases, the user may additionally request runbook generation.
 
 #### 4.5.0 Auto-Generated Terminal Summary
 
@@ -1846,7 +1852,7 @@ After a case reaches RESOLVED or CLOSED, the system auto-generates a terminal su
 
 **Implementation**: `MilestoneEngine._auto_generate_report()` calls `ReportGenerationService.generate_reports()` after the case is saved in terminal state. Called from both transition paths in the milestone engine (dropdown confirm and main process_turn).
 
-**Guardrail**: `should_generate_terminal_summary()` in `terminal_transitions.py` skips generation for:
+**Guardrail**: `should_generate_terminal_summary()` in `terminal_transitions.py` applies only to CLOSED transitions. RESOLVED transitions always generate a summary unconditionally — a verified solution is meaningful content by definition. For CLOSED transitions, generation is skipped when:
 - Duplicate closures (`closure_reason == "duplicate"`) — parent case has the real content
 - Trivial cases — no evidence AND no hypotheses AND fewer than 4 messages
 
@@ -1861,12 +1867,11 @@ Summaries are built from case data fields (hypotheses, solutions, evidence, mile
 
 **Report type enum** (`ReportType` in `case/domain/owned_models/report.py`):
 
-- `RESOLUTION_SUMMARY` — auto-generated for resolved cases
-- `CLOSURE_SUMMARY` — auto-generated for closed cases
-- `RUNBOOK` — user-requested via ConversionService (see §4.5.2)
-- `MITIGATION_PLAYBOOK` — user-requested from `CLOSED(mitigation_sufficient)` cases (see §4.5.1)
+- `RESOLUTION_SUMMARY` — auto-generated for resolved cases (always generated)
+- `CLOSURE_SUMMARY` — auto-generated for closed cases (subject to skip-if-trivial guardrail)
+- `RUNBOOK` — user-requested via ConversionService (see §4.5.1)
 
-**Dashboard**: `ReportTab` is view-only — displays auto-generated summaries with formatted markdown rendering and download. No manual generate button. If no summary was generated (trivial case), the tab explains why.
+**Dashboard**: `ReportTab` is view-only — displays auto-generated summaries with formatted markdown rendering and download. No manual generate button. If no summary was generated for a closed case (trivial case), the tab surfaces a derived skip-reason note (via `terminal_summary_skip_reason()` in `terminal_transitions.py`) rather than appearing blank. RESOLVED cases always have a summary.
 
 **API endpoints:**
 
@@ -1874,85 +1879,9 @@ Summaries are built from case data fields (hypotheses, solutions, evidence, mile
 - `GET /api/v1/cases/{case_id}/reports/{report_id}/download` — Download report
 - `POST /api/v1/cases/{case_id}/reports` — Regenerate (requires terminal state)
 
-#### 4.5.1 Runbook Generation from Mitigated Cases
+#### 4.5.1 Runbook Generation (Knowledge Flywheel)
 
-**Eligibility**: `CLOSED(mitigation_sufficient)` cases only. Other CLOSED reasons (`abandoned`, `escalated`, `inquiry_only`, `duplicate`) are not eligible.
-
-**User-facing concept**: To the user, this is a "runbook" — same as what RESOLVED cases produce. The backend uses a different readiness check (`assess_playbook_readiness`) and a mitigation-focused template, but the user sees "runbook" throughout. Internally stored as `ReportType.MITIGATION_PLAYBOOK` for analytics distinction.
-
-**Purpose**: Capture operational knowledge from cases where mitigation was successful but no permanent root-cause fix was applied. This covers **two distinct scenarios** that share the same `closure_reason`:
-
-1. **Feasibility-driven** (`rca_infeasible=True`): RCA is infeasible — the system is a black box, deprecated, or has a known intractable condition. The mitigation *is* the permanent strategy.
-2. **Decision-driven** (`rca_infeasible=False`): RCA was feasible but the user chose not to pursue it — 2am during an outage, team bandwidth, or simply "good enough for now."
-
-Both produce the same runbook artifact. The reader doesn't need to know *why* the author stopped at mitigation — they need *what was done* and *how to verify it*. The only content difference is the Constraint Statement section: populated from `rca_infeasible_rationale` for scenario 1, or a generic "RCA deferred by user decision" for scenario 2. This is an enrichment section (not required), so it's handled naturally by the readiness check.
-
-**Analytics distinction**: Query `rca_infeasible` on the case to distinguish scenarios. The runbook itself does not carry this distinction. Query `ReportType` (`RUNBOOK` vs `MITIGATION_PLAYBOOK`) to distinguish runbook source.
-
-**Design**: Same suggest-first pattern as §4.5.2 runbook generation. The agent offers a COOPERATIVE suggestion at closure time for `mitigation_sufficient` cases. Readiness and deduplication are evaluated only when the user accepts.
-
-**Trigger flow (Copilot)**:
-
-```text
-User confirms closure (mitigation_sufficient)
-    → Agent offers COOPERATIVE suggestion: "Would you like me to create a runbook?"
-    → User accepts
-        → System evaluates readiness + deduplication
-        → Four possible outcomes:
-            SUCCESS           → Draft created, user redirected to Dashboard
-            NOT_SUITABLE      → "Not enough mitigation data for a runbook" (no draft)
-            EXISTING_COVERS   → "Similar runbook exists: {title} ({score}% match)"
-            GENERATION_FAILED → "Generation failed, try again later"
-    → User declines or ignores
-        → No evaluation, no side effects
-```
-
-**Readiness assessment** (`assess_playbook_readiness()` in `terminal_transitions.py`):
-
-Unlike standard runbook readiness (§4.5.2), mitigated-case readiness does **not** require root cause or permanent solution. It requires evidence that a mitigation was executed and verified.
-
-| Verdict | Condition | Outcome |
-| --- | --- | --- |
-| `READY` | Problem definition + verified mitigation actions in `action_attempts` + at most 1 enrichment gap | Draft generated |
-| `NEEDS_ENRICHMENT` | Critical sections OK, but 2+ enrichment sections thin | Draft generated with quality warning |
-| `NOT_SUITABLE` | Missing problem definition or no verified mitigation actions | `NOT_SUITABLE` outcome — no draft |
-
-**Critical sections** (required):
-
-- `problem_definition`: `problem_verification.symptom_statement` exists
-- `mitigation_steps`: `action_attempts` contains entries with `action_type=MITIGATION` AND at least one was verified (check `action_attempts` history, not boolean flags which reset)
-
-**Enrichment sections** (improve quality, not required):
-
-- `detection_triage`: evidence items with summaries (how the problem was identified)
-- `verification`: verification steps for the mitigation
-- `constraint_statement`: `rca_infeasible_rationale` is populated
-
-**Always LLM-generated**: recurrence monitoring, sources.
-
-**Same template, same structure.** Mitigated-case runbooks use the identical 7-section canonical template as standard runbooks (see [Runbook Content Architecture §3](../knowledge-and-ai/runbook-content-architecture.md#3-standardized-runbook-template)). The mitigation *is* the resolution — it fits the existing "If X then Y" + code block structure naturally:
-
-> **If** Stripe API returns intermittent 503s with no pattern in application logs (external dependency):
-> ```python
-> STRIPE_CIRCUIT_BREAKER = {
->     "failure_threshold": 5,
->     "recovery_timeout": 30,
->     "fallback": "queue_for_retry"
-> }
-> ```
-> This is the accepted permanent resolution — the root cause is external to our control.
-
-The diagnostic finding is the identified constraint. The resolution is the mitigation implementation. No template change needed — the same structure that accommodates "change the config" also accommodates "implement the circuit breaker."
-
-**Deduplication**: Same vector similarity thresholds as standard runbooks (≥85% = existing covers, 70-84% = suggest with caveats). Both types share the same ChromaDB collection for cross-type dedup.
-
-**API**: Uses the same `POST /api/v1/knowledge/convert-from-case` endpoint. For mitigated cases, `CaseConversionRequest.is_mitigation_only=True` provides additional context (constraint rationale, mitigation actions) in the source material so the LLM can construct a proper Root Cause Resolution section where the mitigation is framed as the permanent strategy.
-
----
-
-#### 4.5.2 Runbook Generation (Knowledge Flywheel)
-
-**Eligibility**: RESOLVED cases only. CLOSED cases are not eligible — quality over quantity (see §4.5.1 for mitigated-case runbooks from `mitigation_sufficient` closures).
+**Eligibility**: RESOLVED cases only. CLOSED cases are not eligible regardless of `closure_reason` — they lack the confirmed root-cause-to-solution chain that a future investigator can apply. The post-close suggestion menu for any CLOSED case offers only "Regenerate closure summary."
 
 **Design**: Suggest first, evaluate on acceptance. The agent always offers a COOPERATIVE suggestion at resolution time. Readiness assessment and deduplication happen only when the user accepts — not upfront. This avoids wasted computation and gives the user a clear accept/decline choice.
 
@@ -2012,7 +1941,7 @@ Maps case data to the 7 canonical runbook sections and checks coverage.
 - `POST /api/v1/knowledge/conversions/{id}/drafts/{draft_id}/verify` — Verify → ingest into vector DB
 - `DELETE /api/v1/knowledge/conversions/{id}/drafts/{draft_id}` — Soft delete draft
 
-#### 4.5.3 Knowledge Suggestion Extraction
+#### 4.5.2 Knowledge Suggestion Extraction
 
 **Eligibility**: RESOLVED cases only. This is a separate workflow from runbook generation — it produces structured knowledge articles (Problem, Root Cause, Solution, Prevention) rather than step-by-step runbooks.
 
@@ -2037,7 +1966,7 @@ Maps case data to the 7 canonical runbook sections and checks coverage.
 - `POST /api/v1/knowledge/suggestions/{id}/reject` — Reject with reason
 - `POST /api/v1/knowledge/suggestions/{id}/remediate-pii` — Auto-remediate PII
 
-#### 4.5.4 Cross-Frontend Linking
+#### 4.5.3 Cross-Frontend Linking
 
 The copilot links to dashboard for operations that require richer UI:
 

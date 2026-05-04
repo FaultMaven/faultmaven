@@ -305,6 +305,28 @@ class InvestigationStrategy(str, Enum):
 
 
 # ============================================================
+# Closure Reason Enum
+# ============================================================
+#
+# Sub-categorization of CLOSED state. Engine-derived from case state at
+# transition time. None for non-terminal and RESOLVED cases.
+#
+# All three values are programmatic — derived from (from_status, mitigation_verified):
+#   - inquiry_only: INQUIRY → CLOSED
+#   - mitigation_sufficient: INVESTIGATING → CLOSED, mitigation_verified=True
+#   - closed_after_investigation: INVESTIGATING → CLOSED, mitigation_verified=False
+#
+# The LLM does NOT emit closure_reason; user-motivation context (e.g., "we're
+# escalating") lives in the LLM-authored persistent Report's free-form summary.
+
+VALID_CLOSURE_REASONS: set[str] = {
+    "inquiry_only",
+    "closed_after_investigation",
+    "mitigation_sufficient",
+}
+
+
+# ============================================================
 # Investigation Progress Models (Section 3)
 # ============================================================
 
@@ -3681,19 +3703,13 @@ class Case(BaseModel):
     @field_validator("closure_reason")
     @classmethod
     def valid_closure_reason(cls, v):
-        """Validate closure reason is from allowed set"""
-        if v is not None:
-            allowed = [
-                "resolved",
-                "abandoned",
-                "escalated",
-                "mitigation_sufficient",
-                "inquiry_only",
-                "duplicate",
-                "other",
-            ]
-            if v not in allowed:
-                raise ValueError(f"closure_reason must be one of: {allowed}")
+        """closure_reason is a sub-categorization of CLOSED state, all
+        engine-derived. None for non-terminal and RESOLVED cases.
+        See: VALID_CLOSURE_REASONS in this module."""
+        if v is not None and v not in VALID_CLOSURE_REASONS:
+            raise ValueError(
+                f"closure_reason must be one of: {sorted(VALID_CLOSURE_REASONS)}"
+            )
         return v
 
     @field_validator("action_history")
@@ -3803,20 +3819,18 @@ class Case(BaseModel):
                 f"closed_at can only be set when status is RESOLVED or CLOSED (current: {self.status})"
             )
 
-        # Terminal states require closure_reason
-        if (
-            self.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
-            and not self.closure_reason
-        ):
-            raise ValueError(f"Terminal status {self.status} requires closure_reason")
-
-        # Non-terminal must not have closure_reason
-        if (
-            self.status not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
-            and self.closure_reason
-        ):
+        # closure_reason is a sub-categorization of CLOSED only.
+        #   - status == CLOSED:    closure_reason MUST be set (engine-derived)
+        #   - status == RESOLVED:  closure_reason MUST be None (resolution
+        #                          itself is the reason; sub-categorization
+        #                          would be redundant with the status)
+        #   - non-terminal:        closure_reason MUST be None
+        if self.status == CaseStatus.CLOSED and not self.closure_reason:
+            raise ValueError("CLOSED status requires closure_reason")
+        if self.status != CaseStatus.CLOSED and self.closure_reason:
             raise ValueError(
-                f"closure_reason can only be set when status is RESOLVED or CLOSED (current: {self.status})"
+                f"closure_reason can only be set when status is CLOSED "
+                f"(current: {self.status})"
             )
 
         return self

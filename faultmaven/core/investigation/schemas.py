@@ -536,24 +536,15 @@ class MissingCriticalData(BaseModel):
 
 class ProposedTransition(BaseModel):
     """
-    Agent proposes a state transition that requires user confirmation.
+    Agent signals a state transition. Engine handles everything else.
 
-    Terminal transitions (INVESTIGATING → RESOLVED, INVESTIGATING → CLOSED,
-    INQUIRY → RESOLVED) are never automatic. The agent proposes the transition,
-    and the system holds it pending until the user explicitly confirms.
-
-    This implements the User-Agent Handshake pattern: the agent's interpretation
-    of user intent (e.g., "it works" → solution_verified) is not sufficient to
-    trigger an irreversible state change. The user must confirm the proposal.
+    Terminal transitions (→ RESOLVED or → CLOSED) require user confirmation;
+    this signal sets pending_transition. Engine derives closure_reason from
+    case state programmatically — the LLM does not author it. The engine
+    builds the confirmation prompt summary from existing helpers.
     """
 
     to_status: str = Field(description="Target status: 'resolved' or 'closed'")
-    reason: str = Field(
-        description="Why the agent believes this transition is appropriate"
-    )
-    summary: str = Field(
-        description="Summary presented to user for confirmation (e.g., problem statement, root cause, solution applied)"
-    )
     evidence_ids: Optional[List[str]] = Field(
         default_factory=list,
         description="Evidence IDs supporting this transition proposal",
@@ -741,11 +732,9 @@ class InquiryResponse(BaseInteractionResponse):
         proposed_transition: Optional[ProposedTransition] = Field(
             None,
             description=(
-                "Propose INQUIRY → CLOSED for user confirmation when the user "
-                "asks to close/cancel without investigating. Use to_status='closed' "
-                "(only target valid from INQUIRY). The transition is NOT executed "
-                "until the user explicitly confirms. The engine sets closure_reason "
-                "and emits the canonical confirm/decline pair."
+                "Propose INQUIRY → CLOSED for user confirmation when the user asks "
+                "to close/cancel without investigating. Use to_status='closed'. "
+                "The transition is NOT executed until the user explicitly confirms."
             ),
         )
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(

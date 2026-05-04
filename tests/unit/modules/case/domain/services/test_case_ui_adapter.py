@@ -108,7 +108,9 @@ def _make_resolved_case(**overrides) -> Case:
     now = datetime.now(timezone.utc)
     object.__setattr__(case, "resolved_at", now)
     object.__setattr__(case, "closed_at", now)
-    object.__setattr__(case, "closure_reason", "resolved")
+    # closure_reason is None for RESOLVED — sub-categorization would be
+    # redundant with the status itself.
+    object.__setattr__(case, "closure_reason", None)
     object.__setattr__(case, "status", CaseStatus.RESOLVED)
     for k, v in overrides.items():
         object.__setattr__(case, k, v)
@@ -123,7 +125,7 @@ def _make_closed_case(**overrides) -> Case:
     case = _make_investigating_case()
     now = datetime.now(timezone.utc)
     object.__setattr__(case, "closed_at", now)
-    object.__setattr__(case, "closure_reason", "closed_by_user")
+    object.__setattr__(case, "closure_reason", "closed_after_investigation")
     object.__setattr__(case, "status", CaseStatus.CLOSED)
     for k, v in overrides.items():
         object.__setattr__(case, k, v)

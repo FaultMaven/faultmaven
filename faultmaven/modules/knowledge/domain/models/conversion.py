@@ -254,24 +254,21 @@ class VerifyResponse(BaseModel):
 
 
 class CaseConversionRequest(BaseModel):
-    """Data extracted from a terminal case for runbook generation.
+    """Data extracted from a RESOLVED case for runbook generation.
 
-    Supports both RESOLVED cases (root-cause runbooks) and
-    CLOSED(mitigation_sufficient) cases (mitigation-focused runbooks).
+    Runbooks codify complete troubleshooting scenarios — root cause + verified
+    solution — so only RESOLVED cases reach this request shape.
 
     Fields are populated from the Case domain model:
     - title: Case.title
     - description: Case.problem_verification.symptom_statement
-    - root_cause: Case.root_cause_conclusion.root_cause (None for mitigated cases)
+    - root_cause: Case.root_cause_conclusion.root_cause
     - root_cause_mechanism: Case.root_cause_conclusion.mechanism
     - solutions: Structured text from Case.solutions[] (title, steps, commands, risks)
     - hypotheses_summary: Validated hypothesis statements from Case.hypotheses
     - evidence_summary: Case.working_conclusion.statement + evidence summaries
     - severity: Case.problem_verification.severity
     - service: Case.problem_verification.affected_services[0]
-    - is_mitigation_only: True for CLOSED(mitigation_sufficient) cases
-    - rca_infeasible_rationale: Why RCA is infeasible (from ProblemVerification)
-    - mitigation_actions: Structured text from action_attempts with MITIGATION type
     """
 
     case_id: str
@@ -288,17 +285,11 @@ class CaseConversionRequest(BaseModel):
     severity: str = "medium"
     tags: List[str] = Field(default_factory=list)
     scope: str = "global"
-    # Mitigation-focused runbook fields
-    is_mitigation_only: bool = False
-    rca_infeasible_rationale: Optional[str] = None
-    mitigation_actions: List[str] = Field(default_factory=list)
 
     @classmethod
     def from_case(cls, case, scope: str = "global") -> "CaseConversionRequest":
-        """Extract runbook generation data from a terminal Case domain object.
+        """Extract runbook generation data from a RESOLVED Case domain object.
 
-        Supports RESOLVED cases (root-cause runbooks) and
-        CLOSED(mitigation_sufficient) cases (mitigation-focused runbooks).
         Reusable by both the API route and the milestone engine.
         """
         # Root cause
@@ -367,27 +358,6 @@ class CaseConversionRequest(BaseModel):
         service = affected[0] if affected else "unknown"
         tags = getattr(case, "tags", []) or []
 
-        # Mitigation-focused runbook fields
-        closure_reason = getattr(case, "closure_reason", None)
-        is_mitigation_only = closure_reason == "mitigation_sufficient"
-
-        rca_infeasible_rationale = None
-        if is_mitigation_only and pv:
-            rca_infeasible_rationale = getattr(pv, "rca_infeasible_rationale", None)
-
-        mitigation_actions = []
-        if is_mitigation_only:
-            for attempt in getattr(case, "action_attempts", []) or []:
-                action_type = getattr(attempt, "action_type", "")
-                if hasattr(action_type, "value"):
-                    action_type = action_type.value
-                if str(action_type).upper() == "MITIGATION":
-                    msg = getattr(attempt, "user_message", None) or ""
-                    action_id = getattr(attempt, "action_id", "")
-                    mitigation_actions.append(
-                        f"Mitigation action ({action_id}): {msg[:2000]}"
-                    )
-
         return cls(
             case_id=case.case_id,
             title=getattr(case, "title", "Untitled Case") or "Untitled Case",
@@ -402,9 +372,6 @@ class CaseConversionRequest(BaseModel):
             severity=severity.lower() if isinstance(severity, str) else "medium",
             tags=tags if tags else affected,
             scope=scope,
-            is_mitigation_only=is_mitigation_only,
-            rca_infeasible_rationale=rca_infeasible_rationale,
-            mitigation_actions=mitigation_actions,
         )
 
 
