@@ -653,6 +653,7 @@ class AgentOrchestrationService:
         execution = AgentExecution(
             execution_id=f"exec_{uuid4().hex[:12]}",
             case_id=session.case_id,
+            organization_id=session.organization_id,
             agent_type=agent_type,
             agent_model=self.llm_client.model,
             status=ExecutionStatus.QUEUED,
@@ -1548,6 +1549,7 @@ class AgentOrchestrationService:
         tc_record = AgentToolCall(
             tool_call_id=tool_call.id,
             execution_id=execution.execution_id,
+            organization_id=execution.organization_id,
             tool_name=tool_call.name,
             tool_input=tool_call.arguments,
         )

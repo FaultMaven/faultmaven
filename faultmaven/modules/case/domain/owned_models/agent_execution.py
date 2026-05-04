@@ -65,6 +65,9 @@ class AgentToolCall:
         duration_ms: Tool call duration in milliseconds
         created_at: Record creation timestamp
         updated_at: Record update timestamp
+        organization_id: Tenant identifier. Optional at construction; the
+            repository populates it from the parent execution's case row
+            at insert time when not set.
     """
 
     tool_call_id: str
@@ -79,6 +82,9 @@ class AgentToolCall:
     duration_ms: Optional[int] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Tenant column. None at construction time means the repository will
+    # source it from the parent execution's case row at insert time.
+    organization_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         """Validate tool call data."""
@@ -162,6 +168,10 @@ class AgentExecution:
         token_usage: Token usage statistics (prompt_tokens, completion_tokens, total_tokens)
         tool_calls: List of tool calls made during execution
         metadata: Additional execution-specific metadata (JSON)
+        organization_id: Tenant identifier. Production callers
+            (agent_orchestration_service) propagate it from the
+            authenticated session for defense-in-depth; the repository
+            falls back to the parent case row when not set.
         created_at: Record creation timestamp
         updated_at: Record update timestamp
     """
@@ -182,6 +192,10 @@ class AgentExecution:
     metadata: Optional[Dict[str, Any]] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Tenant column. None at construction means the repository will source
+    # it from the parent case row at insert time. Production callers
+    # propagate it from the authenticated session for defense-in-depth.
+    organization_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         """Validate agent execution data."""

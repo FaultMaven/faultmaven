@@ -64,6 +64,9 @@ from faultmaven.modules.case.contracts import (
     WorkingConclusion,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
+from faultmaven.modules.case.infrastructure import (
+    _agent_execution_mappers as agent_mappers,
+)
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -2930,11 +2933,86 @@ class SQLiteCaseRepository(CaseRepository):
         """Get case participants (stub)."""
         raise NotImplementedError("get_case_participants not implemented for SQLite")
 
+    # ============================================================
+    # Agent Execution & Tool Call Persistence (SQLite)
+    # Schema reference: docs/architecture/data-and-storage/schemas/case-schema.md §4.11
+    # ============================================================
+
+    async def _resolve_organization_id(self, execution: Any, case_id: str) -> str:
+        """Resolve organization_id for an execution.
+
+        Production callers (agent_orchestration_service) populate
+        execution.organization_id from the authenticated session. Tests and
+        legacy callers may leave it None; in that case fall back to the
+        parent case row.
+        """
+        org_id = getattr(execution, "organization_id", None)
+        if org_id:
+            return org_id
+        result = await self.db.execute(
+            text("SELECT organization_id FROM cases WHERE case_id = :case_id"),
+            {"case_id": case_id},
+        )
+        row = result.fetchone()
+        if not row or not row[0]:
+            raise RepositoryException(
+                f"Cannot resolve organization_id: case {case_id} not found"
+            )
+        return str(row[0])
+
     async def create_agent_execution(self, execution: Any) -> Any:
-        raise NotImplementedError("create_agent_execution not implemented for SQLite")
+
+        try:
+            organization_id = await self._resolve_organization_id(
+                execution, execution.case_id
+            )
+            params = agent_mappers.execution_insert_params(execution, organization_id)
+            await self.db.execute(
+                text("""
+                    INSERT INTO agent_executions (
+                        execution_id, case_id, organization_id, agent_type,
+                        agent_model, status, started_at, completed_at,
+                        execution_duration_ms, prompt, response, error_message,
+                        token_usage, metadata, session_id, created_at, updated_at
+                    ) VALUES (
+                        :execution_id, :case_id, :organization_id, :agent_type,
+                        :agent_model, :status, :started_at, :completed_at,
+                        :execution_duration_ms, :prompt, :response, :error_message,
+                        :token_usage, :metadata, :session_id, :created_at, :updated_at
+                    )
+                """),
+                params,
+            )
+            await self.db.commit()
+            execution.organization_id = organization_id
+            # Mirror in-memory semantics: returned object has empty tool_calls;
+            # callers persist tool calls separately via create_agent_tool_call.
+            execution.tool_calls = []
+            return execution
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to create agent execution {execution.execution_id}: {e}"
+            ) from e
 
     async def get_agent_execution(self, execution_id: str) -> Any | None:
-        raise NotImplementedError("get_agent_execution not implemented for SQLite")
+
+        result = await self.db.execute(
+            text("""
+                SELECT execution_id, case_id, organization_id, agent_type,
+                       agent_model, status, started_at, completed_at,
+                       execution_duration_ms, prompt, response, error_message,
+                       token_usage, metadata AS metadata, created_at, updated_at
+                FROM agent_executions
+                WHERE execution_id = :execution_id
+            """),
+            {"execution_id": execution_id},
+        )
+        row = result.fetchone()
+        if not row:
+            return None
+        tool_call_rows = await self._fetch_tool_call_rows(execution_id)
+        return agent_mappers.row_to_execution(row, tool_call_rows)
 
     async def list_agent_executions_by_case(
         self,
@@ -2944,8 +3022,14 @@ class SQLiteCaseRepository(CaseRepository):
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[builtins.list[Any], int]:
-        raise NotImplementedError(
-            "list_agent_executions_by_case not implemented for SQLite"
+        return await self._list_executions(
+            where_clause="case_id = :case_id",
+            where_params={"case_id": case_id},
+            status=status,
+            agent_type=agent_type,
+            order_by="created_at DESC",
+            limit=limit,
+            offset=offset,
         )
 
     async def list_agent_executions_by_session(
@@ -2955,40 +3039,279 @@ class SQLiteCaseRepository(CaseRepository):
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[builtins.list[Any], int]:
-        raise NotImplementedError(
-            "list_agent_executions_by_session not implemented for SQLite"
+        return await self._list_executions(
+            where_clause="session_id = :session_id",
+            where_params={"session_id": session_id},
+            status=status,
+            agent_type=None,
+            order_by="created_at ASC",
+            limit=limit,
+            offset=offset,
         )
 
+    async def _list_executions(
+        self,
+        where_clause: str,
+        where_params: dict,
+        status: str | None,
+        agent_type: str | None,
+        order_by: str,
+        limit: int,
+        offset: int,
+    ) -> tuple[builtins.list[Any], int]:
+
+        conditions = [where_clause]
+        params: dict[str, Any] = dict(where_params)
+        if status is not None:
+            status_val = status.value if hasattr(status, "value") else str(status)
+            conditions.append("status = :status")
+            params["status"] = status_val
+        if agent_type is not None:
+            agent_type_val = (
+                agent_type.value if hasattr(agent_type, "value") else str(agent_type)
+            )
+            conditions.append("agent_type = :agent_type")
+            params["agent_type"] = agent_type_val
+        where_sql = " AND ".join(conditions)
+
+        count_result = await self.db.execute(
+            text(f"SELECT COUNT(*) FROM agent_executions WHERE {where_sql}"),
+            params,
+        )
+        total = int(count_result.scalar() or 0)
+
+        page_params = dict(params)
+        page_params["limit"] = limit
+        page_params["offset"] = offset
+        page_result = await self.db.execute(
+            text(f"""
+                SELECT execution_id, case_id, organization_id, agent_type,
+                       agent_model, status, started_at, completed_at,
+                       execution_duration_ms, prompt, response, error_message,
+                       token_usage, metadata AS metadata, created_at, updated_at
+                FROM agent_executions
+                WHERE {where_sql}
+                ORDER BY {order_by}
+                LIMIT :limit OFFSET :offset
+            """),
+            page_params,
+        )
+        rows = page_result.fetchall()
+
+        executions: builtins.list[Any] = []
+        for row in rows:
+            tool_call_rows = await self._fetch_tool_call_rows(row.execution_id)
+            executions.append(agent_mappers.row_to_execution(row, tool_call_rows))
+        return executions, total
+
     async def update_agent_execution(self, execution: Any) -> Any:
-        raise NotImplementedError("update_agent_execution not implemented for SQLite")
+
+        try:
+            execution.updated_at = datetime.now(UTC)
+            params = agent_mappers.execution_update_params(execution)
+            result = await self.db.execute(
+                text("""
+                    UPDATE agent_executions
+                    SET agent_type = :agent_type,
+                        agent_model = :agent_model,
+                        status = :status,
+                        started_at = :started_at,
+                        completed_at = :completed_at,
+                        execution_duration_ms = :execution_duration_ms,
+                        prompt = :prompt,
+                        response = :response,
+                        error_message = :error_message,
+                        token_usage = :token_usage,
+                        metadata = :metadata,
+                        updated_at = :updated_at
+                    WHERE execution_id = :execution_id
+                """),
+                params,
+            )
+            await self.db.commit()
+            if result.rowcount == 0:
+                raise RepositoryException(
+                    f"Agent execution {execution.execution_id} not found"
+                )
+            execution.tool_calls = await self.get_agent_tool_calls_for_execution(
+                execution.execution_id
+            )
+            return execution
+        except RepositoryException:
+            raise
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to update agent execution {execution.execution_id}: {e}"
+            ) from e
 
     async def delete_agent_execution(self, execution_id: str) -> bool:
-        raise NotImplementedError("delete_agent_execution not implemented for SQLite")
+        # SQLite does not enforce ON DELETE CASCADE unless the per-connection
+        # PRAGMA foreign_keys=ON is set, and the engine setup in
+        # infrastructure/persistence/database.py does not set it. We perform
+        # an explicit two-phase delete to guarantee tool calls are removed.
+        try:
+            await self.db.execute(
+                text("DELETE FROM agent_tool_calls WHERE execution_id = :execution_id"),
+                {"execution_id": execution_id},
+            )
+            result = await self.db.execute(
+                text("DELETE FROM agent_executions WHERE execution_id = :execution_id"),
+                {"execution_id": execution_id},
+            )
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to delete agent execution {execution_id}: {e}"
+            ) from e
 
     async def create_agent_tool_call(self, tool_call: Any) -> Any:
-        raise NotImplementedError("create_agent_tool_call not implemented for SQLite")
+
+        try:
+            organization_id = getattr(tool_call, "organization_id", None)
+            if not organization_id:
+                # Derive from parent execution row.
+                result = await self.db.execute(
+                    text(
+                        "SELECT organization_id FROM agent_executions "
+                        "WHERE execution_id = :execution_id"
+                    ),
+                    {"execution_id": tool_call.execution_id},
+                )
+                row = result.fetchone()
+                if not row or not row[0]:
+                    raise RepositoryException(
+                        f"Cannot resolve organization_id for tool call "
+                        f"{tool_call.tool_call_id}: parent execution "
+                        f"{tool_call.execution_id} not found"
+                    )
+                organization_id = str(row[0])
+            params = agent_mappers.tool_call_insert_params(tool_call, organization_id)
+            await self.db.execute(
+                text("""
+                    INSERT INTO agent_tool_calls (
+                        tool_call_id, execution_id, organization_id, tool_name,
+                        tool_input, tool_output, status, error_message,
+                        started_at, completed_at, duration_ms,
+                        created_at, updated_at
+                    ) VALUES (
+                        :tool_call_id, :execution_id, :organization_id, :tool_name,
+                        :tool_input, :tool_output, :status, :error_message,
+                        :started_at, :completed_at, :duration_ms,
+                        :created_at, :updated_at
+                    )
+                """),
+                params,
+            )
+            await self.db.commit()
+            tool_call.organization_id = organization_id
+            return tool_call
+        except RepositoryException:
+            raise
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to create tool call {tool_call.tool_call_id}: {e}"
+            ) from e
 
     async def update_agent_tool_call(self, tool_call: Any) -> Any:
-        raise NotImplementedError("update_agent_tool_call not implemented for SQLite")
+
+        try:
+            tool_call.updated_at = datetime.now(UTC)
+            params = agent_mappers.tool_call_update_params(tool_call)
+            result = await self.db.execute(
+                text("""
+                    UPDATE agent_tool_calls
+                    SET tool_name = :tool_name,
+                        tool_input = :tool_input,
+                        tool_output = :tool_output,
+                        status = :status,
+                        error_message = :error_message,
+                        started_at = :started_at,
+                        completed_at = :completed_at,
+                        duration_ms = :duration_ms,
+                        updated_at = :updated_at
+                    WHERE tool_call_id = :tool_call_id
+                """),
+                params,
+            )
+            await self.db.commit()
+            if result.rowcount == 0:
+                raise RepositoryException(
+                    f"Tool call {tool_call.tool_call_id} not found"
+                )
+            return tool_call
+        except RepositoryException:
+            raise
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to update tool call {tool_call.tool_call_id}: {e}"
+            ) from e
 
     async def get_agent_tool_calls_for_execution(
         self, execution_id: str
     ) -> builtins.list[Any]:
-        raise NotImplementedError(
-            "get_agent_tool_calls_for_execution not implemented for SQLite"
+
+        rows = await self._fetch_tool_call_rows(execution_id)
+        return [agent_mappers.row_to_tool_call(row) for row in rows]
+
+    async def _fetch_tool_call_rows(self, execution_id: str) -> builtins.list[Any]:
+        result = await self.db.execute(
+            text("""
+                SELECT tool_call_id, execution_id, organization_id, tool_name,
+                       tool_input, tool_output, status, error_message,
+                       started_at, completed_at, duration_ms,
+                       created_at, updated_at
+                FROM agent_tool_calls
+                WHERE execution_id = :execution_id
+                ORDER BY created_at ASC
+            """),
+            {"execution_id": execution_id},
         )
+        return list(result.fetchall())
 
     async def count_agent_executions_by_case(self, case_id: str) -> int:
-        raise NotImplementedError(
-            "count_agent_executions_by_case not implemented for SQLite"
+        result = await self.db.execute(
+            text("SELECT COUNT(*) FROM agent_executions WHERE case_id = :case_id"),
+            {"case_id": case_id},
         )
+        return int(result.scalar() or 0)
 
     async def get_latest_agent_execution(
         self, case_id: str, agent_type: str | None = None
     ) -> Any | None:
-        raise NotImplementedError(
-            "get_latest_agent_execution not implemented for SQLite"
+
+        conditions = ["case_id = :case_id"]
+        params: dict[str, Any] = {"case_id": case_id}
+        if agent_type is not None:
+            agent_type_val = (
+                agent_type.value if hasattr(agent_type, "value") else str(agent_type)
+            )
+            conditions.append("agent_type = :agent_type")
+            params["agent_type"] = agent_type_val
+        where_sql = " AND ".join(conditions)
+
+        result = await self.db.execute(
+            text(f"""
+                SELECT execution_id, case_id, organization_id, agent_type,
+                       agent_model, status, started_at, completed_at,
+                       execution_duration_ms, prompt, response, error_message,
+                       token_usage, metadata AS metadata, created_at, updated_at
+                FROM agent_executions
+                WHERE {where_sql}
+                ORDER BY created_at DESC
+                LIMIT 1
+            """),
+            params,
         )
+        row = result.fetchone()
+        if not row:
+            return None
+        tool_call_rows = await self._fetch_tool_call_rows(row.execution_id)
+        return agent_mappers.row_to_execution(row, tool_call_rows)
 
 
 class RepositoryException(Exception):
