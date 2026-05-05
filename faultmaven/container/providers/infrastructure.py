@@ -38,8 +38,32 @@ def create_tracer(settings: FaultMavenSettings) -> Any:
     return OpikTracer(settings=settings)
 
 
-def create_llm_provider() -> Any:
-    """Create LLM provider/router."""
+def create_llm_provider(settings: FaultMavenSettings | None = None) -> Any:
+    """Create LLM provider/router.
+
+    Defaults to the OSS LLMRouter. Override via LLM_ROUTER_CLASS env var
+    pointing to a dotted path (e.g.
+    ``faultmaven_cloud.providers.tenant_llm_router.MultiTenantLLMRouter``)
+    for cloud deployments that need tenant-aware routing.
+
+    The replacement class must satisfy ``ILLMProvider`` and accept zero
+    constructor arguments (or have all-optional kwargs).
+    """
+    if settings is None:
+        from faultmaven.config.settings import get_settings
+
+        settings = get_settings()
+
+    router_class_path = settings.llm.router_class
+    if router_class_path:
+        import importlib
+
+        module_path, class_name = router_class_path.rsplit(".", 1)
+        module = importlib.import_module(module_path)
+        router_class = getattr(module, class_name)
+        logger.info(f"Using custom LLM router: {router_class_path}")
+        return router_class()
+
     from faultmaven.infrastructure.llm.router import LLMRouter
 
     return LLMRouter()
@@ -552,7 +576,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     container._register_service("tracer", tracer)
 
     # LLM
-    llm_provider = create_llm_provider()
+    llm_provider = create_llm_provider(settings)
     container._register_service("llm_provider", llm_provider)
 
     # Processing
