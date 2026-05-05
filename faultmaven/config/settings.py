@@ -150,6 +150,12 @@ class ServerSettings(BaseSettings):
 class LLMSettings(BaseSettings):
     """LLM provider configuration with flexible multi-model support"""
 
+    # Optional dotted path to a custom LLMRouter implementation (e.g. cloud's
+    # MultiTenantLLMRouter). When unset, OSS LLMRouter is used.
+    router_class: Optional[str] = Field(
+        default=None, validation_alias="LLM_ROUTER_CLASS"
+    )
+
     # Task-specific provider selection
     provider: LLMProvider = Field(
         default=LLMProvider.FIREWORKS, validation_alias="CHAT_PROVIDER"
