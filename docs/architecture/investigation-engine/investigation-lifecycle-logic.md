@@ -1114,8 +1114,9 @@ RESOLVED transitions always generate a summary — a confirmed solution is meani
 2. **Investigation substance** (at least one must be true):
    - Has evidence (investigation produced data)
    - Has hypotheses (investigation produced theories)
-   - Has a confirmed problem description (inquiry completed)
    - Has completed milestones (investigation made progress)
+
+The case description is intentionally excluded from substance signals — it's creation-time metadata, not investigation output. A case closed without any of the three substance signals (i.e. closed before investigation produced anything) gets no auto-generated summary.
 
 Always skipped for `closure_reason == "duplicate"` — parent case has the real content.
 
@@ -1881,7 +1882,7 @@ Summaries are built from case data fields (hypotheses, solutions, evidence, mile
 
 #### 4.5.1 Runbook Generation (Knowledge Flywheel)
 
-**Eligibility**: RESOLVED cases only. CLOSED cases are not eligible regardless of `closure_reason` — they lack the confirmed root-cause-to-solution chain that a future investigator can apply. The post-close suggestion menu for any CLOSED case offers only "Regenerate closure summary."
+**Eligibility**: RESOLVED cases only. CLOSED cases are not eligible regardless of `closure_reason` — they lack the confirmed root-cause-to-solution chain that a future investigator can apply. The post-close suggestion menu for a CLOSED case offers "Regenerate closure summary" only when an auto-generated summary was actually produced (gated by the substance check above). For low-substance closures with no auto-generated summary, no suggestions are offered — there's nothing to regenerate.
 
 **Design**: Suggest first, evaluate on acceptance. The agent always offers a COOPERATIVE suggestion at resolution time. Readiness assessment and deduplication happen only when the user accepts — not upfront. This avoids wasted computation and gives the user a clear accept/decline choice.
 

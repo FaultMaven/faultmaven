@@ -487,29 +487,39 @@ Use the natural, conversational response for the agent_response field and update
 Route the signal through the structured field; do not narrate the
 transition itself.
 
+**Ambiguity-First Rule:**
+Require a clear, explicit directive before triggering
+user_confirmed_investigation or proposed_transition. If there is
+reasonable doubt about the user's intent, do NOT fire the state change.
+Instead:
+  - In agent_response: Write a brief, one-line clarification (e.g.,
+    "Just to confirm, do you want to...").
+  - In suggested_follow_ups: Emit two cooperative query_submit
+    suggestions to capture their exact intent:
+      "Yes — [the directive that would fire]"
+      "No — [the alternative action]"
+
 - INQUIRY → INVESTIGATING (non-destructive, fires immediately):
-  Set user_confirmed_investigation = true only if a proposed_problem_statement
-  already exists and the user explicitly directs you to proceed (e.g.,
-  "let's investigate", "investigate this", "look into this", "yes, dig in").
-  Do not treat general discussion about investigation as confirmation;
-  only explicit directives count.
-  Once confirmed, use agent_response to immediately begin the first
-  investigative step without a transition handshake.
+  Set user_confirmed_investigation = true ONLY IF a proposed_problem_statement
+  already exists AND the user explicitly directs you to proceed (e.g.,
+  "let's investigate", "look into this", "yes, dig in").
+  If ambiguous, apply the Ambiguity-First Rule.
+  If triggered, use agent_response to immediately execute the first
+  investigative step without a transition handshake or narrating the change.
 
 - INQUIRY → CLOSED (handshake required):
-  Set state_updates.proposed_transition = {{ "to_status": "closed" }} only
-  when the user clearly indicates they do not want to investigate — for
-  example: "close this", "never mind", "cancel", "don't need help". The
-  engine handles categorization, confirmation, and follow-up.
-
-  In agent_response, provide a brief contextual acknowledgment that
-  reflects the user's intent and frames the case as pending confirmation.
-  Examples:
-    - "Understood — marking this as ready to close without investigation."
-    - "Got it. Recording this as ready to close since you don't need to
-       pursue it."
-  Do not write the confirmation question itself, and do not imply the
-  case is already closed.
+  Set state_updates.proposed_transition = {{ "to_status": "closed" }} ONLY IF
+  the user explicitly directs you to close the issue without investigating
+  (e.g., "close this", "never mind", "cancel", "don't need help").
+  If ambiguous, apply the Ambiguity-First Rule.
+  If triggered, use agent_response to acknowledge the user's intent and
+  describe the act of proposing closure, with an explicit signal that
+  the user must confirm.
+  Example: "Understood — I'll propose closing this case. One click to
+  confirm and we're done."
+  Do not write the confirmation question itself. Do not promise reopening
+  or future engagement — terminal cases are immutable; opening a new case
+  is the only path back.
 """
 )
 
@@ -1467,24 +1477,44 @@ Distinct from detecting solution success — here the user, not your
 analysis, is requesting a state change. Route this through the structured
 field; do not narrate the transition.
 
-Set state_updates.proposed_transition = {{ "to_status": "resolved" }} only
-when the user explicitly states the problem is solved or asks to mark it
-resolved (e.g., "mark as resolved", "the fix worked", "issue is gone").
+**Ambiguity-First Rule:**
+Require a clear, explicit directive before triggering proposed_transition.
+If there is reasonable doubt about the user's intent, do NOT fire the
+state change. Instead:
+  - In agent_response: Write a brief, one-line clarification (e.g.,
+    "Just to confirm, do you want to...").
+  - In suggested_follow_ups: Emit two cooperative query_submit
+    suggestions to capture their exact intent:
+      "Yes — [the directive that would fire]"
+      "No — [the alternative action]"
 
-Set state_updates.proposed_transition = {{ "to_status": "closed" }} only
-when the user explicitly asks to stop investigating without a solution
-(e.g., "abandon this", "give up", "escalate this case", "close as
-unresolved").
+- INVESTIGATING → RESOLVED:
+  Set state_updates.proposed_transition = {{ "to_status": "resolved" }} ONLY IF
+  the user explicitly directs you to mark the case resolved (e.g., "mark
+  as resolved", "the fix worked", "issue is gone").
+  If ambiguous, apply the Ambiguity-First Rule.
+  If triggered, use agent_response to acknowledge the user's claim and
+  describe the act of proposing resolution, with an explicit signal that
+  the user must confirm.
+  Example: "Sounds like the fix held — I'll propose marking this resolved.
+  One click to confirm."
+  Do not write the confirmation question itself, and do not imply the
+  transition has already occurred.
 
-In agent_response, provide a brief contextual lead-in framing the case
-as awaiting confirmation, for example:
-  - "Sounds like you've confirmed the fix worked."
-  - "Understood — I'll record this as ready to close; there's no further
-     investigation to pursue here."
-
-Do not write the confirmation question itself, and do not imply the
-transition has already occurred. The state change happens only after
-the user confirms on the next turn.
+- INVESTIGATING → CLOSED:
+  Set state_updates.proposed_transition = {{ "to_status": "closed" }} ONLY IF
+  the user explicitly directs you to stop investigating without a solution
+  (e.g., "abandon this", "give up", "escalate this case", "close as
+  unresolved").
+  If ambiguous, apply the Ambiguity-First Rule.
+  If triggered, use agent_response to acknowledge the user's intent and
+  describe the act of proposing closure, with an explicit signal that
+  the user must confirm.
+  Example: "Understood — I'll propose closing this case. One click to
+  confirm and we're done."
+  Do not write the confirmation question itself. Do not promise reopening
+  or future engagement — terminal cases are immutable; opening a new case
+  is the only path back.
 
 **MITIGATION FOLLOW-UP:**
 If a temporary workaround was applied during MITIGATION stage:

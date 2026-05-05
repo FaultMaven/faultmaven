@@ -655,11 +655,13 @@ def should_generate_terminal_summary(case: "Case") -> bool:
 
     Two independent checks (both must pass):
     1. Minimum 4 messages (enough conversation to summarize)
-    2. At least one substance indicator:
+    2. At least one investigation-output indicator:
        - Has evidence (investigation produced data)
        - Has hypotheses (investigation produced theories)
-       - Has a confirmed problem description (inquiry completed)
        - Has completed milestones (investigation made progress)
+
+    The case description is creation-time metadata, not investigation output,
+    and is intentionally excluded from the substance signal.
 
     Always skip for duplicate closures — the parent case has the real content.
     """
@@ -672,7 +674,6 @@ def should_generate_terminal_summary(case: "Case") -> bool:
     message_count = getattr(case, "message_count", 0) or 0
     evidence_count = len(case.evidence) if case.evidence else 0
     hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
-    has_description = bool(case.description and case.description.strip())
     milestones_completed = (
         len(case.progress.completed_milestones) if case.progress else 0
     )
@@ -685,19 +686,17 @@ def should_generate_terminal_summary(case: "Case") -> bool:
         )
         return False
 
-    # Check 2: Investigation substance
+    # Check 2: Investigation substance (description excluded — creation
+    # metadata is not an investigation output)
     has_substance = (
-        evidence_count > 0
-        or hypothesis_count > 0
-        or has_description
-        or milestones_completed > 0
+        evidence_count > 0 or hypothesis_count > 0 or milestones_completed > 0
     )
 
     if not has_substance:
         logger.info(
             f"Skipping terminal summary for case {case.case_id}: no investigation "
             f"substance (evidence={evidence_count}, hypotheses={hypothesis_count}, "
-            f"description={has_description}, milestones={milestones_completed})"
+            f"milestones={milestones_completed})"
         )
         return False
 
@@ -723,20 +722,19 @@ def terminal_summary_skip_reason(case: "Case") -> Optional[str]:
 
     evidence_count = len(case.evidence) if case.evidence else 0
     hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
-    has_description = bool(case.description and case.description.strip())
     milestones_completed = (
         len(case.progress.completed_milestones) if case.progress else 0
     )
+    # Substance = investigation output. Description is creation-time
+    # metadata and is intentionally excluded — must match the substance
+    # check in should_generate_terminal_summary.
     has_substance = (
-        evidence_count > 0
-        or hypothesis_count > 0
-        or has_description
-        or milestones_completed > 0
+        evidence_count > 0 or hypothesis_count > 0 or milestones_completed > 0
     )
     if not has_substance:
         return (
             "No closure summary generated: no evidence, hypotheses, "
-            "description, or completed milestones to summarize."
+            "or completed milestones to summarize."
         )
 
     return None

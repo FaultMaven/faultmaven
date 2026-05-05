@@ -742,6 +742,24 @@ def _close_confirmation_suggestions() -> list:
     ]
 
 
+def _terminal_confirmation_response(case) -> str:
+    """Deterministic agent response after a transition is confirmed.
+
+    Closure-reason-aware so the user can tell at a glance what was preserved.
+    """
+    if case.status == CaseStatus.RESOLVED:
+        return "Case resolved."
+
+    closure_reason = getattr(case, "closure_reason", "") or ""
+    if closure_reason == "inquiry_only":
+        return "Case closed without investigation."
+    if closure_reason == "closed_after_investigation":
+        return "Case closed without resolution. Investigation history preserved."
+    if closure_reason == "mitigation_sufficient":
+        return "Case closed; mitigation deemed sufficient."
+    return "Case closed."
+
+
 def _resolved_suggestions() -> list:
     """Suggestions offered after a case is marked RESOLVED.
 
@@ -767,15 +785,22 @@ def _resolved_suggestions() -> list:
     ]
 
 
-def _closed_suggestions(closure_reason: str = "") -> list:
+def _closed_suggestions(case) -> list:
     """Suggestions offered after a case is CLOSED.
+
+    "Regenerate closure summary" is shown only when an auto-generated summary
+    actually exists (gated by ``_pending_summary``, set at closure time by
+    the substance check). For low-substance closures (e.g. inquiry_only with
+    no investigation), no summary was generated, so there is nothing to
+    regenerate — return no suggestions.
 
     Report viewing is via Dashboard. Runbook generation is intentionally
     not offered on CLOSED cases — runbooks codify complete troubleshooting
     scenarios (root cause + verified solution) and only RESOLVED cases
-    qualify. The ``closure_reason`` parameter is kept for caller symmetry
-    with potential future closure-specific suggestions.
+    qualify.
     """
+    if not getattr(case, "_pending_summary", False):
+        return []
     return [
         {
             "label": "Regenerate closure summary",
@@ -1450,11 +1475,7 @@ class MilestoneEngine:
 
                         confirm_pending_transition(case, case.user_id)
 
-                        agent_response = (
-                            "Case resolved."
-                            if case.status == CaseStatus.RESOLVED
-                            else "Case closed."
-                        )
+                        agent_response = _terminal_confirmation_response(case)
                         self._record_deterministic_turn(
                             case, user_message or "", agent_response
                         )
@@ -1466,9 +1487,7 @@ class MilestoneEngine:
                         follow_ups = (
                             _resolved_suggestions()
                             if case.status == CaseStatus.RESOLVED
-                            else _closed_suggestions(
-                                getattr(case, "closure_reason", "") or ""
-                            )
+                            else _closed_suggestions(case)
                         )
 
                         return {
@@ -2427,9 +2446,7 @@ class MilestoneEngine:
                 if case_updated.status == CaseStatus.RESOLVED:
                     follow_ups = _resolved_suggestions()
                 elif case_updated.status == CaseStatus.CLOSED:
-                    follow_ups = _closed_suggestions(
-                        getattr(case_updated, "closure_reason", "") or ""
-                    )
+                    follow_ups = _closed_suggestions(case_updated)
 
             # Compliance instrumentation: per-turn signal on whether the LLM
             # is honoring the transition-handling prompt rules. Used for
