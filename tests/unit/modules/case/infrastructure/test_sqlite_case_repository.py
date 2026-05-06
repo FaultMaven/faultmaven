@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.models import Base
@@ -296,6 +297,24 @@ class TestSaveAndGet:
             await repository.get("case_abc")
 
         assert "Failed to get case" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_save_refuses_corrupted_state(self, repository):
+        """Defense in depth: save() re-validates the aggregate before writing.
+
+        Catches cases that bypassed validate_assignment via object.__setattr__
+        (test fixtures leaking into prod paths) or had a Pydantic v2 partial
+        assignment whose ValidationError was swallowed. Without this guard the
+        repo would persist schema-invalid rows (status=RESOLVED with no
+        timestamps) and poison subsequent reads.
+        """
+        case = _make_case()  # default: INQUIRY (valid minimal state)
+        # Force-corrupt the aggregate, fully bypassing validate_assignment.
+        # status=RESOLVED requires resolved_at + closed_at, but we leave them None.
+        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+
+        with pytest.raises(ValidationError):
+            await repository.save(case)
 
 
 # ============================================================

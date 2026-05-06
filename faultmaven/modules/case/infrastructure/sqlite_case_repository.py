@@ -172,6 +172,10 @@ class SQLiteCaseRepository(CaseRepository):
         the new version and returned — callers can use either the
         return value or the passed-in object.
         """
+        # Defense in depth: catch swallowed validation exceptions or bypassed validators
+        # by re-verifying the entire aggregate state before persisting.
+        Case.model_validate(case.model_dump(mode="python"))
+
         try:
             case.updated_at = datetime.now(UTC)
 

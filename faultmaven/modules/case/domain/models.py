@@ -25,7 +25,7 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ============================================================
 # Status & Lifecycle Models (Section 2)
@@ -3908,27 +3908,50 @@ class Case(BaseModel):
         Args:
             **updates: Field names and values to update atomically
 
+        Raises:
+            ValueError: If the post-update state violates a cross-field invariant
+                (e.g., status=RESOLVED with no resolved_at). Pre-update state is
+                restored before the exception propagates.
+
         Note:
-            Sets _in_atomic_update flag to signal validators to skip checks.
-            Uses object.__setattr__() to bypass Pydantic's validate_assignment.
+            Sets _in_atomic_update flag to bypass per-field validators that would
+            otherwise reject transient inconsistent states during multi-field
+            updates. After all updates apply, this method re-runs the cross-field
+            validators on the final state to catch callers that forgot a required
+            field — without that revalidation step, atomic_update would silently
+            accept malformed transitions (e.g., status=RESOLVED without timestamps).
         """
-        # Set flag to signal validators to skip consistency checks
+        snapshot = {f: getattr(self, f) for f in updates}
+
         object.__setattr__(self, "_in_atomic_update", True)
         try:
             for field_name, value in updates.items():
                 object.__setattr__(self, field_name, value)
         finally:
-            # Clear flag after all updates complete
             object.__setattr__(self, "_in_atomic_update", False)
+
+        try:
+            self.validate_status_timestamp_consistency()
+            self.validate_timestamp_ordering()
+            self.validate_investigating_requirements()
+        except ValueError:
+            object.__setattr__(self, "_in_atomic_update", True)
+            try:
+                for field_name, value in snapshot.items():
+                    object.__setattr__(self, field_name, value)
+            finally:
+                object.__setattr__(self, "_in_atomic_update", False)
+            raise
 
     # ============================================================
     # Configuration
     # ============================================================
-    class Config:
-        validate_assignment = True  # Validate on field assignment
-        use_enum_values = False  # Keep enum instances
-        json_encoders = {
+    model_config = ConfigDict(
+        validate_assignment=True,  # Validate on field assignment
+        use_enum_values=False,  # Keep enum instances
+        json_encoders={
             datetime: lambda v: v.isoformat()
             + ("Z" if v.tzinfo in (None, timezone.utc) else ""),
             timedelta: lambda v: v.total_seconds(),
-        }
+        },
+    )
