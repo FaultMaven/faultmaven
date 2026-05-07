@@ -1545,12 +1545,6 @@ class UploadedFile(BaseModel):
         max_length=50,
     )
 
-    preprocessing_summary: Optional[str] = Field(
-        default=None,
-        description="Brief summary from preprocessing pipeline (<500 chars)",
-        max_length=500,
-    )
-
     storage_ref: Optional[str] = Field(
         default=None,
         description=(

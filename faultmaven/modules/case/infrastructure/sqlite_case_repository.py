@@ -400,13 +400,12 @@ class SQLiteCaseRepository(CaseRepository):
         Schema columns: ``file_id``, ``filename``, ``size_bytes``,
         ``content_type`` (MIME), ``content_hash``, ``storage_ref``,
         ``upload_source`` (renamed from ``source_type``),
-        ``uploaded_at_turn``, ``uploaded_at``, ``uploaded_by``,
-        ``preprocessing_summary``.
+        ``uploaded_at_turn``, ``uploaded_at``, ``uploaded_by``.
         """
         query = text("""
             SELECT file_id, filename, size_bytes, content_type, content_hash,
                    storage_ref, upload_source, uploaded_at_turn, uploaded_at,
-                   uploaded_by, preprocessing_summary
+                   uploaded_by
             FROM uploaded_files
             WHERE case_id = :case_id
         """)
@@ -432,7 +431,6 @@ class SQLiteCaseRepository(CaseRepository):
                     "uploaded_at_turn": row_dict.get("uploaded_at_turn", 0),
                     "uploaded_at": row_dict.get("uploaded_at"),
                     "uploaded_by": row_dict.get("uploaded_by"),
-                    "preprocessing_summary": row_dict.get("preprocessing_summary"),
                 }
             )
         return files
@@ -714,7 +712,7 @@ class SQLiteCaseRepository(CaseRepository):
         query = text(f"""
             SELECT case_id, file_id, filename, size_bytes, content_type,
                    content_hash, storage_ref, upload_source, uploaded_at_turn,
-                   uploaded_at, uploaded_by, preprocessing_summary
+                   uploaded_at, uploaded_by
             FROM uploaded_files
             WHERE case_id IN ({placeholders})
         """)
@@ -735,7 +733,6 @@ class SQLiteCaseRepository(CaseRepository):
                     "uploaded_at_turn": row[8] or 0,
                     "uploaded_at": row[9],
                     "uploaded_by": row[10],
-                    "preprocessing_summary": row[11],
                 }
             )
         return by_case
@@ -2338,13 +2335,13 @@ class SQLiteCaseRepository(CaseRepository):
                     filename, size_bytes, content_type, content_hash,
                     storage_ref, upload_source,
                     uploaded_at_turn, uploaded_at,
-                    preprocessing_summary, metadata
+                    metadata
                 ) VALUES (
                     :file_id, :case_id, :organization_id, :uploaded_by,
                     :filename, :size_bytes, :content_type, :content_hash,
                     :storage_ref, :upload_source,
                     :uploaded_at_turn, :uploaded_at,
-                    :preprocessing_summary, :metadata
+                    :metadata
                 )
                 ON CONFLICT (file_id) DO UPDATE SET
                     uploaded_by = EXCLUDED.uploaded_by,
@@ -2355,7 +2352,6 @@ class SQLiteCaseRepository(CaseRepository):
                     storage_ref = EXCLUDED.storage_ref,
                     upload_source = EXCLUDED.upload_source,
                     uploaded_at_turn = EXCLUDED.uploaded_at_turn,
-                    preprocessing_summary = EXCLUDED.preprocessing_summary,
                     metadata = EXCLUDED.metadata
             """)
 
@@ -2374,7 +2370,6 @@ class SQLiteCaseRepository(CaseRepository):
                     "upload_source": file.upload_source,
                     "uploaded_at_turn": file.uploaded_at_turn,
                     "uploaded_at": file.uploaded_at,
-                    "preprocessing_summary": file.preprocessing_summary,
                     "metadata": json.dumps({}),
                 },
             )

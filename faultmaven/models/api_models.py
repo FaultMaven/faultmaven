@@ -618,38 +618,22 @@ class UploadedFileMetadata(BaseModel):
             size_display=size_display,
             uploaded_at_turn=uploaded_file.uploaded_at_turn,
             uploaded_at=uploaded_file.uploaded_at,
-            source_type=uploaded_file.source_type,
+            source_type=uploaded_file.upload_source,
             analysis_status="completed",  # Always completed after preprocessing
-            summary=uploaded_file.preprocessing_summary,
+            # summary is the case-scoped Evidence.summary, not on the upload
+            # row anymore. Callers with case context can populate it via
+            # case.find_evidence_for_file(...) (or by traversing case.evidence
+            # for source_file_id == file_id) and pass it via a follow-up
+            # field-level update.
+            summary=None,
             source_metadata=None,
         )
 
-    @classmethod
-    def from_evidence(cls, evidence) -> "UploadedFileMetadata":
-        """Convert Evidence model to UploadedFileMetadata (legacy - should use from_uploaded_file)."""
-        from faultmaven.models.case import Evidence
-
-        # Calculate human-readable size
-        size_bytes = evidence.content_size_bytes
-        if size_bytes < 1024:
-            size_display = f"{size_bytes} B"
-        elif size_bytes < 1024 * 1024:
-            size_display = f"{size_bytes / 1024:.1f} KB"
-        else:
-            size_display = f"{size_bytes / (1024 * 1024):.1f} MB"
-
-        return cls(
-            file_id=evidence.evidence_id,
-            filename=f"{evidence.source_type.value}_{evidence.evidence_id}.txt",  # Generate filename
-            size_bytes=size_bytes,
-            size_display=size_display,
-            uploaded_at_turn=evidence.collected_at_turn,
-            uploaded_at=evidence.collected_at,
-            source_type=evidence.source_type.value,
-            analysis_status="completed",  # Always completed for now
-            summary=evidence.summary,
-            source_metadata=None,
-        )
+    # `from_evidence` (legacy) was removed: it relied on the dropped
+    # `evidence.content_size_bytes` and `evidence.collected_at`-as-
+    # `uploaded_at` shim. Callers should always go through
+    # `from_uploaded_file` now (Evidence and UploadedFile are distinct
+    # entities post-redesign).
 
 
 class HypothesisRelationship(BaseModel):
@@ -695,13 +679,11 @@ class UploadedFileDetails(UploadedFileMetadata):
         # Start with base metadata
         base = UploadedFileMetadata.from_uploaded_file(uploaded_file)
 
-        # Build minimal analysis (just preprocessing summary)
+        # No file-level summary on the upload row anymore; key_findings
+        # for the INQUIRY-phase response is just empty until analysis runs.
+        # The case-scoped summary lives on the linked Evidence row.
         full_analysis = FileAnalysis(
-            key_findings=(
-                [uploaded_file.preprocessing_summary]
-                if uploaded_file.preprocessing_summary
-                else []
-            ),
+            key_findings=[],
             relevance=None,  # No analysis yet in INQUIRY phase
         )
 

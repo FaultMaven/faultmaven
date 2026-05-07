@@ -3258,7 +3258,7 @@ async def get_uploaded_file_details(
             uploaded_at=uploaded_file.uploaded_at,
             source_type=uploaded_file.source_type,
             data_type=uploaded_file.data_type,
-            summary=uploaded_file.preprocessing_summary,
+            summary=None,  # case-scoped summary lives on linked Evidence
             derived_evidence=derived_evidence,
             evidence_count=len(derived_evidence),
         )
@@ -3326,7 +3326,7 @@ async def list_uploaded_files(
                     uploaded_at=uploaded_file.uploaded_at,
                     source_type=uploaded_file.source_type,
                     data_type=uploaded_file.data_type,
-                    summary=uploaded_file.preprocessing_summary,
+                    summary=None,  # case-scoped summary lives on linked Evidence
                     evidence_count=evidence_count,
                 )
             )

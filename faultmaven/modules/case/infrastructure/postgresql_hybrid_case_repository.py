@@ -250,8 +250,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             'uploaded_at_turn', f.uploaded_at_turn,
                             'uploaded_at', f.uploaded_at,
                             'source_type', f.source_type,
-                            'content_ref', f.content_ref,
-                            'preprocessing_summary', f.preprocessing_summary
+                            'content_ref', f.content_ref
                         )) FILTER (WHERE f.file_id IS NOT NULL),
                         '[]'::json
                     ) as uploaded_files_data
@@ -1753,16 +1752,22 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         intentional removal, use `delete_uploaded_file(case_id, file_id)`.
         """
         # Upsert each file (field names match Pydantic model exactly)
+        # NOTE: this PG-hybrid uploaded_files upsert is structurally stale
+        # — it still references dropped columns (data_type, source_type vs
+        # upload_source, content_ref vs storage_ref). The full rewrite is
+        # sub-commit (c). Removing only the preprocessing_summary references
+        # here so this commit (the schema drop of preprocessing_summary)
+        # is internally consistent.
         for file in files_list:
             query = text("""
                 INSERT INTO uploaded_files (
                     file_id, case_id, organization_id, filename, size_bytes, data_type,
                     uploaded_at_turn, uploaded_at, source_type,
-                    content_ref, preprocessing_summary, metadata
+                    content_ref, metadata
                 ) VALUES (
                     :file_id, :case_id, :organization_id, :filename, :size_bytes, :data_type,
                     :uploaded_at_turn, :uploaded_at, :source_type,
-                    :content_ref, :preprocessing_summary, :metadata::jsonb
+                    :content_ref, :metadata::jsonb
                 )
                 ON CONFLICT (file_id) DO UPDATE SET
                     filename = EXCLUDED.filename,
@@ -1771,7 +1776,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     uploaded_at_turn = EXCLUDED.uploaded_at_turn,
                     source_type = EXCLUDED.source_type,
                     content_ref = EXCLUDED.content_ref,
-                    preprocessing_summary = EXCLUDED.preprocessing_summary,
                     metadata = EXCLUDED.metadata
             """)
 
@@ -1788,7 +1792,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "uploaded_at": file.uploaded_at,
                     "source_type": file.source_type,
                     "content_ref": file.content_ref,
-                    "preprocessing_summary": file.preprocessing_summary,
                     "metadata": json.dumps({}),
                 },
             )

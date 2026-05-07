@@ -713,7 +713,6 @@ class UploadedFileModel(Base):
     # `file_upload`, `conversion_source`, `api_push`, etc.
     upload_source = Column(String(50), nullable=False, server_default="file_upload")
     uploaded_at_turn = Column(Integer, nullable=False, server_default="0")
-    preprocessing_summary = Column(Text, nullable=True)
     file_metadata = Column("metadata", JsonBlob, nullable=False, server_default="{}")
 
     uploaded_at = Column(
