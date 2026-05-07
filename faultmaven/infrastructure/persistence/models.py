@@ -53,7 +53,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
-from sqlalchemy.types import JSON
+from sqlalchemy.types import JSON, TypeDecorator
 
 Base = declarative_base()
 
@@ -185,10 +185,51 @@ class PiiScanStatus(str, enum.Enum):
     SCAN_FAILED = "scan_failed"
 
 
-# Tags: cross-dialect column type. PG uses native TEXT[] + GIN (declared
-# per-table via postgresql_using="gin"); SQLite uses comma-separated TEXT
-# (the comma-ban validator on tag values keeps the round-trip lossless).
-TagsArray = Text().with_variant(ARRAY(String(50)), "postgresql")
+# Tags: cross-dialect column type. PG uses native VARCHAR(50)[] + GIN
+# (the GIN index is declared per-table via postgresql_using="gin"); SQLite
+# uses comma-separated TEXT. The Pydantic-side comma-ban validator on tag
+# values keeps the round-trip lossless.
+#
+# Implemented as a TypeDecorator so ORM-mode repositories (e.g. the
+# knowledge module's KnowledgeItemRepository) can pass a Python list[str]
+# directly without manual serialization. Raw-SQL repos (the case-domain
+# SQLite + PG hybrid repos) bypass the decorator and continue to bind
+# pre-serialized values via their own _serialize_tags helpers — that's
+# fine because TypeDecorator only intercepts ORM-level binds, not raw
+# `text(...)` parameter binding.
+class _TagsArrayType(TypeDecorator):
+    """Cross-dialect Python list[str] <-> column storage."""
+
+    impl = Text
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(ARRAY(String(50)))
+        return dialect.type_descriptor(Text())
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise TypeError(f"tags must be a list of str, got {type(value).__name__}")
+        if dialect.name == "postgresql":
+            # asyncpg/psycopg bind list directly to text[]
+            return value if value else None
+        # SQLite: comma-separated TEXT; the no-comma validator on the
+        # domain side keeps this round-trip lossless.
+        return ",".join(value) if value else None
+
+    def process_result_value(self, value, dialect):
+        if value is None or value == "":
+            return []
+        if dialect.name == "postgresql":
+            return list(value)
+        # SQLite: comma-separated TEXT
+        return [t for t in value.split(",") if t]
+
+
+TagsArray = _TagsArrayType()
 
 # JSON blob: cross-dialect column type for JSON-shaped data (metadata,
 # domain-state JSON, etc.). PG promotes to JSONB for fast key lookups and

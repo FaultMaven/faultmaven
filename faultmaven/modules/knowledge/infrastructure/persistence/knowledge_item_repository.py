@@ -292,18 +292,21 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     async def create(self, item: KnowledgeItem) -> KnowledgeItem:
         """Create new knowledge item record in the database."""
         try:
-            # Convert domain model to ORM model
+            # Convert domain model to ORM model. The TagsArray TypeDecorator
+            # on `tags` handles cross-dialect serialization (list[str] →
+            # text[] on PG, comma-sep TEXT on SQLite), so we pass the list
+            # directly. embedding_vector is a plain Text column → JSON-encode.
             item_model = KnowledgeItemModel(
                 item_id=item.item_id,
                 organization_id=item.organization_id,
-                scope=item.scope,
+                scope=item.scope.value,
                 owner_id=item.owner_id,
                 team_id=item.team_id,
                 title=item.title,
                 content=item.content,
                 item_type=item.item_type.value,
                 category=item.category,
-                tags=json.dumps(item.tags) if item.tags else "[]",
+                tags=list(item.tags) if item.tags else None,
                 embedding_model=item.embedding_model,
                 embedding_vector=(
                     json.dumps(item.embedding_vector) if item.embedding_vector else None
@@ -377,14 +380,14 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 update(KnowledgeItemModel)
                 .where(KnowledgeItemModel.item_id == item.item_id)
                 .values(
-                    scope=item.scope,
+                    scope=item.scope.value,
                     owner_id=item.owner_id,
                     team_id=item.team_id,
                     title=item.title,
                     content=item.content,
                     item_type=item.item_type.value,
                     category=item.category,
-                    tags=json.dumps(item.tags) if item.tags else "[]",
+                    tags=list(item.tags) if item.tags else None,
                     embedding_model=item.embedding_model,
                     embedding_vector=(
                         json.dumps(item.embedding_vector)
@@ -578,7 +581,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             # Filter by tags in memory (SQLite compatible)
             matching_items = []
             for model in item_models:
-                item_tags = self._parse_json_list(model.tags)
+                item_tags = list(model.tags) if model.tags else []
                 if match_all:
                     if all(tag in item_tags for tag in tags):
                         matching_items.append(self._to_domain(model))
@@ -709,8 +712,10 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
     def _to_domain(self, model: KnowledgeItemModel) -> KnowledgeItem:
         """Convert SQLAlchemy model to domain model."""
-        # Parse JSON fields
-        tags = self._parse_json_list(model.tags)
+        # tags is handled by the TagsArray TypeDecorator — already a list
+        # (or None) on read. embedding_vector and metadata are plain Text
+        # columns, still JSON-encoded.
+        tags = list(model.tags) if model.tags else []
         embedding_vector = self._parse_json_list(model.embedding_vector)
         metadata = self._parse_json_dict(model.knowledge_metadata)
 
