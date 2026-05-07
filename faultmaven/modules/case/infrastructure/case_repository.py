@@ -791,17 +791,30 @@ class InMemoryCaseRepository(CaseRepository):
     async def find_by_content_hash(
         self, case_id: str, content_hash: str
     ) -> Optional[Evidence]:
-        """Find oldest Evidence matching content_hash within a single case."""
+        """Find oldest Evidence in a case whose backing UploadedFile has
+        a matching ``content_hash``.
+
+        Post-redesign: ``content_hash`` lives on ``UploadedFile`` (not
+        ``Evidence``). Dedup walks ``case.evidence`` looking for any row
+        whose ``source_file_id`` points at an ``UploadedFile`` with the
+        target hash. Inline-only evidence (``source_file_id is None``)
+        cannot be matched — that's the accepted tradeoff.
+        """
         if not content_hash:
             return None
         case = self._cases.get(case_id)
         if case is None:
             return None
-        matches = [
-            ev
-            for ev in case.evidence
-            if getattr(ev, "content_hash", None) == content_hash
-        ]
+        files_by_id = {f.file_id: f for f in case.uploaded_files}
+        matches = []
+        for ev in case.evidence:
+            if not ev.source_file_id:
+                continue
+            uf = files_by_id.get(ev.source_file_id)
+            if uf is None:
+                continue
+            if uf.content_hash == content_hash:
+                matches.append(ev)
         if not matches:
             return None
         matches.sort(key=lambda ev: getattr(ev, "collected_at_turn", 0) or 0)

@@ -47,7 +47,9 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceForm,
     EvidenceSourceType,
+    EvidenceStance,
     Hypothesis,
+    HypothesisEvidenceLink,
     InquiryData,
     InvestigationProgress,
     InvestigationStrategy,
@@ -104,41 +106,53 @@ def _row_to_case_entity(row: Any) -> CaseEntity:
 
 
 def _derive_evidence_form(evidence: Evidence) -> str:
-    """Heuristic mapping from domain Evidence to the persistence-side
-    ``evidence.form`` column (data-shape: text|image|metric|structured).
+    """Return the persistence-side ``form`` value for an Evidence row.
 
-    Distinct from the domain ``EvidenceForm`` enum (entry mechanism:
-    DOCUMENT|USER_TEXT|SUBMITTED_DATA). The persistence column is bound
-    to ``EvidenceFormEnum`` defined in
-    ``faultmaven/infrastructure/persistence/models.py``.
+    The two-EvidenceForm-enum split is gone post-redesign — the
+    persistence column carries the same canonical values as the domain
+    enum (``document``, ``user_text``, ``submitted_data``). This helper
+    used to do a heuristic mapping; it now just forwards
+    ``evidence.form.value``.
 
-    Heuristic order:
-    1. ``data_type`` (UnifiedDataType from preprocessing) — most reliable
-       signal: image/metrics/configuration/code/text/logs.
-    2. Fallback: filename extension on ``original_filename``.
-    3. Default: ``"text"`` (matches column ``server_default``).
-
-    TODO: replace with explicit producer once the upload/preprocessing
-    pipeline carries an authoritative form classification.
+    Kept as a function (rather than inlined) until the PostgreSQL hybrid
+    repo's sub-commit (c) lands — it imports this name. Deletion happens
+    there.
     """
-    data_type = (getattr(evidence, "data_type", None) or "").lower()
-    if data_type == "image":
-        return "image"
-    if data_type in ("metrics", "metric"):
-        return "metric"
-    if data_type in ("configuration", "structured", "json", "yaml"):
-        return "structured"
-    if data_type in ("logs", "log", "text", "code"):
-        return "text"
+    return evidence.form.value
 
-    filename = (getattr(evidence, "original_filename", None) or "").lower()
-    if filename:
-        if filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
-            return "image"
-        if filename.endswith((".json", ".yaml", ".yml", ".toml", ".xml")):
-            return "structured"
 
-    return "text"
+def _serialize_tags(tags: Optional[List[str]]) -> Optional[str]:
+    """Serialize an Evidence.tags list to the SQLite TEXT column.
+
+    Empty list and None both round-trip as NULL. Comma-separated for
+    SQLite (Pydantic's ``_no_commas_in_tags`` validator forbids commas
+    inside individual tag values, which keeps the round-trip lossless).
+    """
+    if not tags:
+        return None
+    return ",".join(tags)
+
+
+def _deserialize_tags(value: Optional[str]) -> List[str]:
+    """Inverse of ``_serialize_tags``. Empty/None → empty list."""
+    if not value:
+        return []
+    return [t for t in value.split(",") if t]
+
+
+_STANCE_TO_RELATIONSHIP: Dict[EvidenceStance, str] = {
+    EvidenceStance.SUPPORTS: "supports",
+    EvidenceStance.REFUTES: "refutes",
+    # The junction CHECK constraint allows ('supports', 'refutes', 'related').
+    # Map domain NEUTRAL → 'related' (the closest neutral-not-irrelevant slot).
+    EvidenceStance.NEUTRAL: "related",
+}
+
+_RELATIONSHIP_TO_STANCE: Dict[str, EvidenceStance] = {
+    "supports": EvidenceStance.SUPPORTS,
+    "refutes": EvidenceStance.REFUTES,
+    "related": EvidenceStance.NEUTRAL,
+}
 
 
 class SQLiteCaseRepository(CaseRepository):
@@ -245,19 +259,28 @@ class SQLiteCaseRepository(CaseRepository):
             raise RepositoryException(f"Failed to get case {case_id}: {e}") from e
 
     async def _load_hypotheses(self, case_id: str) -> list[dict]:
-        """Load hypotheses for a case."""
+        """Load hypotheses for a case.
+
+        Returns dicts keyed by hypothesis_id with ``evidence_links`` set to
+        a List[HypothesisEvidenceLink] hydrated from the
+        ``hypothesis_evidence`` junction table (not the dropped
+        ``hypotheses.evidence_links`` JSON blob).
+        """
         query = text("""
             SELECT hypothesis_id, statement, status, likelihood, initial_likelihood,
                    generated_at_turn, last_updated_turn, last_progress_at_turn,
                    iterations_without_progress,
                    category, generation_mode, rationale, retirement_reason,
                    refutation_reason,
-                   evidence_links, tested_at, concluded_at, proposed_at, updated_at, metadata
+                   tested_at, concluded_at, proposed_at, updated_at, metadata
             FROM hypotheses
             WHERE case_id = :case_id
         """)
         result = await self.db.execute(query, {"case_id": case_id})
         rows = result.fetchall()
+
+        hypothesis_ids = [row[0] for row in rows]
+        links_by_hyp = await self._load_hypothesis_evidence_links(hypothesis_ids)
 
         hypotheses = []
         for row in rows:
@@ -277,15 +300,68 @@ class SQLiteCaseRepository(CaseRepository):
                     "rationale": row[11],
                     "retirement_reason": row[12],
                     "refutation_reason": row[13],
-                    "evidence_links": json.loads(row[14]) if row[14] else {},
-                    "tested_at": row[15],
-                    "concluded_at": row[16],
-                    "proposed_at": row[17],
-                    "updated_at": row[18],
-                    "metadata": json.loads(row[19]) if row[19] else {},
+                    "evidence_links": links_by_hyp.get(row[0], []),
+                    "tested_at": row[14],
+                    "concluded_at": row[15],
+                    "proposed_at": row[16],
+                    "updated_at": row[17],
+                    "metadata": json.loads(row[18]) if row[18] else {},
                 }
             )
         return hypotheses
+
+    async def _load_hypothesis_evidence_links(
+        self, hypothesis_ids: builtins.list[str]
+    ) -> dict[str, builtins.list[HypothesisEvidenceLink]]:
+        """Load junction-table rows and return them as
+        ``{hypothesis_id: [HypothesisEvidenceLink, ...]}``.
+
+        Empty input returns ``{}``. Hypotheses with no links are absent
+        from the result (callers default to an empty list per hypothesis).
+        """
+        if not hypothesis_ids:
+            return {}
+        params: dict[str, Any] = {}
+        placeholders = self._bind_ids(params, hypothesis_ids)
+        # Reuse _bind_ids for hypothesis_ids by re-keying — _bind_ids
+        # produces ``cid_<i>`` keys but we just need any unique placeholders.
+        query = text(f"""
+            SELECT hypothesis_id, evidence_id, relationship_type, confidence,
+                   linked_at_turn, created_at
+            FROM hypothesis_evidence
+            WHERE hypothesis_id IN ({placeholders})
+        """)
+        result = await self.db.execute(query, params)
+        rows = result.fetchall()
+
+        by_hyp: dict[str, builtins.list[HypothesisEvidenceLink]] = {}
+        for row in rows:
+            hyp_id = row[0]
+            relationship = row[2] or "related"
+            stance = _RELATIONSHIP_TO_STANCE.get(relationship, EvidenceStance.NEUTRAL)
+            confidence = float(row[3]) if row[3] is not None else 0.0
+            analyzed_at = row[5]
+            if isinstance(analyzed_at, str):
+                try:
+                    analyzed_at = datetime.fromisoformat(analyzed_at.replace(" ", "T"))
+                except ValueError:
+                    analyzed_at = datetime.now(UTC)
+            elif analyzed_at is None:
+                analyzed_at = datetime.now(UTC)
+            link = HypothesisEvidenceLink(
+                hypothesis_id=str(hyp_id),
+                evidence_id=str(row[1]),
+                stance=stance,
+                # ``reasoning`` is required on the Pydantic model but the
+                # junction table doesn't carry the LLM's free-text rationale —
+                # it lives on case_messages / agent reasoning logs. Persist
+                # an empty marker; the Pydantic validator allows any string.
+                reasoning="",
+                stance_confidence=max(0.0, min(1.0, confidence)),
+                analyzed_at=analyzed_at,
+            )
+            by_hyp.setdefault(str(hyp_id), []).append(link)
+        return by_hyp
 
     async def _load_solutions(self, case_id: str) -> list[dict]:
         """Load solutions for a case."""
@@ -319,14 +395,18 @@ class SQLiteCaseRepository(CaseRepository):
         return solutions
 
     async def _load_uploaded_files(self, case_id: str) -> list[dict]:
-        """Load uploaded files for a case.
+        """Load uploaded files for a case (post-redesign schema).
 
-        Schema per design spec (case-schema.md §4.6):
-        - size_bytes, data_type, content_ref, uploaded_at_turn, source_type, preprocessing_summary
+        Schema columns: ``file_id``, ``filename``, ``size_bytes``,
+        ``content_type`` (MIME), ``content_hash``, ``storage_ref``,
+        ``upload_source`` (renamed from ``source_type``),
+        ``uploaded_at_turn``, ``uploaded_at``, ``uploaded_by``,
+        ``preprocessing_summary``.
         """
         query = text("""
-            SELECT file_id, filename, size_bytes, data_type, uploaded_at_turn,
-                   uploaded_at, source_type, content_ref, preprocessing_summary, metadata
+            SELECT file_id, filename, size_bytes, content_type, content_hash,
+                   storage_ref, upload_source, uploaded_at_turn, uploaded_at,
+                   uploaded_by, preprocessing_summary
             FROM uploaded_files
             WHERE case_id = :case_id
         """)
@@ -345,12 +425,14 @@ class SQLiteCaseRepository(CaseRepository):
                     "file_id": row_dict.get("file_id"),
                     "filename": row_dict.get("filename"),
                     "size_bytes": row_dict.get("size_bytes", 0),
-                    "data_type": row_dict.get("data_type", "other"),
+                    "content_type": row_dict.get("content_type"),
+                    "content_hash": row_dict.get("content_hash"),
+                    "storage_ref": row_dict.get("storage_ref"),
+                    "upload_source": row_dict.get("upload_source", "file_upload"),
                     "uploaded_at_turn": row_dict.get("uploaded_at_turn", 0),
                     "uploaded_at": row_dict.get("uploaded_at"),
-                    "source_type": row_dict.get("source_type", "file_upload"),
-                    "content_ref": row_dict.get("content_ref", ""),
-                    "preprocessing_summary": row_dict.get("preprocessing_summary", ""),
+                    "uploaded_by": row_dict.get("uploaded_by"),
+                    "preprocessing_summary": row_dict.get("preprocessing_summary"),
                 }
             )
         return files
@@ -405,95 +487,116 @@ class SQLiteCaseRepository(CaseRepository):
         return messages
 
     async def _load_evidence_for_case(self, case: Case) -> None:
-        """Load investigation evidence from the evidence table."""
+        """Load investigation evidence from the evidence table.
+
+        Post-redesign columns: ``evidence_id``, ``category``, ``source_type``,
+        ``form``, ``summary``, ``extract``, ``is_primary``,
+        ``reliability_score``, ``tags``, ``collected_at_turn``, ``source_file_id``,
+        ``vectorized``, ``coverage_start_ts``, ``coverage_end_ts``,
+        ``metadata``, ``created_at``.
+        """
         try:
             query = text("""
                 SELECT
-                    evidence_id, case_id, category, summary,
-                    preprocessed_content, content_ref, file_size,
-                    filename, upload_timestamp, metadata,
-                    source_type, content_hash, collected_at_turn,
-                    source_file_id, vectorized,
-                    coverage_start_ts, coverage_end_ts
+                    evidence_id, category, source_type, form,
+                    summary, extract,
+                    is_primary, reliability_score, tags,
+                    collected_at_turn, source_file_id, vectorized,
+                    coverage_start_ts, coverage_end_ts,
+                    metadata, created_at
                 FROM evidence
                 WHERE case_id = :case_id
-                ORDER BY upload_timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT 1000
             """)
             result = await self.db.execute(query, {"case_id": case.case_id})
             rows = result.fetchall()
 
-            evidence_list = []
-            for row in rows:
-                try:
-                    category_str = row[2] or "contextual_evidence"
-                    try:
-                        category = EvidenceCategory(category_str)
-                    except ValueError:
-                        category = EvidenceCategory.CONTEXTUAL_EVIDENCE
-
-                    # Parse source_type from DB (col 10), fall back to LOGS
-                    source_type_str = row[10] or "logs"
-                    try:
-                        source_type = EvidenceSourceType(source_type_str)
-                    except ValueError:
-                        source_type = EvidenceSourceType.LOGS
-
-                    # Deserialize evidence.metadata (JSON-encoded Text
-                    # column). Absent / empty / unparseable → None, which
-                    # the domain model treats as "no metadata". Readers
-                    # must tolerate this shape.
-                    metadata_raw = row[9]
-                    parsed_metadata: Optional[Dict[str, Any]] = None
-                    if metadata_raw:
-                        try:
-                            parsed = json.loads(metadata_raw)
-                            if isinstance(parsed, dict) and parsed:
-                                parsed_metadata = parsed
-                        except (json.JSONDecodeError, TypeError):
-                            parsed_metadata = None
-
-                    # Phase 3 — coverage timestamps (nullable). SQLite
-                    # returns these as str or datetime depending on the
-                    # driver path; the domain model coerces.
-                    coverage_start = row[15]
-                    coverage_end = row[16]
-
-                    evidence_list.append(
-                        Evidence(
-                            evidence_id=str(row[0]),
-                            category=category,
-                            primary_purpose="loaded_evidence",
-                            summary=row[3] if row[3] else "Evidence",
-                            preprocessed_content=row[4] if row[4] else "",
-                            content_ref=row[5],
-                            content_size_bytes=row[6] if row[6] else 0,
-                            original_filename=row[7],
-                            preprocessing_method="loaded",
-                            source_type=source_type,
-                            form=EvidenceForm.DOCUMENT,
-                            collected_by="user",
-                            collected_at_turn=row[12] if row[12] else 0,
-                            content_hash=row[11],
-                            source_file_id=row[13],
-                            vectorized=bool(row[14]),
-                            metadata=parsed_metadata,
-                            coverage_start_ts=coverage_start,
-                            coverage_end_ts=coverage_end,
-                        )
-                    )
-                except Exception as ev_err:
-                    logging.getLogger(__name__).warning(
-                        "Failed to load evidence %s: %s", row[0], ev_err
-                    )
-
-            case.evidence = evidence_list
+            evidence_list = [self._row_to_evidence(row) for row in rows if row]
+            case.evidence = [ev for ev in evidence_list if ev is not None]
         except Exception as e:
             logging.getLogger(__name__).warning(
                 "Failed to load evidence for case %s: %s",
                 case.case_id,
                 e,
             )
+
+    def _row_to_evidence(self, row: Any) -> Optional[Evidence]:
+        """Reconstruct a domain ``Evidence`` from a SELECT row.
+
+        Column order (fixed): ``evidence_id, category, source_type, form,
+        summary, extract, is_primary, reliability_score, tags,
+        collected_at_turn, source_file_id, vectorized, coverage_start_ts,
+        coverage_end_ts, metadata, created_at``.
+
+        Returns ``None`` and logs a warning when reconstruction fails so
+        one bad row doesn't blank an entire result set.
+        """
+        try:
+            category_str = row[1] or "contextual_evidence"
+            try:
+                category = EvidenceCategory(category_str)
+            except ValueError:
+                category = EvidenceCategory.CONTEXTUAL_EVIDENCE
+
+            source_type_str = row[2] or "logs"
+            try:
+                source_type = EvidenceSourceType(source_type_str)
+            except ValueError:
+                source_type = EvidenceSourceType.LOGS
+
+            form_str = row[3] or EvidenceForm.DOCUMENT.value
+            try:
+                form = EvidenceForm(form_str)
+            except ValueError:
+                form = EvidenceForm.DOCUMENT
+
+            metadata_raw = row[14]
+            parsed_metadata: Optional[Dict[str, Any]] = None
+            if metadata_raw:
+                try:
+                    parsed = json.loads(metadata_raw)
+                    if isinstance(parsed, dict) and parsed:
+                        parsed_metadata = parsed
+                except (json.JSONDecodeError, TypeError):
+                    parsed_metadata = None
+
+            collected_at = row[15]
+            if isinstance(collected_at, str):
+                try:
+                    collected_at = datetime.fromisoformat(
+                        collected_at.replace(" ", "T")
+                    )
+                except ValueError:
+                    collected_at = datetime.now(UTC)
+            elif collected_at is None:
+                collected_at = datetime.now(UTC)
+
+            return Evidence(
+                evidence_id=str(row[0]),
+                category=category,
+                primary_purpose="loaded_evidence",
+                summary=row[4] if row[4] else "Evidence",
+                extract=row[5],
+                source_type=source_type,
+                form=form,
+                source_file_id=row[10],
+                is_primary=bool(row[6]),
+                reliability_score=(float(row[7]) if row[7] is not None else None),
+                tags=_deserialize_tags(row[8]),
+                collected_by="user",
+                collected_at=collected_at,
+                collected_at_turn=row[9] if row[9] else 0,
+                vectorized=bool(row[11]),
+                metadata=parsed_metadata,
+                coverage_start_ts=row[12],
+                coverage_end_ts=row[13],
+            )
+        except Exception as ev_err:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "Failed to load evidence %s: %s", row[0], ev_err
+            )
+            return None
 
     # ========================================================================
     # Bulk loaders — used by list() to avoid the N+1 per-case fan-out that
@@ -526,12 +629,17 @@ class SQLiteCaseRepository(CaseRepository):
                    initial_likelihood, generated_at_turn, last_updated_turn,
                    last_progress_at_turn, iterations_without_progress,
                    category, generation_mode, rationale, retirement_reason,
-                   refutation_reason, evidence_links, tested_at, concluded_at,
+                   refutation_reason, tested_at, concluded_at,
                    proposed_at, updated_at, metadata
             FROM hypotheses
             WHERE case_id IN ({placeholders})
         """)
         rows = (await self.db.execute(query, params)).fetchall()
+
+        # Hydrate evidence_links from the junction table for every hypothesis
+        # we just loaded, in one round-trip.
+        all_hyp_ids = [row[1] for row in rows]
+        links_by_hyp = await self._load_hypothesis_evidence_links(all_hyp_ids)
 
         by_case: dict[str, builtins.list[dict]] = {cid: [] for cid in case_ids}
         for row in rows:
@@ -551,12 +659,12 @@ class SQLiteCaseRepository(CaseRepository):
                     "rationale": row[12],
                     "retirement_reason": row[13],
                     "refutation_reason": row[14],
-                    "evidence_links": json.loads(row[15]) if row[15] else {},
-                    "tested_at": row[16],
-                    "concluded_at": row[17],
-                    "proposed_at": row[18],
-                    "updated_at": row[19],
-                    "metadata": json.loads(row[20]) if row[20] else {},
+                    "evidence_links": links_by_hyp.get(row[1], []),
+                    "tested_at": row[15],
+                    "concluded_at": row[16],
+                    "proposed_at": row[17],
+                    "updated_at": row[18],
+                    "metadata": json.loads(row[19]) if row[19] else {},
                 }
             )
         return by_case
@@ -604,9 +712,9 @@ class SQLiteCaseRepository(CaseRepository):
         params: dict[str, Any] = {}
         placeholders = self._bind_ids(params, case_ids)
         query = text(f"""
-            SELECT case_id, file_id, filename, size_bytes, data_type,
-                   uploaded_at_turn, uploaded_at, source_type, content_ref,
-                   preprocessing_summary, metadata
+            SELECT case_id, file_id, filename, size_bytes, content_type,
+                   content_hash, storage_ref, upload_source, uploaded_at_turn,
+                   uploaded_at, uploaded_by, preprocessing_summary
             FROM uploaded_files
             WHERE case_id IN ({placeholders})
         """)
@@ -620,12 +728,14 @@ class SQLiteCaseRepository(CaseRepository):
                     "file_id": row[1],
                     "filename": row[2],
                     "size_bytes": row[3] or 0,
-                    "data_type": row[4] or "other",
-                    "uploaded_at_turn": row[5] or 0,
-                    "uploaded_at": row[6],
-                    "source_type": row[7] or "file_upload",
-                    "content_ref": row[8] or "",
-                    "preprocessing_summary": row[9] or "",
+                    "content_type": row[4],
+                    "content_hash": row[5],
+                    "storage_ref": row[6],
+                    "upload_source": row[7] or "file_upload",
+                    "uploaded_at_turn": row[8] or 0,
+                    "uploaded_at": row[9],
+                    "uploaded_by": row[10],
+                    "preprocessing_summary": row[11],
                 }
             )
         return by_case
@@ -689,71 +799,45 @@ class SQLiteCaseRepository(CaseRepository):
         try:
             query = text(f"""
                 SELECT
-                    evidence_id, case_id, category, summary,
-                    preprocessed_content, content_ref, file_size,
-                    filename, upload_timestamp, metadata,
-                    source_type, content_hash, collected_at_turn,
-                    source_file_id, vectorized,
-                    coverage_start_ts, coverage_end_ts
+                    evidence_id, case_id, category, source_type, form,
+                    summary, extract,
+                    is_primary, reliability_score, tags,
+                    collected_at_turn, source_file_id, vectorized,
+                    coverage_start_ts, coverage_end_ts,
+                    metadata, created_at
                 FROM evidence
                 WHERE case_id IN ({placeholders})
-                ORDER BY upload_timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT 1000
             """)
             rows = (await self.db.execute(query, params)).fetchall()
 
             by_case: dict[str, builtins.list[Evidence]] = {cid: [] for cid in case_ids}
             for row in rows:
-                try:
-                    category_str = row[2] or "contextual_evidence"
-                    try:
-                        category = EvidenceCategory(category_str)
-                    except ValueError:
-                        category = EvidenceCategory.CONTEXTUAL_EVIDENCE
-
-                    source_type_str = row[10] or "logs"
-                    try:
-                        source_type = EvidenceSourceType(source_type_str)
-                    except ValueError:
-                        source_type = EvidenceSourceType.LOGS
-
-                    metadata_raw = row[9]
-                    parsed_metadata: Optional[Dict[str, Any]] = None
-                    if metadata_raw:
-                        try:
-                            parsed = json.loads(metadata_raw)
-                            if isinstance(parsed, dict) and parsed:
-                                parsed_metadata = parsed
-                        except (json.JSONDecodeError, TypeError):
-                            parsed_metadata = None
-
-                    by_case.setdefault(row[1], []).append(
-                        Evidence(
-                            evidence_id=str(row[0]),
-                            category=category,
-                            primary_purpose="loaded_evidence",
-                            summary=row[3] if row[3] else "Evidence",
-                            preprocessed_content=row[4] if row[4] else "",
-                            content_ref=row[5],
-                            content_size_bytes=row[6] if row[6] else 0,
-                            original_filename=row[7],
-                            preprocessing_method="loaded",
-                            source_type=source_type,
-                            form=EvidenceForm.DOCUMENT,
-                            collected_by="user",
-                            collected_at_turn=row[12] if row[12] else 0,
-                            content_hash=row[11],
-                            source_file_id=row[13],
-                            vectorized=bool(row[14]),
-                            metadata=parsed_metadata,
-                            coverage_start_ts=row[15],
-                            coverage_end_ts=row[16],
-                        )
-                    )
-                except Exception as ev_err:  # noqa: BLE001
-                    logging.getLogger(__name__).warning(
-                        "Failed to load evidence %s: %s", row[0], ev_err
-                    )
+                # Bulk row order is offset by one column (case_id at index 1).
+                # _row_to_evidence expects the per-case shape; remap by skipping
+                # case_id when calling.
+                ev_row = (
+                    row[0],  # evidence_id
+                    row[2],  # category
+                    row[3],  # source_type
+                    row[4],  # form
+                    row[5],  # summary
+                    row[6],  # extract
+                    row[7],  # is_primary
+                    row[8],  # reliability_score
+                    row[9],  # tags
+                    row[10],  # collected_at_turn
+                    row[11],  # source_file_id
+                    row[12],  # vectorized
+                    row[13],  # coverage_start_ts
+                    row[14],  # coverage_end_ts
+                    row[15],  # metadata
+                    row[16],  # created_at
+                )
+                ev = self._row_to_evidence(ev_row)
+                if ev is not None:
+                    by_case.setdefault(row[1], []).append(ev)
         except Exception as e:  # noqa: BLE001
             logging.getLogger(__name__).warning(
                 "Failed to bulk-load evidence for %d cases: %s", len(cases), e
@@ -894,23 +978,31 @@ class SQLiteCaseRepository(CaseRepository):
     async def find_by_content_hash(
         self, case_id: str, content_hash: str
     ) -> Optional[Evidence]:
-        """Find oldest Evidence in a case whose content_hash matches."""
+        """Find oldest Evidence in a case whose backing UploadedFile's
+        ``content_hash`` matches.
+
+        Post-redesign: ``content_hash`` lives on ``uploaded_files`` (not
+        ``evidence``). Dedup joins the two tables by ``source_file_id``.
+        Inline-only Path 2 evidence (``source_file_id IS NULL``) cannot
+        be deduped by hash — that's the accepted tradeoff.
+        """
         if not content_hash:
             return None
         try:
             query = text("""
                 SELECT
-                    evidence_id, case_id, category, summary,
-                    preprocessed_content, content_ref, file_size,
-                    filename, upload_timestamp, metadata,
-                    source_type, content_hash, collected_at_turn,
-                    source_file_id,
-                    coverage_start_ts, coverage_end_ts
-                FROM evidence
-                WHERE case_id = :case_id
-                  AND content_hash = :content_hash
-                  AND content_hash IS NOT NULL
-                ORDER BY upload_timestamp ASC
+                    e.evidence_id, e.category, e.source_type, e.form,
+                    e.summary, e.extract,
+                    e.is_primary, e.reliability_score, e.tags,
+                    e.collected_at_turn, e.source_file_id, e.vectorized,
+                    e.coverage_start_ts, e.coverage_end_ts,
+                    e.metadata, e.created_at
+                FROM evidence e
+                INNER JOIN uploaded_files uf ON uf.file_id = e.source_file_id
+                WHERE e.case_id = :case_id
+                  AND uf.content_hash = :content_hash
+                  AND uf.content_hash IS NOT NULL
+                ORDER BY e.created_at ASC
                 LIMIT 1
             """)
             result = await self.db.execute(
@@ -919,49 +1011,7 @@ class SQLiteCaseRepository(CaseRepository):
             row = result.fetchone()
             if row is None:
                 return None
-
-            category_str = row[2] or "contextual_evidence"
-            try:
-                category = EvidenceCategory(category_str)
-            except ValueError:
-                category = EvidenceCategory.CONTEXTUAL_EVIDENCE
-
-            source_type_str = row[10] or "logs"
-            try:
-                source_type = EvidenceSourceType(source_type_str)
-            except ValueError:
-                source_type = EvidenceSourceType.LOGS
-
-            metadata_raw = row[9]
-            parsed_metadata: Optional[Dict[str, Any]] = None
-            if metadata_raw:
-                try:
-                    parsed = json.loads(metadata_raw)
-                    if isinstance(parsed, dict) and parsed:
-                        parsed_metadata = parsed
-                except (json.JSONDecodeError, TypeError):
-                    parsed_metadata = None
-
-            return Evidence(
-                evidence_id=str(row[0]),
-                category=category,
-                primary_purpose="loaded_evidence",
-                summary=row[3] if row[3] else "Evidence",
-                preprocessed_content=row[4] if row[4] else "",
-                content_ref=row[5],
-                content_size_bytes=row[6] if row[6] else 0,
-                original_filename=row[7],
-                preprocessing_method="loaded",
-                source_type=source_type,
-                form=EvidenceForm.DOCUMENT,
-                collected_by="user",
-                collected_at_turn=row[12] if row[12] else 0,
-                content_hash=row[11],
-                source_file_id=row[13],
-                metadata=parsed_metadata,
-                coverage_start_ts=row[14],
-                coverage_end_ts=row[15],
-            )
+            return self._row_to_evidence(row)
         except Exception as e:
             raise RepositoryException(
                 f"Failed to find evidence by content_hash for case {case_id}: {e}"
@@ -996,12 +1046,12 @@ class SQLiteCaseRepository(CaseRepository):
 
             query = text(f"""
                 SELECT
-                    evidence_id, case_id, category, summary,
-                    preprocessed_content, content_ref, file_size,
-                    filename, upload_timestamp, metadata,
-                    source_type, content_hash, collected_at_turn,
-                    source_file_id, vectorized,
-                    coverage_start_ts, coverage_end_ts
+                    evidence_id, category, source_type, form,
+                    summary, extract,
+                    is_primary, reliability_score, tags,
+                    collected_at_turn, source_file_id, vectorized,
+                    coverage_start_ts, coverage_end_ts,
+                    metadata, created_at
                 FROM evidence
                 WHERE {' AND '.join(where_clauses)}
                 ORDER BY coverage_start_ts ASC
@@ -1012,58 +1062,9 @@ class SQLiteCaseRepository(CaseRepository):
 
             evidence_list: List[Evidence] = []
             for row in rows:
-                try:
-                    category_str = row[2] or "contextual_evidence"
-                    try:
-                        category = EvidenceCategory(category_str)
-                    except ValueError:
-                        category = EvidenceCategory.CONTEXTUAL_EVIDENCE
-
-                    source_type_str = row[10] or "logs"
-                    try:
-                        source_type = EvidenceSourceType(source_type_str)
-                    except ValueError:
-                        source_type = EvidenceSourceType.LOGS
-
-                    metadata_raw = row[9]
-                    parsed_metadata: Optional[Dict[str, Any]] = None
-                    if metadata_raw:
-                        try:
-                            parsed = json.loads(metadata_raw)
-                            if isinstance(parsed, dict) and parsed:
-                                parsed_metadata = parsed
-                        except (json.JSONDecodeError, TypeError):
-                            parsed_metadata = None
-
-                    evidence_list.append(
-                        Evidence(
-                            evidence_id=str(row[0]),
-                            category=category,
-                            primary_purpose="loaded_evidence",
-                            summary=row[3] if row[3] else "Evidence",
-                            preprocessed_content=row[4] if row[4] else "",
-                            content_ref=row[5],
-                            content_size_bytes=row[6] if row[6] else 0,
-                            original_filename=row[7],
-                            preprocessing_method="loaded",
-                            source_type=source_type,
-                            form=EvidenceForm.DOCUMENT,
-                            collected_by="user",
-                            collected_at_turn=row[12] if row[12] else 0,
-                            content_hash=row[11],
-                            source_file_id=row[13],
-                            vectorized=bool(row[14]),
-                            metadata=parsed_metadata,
-                            coverage_start_ts=row[15],
-                            coverage_end_ts=row[16],
-                        )
-                    )
-                except Exception as ev_err:
-                    logging.getLogger(__name__).warning(
-                        "Failed to load evidence %s in time-window query: %s",
-                        row[0],
-                        ev_err,
-                    )
+                ev = self._row_to_evidence(row)
+                if ev is not None:
+                    evidence_list.append(ev)
 
             return evidence_list
         except Exception as e:
@@ -1084,6 +1085,10 @@ class SQLiteCaseRepository(CaseRepository):
         ``evidence_id`` as a belt-and-suspenders check: a bug that
         crossed evidence_ids between cases would otherwise silently
         corrupt the registry.
+
+        ``organization_id`` is NOT NULL on case_entities; we derive it
+        from the parent case row in the INSERT so callers don't have to
+        thread it through.
         """
         try:
             delete_q = text("""
@@ -1099,10 +1104,12 @@ class SQLiteCaseRepository(CaseRepository):
 
             insert_q = text("""
                 INSERT INTO case_entities (
-                    case_id, entity_type, entity_value, evidence_id,
+                    case_id, organization_id, entity_type, entity_value, evidence_id,
                     mention_count, in_error_context, first_seen_ts
                 ) VALUES (
-                    :case_id, :entity_type, :entity_value, :evidence_id,
+                    :case_id,
+                    (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                    :entity_type, :entity_value, :evidence_id,
                     :mention_count, :in_error_context, :first_seen_ts
                 )
                 """)
@@ -1739,13 +1746,10 @@ class SQLiteCaseRepository(CaseRepository):
     async def cleanup_expired(
         self, max_age_days: int = 90, batch_size: int = 100
     ) -> int:
-        """Delete closed cases whose closure timestamp is older than max_age_days.
+        """Delete closed cases whose ``closed_at`` is older than max_age_days.
 
-        `closed_at` is stored inside the `metadata` JSON column (see save()
-        persistence path); there is no dedicated `closed_at` column on the
-        `cases` table. We read it via `json_extract` and compare lexicographically
-        against an ISO-8601 cutoff — works because our serialized timestamps are
-        always ISO-8601 UTC strings which sort chronologically.
+        Post-redesign: ``closed_at`` is a first-class column. The DELETE
+        compares it directly against the cutoff datetime.
         """
         try:
             query = text("""
@@ -1754,8 +1758,8 @@ class SQLiteCaseRepository(CaseRepository):
                     SELECT case_id
                     FROM cases
                     WHERE status = 'closed'
-                    AND json_extract(metadata, '$.closed_at') IS NOT NULL
-                    AND json_extract(metadata, '$.closed_at') < datetime('now', '-' || :max_age_days || ' days')
+                    AND closed_at IS NOT NULL
+                    AND closed_at < datetime('now', '-' || :max_age_days || ' days')
                     LIMIT :batch_size
                 )
             """)
@@ -1800,10 +1804,12 @@ class SQLiteCaseRepository(CaseRepository):
                 user_id = :user_id,
                 organization_id = :organization_id,
                 title = :title,
+                description = :description,
                 status = :status,
+                investigation_strategy = :investigation_strategy,
+                current_turn = :current_turn,
+                turns_without_progress = :turns_without_progress,
                 updated_at = :updated_at,
-                is_archived = :is_archived,
-                archived_at = :archived_at,
                 closure_reason = :closure_reason,
                 last_activity_at = :last_activity_at,
                 resolved_at = :resolved_at,
@@ -1844,18 +1850,18 @@ class SQLiteCaseRepository(CaseRepository):
             # New case — INSERT with version = 1.
             insert_query = text("""
                 INSERT INTO cases (
-                    case_id, user_id, organization_id, title,
-                    status, created_at, updated_at,
-                    is_archived, archived_at,
+                    case_id, user_id, organization_id, title, description,
+                    status, investigation_strategy, current_turn,
+                    turns_without_progress, created_at, updated_at,
                     closure_reason, last_activity_at, resolved_at, closed_at,
                     inquiry, problem_verification, working_conclusion,
                     root_cause_conclusion, path_selection,
                     escalation_state, documentation, progress, metadata,
                     version
                 ) VALUES (
-                    :case_id, :user_id, :organization_id, :title,
-                    :status, :created_at, :updated_at,
-                    :is_archived, :archived_at,
+                    :case_id, :user_id, :organization_id, :title, :description,
+                    :status, :investigation_strategy, :current_turn,
+                    :turns_without_progress, :created_at, :updated_at,
                     :closure_reason, :last_activity_at, :resolved_at, :closed_at,
                     :inquiry, :problem_verification, :working_conclusion,
                     :root_cause_conclusion, :path_selection,
@@ -1881,20 +1887,26 @@ class SQLiteCaseRepository(CaseRepository):
 
         Shared between the UPDATE and fallback INSERT paths in
         _upsert_case_record — keeps column serialization in one place.
+
+        Post-redesign: ``description``, ``investigation_strategy``,
+        ``current_turn``, ``turns_without_progress`` are first-class
+        columns. The ``metadata`` JSON blob still holds the transient
+        runtime state (proposed_actions / action_attempts / turn_history /
+        pending_transition / message_count) — those have no first-class
+        column yet.
         """
         return {
             "case_id": case.case_id,
             "user_id": case.user_id,
             "organization_id": case.organization_id,
             "title": case.title,
+            "description": case.description or "",
             "status": case.status.value,
+            "investigation_strategy": case.investigation_strategy.value,
+            "current_turn": case.current_turn,
+            "turns_without_progress": case.turns_without_progress,
             "created_at": case.created_at,
             "updated_at": case.updated_at,
-            "is_archived": (
-                case.is_archived if hasattr(case, "is_archived") else False
-            ),
-            "archived_at": (case.archived_at if hasattr(case, "archived_at") else None),
-            # Phase 6 Tier 1 columns — populated from domain Case fields.
             "closure_reason": getattr(case, "closure_reason", None),
             "last_activity_at": last_activity_at,
             "resolved_at": getattr(case, "resolved_at", None),
@@ -1931,20 +1943,7 @@ class SQLiteCaseRepository(CaseRepository):
             "progress": json.dumps(to_json_compatible(case.progress.model_dump())),
             "metadata": json.dumps(
                 {
-                    "current_turn": case.current_turn,
-                    "turns_without_progress": case.turns_without_progress,
                     "message_count": case.message_count,
-                    "closure_reason": case.closure_reason,
-                    "description": case.description,
-                    "investigation_strategy": case.investigation_strategy.value,
-                    "closed_at": (
-                        to_json_compatible(case.closed_at) if case.closed_at else None
-                    ),
-                    "resolved_at": (
-                        to_json_compatible(case.resolved_at)
-                        if hasattr(case, "resolved_at") and case.resolved_at
-                        else None
-                    ),
                     "pending_transition": case.pending_transition,
                     "proposed_actions": (
                         [
@@ -1974,7 +1973,7 @@ class SQLiteCaseRepository(CaseRepository):
     async def _upsert_evidence(
         self, case_id: str, evidence_list: builtins.list[Evidence], organization_id: str
     ) -> None:
-        """Upsert evidence records (SQLite-compatible).
+        """Upsert evidence records (post-redesign schema).
 
         Purely additive: inserts new rows and updates existing ones keyed by
         evidence_id. Does NOT remove rows absent from `evidence_list`. The
@@ -1983,96 +1982,70 @@ class SQLiteCaseRepository(CaseRepository):
         background tasks) must not be able to silently delete rows that
         other concurrent writers have added. For intentional removal, use
         `delete_evidence(case_id, evidence_id)` explicitly.
+
+        File-level metadata (filename, content_type, content_hash, size,
+        storage_ref) lives on ``uploaded_files`` and is reached via
+        ``source_file_id``. Inline-only Path 2 evidence has
+        ``source_file_id IS NULL`` and persists no file metadata.
         """
-        # Upsert each evidence record (no ::jsonb type cast)
         for evidence in evidence_list:
             query = text("""
                 INSERT INTO evidence (
-                    evidence_id, case_id, organization_id, category, summary, preprocessed_content,
-                    content_ref, file_size, filename, upload_timestamp, metadata,
-                    source_type, content_hash, collected_at_turn, source_file_id,
-                    form, is_primary, content_type, reliability_score, tags, vectorized,
-                    coverage_start_ts, coverage_end_ts
+                    evidence_id, case_id, organization_id, source_file_id,
+                    category, source_type, form,
+                    summary, extract,
+                    is_primary, reliability_score, tags,
+                    collected_at_turn, vectorized,
+                    coverage_start_ts, coverage_end_ts,
+                    metadata, created_at, updated_at
                 ) VALUES (
-                    :evidence_id, :case_id, :organization_id, :category, :summary, :preprocessed_content,
-                    :content_ref, :file_size, :filename, :upload_timestamp, :metadata,
-                    :source_type, :content_hash, :collected_at_turn, :source_file_id,
-                    :form, :is_primary, :content_type, :reliability_score, :tags, :vectorized,
-                    :coverage_start_ts, :coverage_end_ts
+                    :evidence_id, :case_id, :organization_id, :source_file_id,
+                    :category, :source_type, :form,
+                    :summary, :extract,
+                    :is_primary, :reliability_score, :tags,
+                    :collected_at_turn, :vectorized,
+                    :coverage_start_ts, :coverage_end_ts,
+                    :metadata, :created_at, :updated_at
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
-                    category = EXCLUDED.category,
-                    summary = EXCLUDED.summary,
-                    preprocessed_content = EXCLUDED.preprocessed_content,
-                    content_ref = EXCLUDED.content_ref,
-                    metadata = EXCLUDED.metadata,
-                    source_type = EXCLUDED.source_type,
-                    content_hash = EXCLUDED.content_hash,
-                    collected_at_turn = EXCLUDED.collected_at_turn,
                     source_file_id = EXCLUDED.source_file_id,
-                    filename = EXCLUDED.filename,
+                    category = EXCLUDED.category,
+                    source_type = EXCLUDED.source_type,
                     form = EXCLUDED.form,
+                    summary = EXCLUDED.summary,
+                    extract = EXCLUDED.extract,
                     is_primary = EXCLUDED.is_primary,
-                    content_type = EXCLUDED.content_type,
                     reliability_score = EXCLUDED.reliability_score,
                     tags = EXCLUDED.tags,
+                    collected_at_turn = EXCLUDED.collected_at_turn,
                     vectorized = EXCLUDED.vectorized,
                     coverage_start_ts = EXCLUDED.coverage_start_ts,
-                    coverage_end_ts = EXCLUDED.coverage_end_ts
+                    coverage_end_ts = EXCLUDED.coverage_end_ts,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = EXCLUDED.updated_at
             """)
 
-            source_type_val = (
-                evidence.source_type.value
-                if hasattr(evidence.source_type, "value")
-                else str(evidence.source_type)
-            )
-
+            now = datetime.now(UTC)
             await self.db.execute(
                 query,
                 {
                     "evidence_id": evidence.evidence_id,
                     "case_id": case_id,
                     "organization_id": organization_id,
+                    "source_file_id": evidence.source_file_id,
                     "category": evidence.category.value,
+                    "source_type": evidence.source_type.value,
+                    # The domain ``EvidenceForm`` enum (entry mechanism:
+                    # DOCUMENT|USER_TEXT|SUBMITTED_DATA) is the canonical
+                    # value for the persistence column post-redesign.
+                    "form": evidence.form.value,
                     "summary": evidence.summary,
-                    "preprocessed_content": evidence.preprocessed_content or "",
-                    "content_ref": evidence.content_ref,
-                    "file_size": evidence.content_size_bytes,
-                    "filename": getattr(evidence, "original_filename", None) or "",
-                    "upload_timestamp": evidence.collected_at.isoformat(),
-                    # evidence.metadata carries the structured JSON contract
-                    # from faultmaven/core/preprocessing/evidence_metadata.py.
-                    # Empty dict when not populated — schema column has
-                    # NOT NULL default "{}" so we always write valid JSON.
-                    "metadata": json.dumps(evidence.metadata or {}),
-                    "source_type": source_type_val,
-                    "content_hash": getattr(evidence, "content_hash", None) or "",
+                    "extract": evidence.extract,
+                    "is_primary": 1 if evidence.is_primary else 0,
+                    "reliability_score": evidence.reliability_score,
+                    "tags": _serialize_tags(evidence.tags),
                     "collected_at_turn": evidence.collected_at_turn,
-                    "source_file_id": getattr(evidence, "source_file_id", None),
-                    # Phase 6 Tier 1 columns. The persistence-side `form`
-                    # describes data SHAPE (text|image|metric|structured) —
-                    # distinct from domain `EvidenceForm` (entry mechanism).
-                    # Heuristic-derived from data_type / source_type;
-                    # defaults to "text" otherwise. TODO: explicit producer.
-                    "form": _derive_evidence_form(evidence),
-                    # TODO: setter API for is_primary deferred (Phase 6 task).
-                    # Default False until explicit producer wires it.
-                    "is_primary": False,
-                    # TODO: content_type wiring to Attachment.content_type
-                    # deferred — upload pipeline does not yet thread the MIME
-                    # type onto the Evidence object.
-                    "content_type": getattr(evidence, "content_type", None),
-                    # reliability_score / tags producers deferred. Columns
-                    # exist Tier 1; populated by future code.
-                    "reliability_score": getattr(evidence, "reliability_score", None),
-                    "tags": getattr(evidence, "tags", None),
-                    "vectorized": evidence.vectorized,
-                    # Phase 3 — case-level timeline. NULL for evidence
-                    # without parseable timestamps (configs, code,
-                    # screenshots, short pastes). SQLite stores
-                    # ISO-format strings in DATETIME columns; the
-                    # domain model's ``datetime`` type serialises
-                    # cleanly via str().
+                    "vectorized": 1 if evidence.vectorized else 0,
                     "coverage_start_ts": (
                         evidence.coverage_start_ts.isoformat()
                         if evidence.coverage_start_ts
@@ -2083,31 +2056,43 @@ class SQLiteCaseRepository(CaseRepository):
                         if evidence.coverage_end_ts
                         else None
                     ),
+                    "metadata": json.dumps(evidence.metadata or {}),
+                    "created_at": evidence.collected_at or now,
+                    "updated_at": now,
                 },
             )
 
     async def _upsert_hypotheses(
         self, case_id: str, hypotheses_dict: dict[str, Hypothesis], organization_id: str
     ) -> None:
-        """Upsert hypotheses records (SQLite-compatible).
+        """Upsert hypotheses records (post-redesign schema).
 
         Purely additive — see `_upsert_evidence` for rationale. For
         intentional removal, use `IHypothesisRepository.delete_hypothesis`.
+
+        The dropped ``hypotheses.evidence_links`` JSON blob has been
+        replaced by the ``hypothesis_evidence`` junction table; that
+        upsert runs after the parent row is in place so FK constraints
+        are satisfied.
         """
         for hypothesis_id, hypothesis in hypotheses_dict.items():
             query = text("""
                 INSERT INTO hypotheses (
-                    hypothesis_id, case_id, organization_id, statement, status, likelihood, initial_likelihood,
+                    hypothesis_id, case_id, organization_id, statement, status,
+                    likelihood, initial_likelihood,
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
                     iterations_without_progress,
-                    category, generation_mode, rationale, retirement_reason, refutation_reason, evidence_links,
+                    category, generation_mode, rationale, retirement_reason,
+                    refutation_reason,
                     tested_at, concluded_at, proposed_at, updated_at, metadata,
                     created_by, updated_by
                 ) VALUES (
-                    :hypothesis_id, :case_id, :organization_id, :statement, :status, :likelihood, :initial_likelihood,
+                    :hypothesis_id, :case_id, :organization_id, :statement, :status,
+                    :likelihood, :initial_likelihood,
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
                     :iterations_without_progress,
-                    :category, :generation_mode, :rationale, :retirement_reason, :refutation_reason, :evidence_links,
+                    :category, :generation_mode, :rationale, :retirement_reason,
+                    :refutation_reason,
                     :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata,
                     :created_by, :updated_by
                 )
@@ -2121,7 +2106,6 @@ class SQLiteCaseRepository(CaseRepository):
                     iterations_without_progress = EXCLUDED.iterations_without_progress,
                     retirement_reason = EXCLUDED.retirement_reason,
                     refutation_reason = EXCLUDED.refutation_reason,
-                    evidence_links = EXCLUDED.evidence_links,
                     concluded_at = EXCLUDED.concluded_at,
                     updated_at = EXCLUDED.updated_at,
                     metadata = EXCLUDED.metadata
@@ -2146,12 +2130,6 @@ class SQLiteCaseRepository(CaseRepository):
                     "rationale": hypothesis.rationale,
                     "retirement_reason": hypothesis.retirement_reason,
                     "refutation_reason": hypothesis.refutation_reason,
-                    "evidence_links": json.dumps(
-                        {
-                            eid: link.model_dump(mode="json")
-                            for eid, link in hypothesis.evidence_links.items()
-                        }
-                    ),
                     "tested_at": hypothesis.tested_at,
                     "concluded_at": hypothesis.concluded_at,
                     "proposed_at": getattr(hypothesis, "proposed_at", None)
@@ -2160,6 +2138,64 @@ class SQLiteCaseRepository(CaseRepository):
                     "metadata": json.dumps({}),
                     "created_by": "system",
                     "updated_by": None,
+                },
+            )
+
+            await self._upsert_hypothesis_evidence(
+                hypothesis_id, hypothesis.evidence_links, organization_id
+            )
+
+    async def _upsert_hypothesis_evidence(
+        self,
+        hypothesis_id: str,
+        links: builtins.list[HypothesisEvidenceLink],
+        organization_id: str,
+    ) -> None:
+        """Upsert rows on the ``hypothesis_evidence`` junction table.
+
+        Purely additive — never deletes rows. Composite PK
+        ``(hypothesis_id, evidence_id)`` makes the upsert idempotent.
+        Stance → relationship_type mapping is in
+        ``_STANCE_TO_RELATIONSHIP``; NEUTRAL maps to ``related`` because
+        the junction CHECK constraint only allows
+        ``('supports', 'refutes', 'related')``.
+        """
+        if not links:
+            return
+        query = text("""
+            INSERT INTO hypothesis_evidence (
+                hypothesis_id, evidence_id, organization_id,
+                relationship_type, confidence, linked_at_turn,
+                linked_by, created_at
+            ) VALUES (
+                :hypothesis_id, :evidence_id, :organization_id,
+                :relationship_type, :confidence, :linked_at_turn,
+                :linked_by, :created_at
+            )
+            ON CONFLICT (hypothesis_id, evidence_id) DO UPDATE SET
+                relationship_type = EXCLUDED.relationship_type,
+                confidence = EXCLUDED.confidence,
+                linked_at_turn = EXCLUDED.linked_at_turn,
+                linked_by = EXCLUDED.linked_by
+        """)
+
+        for link in links:
+            relationship = _STANCE_TO_RELATIONSHIP.get(link.stance, "related")
+            await self.db.execute(
+                query,
+                {
+                    "hypothesis_id": hypothesis_id,
+                    "evidence_id": link.evidence_id,
+                    "organization_id": organization_id,
+                    "relationship_type": relationship,
+                    "confidence": link.stance_confidence,
+                    # Domain ``HypothesisEvidenceLink`` doesn't carry a
+                    # turn number; the junction column is nullable.
+                    "linked_at_turn": None,
+                    # Linker user_id isn't tracked on the link object —
+                    # nullable column, FK SET NULL on user delete.
+                    "linked_by": None,
+                    "created_at": link.analyzed_at,
                 },
             )
 
@@ -2286,29 +2322,39 @@ class SQLiteCaseRepository(CaseRepository):
         files_list: builtins.list[UploadedFile],
         organization_id: str,
     ) -> None:
-        """Upsert uploaded_files records (SQLite-compatible).
+        """Upsert uploaded_files records (post-redesign schema).
 
         Purely additive — see `_upsert_evidence` for rationale. For
         intentional removal, use `delete_uploaded_file(case_id, file_id)`.
+
+        Renamed columns: ``content_ref`` → ``storage_ref``,
+        ``source_type`` → ``upload_source``. Dropped: ``data_type``.
+        Added: ``content_hash``, ``content_type`` (MIME), ``uploaded_by``.
         """
         for file in files_list:
             query = text("""
                 INSERT INTO uploaded_files (
-                    file_id, case_id, organization_id, filename, size_bytes, data_type,
-                    uploaded_at_turn, uploaded_at, source_type,
-                    content_ref, preprocessing_summary, metadata
+                    file_id, case_id, organization_id, uploaded_by,
+                    filename, size_bytes, content_type, content_hash,
+                    storage_ref, upload_source,
+                    uploaded_at_turn, uploaded_at,
+                    preprocessing_summary, metadata
                 ) VALUES (
-                    :file_id, :case_id, :organization_id, :filename, :size_bytes, :data_type,
-                    :uploaded_at_turn, :uploaded_at, :source_type,
-                    :content_ref, :preprocessing_summary, :metadata
+                    :file_id, :case_id, :organization_id, :uploaded_by,
+                    :filename, :size_bytes, :content_type, :content_hash,
+                    :storage_ref, :upload_source,
+                    :uploaded_at_turn, :uploaded_at,
+                    :preprocessing_summary, :metadata
                 )
                 ON CONFLICT (file_id) DO UPDATE SET
+                    uploaded_by = EXCLUDED.uploaded_by,
                     filename = EXCLUDED.filename,
                     size_bytes = EXCLUDED.size_bytes,
-                    data_type = EXCLUDED.data_type,
+                    content_type = EXCLUDED.content_type,
+                    content_hash = EXCLUDED.content_hash,
+                    storage_ref = EXCLUDED.storage_ref,
+                    upload_source = EXCLUDED.upload_source,
                     uploaded_at_turn = EXCLUDED.uploaded_at_turn,
-                    source_type = EXCLUDED.source_type,
-                    content_ref = EXCLUDED.content_ref,
                     preprocessing_summary = EXCLUDED.preprocessing_summary,
                     metadata = EXCLUDED.metadata
             """)
@@ -2319,13 +2365,15 @@ class SQLiteCaseRepository(CaseRepository):
                     "file_id": file.file_id,
                     "case_id": case_id,
                     "organization_id": organization_id,
+                    "uploaded_by": file.uploaded_by,
                     "filename": file.filename,
                     "size_bytes": file.size_bytes,
-                    "data_type": file.data_type,
+                    "content_type": file.content_type,
+                    "content_hash": file.content_hash,
+                    "storage_ref": file.storage_ref,
+                    "upload_source": file.upload_source,
                     "uploaded_at_turn": file.uploaded_at_turn,
                     "uploaded_at": file.uploaded_at,
-                    "source_type": file.source_type,
-                    "content_ref": file.content_ref,
                     "preprocessing_summary": file.preprocessing_summary,
                     "metadata": json.dumps({}),
                 },
@@ -2508,23 +2556,24 @@ class SQLiteCaseRepository(CaseRepository):
             else []
         )
 
-        # Parse metadata to extract stored fields
+        # Parse metadata for the transient runtime state that has no
+        # first-class column yet (proposed_actions / action_attempts /
+        # turn_history / pending_transition / message_count).
         metadata = json.loads(row.metadata) if row.metadata else {}
 
-        # Build case_data dict conditionally to allow Pydantic to apply field defaults
-        # Only include optional fields if they have actual values from database
+        # Promoted columns: read directly from the row.
         case_data = {
             "case_id": row.case_id,
             "user_id": row.user_id,
-            "organization_id": row.organization_id,  # Required field, must be NOT NULL in DB
+            "organization_id": row.organization_id,  # NOT NULL in DB
             "title": row.title,
             "status": CaseStatus(row.status),
             "action_history": [],
-            "closure_reason": metadata.get("closure_reason"),
+            "closure_reason": row.closure_reason,
             "pending_transition": metadata.get("pending_transition"),
             "progress": progress,
-            "current_turn": metadata.get("current_turn", 0),
-            "turns_without_progress": metadata.get("turns_without_progress", 0),
+            "current_turn": int(row.current_turn or 0),
+            "turns_without_progress": int(row.turns_without_progress or 0),
             "message_count": metadata.get("message_count", 0),
             "turn_history": (
                 [TurnProgress(**t) for t in metadata.get("turn_history", [])]
@@ -2541,10 +2590,6 @@ class SQLiteCaseRepository(CaseRepository):
                 if metadata.get("action_attempts")
                 else []
             ),
-            "is_archived": (
-                bool(row.is_archived) if hasattr(row, "is_archived") else False
-            ),
-            "archived_at": (row.archived_at if hasattr(row, "archived_at") else None),
             "path_selection": path_selection,
             "inquiry": inquiry,
             "problem_verification": problem_verification,
@@ -2557,7 +2602,6 @@ class SQLiteCaseRepository(CaseRepository):
             "root_cause_conclusion": root_cause_conclusion,
             "escalation_state": escalation_state,
             "documentation": documentation,
-            # metadata field removed as it is not part of Case model
             "created_at": row.created_at,
             "updated_at": row.updated_at,
             # Optimistic concurrency token. Must round-trip so the next
@@ -2569,58 +2613,39 @@ class SQLiteCaseRepository(CaseRepository):
             ),
         }
 
-        # description has no first-class column on `cases`; round-trip
-        # through the metadata JSON blob. Fall back to row column or
-        # empty string for legacy rows that pre-date the metadata key.
-        description = metadata.get("description") or (
-            row.description if hasattr(row, "description") else ""
-        )
+        # ``description`` is now a first-class column. Auto-heal the
+        # legacy case where an INVESTIGATING row lost its description
+        # (rare; pre-redesign rows that fell through the migration).
+        description = row.description or ""
         if (
             CaseStatus(row.status) == CaseStatus.INVESTIGATING
             and (not description or not description.strip())
             and inquiry.proposed_problem_statement
         ):
             description = inquiry.proposed_problem_statement
-            # Log only in debug mode to avoid production log spam
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     f"Auto-healed missing description for case {row.case_id} "
                     f"from proposed_problem_statement"
                 )
 
-        # Only add optional fields if they exist and have values in database
-        # This allows Pydantic to apply its own defaults for missing fields
-
         if description:
             case_data["description"] = description
 
-        # investigation_strategy isn't a first-class column on `cases`
-        # (no Tier 1 column for it yet) — round-trip via the metadata
-        # JSON blob. Fall through to Pydantic's default if neither
-        # source carries a value.
-        strategy_value = metadata.get("investigation_strategy") or (
-            row.investigation_strategy
-            if hasattr(row, "investigation_strategy")
-            else None
-        )
-        if strategy_value:
-            case_data["investigation_strategy"] = InvestigationStrategy(strategy_value)
+        # ``investigation_strategy`` is now a first-class column.
+        if row.investigation_strategy:
+            case_data["investigation_strategy"] = InvestigationStrategy(
+                row.investigation_strategy
+            )
 
-        if hasattr(row, "last_activity_at") and row.last_activity_at:
+        if row.last_activity_at:
             case_data["last_activity_at"] = row.last_activity_at
 
-        # Extract dates from metadata if not on row
-        resolved_at_val = metadata.get("resolved_at") or (
-            row.resolved_at if hasattr(row, "resolved_at") else None
-        )
-        if resolved_at_val:
-            case_data["resolved_at"] = resolved_at_val
+        if row.resolved_at:
+            case_data["resolved_at"] = row.resolved_at
 
-        closed_at_val = metadata.get("closed_at") or (
-            row.closed_at if hasattr(row, "closed_at") else None
-        )
-        if closed_at_val:
-            case_data["closed_at"] = closed_at_val
+        if row.closed_at:
+            case_data["closed_at"] = row.closed_at
 
         return Case(**case_data)
 
@@ -2648,15 +2673,19 @@ class SQLiteCaseRepository(CaseRepository):
             json.dumps(report.metadata.model_dump()) if report.metadata else "{}"
         )
 
-        # SQLite-compatible: no type casts
+        # ``organization_id`` is NOT NULL FK CASCADE on reports; derive
+        # it from the parent case via subquery so callers don't have to
+        # thread it through.
         insert_query = text("""
             INSERT INTO reports (
-                report_id, case_id, report_type, version, is_current,
+                report_id, case_id, organization_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
                 generation_status, generation_time_ms, metadata,
                 generated_at, updated_at, generated_by
             ) VALUES (
-                :report_id, :case_id, :report_type, :version, :is_current,
+                :report_id, :case_id,
+                (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                :report_type, :version, :is_current,
                 :linked_to_closure, :title, :content, :format,
                 :generation_status, :generation_time_ms, :metadata,
                 :generated_at, :updated_at, :generated_by

@@ -91,7 +91,7 @@ def execution_insert_params(
         "token_usage": (
             json.dumps(execution.token_usage) if execution.token_usage else None
         ),
-        "metadata": json.dumps(execution.metadata) if execution.metadata else None,
+        "metadata": json.dumps(execution.metadata) if execution.metadata else "{}",
         "session_id": (
             execution.metadata.get("session_id")
             if isinstance(execution.metadata, dict)
@@ -122,7 +122,7 @@ def execution_update_params(execution: AgentExecution) -> dict:
         "token_usage": (
             json.dumps(execution.token_usage) if execution.token_usage else None
         ),
-        "metadata": json.dumps(execution.metadata) if execution.metadata else None,
+        "metadata": json.dumps(execution.metadata) if execution.metadata else "{}",
         "updated_at": execution.updated_at,
     }
 

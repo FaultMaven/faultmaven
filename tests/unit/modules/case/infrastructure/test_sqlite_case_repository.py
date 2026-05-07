@@ -115,9 +115,7 @@ def _make_evidence(
         category=category,
         primary_purpose="symptom_verified",
         summary=summary,
-        preprocessed_content="ERROR: connection refused on port 5432",
-        content_size_bytes=120,
-        preprocessing_method="crime_scene_extraction",
+        extract="ERROR: connection refused on port 5432",
         source_type=source_type,
         form=EvidenceForm.DOCUMENT,
         collected_by="user_alpha",
@@ -158,9 +156,9 @@ def _make_uploaded_file(filename: str = "app.log") -> UploadedFile:
     return UploadedFile(
         filename=filename,
         size_bytes=2048,
-        data_type="log",
+        content_type="text/plain",
         uploaded_at_turn=1,
-        source_type="file_upload",
+        upload_source="file_upload",
         preprocessing_summary="3 errors observed",
     )
 
@@ -1140,19 +1138,24 @@ class TestReports:
     async def test_get_reports_filters_by_type(self, repository):
         case = _make_case()
         await repository.save(case)
+        # Schema CHECK constraint allows resolution_summary and
+        # closure_summary on this table; runbook reports are persisted
+        # via the knowledge module, not here.
         res_report = _make_report(
             case.case_id, report_type=ReportType.RESOLUTION_SUMMARY
         )
-        rb_report = _make_report(case.case_id, report_type=ReportType.RUNBOOK)
+        closure_report = _make_report(
+            case.case_id, report_type=ReportType.CLOSURE_SUMMARY
+        )
         await repository.add_report(res_report)
-        await repository.add_report(rb_report)
+        await repository.add_report(closure_report)
 
-        runbooks = await repository.get_reports(
-            case.case_id, report_type=ReportType.RUNBOOK
+        closures = await repository.get_reports(
+            case.case_id, report_type=ReportType.CLOSURE_SUMMARY
         )
 
-        assert len(runbooks) == 1
-        assert runbooks[0].report_type == ReportType.RUNBOOK
+        assert len(closures) == 1
+        assert closures[0].report_type == ReportType.CLOSURE_SUMMARY
 
     @pytest.mark.asyncio
     async def test_update_report_changes_content(self, repository):
