@@ -37,16 +37,20 @@ def _parse_settings(raw) -> dict:
 
 
 def _model_to_domain(model: OrganizationModel) -> Organization:
-    """Convert ORM model to domain object."""
+    """Convert ORM model to domain object.
+
+    plan_tier / max_members / max_cases / settings now live on the
+    Enterprise tier (`enterprises` table) — not on `organizations`.
+    Until the Enterprise tier bootstrap is wired, the Organization
+    domain object falls back to its Pydantic defaults for these
+    fields. Future: look up the parent enterprise and populate from
+    there.
+    """
     return Organization(
         organization_id=model.organization_id,
         name=model.name,
         slug=model.slug,
         description=model.description,
-        plan_tier=OrgPlanTier(model.plan_tier),
-        max_members=model.max_members,
-        max_cases=model.max_cases,
-        settings=_parse_settings(model.settings),
         created_at=model.created_at,
         updated_at=model.updated_at,
         deleted_at=model.deleted_at,
@@ -60,16 +64,17 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         self.db = db_session
 
     async def create_organization(self, org: Organization) -> Organization:
-        """Create a new organization."""
+        """Create a new organization.
+
+        plan_tier / max_members / max_cases / settings are dropped from
+        the persistence write — they belong on the Enterprise tier and
+        will be set there once the Enterprise bootstrap is wired.
+        """
         model = OrganizationModel(
             organization_id=org.organization_id,
             name=org.name,
             slug=org.slug,
             description=org.description,
-            plan_tier=org.plan_tier.value,
-            max_members=org.max_members,
-            max_cases=org.max_cases,
-            settings=json.dumps(org.settings or {}),
             created_at=org.created_at,
             updated_at=org.updated_at,
         )
@@ -113,10 +118,6 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
                 name=org.name,
                 slug=org.slug,
                 description=org.description,
-                plan_tier=org.plan_tier.value,
-                max_members=org.max_members,
-                max_cases=org.max_cases,
-                settings=json.dumps(org.settings or {}),
                 updated_at=org.updated_at,
             )
         )

@@ -245,10 +245,14 @@ class UserModel(Base):
     __tablename__ = "users"
 
     user_id = Column(String(36), primary_key=True)
+    # enterprise_id is temporarily nullable until the Enterprise tier
+    # bootstrap is wired (todo: auth/RBAC + Enterprise Pydantic). Will be
+    # tightened to NOT NULL once SingleTenantProvider creates a default
+    # enterprise alongside the default organization on startup.
     enterprise_id = Column(
         String(36),
         ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     username = Column(String(100), nullable=False, unique=True)
@@ -299,10 +303,12 @@ class OrganizationModel(Base):
     __tablename__ = "organizations"
 
     organization_id = Column(String(36), primary_key=True)
+    # See UserModel.enterprise_id — temporarily nullable until the Enterprise
+    # tier bootstrap is wired.
     enterprise_id = Column(
         String(36),
         ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     name = Column(String(255), nullable=False)
