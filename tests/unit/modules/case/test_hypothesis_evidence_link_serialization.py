@@ -186,14 +186,15 @@ class TestHypothesisEvidenceLinkSerialization:
             assert isinstance(link_data["analyzed_at"], str)
 
     def test_hypothesis_with_evidence_links_serialization(self):
-        """Test that a full Hypothesis with evidence_links can be serialized.
+        """Hypothesis with evidence_links serializes cleanly via mode='json'.
 
-        This tests the complete scenario that was failing in the repository.
+        Regression for the original datetime-in-dict-keys bug. Note: since
+        the schema redesign (commit 7b5a1b93), evidence_links is a list of
+        HypothesisEvidenceLink rows backing the hypothesis_evidence
+        junction table, not a dict keyed by evidence_id.
         """
         now = datetime.now(timezone.utc)
 
-        # Create hypothesis with evidence_links
-        # Use valid hex format for hypothesis_id (pattern: ^hyp_[a-f0-9]{12}$)
         hypothesis = Hypothesis(
             hypothesis_id="hyp_0123456789ab",
             statement="Database connection pool exhaustion",
@@ -201,8 +202,8 @@ class TestHypothesisEvidenceLinkSerialization:
             status=HypothesisStatus.ACTIVE,
             likelihood=0.8,
             initial_likelihood=0.5,
-            evidence_links={
-                "evidence_001": HypothesisEvidenceLink(
+            evidence_links=[
+                HypothesisEvidenceLink(
                     hypothesis_id="hyp_0123456789ab",
                     evidence_id="evidence_001",
                     stance=EvidenceStance.SUPPORTS,
@@ -210,7 +211,7 @@ class TestHypothesisEvidenceLinkSerialization:
                     stance_confidence=0.95,
                     analyzed_at=now,
                 ),
-                "evidence_002": HypothesisEvidenceLink(
+                HypothesisEvidenceLink(
                     hypothesis_id="hyp_0123456789ab",
                     evidence_id="evidence_002",
                     stance=EvidenceStance.NEUTRAL,
@@ -218,21 +219,16 @@ class TestHypothesisEvidenceLinkSerialization:
                     stance_confidence=0.5,
                     analyzed_at=now - timedelta(minutes=5),
                 ),
-            },
+            ],
             generated_at_turn=1,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC,
             rationale="High correlation between pool usage and errors",
         )
 
-        # Serialize hypothesis with mode='json'
-        hypothesis_dict = hypothesis.model_dump(mode="json")
-
-        # Serialize evidence_links (this is what the repository does)
+        # Serialize evidence_links (the list shape persisted to the
+        # hypothesis_evidence junction table).
         evidence_links_json = json.dumps(
-            {
-                eid: link.model_dump(mode="json")
-                for eid, link in hypothesis.evidence_links.items()
-            }
+            [link.model_dump(mode="json") for link in hypothesis.evidence_links]
         )
 
         # Should not raise TypeError
@@ -241,16 +237,13 @@ class TestHypothesisEvidenceLinkSerialization:
         # Verify we can parse it back
         parsed_links = json.loads(evidence_links_json)
         assert len(parsed_links) == 2
-        assert "evidence_001" in parsed_links
-        assert "evidence_002" in parsed_links
+        assert {link["evidence_id"] for link in parsed_links} == {
+            "evidence_001",
+            "evidence_002",
+        }
 
     def test_edge_case_empty_evidence_links(self):
-        """Test that empty evidence_links dict serializes correctly.
-
-        This was the pattern in existing tests that DIDN'T catch the bug,
-        because empty dicts don't exercise the datetime serialization path.
-        """
-        # Use valid hex format for hypothesis_id (pattern: ^hyp_[a-f0-9]{12}$)
+        """Empty evidence_links list serializes to '[]'."""
         hypothesis = Hypothesis(
             hypothesis_id="hyp_0123456789ab",
             statement="Test hypothesis",
@@ -258,21 +251,17 @@ class TestHypothesisEvidenceLinkSerialization:
             status=HypothesisStatus.CAPTURED,
             likelihood=0.5,
             initial_likelihood=0.5,
-            evidence_links={},  # ← Empty dict doesn't trigger datetime serialization
+            evidence_links=[],
             generated_at_turn=1,
             generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
             rationale="Test rationale",
         )
 
-        # This works fine even with the bug, which is why tests didn't catch it
         evidence_links_json = json.dumps(
-            {
-                eid: link.model_dump(mode="json")
-                for eid, link in hypothesis.evidence_links.items()
-            }
+            [link.model_dump(mode="json") for link in hypothesis.evidence_links]
         )
 
-        assert evidence_links_json == "{}"
+        assert evidence_links_json == "[]"
 
     def test_analyzed_at_default_factory(self):
         """Test that analyzed_at gets a default UTC datetime if not provided."""

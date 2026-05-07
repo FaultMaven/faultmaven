@@ -73,48 +73,13 @@ def _make_case(evidence_list=None):
 
 
 class TestEvidenceNewFields:
-    def test_data_type_field_optional(self):
-        ev = _make_evidence()
-        assert ev.data_type is None
-
-    def test_data_type_field_set(self):
-        ev = _make_evidence(data_type="logs")
-        assert ev.data_type == "logs"
-
-    def test_content_hash_optional(self):
-        ev = _make_evidence()
-        assert ev.content_hash is None
-
-    def test_content_hash_set(self):
-        ev = _make_evidence(content_hash="a" * 64)
-        assert ev.content_hash == "a" * 64
-
-    def test_extraction_method_optional(self):
-        ev = _make_evidence()
-        assert ev.extraction_method is None
-
-    def test_extraction_method_set(self):
-        ev = _make_evidence(extraction_method="structural_index")
-        assert ev.extraction_method == "structural_index"
-
-    def test_backward_compatible_construction(self):
-        """Evidence can be created without any new fields (backward compat)."""
-        ev = _make_evidence(category=EvidenceCategory.CONTEXTUAL_EVIDENCE)
-        assert ev.data_type is None
-        assert ev.content_hash is None
-        assert ev.extraction_method is None
-
-    def test_all_new_fields_together(self):
-        ev = _make_evidence(
-            data_type="metrics",
-            content_hash="b" * 64,
-            extraction_method="statistical_profile",
-        )
-        assert ev.data_type == "metrics"
-        assert ev.content_hash == "b" * 64
-        assert ev.extraction_method == "statistical_profile"
-
-    # --- Scenario-driven processing fields ---
+    # The data_type / content_hash / extraction_method tests previously here
+    # were removed in the schema redesign (commit 7b5a1b93). Those fields
+    # were dropped from Evidence — file metadata (content_hash, content_type)
+    # now lives on uploaded_files, and the extraction_method classification
+    # was folded into the preprocessing pipeline's metadata blob. The
+    # processing_mode tests below remain — that field is still a valid
+    # transient classifier on Evidence.
 
     def test_processing_mode_defaults_to_none(self):
         ev = _make_evidence()

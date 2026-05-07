@@ -17,7 +17,6 @@ def _make_case(
     status=CaseStatus.INQUIRY,
     current_turn=1,
     messages=None,
-    is_archived=False,
     **kwargs,
 ):
     """Helper to build a Case with valid defaults."""
@@ -30,7 +29,6 @@ def _make_case(
     # Use object.__setattr__ to bypass Pydantic cross-field validators
     object.__setattr__(case, "status", status)
     object.__setattr__(case, "current_turn", current_turn)
-    object.__setattr__(case, "is_archived", is_archived)
     if messages is not None:
         object.__setattr__(case, "messages", messages)
     return case
@@ -464,19 +462,14 @@ class TestListUserCases:
         active_case = _make_case(current_turn=3)
         mock_repo.list.return_value = ([empty_case, active_case], 2)
 
-        filters = CaseListFilter(include_empty=False, include_archived=True)
+        filters = CaseListFilter(include_empty=False)
         result = await service.list_user_cases("user_123", filters=filters)
         assert len(result) == 1
 
-    @pytest.mark.asyncio
-    async def test_excludes_archived_cases_by_default(self, service, mock_repo):
-        archived = _make_case(current_turn=1, is_archived=True)
-        active = _make_case(current_turn=1, is_archived=False)
-        mock_repo.list.return_value = ([archived, active], 2)
-
-        filters = CaseListFilter(include_archived=False, include_empty=True)
-        result = await service.list_user_cases("user_123", filters=filters)
-        assert len(result) == 1
+    # test_excludes_archived_cases_by_default removed: archive feature dropped
+    # in the schema redesign (commit 7b5a1b93). Will be reintroduced as a
+    # deliberate epic with retention policy, scheduled archival, and list-view
+    # filter UI. Reintroduce the test alongside that feature.
 
     @pytest.mark.asyncio
     async def test_rejects_empty_user_id(self, service):
