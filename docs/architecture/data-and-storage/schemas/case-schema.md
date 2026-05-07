@@ -543,6 +543,40 @@ COMMENT ON TABLE cases IS 'Root case entity with embedded low-cardinality data i
 
 ### 4.3 evidence (Single-Table Design, v2.1 Locked — Audit-Pass Corrected)
 
+#### Role of `summary` vs `extract`
+
+Every `evidence` row carries two semantically distinct content fields. They are **not** redundant — confusing them was the design error this section exists to prevent.
+
+| Field | Type | Required? | What it carries |
+| --- | --- | --- | --- |
+| `summary` | `VARCHAR(500) NOT NULL` | always | Short label for this row. Used for UI list views, headers, and quick scanning. |
+| `extract` | `TEXT NULL` | conditional | Bulk content backing the summary. Required for Paths 1 and 3 (application-enforced); optional for Path 2 (DB allows NULL). |
+
+The two fields are filled differently per the three evidence-creation paths (see [evidence-flow-architecture.md](../../data-processing/evidence-flow-architecture.md)):
+
+| Path | `form` | Source of `summary` | Source of `extract` |
+| --- | --- | --- | --- |
+| **1. File upload** (Tier 0+1, no LLM) | `DOCUMENT` | Auto-generated file summary | Structural index from preprocessor (`file_extract` + `search_map` + `file_meta`) — what the LLM reads in `<evidence_collected>` |
+| **2. LLM `evidence_to_add`** (after the LLM call) | `SUBMITTED_DATA` | LLM's brief description | LLM's optional verbatim quote (the only path where `extract` may be NULL) |
+| **3. Tier 2/3 tool findings** (`search_file`, `deep_analysis`) | `SUBMITTED_DATA` | Agent-written description | Tool's search excerpts or analysis answer |
+
+**Why this matters.** The structural index on Path 1 is what the agent actually reads to investigate; without it the LLM has nothing to work with except a 500-char label. The verbatim quote on Path 2 grounds the LLM's finding in a specific snippet so a reader can verify the claim. Same column (`extract`) carries both because the role is identical: bulk content backing the summary label. The column name reflects that — extracted text from a source.
+
+**File pointer is separate.** Neither `summary` nor `extract` carries the storage location of the original raw file. That lives on `uploaded_files.storage_ref`, reachable from `evidence.source_file_id`. Inline-only evidence (Path 2 with no quote) has both `extract IS NULL` and `source_file_id IS NULL`.
+
+**CHECK constraints (mirrored at the Pydantic layer):**
+
+```sql
+CONSTRAINT evidence_summary_not_empty CHECK (LENGTH(TRIM(summary)) > 0)
+CONSTRAINT evidence_extract_not_empty CHECK (extract IS NULL OR LENGTH(TRIM(extract)) > 0)
+```
+
+The Pydantic `Evidence` model has a matching `_extract_not_empty_when_set` validator. Same rule, two layers, neither bypassable independently.
+
+**Naming caveat.** `EXTRACT` is a SQL function in PostgreSQL (`EXTRACT(YEAR FROM dt)`); using it as a column name works (PG treats it as a non-reserved keyword and SQLAlchemy quotes correctly), but raw-SQL readers should be aware that `SELECT EXTRACT(YEAR FROM created_at), extract FROM evidence` reads slightly ambiguously. The semantic accuracy across all three paths is structural; the keyword friction is documentary.
+
+---
+
 > **v2.1 design note**: The single-table evidence model with `case_id NOT NULL` FK is the **locked final design** per [deployment-schema-strategy.md §7 and §12 decision #11](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md). The v2.0-era proposal of "consolidated two-tables-plus-join" was rejected as scope creep. Every evidence record is a case-specific interpretation; there is no general "case-less evidence" concept.
 >
 > **Audit-pass correction (v2.2)**: bundled-in cosmetic column renames and speculative new columns were rolled back. Only the changes below remain.

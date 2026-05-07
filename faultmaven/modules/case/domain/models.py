@@ -1599,20 +1599,46 @@ class Evidence(BaseModel):
     )
 
     # ============================================================
-    # Content (single field — the atomic fact)
+    # Content — two-field shape (see case-schema.md §4.3)
     # ============================================================
-    content: str = Field(
+    summary: str = Field(
         description=(
-            "The atomic fact this evidence records. For file-backed evidence, "
-            "this is the high-signal extract used for hypothesis evaluation "
-            "(crime-scene log lines, anomaly readings, parsed config snippet, "
-            "AST function, vision-model description, etc.). For user-typed "
-            "evidence, this is the user's sentence verbatim. The original "
-            "file (if any) is reachable via source_file_id → "
-            "uploaded_files.storage_ref."
+            "Short label for this evidence row. ALWAYS present, regardless "
+            "of how the evidence was created. ~500 chars max. "
+            "Path 1 (DOCUMENT): auto-generated file summary. "
+            "Path 2 (LLM evidence_to_add): LLM's brief description. "
+            "Path 3 (search_file / deep_analysis tools): agent's description "
+            "of the finding. Use this for UI list views, headers, and quick "
+            "scanning."
         ),
         min_length=1,
+        max_length=500,
     )
+
+    extract: Optional[str] = Field(
+        default=None,
+        description=(
+            "Bulk content backing the summary. Distinct from summary "
+            "(short label) and from uploaded_files.storage_ref (file pointer). "
+            "Path 1 (DOCUMENT): structural index from the Tier 0+1 "
+            "preprocessor (file_extract + search_map + file_meta) — what the "
+            "LLM reads in <evidence_collected>. Path 2 (LLM evidence_to_add): "
+            "optional verbatim quote when the LLM wants to ground the finding "
+            "in a specific snippet. Path 3 (tools): the search excerpts or "
+            "analysis answer the tool returned. Required for Paths 1 and 3 "
+            "(application-enforced); nullable for Path 2."
+        ),
+    )
+
+    @field_validator("extract", mode="after")
+    @classmethod
+    def _extract_not_empty_when_set(cls, v: Optional[str]) -> Optional[str]:
+        """Mirror of the DB evidence_extract_not_empty CHECK: if extract is
+        set, it must not be whitespace-only. Cross-layer defense in depth —
+        same rule, two layers, neither bypassable independently."""
+        if v is not None and not v.strip():
+            raise ValueError("extract must not be empty whitespace; pass None to omit")
+        return v
 
     analysis: Optional[str] = Field(
         default=None,

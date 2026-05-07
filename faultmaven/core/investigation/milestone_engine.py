@@ -23,7 +23,6 @@ Architecture:
 
 import asyncio
 import difflib
-import hashlib
 import json
 import logging
 import re
@@ -321,43 +320,6 @@ def _infer_milestones(
 # =============================================================================
 # Content Sanitization
 # =============================================================================
-
-
-def _truncate_content_ref(
-    content_ref: str | None, max_length: int = 4950
-) -> str | None:
-    """
-    Defensively truncate content_ref to prevent ValidationError from max_length constraint.
-
-    The Evidence domain model enforces max_length=5000 for content_ref. This helper
-    ensures content never exceeds the limit, preventing crashes while preserving
-    data quality.
-
-    Args:
-        content_ref: The content reference string (log excerpt, file ref, etc.)
-        max_length: Maximum allowed length (default 4950 to leave room for suffix)
-
-    Returns:
-        Truncated string with "..." suffix if truncation occurred, or None if input is None
-
-    Design Decision:
-        - Truncate at 4950 chars (leaving 50-char buffer below 5000 limit)
-        - Add "..." suffix to indicate truncation
-        - Log warning when truncation occurs for observability
-    """
-    if content_ref is None:
-        return None
-
-    if len(content_ref) <= max_length:
-        return content_ref
-
-    # Truncation needed
-    truncated = content_ref[:max_length] + "..."
-    logger.warning(
-        f"content_ref truncated from {len(content_ref)} to {len(truncated)} chars "
-        f"(max_length={max_length})"
-    )
-    return truncated
 
 
 # =============================================================================
@@ -4386,14 +4348,14 @@ class MilestoneEngine:
                 # Evidence will be available for milestone validation once case transitions to INVESTIGATING
                 advances_milestones = []  # INQUIRY phase: No milestone tracking yet
 
-                # Compute content hash for deduplication of inline evidence
-                evidence_content = ev_item.summary or ""
-                content_hash = hashlib.sha256(evidence_content.encode()).hexdigest()
-
+                # Path 2: LLM evidence_to_add → Evidence. Direct field mapping;
+                # no joining or merging. Inline evidence loses content_hash
+                # dedup (accepted tradeoff — only file-backed evidence dedups
+                # via uploaded_files.content_hash).
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
-                    content_ref=_truncate_content_ref(ev_item.content_ref),
+                    extract=ev_item.extract,
                     category=ev_item.category,
                     source_type=ev_item.source_type,
                     collected_at=datetime.now(UTC),
@@ -4402,12 +4364,6 @@ class MilestoneEngine:
                     form=EvidenceForm.SUBMITTED_DATA,
                     advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",
-                    preprocessed_content=ev_item.summary,
-                    content_size_bytes=len(evidence_content),
-                    preprocessing_method="none",
-                    data_type=None,
-                    content_hash=content_hash,
-                    original_filename=source_filename,
                 )
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
@@ -4644,14 +4600,12 @@ class MilestoneEngine:
                         ev_item.category, milestones_completed_this_turn
                     )
 
-                # Compute content hash for deduplication of inline evidence
-                evidence_content = ev_item.summary or ""
-                content_hash = hashlib.sha256(evidence_content.encode()).hexdigest()
-
+                # Path 2: LLM evidence_to_add → Evidence. Direct field mapping;
+                # see the INQUIRY-phase site above for the same pattern.
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
-                    content_ref=_truncate_content_ref(ev_item.content_ref),
+                    extract=ev_item.extract,
                     category=ev_item.category,
                     source_type=ev_item.source_type,
                     collected_at=datetime.now(UTC),
@@ -4660,12 +4614,6 @@ class MilestoneEngine:
                     form=EvidenceForm.SUBMITTED_DATA,
                     advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",
-                    preprocessed_content=ev_item.summary,
-                    content_size_bytes=len(evidence_content),
-                    preprocessing_method="none",
-                    data_type=None,
-                    content_hash=content_hash,
-                    original_filename=source_filename,
                 )
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
@@ -5448,14 +5396,15 @@ class MilestoneEngine:
         # Infer category based on investigation state
         category = self._infer_evidence_category(case)
 
-        # Create evidence
+        # Path 1: file upload → DOCUMENT-form Evidence. extract starts None
+        # and is populated by the preprocessing pipeline (Tier 0+1 structural
+        # index: file_extract + search_map + file_meta) before the Evidence
+        # row is considered complete. The file's storage location lives on
+        # uploaded_files.storage_ref, reachable via source_file_id.
         evidence = Evidence(
             evidence_id=f"ev_{uuid4().hex[:12]}",
             summary=f"Uploaded file: {attachment.get('filename', 'unknown')}",
-            preprocessed_content="[Content to be preprocessed]",  # Placeholder
-            content_ref=attachment.get("s3_uri", "unknown"),
-            content_size_bytes=attachment.get("size", 0),
-            preprocessing_method="pending",
+            extract=None,  # populated by preprocessing pipeline
             category=category,
             source_type=EvidenceSourceType.LOGS,  # Default (simplified from LOG_FILE)
             form=EvidenceForm.DOCUMENT,

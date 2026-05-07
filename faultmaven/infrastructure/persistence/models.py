@@ -769,11 +769,21 @@ class EvidenceModel(Base):
         nullable=False,
     )
 
-    # The atomic fact itself. If this evidence is file-backed, `source_file_id`
-    # links to the underlying upload; the file's storage location lives on
-    # `uploaded_files.storage_ref`. Inline-only evidence has source_file_id
-    # NULL and `content` is self-contained.
-    content = Column(Text, nullable=False)
+    # Two-field shape per the three-path evidence design (see case-schema.md
+    # §4.3 "Role of summary vs extract"):
+    #
+    # - summary: short label, ALWAYS present. Auto-generated from the file
+    #   summary on Path 1 (DOCUMENT); LLM-written on Path 2 (evidence_to_add);
+    #   agent-written on Path 3 (search/deep_analysis tools).
+    # - extract: bulk content backing the summary. Required-by-application
+    #   for Paths 1 and 3 (structural index / tool excerpts); optional on
+    #   Path 2 (verbatim quote when the LLM has one). Nullable at the DB
+    #   level to accommodate Path 2.
+    #
+    # If file-backed, source_file_id links to the upload; the file's storage
+    # location lives on uploaded_files.storage_ref.
+    summary = Column(String(500), nullable=False)
+    extract = Column(Text, nullable=True)
 
     # Investigation context
     is_primary = Column(Boolean, nullable=False, server_default="0")
@@ -803,7 +813,15 @@ class EvidenceModel(Base):
     case = relationship("CaseModel", back_populates="evidence")
 
     __table_args__ = (
-        CheckConstraint("LENGTH(TRIM(content)) > 0", name="evidence_content_not_empty"),
+        CheckConstraint("LENGTH(TRIM(summary)) > 0", name="evidence_summary_not_empty"),
+        # extract is nullable for Path 2 (LLM evidence_to_add without a
+        # verbatim quote). When set, must not be whitespace-only — mirrored
+        # in Pydantic Evidence._extract_not_empty_when_set for cross-layer
+        # defense in depth.
+        CheckConstraint(
+            "extract IS NULL OR LENGTH(TRIM(extract)) > 0",
+            name="evidence_extract_not_empty",
+        ),
         CheckConstraint(
             "reliability_score IS NULL OR (reliability_score >= 0 AND reliability_score <= 1)",
             name="evidence_reliability_range",

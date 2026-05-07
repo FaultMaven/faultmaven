@@ -257,18 +257,18 @@ class EvidenceToAdd(BaseModel):
     """
 
     summary: str
-    excerpt: Optional[str] = Field(
+    extract: Optional[str] = Field(
         default=None,
         description=(
-            "Optional inline quote: a short human-readable snippet (one or a "
-            "few lines) drawn directly from a file, command output, or "
-            "conversation. Use this when a verbatim quote makes the finding "
-            "concrete. Leave empty when the summary is self-contained. Do "
-            "NOT put a filename or 'file:NAME' here — file-backed evidence "
-            "is created automatically from uploaded attachments by the "
-            "preprocessing pipeline; evidence_to_add is for derived findings "
-            "the agent draws from those uploads, not for re-creating file "
-            "references."
+            "Optional verbatim quote: a short snippet (one or a few lines) "
+            "drawn directly from a file, command output, or conversation, "
+            "to ground the finding in concrete evidence. Leave empty when "
+            "the summary is self-contained. Do NOT put a filename or "
+            "'file:NAME' here — file-backed evidence is created automatically "
+            "from uploaded attachments by the preprocessing pipeline; "
+            "evidence_to_add is for derived findings the agent draws from "
+            "those uploads, not for re-creating file references. Persisted "
+            "as Evidence.extract on the resulting row."
         ),
     )
     category: EvidenceCategory
