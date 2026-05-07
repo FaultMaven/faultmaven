@@ -701,10 +701,19 @@ class CaseModel(Base):
             "status IN ('inquiry', 'investigating', 'resolved', 'closed')",
             name="cases_status_check",
         ),
-        # Once a case leaves INQUIRY, description must be populated.
+        # Description = problem statement. INVESTIGATING and RESOLVED both
+        # require the problem to be articulated:
+        #   - INVESTIGATING: entry gate; you can't investigate without a problem.
+        #   - RESOLVED: a resolved case must have a known problem (per the
+        #     transitions spec, RESOLVED only comes from INVESTIGATING which
+        #     already required it; this CHECK is defense-in-depth).
+        # INQUIRY allows empty (still being formulated). CLOSED allows empty
+        # because the inquiry → closed early-abandon path is legitimate; if
+        # the case went through INVESTIGATING first, description is non-empty
+        # via that gate's enforcement.
         CheckConstraint(
-            "status = 'inquiry' OR LENGTH(TRIM(description)) > 0",
-            name="cases_description_required_post_inquiry",
+            "status IN ('inquiry', 'closed') OR LENGTH(TRIM(description)) > 0",
+            name="cases_description_required_for_investigation",
         ),
         CheckConstraint("current_turn >= 0", name="cases_current_turn_nonnegative"),
         CheckConstraint(

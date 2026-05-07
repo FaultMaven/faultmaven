@@ -3908,22 +3908,42 @@ class Case(BaseModel):
         return AtomicContext(self)
 
     @model_validator(mode="after")
-    def validate_investigating_requirements(self) -> "Case":
+    def validate_description_for_investigation_and_resolution(self) -> "Case":
         """
-        Enforce INVESTIGATING status requirements per DB spec.
+        Description = problem statement. Required for the two states that
+        carry "we know what the problem is" semantics:
 
-        Spec Reference: DB Design Specification lines 175-179
+        * INVESTIGATING: entry gate — investigation without a stated problem
+          is wandering. Also requires problem_statement_confirmed and
+          decided_to_investigate (separate inquiry-readiness checks).
+        * RESOLVED: the case must have a known problem to be meaningfully
+          resolved (the resolution would otherwise have nothing to attach
+          to). Per the legitimate transitions spec (RESOLVED only comes
+          from INVESTIGATING), this should be naturally satisfied; the
+          check is defense-in-depth against bypassed validators.
+
+        INQUIRY: empty allowed (still being formulated).
+        CLOSED: empty allowed when path is inquiry → closed early-abandon;
+                non-empty when path went through INVESTIGATING. The state
+                itself imposes no requirement — closure_reason captures
+                the why-closed fact instead.
+
+        Mirror of the DB CHECK cases_description_required_for_investigation.
         """
-        if self.status == CaseStatus.INVESTIGATING:
+        if self.status in (CaseStatus.INVESTIGATING, CaseStatus.RESOLVED):
             if not self.description or self.description == "":
-                raise ValueError("INVESTIGATING status requires non-empty description")
+                raise ValueError(
+                    f"{self.status.value} status requires non-empty description "
+                    "(description carries the case's problem statement)"
+                )
 
-            # Must have confirmed problem statement and decision to investigate
+        if self.status == CaseStatus.INVESTIGATING:
+            # Inquiry-phase readiness — separate from the description check
+            # but enforced at the same gate.
             if not self.inquiry.problem_statement_confirmed:
                 raise ValueError(
                     "INVESTIGATING status requires confirmed problem statement"
                 )
-
             if not self.inquiry.decided_to_investigate:
                 raise ValueError(
                     "INVESTIGATING status requires investigation commitment"
@@ -3982,7 +4002,7 @@ class Case(BaseModel):
         try:
             self.validate_status_timestamp_consistency()
             self.validate_timestamp_ordering()
-            self.validate_investigating_requirements()
+            self.validate_description_for_investigation_and_resolution()
         except ValueError:
             object.__setattr__(self, "_in_atomic_update", True)
             try:
