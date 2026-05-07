@@ -747,14 +747,6 @@ class CaseService(ICaseService):
                 if not filters.include_empty:
                     cases_list = [c for c in cases_list if c.current_turn > 0]
 
-                # Exclude archived cases unless explicitly requested.
-                # Archiving is independent of case status — both active and
-                # terminal cases can be archived by the user.
-                if not filters.include_archived:
-                    cases_list = [
-                        c for c in cases_list if not getattr(c, "is_archived", False)
-                    ]
-
             # Convert to CaseSummary
             from faultmaven.models.api_models import CaseSummary
 

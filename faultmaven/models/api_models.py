@@ -98,9 +98,6 @@ class CaseSummary(BaseModel):
     milestones_completed: int
     total_milestones: int = 8
 
-    # Archival
-    is_archived: bool = False
-
     # Computed fields
     is_terminal: bool
 
@@ -129,7 +126,6 @@ class CaseSummary(BaseModel):
             current_turn=case.current_turn,
             milestones_completed=len(case.progress.completed_milestones),
             total_milestones=8,
-            is_archived=case.is_archived,
             is_terminal=case.is_terminal,
             valid_next_states=[
                 status.value
@@ -247,10 +243,6 @@ class CaseListFilter(BaseModel):
     include_empty: bool = Field(
         default=True,
         description="Include cases with no conversation (current_turn == 0)",
-    )
-
-    include_archived: bool = Field(
-        default=False, description="Include archived/closed cases"
     )
 
 

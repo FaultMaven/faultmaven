@@ -257,16 +257,18 @@ class EvidenceToAdd(BaseModel):
     """
 
     summary: str
-    content_ref: Optional[str] = Field(
+    excerpt: Optional[str] = Field(
         default=None,
         description=(
-            "Optional human-readable reference snippet (e.g. a quoted log "
-            "line or a short evidence excerpt). Leave empty when the "
-            "summary is self-contained. Do NOT put a filename or "
-            "'file:NAME' here — file-backed evidence is created automatically "
-            "from uploaded attachments by the preprocessing pipeline; "
-            "evidence_to_add is for derived findings the agent draws "
-            "from those uploads, not for re-creating file references."
+            "Optional inline quote: a short human-readable snippet (one or a "
+            "few lines) drawn directly from a file, command output, or "
+            "conversation. Use this when a verbatim quote makes the finding "
+            "concrete. Leave empty when the summary is self-contained. Do "
+            "NOT put a filename or 'file:NAME' here — file-backed evidence "
+            "is created automatically from uploaded attachments by the "
+            "preprocessing pipeline; evidence_to_add is for derived findings "
+            "the agent draws from those uploads, not for re-creating file "
+            "references."
         ),
     )
     category: EvidenceCategory
@@ -276,37 +278,13 @@ class EvidenceToAdd(BaseModel):
     @field_validator("summary", mode="before")
     @classmethod
     def truncate_summary(cls, v):
-        # Domain Evidence.summary caps at 500 chars (modules/case/domain/models.py).
-        # Verbose providers (e.g. DeepSeek on logs-zookeeper) overshoot; truncate
-        # softly here so the turn does not 500. Same graceful-degrade pattern as
-        # the binary-decode placeholder. See ISS-057.
+        # Domain Evidence.content has no length cap, but the summary is the
+        # short-form description used for UI. Verbose providers (e.g. DeepSeek
+        # on logs-zookeeper) overshoot 500; truncate softly so the turn does
+        # not 500. Same graceful-degrade pattern as the binary-decode
+        # placeholder. See ISS-057.
         if isinstance(v, str) and len(v) > 500:
             return v[:489] + " [...trunc]"
-        return v
-
-    @field_validator("content_ref", mode="before")
-    @classmethod
-    def stringify_content_ref(cls, v):
-        """
-        Convert dict objects to JSON strings for content_ref.
-
-        When LLMs use structured output (tool calling), they may populate content_ref
-        with dict objects instead of JSON strings. This validator automatically
-        converts dict/list objects to JSON strings, ensuring compatibility with
-        the string type constraint.
-
-        Examples:
-            - {"key": "value"} → '{"key": "value"}'
-            - [1, 2, 3] → '[1, 2, 3]'
-            - "already a string" → "already a string"
-            - None → None
-        """
-        if v is None:
-            return v
-        if isinstance(v, (dict, list)):
-            import json
-
-            return json.dumps(v, indent=2)
         return v
 
     advances_milestones: Optional[List[str]] = Field(

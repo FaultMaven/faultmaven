@@ -1498,9 +1498,20 @@ class UploadedFile(BaseModel):
 
     size_bytes: int = Field(ge=0, description="File size in bytes")
 
-    data_type: str = Field(
-        description="Detected data type from preprocessing (log, metric, config, code, text, image, etc.)",
-        max_length=50,
+    content_type: Optional[str] = Field(
+        default=None,
+        description="MIME type as reported on upload (e.g., text/plain, application/pdf).",
+        max_length=100,
+    )
+
+    content_hash: Optional[str] = Field(
+        default=None,
+        description=(
+            "SHA-256 of the raw file content. Used for storage-backend dedup "
+            "and integrity checks. NULL when the upload is still streaming "
+            "or hashing was skipped."
+        ),
+        max_length=64,
     )
 
     uploaded_at_turn: int = Field(
@@ -1511,9 +1522,23 @@ class UploadedFile(BaseModel):
         default_factory=lambda: datetime.now(UTC), description="Upload timestamp"
     )
 
-    source_type: str = Field(
+    uploaded_by: Optional[str] = Field(
+        default=None,
+        description=(
+            "User who uploaded the file. NULL for system-generated uploads "
+            "or after the originating user is deleted (FK SET NULL)."
+        ),
+        max_length=36,
+    )
+
+    upload_source: str = Field(
         default="file_upload",
-        description="file_upload | paste | screenshot | page_injection | agent_generated",
+        description=(
+            "Provenance of the upload: how the file got into the system. "
+            "Values: file_upload, paste, screenshot, page_injection, "
+            "agent_generated, conversion_source. Distinct from "
+            "evidence.source_type, which classifies the data shape."
+        ),
         max_length=50,
     )
 
@@ -1523,9 +1548,13 @@ class UploadedFile(BaseModel):
         max_length=500,
     )
 
-    content_ref: Optional[str] = Field(
+    storage_ref: Optional[str] = Field(
         default=None,
-        description="Reference to stored file content (S3 URI or data_id). May be None if processing pending.",
+        description=(
+            "Opaque key passed to IFileStorageBackend.retrieve_file(). The "
+            "backend interprets it (local FS path, S3 key, Azure blob name, "
+            "etc.). May be None if processing pending."
+        ),
         max_length=5000,
     )
 
@@ -1570,92 +1599,25 @@ class Evidence(BaseModel):
     )
 
     # ============================================================
-    # Content (Three-Tier Storage)
+    # Content (single field — the atomic fact)
     # ============================================================
-    summary: str = Field(
-        description="Brief summary of evidence content (<500 chars) for UI display and quick scanning",
+    content: str = Field(
+        description=(
+            "The atomic fact this evidence records. For file-backed evidence, "
+            "this is the high-signal extract used for hypothesis evaluation "
+            "(crime-scene log lines, anomaly readings, parsed config snippet, "
+            "AST function, vision-model description, etc.). For user-typed "
+            "evidence, this is the user's sentence verbatim. The original "
+            "file (if any) is reachable via source_file_id → "
+            "uploaded_files.storage_ref."
+        ),
         min_length=1,
-        max_length=500,
-    )
-
-    preprocessed_content: str = Field(description="""
-        Extracted relevant diagnostic information from preprocessing pipeline.
-
-        This is what the agent uses for hypothesis evaluation and evidence analysis.
-        Contains only the high-signal portions extracted from raw files.
-
-        Examples:
-        - Logs: Crime scene extraction (approx. 200 lines around errors)
-        - Metrics: Anomaly detection results with statistical analysis
-        - Config: Parsed configuration with secrets redacted
-        - Code: AST-extracted functions and classes
-        - Text: LLM-generated summary
-        - Images: Vision model description
-
-        Size: Typically 5 to 50 KB (compressed from larger raw files).
-        Compression ratios: 200:1 for logs, 167:1 for metrics, 50:1 for code.
-
-        This field is REQUIRED for all evidence. Raw files remain in S3 for audit/deep dive.
-        """)
-
-    content_ref: Optional[str] = Field(
-        default=None,
-        description="S3 URI to original raw file (1-10MB) for audit, compliance, and deep dive analysis. May be None for user-typed evidence.",
-        max_length=5000,
-    )
-
-    content_size_bytes: int = Field(
-        ge=0, description="Size of original raw file in bytes"
-    )
-
-    preprocessing_method: str = Field(description="""
-        Preprocessing method used to extract preprocessed_content from raw file.
-        Examples: crime_scene_extraction, anomaly_detection, parse_and_sanitize,
-        ast_extraction, vision_analysis, single_shot_summary, map_reduce_summary
-        """)
-
-    compression_ratio: Optional[float] = Field(
-        default=None,
-        ge=0.0,
-        le=1.0,
-        description="Ratio of preprocessed to raw content size (e.g., 0.005 = 200:1 compression)",
     )
 
     analysis: Optional[str] = Field(
         default=None,
         description="Agent analysis of this evidence and its significance to the investigation",
         max_length=2000,
-    )
-
-    # ============================================================
-    # Data Type & Deduplication (from Preprocessing Pipeline)
-    # ============================================================
-    data_type: Optional[str] = Field(
-        default=None,
-        description=(
-            "Unified data type from preprocessing (logs, metrics, configuration, "
-            "code, text, image). None for legacy evidence without preprocessing."
-        ),
-        max_length=50,
-    )
-
-    content_hash: Optional[str] = Field(
-        default=None,
-        description=(
-            "SHA-256 hash of raw file content for deduplication. "
-            "Computed from raw bytes before any extraction. "
-            "UNIQUE per (case_id, content_hash) — prevents duplicate uploads."
-        ),
-        max_length=64,
-    )
-
-    extraction_method: Optional[str] = Field(
-        default=None,
-        description=(
-            "Extraction method used: structural_index, statistical_profile, "
-            "parse_and_sanitize, ast_extraction, structure_extraction, metadata_extraction"
-        ),
-        max_length=100,
     )
 
     # ============================================================
@@ -1678,14 +1640,53 @@ class Evidence(BaseModel):
 
     source_file_id: Optional[str] = Field(
         default=None,
-        description="ID of the UploadedFile this evidence was derived from (None if from user input)",
+        description=(
+            "ID of the UploadedFile this evidence was derived from. NULL for "
+            "inline-only evidence (user-typed or agent-generated). When set, "
+            "uploaded_files holds the file's metadata (filename, size, MIME, "
+            "content_hash, storage_ref). search_file tool retrieves the "
+            "filename via this link rather than duplicating it on the row."
+        ),
     )
 
-    original_filename: Optional[str] = Field(
-        default=None,
-        description="Original filename when uploaded (e.g., 'OpenSSH_2k.log'). Used by search_file tool for display.",
-        max_length=512,
+    is_primary: bool = Field(
+        default=False,
+        description=(
+            "True for the principal evidence row in this case (the one "
+            "that anchors the investigation summary). list_evidence_tool "
+            "uses this for surface-level dashboards."
+        ),
     )
+
+    reliability_score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "LLM-assessed reliability of this evidence (0.0-1.0). "
+            "NULL when the agent has not scored the evidence."
+        ),
+    )
+
+    tags: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Free-form tag list for evidence classification. Tag values must "
+            "not contain commas (the SQLite serializer uses comma-separation; "
+            "the comma-ban keeps round-trip lossless)."
+        ),
+    )
+
+    @field_validator("tags", mode="after")
+    @classmethod
+    def _no_commas_in_tags(cls, v: List[str]) -> List[str]:
+        for t in v:
+            if "," in t:
+                raise ValueError(
+                    f"tag values must not contain commas (got {t!r}); commas "
+                    "would break the SQLite serialization round-trip"
+                )
+        return v
 
     vectorized: bool = Field(
         default=False,
@@ -2019,18 +2020,19 @@ class Hypothesis(BaseModel):
     # ============================================================
     # Evidence Relationships (Many-to-Many)
     # ============================================================
-    evidence_links: Dict[str, HypothesisEvidenceLink] = Field(
-        default_factory=dict,
+    evidence_links: List[HypothesisEvidenceLink] = Field(
+        default_factory=list,
         description="""
-        Maps evidence_id to relationship details.
+        Relationship rows from the hypothesis_evidence junction table.
 
         ONE evidence can:
-        - STRONGLY_SUPPORTS hypothesis A
+        - SUPPORTS hypothesis A
         - REFUTES hypothesis B
-        - Be IRRELEVANT to hypothesis C
+        - Be NEUTRAL to hypothesis C
 
-        Backed by hypothesis_evidence junction table in database.
-        LLM evaluates each evidence against ALL active hypotheses after submission.
+        Each list entry binds (hypothesis_id, evidence_id, stance, reasoning,
+        stance_confidence). LLM evaluates each evidence against ALL active
+        hypotheses after submission.
         """,
     )
 
@@ -2096,8 +2098,8 @@ class Hypothesis(BaseModel):
         """Get evidence IDs that support this hypothesis"""
 
         return [
-            evidence_id
-            for evidence_id, link in self.evidence_links.items()
+            link.evidence_id
+            for link in self.evidence_links
             if link.stance == EvidenceStance.SUPPORTS
         ]
 
@@ -2106,8 +2108,8 @@ class Hypothesis(BaseModel):
         """Get evidence IDs that refute this hypothesis"""
 
         return [
-            evidence_id
-            for evidence_id, link in self.evidence_links.items()
+            link.evidence_id
+            for link in self.evidence_links
             if link.stance == EvidenceStance.REFUTES
         ]
 
@@ -3225,12 +3227,20 @@ class Case(BaseModel):
         pattern=r"^case_[a-f0-9]{12}$",
     )
 
-    user_id: str = Field(
-        description="User who created the case", min_length=1, max_length=255
+    user_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "User who created the case. NULL after the originating user is "
+            "deleted (FK SET NULL). Required to be non-empty at creation time; "
+            "creation logic enforces this separately from Pydantic validation."
+        ),
+        max_length=36,
     )
 
     organization_id: str = Field(
-        description="Organization this case belongs to", min_length=1, max_length=255
+        description="Organization this case belongs to",
+        min_length=1,
+        max_length=36,
     )
 
     title: str = Field(
@@ -3506,21 +3516,6 @@ class Case(BaseModel):
     closed_at: Optional[datetime] = Field(
         default=None,
         description="When case reached terminal state (RESOLVED or CLOSED)",
-    )
-
-    # ============================================================
-    # Archival
-    # ============================================================
-    is_archived: bool = Field(
-        default=False,
-        description="Whether the case has been archived by the user. "
-        "Archived cases are hidden from the default list view but remain "
-        "fully accessible. Independent of case status.",
-    )
-
-    archived_at: Optional[datetime] = Field(
-        default=None,
-        description="When the case was archived",
     )
 
     # ============================================================
