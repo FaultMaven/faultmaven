@@ -61,7 +61,6 @@ def mock_case():
     mock.description = "Test Description"
     mock.status = CaseStatus.INQUIRY
     mock.is_terminal = False
-    mock.is_archived = False
     mock.created_at = datetime.now(timezone.utc)
     mock.updated_at = datetime.now(timezone.utc)
     # Optional fields - must be explicit to avoid MagicMock being returned

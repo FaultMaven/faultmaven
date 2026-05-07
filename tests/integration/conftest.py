@@ -288,24 +288,25 @@ def mock_investigation_service(mock_case_service):
                         source_type = EvidenceSourceType.METRICS
                         data_type = "metrics"
 
-                    # Create UploadedFile for the raw file
+                    # Create UploadedFile for the raw file. content_hash and
+                    # storage_ref live here now (file-intrinsic metadata);
+                    # Evidence references the file via source_file_id FK.
                     file_id = f"file_{uuid4().hex[:12]}"
                     uploaded_file = UploadedFile(
                         file_id=file_id,
                         filename=filename,
                         size_bytes=len(attachment.content),
-                        data_type=data_type,
                         uploaded_at_turn=1,
-                        source_type="file_upload",
-                        preprocessing_summary=f"Test {data_type} ingested from {filename}",
-                        content_ref=content_ref,
+                        upload_source="file_upload",
+                        storage_ref=content_ref,
+                        content_hash=_hashlib.sha256(b"Test content").hexdigest(),
                     )
                     case.uploaded_files.append(uploaded_file)
 
-                    # Duplicate detection: check existing evidence
+                    # Duplicate detection now reads from evidence.extract
+                    # (was preprocessed_content before the rename)
                     is_duplicate = any(
-                        ev.preprocessed_content == "Test content"
-                        for ev in case.evidence
+                        ev.extract == "Test content" for ev in case.evidence
                     )
                     is_irrelevant = "random" in filename.lower()
 
@@ -324,21 +325,18 @@ def mock_investigation_service(mock_case_service):
                         )
                         primary_purpose = "irrelevant_ignored"
 
-                    # Create Evidence with matching content_ref
+                    # Create Evidence linked to the upload via source_file_id
                     ev = Evidence(
                         evidence_id=f"ev_{uuid4().hex[:12]}",
-                        preprocessed_content="Test content",
-                        preprocessing_method="test_extraction",
-                        content_size_bytes=len(attachment.content),
+                        extract="Test content",
                         category=category,
                         source_type=source_type,
                         form=EvidenceForm.DOCUMENT,
                         summary=summary,
                         collected_at_turn=1,
                         collected_by="system",
-                        content_ref=content_ref,
+                        source_file_id=file_id,
                         primary_purpose=primary_purpose,
-                        content_hash=_hashlib.sha256(b"Test content").hexdigest(),
                     )
                     case.evidence.append(ev)
 
@@ -346,7 +344,7 @@ def mock_investigation_service(mock_case_service):
                         AttachmentResult(
                             evidence_id=ev.evidence_id,
                             filename=filename,
-                            data_type=data_type,
+                            source_type=data_type,
                             file_size=len(attachment.content),
                             processing_status="completed",
                         )

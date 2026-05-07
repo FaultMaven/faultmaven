@@ -586,7 +586,7 @@ class InvestigationService:
                     AttachmentResult(
                         evidence_id=res.evidence.evidence_id,
                         filename=att.filename,
-                        data_type=res.evidence.source_type.value,
+                        source_type=res.evidence.source_type.value,
                         file_size=(
                             (lambda fm: fm.size_bytes if fm else 0)(
                                 case.find_uploaded_file(res.evidence.source_file_id)
@@ -596,7 +596,7 @@ class InvestigationService:
                             "duplicate" if res.duplicate_of else "completed"
                         ),
                         uploaded_at=datetime.now(timezone.utc).isoformat(),
-                        source_type=(
+                        upload_source=(
                             att.source_metadata.get("source_type", "file_upload")
                             if att.source_metadata
                             else "file_upload"

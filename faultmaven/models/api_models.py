@@ -398,7 +398,6 @@ class AttachmentResult(BaseModel):
 
     evidence_id: str
     filename: str
-    data_type: str
     file_size: int
     processing_status: str
     uploaded_at: str = Field(
@@ -406,8 +405,14 @@ class AttachmentResult(BaseModel):
         description="ISO 8601 timestamp of when the attachment was processed",
     )
     source_type: str = Field(
+        description=(
+            "Data shape from preprocessing classifier: logs | metrics | "
+            "configuration | code | text | image"
+        ),
+    )
+    upload_source: str = Field(
         default="file_upload",
-        description="Input origin: file_upload | text_paste | page_capture",
+        description="Input origin: file_upload | paste | page_capture | screenshot | agent_generated",
     )
     duplicate_of: Optional[str] = Field(
         default=None,
@@ -713,11 +718,17 @@ class UploadedFileDetails(UploadedFileMetadata):
             # Find hypotheses related to this evidence
             relationships = []
             for hyp_id, hypothesis in hypotheses.items():
-                if (
-                    hasattr(hypothesis, "evidence_links")
-                    and evidence.evidence_id in hypothesis.evidence_links
-                ):
-                    link = hypothesis.evidence_links[evidence.evidence_id]
+                if not hasattr(hypothesis, "evidence_links"):
+                    continue
+                link = next(
+                    (
+                        l
+                        for l in hypothesis.evidence_links
+                        if l.evidence_id == evidence.evidence_id
+                    ),
+                    None,
+                )
+                if link is not None:
                     relationships.append(
                         HypothesisRelationship(
                             hypothesis_id=hyp_id,
@@ -759,9 +770,9 @@ class DerivedEvidenceSummary(BaseModel):
         description="SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER"
     )
     collected_at_turn: int
-    source_type: str = Field(description="LOGS | METRICS | TRACES | etc.")
-    content_hash: Optional[str] = None
-    preprocessing_method: Optional[str] = None
+    source_type: str = Field(
+        description="LOGS | METRICS | CONFIGURATION | CODE | TEXT | IMAGE"
+    )
     primary_purpose: Optional[str] = None
     related_hypothesis_ids: List[str] = Field(default_factory=list)
 
@@ -773,11 +784,21 @@ class UploadedFileDetailsResponse(BaseModel):
     filename: str
     size_bytes: int
     size_display: str
+    content_type: Optional[str] = Field(
+        default=None, description="MIME type as reported on upload"
+    )
+    content_hash: Optional[str] = Field(
+        default=None, description="SHA-256 of file contents (storage-backend dedup)"
+    )
     uploaded_at_turn: int
     uploaded_at: datetime
-    source_type: str
-    data_type: str
-    summary: Optional[str] = None
+    upload_source: str = Field(
+        description="Provenance: file_upload | paste | screenshot | page_capture | agent_generated | conversion_source"
+    )
+    summary: Optional[str] = Field(
+        default=None,
+        description="Case-scoped summary from the linked Evidence row, when present",
+    )
 
     # Evidence linkage
     derived_evidence: List[DerivedEvidenceSummary] = Field(default_factory=list)
@@ -831,6 +852,11 @@ class EvidenceDetailsResponse(BaseModel):
     related_hypotheses: List[RelatedHypothesis] = Field(default_factory=list)
 
     # Content
-    preprocessed_content: str
-    content_size_bytes: int
+    extract: Optional[str] = Field(
+        default=None,
+        description=(
+            "Bulk content backing the summary. NULL for inline-only evidence "
+            "(Path 2 LLM finding without a verbatim quote)."
+        ),
+    )
     analysis: Optional[str] = None

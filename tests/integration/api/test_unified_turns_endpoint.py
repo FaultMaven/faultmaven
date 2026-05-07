@@ -373,7 +373,7 @@ class TestTurnResponseModel:
         att = response.attachments_processed[0]
         assert att.evidence_id == "ev_abc123def456"
         assert att.filename == "app.log"
-        assert att.data_type == "LOGS"
+        assert att.source_type == "logs"
         assert att.processing_status == "completed"
 
     def test_multiple_attachments_response(self):

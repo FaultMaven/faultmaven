@@ -918,14 +918,15 @@ def _score_evidence_for_tier_a(
     # Hypothesis linkage: evidence linked to active/validated hypotheses
     # with a supportive stance (supports/strongly_supports)
     for h in case.hypotheses.values():
-        if (
-            h.status.value in ("active", "validated")
-            and ev.evidence_id in h.evidence_links
-        ):
-            link = h.evidence_links[ev.evidence_id]
-            if link.stance.value in ("supports", "strongly_supports"):
-                score += 3
-                break
+        if h.status.value not in ("active", "validated"):
+            continue
+        link = next(
+            (l for l in h.evidence_links if l.evidence_id == ev.evidence_id),
+            None,
+        )
+        if link is not None and link.stance.value in ("supports", "strongly_supports"):
+            score += 3
+            break
 
     # Structural content richness: items with real extraction output benefit
     # more from Tier A than items with sparse/empty extract

@@ -2486,7 +2486,6 @@ async def reclassify_evidence(
 
     return {
         "evidence_id": updated_evidence.evidence_id,
-        "data_type": updated_evidence.data_type,
         "source_type": (
             updated_evidence.source_type.value
             if hasattr(updated_evidence.source_type, "value")
@@ -3207,38 +3206,37 @@ async def get_uploaded_file_details(
                 status_code=404, detail=f"File {file_id} not found in case {case_id}"
             )
 
-        # Find all evidence derived from this file (matching by content_ref)
+        # Find all evidence derived from this file via the canonical FK
+        # (Evidence.source_file_id → UploadedFile.file_id). The pre-redesign
+        # `content_ref == content_ref` matching was a polymorphism workaround
+        # eliminated by the schema redesign.
         derived_evidence = []
+        first_summary: Optional[str] = None
         for evidence in case.evidence:
-            if (
-                evidence.content_ref
-                and evidence.content_ref == uploaded_file.content_ref
-            ):
-                # Find hypotheses related to this evidence
-                related_hypothesis_ids = []
-                for hypothesis in case.hypotheses:
-                    if evidence.evidence_id in hypothesis.evidence_links:
-                        related_hypothesis_ids.append(hypothesis.hypothesis_id)
-
-                derived_evidence.append(
-                    DerivedEvidenceSummary(
-                        evidence_id=evidence.evidence_id,
-                        summary=evidence.summary,
-                        category=_safe_enum_value(evidence.category),
-                        collected_at_turn=evidence.collected_at_turn,
-                        source_type=_safe_enum_value(evidence.source_type),
-                        content_hash=(
-                            hashlib.sha256(
-                                evidence.preprocessed_content.encode()
-                            ).hexdigest()
-                            if evidence.preprocessed_content
-                            else None
-                        ),
-                        preprocessing_method=evidence.preprocessing_method,
-                        primary_purpose=evidence.primary_purpose,
-                        related_hypothesis_ids=related_hypothesis_ids,
-                    )
+            if evidence.source_file_id != uploaded_file.file_id:
+                continue
+            # Find hypotheses related to this evidence (junction list)
+            related_hypothesis_ids = [
+                hyp.hypothesis_id
+                for hyp in case.hypotheses
+                if any(
+                    link.evidence_id == evidence.evidence_id
+                    for link in hyp.evidence_links
                 )
+            ]
+            derived_evidence.append(
+                DerivedEvidenceSummary(
+                    evidence_id=evidence.evidence_id,
+                    summary=evidence.summary,
+                    category=_safe_enum_value(evidence.category),
+                    collected_at_turn=evidence.collected_at_turn,
+                    source_type=_safe_enum_value(evidence.source_type),
+                    primary_purpose=evidence.primary_purpose,
+                    related_hypothesis_ids=related_hypothesis_ids,
+                )
+            )
+            if first_summary is None:
+                first_summary = evidence.summary
 
         # Format file size for display
         size_bytes = uploaded_file.size_bytes
@@ -3254,11 +3252,12 @@ async def get_uploaded_file_details(
             filename=uploaded_file.filename,
             size_bytes=uploaded_file.size_bytes,
             size_display=size_display,
+            content_type=uploaded_file.content_type,
+            content_hash=uploaded_file.content_hash,
             uploaded_at_turn=uploaded_file.uploaded_at_turn,
             uploaded_at=uploaded_file.uploaded_at,
-            source_type=uploaded_file.source_type,
-            data_type=uploaded_file.data_type,
-            summary=None,  # case-scoped summary lives on linked Evidence
+            upload_source=uploaded_file.upload_source,
+            summary=first_summary,
             derived_evidence=derived_evidence,
             evidence_count=len(derived_evidence),
         )
@@ -3300,11 +3299,9 @@ async def list_uploaded_files(
         # Build file list with evidence counts
         files_with_counts = []
         for uploaded_file in case.uploaded_files:
-            # Count evidence derived from this file
+            # Count evidence derived from this file via the canonical FK
             evidence_count = sum(
-                1
-                for e in case.evidence
-                if e.content_ref and e.content_ref == uploaded_file.content_ref
+                1 for e in case.evidence if e.source_file_id == uploaded_file.file_id
             )
 
             # Format file size
@@ -3324,10 +3321,8 @@ async def list_uploaded_files(
                     size_display=size_display,
                     uploaded_at_turn=uploaded_file.uploaded_at_turn,
                     uploaded_at=uploaded_file.uploaded_at,
-                    source_type=uploaded_file.source_type,
-                    data_type=uploaded_file.data_type,
+                    source_type=uploaded_file.upload_source,
                     summary=None,  # case-scoped summary lives on linked Evidence
-                    evidence_count=evidence_count,
                 )
             )
 
@@ -3380,46 +3375,34 @@ async def get_evidence_details(
                 detail=f"Evidence {evidence_id} not found in case {case_id}",
             )
 
-        # Find source file (if evidence was derived from uploaded file)
-        source_file = None
-        matched_file = None
-        if getattr(evidence, "source_file_id", None):
-            # Primary: direct link via source_file_id
-            matched_file = next(
-                (
-                    f
-                    for f in case.uploaded_files
-                    if f.file_id == evidence.source_file_id
-                ),
-                None,
-            )
-        if not matched_file and evidence.content_ref:
-            # Legacy fallback: match via content_ref
-            matched_file = next(
-                (
-                    f
-                    for f in case.uploaded_files
-                    if f.content_ref == evidence.content_ref
-                ),
-                None,
-            )
-        if matched_file:
-            source_file = SourceFileReference(
+        # Source file via canonical FK. Inline-only evidence (Path 2,
+        # source_file_id IS NULL) returns source_file=None.
+        matched_file = case.find_uploaded_file(evidence.source_file_id)
+        source_file = (
+            SourceFileReference(
                 file_id=matched_file.file_id,
                 filename=matched_file.filename,
                 uploaded_at_turn=matched_file.uploaded_at_turn,
             )
+            if matched_file
+            else None
+        )
 
-        # Find related hypotheses
+        # Related hypotheses via the junction-backed list
         related_hypotheses = []
         for hypothesis in case.hypotheses:
-            if evidence.evidence_id in hypothesis.evidence_links:
-                stance = hypothesis.evidence_links[evidence.evidence_id]
+            for link in hypothesis.evidence_links:
+                if link.evidence_id != evidence.evidence_id:
+                    continue
                 related_hypotheses.append(
                     RelatedHypothesis(
                         hypothesis_id=hypothesis.hypothesis_id,
                         statement=hypothesis.statement,
-                        stance=stance,
+                        stance=(
+                            link.stance.value
+                            if hasattr(link.stance, "value")
+                            else str(link.stance)
+                        ),
                     )
                 )
 
@@ -3434,8 +3417,7 @@ async def get_evidence_details(
             collected_by=evidence.collected_by,
             source_file=source_file,
             related_hypotheses=related_hypotheses,
-            preprocessed_content=evidence.preprocessed_content,
-            content_size_bytes=evidence.content_size_bytes,
+            extract=evidence.extract,
             analysis=evidence.analysis,
         )
 

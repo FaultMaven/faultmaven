@@ -70,12 +70,12 @@ class HypothesisManager:
         """
         supporting = sum(
             1
-            for link in hypothesis.evidence_links.values()
+            for link in hypothesis.evidence_links
             if link.stance == EvidenceStance.SUPPORTS
         )
         refuting = sum(
             1
-            for link in hypothesis.evidence_links.values()
+            for link in hypothesis.evidence_links
             if link.stance == EvidenceStance.REFUTES
         )
         total = supporting + refuting
@@ -102,7 +102,7 @@ class HypothesisManager:
             generated_at_turn=current_turn,
             last_updated_turn=current_turn,
             last_progress_at_turn=current_turn,
-            evidence_links={},
+            evidence_links=[],
             rationale=rationale or "Initial hypothesis",
         )
 
@@ -176,15 +176,28 @@ class HypothesisManager:
         else:
             stance = EvidenceStance.SUPPORTS if supports else EvidenceStance.REFUTES
 
-        if evidence_id not in hypothesis.evidence_links:
-            link = HypothesisEvidenceLink(
-                hypothesis_id=hypothesis.hypothesis_id,
-                evidence_id=evidence_id,
-                stance=stance,
-                reasoning=reasoning,
-                stance_confidence=stance_confidence,
-            )
-            hypothesis.evidence_links[evidence_id] = link
+        link = HypothesisEvidenceLink(
+            hypothesis_id=hypothesis.hypothesis_id,
+            evidence_id=evidence_id,
+            stance=stance,
+            reasoning=reasoning,
+            stance_confidence=stance_confidence,
+        )
+        # evidence_links is now List[HypothesisEvidenceLink] (junction-table
+        # backed). Upsert by evidence_id: replace an existing link if one
+        # already exists for this evidence_id, else append.
+        existing_idx = next(
+            (
+                i
+                for i, existing in enumerate(hypothesis.evidence_links)
+                if existing.evidence_id == evidence_id
+            ),
+            None,
+        )
+        if existing_idx is not None:
+            hypothesis.evidence_links[existing_idx] = link
+        else:
+            hypothesis.evidence_links.append(link)
 
             stance_label = stance.value
             logger.info(
@@ -220,12 +233,12 @@ class HypothesisManager:
 
         supporting_count = sum(
             1
-            for link in hypothesis.evidence_links.values()
+            for link in hypothesis.evidence_links
             if link.stance == EvidenceStance.SUPPORTS
         )
         refuting_count = sum(
             1
-            for link in hypothesis.evidence_links.values()
+            for link in hypothesis.evidence_links
             if link.stance == EvidenceStance.REFUTES
         )
 
@@ -321,12 +334,12 @@ class HypothesisManager:
 
         supporting_count = sum(
             1
-            for link in hypothesis.evidence_links.values()
+            for link in hypothesis.evidence_links
             if link.stance == EvidenceStance.SUPPORTS
         )
         refuting_count = sum(
             1
-            for link in hypothesis.evidence_links.values()
+            for link in hypothesis.evidence_links
             if link.stance == EvidenceStance.REFUTES
         )
 
@@ -435,14 +448,17 @@ class HypothesisManager:
         hypothesis.status = HypothesisStatus.REFUTED
         hypothesis.likelihood = 0.0
         # hypothesis.refuting_evidence.extend(refuting_evidence_ids) # Updated logic via link_evidence manually or loop
+        existing_evidence_ids = {link.evidence_id for link in hypothesis.evidence_links}
         for ev_id in refuting_evidence_ids:
-            if ev_id not in hypothesis.evidence_links:
-                hypothesis.evidence_links[ev_id] = HypothesisEvidenceLink(
-                    hypothesis_id=hypothesis.hypothesis_id,
-                    evidence_id=ev_id,
-                    stance=EvidenceStance.REFUTES,
-                    reasoning=reason,
-                    completeness=1.0,
+            if ev_id not in existing_evidence_ids:
+                hypothesis.evidence_links.append(
+                    HypothesisEvidenceLink(
+                        hypothesis_id=hypothesis.hypothesis_id,
+                        evidence_id=ev_id,
+                        stance=EvidenceStance.REFUTES,
+                        reasoning=reason,
+                        stance_confidence=1.0,
+                    )
                 )
         hypothesis.last_updated_turn = current_turn
 
