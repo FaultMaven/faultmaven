@@ -728,10 +728,11 @@ class UploadedFileModel(Base):
 
 
 class EvidenceModel(Base):
-    """Evidence collected during a case. One row per atomic fact. The `content`
-    column holds the actual payload — a log snippet, the user's sentence, a
-    metric reading, etc. File metadata lives on `uploaded_files` (linked via
-    `source_file_id`); inline-only evidence has `source_file_id IS NULL`."""
+    """Evidence collected during a case. One row per atomic fact. Two content
+    fields per the three-path design (see column-level comment): `summary` is
+    the always-present short label; `extract` is the bulk content backing it
+    (structural index, LLM quote, or tool excerpts depending on form). File
+    metadata lives on `uploaded_files` (linked via `source_file_id`)."""
 
     __tablename__ = "evidence"
 
