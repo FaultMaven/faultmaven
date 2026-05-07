@@ -18,6 +18,7 @@ Architecture:
     └── agent_tool_calls (1:N normalized table)
 """
 
+import builtins
 import json
 import logging
 from datetime import datetime, timezone
@@ -40,9 +41,12 @@ from faultmaven.modules.case.domain.models import (
     EvidenceCategory,
     EvidenceForm,
     EvidenceSourceType,
+    EvidenceStance,
     Hypothesis,
+    HypothesisEvidenceLink,
     InquiryData,
     InvestigationProgress,
+    InvestigationStrategy,
     PathSelection,
     ProblemVerification,
     ProposedAction,
@@ -61,13 +65,56 @@ from faultmaven.modules.case.infrastructure import (
     _agent_execution_mappers as agent_mappers,
 )
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-    _derive_evidence_form,
-)
 
 # TYPE_CHECKING imports not needed - models imported directly above
 
 logger = logging.getLogger(__name__)
+
+
+def _serialize_tags(tags: Optional[List[str]]) -> Optional[List[str]]:
+    """Serialize Evidence.tags for the PG ``tags`` column.
+
+    PostgreSQL stores tags as ``TEXT[]`` (see ``TagsArray`` in
+    infrastructure/persistence/models.py). asyncpg / psycopg bind a
+    Python list directly to that array, so the serializer is just an
+    ``[] → None`` normalization. Pydantic's ``_no_commas_in_tags``
+    validator already rejects values containing commas — same rule
+    SQLite needs for its TEXT round-trip.
+    """
+    if not tags:
+        return None
+    return list(tags)
+
+
+def _deserialize_tags(value: Any) -> List[str]:
+    """Inverse of ``_serialize_tags``.
+
+    On PG, asyncpg returns the column as ``list[str]``. Older rows
+    written before the schema rewrite may surface as a comma-separated
+    TEXT (the SQLite shape) — accept both for robustness.
+    """
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(t) for t in value if t]
+    if isinstance(value, str):
+        return [t for t in value.split(",") if t]
+    return []
+
+
+_STANCE_TO_RELATIONSHIP: Dict[EvidenceStance, str] = {
+    EvidenceStance.SUPPORTS: "supports",
+    EvidenceStance.REFUTES: "refutes",
+    # The hypothesis_evidence CHECK allows ('supports', 'refutes', 'related').
+    # Domain NEUTRAL maps to 'related' (closest neutral-not-irrelevant slot).
+    EvidenceStance.NEUTRAL: "related",
+}
+
+_RELATIONSHIP_TO_STANCE: Dict[str, EvidenceStance] = {
+    "supports": EvidenceStance.SUPPORTS,
+    "refutes": EvidenceStance.REFUTES,
+    "related": EvidenceStance.NEUTRAL,
+}
 
 
 def _pg_row_to_case_entity(row: Any) -> CaseEntity:
@@ -103,7 +150,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     Performance Characteristics:
     - Case load: ~10ms (single query + JOINs)
     - Evidence filtering: ~5ms (indexed queries on normalized table)
-    - Search: ~15ms (full-text search on preprocessed_content)
+    - Search: ~15ms (tsvector search on cases.title + inquiry text)
     - Hypothesis tracking: ~3ms (status index lookup)
     """
 
@@ -181,28 +228,24 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         Retrieve case by ID using JOINs for normalized tables.
 
-        Note: Evidence is loaded via IEvidenceQuery to respect database boundaries
-        (Principle 3: Database Boundaries - no cross-module JOINs).
+        Hypotheses, solutions, uploaded_files and case_messages are
+        aggregated to JSON in the same query as the parent ``cases`` row.
+        Evidence is loaded separately (via ``_load_evidence_for_case``)
+        because the row → ``Evidence`` reconstruction is non-trivial and
+        easier to keep in one place than to inline into a JSON aggregate.
 
-        Performance: ~12ms (single query + evidence API call)
-
-        Args:
-            case_id: Case identifier
-
-        Returns:
-            Case if found, None otherwise
+        Hypotheses' evidence linkage lives in the ``hypothesis_evidence``
+        junction table (the ``hypotheses.evidence_links`` JSON blob is
+        gone). The links are loaded after the parent fetch.
         """
         try:
-            # Main query - evidence removed per Principle 3 (Database Boundaries)
-            # Evidence is loaded separately via IEvidenceQuery
             query = text("""
                 SELECT
                     c.*,
 
-                    -- Evidence loaded via IEvidenceQuery (no cross-module JOIN)
-                    '[]'::json as evidence_data,
-
-                    -- Hypotheses (aggregated as JSON)
+                    -- Hypotheses (aggregated as JSON; evidence_links
+                    -- column is gone — junction-table data is hydrated
+                    -- separately by _load_hypothesis_evidence_links).
                     COALESCE(
                         json_agg(DISTINCT jsonb_build_object(
                             'hypothesis_id', h.hypothesis_id,
@@ -210,10 +253,17 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             'status', h.status,
                             'likelihood', h.likelihood,
                             'initial_likelihood', h.initial_likelihood,
-                            'category', h.category,
-                            'evidence_links', h.evidence_links,
+                            'generated_at_turn', h.generated_at_turn,
                             'last_updated_turn', h.last_updated_turn,
+                            'last_progress_at_turn', h.last_progress_at_turn,
                             'iterations_without_progress', h.iterations_without_progress,
+                            'category', h.category,
+                            'generation_mode', h.generation_mode,
+                            'rationale', h.rationale,
+                            'retirement_reason', h.retirement_reason,
+                            'refutation_reason', h.refutation_reason,
+                            'tested_at', h.tested_at,
+                            'concluded_at', h.concluded_at,
                             'proposed_at', h.proposed_at,
                             'updated_at', h.updated_at,
                             'metadata', h.metadata
@@ -225,9 +275,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     COALESCE(
                         json_agg(DISTINCT jsonb_build_object(
                             'solution_id', s.solution_id,
+                            'solution_type', s.solution_type,
+                            'title', s.title,
                             'description', s.description,
                             'status', s.status,
+                            'immediate_action', s.immediate_action,
+                            'longterm_fix', s.longterm_fix,
                             'implementation_steps', s.implementation_steps,
+                            'commands', s.commands,
+                            'risks', s.risks,
                             'risk_level', s.risk_level,
                             'estimated_effort', s.estimated_effort,
                             'verification_result', s.verification_result,
@@ -240,25 +296,45 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                         '[]'::json
                     ) as solutions_data,
 
-                    -- Uploaded Files (aggregated as JSON - matches UploadedFile Pydantic model)
+                    -- Uploaded Files (post-redesign columns: storage_ref
+                    -- replaces content_ref; upload_source replaces
+                    -- source_type; data_type is gone; content_hash,
+                    -- content_type and uploaded_by added).
                     COALESCE(
                         json_agg(DISTINCT jsonb_build_object(
                             'file_id', f.file_id,
                             'filename', f.filename,
                             'size_bytes', f.size_bytes,
-                            'data_type', f.data_type,
+                            'content_type', f.content_type,
+                            'content_hash', f.content_hash,
+                            'storage_ref', f.storage_ref,
+                            'upload_source', f.upload_source,
                             'uploaded_at_turn', f.uploaded_at_turn,
                             'uploaded_at', f.uploaded_at,
-                            'source_type', f.source_type,
-                            'content_ref', f.content_ref
+                            'uploaded_by', f.uploaded_by
                         )) FILTER (WHERE f.file_id IS NOT NULL),
                         '[]'::json
-                    ) as uploaded_files_data
+                    ) as uploaded_files_data,
+
+                    -- Case messages (case_messages table; sorted by created_at).
+                    COALESCE(
+                        json_agg(DISTINCT jsonb_build_object(
+                            'message_id', m.message_id,
+                            'turn_number', m.turn_number,
+                            'role', m.role,
+                            'content', m.content,
+                            'created_at', m.created_at,
+                            'token_count', m.token_count,
+                            'metadata', m.metadata
+                        )) FILTER (WHERE m.message_id IS NOT NULL),
+                        '[]'::json
+                    ) as messages_data
 
                 FROM cases c
                 LEFT JOIN hypotheses h ON c.case_id = h.case_id
                 LEFT JOIN solutions s ON c.case_id = s.case_id
                 LEFT JOIN uploaded_files f ON c.case_id = f.case_id
+                LEFT JOIN case_messages m ON c.case_id = m.case_id
                 WHERE c.case_id = :case_id
                 GROUP BY c.case_id
             """)
@@ -269,10 +345,22 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if not row:
                 return None
 
-            # Reconstruct Case domain object
-            case = await self._row_to_case(row)
+            # Hydrate junction-table links for every hypothesis on the row.
+            hypotheses_payload = (
+                row.hypotheses_data
+                if isinstance(row.hypotheses_data, list)
+                else json.loads(row.hypotheses_data)
+            )
+            hypothesis_ids = [
+                h["hypothesis_id"] for h in hypotheses_payload if h.get("hypothesis_id")
+            ]
+            links_by_hyp = await self._load_hypothesis_evidence_links(hypothesis_ids)
 
-            # Load evidence directly (Case now owns evidence per module-organization-design.md)
+            case = await self._row_to_case(row, links_by_hyp)
+
+            # Load evidence separately — the Pydantic reconstruction needs
+            # column-by-column conversion that doesn't fit cleanly in a
+            # JSONB aggregate.
             if case:
                 await self._load_evidence_for_case(case)
 
@@ -284,89 +372,189 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def _load_evidence_for_case(self, case: Case) -> None:
         """Load investigation evidence from the evidence table.
 
-        Args:
-            case: Case to load evidence for (modified in place)
+        Post-redesign columns: ``evidence_id``, ``category``, ``source_type``,
+        ``form``, ``summary``, ``extract``, ``is_primary``,
+        ``reliability_score``, ``tags``, ``collected_at_turn``,
+        ``source_file_id``, ``vectorized``, ``coverage_start_ts``,
+        ``coverage_end_ts``, ``metadata``, ``created_at``.
+
+        File-level metadata (filename, content_hash, content_type, size,
+        storage_ref) lives on ``uploaded_files`` reachable via
+        ``source_file_id``; it isn't projected onto the Pydantic Evidence
+        anymore.
         """
         try:
             query = text("""
                 SELECT
-                    evidence_id, case_id, category, summary,
-                    preprocessed_content, content_ref, file_size,
-                    filename, upload_timestamp, metadata,
-                    source_type, content_hash, collected_at_turn,
-                    source_file_id, vectorized,
-                    coverage_start_ts, coverage_end_ts
+                    evidence_id, category, source_type, form,
+                    summary, extract,
+                    is_primary, reliability_score, tags,
+                    collected_at_turn, source_file_id, vectorized,
+                    coverage_start_ts, coverage_end_ts,
+                    metadata, created_at
                 FROM evidence
                 WHERE case_id = :case_id
-                ORDER BY upload_timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT 1000
                 """)
             result = await self.db.execute(query, {"case_id": case.case_id})
             rows = result.fetchall()
 
-            evidence_list = []
-            for row in rows:
-                try:
-                    category_str = row[2] or "contextual_evidence"
-                    try:
-                        category = EvidenceCategory(category_str)
-                    except ValueError:
-                        category = EvidenceCategory.CONTEXTUAL_EVIDENCE
-
-                    source_type_str = row[10] or "logs"
-                    try:
-                        source_type = EvidenceSourceType(source_type_str)
-                    except ValueError:
-                        source_type = EvidenceSourceType.LOGS
-
-                    metadata_raw = row[9]
-                    parsed_metadata: Optional[Dict[str, Any]] = None
-                    if metadata_raw:
-                        if isinstance(metadata_raw, dict):
-                            # Postgres JSONB returns a dict directly.
-                            parsed_metadata = metadata_raw or None
-                        else:
-                            try:
-                                parsed = json.loads(metadata_raw)
-                                if isinstance(parsed, dict) and parsed:
-                                    parsed_metadata = parsed
-                            except (json.JSONDecodeError, TypeError):
-                                parsed_metadata = None
-
-                    evidence_list.append(
-                        Evidence(
-                            evidence_id=str(row[0]),
-                            category=category,
-                            primary_purpose="loaded_evidence",
-                            summary=row[3] if row[3] else "Evidence",
-                            preprocessed_content=row[4] if row[4] else "",
-                            content_ref=row[5],
-                            content_size_bytes=row[6] if row[6] else 0,
-                            original_filename=row[7],
-                            preprocessing_method="loaded",
-                            source_type=source_type,
-                            form=EvidenceForm.DOCUMENT,
-                            collected_by="user",
-                            collected_at_turn=row[12] if row[12] else 0,
-                            content_hash=row[11],
-                            source_file_id=row[13],
-                            vectorized=bool(row[14]),
-                            metadata=parsed_metadata,
-                            # Phase 3 — coverage timestamps (nullable).
-                            coverage_start_ts=row[15],
-                            coverage_end_ts=row[16],
-                        )
-                    )
-                except Exception as ev_err:
-                    logger.warning("Failed to load evidence %s: %s", row[0], ev_err)
-
-            case.evidence = evidence_list
+            evidence_list = [self._row_to_evidence(row) for row in rows if row]
+            case.evidence = [ev for ev in evidence_list if ev is not None]
         except Exception as e:
             logger.warning(
                 "Failed to load evidence for case %s: %s",
                 case.case_id,
                 e,
             )
+
+    def _row_to_evidence(self, row: Any) -> Optional[Evidence]:
+        """Reconstruct a domain ``Evidence`` from a SELECT row.
+
+        Column order (fixed): ``evidence_id, category, source_type, form,
+        summary, extract, is_primary, reliability_score, tags,
+        collected_at_turn, source_file_id, vectorized, coverage_start_ts,
+        coverage_end_ts, metadata, created_at``.
+
+        Returns ``None`` and logs a warning when reconstruction fails so
+        one bad row doesn't blank an entire result set.
+        """
+        try:
+            category_str = row[1] or "contextual_evidence"
+            try:
+                category = EvidenceCategory(category_str)
+            except ValueError:
+                category = EvidenceCategory.CONTEXTUAL_EVIDENCE
+
+            source_type_str = row[2] or "logs"
+            try:
+                source_type = EvidenceSourceType(source_type_str)
+            except ValueError:
+                source_type = EvidenceSourceType.LOGS
+
+            form_str = row[3] or EvidenceForm.DOCUMENT.value
+            try:
+                form = EvidenceForm(form_str)
+            except ValueError:
+                form = EvidenceForm.DOCUMENT
+
+            metadata_raw = row[14]
+            parsed_metadata: Optional[Dict[str, Any]] = None
+            if metadata_raw:
+                # Postgres JSONB returns a dict directly; legacy TEXT
+                # rows arrive as JSON-serialized strings.
+                if isinstance(metadata_raw, dict):
+                    parsed_metadata = metadata_raw or None
+                else:
+                    try:
+                        parsed = json.loads(metadata_raw)
+                        if isinstance(parsed, dict) and parsed:
+                            parsed_metadata = parsed
+                    except (json.JSONDecodeError, TypeError):
+                        parsed_metadata = None
+
+            collected_at = row[15]
+            if isinstance(collected_at, str):
+                try:
+                    collected_at = datetime.fromisoformat(
+                        collected_at.replace(" ", "T")
+                    )
+                except ValueError:
+                    collected_at = datetime.now(timezone.utc)
+            elif collected_at is None:
+                collected_at = datetime.now(timezone.utc)
+
+            return Evidence(
+                evidence_id=str(row[0]),
+                category=category,
+                primary_purpose="loaded_evidence",
+                summary=row[4] if row[4] else "Evidence",
+                extract=row[5],
+                source_type=source_type,
+                form=form,
+                source_file_id=row[10],
+                is_primary=bool(row[6]),
+                reliability_score=(float(row[7]) if row[7] is not None else None),
+                tags=_deserialize_tags(row[8]),
+                collected_by="user",
+                collected_at=collected_at,
+                collected_at_turn=row[9] if row[9] else 0,
+                vectorized=bool(row[11]),
+                metadata=parsed_metadata,
+                coverage_start_ts=row[12],
+                coverage_end_ts=row[13],
+            )
+        except Exception as ev_err:  # noqa: BLE001
+            logger.warning("Failed to load evidence %s: %s", row[0], ev_err)
+            return None
+
+    async def _load_hypothesis_evidence_links(
+        self, hypothesis_ids: builtins.list[str]
+    ) -> Dict[str, builtins.list[HypothesisEvidenceLink]]:
+        """Load junction-table rows and return them as
+        ``{hypothesis_id: [HypothesisEvidenceLink, ...]}``.
+
+        Empty input returns ``{}``. Hypotheses with no links are absent
+        from the result (callers default to an empty list per hypothesis).
+        The junction table doesn't carry the LLM's free-text rationale —
+        that lives on ``case_messages`` / agent reasoning logs — so we
+        persist an empty marker on the reconstructed link.
+        """
+        if not hypothesis_ids:
+            return {}
+        params: Dict[str, Any] = {}
+        placeholders = self._bind_ids(params, hypothesis_ids)
+        query = text(f"""
+            SELECT hypothesis_id, evidence_id, relationship_type, confidence,
+                   linked_at_turn, created_at
+            FROM hypothesis_evidence
+            WHERE hypothesis_id IN ({placeholders})
+        """)
+        result = await self.db.execute(query, params)
+        rows = result.fetchall()
+
+        by_hyp: Dict[str, builtins.list[HypothesisEvidenceLink]] = {}
+        for row in rows:
+            hyp_id = row[0]
+            relationship = row[2] or "related"
+            stance = _RELATIONSHIP_TO_STANCE.get(relationship, EvidenceStance.NEUTRAL)
+            confidence = float(row[3]) if row[3] is not None else 0.0
+            analyzed_at = row[5]
+            if isinstance(analyzed_at, str):
+                try:
+                    analyzed_at = datetime.fromisoformat(analyzed_at.replace(" ", "T"))
+                except ValueError:
+                    analyzed_at = datetime.now(timezone.utc)
+            elif analyzed_at is None:
+                analyzed_at = datetime.now(timezone.utc)
+            link = HypothesisEvidenceLink(
+                hypothesis_id=str(hyp_id),
+                evidence_id=str(row[1]),
+                stance=stance,
+                # Junction has no reasoning column; required-by-Pydantic
+                # field is satisfied with empty marker.
+                reasoning="",
+                stance_confidence=max(0.0, min(1.0, confidence)),
+                analyzed_at=analyzed_at,
+            )
+            by_hyp.setdefault(str(hyp_id), []).append(link)
+        return by_hyp
+
+    def _bind_ids(self, params: Dict[str, Any], ids: builtins.list[str]) -> str:
+        """Expand a list of identifiers into named bind parameters.
+
+        Returns the SQL placeholder clause (``:cid_0, :cid_1, ...``) and
+        mutates ``params`` with the values. Used to splice into an
+        ``IN (...)`` filter without resorting to f-string interpolation
+        of values.
+        """
+        names = []
+        for i, cid in enumerate(ids):
+            key = f"cid_{i}"
+            params[key] = cid
+            names.append(f":{key}")
+        return ", ".join(names)
 
     async def list(
         self,
@@ -489,23 +677,31 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def find_by_content_hash(
         self, case_id: str, content_hash: str
     ) -> Optional[Evidence]:
-        """Find oldest Evidence in a case whose content_hash matches."""
+        """Find oldest Evidence in a case whose backing UploadedFile's
+        ``content_hash`` matches.
+
+        Post-redesign: ``content_hash`` lives on ``uploaded_files`` (not
+        ``evidence``). Dedup joins the two tables by ``source_file_id``.
+        Inline-only Path 2 evidence (``source_file_id IS NULL``) cannot
+        be deduped by hash — that's the accepted tradeoff.
+        """
         if not content_hash:
             return None
         try:
             query = text("""
                 SELECT
-                    evidence_id, case_id, category, summary,
-                    preprocessed_content, content_ref, file_size,
-                    filename, upload_timestamp, metadata,
-                    source_type, content_hash, collected_at_turn,
-                    source_file_id,
-                    coverage_start_ts, coverage_end_ts
-                FROM evidence
-                WHERE case_id = :case_id
-                  AND content_hash = :content_hash
-                  AND content_hash IS NOT NULL
-                ORDER BY upload_timestamp ASC
+                    e.evidence_id, e.category, e.source_type, e.form,
+                    e.summary, e.extract,
+                    e.is_primary, e.reliability_score, e.tags,
+                    e.collected_at_turn, e.source_file_id, e.vectorized,
+                    e.coverage_start_ts, e.coverage_end_ts,
+                    e.metadata, e.created_at
+                FROM evidence e
+                INNER JOIN uploaded_files uf ON uf.file_id = e.source_file_id
+                WHERE e.case_id = :case_id
+                  AND uf.content_hash = :content_hash
+                  AND uf.content_hash IS NOT NULL
+                ORDER BY e.created_at ASC
                 LIMIT 1
             """)
             result = await self.db.execute(
@@ -514,52 +710,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             row = result.fetchone()
             if row is None:
                 return None
-
-            category_str = row[2] or "contextual_evidence"
-            try:
-                category = EvidenceCategory(category_str)
-            except ValueError:
-                category = EvidenceCategory.CONTEXTUAL_EVIDENCE
-
-            source_type_str = row[10] or "logs"
-            try:
-                source_type = EvidenceSourceType(source_type_str)
-            except ValueError:
-                source_type = EvidenceSourceType.LOGS
-
-            metadata_raw = row[9]
-            parsed_metadata: Optional[Dict[str, Any]] = None
-            if metadata_raw:
-                if isinstance(metadata_raw, dict):
-                    parsed_metadata = metadata_raw or None
-                else:
-                    try:
-                        parsed = json.loads(metadata_raw)
-                        if isinstance(parsed, dict) and parsed:
-                            parsed_metadata = parsed
-                    except (json.JSONDecodeError, TypeError):
-                        parsed_metadata = None
-
-            return Evidence(
-                evidence_id=str(row[0]),
-                category=category,
-                primary_purpose="loaded_evidence",
-                summary=row[3] if row[3] else "Evidence",
-                preprocessed_content=row[4] if row[4] else "",
-                content_ref=row[5],
-                content_size_bytes=row[6] if row[6] else 0,
-                original_filename=row[7],
-                preprocessing_method="loaded",
-                source_type=source_type,
-                form=EvidenceForm.DOCUMENT,
-                collected_by="user",
-                collected_at_turn=row[12] if row[12] else 0,
-                content_hash=row[11],
-                source_file_id=row[13],
-                metadata=parsed_metadata,
-                coverage_start_ts=row[14],
-                coverage_end_ts=row[15],
-            )
+            return self._row_to_evidence(row)
         except Exception as e:
             raise RepositoryException(
                 f"Failed to find evidence by content_hash for case {case_id}: {e}"
@@ -573,8 +724,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     ) -> List[Evidence]:
         """Return evidence whose coverage overlaps ``[start, end]``.
 
-        Same semantics as the SQLite implementation — see
-        ``CaseRepository.list_evidence_by_time_window``. Uses the
+        Overlap: ``coverage_start_ts <= end AND coverage_end_ts >= start``.
+        NULL coverage timestamps exclude the row from results —
+        timeless evidence isn't time-windowable. Uses the
         ``idx_evidence_coverage`` index for the case_id + range filter.
         """
         try:
@@ -594,12 +746,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             query = text(f"""
                 SELECT
-                    evidence_id, case_id, category, summary,
-                    preprocessed_content, content_ref, file_size,
-                    filename, upload_timestamp, metadata,
-                    source_type, content_hash, collected_at_turn,
-                    source_file_id, vectorized,
-                    coverage_start_ts, coverage_end_ts
+                    evidence_id, category, source_type, form,
+                    summary, extract,
+                    is_primary, reliability_score, tags,
+                    collected_at_turn, source_file_id, vectorized,
+                    coverage_start_ts, coverage_end_ts,
+                    metadata, created_at
                 FROM evidence
                 WHERE {' AND '.join(where_clauses)}
                 ORDER BY coverage_start_ts ASC
@@ -610,61 +762,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             evidence_list: List[Evidence] = []
             for row in rows:
-                try:
-                    category_str = row[2] or "contextual_evidence"
-                    try:
-                        category = EvidenceCategory(category_str)
-                    except ValueError:
-                        category = EvidenceCategory.CONTEXTUAL_EVIDENCE
-
-                    source_type_str = row[10] or "logs"
-                    try:
-                        source_type = EvidenceSourceType(source_type_str)
-                    except ValueError:
-                        source_type = EvidenceSourceType.LOGS
-
-                    metadata_raw = row[9]
-                    parsed_metadata: Optional[Dict[str, Any]] = None
-                    if metadata_raw:
-                        if isinstance(metadata_raw, dict):
-                            parsed_metadata = metadata_raw or None
-                        else:
-                            try:
-                                parsed = json.loads(metadata_raw)
-                                if isinstance(parsed, dict) and parsed:
-                                    parsed_metadata = parsed
-                            except (json.JSONDecodeError, TypeError):
-                                parsed_metadata = None
-
-                    evidence_list.append(
-                        Evidence(
-                            evidence_id=str(row[0]),
-                            category=category,
-                            primary_purpose="loaded_evidence",
-                            summary=row[3] if row[3] else "Evidence",
-                            preprocessed_content=row[4] if row[4] else "",
-                            content_ref=row[5],
-                            content_size_bytes=row[6] if row[6] else 0,
-                            original_filename=row[7],
-                            preprocessing_method="loaded",
-                            source_type=source_type,
-                            form=EvidenceForm.DOCUMENT,
-                            collected_by="user",
-                            collected_at_turn=row[12] if row[12] else 0,
-                            content_hash=row[11],
-                            source_file_id=row[13],
-                            vectorized=bool(row[14]),
-                            metadata=parsed_metadata,
-                            coverage_start_ts=row[15],
-                            coverage_end_ts=row[16],
-                        )
-                    )
-                except Exception as ev_err:
-                    logger.warning(
-                        "Failed to load evidence %s in time-window query: %s",
-                        row[0],
-                        ev_err,
-                    )
+                ev = self._row_to_evidence(row)
+                if ev is not None:
+                    evidence_list.append(ev)
 
             return evidence_list
         except Exception as e:
@@ -678,7 +778,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         evidence_id: str,
         entities: List[CaseEntity],
     ) -> None:
-        """Phase 4 — replace this evidence's entity rows."""
+        """Delete this evidence's case_entities rows, then insert fresh.
+
+        ``organization_id`` is NOT NULL on case_entities; we derive it
+        from the parent case row in the INSERT so callers don't have to
+        thread it through.
+        """
         try:
             delete_q = text("""
                 DELETE FROM case_entities
@@ -693,10 +798,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             insert_q = text("""
                 INSERT INTO case_entities (
-                    case_id, entity_type, entity_value, evidence_id,
+                    case_id, organization_id, entity_type, entity_value, evidence_id,
                     mention_count, in_error_context, first_seen_ts
                 ) VALUES (
-                    :case_id, :entity_type, :entity_value, :evidence_id,
+                    :case_id,
+                    (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                    :entity_type, :entity_value, :evidence_id,
                     :mention_count, :in_error_context, :first_seen_ts
                 )
                 """)
@@ -948,7 +1055,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Searches:
         - cases.title
         - cases.inquiry->>'proposed_problem_statement'
-        - evidence.preprocessed_content (via JOIN)
 
         Performance: ~15ms (GIN indexes on tsvector columns)
 
@@ -1011,22 +1117,43 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     # ========================================================================
 
     async def add_message(self, case_id: str, message_dict: dict) -> bool:
-        """
-        Add message to case_messages table.
+        """Add message to case_messages table.
 
-        Args:
-            case_id: Case identifier
-            message_dict: Message data (role, content, metadata)
+        Returns False (not raise) if the parent case doesn't exist —
+        organization_id is NOT NULL on case_messages and is derived
+        via subquery from the parent case row, so a missing case
+        would otherwise surface as an IntegrityError. Pre-checking
+        keeps the contract: True on success, False on missing case,
+        raise only on real persistence errors.
 
-        Returns:
-            True if added successfully
+        Schema per design spec (case-schema.md §4.7):
+        - message_id, turn_number, role, content, created_at, token_count, metadata
         """
         try:
+            probe = await self.db.execute(
+                text("SELECT 1 FROM cases WHERE case_id = :case_id"),
+                {"case_id": case_id},
+            )
+            if probe.fetchone() is None:
+                return False
+
             message_id = message_dict.get("message_id", f"msg_{uuid4().hex[:16]}")
+            created_at = (
+                message_dict.get("created_at")
+                or message_dict.get("timestamp")
+                or datetime.now(timezone.utc)
+            )
 
             query = text("""
-                INSERT INTO case_messages (message_id, case_id, organization_id, role, content, metadata)
-                VALUES (:message_id, :case_id, (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = :case_id), :role, :content, :metadata::jsonb)
+                INSERT INTO case_messages (
+                    message_id, case_id, organization_id, turn_number, role, content,
+                    created_at, token_count, metadata
+                ) VALUES (
+                    :message_id, :case_id,
+                    (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                    :turn_number, :role, :content,
+                    :created_at, :token_count, :metadata::jsonb
+                )
             """)
 
             await self.db.execute(
@@ -1034,13 +1161,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "message_id": message_id,
                     "case_id": case_id,
+                    "turn_number": message_dict.get("turn_number", 0),
                     "role": message_dict.get("role", "user"),
                     "content": message_dict.get("content", ""),
+                    "created_at": created_at,
+                    "token_count": message_dict.get("token_count"),
                     "metadata": json.dumps(message_dict.get("metadata", {})),
                 },
             )
             await self.db.commit()
-
             return True
 
         except Exception as e:
@@ -1052,20 +1181,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
     ) -> List[dict]:
-        """
-        Get messages for case with pagination.
+        """Get messages for case with pagination.
 
-        Args:
-            case_id: Case identifier
-            limit: Maximum messages
-            offset: Pagination offset
-
-        Returns:
-            List of message dictionaries
+        Schema per design spec (case-schema.md §4.7):
+        - message_id, turn_number, role, content, created_at, token_count, metadata
         """
         try:
             query = text("""
-                SELECT message_id, role, content, created_at, metadata
+                SELECT message_id, turn_number, role, content, created_at, token_count, metadata
                 FROM case_messages
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC
@@ -1078,13 +1201,24 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             messages = []
             for row in result.fetchall():
+                metadata_raw = row[6]
+                if isinstance(metadata_raw, dict):
+                    metadata = metadata_raw
+                elif isinstance(metadata_raw, str):
+                    metadata = json.loads(metadata_raw) if metadata_raw else {}
+                else:
+                    metadata = {}
+
+                created_at = row[4].isoformat() if row[4] else None
                 messages.append(
                     {
                         "message_id": row[0],
-                        "role": row[1],
-                        "content": row[2],
-                        "created_at": row[3].isoformat() if row[3] else None,
-                        "metadata": row[4] if row[4] else {},
+                        "turn_number": row[1],
+                        "role": row[2],
+                        "content": row[3],
+                        "created_at": created_at,
+                        "token_count": row[5],
+                        "metadata": metadata,
                     }
                 )
 
@@ -1264,15 +1398,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def cleanup_expired(
         self, max_age_days: int = 90, batch_size: int = 100
     ) -> int:
-        """
-        Clean up expired/old cases.
+        """Delete closed cases whose ``closed_at`` is older than max_age_days.
 
-        Args:
-            max_age_days: Maximum age in days for closed cases
-            batch_size: Maximum cases to process
-
-        Returns:
-            Number of cases deleted
+        Post-redesign: ``closed_at`` is a first-class column. The DELETE
+        compares it directly against the cutoff datetime. The interval
+        is built via ``make_interval(days := :max_age_days)`` so the
+        bind parameter type-checks (the older
+        ``INTERVAL ':max_age_days days'`` form silently quoted the
+        whole literal and never interpolated).
         """
         try:
             query = text("""
@@ -1281,7 +1414,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     SELECT case_id
                     FROM cases
                     WHERE status = 'closed'
-                    AND closed_at < NOW() - INTERVAL ':max_age_days days'
+                    AND closed_at IS NOT NULL
+                    AND closed_at < NOW() - make_interval(days := :max_age_days)
                     LIMIT :batch_size
                 )
             """)
@@ -1308,6 +1442,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         StaleCaseException on version mismatch; falls back to INSERT
         when no row exists. On success mutates `case.version` in place.
 
+        Post-redesign (storage redesign 2026-04): persists ``description``,
+        ``investigation_strategy``, ``current_turn``,
+        ``turns_without_progress``, ``closure_reason``,
+        ``last_activity_at``, ``resolved_at`` and ``closed_at`` to
+        first-class columns instead of the ``metadata`` JSON blob.
+        ``last_activity_at`` is bumped to the current UTC time on every
+        save so staleness queries work without scanning JSON.
+
         Deployment-Agnostic Implementation:
         - Detects database dialect (PostgreSQL vs SQLite)
         - Uses PostgreSQL ::jsonb type casts when available
@@ -1318,7 +1460,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         is_postgresql = dialect_name == "postgresql"
 
         jsonb = "::jsonb" if is_postgresql else ""
-        params = self._case_record_params(case)
+        last_activity_at = datetime.now(timezone.utc)
+        params = self._case_record_params(case, last_activity_at)
         expected_version = case.version
         new_version = expected_version + 1
         update_params = {
@@ -1399,18 +1542,28 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             actual_version=row[0],
         )
 
-    def _case_record_params(self, case: Case) -> Dict[str, Any]:
+    def _case_record_params(
+        self, case: Case, last_activity_at: datetime
+    ) -> Dict[str, Any]:
         """Parameter dict for the cases-row INSERT/UPDATE.
 
         Shared between the UPDATE and fallback INSERT paths in
         _upsert_case_record — keeps column serialization in one place.
+
+        Post-redesign: ``description``, ``investigation_strategy``,
+        ``current_turn``, ``turns_without_progress`` are first-class
+        columns (the PG hybrid had been writing them as phantom columns
+        before the schema baseline; now they're real). The ``metadata``
+        JSON blob still holds the transient runtime state (proposed_actions /
+        action_attempts / turn_history / pending_transition) — those
+        have no first-class column yet.
         """
         return {
             "case_id": case.case_id,
             "user_id": case.user_id,
             "organization_id": case.organization_id,
             "title": case.title,
-            "description": case.description,
+            "description": case.description or "",
             "investigation_strategy": case.investigation_strategy.value,
             "status": case.status.value,
             "closure_reason": case.closure_reason,
@@ -1418,7 +1571,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             "turns_without_progress": case.turns_without_progress,
             "created_at": case.created_at,
             "updated_at": case.updated_at,
-            "last_activity_at": case.last_activity_at,
+            "last_activity_at": last_activity_at,
             "resolved_at": case.resolved_at,
             "closed_at": case.closed_at,
             "inquiry": json.dumps(case.inquiry.model_dump(mode="json")),
@@ -1478,7 +1631,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def _upsert_evidence(
         self, case_id: str, evidence_list: List[Evidence], organization_id: str
     ) -> None:
-        """Upsert evidence records (normalized table).
+        """Upsert evidence records (post-redesign schema).
 
         Purely additive: inserts new rows and updates existing ones keyed by
         evidence_id. Does NOT remove rows absent from `evidence_list`. The
@@ -1487,94 +1640,110 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         background tasks) must not be able to silently delete rows that
         other concurrent writers have added. For intentional removal, use
         `delete_evidence(case_id, evidence_id)` explicitly.
+
+        File-level metadata (filename, content_type, content_hash, size,
+        storage_ref) lives on ``uploaded_files`` and is reached via
+        ``source_file_id``. Inline-only Path 2 evidence has
+        ``source_file_id IS NULL`` and persists no file metadata.
         """
-        # Upsert each evidence record
         for evidence in evidence_list:
             query = text("""
                 INSERT INTO evidence (
-                    evidence_id, case_id, organization_id, category, summary, preprocessed_content,
-                    content_ref, file_size, filename, upload_timestamp, metadata,
-                    form, is_primary, content_type, reliability_score, tags, vectorized,
-                    coverage_start_ts, coverage_end_ts
+                    evidence_id, case_id, organization_id, source_file_id,
+                    category, source_type, form,
+                    summary, extract,
+                    is_primary, reliability_score, tags,
+                    collected_at_turn, vectorized,
+                    coverage_start_ts, coverage_end_ts,
+                    metadata, created_at, updated_at
                 ) VALUES (
-                    :evidence_id, :case_id, :organization_id, :category, :summary, :preprocessed_content,
-                    :content_ref, :file_size, :filename, :upload_timestamp, :metadata::jsonb,
-                    :form, :is_primary, :content_type, :reliability_score, :tags, :vectorized,
-                    :coverage_start_ts, :coverage_end_ts
+                    :evidence_id, :case_id, :organization_id, :source_file_id,
+                    :category, :source_type, :form,
+                    :summary, :extract,
+                    :is_primary, :reliability_score, :tags,
+                    :collected_at_turn, :vectorized,
+                    :coverage_start_ts, :coverage_end_ts,
+                    :metadata::jsonb, :created_at, :updated_at
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
+                    source_file_id = EXCLUDED.source_file_id,
                     category = EXCLUDED.category,
-                    summary = EXCLUDED.summary,
-                    preprocessed_content = EXCLUDED.preprocessed_content,
-                    content_ref = EXCLUDED.content_ref,
-                    metadata = EXCLUDED.metadata,
+                    source_type = EXCLUDED.source_type,
                     form = EXCLUDED.form,
+                    summary = EXCLUDED.summary,
+                    extract = EXCLUDED.extract,
                     is_primary = EXCLUDED.is_primary,
-                    content_type = EXCLUDED.content_type,
                     reliability_score = EXCLUDED.reliability_score,
                     tags = EXCLUDED.tags,
+                    collected_at_turn = EXCLUDED.collected_at_turn,
                     vectorized = EXCLUDED.vectorized,
                     coverage_start_ts = EXCLUDED.coverage_start_ts,
-                    coverage_end_ts = EXCLUDED.coverage_end_ts
+                    coverage_end_ts = EXCLUDED.coverage_end_ts,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = EXCLUDED.updated_at
             """)
 
+            now = datetime.now(timezone.utc)
             await self.db.execute(
                 query,
                 {
                     "evidence_id": evidence.evidence_id,
                     "case_id": case_id,
                     "organization_id": organization_id,
-                    "category": evidence.category.value,  # Maps to evidence_category enum
+                    "source_file_id": evidence.source_file_id,
+                    "category": evidence.category.value,
+                    "source_type": evidence.source_type.value,
+                    # The domain ``EvidenceForm`` enum (entry mechanism:
+                    # DOCUMENT|USER_TEXT|SUBMITTED_DATA) is the canonical
+                    # value for the persistence column post-redesign.
+                    "form": evidence.form.value,
                     "summary": evidence.summary,
-                    "preprocessed_content": evidence.preprocessed_content or "",
-                    "content_ref": evidence.content_ref,
-                    "file_size": evidence.content_size_bytes,
-                    "filename": "",  # Evidence doesn't have filename - would come from source
-                    "upload_timestamp": evidence.collected_at.isoformat(),
-                    # evidence.metadata carries the structured JSON contract
-                    # from faultmaven/core/preprocessing/evidence_metadata.py.
-                    "metadata": json.dumps(evidence.metadata or {}),
-                    # Phase 6 Tier 1 columns. The persistence-side `form`
-                    # describes data SHAPE — distinct from domain
-                    # `EvidenceForm` (entry mechanism). See sqlite_case_repository
-                    # _derive_evidence_form() for heuristic. Other columns
-                    # default NULL/False until explicit producers exist.
-                    "form": _derive_evidence_form(evidence),
-                    "is_primary": False,
-                    "content_type": getattr(evidence, "content_type", None),
-                    "reliability_score": getattr(evidence, "reliability_score", None),
-                    "tags": getattr(evidence, "tags", None),
+                    "extract": evidence.extract,
+                    "is_primary": evidence.is_primary,
+                    "reliability_score": evidence.reliability_score,
+                    "tags": _serialize_tags(evidence.tags),
+                    "collected_at_turn": evidence.collected_at_turn,
                     "vectorized": evidence.vectorized,
-                    # Phase 3 — case-level timeline coverage.
                     "coverage_start_ts": evidence.coverage_start_ts,
                     "coverage_end_ts": evidence.coverage_end_ts,
+                    "metadata": json.dumps(evidence.metadata or {}),
+                    "created_at": evidence.collected_at or now,
+                    "updated_at": now,
                 },
             )
 
     async def _upsert_hypotheses(
         self, case_id: str, hypotheses_dict: Dict[str, Hypothesis], organization_id: str
     ) -> None:
-        """Upsert hypotheses records (normalized table).
+        """Upsert hypotheses records (post-redesign schema).
 
         Purely additive — see `_upsert_evidence` for rationale. For
         intentional removal, use `IHypothesisRepository.delete_hypothesis`.
+
+        The dropped ``hypotheses.evidence_links`` JSON blob has been
+        replaced by the ``hypothesis_evidence`` junction table; that
+        upsert runs after the parent row is in place so FK constraints
+        are satisfied.
         """
-        # Upsert each hypothesis
         for hypothesis_id, hypothesis in hypotheses_dict.items():
             query = text("""
                 INSERT INTO hypotheses (
-                    hypothesis_id, case_id, organization_id, statement, status, likelihood, initial_likelihood,
+                    hypothesis_id, case_id, organization_id, statement, status,
+                    likelihood, initial_likelihood,
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
                     iterations_without_progress,
                     category, generation_mode, rationale, retirement_reason,
-                    evidence_links, tested_at, concluded_at, proposed_at, updated_at, metadata,
+                    refutation_reason,
+                    tested_at, concluded_at, proposed_at, updated_at, metadata,
                     created_by, updated_by
                 ) VALUES (
-                    :hypothesis_id, :case_id, :organization_id, :statement, :status, :likelihood, :initial_likelihood,
+                    :hypothesis_id, :case_id, :organization_id, :statement, :status,
+                    :likelihood, :initial_likelihood,
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
                     :iterations_without_progress,
                     :category, :generation_mode, :rationale, :retirement_reason,
-                    :evidence_links::jsonb, :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata::jsonb,
+                    :refutation_reason,
+                    :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata::jsonb,
                     :created_by, :updated_by
                 )
                 ON CONFLICT (hypothesis_id) DO UPDATE SET
@@ -1586,7 +1755,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     last_progress_at_turn = EXCLUDED.last_progress_at_turn,
                     iterations_without_progress = EXCLUDED.iterations_without_progress,
                     retirement_reason = EXCLUDED.retirement_reason,
-                    evidence_links = EXCLUDED.evidence_links,
+                    refutation_reason = EXCLUDED.refutation_reason,
                     concluded_at = EXCLUDED.concluded_at,
                     updated_at = EXCLUDED.updated_at,
                     metadata = EXCLUDED.metadata
@@ -1610,20 +1779,73 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "generation_mode": hypothesis.generation_mode.value,
                     "rationale": hypothesis.rationale,
                     "retirement_reason": hypothesis.retirement_reason,
-                    "evidence_links": json.dumps(
-                        {
-                            eid: link.model_dump(mode="json")
-                            for eid, link in hypothesis.evidence_links.items()
-                        }
-                    ),
+                    "refutation_reason": hypothesis.refutation_reason,
                     "tested_at": hypothesis.tested_at,
                     "concluded_at": hypothesis.concluded_at,
                     "proposed_at": getattr(hypothesis, "proposed_at", None)
                     or datetime.now(timezone.utc),
                     "updated_at": datetime.now(timezone.utc),
-                    "metadata": json.dumps(hypothesis.metadata),
+                    "metadata": json.dumps({}),
                     "created_by": "system",
                     "updated_by": None,
+                },
+            )
+
+            await self._upsert_hypothesis_evidence(
+                hypothesis_id, hypothesis.evidence_links, organization_id
+            )
+
+    async def _upsert_hypothesis_evidence(
+        self,
+        hypothesis_id: str,
+        links: builtins.list[HypothesisEvidenceLink],
+        organization_id: str,
+    ) -> None:
+        """Upsert rows on the ``hypothesis_evidence`` junction table.
+
+        Purely additive — never deletes rows. Composite PK
+        ``(hypothesis_id, evidence_id)`` makes the upsert idempotent.
+        Stance → relationship_type mapping is in
+        ``_STANCE_TO_RELATIONSHIP``; NEUTRAL maps to ``related`` because
+        the junction CHECK constraint only allows
+        ``('supports', 'refutes', 'related')``.
+        """
+        if not links:
+            return
+        query = text("""
+            INSERT INTO hypothesis_evidence (
+                hypothesis_id, evidence_id, organization_id,
+                relationship_type, confidence, linked_at_turn,
+                linked_by, created_at
+            ) VALUES (
+                :hypothesis_id, :evidence_id, :organization_id,
+                :relationship_type, :confidence, :linked_at_turn,
+                :linked_by, :created_at
+            )
+            ON CONFLICT (hypothesis_id, evidence_id) DO UPDATE SET
+                relationship_type = EXCLUDED.relationship_type,
+                confidence = EXCLUDED.confidence,
+                linked_at_turn = EXCLUDED.linked_at_turn,
+                linked_by = EXCLUDED.linked_by
+        """)
+
+        for link in links:
+            relationship = _STANCE_TO_RELATIONSHIP.get(link.stance, "related")
+            await self.db.execute(
+                query,
+                {
+                    "hypothesis_id": hypothesis_id,
+                    "evidence_id": link.evidence_id,
+                    "organization_id": organization_id,
+                    "relationship_type": relationship,
+                    "confidence": link.stance_confidence,
+                    # Domain HypothesisEvidenceLink doesn't carry a turn
+                    # number; the junction column is nullable.
+                    "linked_at_turn": None,
+                    # Linker user_id isn't tracked on the link object —
+                    # nullable column, FK SET NULL on user delete.
+                    "linked_by": None,
+                    "created_at": link.analyzed_at,
                 },
             )
 
@@ -1746,36 +1968,42 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def _upsert_uploaded_files(
         self, case_id: str, files_list: List[UploadedFile], organization_id: str
     ) -> None:
-        """Upsert uploaded_files records (normalized table) - matches UploadedFile Pydantic model.
+        """Upsert uploaded_files records (post-redesign schema).
 
         Purely additive — see `_upsert_evidence` for rationale. For
         intentional removal, use `delete_uploaded_file(case_id, file_id)`.
+
+        Renamed columns: ``content_ref`` → ``storage_ref``,
+        ``source_type`` → ``upload_source``. Dropped: ``data_type``.
+        Added: ``content_hash``, ``content_type`` (MIME), ``uploaded_by``.
+        ``case_id`` is now nullable on the table (KB conversion uploads),
+        but case-evidence uploads always carry one — passed through
+        verbatim from the call site.
         """
-        # Upsert each file (field names match Pydantic model exactly)
-        # NOTE: this PG-hybrid uploaded_files upsert is structurally stale
-        # — it still references dropped columns (data_type, source_type vs
-        # upload_source, content_ref vs storage_ref). The full rewrite is
-        # sub-commit (c). Removing only the preprocessing_summary references
-        # here so this commit (the schema drop of preprocessing_summary)
-        # is internally consistent.
         for file in files_list:
             query = text("""
                 INSERT INTO uploaded_files (
-                    file_id, case_id, organization_id, filename, size_bytes, data_type,
-                    uploaded_at_turn, uploaded_at, source_type,
-                    content_ref, metadata
+                    file_id, case_id, organization_id, uploaded_by,
+                    filename, size_bytes, content_type, content_hash,
+                    storage_ref, upload_source,
+                    uploaded_at_turn, uploaded_at,
+                    metadata
                 ) VALUES (
-                    :file_id, :case_id, :organization_id, :filename, :size_bytes, :data_type,
-                    :uploaded_at_turn, :uploaded_at, :source_type,
-                    :content_ref, :metadata::jsonb
+                    :file_id, :case_id, :organization_id, :uploaded_by,
+                    :filename, :size_bytes, :content_type, :content_hash,
+                    :storage_ref, :upload_source,
+                    :uploaded_at_turn, :uploaded_at,
+                    :metadata::jsonb
                 )
                 ON CONFLICT (file_id) DO UPDATE SET
+                    uploaded_by = EXCLUDED.uploaded_by,
                     filename = EXCLUDED.filename,
                     size_bytes = EXCLUDED.size_bytes,
-                    data_type = EXCLUDED.data_type,
+                    content_type = EXCLUDED.content_type,
+                    content_hash = EXCLUDED.content_hash,
+                    storage_ref = EXCLUDED.storage_ref,
+                    upload_source = EXCLUDED.upload_source,
                     uploaded_at_turn = EXCLUDED.uploaded_at_turn,
-                    source_type = EXCLUDED.source_type,
-                    content_ref = EXCLUDED.content_ref,
                     metadata = EXCLUDED.metadata
             """)
 
@@ -1785,13 +2013,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "file_id": file.file_id,
                     "case_id": case_id,
                     "organization_id": organization_id,
+                    "uploaded_by": file.uploaded_by,
                     "filename": file.filename,
                     "size_bytes": file.size_bytes,
-                    "data_type": file.data_type,
+                    "content_type": file.content_type,
+                    "content_hash": file.content_hash,
+                    "storage_ref": file.storage_ref,
+                    "upload_source": file.upload_source,
                     "uploaded_at_turn": file.uploaded_at_turn,
                     "uploaded_at": file.uploaded_at,
-                    "source_type": file.source_type,
-                    "content_ref": file.content_ref,
                     "metadata": json.dumps({}),
                 },
             )
@@ -1907,173 +2137,178 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         return data
 
-    async def _row_to_case(self, row) -> Case:
-        """
-        Reconstruct Case domain object from database row.
+    async def _row_to_case(
+        self,
+        row,
+        links_by_hyp: Optional[Dict[str, builtins.list[HypothesisEvidenceLink]]] = None,
+    ) -> Case:
+        """Reconstruct Case domain object from a SELECT row.
 
-        Args:
-            row: Database row from case query with JOINs
+        Post-redesign: ``description``, ``investigation_strategy``,
+        ``current_turn``, ``turns_without_progress``, ``closure_reason``,
+        ``last_activity_at``, ``resolved_at``, ``closed_at`` all come
+        directly from first-class columns. ``is_archived`` /
+        ``archived_at`` are gone. Hypothesis evidence_links come from the
+        ``hypothesis_evidence`` junction table (the JSON blob is gone),
+        loaded by the caller and passed in via ``links_by_hyp``.
 
-        Returns:
-            Case domain object
+        Evidence is NOT populated here — the caller (``get`` /
+        ``list``) loads it separately via ``_load_evidence_for_case`` /
+        bulk equivalent.
         """
-        # Parse JSONB columns with backward compatibility for legacy schema
-        inquiry_data = json.loads(row.inquiry) if row.inquiry else {}
+        if links_by_hyp is None:
+            links_by_hyp = {}
+
+        def _maybe_load(value: Any) -> Any:
+            """JSONB columns arrive as Python objects on PG; legacy
+            TEXT rows arrive as JSON-serialized strings. Accept both."""
+            if value is None:
+                return None
+            if isinstance(value, (dict, list)):
+                return value
+            return json.loads(value)
+
+        inquiry_data = _maybe_load(row.inquiry) or {}
         inquiry_data = self._convert_legacy_inquiry_data(inquiry_data)
         inquiry = InquiryData(**inquiry_data) if inquiry_data else InquiryData()
         problem_verification = (
-            ProblemVerification(**json.loads(row.problem_verification))
+            ProblemVerification(**_maybe_load(row.problem_verification))
             if row.problem_verification
             else None
         )
         working_conclusion = (
-            WorkingConclusion(**json.loads(row.working_conclusion))
+            WorkingConclusion(**_maybe_load(row.working_conclusion))
             if row.working_conclusion
             else None
         )
         root_cause_conclusion = (
-            RootCauseConclusion(**json.loads(row.root_cause_conclusion))
+            RootCauseConclusion(**_maybe_load(row.root_cause_conclusion))
             if row.root_cause_conclusion
             else None
         )
         path_selection = (
-            PathSelection(**json.loads(row.path_selection))
+            PathSelection(**_maybe_load(row.path_selection))
             if row.path_selection
             else None
         )
         escalation_state = (
-            EscalationState(**json.loads(row.escalation_state))
+            EscalationState(**_maybe_load(row.escalation_state))
             if row.escalation_state
             else None
         )
         documentation = (
-            DocumentationData(**json.loads(row.documentation))
+            DocumentationData(**_maybe_load(row.documentation))
             if row.documentation
             else DocumentationData()
         )
         progress = (
-            InvestigationProgress(**json.loads(row.progress))
+            InvestigationProgress(**_maybe_load(row.progress))
             if row.progress
             else InvestigationProgress()
         )
 
-        # Parse normalized table data (aggregated as JSON)
-        evidence_list = (
-            [Evidence(**e) for e in json.loads(row.evidence_data)]
-            if row.evidence_data != "[]"
-            else []
-        )
-        hypotheses_dict = (
-            {
-                h["hypothesis_id"]: Hypothesis(**h)
-                for h in json.loads(row.hypotheses_data)
-            }
-            if row.hypotheses_data != "[]"
-            else {}
-        )
-        solutions_list = (
-            [Solution(**s) for s in json.loads(row.solutions_data)]
-            if row.solutions_data != "[]"
-            else []
-        )
-        uploaded_files = (
-            [UploadedFile(**f) for f in json.loads(row.uploaded_files_data)]
-            if row.uploaded_files_data != "[]"
-            else []
-        )
+        # Parse aggregated JSON sub-collections.
+        hypotheses_payload = _maybe_load(row.hypotheses_data) or []
+        solutions_payload = _maybe_load(row.solutions_data) or []
+        uploaded_files_payload = _maybe_load(row.uploaded_files_data) or []
+        messages_payload = _maybe_load(row.messages_data) or []
 
-        # Backward compatibility: Fix description for old INVESTIGATING cases
-        # Old cases may be in INVESTIGATING status with empty description
-        description = None  # Not stored in hybrid schema by default
+        # Hydrate hypothesis_evidence links onto each hypothesis.
+        hypotheses_dict: Dict[str, Hypothesis] = {}
+        for h in hypotheses_payload:
+            hyp_id = h["hypothesis_id"]
+            h["evidence_links"] = links_by_hyp.get(hyp_id, [])
+            hypotheses_dict[hyp_id] = Hypothesis(**h)
+
+        solutions_list = [Solution(**s) for s in solutions_payload]
+        uploaded_files = [UploadedFile(**f) for f in uploaded_files_payload]
+
+        # Promoted columns: read directly from the row.
+        metadata = _maybe_load(getattr(row, "metadata", None)) or {}
+
+        # ``description`` is now a first-class column. Auto-heal the
+        # legacy case where an INVESTIGATING row lost its description
+        # (rare; pre-redesign rows that fell through the migration).
+        description = row.description or ""
         if (
             CaseStatus(row.status) == CaseStatus.INVESTIGATING
+            and (not description or not description.strip())
             and inquiry.proposed_problem_statement
         ):
             description = inquiry.proposed_problem_statement
-            # Log only in debug mode to avoid production log spam
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     f"Auto-healed missing description for case {row.case_id} "
                     f"from proposed_problem_statement"
                 )
 
-        # Parse metadata for pending_transition
-        metadata = (
-            json.loads(row.metadata)
-            if hasattr(row, "metadata") and row.metadata
-            else {}
-        )
-
-        # Reconstruct Case
-        return Case(
-            case_id=row.case_id,
-            user_id=row.user_id,
-            organization_id=(
-                row.organization_id if hasattr(row, "organization_id") else None
-            ),
-            title=row.title,
-            description=description,
-            status=CaseStatus(row.status),
-            action_history=[],  # Load separately if needed
-            closure_reason=getattr(row, "closure_reason", None),
-            pending_transition=metadata.get("pending_transition"),
-            is_archived=bool(row.is_archived) if hasattr(row, "is_archived") else False,
-            archived_at=row.archived_at if hasattr(row, "archived_at") else None,
-            # Progress
-            progress=progress,
-            current_turn=getattr(row, "current_turn", 0) or 0,
-            turns_without_progress=getattr(row, "turns_without_progress", 0) or 0,
-            turn_history=(
+        case_data: Dict[str, Any] = {
+            "case_id": row.case_id,
+            "user_id": row.user_id,
+            "organization_id": row.organization_id,
+            "title": row.title,
+            "status": CaseStatus(row.status),
+            "action_history": [],
+            "closure_reason": row.closure_reason,
+            "pending_transition": metadata.get("pending_transition"),
+            "progress": progress,
+            "current_turn": int(row.current_turn or 0),
+            "turns_without_progress": int(row.turns_without_progress or 0),
+            "message_count": metadata.get("message_count", 0),
+            "turn_history": (
                 [TurnProgress(**t) for t in metadata.get("turn_history", [])]
                 if metadata.get("turn_history")
                 else []
             ),
-            proposed_actions=(
+            "proposed_actions": (
                 [ProposedAction(**a) for a in metadata.get("proposed_actions", [])]
                 if metadata.get("proposed_actions")
                 else []
             ),
-            action_attempts=(
+            "action_attempts": (
                 [ActionAttempt(**a) for a in metadata.get("action_attempts", [])]
                 if metadata.get("action_attempts")
                 else []
             ),
-            # Path and strategy
-            path_selection=path_selection,
-            investigation_strategy=None,  # Not stored
-            # Problem context
-            inquiry=inquiry,
-            problem_verification=problem_verification,
-            # Investigation data (from normalized tables)
-            uploaded_files=uploaded_files,
-            evidence=evidence_list,
-            hypotheses=hypotheses_dict,
-            solutions=solutions_list,
-            # Conclusions
-            working_conclusion=working_conclusion,
-            root_cause_conclusion=root_cause_conclusion,
-            # Special states
-            escalation_state=escalation_state,
-            # Documentation
-            documentation=documentation,
-            # Timestamps
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-            last_activity_at=(
-                row.last_activity_at
-                if hasattr(row, "last_activity_at")
-                else row.updated_at
-            ),
-            resolved_at=row.resolved_at if hasattr(row, "resolved_at") else None,
-            closed_at=row.closed_at if hasattr(row, "closed_at") else None,
-            # Optimistic concurrency token. Must round-trip so the next
-            # save() can assert it still matches the DB.
-            version=(
+            "path_selection": path_selection,
+            "inquiry": inquiry,
+            "problem_verification": problem_verification,
+            "uploaded_files": uploaded_files,
+            "evidence": [],  # Loaded separately
+            "hypotheses": hypotheses_dict,
+            "solutions": solutions_list,
+            "messages": messages_payload,
+            "working_conclusion": working_conclusion,
+            "root_cause_conclusion": root_cause_conclusion,
+            "escalation_state": escalation_state,
+            "documentation": documentation,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+            "version": (
                 int(row.version)
                 if hasattr(row, "version") and row.version is not None
                 else 1
             ),
-        )
+        }
+
+        if description:
+            case_data["description"] = description
+
+        if row.investigation_strategy:
+            case_data["investigation_strategy"] = InvestigationStrategy(
+                row.investigation_strategy
+            )
+
+        if row.last_activity_at:
+            case_data["last_activity_at"] = row.last_activity_at
+
+        if row.resolved_at:
+            case_data["resolved_at"] = row.resolved_at
+
+        if row.closed_at:
+            case_data["closed_at"] = row.closed_at
+
+        return Case(**case_data)
 
     # ========================================================================
     # Report Operations (TD-001: migrated from IReportStore)
@@ -2111,14 +2346,21 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             else "{}"
         )
 
+        # ``organization_id`` is NOT NULL FK CASCADE on reports; derive
+        # it from the parent case via subquery so callers don't have to
+        # thread it through. ``report_type`` CHECK now allows only
+        # ('resolution_summary', 'closure_summary') — RUNBOOK is gone
+        # post-redesign.
         insert_query = text("""
             INSERT INTO reports (
-                report_id, case_id, report_type, version, is_current,
+                report_id, case_id, organization_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
                 generation_status, generation_time_ms, metadata,
                 generated_at, updated_at, generated_by
             ) VALUES (
-                :report_id, :case_id, :report_type, :version, :is_current,
+                :report_id, :case_id,
+                (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                :report_type, :version, :is_current,
                 :linked_to_closure, :title, :content, :format,
                 :generation_status, :generation_time_ms, :metadata::jsonb,
                 :generated_at::timestamptz, :updated_at::timestamptz, :generated_by

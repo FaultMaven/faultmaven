@@ -105,22 +105,6 @@ def _row_to_case_entity(row: Any) -> CaseEntity:
     )
 
 
-def _derive_evidence_form(evidence: Evidence) -> str:
-    """Return the persistence-side ``form`` value for an Evidence row.
-
-    The two-EvidenceForm-enum split is gone post-redesign — the
-    persistence column carries the same canonical values as the domain
-    enum (``document``, ``user_text``, ``submitted_data``). This helper
-    used to do a heuristic mapping; it now just forwards
-    ``evidence.form.value``.
-
-    Kept as a function (rather than inlined) until the PostgreSQL hybrid
-    repo's sub-commit (c) lands — it imports this name. Deletion happens
-    there.
-    """
-    return evidence.form.value
-
-
 def _serialize_tags(tags: Optional[List[str]]) -> Optional[str]:
     """Serialize an Evidence.tags list to the SQLite TEXT column.
 
