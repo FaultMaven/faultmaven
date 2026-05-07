@@ -313,7 +313,8 @@ class StateValidator:
 
             # Check evidence_links if present
             if hasattr(hypothesis, "evidence_links") and hypothesis.evidence_links:
-                for ev_ref in hypothesis.evidence_links.keys():
+                for link in hypothesis.evidence_links:
+                    ev_ref = link.evidence_id
                     if ev_ref.startswith("new_index_"):
                         continue
                     if ev_ref not in evidence_ids:

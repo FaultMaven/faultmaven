@@ -119,7 +119,7 @@ class TestServiceDelegation:
     async def test_success_path_returns_updated_data(self, tool, service):
         updated = MagicMock()
         updated.evidence_id = "ev_abc"
-        updated.data_type = "logs_and_errors"
+        updated.source_type.value = "logs_and_errors"
         updated.summary = "Re-extracted"
         service.reclassify_evidence.return_value = updated
 

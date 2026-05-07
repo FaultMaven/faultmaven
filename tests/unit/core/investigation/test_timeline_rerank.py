@@ -49,18 +49,22 @@ def _ev(
     data_type: str = "logs",
     content: str = "structural index content " * 20,
 ) -> Evidence:
+    # Map legacy `data_type` strings to EvidenceSourceType.
+    source_map = {
+        "logs": EvidenceSourceType.LOGS,
+        "configuration": EvidenceSourceType.CONFIGURATION,
+        "metrics": EvidenceSourceType.METRICS,
+        "code": EvidenceSourceType.CODE,
+    }
+    source_type = source_map.get(data_type, EvidenceSourceType.LOGS)
     return Evidence(
         evidence_id=f"ev_{uuid4().hex[:12]}",
         category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
         primary_purpose="Test",
         summary="Test evidence",
-        preprocessed_content=content,
-        content_size_bytes=100,
-        data_type=data_type,
-        source_type=EvidenceSourceType.LOGS,
+        extract=content,
+        source_type=source_type,
         form=EvidenceForm.DOCUMENT,
-        preprocessing_method="crime_scene",
-        extraction_method="crime_scene",
         collected_by="user",
         collected_at=datetime.now(UTC),
         collected_at_turn=1,

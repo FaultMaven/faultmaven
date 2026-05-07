@@ -144,11 +144,9 @@ def _make_evidence(
         category=category,
         primary_purpose="symptom_verified",
         summary=summary,
-        preprocessed_content="2025-01-01 ERROR: timeout",
+        extract="2025-01-01 ERROR: timeout",
         source_type=source_type,
         form=EvidenceForm.DOCUMENT,
-        content_size_bytes=1024,
-        preprocessing_method="crime_scene_extraction",
         collected_by="test-user",
         collected_at_turn=turn,
     )
@@ -187,9 +185,8 @@ def _make_uploaded_file(turn: int = 1, filename: str = "test.log") -> UploadedFi
         file_id=f"file_{uuid4().hex[:12]}",
         filename=filename,
         size_bytes=2048,
-        data_type="log",
         uploaded_at_turn=turn,
-        source_type="file_upload",
+        upload_source="file_upload",
     )
 
 

@@ -114,7 +114,10 @@ class TestPreprocessAttachmentEntities:
         # Evidence id is generated inside the service — just confirm it
         # matches the evidence the service appended to the case.
         saved = await repo.get(case.case_id)
-        new_ev = [ev for ev in saved.evidence if ev.content_hash == "hash_alpha"][0]
+        # content_hash now lives on UploadedFile; locate the matching upload
+        # then resolve evidence via source_file_id.
+        uf = [f for f in saved.uploaded_files if f.content_hash == "hash_alpha"][0]
+        new_ev = [ev for ev in saved.evidence if ev.source_file_id == uf.file_id][0]
         assert evidence_id_arg == new_ev.evidence_id
         types = {e.entity_type for e in entities_arg}
         assert types == {EntityType.IP, EntityType.USER}

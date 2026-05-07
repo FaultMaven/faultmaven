@@ -1535,9 +1535,12 @@ class UploadedFile(BaseModel):
         default="file_upload",
         description=(
             "Provenance of the upload: how the file got into the system. "
-            "Values: file_upload, paste, screenshot, page_injection, "
+            "Values: file_upload, paste, screenshot, page_capture, "
             "agent_generated, conversion_source. Distinct from "
-            "evidence.source_type, which classifies the data shape."
+            "evidence.source_type, which classifies the data shape. "
+            "page_capture is the marker the rerank-page-sections pass uses "
+            "to detect Copilot extension page submissions; see "
+            "context_builder.py."
         ),
         max_length=50,
     )
@@ -3547,6 +3550,37 @@ class Case(BaseModel):
     # ============================================================
     # Computed Properties
     # ============================================================
+    def find_uploaded_file(self, file_id: Optional[str]) -> Optional["UploadedFile"]:
+        """Resolve an UploadedFile by file_id from this case's aggregate.
+
+        The canonical aggregate-traversal point for code that holds an
+        Evidence row (which carries source_file_id) and needs the file's
+        metadata (filename, content_type, content_hash, storage_ref,
+        upload_source, etc.). Replaces the old denormalized
+        evidence.original_filename / evidence.content_ref / evidence.data_type
+        fields — those were copies of upload data; this method walks the
+        FK instead.
+
+        None-safe at the source_file_id end: Path 2 inline-only evidence
+        has source_file_id IS NULL, so callers can pass it through
+        without a guard:
+
+            file_meta = case.find_uploaded_file(ev.source_file_id)
+            filename = file_meta.filename if file_meta else None
+            is_page_capture = file_meta is not None and file_meta.upload_source == "page_capture"
+
+        Assumes the case aggregate is fully loaded (uploaded_files
+        populated by the repository's get_case path). Partial-load
+        paths must NOT call this — they would silently return None for
+        every lookup.
+        """
+        if not file_id:
+            return None
+        return next(
+            (f for f in self.uploaded_files if f.file_id == file_id),
+            None,
+        )
+
     @property
     def current_stage(self) -> Optional[InvestigationStage]:
         """

@@ -42,21 +42,18 @@ def _next_ev_id() -> str:
     return f"ev_{_EV_COUNTER:012x}"
 
 
-def _make_evidence(metadata=None, preprocessed_content="Structural index content"):
+def _make_evidence(metadata=None, extract="Structural index content"):
     return Evidence(
         evidence_id=_next_ev_id(),
         form=EvidenceForm.DOCUMENT,
         summary="Test summary",
-        preprocessed_content=preprocessed_content,
-        data_type="LOGS",
-        content_size_bytes=5000,
+        extract=extract,
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
         source_type=EvidenceSourceType.LOGS,
         collected_at=datetime.now(UTC),
         collected_by="user_123",
         collected_at_turn=1,
         primary_purpose="Test",
-        preprocessing_method="crime_scene",
         metadata=metadata,
     )
 

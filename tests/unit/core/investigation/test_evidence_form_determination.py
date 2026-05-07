@@ -42,9 +42,7 @@ def _make_evidence(**overrides) -> Evidence:
         "collected_by": "user_123",
         "collected_at_turn": 1,
         "primary_purpose": "Investigation context",
-        "preprocessed_content": "test content",
-        "content_size_bytes": 12,
-        "preprocessing_method": "none",
+        "extract": "test content",
     }
     defaults.update(overrides)
     return Evidence(**defaults)
@@ -152,35 +150,30 @@ class TestPayloadDrivenFormAssignment:
         assert ev.form == EvidenceForm.USER_TEXT
 
     def test_attachment_evidence_has_preprocessing_metadata(self):
-        """Attachment evidence should have preprocessing metadata (data_type, method)."""
+        """Attachment evidence should carry source_type and an extract."""
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
-            preprocessing_method="crime_scene",
-            data_type="LOGS",
-            content_size_bytes=5000,
-            preprocessed_content="============\nCRIME SCENE EXTRACTION\n============",
+            source_type=EvidenceSourceType.LOGS,
+            extract="============\nCRIME SCENE EXTRACTION\n============",
         )
         assert ev.form == EvidenceForm.DOCUMENT
-        assert ev.preprocessing_method == "crime_scene"
-        assert ev.data_type == "LOGS"
-        assert ev.content_size_bytes == 5000
+        assert ev.source_type == EvidenceSourceType.LOGS
+        assert ev.extract.startswith("=")
 
     def test_agent_finding_has_minimal_preprocessing(self):
-        """Agent-derived evidence has preprocessing_method='none' and no data_type."""
+        """Agent-derived (USER_TEXT) evidence: form is USER_TEXT and source_type
+        still classifies the data shape (TEXT for free-form prose)."""
         ev = _make_evidence(
             form=EvidenceForm.USER_TEXT,
-            preprocessing_method="none",
-            data_type=None,
+            source_type=EvidenceSourceType.TEXT,
         )
         assert ev.form == EvidenceForm.USER_TEXT
-        assert ev.preprocessing_method == "none"
-        assert ev.data_type is None
+        assert ev.source_type == EvidenceSourceType.TEXT
 
     def test_submitted_data_form_for_search_results(self):
         """Evidence from Tier 2/3 search results uses SUBMITTED_DATA form."""
         ev = _make_evidence(
             form=EvidenceForm.SUBMITTED_DATA,
-            preprocessing_method="search_file_keyword",
             source_file_id="file_abc123def456",
         )
         assert ev.form == EvidenceForm.SUBMITTED_DATA
@@ -311,12 +304,12 @@ class TestImplicitQueryGeneration:
     """Test generate_implicit_query() for attachment-only turns."""
 
     def test_single_file_implicit_query(self):
-        """Single file generates implicit query with filename and data_type."""
+        """Single file generates implicit query with filename and source_type."""
         att = _make_attachment(filename="application.log")
-        ev = _make_evidence(data_type="LOGS")
+        ev = _make_evidence(source_type=EvidenceSourceType.LOGS)
         query = generate_implicit_query([att], [ev])
         assert "application.log" in query
-        assert "LOGS" in query
+        assert "logs" in query
         assert "Analyze" in query
 
     def test_multiple_files_implicit_query(self):
@@ -336,6 +329,6 @@ class TestImplicitQueryGeneration:
     def test_single_pasted_content_implicit_query(self):
         """Pasted content generates implicit query with synthetic filename."""
         att = _make_attachment(filename="pasted-content-20260215T140300.txt")
-        ev = _make_evidence(data_type="LOGS")
+        ev = _make_evidence(source_type=EvidenceSourceType.LOGS)
         query = generate_implicit_query([att], [ev])
         assert "pasted-content" in query

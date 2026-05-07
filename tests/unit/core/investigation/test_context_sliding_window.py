@@ -56,26 +56,25 @@ def _make_evidence(
     evidence_id: str | None = None,
     form: EvidenceForm = EvidenceForm.DOCUMENT,
     summary: str = "Test evidence summary",
-    preprocessed_content: str = "Structural index content",
-    data_type: str = "LOGS",
-    content_size_bytes: int = 5000,
+    extract: str | None = "Structural index content",
+    source_type: EvidenceSourceType = EvidenceSourceType.LOGS,
     **overrides,
 ) -> Evidence:
     """Create an Evidence instance for context builder tests."""
+    # The extract field validator rejects whitespace-only strings; map ""
+    # (a common test signal for "no structural content") to None.
+    normalized_extract = extract if extract else None
     defaults = {
         "evidence_id": evidence_id or _next_ev_id(),
         "form": form,
         "summary": summary,
-        "preprocessed_content": preprocessed_content,
-        "data_type": data_type,
-        "content_size_bytes": content_size_bytes,
+        "extract": normalized_extract,
         "category": EvidenceCategory.SYMPTOM_EVIDENCE,
-        "source_type": EvidenceSourceType.LOGS,
+        "source_type": source_type,
         "collected_at": datetime.now(UTC),
         "collected_by": "user_123",
         "collected_at_turn": 1,
         "primary_purpose": "Test",
-        "preprocessing_method": "crime_scene",
     }
     defaults.update(overrides)
     return Evidence(**defaults)
@@ -150,15 +149,15 @@ class TestTierA:
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Error burst detected in application logs",
-            preprocessed_content="============\nCRIME SCENE EXTRACTION\n============\nERROR: Connection timeout at 14:03:21",
-            data_type="LOGS",
+            extract="============\nCRIME SCENE EXTRACTION\n============\nERROR: Connection timeout at 14:03:21",
+            source_type=EvidenceSourceType.LOGS,
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
 
         assert f'id="{ev.evidence_id}"' in result
         assert 'form="document"' in result
-        assert 'data_type="LOGS"' in result
+        assert 'data_type="logs"' in result
         assert "<file_extract>" in result
         assert "CRIME SCENE EXTRACTION" in result
         assert "<summary>" in result
@@ -168,7 +167,7 @@ class TestTierA:
         ev = _make_evidence(
             form=EvidenceForm.SUBMITTED_DATA,
             summary="Search result finding",
-            preprocessed_content="Matched lines with 'timeout'",
+            extract="Matched lines with 'timeout'",
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
@@ -182,7 +181,7 @@ class TestTierA:
         evidence = [
             _make_evidence(
                 summary=f"Evidence item {i}",
-                preprocessed_content=f"Structural index for item {i}",
+                extract=f"Structural index for item {i}",
                 collected_at_turn=i + 1,
             )
             for i in range(3)
@@ -197,7 +196,7 @@ class TestTierA:
     def test_empty_structural_index_omits_tag(self):
         """Evidence with empty preprocessed_content omits <file_extract> tag."""
         ev = _make_evidence(
-            preprocessed_content="",
+            extract="",
             summary="Log file with no extractable structure",
         )
         case = _make_case_with_evidence([ev])
@@ -221,7 +220,7 @@ class TestTruncation:
         """Structural index > 4000 chars → truncated with [TRUNCATED] marker."""
         long_content = "X" * 6000  # Exceeds default 4000 cap
         ev = _make_evidence(
-            preprocessed_content=long_content,
+            extract=long_content,
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
@@ -241,7 +240,7 @@ class TestTruncation:
         large_content = "Y" * 5500  # Each ~5500 chars, 3 items = ~16500 > 16000
         evidence = [
             _make_evidence(
-                preprocessed_content=large_content,
+                extract=large_content,
                 summary=f"Big evidence {i}",
                 collected_at_turn=i + 1,
             )
@@ -272,7 +271,7 @@ class TestTierB:
         evidence = [
             _make_evidence(
                 summary=f"Summary for item {i}",
-                preprocessed_content=f"Structural index for item {i}",
+                extract=f"Structural index for item {i}",
                 collected_at_turn=i + 1,
             )
             for i in range(5)
@@ -303,7 +302,7 @@ class TestTierC:
         ev = _make_evidence(
             form=EvidenceForm.USER_TEXT,
             summary="User described intermittent timeouts every 5 minutes",
-            preprocessed_content="This should NOT appear in context",
+            extract="This should NOT appear in context",
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
@@ -348,33 +347,33 @@ class TestMixedForms:
             _make_evidence(
                 form=EvidenceForm.DOCUMENT,
                 summary="Old document evidence",
-                preprocessed_content="Old structural index",
+                extract="Old structural index",
                 collected_at_turn=1,
             ),
             # User text (Tier C)
             _make_evidence(
                 form=EvidenceForm.USER_TEXT,
                 summary="User observation about timeouts",
-                preprocessed_content="User text content",
+                extract="User text content",
                 collected_at_turn=2,
             ),
             # Recent data - these 3 should be Tier A
             _make_evidence(
                 form=EvidenceForm.DOCUMENT,
                 summary="Recent log file",
-                preprocessed_content="Crime scene extraction: errors found",
+                extract="Crime scene extraction: errors found",
                 collected_at_turn=3,
             ),
             _make_evidence(
                 form=EvidenceForm.DOCUMENT,
                 summary="Recent metrics file",
-                preprocessed_content="Statistical profile: anomalies detected",
+                extract="Statistical profile: anomalies detected",
                 collected_at_turn=4,
             ),
             _make_evidence(
                 form=EvidenceForm.SUBMITTED_DATA,
                 summary="Search result finding",
-                preprocessed_content="Matched patterns in raw file",
+                extract="Matched patterns in raw file",
                 collected_at_turn=5,
             ),
         ]
@@ -425,8 +424,8 @@ class TestFilenameAttribution:
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Nginx access log errors",
-            preprocessed_content="ERROR: 503 at /api/health",
-            data_type="LOGS",
+            extract="ERROR: 503 at /api/health",
+            source_type=EvidenceSourceType.LOGS,
             source_file_id="file_aabbccdd1122",
         )
         case = _make_case_with_evidence([ev])
@@ -435,7 +434,6 @@ class TestFilenameAttribution:
                 file_id="file_aabbccdd1122",
                 filename="nginx-access.log",
                 size_bytes=5000,
-                data_type="LOGS_AND_ERRORS",
                 uploaded_at_turn=1,
             )
         ]
@@ -449,14 +447,14 @@ class TestFilenameAttribution:
         evidence = [
             _make_evidence(
                 summary="Old app server log",
-                preprocessed_content="Old structural index",
+                extract="Old structural index",
                 source_file_id="file_aabb11223344",
                 collected_at_turn=1,
             ),
         ] + [
             _make_evidence(
                 summary=f"Recent item {i}",
-                preprocessed_content=f"Structural {i}",
+                extract=f"Structural {i}",
                 collected_at_turn=i + 2,
             )
             for i in range(3)
@@ -467,7 +465,6 @@ class TestFilenameAttribution:
                 file_id="file_aabb11223344",
                 filename="app-server.log",
                 size_bytes=3000,
-                data_type="LOGS_AND_ERRORS",
                 uploaded_at_turn=1,
             )
         ]
@@ -480,7 +477,7 @@ class TestFilenameAttribution:
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="User pasted logs",
-            preprocessed_content="Some content",
+            extract="Some content",
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
@@ -491,13 +488,13 @@ class TestFilenameAttribution:
         """Two evidence items from different files → distinct filenames in XML."""
         ev1 = _make_evidence(
             summary="Nginx errors",
-            preprocessed_content="503 errors",
+            extract="503 errors",
             source_file_id="file_ccdd11223344",
             collected_at_turn=1,
         )
         ev2 = _make_evidence(
             summary="App server errors",
-            preprocessed_content="NullPointerException",
+            extract="NullPointerException",
             source_file_id="file_eeff11223344",
             collected_at_turn=2,
         )
@@ -507,14 +504,12 @@ class TestFilenameAttribution:
                 file_id="file_ccdd11223344",
                 filename="nginx-access.log",
                 size_bytes=5000,
-                data_type="LOGS_AND_ERRORS",
                 uploaded_at_turn=1,
             ),
             UploadedFile(
                 file_id="file_eeff11223344",
                 filename="app-server.log",
                 size_bytes=8000,
-                data_type="LOGS_AND_ERRORS",
                 uploaded_at_turn=2,
             ),
         ]
@@ -541,7 +536,7 @@ class TestProcessingModeOrientation:
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Nginx errors",
-            preprocessed_content="CRIME SCENE: 502 errors at 14:00",
+            extract="CRIME SCENE: 502 errors at 14:00",
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case, processing_mode="directed_analysis")
@@ -554,7 +549,7 @@ class TestProcessingModeOrientation:
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Nginx errors",
-            preprocessed_content="CRIME SCENE: 502 errors at 14:00",
+            extract="CRIME SCENE: 502 errors at 14:00",
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case, processing_mode="triage")
@@ -567,7 +562,7 @@ class TestProcessingModeOrientation:
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Nginx errors",
-            preprocessed_content="CRIME SCENE: 502 errors at 14:00",
+            extract="CRIME SCENE: 502 errors at 14:00",
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)  # no processing_mode arg
@@ -580,7 +575,7 @@ class TestProcessingModeOrientation:
         evidence = [
             _make_evidence(
                 summary=f"Evidence {i}",
-                preprocessed_content=f"Index {i}",
+                extract=f"Index {i}",
                 collected_at_turn=i + 1,
             )
             for i in range(5)
@@ -708,16 +703,26 @@ class TestPageCaptureRerankingIntegration:
     """Integration tests: reranking within _build_evidence_context."""
 
     def test_page_capture_evidence_is_reranked(self):
-        """Page capture evidence with extraction_method='page_capture_passthrough'
+        """Page capture evidence (UploadedFile.upload_source='page_capture')
         has its sections reranked by user_query."""
+        file_id = "file_aaccccccdd11"
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Grafana dashboard capture",
-            preprocessed_content=_PAGE_CAPTURE_CONTENT,
-            data_type="text",
-            extraction_method="page_capture_passthrough",
+            extract=_PAGE_CAPTURE_CONTENT,
+            source_type=EvidenceSourceType.TEXT,
+            source_file_id=file_id,
         )
         case = _make_case_with_evidence([ev])
+        case.uploaded_files = [
+            UploadedFile(
+                file_id=file_id,
+                filename="dashboard.html",
+                size_bytes=len(_PAGE_CAPTURE_CONTENT),
+                uploaded_at_turn=1,
+                upload_source="page_capture",
+            )
+        ]
         result = _build_evidence_context(case, user_query="CPU usage high")
         # CPU Usage section should appear before Network in the structural index
         cpu_pos = result.find("## CPU Usage")
@@ -727,8 +732,8 @@ class TestPageCaptureRerankingIntegration:
         ), f"CPU Usage (pos={cpu_pos}) should appear before Network (pos={network_pos})"
 
     def test_non_page_capture_not_reranked(self):
-        """Evidence without extraction_method='page_capture_passthrough'
-        is not reranked regardless of user_query."""
+        """Evidence whose backing UploadedFile is not a page capture is not
+        reranked regardless of user_query."""
         content = (
             "Header\n"
             "## Zebra\n"
@@ -736,14 +741,24 @@ class TestPageCaptureRerankingIntegration:
             "## Alpha\n"
             "First section alpha query match\n"
         )
+        file_id = "file_bbccccccdd44"
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Regular log file",
-            preprocessed_content=content,
-            data_type="LOGS",
-            extraction_method="structural_index",
+            extract=content,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=file_id,
         )
         case = _make_case_with_evidence([ev])
+        case.uploaded_files = [
+            UploadedFile(
+                file_id=file_id,
+                filename="app.log",
+                size_bytes=len(content),
+                uploaded_at_turn=1,
+                upload_source="file_upload",
+            )
+        ]
         result = _build_evidence_context(case, user_query="alpha")
         # Original order preserved — Zebra before Alpha
         zebra_pos = result.find("## Zebra")
@@ -752,14 +767,24 @@ class TestPageCaptureRerankingIntegration:
 
     def test_no_query_preserves_original_order(self):
         """Without user_query, page capture sections stay in original order."""
+        file_id = "file_aaccccccdd22"
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Dashboard",
-            preprocessed_content=_PAGE_CAPTURE_CONTENT,
-            data_type="text",
-            extraction_method="page_capture_passthrough",
+            extract=_PAGE_CAPTURE_CONTENT,
+            source_type=EvidenceSourceType.TEXT,
+            source_file_id=file_id,
         )
         case = _make_case_with_evidence([ev])
+        case.uploaded_files = [
+            UploadedFile(
+                file_id=file_id,
+                filename="dashboard.html",
+                size_bytes=len(_PAGE_CAPTURE_CONTENT),
+                uploaded_at_turn=1,
+                upload_source="page_capture",
+            )
+        ]
         result = _build_evidence_context(case)  # no user_query
         # Original order: Network before CPU Usage
         network_pos = result.find("## Network")
@@ -777,14 +802,24 @@ class TestPageCaptureRerankingIntegration:
             f"## Filler C\n{filler}\n"
             f"## Target Section\nCPU usage: 95%\nLoad average: 12.3\n"
         )
+        file_id = "file_aaccccccdd33"
         ev = _make_evidence(
             form=EvidenceForm.DOCUMENT,
             summary="Large dashboard",
-            preprocessed_content=content,
-            data_type="text",
-            extraction_method="page_capture_passthrough",
+            extract=content,
+            source_type=EvidenceSourceType.TEXT,
+            source_file_id=file_id,
         )
         case = _make_case_with_evidence([ev])
+        case.uploaded_files = [
+            UploadedFile(
+                file_id=file_id,
+                filename="dashboard.html",
+                size_bytes=len(content),
+                uploaded_at_turn=1,
+                upload_source="page_capture",
+            )
+        ]
         result = _build_evidence_context(case, user_query="CPU load average")
         # Target section should survive truncation because it's promoted to top
         assert "Target Section" in result

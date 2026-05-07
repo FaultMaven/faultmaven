@@ -1033,7 +1033,7 @@ class AgentOrchestrationService:
         all_services: list[str] = []
 
         for ev in case.evidence:
-            preprocessed = getattr(ev, "preprocessed_content", "") or ""
+            preprocessed = ev.extract or ""
             try:
                 d = _json.loads(preprocessed)
                 if isinstance(d, dict) and d.get("v") == 1:
@@ -1654,7 +1654,8 @@ class AgentOrchestrationService:
                 return 0
             for ev in getattr(case, "evidence", []) or []:
                 if getattr(ev, "evidence_id", None) == evidence_id:
-                    return int(getattr(ev, "content_size_bytes", 0) or 0)
+                    file_meta = case.find_uploaded_file(ev.source_file_id)
+                    return int(file_meta.size_bytes if file_meta else 0)
         except Exception:
             return 0
         return 0
@@ -1664,9 +1665,9 @@ class AgentOrchestrationService:
     ) -> str | None:
         """Retrieve raw file content for a small evidence file.
 
-        Uses `case.evidence` + `content_ref` via FileStorageService (storage
-        redesign 2026-04 phase 2 deleted the standalone evidence service).
-        Returns None if the case/evidence/file isn't accessible.
+        Uses `case.evidence` + UploadedFile.storage_ref via FileStorageService
+        (storage redesign 2026-04 phase 2 deleted the standalone evidence
+        service). Returns None if the case/evidence/file isn't accessible.
         """
         try:
             case = tool_context.in_memory_case
@@ -1683,8 +1684,9 @@ class AgentOrchestrationService:
             if target is None:
                 return None
 
-            content_ref = getattr(target, "content_ref", None)
-            if not content_ref:
+            file_meta = case.find_uploaded_file(target.source_file_id)
+            storage_ref = file_meta.storage_ref if file_meta else None
+            if not storage_ref:
                 return None
 
             from faultmaven.modules.evidence.domain.services.file_storage_service import (
@@ -1697,7 +1699,7 @@ class AgentOrchestrationService:
                     settings, "evidence_storage_root", "./data/evidence"
                 ),
             )
-            file_data = await storage.retrieve_file(content_ref)
+            file_data = await storage.retrieve_file(storage_ref)
             return file_data.decode("utf-8", errors="replace")
         except Exception:
             return None
@@ -1760,7 +1762,8 @@ class AgentOrchestrationService:
 
         tasks: dict[str, asyncio.Task] = {}
         for ev in case.evidence:
-            size = getattr(ev, "content_size_bytes", 0) or 0
+            file_meta = case.find_uploaded_file(ev.source_file_id)
+            size = file_meta.size_bytes if file_meta else 0
             if not (
                 size >= settings.agent.vectorization_min_size_bytes
                 and size <= VECTORIZATION_MAX_SIZE_BYTES

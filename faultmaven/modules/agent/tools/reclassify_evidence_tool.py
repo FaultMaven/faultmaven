@@ -166,7 +166,7 @@ class ReclassifyEvidenceTool(AgentTool):
             success=True,
             data={
                 "evidence_id": updated.evidence_id,
-                "data_type": updated.data_type,
+                "data_type": updated.source_type.value,
                 "summary": updated.summary,
                 "note": (
                     "Reclassification complete. The re-extracted "

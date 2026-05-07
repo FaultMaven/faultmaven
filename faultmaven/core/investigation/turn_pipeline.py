@@ -32,7 +32,7 @@ def generate_implicit_query(
         filename = attachments[0].filename if attachments else "data"
         return (
             f"I've submitted {filename} "
-            f"(classified as {ev.data_type}). "
+            f"(classified as {ev.source_type.value}). "
             f"Analyze this data and tell me what you find."
         )
     filenames = ", ".join(att.filename for att in attachments)

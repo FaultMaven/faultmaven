@@ -73,13 +73,10 @@ def _make_evidence(**overrides) -> Evidence:
         "form": EvidenceForm.DOCUMENT,
         "summary": "Test evidence",
         "primary_purpose": "Shows test data",
-        "content_ref": "s3://evidence/test.log",
         "collected_at": datetime.now(timezone.utc),
         "collected_by": "user_123",
         "collected_at_turn": 1,
-        "preprocessing_method": "crime_scene",
-        "content_size_bytes": 1024,
-        "preprocessed_content": "Test content",
+        "extract": "Test content",
     }
     defaults.update(overrides)
     return Evidence(**defaults)
@@ -123,8 +120,6 @@ class TestEvidenceClassificationBasics:
             summary="Database connection timeout errors in application logs",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
             source_type=EvidenceSourceType.LOGS,
-            preprocessing_method="crime_scene",
-            data_type="LOGS",
         )
         case.evidence.append(evidence)
 
@@ -151,7 +146,6 @@ class TestEvidenceClassificationBasics:
             summary=evidence_to_add.summary,
             category=evidence_to_add.category,
             source_type=evidence_to_add.source_type,
-            preprocessing_method="none",
         )
         case.evidence.append(evidence)
 
@@ -180,21 +174,21 @@ class TestEvidenceClassificationBasics:
 
     @pytest.mark.asyncio
     async def test_duplicate_detection_via_content(self):
-        """Duplicate detection works by comparing preprocessed_content."""
+        """Duplicate detection works by comparing extract."""
         case = _make_case(evidence=[])
-        preprocessed = "ERROR: Connection timeout"
+        extract_text = "ERROR: Connection timeout"
 
         first = _make_evidence(
             evidence_id="ev_abc123456789",
-            preprocessed_content=preprocessed,
+            extract=extract_text,
             collected_at_turn=1,
         )
         case.evidence.append(first)
 
-        # Detect duplicate by comparing preprocessed_content
+        # Detect duplicate by comparing extract
         duplicate_found = None
         for ev in case.evidence:
-            if ev.preprocessed_content == preprocessed:
+            if ev.extract == extract_text:
                 duplicate_found = ev
                 break
 
@@ -206,7 +200,7 @@ class TestEvidenceClassificationBasics:
             evidence_id="ev_def456789012",
             category=EvidenceCategory.REJECTED,
             summary=f"Duplicate of evidence from turn {duplicate_found.collected_at_turn}",
-            preprocessed_content=preprocessed,
+            extract=extract_text,
             collected_at_turn=2,
         )
         case.evidence.append(second)
@@ -314,7 +308,6 @@ class TestSourceTypeClassification:
             source_type=EvidenceSourceType.TEXT,
             form=EvidenceForm.USER_TEXT,
             summary="User report of intermittent timeouts",
-            preprocessing_method="none",
         )
         assert ev.source_type == EvidenceSourceType.TEXT
         assert ev.form == EvidenceForm.USER_TEXT

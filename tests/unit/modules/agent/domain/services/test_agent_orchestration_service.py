@@ -1468,7 +1468,7 @@ class TestDetectCoverageGaps:
     def _make_case_with_evidence(self, preprocessed_content):
         """Helper to create a case with evidence containing coverage metadata."""
         evidence = MagicMock()
-        evidence.preprocessed_content = preprocessed_content
+        evidence.extract = preprocessed_content
         case = MagicMock()
         case.evidence = [evidence]
         return case
@@ -1577,7 +1577,7 @@ class TestBuildCoverageAdvisories:
         )
 
         evidence = MagicMock()
-        evidence.preprocessed_content = (
+        evidence.extract = (
             f"log content{COVERAGE_SEPARATOR}"
             f"First timestamp: 2024-01-15 13:42:00\n"
             f"Last timestamp: 2024-01-15 13:57:00"
@@ -1605,7 +1605,7 @@ class TestBuildCoverageAdvisories:
         )
 
         evidence = MagicMock()
-        evidence.preprocessed_content = (
+        evidence.extract = (
             f"log content{COVERAGE_SEPARATOR}"
             f"First timestamp: 2024-01-15 14:00:00\n"
             f"Last timestamp: 2024-01-15 14:30:00\n"
@@ -2061,22 +2061,28 @@ class TestGetEvidenceSize:
 
     @pytest.mark.asyncio
     async def test_reads_size_from_case_evidence(self, service, tool_context):
-        """_get_evidence_size reads content_size_bytes from case.evidence."""
+        """_get_evidence_size reads size_bytes from the linked UploadedFile."""
         ev = MagicMock()
         ev.evidence_id = "ev_test"
-        ev.content_size_bytes = 196268
-        tool_context.in_memory_case.evidence = [ev]
+        ev.source_file_id = "file_test"
+        uf = MagicMock()
+        uf.size_bytes = 196268
+        case = tool_context.in_memory_case
+        case.evidence = [ev]
+        case.find_uploaded_file = MagicMock(return_value=uf)
 
         size = await service._get_evidence_size("ev_test", tool_context)
         assert size == 196268
 
     @pytest.mark.asyncio
     async def test_returns_zero_when_no_size_attribute(self, service, tool_context):
-        """Returns 0 when evidence has no content_size_bytes."""
+        """Returns 0 when evidence has no linked UploadedFile."""
         ev = MagicMock()
         ev.evidence_id = "ev_test"
-        ev.content_size_bytes = 0
-        tool_context.in_memory_case.evidence = [ev]
+        ev.source_file_id = None
+        case = tool_context.in_memory_case
+        case.evidence = [ev]
+        case.find_uploaded_file = MagicMock(return_value=None)
 
         size = await service._get_evidence_size("ev_test", tool_context)
         assert size == 0

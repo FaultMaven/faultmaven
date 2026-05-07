@@ -20,16 +20,20 @@ from faultmaven.modules.agent.tools.vectorize_file_tool import (
 def _make_evidence(
     evidence_id: str = "ev_abc",
     case_id: str = "case_123",
-    content_size_bytes: int = 100_000,
-    preprocessed_content: Optional[str] = "Structural index content here...",
-    data_type: str = "logs",
+    size_bytes: int = 100_000,
+    extract: Optional[str] = "Structural index content here...",
+    source_type_value: str = "logs",
+    source_file_id: str = "file_aaaa11112222",
 ):
     ev = MagicMock()
     ev.evidence_id = evidence_id
     ev.case_id = case_id
-    ev.content_size_bytes = content_size_bytes
-    ev.preprocessed_content = preprocessed_content
-    ev.data_type = data_type
+    ev.extract = extract
+    ev.source_type.value = source_type_value
+    ev.source_file_id = source_file_id
+    # Stash size_bytes for the helper that builds the case so we can wire up
+    # the matching UploadedFile (production reads size from the file).
+    ev._test_size_bytes = size_bytes
     return ev
 
 
@@ -37,6 +41,25 @@ def _make_context(case_id: str = "case_123", evidence_items=None):
     case = MagicMock()
     case.case_id = case_id
     case.evidence = evidence_items if evidence_items is not None else [_make_evidence()]
+
+    # Build a uploaded_files list and wire find_uploaded_file to return matches.
+    uploaded_files = []
+    for ev in case.evidence:
+        f = MagicMock()
+        f.file_id = ev.source_file_id
+        f.size_bytes = getattr(ev, "_test_size_bytes", 0)
+        f.filename = "test.log"
+        f.upload_source = "file_upload"
+        uploaded_files.append(f)
+    case.uploaded_files = uploaded_files
+
+    def _find_uploaded_file(file_id):
+        if not file_id:
+            return None
+        return next((f for f in uploaded_files if f.file_id == file_id), None)
+
+    case.find_uploaded_file.side_effect = _find_uploaded_file
+
     return ToolContext(
         session_id="sess_1",
         case_id=case_id,
@@ -74,7 +97,7 @@ def context():
 class TestSizeGates:
     @pytest.mark.asyncio
     async def test_rejects_file_below_minimum(self, tool, mock_settings):
-        ev = _make_evidence(content_size_bytes=10_000)
+        ev = _make_evidence(size_bytes=10_000)
         context = _make_context(evidence_items=[ev])
 
         result = await tool.execute_with_context(
@@ -88,7 +111,7 @@ class TestSizeGates:
 
     @pytest.mark.asyncio
     async def test_rejects_file_above_maximum(self, tool, mock_settings):
-        ev = _make_evidence(content_size_bytes=60_000_000)
+        ev = _make_evidence(size_bytes=60_000_000)
         context = _make_context(evidence_items=[ev])
 
         result = await tool.execute_with_context(
@@ -118,7 +141,7 @@ class TestSizeGates:
     @pytest.mark.asyncio
     async def test_custom_min_size_threshold(self, tool, mock_settings):
         mock_settings.agent.vectorization_min_size_bytes = 200_000
-        ev = _make_evidence(content_size_bytes=100_000)
+        ev = _make_evidence(size_bytes=100_000)
         context = _make_context(evidence_items=[ev])
 
         result = await tool.execute_with_context(
@@ -151,7 +174,7 @@ class TestVectorization:
 
     @pytest.mark.asyncio
     async def test_no_preprocessed_content(self, tool, mock_settings):
-        ev = _make_evidence(preprocessed_content=None)
+        ev = _make_evidence(extract=None)
         context = _make_context(evidence_items=[ev])
 
         result = await tool.execute_with_context(

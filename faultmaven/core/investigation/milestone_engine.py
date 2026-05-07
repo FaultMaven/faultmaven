@@ -5369,12 +5369,13 @@ class MilestoneEngine:
             file_id=attachment.get("file_id", f"file_{uuid4().hex[:12]}"),
             filename=attachment.get("filename", "unknown"),
             size_bytes=attachment.get("size", 0),
-            data_type=attachment.get("data_type", "unknown"),
+            content_type=attachment.get("content_type"),
+            content_hash=attachment.get("content_hash"),
             uploaded_at_turn=turn_number,
             uploaded_at=datetime.now(UTC),
-            source_type=attachment.get("source_type", "file_upload"),
+            upload_source=attachment.get("source_type", "file_upload"),
             preprocessing_summary=attachment.get("summary", None),
-            content_ref=attachment.get("s3_uri", attachment.get("file_id", "unknown")),
+            storage_ref=attachment.get("s3_uri", attachment.get("file_id", "unknown")),
         )
 
         return uploaded_file

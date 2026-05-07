@@ -129,7 +129,8 @@ class VectorizeFileTool(AgentTool):
                 )
 
             # Check size gates
-            content_size = getattr(evidence, "content_size_bytes", 0) or 0
+            file_meta = case.find_uploaded_file(evidence.source_file_id)
+            content_size = file_meta.size_bytes if file_meta else 0
             settings = get_settings()
             min_size = settings.agent.vectorization_min_size_bytes
 
@@ -158,7 +159,7 @@ class VectorizeFileTool(AgentTool):
             # Get the file_extract content to vectorize (not raw JSON).
             # Check for "file_extract" key presence rather than exact version so
             # future schema bumps don't silently vectorize a JSON blob.
-            raw_preprocessed = getattr(evidence, "preprocessed_content", None)
+            raw_preprocessed = evidence.extract
             if not raw_preprocessed:
                 return ToolResult(
                     success=False,
@@ -182,7 +183,7 @@ class VectorizeFileTool(AgentTool):
             # Determine data type for chunking strategy
             from faultmaven.core.preprocessing.models import UnifiedDataType
 
-            data_type_str = getattr(evidence, "data_type", "text")
+            data_type_str = evidence.source_type.value
             try:
                 data_type = UnifiedDataType(data_type_str)
             except (ValueError, KeyError):

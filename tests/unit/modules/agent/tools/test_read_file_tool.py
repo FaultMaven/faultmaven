@@ -30,14 +30,32 @@ def _make_evidence(
     summary: str = "Error log file",
     case_id: str = "case_test",
 ):
-    """Build a minimal Evidence-shaped object that ReadFileTool understands."""
+    """Build a minimal Evidence-shaped object that ReadFileTool understands.
+
+    Legacy `original_filename` and `content_ref` kwargs now wire up an
+    UploadedFile-shaped mock stashed on the evidence; the case helper installs
+    it on `case.uploaded_files` so production's `find_uploaded_file()` works.
+    """
     ev = MagicMock()
     ev.evidence_id = evidence_id
     ev.case_id = case_id
-    ev.original_filename = original_filename
-    ev.content_ref = content_ref
     ev.summary = summary
-    ev.content_size_bytes = 1024
+
+    if content_ref is not None:
+        file_id = (
+            f"file_{evidence_id.replace('-', '_').replace('ev_', 'fl0000000')[:16]}"
+        )
+        ev.source_file_id = file_id
+        uf = MagicMock()
+        uf.file_id = file_id
+        uf.filename = original_filename
+        uf.size_bytes = 1024
+        uf.storage_ref = content_ref
+        uf.upload_source = "file_upload"
+        ev._uploaded_file = uf
+    else:
+        ev.source_file_id = None
+        ev._uploaded_file = None
     return ev
 
 
@@ -46,6 +64,21 @@ def _make_context(case_id: str = "case_test", evidence_items=None):
     case = MagicMock()
     case.case_id = case_id
     case.evidence = evidence_items if evidence_items is not None else [_make_evidence()]
+
+    uploaded_files = [
+        ev._uploaded_file
+        for ev in case.evidence
+        if getattr(ev, "_uploaded_file", None) is not None
+    ]
+    case.uploaded_files = uploaded_files
+
+    def _find(file_id):
+        if not file_id:
+            return None
+        return next((f for f in uploaded_files if f.file_id == file_id), None)
+
+    case.find_uploaded_file.side_effect = _find
+
     return ToolContext(
         session_id="session_test",
         case_id=case_id,

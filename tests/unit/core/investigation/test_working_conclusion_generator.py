@@ -79,12 +79,14 @@ def create_hypothesis(
         )
 
         for ev_id in supporting_evidence:
-            hyp.evidence_links[ev_id] = HypothesisEvidenceLink(
-                hypothesis_id=hyp_id,
-                evidence_id=ev_id,
-                stance=EvidenceStance.SUPPORTS,
-                reasoning="Test supporting evidence",
-                stance_confidence=0.8,
+            hyp.evidence_links.append(
+                HypothesisEvidenceLink(
+                    hypothesis_id=hyp_id,
+                    evidence_id=ev_id,
+                    stance=EvidenceStance.SUPPORTS,
+                    reasoning="Test supporting evidence",
+                    stance_confidence=0.8,
+                )
             )
     return hyp
 

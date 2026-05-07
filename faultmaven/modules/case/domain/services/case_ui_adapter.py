@@ -402,6 +402,8 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         )[:5]
 
         for ev in sorted_evidence:
+            file_meta = case.find_uploaded_file(ev.source_file_id)
+            source_filename = file_meta.filename if file_meta else None
             evidence_summaries.append(
                 EvidenceSummary(
                     evidence_id=ev.evidence_id,
@@ -419,7 +421,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
                         if hasattr(ev.category, "value")
                         else str(ev.category)
                     ),
-                    source_filename=getattr(ev, "original_filename", None),
+                    source_filename=source_filename,
                 )
             )
 

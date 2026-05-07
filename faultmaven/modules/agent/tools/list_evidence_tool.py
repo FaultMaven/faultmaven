@@ -125,7 +125,7 @@ class ListEvidenceTool(AgentTool):
             if isinstance(limit, int) and limit > 0:
                 evidence_list = evidence_list[:limit]
 
-            formatted_evidence = self._format_evidence_list(evidence_list)
+            formatted_evidence = self._format_evidence_list(evidence_list, case)
 
             logger.info(
                 f"Listed {len(evidence_list)} evidence items for case {context.case_id} "
@@ -152,6 +152,7 @@ class ListEvidenceTool(AgentTool):
     def _format_evidence_list(
         self,
         evidence_list: List[Any],
+        case: Any,
     ) -> List[Dict[str, Any]]:
         """Format evidence list for LLM consumption.
 
@@ -161,6 +162,7 @@ class ListEvidenceTool(AgentTool):
 
         Args:
             evidence_list: List of domain Evidence records
+            case: Case aggregate (used to resolve UploadedFile metadata)
 
         Returns:
             List of formatted evidence dictionaries
@@ -173,8 +175,13 @@ class ListEvidenceTool(AgentTool):
             )
             type_value = type_attr.value if hasattr(type_attr, "value") else type_attr
 
-            # Size: domain Evidence uses content_size_bytes
-            size_bytes = int(getattr(evidence, "content_size_bytes", 0) or 0)
+            # Size + filename: walk the FK to UploadedFile via the case
+            # aggregate (replaces the dropped denormalized fields on Evidence).
+            file_meta = case.find_uploaded_file(
+                getattr(evidence, "source_file_id", None)
+            )
+            size_bytes = int(file_meta.size_bytes if file_meta else 0)
+            filename = file_meta.filename if file_meta else None
 
             # Timestamp: domain Evidence uses collected_at
             collected_at = getattr(evidence, "collected_at", None)
@@ -185,7 +192,7 @@ class ListEvidenceTool(AgentTool):
             formatted.append(
                 {
                     "evidence_id": getattr(evidence, "evidence_id", None),
-                    "filename": getattr(evidence, "original_filename", None),
+                    "filename": filename,
                     "type": type_value,
                     # mime_type is not on the domain Evidence model; the future
                     # normalized evidence table will reintroduce it (see

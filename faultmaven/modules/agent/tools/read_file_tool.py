@@ -158,14 +158,15 @@ class ReadFileTool(AgentTool):
                     ),
                 )
 
-            content_ref = getattr(evidence, "content_ref", None)
-            filename = getattr(evidence, "original_filename", None) or evidence_id
-            if not content_ref:
+            file_meta = case.find_uploaded_file(evidence.source_file_id)
+            storage_ref = file_meta.storage_ref if file_meta else None
+            filename = (file_meta.filename if file_meta else None) or evidence_id
+            if not storage_ref:
                 return ToolResult(
                     success=False,
                     data=None,
                     error=(
-                        f"Evidence {evidence_id} has no content_ref "
+                        f"Evidence {evidence_id} has no backing file "
                         f"(raw file not stored)"
                     ),
                 )
@@ -185,7 +186,7 @@ class ReadFileTool(AgentTool):
                 ),
             )
             try:
-                file_data = await storage.retrieve_file(content_ref)
+                file_data = await storage.retrieve_file(storage_ref)
             except Exception as e:
                 return ToolResult(
                     success=False,

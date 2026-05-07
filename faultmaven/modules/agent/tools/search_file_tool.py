@@ -421,7 +421,7 @@ class SearchFileTool(AgentTool):
                 context.case_id,
                 len(all_evidence),
             )
-            alts = self._format_searchable_alternatives(all_evidence, evidence_id)
+            alts = self._format_searchable_alternatives(all_evidence, evidence_id, case)
             return f"Evidence {evidence_id} not found in this case.{alts}"
 
         # Reject non-file-backed evidence forms BEFORE hitting storage.
@@ -435,7 +435,7 @@ class SearchFileTool(AgentTool):
         ev_form = getattr(case_evidence, "form", None)
         if ev_form is not None and ev_form != EvidenceForm.DOCUMENT:
             ev_form_value = ev_form.value if hasattr(ev_form, "value") else str(ev_form)
-            alts = self._format_searchable_alternatives(all_evidence, evidence_id)
+            alts = self._format_searchable_alternatives(all_evidence, evidence_id, case)
             logger.warning(
                 "search_file: evidence %s has non-searchable form=%s; pointing "
                 "LLM at file-backed alternatives",
@@ -449,46 +449,44 @@ class SearchFileTool(AgentTool):
                 f'(searchable="true") for this search.{alts}'
             )
 
-        # Read raw file via content_ref
-        content_ref = getattr(case_evidence, "content_ref", None)
-        if not content_ref:
+        # Read raw file via UploadedFile.storage_ref
+        file_meta = case.find_uploaded_file(case_evidence.source_file_id)
+        storage_ref = file_meta.storage_ref if file_meta else None
+        if not storage_ref:
             logger.warning(
-                "search_file: evidence %s has no content_ref (file not stored)",
+                "search_file: evidence %s has no backing file (file not stored)",
                 evidence_id,
             )
-            alts = self._format_searchable_alternatives(all_evidence, evidence_id)
-            return (
-                f"Evidence {evidence_id} has no stored file content "
-                f"(content_ref is empty).{alts}"
-            )
+            alts = self._format_searchable_alternatives(all_evidence, evidence_id, case)
+            return f"Evidence {evidence_id} has no stored file content.{alts}"
 
         if self.storage_service is not None and hasattr(
             self.storage_service, "retrieve_file"
         ):
             try:
-                file_data = await self.storage_service.retrieve_file(content_ref)
-                filename = (
-                    getattr(case_evidence, "original_filename", None) or evidence_id
-                )
+                file_data = await self.storage_service.retrieve_file(storage_ref)
+                filename = (file_meta.filename if file_meta else None) or evidence_id
                 content = file_data.decode("utf-8", errors="replace")
                 return content, filename, case_evidence
             except Exception as e:
                 logger.warning(
                     "search_file: storage_service.retrieve_file failed for %s: %s",
-                    content_ref,
+                    storage_ref,
                     e,
                 )
-                alts = self._format_searchable_alternatives(all_evidence, evidence_id)
+                alts = self._format_searchable_alternatives(
+                    all_evidence, evidence_id, case
+                )
                 return (
                     f"Evidence {evidence_id}: stored file could not be "
-                    f"retrieved (content_ref={content_ref}, error: {e}).{alts}"
+                    f"retrieved (storage_ref={storage_ref}, error: {e}).{alts}"
                 )
 
         logger.warning(
             "search_file: storage_service unavailable; cannot read evidence %s "
-            "(content_ref=%s)",
+            "(storage_ref=%s)",
             evidence_id,
-            content_ref,
+            storage_ref,
         )
         return f"Evidence {evidence_id}: storage service unavailable."
 
@@ -496,6 +494,7 @@ class SearchFileTool(AgentTool):
         self,
         all_evidence: list[Any],
         excluded_evidence_id: str,
+        case: Any,
     ) -> str:
         """Build a redirect hint listing file-backed evidence_ids in this case.
 
@@ -514,10 +513,10 @@ class SearchFileTool(AgentTool):
             ev_form = getattr(ev, "form", None)
             if ev_form != EvidenceForm.DOCUMENT:
                 continue
-            content_ref = getattr(ev, "content_ref", None)
-            if not content_ref or str(content_ref).startswith("ev_"):
+            file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
+            if file_meta is None:
                 continue
-            filename = getattr(ev, "original_filename", None) or "(unnamed)"
+            filename = file_meta.filename or "(unnamed)"
             alternatives.append(f"{ev_id} ({filename})")
 
         if not alternatives:

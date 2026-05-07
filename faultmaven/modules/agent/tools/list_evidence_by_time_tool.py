@@ -152,7 +152,7 @@ class ListEvidenceByTimeTool(AgentTool):
                 error=f"Time-window query failed: {e}",
             )
 
-        results = _format_evidence_summaries(evidence_list)
+        results = _format_evidence_summaries(evidence_list, context.in_memory_case)
         return ToolResult(
             success=True,
             data={
@@ -169,21 +169,35 @@ class ListEvidenceByTimeTool(AgentTool):
         )
 
 
-def _format_evidence_summaries(evidence_list: List[Any]) -> List[Dict[str, Any]]:
+def _format_evidence_summaries(
+    evidence_list: List[Any], case: Any = None
+) -> List[Dict[str, Any]]:
     """Flatten Evidence objects to agent-friendly dicts.
 
     Includes the fields the LLM typically needs to decide whether to
     drill in: id, filename, data_type, coverage span, and the summary.
+
+    The ``case`` parameter is used to resolve UploadedFile metadata
+    (filename) via ``case.find_uploaded_file(ev.source_file_id)``. May
+    be None if the caller doesn't have a case in scope (filename will
+    be None in that case).
     """
     formatted: List[Dict[str, Any]] = []
     for ev in evidence_list:
         start = getattr(ev, "coverage_start_ts", None)
         end = getattr(ev, "coverage_end_ts", None)
+        file_meta = (
+            case.find_uploaded_file(getattr(ev, "source_file_id", None))
+            if case is not None
+            else None
+        )
+        filename = file_meta.filename if file_meta else None
+        source_type = getattr(ev, "source_type", None)
         formatted.append(
             {
                 "evidence_id": getattr(ev, "evidence_id", None),
-                "filename": getattr(ev, "original_filename", None),
-                "data_type": getattr(ev, "data_type", None),
+                "filename": filename,
+                "data_type": source_type.value if source_type else None,
                 "coverage_start_ts": start.isoformat() if start else None,
                 "coverage_end_ts": end.isoformat() if end else None,
                 "summary": getattr(ev, "summary", None),

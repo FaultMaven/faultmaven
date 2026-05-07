@@ -50,23 +50,68 @@ def _make_search_tool_with_storage(
 def _make_evidence(
     evidence_id="ev_abc",
     content_ref="evidence/case_123/app.log",
+    filename="app.log",
     form=None,
 ):
-    """Build a minimal Evidence-shaped object for case-embedded lookup."""
+    """Build a minimal Evidence-shaped object for case-embedded lookup.
+
+    The legacy `content_ref` kwarg now wires up an UploadedFile-shaped mock
+    stashed on the evidence (`ev._uploaded_file`) so the test helper that
+    builds the Case can install it on `case.uploaded_files`. Pass
+    `content_ref=None` to model an evidence record with no backing storage.
+    """
     from faultmaven.modules.case.contracts import EvidenceForm
 
     ev = MagicMock()
     ev.evidence_id = evidence_id
     ev.case_id = "case_123"
-    ev.data_type = "logs"
-    ev.content_ref = content_ref
-    ev.original_filename = "app.log"
-    ev.content_size_bytes = 100
     # Default to DOCUMENT (file-backed) so existing tests exercise the
     # successful retrieval path. ISS-025 added a guard that rejects
     # non-DOCUMENT forms before hitting storage.
     ev.form = form if form is not None else EvidenceForm.DOCUMENT
+    ev.source_type.value = "logs"
+
+    if content_ref is not None:
+        # Bind a unique source_file_id per evidence so case.find_uploaded_file
+        # can resolve to the right backing file when multiple evidence records
+        # are present in the case.
+        file_id = (
+            f"file_{evidence_id.replace('-', '_').replace('ev_', 'fl0000000')[:16]}"
+        )
+        ev.source_file_id = file_id
+        uf = MagicMock()
+        uf.file_id = file_id
+        uf.filename = filename
+        uf.size_bytes = 100
+        uf.storage_ref = content_ref
+        uf.upload_source = "file_upload"
+        ev._uploaded_file = uf
+    else:
+        ev.source_file_id = None
+        ev._uploaded_file = None
     return ev
+
+
+def _wire_case_lookup(case):
+    """Populate `case.uploaded_files` and `case.find_uploaded_file` from the
+    evidence records' stashed `_uploaded_file` attributes.
+
+    Tests construct `case.evidence` directly, so this helper centralizes the
+    lookup wiring that production reads via `case.find_uploaded_file()`.
+    """
+    uploaded_files = [
+        ev._uploaded_file
+        for ev in case.evidence
+        if getattr(ev, "_uploaded_file", None) is not None
+    ]
+    case.uploaded_files = uploaded_files
+
+    def _find(file_id):
+        if not file_id:
+            return None
+        return next((f for f in uploaded_files if f.file_id == file_id), None)
+
+    case.find_uploaded_file.side_effect = _find
 
 
 @pytest.fixture
@@ -75,6 +120,7 @@ def context():
     case = MagicMock()
     case.case_id = "case_123"
     case.evidence = [_make_evidence()]
+    _wire_case_lookup(case)
 
     return ToolContext(
         session_id="sess_1",
@@ -204,6 +250,7 @@ class TestValidation:
         # this case from a missing-ID lookup.
         ev = _make_evidence(content_ref=None)
         context.in_memory_case.evidence = [ev]
+        _wire_case_lookup(context.in_memory_case)
         result = await tool.execute_with_context(
             params={"evidence_id": "ev_abc", "query": "test"},
             context=context,
@@ -239,6 +286,7 @@ class TestPartialMatchFallback:
         case = MagicMock()
         case.case_id = "case_123"
         case.evidence = [_make_evidence()]
+        _wire_case_lookup(case)
 
         return ToolContext(
             session_id="sess_1",
@@ -307,10 +355,6 @@ class TestVocabularyExtraction:
     @pytest.fixture
     def vocab_context(self, tool):
         """Context with content rich in extractable patterns."""
-        evidence = MagicMock()
-        evidence.case_id = "case_123"
-        evidence.data_type = "logs"
-
         log_content = (
             "2024-01-15 10:30:00 ERROR ConnectionTimeout: failed to reach 10.0.0.5\n"
             "2024-01-15 10:30:01 WARN RetryableError: attempt 2 for api-server:8080\n"
@@ -328,6 +372,7 @@ class TestVocabularyExtraction:
         case = MagicMock()
         case.case_id = "case_123"
         case.evidence = [_make_evidence(content_ref="evidence/case_123/app.log")]
+        _wire_case_lookup(case)
 
         return ToolContext(
             session_id="sess_1",
@@ -451,10 +496,6 @@ class TestTruncationReporting:
     @pytest.fixture
     def many_matches_context(self, tool):
         """Context with content that produces many non-overlapping matches."""
-        evidence = MagicMock()
-        evidence.case_id = "case_123"
-        evidence.data_type = "logs"
-
         # Space ERROR lines 20 apart so context windows (±5) don't overlap.
         # This produces many distinct merged results that exceed max_results=3.
         lines = []
@@ -472,6 +513,7 @@ class TestTruncationReporting:
         case = MagicMock()
         case.case_id = "case_123"
         case.evidence = [_make_evidence(content_ref="evidence/case_123/app.log")]
+        _wire_case_lookup(case)
 
         return ToolContext(
             session_id="sess_1",
@@ -543,10 +585,6 @@ class TestMaxResultsOverride:
     @pytest.fixture
     def many_lines_context(self, tool):
         """Context with many matching lines."""
-        evidence = MagicMock()
-        evidence.case_id = "case_123"
-        evidence.data_type = "logs"
-
         lines = [
             f"2024-01-15 10:30:{i % 60:02d} ERROR failure #{i}" for i in range(100)
         ]
@@ -559,6 +597,7 @@ class TestMaxResultsOverride:
         case = MagicMock()
         case.case_id = "case_123"
         case.evidence = [_make_evidence(content_ref="evidence/case_123/app.log")]
+        _wire_case_lookup(case)
 
         return ToolContext(
             session_id="sess_1",
@@ -624,10 +663,6 @@ class TestCountOutputFormat:
     @pytest.fixture
     def ip_log_context(self, tool):
         """Context simulating HDFS log with many IPs."""
-        evidence = MagicMock()
-        evidence.case_id = "case_123"
-        evidence.data_type = "logs"
-
         # 200 log lines, 50 with IPs in 10.251.x.x range
         lines = []
         for i in range(200):
@@ -650,6 +685,7 @@ class TestCountOutputFormat:
         case = MagicMock()
         case.case_id = "case_123"
         case.evidence = [_make_evidence(content_ref="evidence/case_123/hdfs.log")]
+        _wire_case_lookup(case)
 
         return ToolContext(
             session_id="sess_1",
@@ -863,13 +899,14 @@ class TestNonFileBackedEvidenceGuard:
         document_ev = _make_evidence(
             evidence_id="ev_upload",
             content_ref="evidence/case_123/healthapp.log",
+            filename="HealthApp_2k.log",
             form=EvidenceForm.DOCUMENT,
         )
-        document_ev.original_filename = "HealthApp_2k.log"
 
         case = MagicMock()
         case.case_id = "case_123"
         case.evidence = [symptom_ev, document_ev]
+        _wire_case_lookup(case)
         ctx = ToolContext(
             session_id="sess_1",
             case_id="case_123",
@@ -906,6 +943,7 @@ class TestNonFileBackedEvidenceGuard:
         case = MagicMock()
         case.case_id = "case_123"
         case.evidence = [text_ev]
+        _wire_case_lookup(case)
         ctx = ToolContext(
             session_id="sess_1",
             case_id="case_123",
@@ -932,12 +970,13 @@ class TestNonFileBackedEvidenceGuard:
         document_ev = _make_evidence(
             evidence_id="ev_actual",
             content_ref="evidence/case_123/system.log",
+            filename="system.log",
             form=EvidenceForm.DOCUMENT,
         )
-        document_ev.original_filename = "system.log"
         case = MagicMock()
         case.case_id = "case_123"
         case.evidence = [document_ev]
+        _wire_case_lookup(case)
         ctx = ToolContext(
             session_id="sess_1",
             case_id="case_123",
@@ -971,6 +1010,7 @@ class TestNonFileBackedEvidenceGuard:
         case = MagicMock()
         case.case_id = "case_123"
         case.evidence = [only_symptom]
+        _wire_case_lookup(case)
         ctx = ToolContext(
             session_id="sess_1",
             case_id="case_123",

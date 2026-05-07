@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 def _format_searchable_alternatives(
     all_evidence: list[Any],
     excluded_evidence_id: str,
+    case: Any,
 ) -> str:
     """Build a redirect hint listing file-backed evidence_ids in this case.
 
@@ -37,10 +38,10 @@ def _format_searchable_alternatives(
         ev_form = getattr(ev, "form", None)
         if ev_form != EvidenceForm.DOCUMENT:
             continue
-        content_ref = getattr(ev, "content_ref", None)
-        if not content_ref or str(content_ref).startswith("ev_"):
+        file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
+        if file_meta is None:
             continue
-        filename = getattr(ev, "original_filename", None) or "(unnamed)"
+        filename = file_meta.filename or "(unnamed)"
         alternatives.append(f"{ev_id} ({filename})")
 
     if not alternatives:
@@ -142,7 +143,7 @@ class DeepAnalysisTool(AgentTool):
                     evidence = ev
                     break
             if evidence is None:
-                alts = _format_searchable_alternatives(all_evidence, evidence_id)
+                alts = _format_searchable_alternatives(all_evidence, evidence_id, case)
                 return ToolResult(
                     success=False,
                     data=None,
@@ -162,7 +163,7 @@ class DeepAnalysisTool(AgentTool):
                 ev_form_value = (
                     ev_form.value if hasattr(ev_form, "value") else str(ev_form)
                 )
-                alts = _format_searchable_alternatives(all_evidence, evidence_id)
+                alts = _format_searchable_alternatives(all_evidence, evidence_id, case)
                 return ToolResult(
                     success=False,
                     data=None,
@@ -174,12 +175,11 @@ class DeepAnalysisTool(AgentTool):
                     ),
                 )
 
-            # Get file reference (content_ref from preprocessing)
-            file_ref = getattr(evidence, "content_ref", None) or getattr(
-                evidence, "file_path", None
-            )
+            # Get file reference (storage_ref via UploadedFile)
+            file_meta = case.find_uploaded_file(evidence.source_file_id)
+            file_ref = file_meta.storage_ref if file_meta else None
             if not file_ref:
-                alts = _format_searchable_alternatives(all_evidence, evidence_id)
+                alts = _format_searchable_alternatives(all_evidence, evidence_id, case)
                 return ToolResult(
                     success=False,
                     data=None,

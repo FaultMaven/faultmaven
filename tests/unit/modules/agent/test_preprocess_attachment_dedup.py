@@ -47,19 +47,23 @@ def _make_preprocessing_result(content_hash: str = "abc123hash"):
 def _make_existing_evidence(
     *, content_hash: str, evidence_id: str = "ev_abcdef123456", turn: int = 3
 ) -> Evidence:
+    """Create existing Evidence linked to a backing UploadedFile by source_file_id.
+
+    `content_hash` now lives on the UploadedFile (not Evidence), so the test
+    helper sets `source_file_id` and the caller is expected to also append the
+    matching UploadedFile to `case.uploaded_files`.
+    """
     return Evidence(
         evidence_id=evidence_id,
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
         primary_purpose="symptom_verified",
         summary="Previously uploaded evidence",
-        preprocessed_content="prior content",
-        content_size_bytes=500,
-        preprocessing_method="crime_scene",
+        extract="prior content",
         source_type=EvidenceSourceType.LOGS,
         form=EvidenceForm.DOCUMENT,
         collected_by="user_owner",
         collected_at_turn=turn,
-        content_hash=content_hash,
+        source_file_id=f"file_{content_hash[:12].ljust(12, '0')}"[:18],
     )
 
 
@@ -133,10 +137,14 @@ class TestPreprocessAttachmentDedup:
 
         await service.process_turn(case.case_id, "user_owner", _make_payload())
 
-        # New Evidence was appended to case
+        # New Evidence was appended to case; content_hash now lives on the
+        # backing UploadedFile, reachable via source_file_id.
         saved = await repo.get(case.case_id)
         assert len(saved.evidence) == 1
-        assert saved.evidence[0].content_hash == "new_hash"
+        new_ev = saved.evidence[0]
+        backing_file = saved.find_uploaded_file(new_ev.source_file_id)
+        assert backing_file is not None
+        assert backing_file.content_hash == "new_hash"
         # File was stored
         file_storage.store_file.assert_called_once()
 

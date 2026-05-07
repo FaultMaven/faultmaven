@@ -176,12 +176,14 @@ class TestHypothesisStates:
             rationale="Test hypothesis",
         )
         # Add only 1 supporting evidence
-        hyp.evidence_links["ev_1"] = HypothesisEvidenceLink(
-            hypothesis_id="hyp_123456789012",
-            evidence_id="ev_1",
-            stance=EvidenceStance.SUPPORTS,
-            reasoning="Test evidence",
-            stance_confidence=0.8,
+        hyp.evidence_links.append(
+            HypothesisEvidenceLink(
+                hypothesis_id="hyp_123456789012",
+                evidence_id="ev_1",
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="Test evidence",
+                stance_confidence=0.8,
+            )
         )
         base_case.hypotheses = {"hyp_123456789012": hyp}
 
@@ -252,12 +254,14 @@ class TestEvidenceLinks:
             rationale="Test hypothesis",
         )
         # Reference non-existent evidence
-        hyp.evidence_links["ev_nonexistent"] = HypothesisEvidenceLink(
-            hypothesis_id="hyp_123456789012",
-            evidence_id="ev_nonexistent",
-            stance=EvidenceStance.SUPPORTS,
-            reasoning="Test evidence",
-            stance_confidence=0.8,
+        hyp.evidence_links.append(
+            HypothesisEvidenceLink(
+                hypothesis_id="hyp_123456789012",
+                evidence_id="ev_nonexistent",
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="Test evidence",
+                stance_confidence=0.8,
+            )
         )
         base_case.hypotheses = {"hyp_123456789012": hyp}
 
@@ -284,12 +288,14 @@ class TestEvidenceLinks:
             rationale="Test hypothesis",
         )
         # Reference new_index (created same turn)
-        hyp.evidence_links["new_index_0"] = HypothesisEvidenceLink(
-            hypothesis_id="hyp_123456789012",
-            evidence_id="new_index_0",
-            stance=EvidenceStance.SUPPORTS,
-            reasoning="Test evidence",
-            stance_confidence=0.8,
+        hyp.evidence_links.append(
+            HypothesisEvidenceLink(
+                hypothesis_id="hyp_123456789012",
+                evidence_id="new_index_0",
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="Test evidence",
+                stance_confidence=0.8,
+            )
         )
         base_case.hypotheses = {"hyp_123456789012": hyp}
 

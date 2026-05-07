@@ -728,7 +728,7 @@ def _build_state_summary(case: Case) -> str:
     # evidence which often contains root-cause clues.
     evidence_digests = []
     for ev in case.evidence:
-        dt = (ev.data_type or "").lower()
+        dt = ev.source_type.value.lower()
         if (
             "log" in dt
             or "metric" in dt
@@ -738,7 +738,7 @@ def _build_state_summary(case: Case) -> str:
             or "code" in dt
         ) and ev.summary:
             evidence_digests.append(
-                f"[{ev.data_type}] {ev.summary[:STATE_SUMMARY_DIGEST_CHARS]}"
+                f"[{ev.source_type.value}] {ev.summary[:STATE_SUMMARY_DIGEST_CHARS]}"
             )
     evidence_digest = (
         "; ".join(evidence_digests[:STATE_SUMMARY_MAX_EVIDENCE_DIGESTS])
@@ -909,7 +909,7 @@ def _score_evidence_for_tier_a(
     # Data type priority: diagnostic evidence over text
     # Handles both DataType enum values (logs_and_errors, metrics_and_performance)
     # and legacy/test values (LOGS, metrics, log, etc.)
-    dt = (ev.data_type or "").lower()
+    dt = ev.source_type.value.lower()
     if "log" in dt or "metric" in dt or "trace" in dt or "error_report" in dt:
         score += 2
     elif "config" in dt or "code" in dt or "command" in dt or "profil" in dt:
@@ -928,8 +928,8 @@ def _score_evidence_for_tier_a(
                 break
 
     # Structural content richness: items with real extraction output benefit
-    # more from Tier A than items with sparse/empty preprocessed_content
-    if ev.preprocessed_content and len(ev.preprocessed_content) > 200:
+    # more from Tier A than items with sparse/empty extract
+    if ev.extract and len(ev.extract) > 200:
         score += 1
 
     # Phase 3c — time-window coverage match. Only fires when the
@@ -948,25 +948,20 @@ def _evidence_label(ev, file_lookup: dict) -> str:
     Used in the XML ``label`` attribute so the LLM can reference evidence
     by a human-readable name (e.g., "nginx-error.log") instead of the
     internal ``ev_`` ID.  The label is chosen from the best available
-    source in priority order: filename → original_filename → data_type
-    → form.
+    source in priority order: filename → source_type → form.
     """
     # 1. Filename from uploaded files lookup
     if ev.source_file_id and str(ev.source_file_id) in file_lookup:
         return file_lookup[str(ev.source_file_id)]
-    # 2. Original filename stored on evidence
-    orig = getattr(ev, "original_filename", None)
-    if orig:
-        return orig
-    # 3. Pasted content
+    # 2. Pasted content
     if ev.form.value == "document":
         fname = getattr(ev, "source_file_id", None) or ""
         if "pasted" in str(fname).lower():
             return "pasted content"
-    # 4. Data type as readable label
-    if ev.data_type:
-        return ev.data_type.replace("_", " ")
-    # 5. Form as fallback
+    # 3. Source type as readable label
+    if ev.source_type:
+        return ev.source_type.value.replace("_", " ")
+    # 4. Form as fallback
     if ev.form.value == "user_text":
         return "user-provided information"
     return "uploaded data"
@@ -1050,15 +1045,16 @@ def _build_evidence_context(
     # Tier A: Recent data evidence with structural index
     for ev in tier_a:
         file_extract, search_map, file_meta = _parse_preprocessed_content(
-            ev.preprocessed_content or ""
+            ev.extract or ""
         )
 
         # Rerank page capture sections by query relevance before truncation
         # so the most pertinent panels/messages survive the per-item char cap.
-        if (
-            user_query
-            and getattr(ev, "extraction_method", None) == "page_capture_passthrough"
-        ):
+        ev_file_meta = case.find_uploaded_file(ev.source_file_id)
+        is_page_capture = (
+            ev_file_meta is not None and ev_file_meta.upload_source == "page_capture"
+        )
+        if user_query and is_page_capture:
             file_extract = _rerank_page_capture_sections(file_extract, user_query)
 
         truncated = False
@@ -1078,18 +1074,16 @@ def _build_evidence_context(
             tier_b.append(ev)
             continue
 
-        data_type_attr = f' data_type="{ev.data_type}"' if ev.data_type else ""
+        data_type_attr = (
+            f' data_type="{ev.source_type.value}"' if ev.source_type else ""
+        )
         label = _evidence_label(ev, file_lookup)
         label_attr = f' label="{label}"'
         filename_attr = ""
         if ev.source_file_id and str(ev.source_file_id) in file_lookup:
             filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
         # Mark evidence as searchable if it has a raw file on disk
-        is_searchable = (
-            ev.form.value == "document"
-            and getattr(ev, "content_ref", None)
-            and not str(ev.content_ref).startswith("ev_")
-        )
+        is_searchable = ev.form.value == "document" and ev_file_meta is not None
         searchable_attr = ' searchable="true"' if is_searchable else ""
         confidence_attr, confidence_advisory = _confidence_marker(ev)
         result += f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}>\n'
@@ -1125,11 +1119,8 @@ def _build_evidence_context(
         filename_attr = ""
         if ev.source_file_id and str(ev.source_file_id) in file_lookup:
             filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
-        is_searchable = (
-            ev.form.value == "document"
-            and getattr(ev, "content_ref", None)
-            and not str(ev.content_ref).startswith("ev_")
-        )
+        ev_file_meta = case.find_uploaded_file(ev.source_file_id)
+        is_searchable = ev.form.value == "document" and ev_file_meta is not None
         searchable_attr = ' searchable="true"' if is_searchable else ""
         confidence_attr, _ = _confidence_marker(ev)
         entry = f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{filename_attr}{searchable_attr}{confidence_attr}>'

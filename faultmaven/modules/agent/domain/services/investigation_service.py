@@ -13,7 +13,7 @@ This service wraps the MilestoneEngine and provides:
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
@@ -49,6 +49,7 @@ from faultmaven.modules.case.domain.models import (
     EvidenceCategory,
     EvidenceForm,
     EvidenceSourceType,
+    UploadedFile,
 )
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -482,16 +483,17 @@ class InvestigationService:
                     # UploadedFile.file_id requires ^(file_|data_)[a-f0-9]{12,16}$
                     ev_hex = ev.evidence_id.removeprefix("ev_")
                     file_id = f"data_{ev_hex}" if is_paste else f"file_{ev_hex}"
+                    file_meta = case.find_uploaded_file(ev.source_file_id)
                     attachment_metadata.append(
                         {
                             "evidence_id": ev.evidence_id,
                             "file_id": file_id,
                             "filename": att.filename,
-                            "data_type": ev.data_type,
-                            "size": ev.content_size_bytes,
+                            "data_type": ev.source_type.value,
+                            "size": file_meta.size_bytes if file_meta else 0,
                             "source_type": source,
                             "summary": ev.summary,
-                            "s3_uri": ev.content_ref,
+                            "s3_uri": file_meta.storage_ref if file_meta else None,
                         }
                     )
                 # DA evidence search is handled inside MilestoneEngine's tool loop.
@@ -584,8 +586,12 @@ class InvestigationService:
                     AttachmentResult(
                         evidence_id=res.evidence.evidence_id,
                         filename=att.filename,
-                        data_type=res.evidence.data_type or "",
-                        file_size=res.evidence.content_size_bytes,
+                        data_type=res.evidence.source_type.value,
+                        file_size=(
+                            (lambda fm: fm.size_bytes if fm else 0)(
+                                case.find_uploaded_file(res.evidence.source_file_id)
+                            )
+                        ),
                         processing_status=(
                             "duplicate" if res.duplicate_of else "completed"
                         ),
@@ -797,34 +803,19 @@ class InvestigationService:
             if isinstance(candidate, dict):
                 evidence_metadata = candidate
 
-        # Create evidence record (form=DOCUMENT for all turn attachments)
-        evidence = Evidence(
-            evidence_id=f"ev_{uuid4().hex[:12]}",
-            form=EvidenceForm.DOCUMENT,
-            category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
-            source_type=_infer_source_type(preprocessing_result.data_type),
-            primary_purpose="user_submitted_data",
-            summary=preprocessing_result.summary,
-            preprocessed_content=preprocessing_result.structural_index,
-            data_type=preprocessing_result.data_type.value,
-            content_hash=preprocessing_result.content_hash,
-            content_size_bytes=len(attachment.content),
-            preprocessing_method=preprocessing_result.extraction_method,
-            extraction_method=preprocessing_result.extraction_method,
-            processing_mode=processing_mode,
-            collected_by=user_id,
-            collected_at_turn=turn_number,
-            original_filename=attachment.filename,
-            metadata=evidence_metadata,
-            # Phase 3 — populate coverage timestamps when the preprocessor
-            # parsed them out of the raw content. NULL for timeless
-            # evidence (configs, code, short pastes); the Phase 3b query
-            # filters these out of time-window queries naturally.
-            coverage_start_ts=preprocessing_result.coverage_start_ts,
-            coverage_end_ts=preprocessing_result.coverage_end_ts,
-        )
+        # Path 1 (DOCUMENT-form Evidence from a file upload):
+        # 1. Store the raw content; storage_result.file_path becomes the
+        #    UploadedFile.storage_ref the storage backend uses to retrieve.
+        # 2. Construct UploadedFile FIRST — Evidence references it via
+        #    source_file_id, so the file row must exist before the evidence row.
+        # 3. Construct Evidence pointing at the UploadedFile via source_file_id.
+        #    summary is the LLM-readable label; extract is the structural index
+        #    (file_extract + search_map + file_meta) the agent reads.
+        upload_source = "file_upload"
+        if attachment.source_metadata:
+            upload_source = attachment.source_metadata.get("source_type", "file_upload")
 
-        # Store raw content for deep analysis / search_file access
+        storage_ref: Optional[str] = None
         if self.file_storage_service:
             storage_result = await self.file_storage_service.store_file(
                 file_data=attachment.content,
@@ -833,23 +824,62 @@ class InvestigationService:
                 case_id=case.case_id,
                 mime_type=attachment.content_type,
             )
-            evidence.content_ref = storage_result.get("file_path")
+            storage_ref = storage_result.get("file_path")
 
-            # Flip the sidecar `linked` flag so the orphan-cleanup job knows
-            # this file has an Evidence row referencing it. Best-effort —
-            # `mark_linked` swallows failures and returns False. Legacy
-            # storage services without this method are handled gracefully.
-            mark_linked = getattr(self.file_storage_service, "mark_linked", None)
-            if mark_linked is not None and evidence.content_ref:
-                try:
-                    await mark_linked(evidence.content_ref)
-                except Exception as e:
-                    logger.warning(
-                        "mark_linked failed for %s (non-fatal, file stays "
-                        "as orphan candidate until TTL): %s",
-                        evidence.content_ref,
-                        e,
-                    )
+        uploaded_file = UploadedFile(
+            file_id=f"file_{uuid4().hex[:12]}",
+            filename=attachment.filename,
+            size_bytes=len(attachment.content),
+            content_type=attachment.content_type,
+            content_hash=preprocessing_result.content_hash,
+            uploaded_at_turn=turn_number,
+            uploaded_at=datetime.now(UTC),
+            uploaded_by=user_id,
+            upload_source=upload_source,
+            storage_ref=storage_ref,
+        )
+        case.uploaded_files.append(uploaded_file)
+
+        # Best-effort sidecar "linked" flag for orphan cleanup. Skipped when
+        # storage_ref is None (no storage service or store_file returned
+        # nothing); legacy storage services without mark_linked are handled
+        # gracefully.
+        mark_linked = (
+            getattr(self.file_storage_service, "mark_linked", None)
+            if self.file_storage_service
+            else None
+        )
+        if mark_linked is not None and storage_ref:
+            try:
+                await mark_linked(storage_ref)
+            except Exception as e:
+                logger.warning(
+                    "mark_linked failed for %s (non-fatal, file stays as "
+                    "orphan candidate until TTL): %s",
+                    storage_ref,
+                    e,
+                )
+
+        evidence = Evidence(
+            evidence_id=f"ev_{uuid4().hex[:12]}",
+            form=EvidenceForm.DOCUMENT,
+            category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
+            source_type=_infer_source_type(preprocessing_result.data_type),
+            primary_purpose="user_submitted_data",
+            summary=preprocessing_result.summary,
+            extract=preprocessing_result.structural_index,
+            source_file_id=uploaded_file.file_id,
+            processing_mode=processing_mode,
+            collected_by=user_id,
+            collected_at_turn=turn_number,
+            metadata=evidence_metadata,
+            # Phase 3 — coverage timestamps when the preprocessor parsed them
+            # out of the raw content. NULL for timeless evidence (configs,
+            # code, short pastes); the Phase 3b query filters these out
+            # of time-window queries naturally.
+            coverage_start_ts=preprocessing_result.coverage_start_ts,
+            coverage_end_ts=preprocessing_result.coverage_end_ts,
+        )
 
         # Phase 4 — persist extracted entities into the case-level
         # registry. Best-effort: an entity upsert failure must not
@@ -1250,7 +1280,9 @@ class InvestigationService:
             raise NotFoundError("Evidence", evidence_id)
 
         evidence = case.evidence[evidence_index]
-        if not evidence.content_ref:
+        file_meta = case.find_uploaded_file(evidence.source_file_id)
+        storage_ref = file_meta.storage_ref if file_meta else None
+        if not storage_ref:
             raise ValidationException(
                 f"Evidence {evidence_id} has no stored raw file — "
                 "reclassification requires re-running the extractor "
@@ -1269,8 +1301,8 @@ class InvestigationService:
         # Fetch raw bytes + decode. Storage returns bytes; extractors
         # operate on strings (UTF-8 is the convention per the upload path).
         # Skip destructive decode for binary evidence (see _is_binary_content).
-        raw_bytes = await self.file_storage_service.retrieve_file(evidence.content_ref)
-        filename = evidence.original_filename or "evidence"
+        raw_bytes = await self.file_storage_service.retrieve_file(storage_ref)
+        filename = file_meta.filename if file_meta else "evidence"
         # Reclassify path doesn't carry a separate content_type; rely on filename.
         if _is_binary_content(filename, None):
             content = _binary_placeholder(filename, None, len(raw_bytes))
@@ -1298,7 +1330,7 @@ class InvestigationService:
             if isinstance(candidate, dict):
                 new_evidence_metadata = candidate
 
-        previous_type = evidence.data_type
+        previous_type = evidence.source_type.value
         new_type = preprocessing_result.data_type.value
 
         # Update the row in place via model_copy to bypass cross-field
@@ -1306,12 +1338,9 @@ class InvestigationService:
         # see a consistent state.
         updated_evidence = evidence.model_copy(
             update={
-                "data_type": new_type,
-                "preprocessed_content": preprocessing_result.structural_index,
+                "extract": preprocessing_result.structural_index,
                 "summary": preprocessing_result.summary,
                 "source_type": _infer_source_type(preprocessing_result.data_type),
-                "preprocessing_method": preprocessing_result.extraction_method,
-                "extraction_method": preprocessing_result.extraction_method,
                 "metadata": new_evidence_metadata,
             },
             deep=True,

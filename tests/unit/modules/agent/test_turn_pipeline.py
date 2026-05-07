@@ -157,15 +157,25 @@ class TestPreprocessAttachmentEvidenceCreation:
 
         saved_case = await mock_case_repository.get(case.case_id)
         ev = saved_case.evidence[0]
-        assert "CRIME SCENE EXTRACTION" in ev.preprocessed_content
-        assert "Connection timeout" in ev.preprocessed_content
+        assert "CRIME SCENE EXTRACTION" in ev.extract
+        assert "Connection timeout" in ev.extract
 
     @pytest.mark.asyncio
     async def test_attachment_evidence_has_data_type(
         self, mock_milestone_engine, mock_case_repository
     ):
-        """Preprocessed evidence has data_type from classification."""
-        preprocessing_result = _make_preprocessing_result(data_type_value="metrics")
+        """Preprocessed evidence carries a classified source_type.
+
+        The DataType→EvidenceSourceType mapping is owned by production
+        (`_infer_source_type`); we just assert the resulting evidence has a
+        real EvidenceSourceType, not None or a raw mock.
+        """
+        from faultmaven.models.api import DataType
+
+        preprocessing_result = _make_preprocessing_result()
+        # Hand the production code a real DataType enum so the source_type
+        # lookup resolves to METRICS rather than the TEXT fallback.
+        preprocessing_result.data_type = DataType.METRICS_AND_PERFORMANCE
         service = _make_service(
             mock_milestone_engine,
             mock_case_repository,
@@ -191,13 +201,14 @@ class TestPreprocessAttachmentEvidenceCreation:
         await service.process_turn(case.case_id, "user_owner", payload)
 
         saved_case = await mock_case_repository.get(case.case_id)
-        assert saved_case.evidence[0].data_type == "metrics"
+        assert saved_case.evidence[0].source_type == EvidenceSourceType.METRICS
+        assert saved_case.evidence[0].source_type.value == "metrics"
 
     @pytest.mark.asyncio
     async def test_attachment_evidence_has_content_size(
         self, mock_milestone_engine, mock_case_repository
     ):
-        """Evidence content_size_bytes matches original attachment size."""
+        """Backing UploadedFile.size_bytes matches original attachment size."""
         service = _make_service(mock_milestone_engine, mock_case_repository)
         raw_content = b"A" * 1234
 
@@ -220,7 +231,10 @@ class TestPreprocessAttachmentEvidenceCreation:
         await service.process_turn(case.case_id, "user_owner", payload)
 
         saved_case = await mock_case_repository.get(case.case_id)
-        assert saved_case.evidence[0].content_size_bytes == 1234
+        ev = saved_case.evidence[0]
+        backing_file = saved_case.find_uploaded_file(ev.source_file_id)
+        assert backing_file is not None
+        assert backing_file.size_bytes == 1234
 
     @pytest.mark.asyncio
     async def test_multiple_attachments_create_multiple_evidence(
@@ -302,7 +316,7 @@ class TestGenerateImplicitQuery:
             content=b"data", filename="app.log", content_type="text/plain"
         )
         evidence = MagicMock()
-        evidence.data_type = "logs"
+        evidence.source_type.value = "logs"
 
         result = generate_implicit_query([attachment], [evidence])
 
@@ -316,7 +330,7 @@ class TestGenerateImplicitQuery:
             content=b"data", filename="metrics.csv", content_type="text/csv"
         )
         evidence = MagicMock()
-        evidence.data_type = "metrics"
+        evidence.source_type.value = "metrics"
 
         result = generate_implicit_query([attachment], [evidence])
 
@@ -341,7 +355,7 @@ class TestGenerateImplicitQuery:
     def test_single_file_no_attachments_fallback(self):
         """Single evidence with empty attachments → uses 'data' as filename."""
         evidence = MagicMock()
-        evidence.data_type = "logs"
+        evidence.source_type.value = "logs"
 
         result = generate_implicit_query([], [evidence])
 
@@ -449,11 +463,19 @@ class TestPipelineOrdering:
     async def test_attachment_metadata_passed_to_engine(
         self, mock_milestone_engine, mock_case_repository
     ):
-        """Engine receives attachment metadata from preprocessing."""
+        """Engine receives attachment metadata from preprocessing.
+
+        The engine-side `data_type` carries `evidence.source_type.value`, the
+        canonical post-classification shape (logs/metrics/...). The
+        preprocessing-side DataType drives the source_type via
+        `_infer_source_type`, so we feed a real DataType here.
+        """
+        from faultmaven.models.api import DataType
+
         preprocessing_result = _make_preprocessing_result(
             summary="Application error log",
-            data_type_value="application_log",
         )
+        preprocessing_result.data_type = DataType.LOGS_AND_ERRORS
         service = _make_service(
             mock_milestone_engine,
             mock_case_repository,
@@ -483,7 +505,7 @@ class TestPipelineOrdering:
         attachments_arg = engine_call.kwargs.get("attachments")
         assert attachments_arg is not None
         assert len(attachments_arg) == 1
-        assert attachments_arg[0]["data_type"] == "application_log"
+        assert attachments_arg[0]["data_type"] == "logs"
         assert attachments_arg[0]["summary"] == "Application error log"
 
     @pytest.mark.asyncio
