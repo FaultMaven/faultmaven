@@ -71,7 +71,7 @@ STALENESS_HALF_LIFE_DAYS = 365
 KB_COLLECTION = "faultmaven_kb"
 
 # Keys that indicate a scope filter is present in a where clause
-SCOPE_FILTER_KEYS = {"scope", "owner_id", "team_id"}
+SCOPE_FILTER_KEYS = {"scope", "owner_id", "team_id", "organization_id"}
 
 # Common English stop words for term overlap scoring
 _STOP_WORDS = frozenset(

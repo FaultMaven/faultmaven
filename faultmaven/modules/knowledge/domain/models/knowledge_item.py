@@ -10,7 +10,7 @@ Design Reference: TASK-009 Knowledge Item Repository Pattern
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, IntEnum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # BGE-M3 produces 1024-dimensional vectors (canonical embedding model).
 # Note: the legacy EmbeddingService/KnowledgeSearchService path referenced
@@ -50,6 +50,27 @@ class KnowledgeItemType(str, Enum):
     RUNBOOK = "runbook"
 
 
+class KnowledgeScope(str, Enum):
+    """Visibility scope for a KnowledgeItem.
+
+    Mirrors the `knowledge_items.scope` CHECK constraint in the ORM. The
+    enum subclasses `str` so existing comparisons like `scope == "personal"`
+    continue to work without consumer-side changes.
+
+    Values:
+        PERSONAL: Visible only to one user (requires owner_id).
+        TEAM: Visible to one team (requires team_id).
+        ORGANIZATION: Visible across one workspace (organization_id is
+            the only ownership marker; owner_id and team_id are optional).
+        GLOBAL: Platform-wide built-in runbooks (FaultMaven-shipped only).
+    """
+
+    PERSONAL = "personal"
+    TEAM = "team"
+    ORGANIZATION = "organization"
+    GLOBAL = "global"
+
+
 @dataclass
 class KnowledgeItem:
     """Knowledge base item for RAG system.
@@ -86,7 +107,7 @@ class KnowledgeItem:
     title: str
     content: str
     item_type: KnowledgeItemType
-    scope: str = "global"
+    scope: Union[KnowledgeScope, str] = KnowledgeScope.GLOBAL
     owner_id: Optional[str] = None
     team_id: Optional[str] = None
 
@@ -144,14 +165,34 @@ class KnowledgeItem:
                 f"item_type must be a KnowledgeItemType, got {type(self.item_type)}"
             )
 
-        if self.scope not in ("personal", "team", "global"):
-            raise ValueError(
-                f"scope must be personal, team, or global, got {self.scope}"
-            )
-        if self.scope == "personal" and not self.owner_id:
+        # Coerce string scope to enum (ValueError if not in the allowed set).
+        # Done here so callers can pass either KnowledgeScope.PERSONAL or
+        # the literal "personal" without extra ceremony.
+        if isinstance(self.scope, str) and not isinstance(self.scope, KnowledgeScope):
+            try:
+                self.scope = KnowledgeScope(self.scope)
+            except ValueError as e:
+                raise ValueError(
+                    f"scope must be one of "
+                    f"{[s.value for s in KnowledgeScope]}, got {self.scope!r}"
+                ) from e
+        if self.scope == KnowledgeScope.PERSONAL and not self.owner_id:
             raise ValueError("owner_id is required for personal scope")
-        if self.scope == "team" and not self.team_id:
+        if self.scope == KnowledgeScope.TEAM and not self.team_id:
             raise ValueError("team_id is required for team scope")
+        # ORGANIZATION and GLOBAL scope: organization_id is the ownership
+        # marker (already required as a base field above). No additional
+        # owner_id / team_id required.
+
+        # Tag values must not contain commas (SQLite stores tags
+        # comma-separated; PG stores as TEXT[]). The cross-dialect
+        # round-trip is lossless only if commas don't appear in values.
+        for tag in self.tags:
+            if "," in tag:
+                raise ValueError(
+                    f"tag values must not contain commas (got {tag!r}); "
+                    "commas would break the SQLite serialization round-trip"
+                )
 
         # Validate verification level (0=experimental, 1=community, 2=admin_verified)
         if self.verification_level < 0 or self.verification_level > 2:
