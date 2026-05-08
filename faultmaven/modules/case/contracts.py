@@ -48,10 +48,8 @@ from faultmaven.modules.case.domain.owned_models.agent_execution import (
 # Case-owned Checkpoint models (Case module owns checkpoints table)
 from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 
-# Case-owned Evidence models (Case module owns evidence table per module-organization-design.md)
+# Case-owned Evidence DTOs (Case module owns evidence table per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.evidence import (
-    EvidenceArtifact,
-    EvidenceArtifactResponse,
     EvidenceArtifactType,
     EvidenceLinkRequest,
     EvidenceListFilter,
@@ -561,14 +559,12 @@ __all__ = [
     # DTOs
     "CaseStatusDTO",
     "CaseDTO",
-    # Case-owned Evidence models (per module-organization-design.md)
+    # Case-owned Evidence DTOs (per module-organization-design.md)
     "EvidenceArtifactType",
     "StorageBackend",
-    "EvidenceArtifact",
     "EvidenceUploadRequest",
     "EvidenceLinkRequest",
     "EvidenceListFilter",
-    "EvidenceArtifactResponse",
     # Case-owned Report models (per module-organization-design.md)
     "ReportType",
     "ReportStatus",

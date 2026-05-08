@@ -256,10 +256,10 @@ class EvidenceResponse(BaseModel):
 
     @classmethod
     def from_domain(cls, evidence: Any) -> "EvidenceResponse":
-        """Create EvidenceResponse from domain EvidenceArtifact model.
+        """Create EvidenceResponse from a domain evidence object.
 
         Args:
-            evidence: Domain EvidenceArtifact object
+            evidence: A domain object exposing the fields below.
 
         Returns:
             EvidenceResponse instance

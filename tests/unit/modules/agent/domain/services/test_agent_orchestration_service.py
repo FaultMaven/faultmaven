@@ -2020,8 +2020,8 @@ class TestEvidenceDAState:
 class TestGetEvidenceSize:
     """Tests for _get_evidence_size — resolves file size from evidence service.
 
-    The evidence_service returns EvidenceArtifact objects which have 'file_size'
-    (not 'content_size_bytes'). The method must read the correct attribute.
+    The evidence_service returns objects exposing 'file_size'; the method
+    must read that attribute (not 'content_size_bytes').
     """
 
     @pytest.fixture

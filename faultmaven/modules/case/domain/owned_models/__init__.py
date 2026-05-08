@@ -1,7 +1,7 @@
 """Case Module Owned Models.
 
 This package contains all domain models owned by the Case module, including:
-- Case-owned evidence models (EvidenceArtifact, etc.)
+- Case-owned evidence DTOs (EvidenceUploadRequest, etc.)
 - Case-owned report models (CaseReport, etc.)
 - Case-owned agent execution models (AgentExecution, AgentToolCall)
 
@@ -19,10 +19,11 @@ from faultmaven.modules.case.domain.owned_models.agent_execution import (
     ExecutionStatus,
 )
 
-# Evidence models (Case owns evidence table per module-organization-design.md)
+# Evidence DTOs (Case owns evidence table per module-organization-design.md).
+# The canonical Evidence domain model lives at
+# faultmaven.modules.case.domain.models.Evidence; this submodule carries the
+# upload/link/list DTOs only.
 from faultmaven.modules.case.domain.owned_models.evidence import (
-    EvidenceArtifact,
-    EvidenceArtifactResponse,
     EvidenceArtifactType,
     EvidenceLinkRequest,
     EvidenceListFilter,
@@ -47,14 +48,12 @@ from faultmaven.modules.case.domain.owned_models.report import (
 )
 
 __all__ = [
-    # Evidence models
+    # Evidence DTOs
     "EvidenceArtifactType",
     "StorageBackend",
-    "EvidenceArtifact",
     "EvidenceUploadRequest",
     "EvidenceLinkRequest",
     "EvidenceListFilter",
-    "EvidenceArtifactResponse",
     # Report models
     "ReportType",
     "ReportStatus",
