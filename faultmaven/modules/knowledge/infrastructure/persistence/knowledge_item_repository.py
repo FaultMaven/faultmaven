@@ -44,6 +44,7 @@ from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
+    KnowledgeScope,
 )
 
 logger = logging.getLogger(__name__)
@@ -722,7 +723,10 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         return KnowledgeItem(
             item_id=model.item_id,
             organization_id=model.organization_id,
-            scope=model.scope,
+            # Coerce the DB-side string into the typed enum at the boundary.
+            # KnowledgeItem.scope is now strongly typed; raw strings would
+            # raise from __post_init__.
+            scope=KnowledgeScope(model.scope),
             owner_id=model.owner_id,
             team_id=model.team_id,
             title=model.title,

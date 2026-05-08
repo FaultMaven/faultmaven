@@ -10,7 +10,7 @@ Design Reference: TASK-009 Knowledge Item Repository Pattern
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, IntEnum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 # BGE-M3 produces 1024-dimensional vectors (canonical embedding model).
 # Note: the legacy EmbeddingService/KnowledgeSearchService path referenced
@@ -54,8 +54,10 @@ class KnowledgeScope(str, Enum):
     """Visibility scope for a KnowledgeItem.
 
     Mirrors the `knowledge_items.scope` CHECK constraint in the ORM. The
-    enum subclasses `str` so existing comparisons like `scope == "personal"`
-    continue to work without consumer-side changes.
+    `str` subclassing makes serialization (`scope.value`, JSON encoding,
+    and `model.scope = item.scope.value` repository writes) ergonomic;
+    consumers should still compare against enum members
+    (`KnowledgeScope.PERSONAL`), not against string literals.
 
     Values:
         PERSONAL: Visible only to one user (requires owner_id).
@@ -107,7 +109,7 @@ class KnowledgeItem:
     title: str
     content: str
     item_type: KnowledgeItemType
-    scope: Union[KnowledgeScope, str] = KnowledgeScope.GLOBAL
+    scope: KnowledgeScope = KnowledgeScope.GLOBAL
     owner_id: Optional[str] = None
     team_id: Optional[str] = None
 
@@ -165,17 +167,13 @@ class KnowledgeItem:
                 f"item_type must be a KnowledgeItemType, got {type(self.item_type)}"
             )
 
-        # Coerce string scope to enum (ValueError if not in the allowed set).
-        # Done here so callers can pass either KnowledgeScope.PERSONAL or
-        # the literal "personal" without extra ceremony.
-        if isinstance(self.scope, str) and not isinstance(self.scope, KnowledgeScope):
-            try:
-                self.scope = KnowledgeScope(self.scope)
-            except ValueError as e:
-                raise ValueError(
-                    f"scope must be one of "
-                    f"{[s.value for s in KnowledgeScope]}, got {self.scope!r}"
-                ) from e
+        if not isinstance(self.scope, KnowledgeScope):
+            raise ValueError(
+                f"scope must be a KnowledgeScope enum member, "
+                f"got {type(self.scope).__name__}={self.scope!r}. "
+                "Coerce strings at the boundary (repository / request parser) "
+                "before constructing KnowledgeItem."
+            )
         if self.scope == KnowledgeScope.PERSONAL and not self.owner_id:
             raise ValueError("owner_id is required for personal scope")
         if self.scope == KnowledgeScope.TEAM and not self.team_id:
