@@ -329,6 +329,32 @@ def create_organization_service(
         return None, None
 
 
+def create_enterprise_repository() -> Any | None:
+    """Create the sessionless enterprise repository.
+
+    Mirrors create_organization_service's repo half. There is no
+    EnterpriseService yet — enterprise CRUD is bootstrap-only in the
+    current scope (single-tenant default-enterprise seeding,
+    multi-tenant defers to cloud rollout). When that lands, mint a
+    parallel create_enterprise_service that returns
+    (service, repository) like its org counterpart.
+    """
+    try:
+        from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (
+            SessionlessEnterpriseRepository,
+        )
+
+        repository = SessionlessEnterpriseRepository()
+        logger.debug("EnterpriseRepository initialized (sessionless)")
+        return repository
+    except Exception as e:
+        logger.warning(f"EnterpriseRepository initialization failed: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return None
+
+
 def create_team_service(
     db_session: Any | None,
     organization_repository: Any | None,
@@ -460,11 +486,17 @@ def create_tenant_provider(
     db_session: Any | None,
     organization_repository: Any | None,
     settings: FaultMavenSettings,
+    enterprise_repository: Any | None = None,
 ) -> Any | None:
     """Create tenant provider for deployment neutrality.
 
     Note: db_session parameter is deprecated and unused since we now use
     SessionlessOrganizationRepository. Kept for backward compatibility.
+
+    enterprise_repository is optional; when present (single-tenant mode), the
+    SingleTenantProvider uses it for default-enterprise bootstrap. Absence is
+    safe — migration 006 also seeds the default enterprise idempotently, so
+    bootstrap simply skips the runtime check.
     """
     if not organization_repository:
         logger.debug("TenantProvider skipped (no organization repository)")
@@ -475,9 +507,13 @@ def create_tenant_provider(
             create_tenant_provider as factory,
         )
 
-        provider = factory(organization_repository=organization_repository)
+        provider = factory(
+            organization_repository=organization_repository,
+            enterprise_repository=enterprise_repository,
+        )
         logger.debug(
-            f"TenantProvider initialized (tenant_provider: {settings.providers.tenant_provider})"
+            f"TenantProvider initialized (tenant_provider: {settings.providers.tenant_provider}, "
+            f"enterprise_repo={'yes' if enterprise_repository else 'no'})"
         )
         return provider
     except Exception as e:
@@ -728,9 +764,20 @@ def register_services(container: BaseDIContainer) -> None:
     if organization_service:
         container._register_service("organization_service", organization_service)
 
-    # Tenant Provider (create after OrganizationService, before CaseService)
+    # Enterprise Repository (create before TenantProvider; SingleTenantProvider
+    # uses it for default-enterprise bootstrap).
+    enterprise_repository = create_enterprise_repository()
+    container.enterprise_repository = enterprise_repository
+    if enterprise_repository:
+        container._register_service("enterprise_repository", enterprise_repository)
+
+    # Tenant Provider (create after OrganizationService + EnterpriseRepository,
+    # before CaseService)
     tenant_provider = create_tenant_provider(
-        db_session, organization_repository, settings
+        db_session,
+        organization_repository,
+        settings,
+        enterprise_repository=enterprise_repository,
     )
     container.tenant_provider = tenant_provider
     if tenant_provider:
