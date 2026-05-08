@@ -115,9 +115,6 @@ async def test_engine():
                 "user_1",
                 "user_2",
                 "user_3",
-                # SQLite repo writes literal "system" into hypotheses /
-                # solutions `created_by` (FK -> users.user_id).
-                "system",
             ],
         )
 

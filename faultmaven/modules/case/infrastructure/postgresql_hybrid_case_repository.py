@@ -1786,7 +1786,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     or datetime.now(timezone.utc),
                     "updated_at": datetime.now(timezone.utc),
                     "metadata": json.dumps({}),
-                    "created_by": "system",
+                    "created_by": None,
                     "updated_by": None,
                 },
             )
@@ -1954,7 +1954,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "implemented_at": None,
                     "updated_at": datetime.now(timezone.utc),
                     "metadata": json.dumps({}),
-                    "created_by": "system",
+                    "created_by": None,
                     "updated_by": None,
                     # Phase 6 Tier 1: optional FK to addressed hypothesis.
                     # TODO: SolutionsToAdd schema does not yet carry
@@ -2412,12 +2412,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 "metadata": metadata_json,
                 "generated_at": generated_at,
                 "updated_at": updated_at,
-                # Phase 6 Tier 1: track who triggered generation. "system"
-                # for auto-generated terminal summaries; explicit user_id
-                # threading via API routes deferred (TODO).
-                "generated_by": (
-                    "system" if getattr(report, "auto_generated", False) else None
-                ),
+                # Auto-generated terminal summaries have no human author,
+                # so generated_by is NULL. Explicit user_id threading via
+                # API routes deferred.
+                "generated_by": getattr(report, "generated_by", None),
             },
         )
 

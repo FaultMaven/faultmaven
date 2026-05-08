@@ -2117,7 +2117,7 @@ class SQLiteCaseRepository(CaseRepository):
                     or datetime.now(UTC),
                     "updated_at": datetime.now(UTC),
                     "metadata": json.dumps({}),
-                    "created_by": "system",
+                    "created_by": None,
                     "updated_by": None,
                 },
             )
@@ -2287,7 +2287,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "implemented_at": None,
                     "updated_at": datetime.now(UTC),
                     "metadata": json.dumps({}),
-                    "created_by": "system",
+                    "created_by": None,
                     "updated_by": None,
                     # Phase 6 Tier 1: link solution to addressed hypothesis when known.
                     # TODO: SolutionsToAdd schema does not yet carry hypothesis_id;
@@ -2712,15 +2712,11 @@ class SQLiteCaseRepository(CaseRepository):
                 "metadata": metadata_json,
                 "generated_at": generated_at.isoformat(),
                 "updated_at": updated_at.isoformat(),
-                # Phase 6 Tier 1: track who triggered generation. "system"
-                # for auto-generated terminal summaries; explicit user_id
-                # may be threaded through later via add_report() callers.
-                # TODO: API routes can pass user_id via a new field on
-                # CaseReport / repository signature; for now derive from
-                # auto_generated flag.
-                "generated_by": (
-                    "system" if getattr(report, "auto_generated", False) else None
-                ),
+                # Auto-generated terminal summaries have no human author,
+                # so generated_by is NULL. Explicit user_id can be threaded
+                # through later via an add_report() signature change when
+                # API routes start carrying it.
+                "generated_by": getattr(report, "generated_by", None),
             },
         )
 

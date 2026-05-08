@@ -81,10 +81,6 @@ TEST_USER_IDS = (
     "concurrent-test-user",
     "concurrent-msg-user",
     "complex-test-user",
-    # The SQLite repository writes the literal "system" into hypotheses /
-    # solutions `created_by` columns (FK -> users.user_id). Seed it so the FK
-    # is satisfied with PRAGMA foreign_keys=ON.
-    "system",
 )
 
 # ============================================================

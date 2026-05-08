@@ -154,7 +154,7 @@ async def create_test_schema(session: AsyncSession):
             proposed_at TIMESTAMP,
             updated_at TIMESTAMP,
             metadata TEXT,
-            created_by TEXT NOT NULL DEFAULT 'system',
+            created_by TEXT,
             updated_by TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
@@ -199,7 +199,7 @@ async def create_test_schema(session: AsyncSession):
             implemented_at TIMESTAMP,
             updated_at TIMESTAMP,
             metadata TEXT,
-            created_by TEXT NOT NULL DEFAULT 'system',
+            created_by TEXT,
             updated_by TEXT,
             -- Phase 6 Tier 1 column addition (storage redesign 2026-04).
             hypothesis_id TEXT,
