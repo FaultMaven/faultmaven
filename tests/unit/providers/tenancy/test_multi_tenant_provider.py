@@ -1,8 +1,6 @@
 """Unit tests for MultiTenantProvider (TASK-023).
 
 Test Coverage: 15-18 tests
-
-Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
 from datetime import datetime, timezone

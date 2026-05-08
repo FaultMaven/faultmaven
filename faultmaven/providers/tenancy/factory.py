@@ -2,8 +2,6 @@
 
 Creates appropriate TenantProvider implementation based on provider selector
 configuration from unified settings.
-
-Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
 import logging

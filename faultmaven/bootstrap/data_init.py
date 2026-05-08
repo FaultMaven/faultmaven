@@ -321,10 +321,7 @@ async def initialize_data_layer(container: Any) -> None:
     run_alembic_migrations()
 
     # Step 4: Create default admin user if needed
-    admin_user = await ensure_default_admin_exists(container)
-    if admin_user:
-        logger.info(f"Default admin user ready: {admin_user.username}")
-    else:
-        logger.info("Default admin user check complete (already exists or skipped)")
+    # Moved to startup.py (Step 3) to ensure it runs after the default enterprise is created
+    # otherwise it fails with a foreign key constraint violation.
 
     logger.info("Data layer initialization complete")

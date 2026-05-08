@@ -6,8 +6,6 @@ can accept requests. This includes:
 - Running database migrations
 - Creating default admin user (local mode)
 - Creating default organization (single-tenant mode)
-
-Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
 import logging
@@ -97,5 +95,18 @@ async def bootstrap_application(container: Any) -> None:
                 raise
         else:
             logger.info("Multi-tenant mode: No default tenant created")
+
+    # ============================================================
+    # Step 3: Ensure Default Admin User
+    # ============================================================
+    # Must run after tenant bootstrap so the enterprise_id FK is valid
+    from faultmaven.bootstrap.data_init import ensure_default_admin_exists
+
+    logger.info("Ensuring default admin user exists")
+    admin_user = await ensure_default_admin_exists(container)
+    if admin_user:
+        logger.info(f"Default admin user ready: {admin_user.username}")
+    else:
+        logger.info("Default admin user check complete (already exists or skipped)")
 
     logger.info("Application bootstrap complete")

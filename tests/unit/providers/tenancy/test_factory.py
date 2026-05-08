@@ -1,8 +1,6 @@
 """Unit tests for TenantProvider Factory (TASK-023).
 
 Test Coverage: 4-6 tests
-
-Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch

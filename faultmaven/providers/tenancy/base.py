@@ -2,8 +2,6 @@
 
 Defines the interface for tenant context resolution to enable deployment-neutral
 services that work in both single-tenant and multi-tenant environments.
-
-Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
 from abc import ABC, abstractmethod

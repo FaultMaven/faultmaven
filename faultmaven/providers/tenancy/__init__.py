@@ -4,8 +4,6 @@ This module provides TenantProvider abstraction to enable deployment-neutral
 case and organization management that works in both:
 1. Local deployment (single tenant, development, community edition)
 2. Cloud deployment (multi-tenant, production, enterprise edition)
-
-Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
 from faultmaven.providers.tenancy.base import TenantProvider

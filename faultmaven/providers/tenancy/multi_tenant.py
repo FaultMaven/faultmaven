@@ -2,8 +2,6 @@
 
 Requires explicit organization_id for each request and validates user membership.
 Enforces multi-tenant isolation with strict authorization checks.
-
-Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
 from typing import Optional

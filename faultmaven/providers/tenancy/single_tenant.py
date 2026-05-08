@@ -3,8 +3,6 @@
 Returns a single default enterprise + organization for all requests.
 All users belong to the same enterprise (and the same organization
 within it), simplifying local development and community edition.
-
-Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
 from datetime import datetime, timezone
