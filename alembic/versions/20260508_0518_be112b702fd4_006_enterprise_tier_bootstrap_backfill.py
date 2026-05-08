@@ -20,6 +20,7 @@ Create Date: 2026-05-08 05:18:00.000000
 from typing import Sequence, Union
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "be112b702fd4"
@@ -41,8 +42,7 @@ def upgrade() -> None:
     # 1) Insert the default enterprise row (idempotent).
     if dialect == "postgresql":
         op.execute(
-            sa.text(
-                """
+            sa.text("""
                 INSERT INTO enterprises (
                     enterprise_id, name, slug, plan_tier, max_members,
                     settings, created_at, updated_at
@@ -51,8 +51,7 @@ def upgrade() -> None:
                     '{}', NOW(), NOW()
                 )
                 ON CONFLICT (enterprise_id) DO NOTHING
-                """
-            ).bindparams(
+                """).bindparams(
                 id=DEFAULT_ENTERPRISE_ID,
                 name=DEFAULT_ENTERPRISE_NAME,
                 slug=DEFAULT_ENTERPRISE_SLUG,
@@ -61,8 +60,7 @@ def upgrade() -> None:
     else:
         # SQLite — INSERT OR IGNORE is the idempotent equivalent.
         op.execute(
-            sa.text(
-                """
+            sa.text("""
                 INSERT OR IGNORE INTO enterprises (
                     enterprise_id, name, slug, plan_tier, max_members,
                     settings, created_at, updated_at
@@ -70,8 +68,7 @@ def upgrade() -> None:
                     :id, :name, :slug, 'pro', 100,
                     '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
-                """
-            ).bindparams(
+                """).bindparams(
                 id=DEFAULT_ENTERPRISE_ID,
                 name=DEFAULT_ENTERPRISE_NAME,
                 slug=DEFAULT_ENTERPRISE_SLUG,

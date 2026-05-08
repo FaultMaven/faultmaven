@@ -34,6 +34,7 @@ Conventions:
 """
 
 import enum
+
 from sqlalchemy import (
     BigInteger,
     Boolean,
