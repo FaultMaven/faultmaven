@@ -4,21 +4,57 @@ Provides common utilities for test ID generation, test data creation,
 and other shared test infrastructure.
 """
 
-from typing import Iterable
+from typing import Iterable, Optional
 from uuid import uuid4
 
+# Default enterprise UUID — mirrors SingleTenantProvider.DEFAULT_ENTERPRISE_ID
+# and migration 006's seeded row. Tests that build orgs/users without a
+# specific enterprise context anchor to this row.
+DEFAULT_TEST_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
 
-async def seed_users(session, user_ids: Iterable[str]) -> None:
+
+async def seed_default_enterprise(session) -> None:
+    """Insert the default enterprise row used as parent for test orgs/users.
+
+    Idempotent: returns silently if the row already exists.
+    """
+    from faultmaven.infrastructure.persistence.models import EnterpriseModel
+
+    existing = await session.get(EnterpriseModel, DEFAULT_TEST_ENTERPRISE_ID)
+    if existing is not None:
+        return
+    session.add(
+        EnterpriseModel(
+            enterprise_id=DEFAULT_TEST_ENTERPRISE_ID,
+            name="Default Test Enterprise",
+            slug="default-test",
+        )
+    )
+    await session.commit()
+
+
+async def seed_users(
+    session,
+    user_ids: Iterable[str],
+    enterprise_id: Optional[str] = None,
+) -> None:
     """Insert user rows so FK-bound tests can reference them.
 
     `cases.user_id` is a nullable FK to `users.user_id` with
     `ondelete="SET NULL"`. With PRAGMA foreign_keys=ON, hand-crafted user IDs
     that don't exist in `users` fail the FK. Seed minimal valid stubs.
 
+    `users.enterprise_id` is NOT NULL (FK to `enterprises.enterprise_id`).
+    The default enterprise row is created automatically; pass an explicit
+    `enterprise_id` to anchor users elsewhere.
+
     The UserModel has unique constraints on `username` and `email`; we derive
     both from the user_id to avoid collisions in batch.
     """
     from faultmaven.infrastructure.persistence.models import UserModel
+
+    enterprise_id = enterprise_id or DEFAULT_TEST_ENTERPRISE_ID
+    await seed_default_enterprise(session)
 
     seen_usernames: set[str] = set()
     seen_emails: set[str] = set()
@@ -40,6 +76,7 @@ async def seed_users(session, user_ids: Iterable[str]) -> None:
         session.add(
             UserModel(
                 user_id=user_id,
+                enterprise_id=enterprise_id,
                 username=username,
                 email=email,
                 display_name=f"Test User {user_id}",
@@ -49,23 +86,33 @@ async def seed_users(session, user_ids: Iterable[str]) -> None:
     await session.commit()
 
 
-async def seed_organizations(session, org_ids: Iterable[str]) -> None:
+async def seed_organizations(
+    session,
+    org_ids: Iterable[str],
+    enterprise_id: Optional[str] = None,
+) -> None:
     """Insert organization rows so FK-bound tests can reference them.
 
-    Phase 9 made organization_id a FK on tenanted tables. Tests that hand-craft
-    org IDs must seed the matching organization row first to satisfy the
-    constraint when PRAGMA foreign_keys=ON.
-    """
-    from sqlalchemy import select
+    `cases.organization_id` is a NOT NULL FK to `organizations`. Tests that
+    hand-craft org IDs must seed the matching organization row first to
+    satisfy the constraint when PRAGMA foreign_keys=ON.
 
+    `organizations.enterprise_id` is NOT NULL. The default enterprise row
+    is created automatically; pass an explicit `enterprise_id` to anchor
+    orgs elsewhere.
+    """
     from faultmaven.infrastructure.persistence.models import OrganizationModel
+
+    enterprise_id = enterprise_id or DEFAULT_TEST_ENTERPRISE_ID
+    await seed_default_enterprise(session)
 
     seen_slugs: set[str] = set()
     for org_id in org_ids:
         existing = await session.get(OrganizationModel, org_id)
         if existing is not None:
             continue
-        # Slugs are unique; derive from org_id but ensure no collision in batch.
+        # Slugs are unique within an enterprise; derive from org_id but
+        # ensure no collision in batch.
         slug = org_id
         suffix = 0
         while slug in seen_slugs:
@@ -75,6 +122,7 @@ async def seed_organizations(session, org_ids: Iterable[str]) -> None:
         session.add(
             OrganizationModel(
                 organization_id=org_id,
+                enterprise_id=enterprise_id,
                 name=f"Test Org {org_id}",
                 slug=slug,
             )
@@ -102,7 +150,10 @@ def install_org_autoseed(sync_session) -> None:
     """
     from sqlalchemy import event, insert, select
 
-    from faultmaven.infrastructure.persistence.models import OrganizationModel
+    from faultmaven.infrastructure.persistence.models import (
+        EnterpriseModel,
+        OrganizationModel,
+    )
 
     @event.listens_for(sync_session, "before_flush")
     def _seed_referenced_orgs(session, flush_context, instances):
@@ -125,11 +176,26 @@ def install_org_autoseed(sync_session) -> None:
         }
         missing = org_ids - existing
         if missing:
+            # Ensure the default enterprise exists so the orgs.enterprise_id
+            # FK target is satisfied.
+            default_ent = session.get(EnterpriseModel, DEFAULT_TEST_ENTERPRISE_ID)
+            if default_ent is None:
+                session.execute(
+                    insert(EnterpriseModel),
+                    [
+                        {
+                            "enterprise_id": DEFAULT_TEST_ENTERPRISE_ID,
+                            "name": "Default Test Enterprise",
+                            "slug": "default-test",
+                        }
+                    ],
+                )
             session.execute(
                 insert(OrganizationModel),
                 [
                     {
                         "organization_id": oid,
+                        "enterprise_id": DEFAULT_TEST_ENTERPRISE_ID,
                         "name": f"Test Org {oid}",
                         "slug": oid,
                     }

@@ -307,9 +307,21 @@ class PostgreSQLUserRepository(UserRepository):
         )
 
     def _domain_to_dict(self, user: User) -> dict:
-        """Convert User domain object to dict for ORM model assignment."""
+        """Convert User domain object to dict for ORM model assignment.
+
+        enterprise_id is sourced from the user object when present; in
+        single-tenant mode (where the User domain model doesn't yet
+        carry the field), it defaults to DEFAULT_ENTERPRISE_ID. Once
+        the cloud rollout wires multi-tenant flows, the User domain
+        model gains an enterprise_id field and this fallback can be
+        dropped.
+        """
+        from faultmaven.providers.tenancy.single_tenant import DEFAULT_ENTERPRISE_ID
+
+        enterprise_id = getattr(user, "enterprise_id", None) or DEFAULT_ENTERPRISE_ID
         return {
             "user_id": user.user_id,
+            "enterprise_id": enterprise_id,
             "username": user.username,
             "email": user.email,
             "display_name": user.display_name,

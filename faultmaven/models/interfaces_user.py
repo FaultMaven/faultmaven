@@ -4,9 +4,15 @@ This module defines the interface contracts for enterprise user management,
 following FaultMaven's interface-based dependency injection pattern.
 
 Implemented by:
+- PostgreSQLEnterpriseRepository
 - PostgreSQLOrganizationRepository
 - PostgreSQLTeamRepository
 - PostgreSQLUserRepository (enhanced)
+
+Hierarchy: Enterprise > Organization > Team > User. An enterprise owns
+billing, plan tier, and SSO/SAML config; organizations live underneath it
+as workspaces. Single-tenant deployments (local/community) get one
+default enterprise containing one default organization.
 """
 
 from abc import ABC, abstractmethod
@@ -22,9 +28,24 @@ from pydantic import BaseModel, Field
 
 
 class OrgPlanTier(str, Enum):
-    """Organization subscription plan levels."""
+    """Organization subscription plan levels.
+
+    Plan tier now lives on the Enterprise tier (`enterprises.plan_tier`).
+    This enum is retained for the Organization domain model's read-side
+    fallback until callers migrate to read plan_tier off the parent
+    enterprise.
+    """
 
     FREE = "free"
+    PRO = "pro"
+    ENTERPRISE = "enterprise"
+
+
+class EnterprisePlanTier(str, Enum):
+    """Enterprise subscription plan tiers (see enterprises.plan_tier)."""
+
+    FREE = "free"
+    STARTER = "starter"
     PRO = "pro"
     ENTERPRISE = "enterprise"
 
@@ -58,10 +79,29 @@ class AuditCategory(str, Enum):
 # ============================================================================
 
 
+class Enterprise(BaseModel):
+    """Top-tier tenant. Holds SSO/SAML config, billing, plan tier, and
+    enterprise-wide knowledge scope. Contains organizations.
+    """
+
+    enterprise_id: str
+    name: str
+    slug: str
+    plan_tier: EnterprisePlanTier = EnterprisePlanTier.FREE
+    max_members: int = 5
+    max_cases: Optional[int] = None
+    billing_email: Optional[str] = None
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: Optional[datetime] = None
+
+
 class Organization(BaseModel):
-    """Organization (workspace/tenant) model."""
+    """Organization (workspace) model. Lives under an enterprise."""
 
     organization_id: str
+    enterprise_id: Optional[str] = None
     name: str
     slug: str
     description: Optional[str] = None
@@ -146,6 +186,26 @@ class UserAuditLog(BaseModel):
 # ============================================================================
 # Repository Interfaces
 # ============================================================================
+
+
+class IEnterpriseRepository(ABC):
+    """Interface for enterprise (top-tier tenant) persistence operations."""
+
+    @abstractmethod
+    async def create_enterprise(self, enterprise: Enterprise) -> Enterprise:
+        """Create a new enterprise."""
+
+    @abstractmethod
+    async def get_enterprise(self, enterprise_id: str) -> Optional[Enterprise]:
+        """Get enterprise by ID. Returns None if not found or soft-deleted."""
+
+    @abstractmethod
+    async def get_enterprise_by_slug(self, slug: str) -> Optional[Enterprise]:
+        """Get enterprise by slug. Returns None if not found or soft-deleted."""
+
+    @abstractmethod
+    async def update_enterprise(self, enterprise: Enterprise) -> bool:
+        """Update enterprise. Returns True if a row was updated."""
 
 
 class IOrganizationRepository(ABC):

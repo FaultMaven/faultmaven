@@ -58,18 +58,33 @@ async def bootstrap_application(container: Any) -> None:
     logger.info("Data layer initialization successful")
 
     # ============================================================
-    # Step 2: Ensure Default Organization (Single-Tenant Mode)
+    # Step 2: Ensure Default Tenant (Single-Tenant Mode)
     # ============================================================
-    # Get tenant provider from container
+    # Order: enterprise -> organization. Organization FK enterprise_id
+    # is NOT NULL, so the enterprise row must exist first.
     if not hasattr(container, "tenant_provider") or container.tenant_provider is None:
         logger.warning(
-            "TenantProvider not available in container - skipping org bootstrap"
+            "TenantProvider not available in container - skipping tenant bootstrap"
         )
     else:
         tenant_provider = container.tenant_provider
 
-        # Single-tenant mode: Ensure default organization exists
         if isinstance(tenant_provider, SingleTenantProvider):
+            logger.info("Single-tenant mode: Ensuring default enterprise exists")
+            try:
+                default_enterprise = (
+                    await tenant_provider.ensure_default_enterprise_exists()
+                )
+                if default_enterprise is not None:
+                    logger.info(
+                        f"Default enterprise ready: {default_enterprise.name} "
+                        f"(ID: {default_enterprise.enterprise_id}, "
+                        f"Tier: {default_enterprise.plan_tier.value})"
+                    )
+            except Exception as e:
+                logger.error(f"Failed to create default enterprise: {e}")
+                raise
+
             logger.info("Single-tenant mode: Ensuring default organization exists")
             try:
                 default_org = await tenant_provider.ensure_default_organization_exists()
@@ -81,6 +96,6 @@ async def bootstrap_application(container: Any) -> None:
                 logger.error(f"Failed to create default organization: {e}")
                 raise
         else:
-            logger.info("Multi-tenant mode: No default organization created")
+            logger.info("Multi-tenant mode: No default tenant created")
 
     logger.info("Application bootstrap complete")

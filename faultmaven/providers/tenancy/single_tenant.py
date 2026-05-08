@@ -1,7 +1,8 @@
 """SingleTenantProvider for Local/Community Deployments.
 
-Returns a single default organization for all requests. All users share
-the same organization, simplifying local development and community edition.
+Returns a single default enterprise + organization for all requests.
+All users belong to the same enterprise (and the same organization
+within it), simplifying local development and community edition.
 
 Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
@@ -11,12 +12,17 @@ from typing import Optional
 
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.interfaces_user import (
+    Enterprise,
+    EnterprisePlanTier,
+    IEnterpriseRepository,
     IOrganizationRepository,
     Organization,
     OrgPlanTier,
 )
 from faultmaven.modules.auth.domain.models.user import User
 from faultmaven.providers.tenancy.base import TenantProvider
+
+DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
 
 
 class SingleTenantProvider(TenantProvider):
@@ -41,13 +47,27 @@ class SingleTenantProvider(TenantProvider):
     DEFAULT_ORG_SLUG = "default"
     DEFAULT_ORG_NAME = "Default Organization"
 
-    def __init__(self, organization_repository: IOrganizationRepository):
+    DEFAULT_ENTERPRISE_ID = DEFAULT_ENTERPRISE_ID
+    DEFAULT_ENTERPRISE_SLUG = "default"
+    DEFAULT_ENTERPRISE_NAME = "Default Enterprise"
+
+    def __init__(
+        self,
+        organization_repository: IOrganizationRepository,
+        enterprise_repository: Optional[IEnterpriseRepository] = None,
+    ):
         """Initialize single-tenant provider.
 
         Args:
             organization_repository: Repository for organization persistence
+            enterprise_repository: Repository for enterprise persistence.
+                Optional during the rollout window — when absent,
+                ensure_default_enterprise_exists() is a no-op (the
+                migration's own backfill is the source of truth).
         """
         self.organization_repository = organization_repository
+        self.enterprise_repository = enterprise_repository
+        self._default_enterprise: Optional[Enterprise] = None
         self._default_org: Optional[Organization] = None
 
     async def get_current_organization(
@@ -96,6 +116,50 @@ class SingleTenantProvider(TenantProvider):
         """Single-tenant mode."""
         return False
 
+    async def ensure_default_enterprise_exists(self) -> Optional[Enterprise]:
+        """Create default enterprise if it doesn't exist.
+
+        Called by startup bootstrapper during application initialization,
+        before ensure_default_organization_exists(). The migration's
+        own backfill seeds this row idempotently, so this method is a
+        belt-and-braces guard for fresh DBs that somehow skip the
+        migration.
+
+        Returns:
+            Enterprise: The default enterprise, or None if no
+            enterprise_repository is wired (rollout fallback).
+
+        Design Notes:
+            - Uses fixed UUID for predictability and testing
+            - Grants PRO tier features for local mode (no billing needed)
+            - Idempotent: safe to call multiple times
+        """
+        if self.enterprise_repository is None:
+            return None
+
+        existing = await self.enterprise_repository.get_enterprise(
+            self.DEFAULT_ENTERPRISE_ID
+        )
+        if existing:
+            self._default_enterprise = existing
+            return existing
+
+        now = datetime.now(timezone.utc)
+        default_enterprise = Enterprise(
+            enterprise_id=self.DEFAULT_ENTERPRISE_ID,
+            slug=self.DEFAULT_ENTERPRISE_SLUG,
+            name=self.DEFAULT_ENTERPRISE_NAME,
+            plan_tier=EnterprisePlanTier.PRO,
+            max_members=100,
+            max_cases=None,
+            settings={},
+            created_at=now,
+            updated_at=now,
+        )
+        created = await self.enterprise_repository.create_enterprise(default_enterprise)
+        self._default_enterprise = created
+        return created
+
     async def ensure_default_organization_exists(self) -> Organization:
         """Create default organization if it doesn't exist.
 
@@ -108,6 +172,9 @@ class SingleTenantProvider(TenantProvider):
             - Uses fixed UUID for predictability and testing
             - Grants PRO tier features for local mode (no billing needed)
             - Idempotent: safe to call multiple times
+            - Always anchors the default org to DEFAULT_ENTERPRISE_ID
+              so the FK relationship is satisfied once the column is
+              tightened to NOT NULL.
         """
         existing = await self.organization_repository.get_organization(
             self.DEFAULT_ORG_ID
@@ -121,6 +188,7 @@ class SingleTenantProvider(TenantProvider):
         now = datetime.now(timezone.utc)
         default_org = Organization(
             organization_id=self.DEFAULT_ORG_ID,
+            enterprise_id=self.DEFAULT_ENTERPRISE_ID,
             slug=self.DEFAULT_ORG_SLUG,
             name=self.DEFAULT_ORG_NAME,
             description="Default organization for local/community deployment",

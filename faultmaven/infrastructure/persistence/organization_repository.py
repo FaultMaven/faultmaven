@@ -39,15 +39,15 @@ def _parse_settings(raw) -> dict:
 def _model_to_domain(model: OrganizationModel) -> Organization:
     """Convert ORM model to domain object.
 
-    plan_tier / max_members / max_cases / settings now live on the
-    Enterprise tier (`enterprises` table) — not on `organizations`.
-    Until the Enterprise tier bootstrap is wired, the Organization
-    domain object falls back to its Pydantic defaults for these
-    fields. Future: look up the parent enterprise and populate from
-    there.
+    plan_tier / max_members / max_cases / settings live on the parent
+    enterprise (`enterprises` table). The Organization domain object
+    falls back to Pydantic defaults for those fields here; callers
+    that need plan-tier semantics should resolve them via the
+    enterprise repository.
     """
     return Organization(
         organization_id=model.organization_id,
+        enterprise_id=model.enterprise_id,
         name=model.name,
         slug=model.slug,
         description=model.description,
@@ -67,11 +67,19 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         """Create a new organization.
 
         plan_tier / max_members / max_cases / settings are dropped from
-        the persistence write — they belong on the Enterprise tier and
-        will be set there once the Enterprise bootstrap is wired.
+        the persistence write — they belong on the parent enterprise
+        (`enterprises` table). enterprise_id must be set on the domain
+        object; the column is NOT NULL.
         """
+        if not org.enterprise_id:
+            from faultmaven.providers.tenancy.single_tenant import (
+                DEFAULT_ENTERPRISE_ID,
+            )
+
+            org.enterprise_id = DEFAULT_ENTERPRISE_ID
         model = OrganizationModel(
             organization_id=org.organization_id,
+            enterprise_id=org.enterprise_id,
             name=org.name,
             slug=org.slug,
             description=org.description,
