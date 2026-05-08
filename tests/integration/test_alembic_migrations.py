@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "b2c3d4e5f6a7"  # uploaded_files.size_bytes constraint relax
+HEAD_REVISION = "24a5adc58c77"  # current head
 
 
 @pytest.fixture(scope="function")
@@ -107,8 +107,10 @@ EXPECTED_TABLES = [
     "cases",
     "conversion_drafts",
     "conversion_jobs",
+    "enterprises",
     "evidence",
     "hypotheses",
+    "hypothesis_evidence",
     "investigation_sessions",
     "knowledge_items",
     "knowledge_suggestions",
@@ -221,8 +223,8 @@ class TestAlembicMigrationInfrastructure:
             HEAD_REVISION in output
         ), f"Head revision should be in history. Output: {output}"
         assert (
-            "scope isolation" in output.lower()
-        ), f"Scope isolation migration should be in history. Output: {output}"
+            "clean_baseline" in output.lower()
+        ), f"Clean baseline migration should be in history. Output: {output}"
 
 
 class TestHelperScript:

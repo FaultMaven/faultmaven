@@ -362,7 +362,7 @@ class TestTurnResponseModel:
                 AttachmentResult(
                     evidence_id="ev_abc123def456",
                     filename="app.log",
-                    data_type="LOGS",
+                    source_type="logs",
                     file_size=5000,
                     processing_status="completed",
                 )
@@ -383,7 +383,7 @@ class TestTurnResponseModel:
                 AttachmentResult(
                     evidence_id=f"ev_{i:012d}",
                     filename=f"file{i}.log",
-                    data_type="LOGS",
+                    source_type="logs",
                     file_size=1000 * (i + 1),
                     processing_status="completed",
                 )

@@ -560,11 +560,15 @@ class TestCaseStateTransitions:
         organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
+        # RESOLVED status requires a non-empty description (the description
+        # carries the case's problem statement). Without it the Case validator
+        # rejects the close transition before we can exercise the
+        # already-closed conflict path.
         case = await case_service.create_case(
             user_id=user_id,
             organization_id=organization_id,
             title="Test",
-            description="",
+            description="Test problem statement",
             severity=CaseSeverity.LOW,
         )
 

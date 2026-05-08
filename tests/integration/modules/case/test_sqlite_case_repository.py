@@ -76,6 +76,8 @@ async def create_test_schema(session: AsyncSession):
             description TEXT DEFAULT '',
             investigation_strategy TEXT DEFAULT 'post_mortem',
             status TEXT NOT NULL DEFAULT 'inquiry',
+            current_turn INTEGER NOT NULL DEFAULT 0,
+            turns_without_progress INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_activity_at TIMESTAMP,
@@ -158,6 +160,22 @@ async def create_test_schema(session: AsyncSession):
         )
     """))
 
+    # Create hypothesis_evidence junction table (replaces hypotheses.evidence_links JSON blob)
+    await session.execute(text("""
+        CREATE TABLE IF NOT EXISTS hypothesis_evidence (
+            hypothesis_id TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
+            relationship_type TEXT NOT NULL,
+            confidence REAL,
+            linked_at_turn INTEGER,
+            linked_by TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (hypothesis_id, evidence_id),
+            FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(hypothesis_id) ON DELETE CASCADE
+        )
+    """))
+
     # Create solutions table
     await session.execute(text("""
         CREATE TABLE IF NOT EXISTS solutions (
@@ -198,12 +216,13 @@ async def create_test_schema(session: AsyncSession):
             organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
             filename TEXT NOT NULL,
             size_bytes INTEGER NOT NULL DEFAULT 0,
-            data_type TEXT NOT NULL DEFAULT 'unknown',
+            content_type TEXT,
+            content_hash TEXT,
+            storage_ref TEXT,
+            upload_source TEXT NOT NULL DEFAULT 'file_upload',
             uploaded_at_turn INTEGER NOT NULL DEFAULT 0,
             uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            source_type TEXT NOT NULL DEFAULT 'file_upload',
-            content_ref TEXT,
-            preprocessing_summary TEXT,
+            uploaded_by TEXT,
             metadata TEXT DEFAULT '{}',
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
@@ -666,10 +685,10 @@ class TestSQLiteCaseRepository:
             status=HypothesisStatus.ACTIVE,
             likelihood=0.8,
             initial_likelihood=0.5,
-            evidence_links={
-                "evidence_001": evidence_link_1,
-                "evidence_002": evidence_link_2,
-            },  # ← This dict with datetime-containing objects caused JSON serialization failure
+            evidence_links=[
+                evidence_link_1,
+                evidence_link_2,
+            ],  # ← This list with datetime-containing objects caused JSON serialization failure
             generated_at_turn=1,
             last_updated_turn=2,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC,
@@ -719,12 +738,16 @@ class TestSQLiteCaseRepository:
 
         # Verify evidence links were serialized and saved
         # (The fact we got here without a JSON serialization error proves the fix works)
+        # evidence_links is now a List[HypothesisEvidenceLink] (was Dict[str, ...]).
         assert len(saved_hypothesis.evidence_links) == 2
-        assert "evidence_001" in saved_hypothesis.evidence_links
-        assert "evidence_002" in saved_hypothesis.evidence_links
+        links_by_evidence_id = {
+            link.evidence_id: link for link in saved_hypothesis.evidence_links
+        }
+        assert "evidence_001" in links_by_evidence_id
+        assert "evidence_002" in links_by_evidence_id
 
         # Verify the HypothesisEvidenceLink objects with datetime fields are present
-        link_1 = saved_hypothesis.evidence_links["evidence_001"]
+        link_1 = links_by_evidence_id["evidence_001"]
         assert isinstance(link_1, HypothesisEvidenceLink)
         assert link_1.evidence_id == "evidence_001"
         assert link_1.stance == EvidenceStance.SUPPORTS
@@ -732,7 +755,7 @@ class TestSQLiteCaseRepository:
             link_1.analyzed_at, datetime
         )  # Datetime field survived serialization
 
-        link_2 = saved_hypothesis.evidence_links["evidence_002"]
+        link_2 = links_by_evidence_id["evidence_002"]
         assert isinstance(link_2, HypothesisEvidenceLink)
         assert link_2.evidence_id == "evidence_002"
         assert link_2.stance == EvidenceStance.REFUTES

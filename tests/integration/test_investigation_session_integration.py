@@ -44,6 +44,7 @@ from tests.utils import (
     generate_session_id,
     install_org_autoseed,
     seed_organizations,
+    seed_users,
 )
 
 # ============================================================
@@ -101,6 +102,22 @@ async def test_engine():
                 "test-org",
                 "different-org",
                 "order-test-org",
+            ],
+        )
+        await seed_users(
+            seed_session,
+            [
+                "integration-test-user",
+                "cascade-test-user",
+                "different-user",
+                "order-test-user",
+                "pagination-test-user",
+                "user_1",
+                "user_2",
+                "user_3",
+                # SQLite repo writes literal "system" into hypotheses /
+                # solutions `created_by` (FK -> users.user_id).
+                "system",
             ],
         )
 
@@ -404,6 +421,7 @@ async def test_four_level_cascade_delete_chain(
 
     exec1 = AgentExecutionModel(
         execution_id=exec1_id,
+        organization_id=case.organization_id,
         case_id=case.case_id,
         session_id=inv_session.session_id,
         agent_type="investigator",
@@ -417,6 +435,7 @@ async def test_four_level_cascade_delete_chain(
 
     exec2 = AgentExecutionModel(
         execution_id=exec2_id,
+        organization_id=case.organization_id,
         case_id=case.case_id,
         session_id=inv_session.session_id,
         agent_type="investigator",
@@ -435,6 +454,7 @@ async def test_four_level_cascade_delete_chain(
     # Create tool calls directly using SQLAlchemy models
     tc1 = AgentToolCallModel(
         tool_call_id=generate_tool_call_id(),
+        organization_id=case.organization_id,
         execution_id=exec1_id,
         tool_name="web_search",
         tool_input='{"query": "test"}',
@@ -445,6 +465,7 @@ async def test_four_level_cascade_delete_chain(
 
     tc2 = AgentToolCallModel(
         tool_call_id=generate_tool_call_id(),
+        organization_id=case.organization_id,
         execution_id=exec1_id,
         tool_name="file_read",
         tool_input='{"path": "test.txt"}',
@@ -455,6 +476,7 @@ async def test_four_level_cascade_delete_chain(
 
     tc3 = AgentToolCallModel(
         tool_call_id=generate_tool_call_id(),
+        organization_id=case.organization_id,
         execution_id=exec2_id,
         tool_name="code_exec",
         tool_input='{"code": "print(1)"}',

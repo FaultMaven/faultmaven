@@ -1,13 +1,15 @@
-"""Test module for repository schema consistency (Phase 1 fixes).
+"""Test module for repository schema consistency.
 
 This module validates that all case repository implementations correctly
-implement the Pydantic model schema as defined in case-storage-design.md.
+implement the Pydantic model schema as defined in case-schema.md.
 
 Tests verify:
 - UploadedFile schema matches between Pydantic and SQL
 - Messages don't contain session_id
 - Session → User → Cases pattern (no direct session-to-case filtering)
-- Field names match (size_bytes not file_size, data_type not content_type, etc.)
+- Field names match the post-redesign shape (size_bytes, content_type,
+  storage_ref, upload_source — no data_type, content_ref,
+  preprocessing_summary, or source_type on UploadedFile)
 - Optional fields are properly handled
 """
 
@@ -36,67 +38,75 @@ class TestUploadedFileSchemaConsistency:
     """Test UploadedFile schema matches across implementations"""
 
     def test_pydantic_model_has_required_fields(self):
-        """Verify Pydantic UploadedFile model has all required fields"""
-
-        # Create instance with all required fields
-        uploaded_file = UploadedFile(
-            file_id="file_abc123def456",  # Must match pattern: ^(file_|data_)[a-f0-9]{12,16}$
-            filename="test.log",
-            size_bytes=1024,  # NOT file_size
-            data_type="log",  # NOT content_type
-            uploaded_at_turn=1,
-            uploaded_at=datetime.now(timezone.utc),
-            source_type="file_upload",
-            content_ref="s3://bucket/key",  # Optional but present
-            preprocessing_summary="Test summary",  # Optional
-        )
-
-        # Verify fields exist and have correct names
-        assert hasattr(uploaded_file, "file_id")
-        assert hasattr(uploaded_file, "filename")
-        assert hasattr(uploaded_file, "size_bytes")  # NOT file_size
-        assert hasattr(uploaded_file, "data_type")  # NOT content_type
-        assert hasattr(uploaded_file, "uploaded_at_turn")
-        assert hasattr(uploaded_file, "uploaded_at")
-        assert hasattr(uploaded_file, "source_type")
-        assert hasattr(uploaded_file, "content_ref")  # NOT storage_path
-        assert hasattr(uploaded_file, "preprocessing_summary")
-
-        # Verify old field names don't exist
-        assert not hasattr(uploaded_file, "file_size")
-        assert not hasattr(uploaded_file, "content_type")
-        assert not hasattr(uploaded_file, "storage_path")
-        assert not hasattr(uploaded_file, "processing_status")
-        assert not hasattr(uploaded_file, "processed_at")
-
-    def test_pydantic_content_ref_is_optional(self):
-        """Verify content_ref can be None (processing pending)"""
+        """Verify Pydantic UploadedFile model has the post-redesign field set."""
 
         uploaded_file = UploadedFile(
             file_id="file_abc123def456",
             filename="test.log",
             size_bytes=1024,
-            data_type="log",
+            content_type="text/plain",
+            content_hash="a" * 64,
             uploaded_at_turn=1,
             uploaded_at=datetime.now(timezone.utc),
-            source_type="file_upload",
-            content_ref=None,  # Should be allowed
+            uploaded_by="user_001",
+            upload_source="file_upload",
+            storage_ref="s3://bucket/key",
         )
 
-        assert uploaded_file.content_ref is None
+        # Current field set
+        for field in (
+            "file_id",
+            "filename",
+            "size_bytes",
+            "content_type",
+            "content_hash",
+            "uploaded_at_turn",
+            "uploaded_at",
+            "uploaded_by",
+            "upload_source",
+            "storage_ref",
+        ):
+            assert hasattr(uploaded_file, field), f"missing field: {field}"
+
+        # Old/renamed/dropped field names must not exist
+        for field in (
+            "file_size",  # → size_bytes
+            "data_type",  # dropped (was redundant with evidence.source_type)
+            "source_type",  # → upload_source on UploadedFile
+            "content_ref",  # → storage_ref
+            "storage_path",  # legacy
+            "preprocessing_summary",  # dropped in migration 004
+            "processing_status",  # legacy
+            "processed_at",  # legacy
+        ):
+            assert not hasattr(uploaded_file, field), f"stale field present: {field}"
+
+    def test_pydantic_storage_ref_is_optional(self):
+        """Verify storage_ref can be None (processing pending)."""
+
+        uploaded_file = UploadedFile(
+            file_id="file_abc123def456",
+            filename="test.log",
+            size_bytes=1024,
+            uploaded_at_turn=1,
+            uploaded_at=datetime.now(timezone.utc),
+            storage_ref=None,
+        )
+
+        assert uploaded_file.storage_ref is None
 
     @pytest.mark.asyncio
     async def test_inmemory_repository_schema_match(self):
-        """Test InMemoryCaseRepository uses correct field names"""
+        """Test InMemoryCaseRepository preserves the post-redesign field shape."""
 
         repo = InMemoryCaseRepository()
 
-        # Create case with uploaded file
         case = Case(
-            case_id="case_123456789012",  # Must be exactly 17 chars
+            case_id="case_123456789012",
             title="Test Case",
-            user_id="user_123",  # Changed from owner_id
-            organization_id="org_123",  # Added required field
+            description="Schema-consistency test case",
+            user_id="user_123",
+            organization_id="org_123",
             status=CaseStatus.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
@@ -106,29 +116,26 @@ class TestUploadedFileSchemaConsistency:
                     file_id="file_001234567890",
                     filename="test.log",
                     size_bytes=2048,
-                    data_type="log",
+                    content_type="text/plain",
                     uploaded_at_turn=1,
                     uploaded_at=datetime.now(timezone.utc),
-                    source_type="file_upload",
-                    content_ref="s3://bucket/test.log",
+                    upload_source="file_upload",
+                    storage_ref="s3://bucket/test.log",
                 )
             ],
         )
 
-        # Store case
         await repo.save(case)
-
-        # Retrieve case
         retrieved = await repo.get(case.case_id)
 
-        # Verify uploaded file schema
         assert len(retrieved.uploaded_files) == 1
         file = retrieved.uploaded_files[0]
 
         assert file.file_id == "file_001234567890"
-        assert file.size_bytes == 2048  # NOT file_size
-        assert file.data_type == "log"  # NOT content_type
-        assert file.content_ref == "s3://bucket/test.log"  # NOT storage_path
+        assert file.size_bytes == 2048
+        assert file.content_type == "text/plain"
+        assert file.upload_source == "file_upload"
+        assert file.storage_ref == "s3://bucket/test.log"
 
 
 # ============================================================
@@ -267,51 +274,21 @@ class TestPostgreSQLHybridSchemaConsistency:
     """Test PostgreSQL hybrid repository SQL queries use correct field names"""
 
     def test_insert_query_uses_correct_field_names(self):
-        """Verify INSERT query for uploaded_files uses Pydantic field names"""
+        """Verify hybrid repo exposes the upsert path for uploaded_files."""
 
-        # This tests the SQL query structure without database
-        expected_fields = [
-            "file_id",
-            "case_id",
-            "filename",
-            "size_bytes",  # NOT file_size
-            "data_type",  # NOT content_type
-            "uploaded_at_turn",
-            "uploaded_at",
-            "source_type",
-            "content_ref",  # NOT storage_path
-            "preprocessing_summary",
-            "metadata",
-        ]
-
-        # Verify these are the fields used in _upsert_uploaded_files()
-        # (Read from actual implementation)
         from faultmaven.infrastructure.persistence.postgresql_hybrid_case_repository import (
             PostgreSQLHybridCaseRepository,
         )
 
-        # Check method exists
         assert hasattr(PostgreSQLHybridCaseRepository, "_upsert_uploaded_files")
 
     def test_select_query_uses_correct_field_names(self):
-        """Verify SELECT query jsonb_build_object uses correct field names"""
+        """Verify hybrid repo exposes the get() entrypoint."""
 
-        # Expected field mappings in SELECT query
-        expected_mappings = {
-            "size_bytes": "f.size_bytes",  # NOT f.file_size
-            "data_type": "f.data_type",  # NOT f.content_type
-            "content_ref": "f.content_ref",  # NOT f.storage_path
-            "uploaded_at_turn": "f.uploaded_at_turn",  # Should exist
-            "source_type": "f.source_type",  # Should exist
-            "preprocessing_summary": "f.preprocessing_summary",  # Should exist
-        }
-
-        # Verify get() method uses correct SQL
         from faultmaven.infrastructure.persistence.postgresql_hybrid_case_repository import (
             PostgreSQLHybridCaseRepository,
         )
 
-        # Check method exists (actual SQL tested in integration tests)
         assert hasattr(PostgreSQLHybridCaseRepository, "get")
 
 
@@ -328,99 +305,87 @@ class TestDatabaseSchemaIntegration:
     async def test_full_roundtrip_uploaded_file(self, test_db_session):
         """Test complete INSERT → SELECT roundtrip preserves all fields"""
 
-        # Skip if no test database
         if test_db_session is None:
             pytest.skip("No test database configured")
 
         repo = PostgreSQLHybridCaseRepository(db=test_db_session)
 
-        # Create case with uploaded file
         case = Case(
             case_id="case_integration_001",
             title="Integration Test",
-            owner_id="user_integration_001",
+            description="Roundtrip integration test",
+            user_id="user_integration_001",
+            organization_id="org_integration_001",
             status=CaseStatus.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],
             uploaded_files=[
                 UploadedFile(
-                    file_id="file_integration_001",
+                    file_id="file_integration001",
                     filename="integration_test.log",
                     size_bytes=4096,
-                    data_type="log",
+                    content_type="text/plain",
                     uploaded_at_turn=1,
                     uploaded_at=datetime.now(timezone.utc),
-                    source_type="file_upload",
-                    content_ref="s3://test-bucket/integration.log",
-                    preprocessing_summary="Integration test file",
+                    upload_source="file_upload",
+                    storage_ref="s3://test-bucket/integration.log",
                 )
             ],
         )
 
-        # Insert
         await repo.create(case)
-
-        # Retrieve
         retrieved = await repo.get(case.case_id)
 
-        # Verify all fields preserved
         assert len(retrieved.uploaded_files) == 1
         file = retrieved.uploaded_files[0]
 
-        assert file.file_id == "file_integration_001"
+        assert file.file_id == "file_integration001"
         assert file.filename == "integration_test.log"
-        assert file.size_bytes == 4096  # NOT file_size
-        assert file.data_type == "log"  # NOT content_type
+        assert file.size_bytes == 4096
+        assert file.content_type == "text/plain"
         assert file.uploaded_at_turn == 1
-        assert file.source_type == "file_upload"
-        assert (
-            file.content_ref == "s3://test-bucket/integration.log"
-        )  # NOT storage_path
-        assert file.preprocessing_summary == "Integration test file"
+        assert file.upload_source == "file_upload"
+        assert file.storage_ref == "s3://test-bucket/integration.log"
 
     async def test_optional_fields_handle_null(self, test_db_session):
-        """Test optional fields (content_ref, preprocessing_summary) can be NULL"""
+        """Test optional fields (storage_ref, content_type) can be NULL"""
 
         if test_db_session is None:
             pytest.skip("No test database configured")
 
         repo = PostgreSQLHybridCaseRepository(db=test_db_session)
 
-        # Create file with NULL optional fields
         case = Case(
             case_id="case_integration_002",
             title="NULL Fields Test",
-            owner_id="user_integration_002",
+            description="Null-fields integration test",
+            user_id="user_integration_002",
+            organization_id="org_integration_002",
             status=CaseStatus.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],
             uploaded_files=[
                 UploadedFile(
-                    file_id="file_integration_002",
+                    file_id="file_integration002",
                     filename="pending.log",
                     size_bytes=1024,
-                    data_type="log",
                     uploaded_at_turn=1,
                     uploaded_at=datetime.now(timezone.utc),
-                    source_type="file_upload",
-                    content_ref=None,  # Processing pending
-                    preprocessing_summary=None,  # Not processed yet
+                    upload_source="file_upload",
+                    storage_ref=None,
+                    content_type=None,
                 )
             ],
         )
 
-        # Insert
         await repo.create(case)
-
-        # Retrieve
         retrieved = await repo.get(case.case_id)
 
-        # Verify NULL fields
         file = retrieved.uploaded_files[0]
-        assert file.content_ref is None
-        assert file.preprocessing_summary is None
+        assert file.storage_ref is None
+        assert file.content_type is None
 
 
 # ============================================================

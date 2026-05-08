@@ -55,7 +55,7 @@ from faultmaven.modules.case.infrastructure.case_repository import (
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
-from tests.utils import seed_organizations
+from tests.utils import seed_organizations, seed_users
 
 # Hardcoded org IDs referenced by tests below — seeded once per test_engine
 # so FK constraints on cases.organization_id (Phase 9) are satisfied.
@@ -69,6 +69,22 @@ TEST_ORG_IDS = (
     "concurrent-test-org",
     "concurrent-msg-org",
     "complex-test-org",
+)
+
+# Hardcoded user IDs referenced by tests below — seeded once per test_engine
+# so FK constraints on cases.user_id are satisfied with PRAGMA foreign_keys=ON.
+TEST_USER_IDS = (
+    "integration-test-user",
+    "lifecycle-test-user",
+    "evidence-test-user",
+    "hypothesis-test-user",
+    "concurrent-test-user",
+    "concurrent-msg-user",
+    "complex-test-user",
+    # The SQLite repository writes the literal "system" into hypotheses /
+    # solutions `created_by` columns (FK -> users.user_id). Seed it so the FK
+    # is satisfied with PRAGMA foreign_keys=ON.
+    "system",
 )
 
 # ============================================================
@@ -106,6 +122,7 @@ async def test_engine():
     )
     async with seed_factory() as seed_session:
         await seed_organizations(seed_session, TEST_ORG_IDS)
+        await seed_users(seed_session, TEST_USER_IDS)
 
     yield engine
 

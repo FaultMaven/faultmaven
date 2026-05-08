@@ -141,7 +141,9 @@ class TestFileUploadToEvidence:
             "connection timeout" in evidence["summary"].lower()
             or "error" in evidence["summary"].lower()
         )
-        assert evidence["content_hash"] is not None
+        # content_hash now lives on the uploaded file (storage-level dedup),
+        # not on the derived evidence row.
+        assert file_detail["content_hash"] is not None
 
     @pytest.mark.integration
     def test_config_file_upload_creates_contextual_evidence(
@@ -252,9 +254,22 @@ class TestDuplicateFileHandling:
         # Should have 2 evidence records
         assert len(evidence_list) == 2
 
-        # Both should have same content_hash
-        hashes = [e["content_hash"] for e in evidence_list]
-        assert hashes[0] == hashes[1]
+        # Both files should share the same content_hash on the uploaded file
+        # (content_hash moved from evidence to uploaded_files for storage-level dedup).
+        files_response = mock_services_for_integration_tests.get(
+            f"/api/v1/cases/{test_case}/uploaded-files", headers=auth_headers
+        )
+        assert files_response.status_code == 200
+        files_data = files_response.json()
+        file_hashes = []
+        for f in files_data.get("files", []):
+            detail = mock_services_for_integration_tests.get(
+                f"/api/v1/cases/{test_case}/uploaded-files/{f['file_id']}",
+                headers=auth_headers,
+            ).json()
+            file_hashes.append(detail["content_hash"])
+        assert len(file_hashes) == 2
+        assert file_hashes[0] == file_hashes[1]
 
         # Second should be marked as duplicate (REJECTED)
         second_evidence = evidence_list[1]
@@ -484,7 +499,11 @@ class TestPreprocessingIntegration:
     def test_content_hash_generated(
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
-        """Verify content_hash is generated during preprocessing"""
+        """Verify content_hash is generated during preprocessing.
+
+        content_hash now lives on the uploaded file (storage-level dedup),
+        not on the derived evidence row.
+        """
         # Arrange
         log_content = b"Test log content"
         # Mock always uses "Test content" for preprocessed_content
@@ -498,37 +517,23 @@ class TestPreprocessingIntegration:
             headers=headers,
         )
 
-        # Assert
-        evidence_list = get_case_evidence(
-            mock_services_for_integration_tests, test_case, auth_headers
+        # Assert - content_hash on the uploaded file
+        files_response = mock_services_for_integration_tests.get(
+            f"/api/v1/cases/{test_case}/uploaded-files", headers=auth_headers
         )
+        assert files_response.status_code == 200
+        files = files_response.json().get("files", [])
+        assert len(files) >= 1
+        detail = mock_services_for_integration_tests.get(
+            f"/api/v1/cases/{test_case}/uploaded-files/{files[0]['file_id']}",
+            headers=auth_headers,
+        ).json()
+        assert detail["content_hash"] == expected_hash
 
-        assert len(evidence_list) >= 1
-        evidence = evidence_list[0]
-        assert evidence["content_hash"] == expected_hash
-
-    @pytest.mark.integration
-    def test_preprocessing_method_recorded(
-        self, test_case, auth_headers, mock_services_for_integration_tests
-    ):
-        """Verify preprocessing_method is recorded in evidence"""
-        # Arrange - Upload file via /turns
-        headers = _upload_headers(auth_headers)
-        mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/turns",
-            files=[("files", ("app.log", b"LOG CONTENT", "text/plain"))],
-            headers=headers,
-        )
-
-        # Assert
-        evidence_list = get_case_evidence(
-            mock_services_for_integration_tests, test_case, auth_headers
-        )
-
-        # Evidence should have preprocessing_method
-        for evidence in evidence_list:
-            assert "preprocessing_method" in evidence
-            assert evidence["preprocessing_method"] is not None
+    # NOTE: test_preprocessing_method_recorded was removed — the
+    # `preprocessing_method` field was dropped from the EvidenceModel during
+    # the storage redesign (no longer present in production code). Preprocessing
+    # provenance is no longer surfaced as a per-evidence column.
 
 
 class TestLargeContentSubmission:

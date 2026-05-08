@@ -8,6 +8,47 @@ from typing import Iterable
 from uuid import uuid4
 
 
+async def seed_users(session, user_ids: Iterable[str]) -> None:
+    """Insert user rows so FK-bound tests can reference them.
+
+    `cases.user_id` is a nullable FK to `users.user_id` with
+    `ondelete="SET NULL"`. With PRAGMA foreign_keys=ON, hand-crafted user IDs
+    that don't exist in `users` fail the FK. Seed minimal valid stubs.
+
+    The UserModel has unique constraints on `username` and `email`; we derive
+    both from the user_id to avoid collisions in batch.
+    """
+    from faultmaven.infrastructure.persistence.models import UserModel
+
+    seen_usernames: set[str] = set()
+    seen_emails: set[str] = set()
+    for user_id in user_ids:
+        existing = await session.get(UserModel, user_id)
+        if existing is not None:
+            continue
+        username = user_id
+        suffix = 0
+        while username in seen_usernames:
+            suffix += 1
+            username = f"{user_id}-{suffix}"
+        seen_usernames.add(username)
+        email = f"{username}@test.local"
+        while email in seen_emails:
+            suffix += 1
+            email = f"{username}-{suffix}@test.local"
+        seen_emails.add(email)
+        session.add(
+            UserModel(
+                user_id=user_id,
+                username=username,
+                email=email,
+                display_name=f"Test User {user_id}",
+                hashed_password="x" * 60,  # bcrypt-shaped placeholder
+            )
+        )
+    await session.commit()
+
+
 async def seed_organizations(session, org_ids: Iterable[str]) -> None:
     """Insert organization rows so FK-bound tests can reference them.
 
