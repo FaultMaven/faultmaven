@@ -329,10 +329,12 @@ class UserModel(Base):
         CheckConstraint(
             "LENGTH(TRIM(display_name)) > 0", name="users_display_name_not_empty"
         ),
-        CheckConstraint(
-            "(hashed_password IS NOT NULL) OR (sso_provider IS NOT NULL)",
-            name="users_password_or_sso",
-        ),
+        # NOTE: a "(hashed_password IS NOT NULL) OR (sso_provider IS NOT NULL)"
+        # CHECK was previously declared here. It blocked the intentional
+        # passwordless dev-login flow (local mode), which creates users
+        # with both fields NULL. Credential-required-for-login is enforced
+        # at the auth-endpoint layer via AUTH_MODE, not at the table.
+        # Dropped in migration 007.
     )
 
 
