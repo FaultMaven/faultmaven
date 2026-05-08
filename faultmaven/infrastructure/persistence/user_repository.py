@@ -283,7 +283,16 @@ class PostgreSQLUserRepository(UserRepository):
         self.db = db_session
 
     def _model_to_domain(self, model) -> User:
-        """Convert UserModel ORM instance to User domain object."""
+        """Convert UserModel ORM instance to User domain object.
+
+        Roles aren't stored on `users` — they live in `roles` /
+        `role_permissions` / `organization_members.role_id`. Resolving
+        a user's roles requires a join with `organization_members`,
+        scoped by org. The Pydantic User keeps `roles: List[str]` for
+        InMemory/Redis stores; for the DB-backed path it defaults to []
+        and callers that need real roles must use the dedicated query
+        path (e.g. organization_repository.get_member_role).
+        """
         return User(
             user_id=model.user_id,
             username=model.username,
@@ -303,7 +312,7 @@ class PostgreSQLUserRepository(UserRepository):
             last_login_at=model.last_login_at,
             last_password_change_at=model.last_password_change_at,
             deleted_at=model.deleted_at,
-            roles=model.roles.split(",") if model.roles else [],
+            roles=[],
         )
 
     def _domain_to_dict(self, user: User) -> dict:
@@ -339,7 +348,10 @@ class PostgreSQLUserRepository(UserRepository):
             "last_login_at": user.last_login_at,
             "last_password_change_at": user.last_password_change_at,
             "deleted_at": user.deleted_at,
-            "roles": ",".join(user.roles) if user.roles else "",
+            # `roles` is not a `users` column — RBAC is normalized into
+            # `roles` / `role_permissions` / `organization_members.role_id`.
+            # The Pydantic User.roles field still exists for InMemory/Redis
+            # stores; we just don't round-trip it through the ORM.
         }
 
     async def save(self, user: User) -> User:
