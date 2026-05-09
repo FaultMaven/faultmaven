@@ -16,12 +16,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from uuid import uuid4
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
+    UploadedFileModel,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
@@ -51,8 +54,14 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     QualityScorer,
     RunbookValidator,
 )
+from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 logger = logging.getLogger(__name__)
+
+# Single-tenant default organization. Conversion sources (KB-bound uploads)
+# require organization_id NOT NULL on both the upload and the conversion job;
+# fall back to this when the caller doesn't supply one.
+DEFAULT_ORGANIZATION_ID = SingleTenantProvider.DEFAULT_ORG_ID
 
 # Threshold for parallel vs sequential conversion
 PARALLEL_THRESHOLD = 6
@@ -761,17 +770,36 @@ class ConversionService:
             return
 
         async with self._db_session_factory() as session:
+            # Per the post-redesign schema (alembic 002 + earlier): the four
+            # source_* columns on conversion_jobs were dropped in favor of a
+            # single source_file_id FK to uploaded_files (ON DELETE RESTRICT).
+            # Create the upload row first; the conversion_jobs row references
+            # it. Both tables require organization_id NOT NULL.
+            org_id = organization_id or DEFAULT_ORGANIZATION_ID
+            source_file_id = f"file_{uuid4().hex[:12]}"
+            upload = UploadedFileModel(
+                file_id=source_file_id,
+                organization_id=org_id,
+                case_id=None,  # KB-bound, not case-bound
+                uploaded_by=user_id,
+                filename=source_file.filename,
+                size_bytes=source_file.size_bytes,
+                content_type=source_file.content_type,
+                storage_ref=source_file.retained_path or None,
+                upload_source="conversion_source",
+                uploaded_at_turn=0,
+            )
+            session.add(upload)
+            await session.flush()  # ensure upload row exists before FK ref
+
             job = ConversionJobModel(
                 id=conversion_id,
                 user_id=user_id,
-                organization_id=organization_id,
+                organization_id=org_id,
                 scope=scope,
                 team_id=team_id,
                 status=status.value,
-                source_filename=source_file.filename,
-                source_content_type=source_file.content_type,
-                source_size_bytes=source_file.size_bytes,
-                source_path=source_file.retained_path or "",
+                source_file_id=source_file_id,
                 source_type=source_type,
                 case_id=case_id,
                 failure_modes_detected=len(analysis.failure_modes),
@@ -784,6 +812,7 @@ class ConversionService:
             for draft in drafts:
                 draft_model = ConversionDraftModel(
                     id=draft.draft_id,
+                    organization_id=org_id,
                     conversion_id=conversion_id,
                     runbook_id=draft.runbook_id,
                     title=draft.title,
@@ -880,15 +909,31 @@ class ConversionService:
                 )
             )
 
+            # Source file metadata moved to uploaded_files (post-redesign);
+            # traverse via source_file_id FK rather than the dropped
+            # source_filename / source_content_type / source_size_bytes /
+            # source_path columns.
+            upload = await session.get(UploadedFileModel, job.source_file_id)
+            source_file = (
+                SourceFileInfo(
+                    filename=upload.filename,
+                    size_bytes=upload.size_bytes,
+                    content_type=upload.content_type,
+                    retained_path=upload.storage_ref or "",
+                )
+                if upload
+                else SourceFileInfo(
+                    filename="<source upload missing>",
+                    size_bytes=0,
+                    content_type="",
+                    retained_path="",
+                )
+            )
+
             return ConversionResponse(
                 conversion_id=job.id,
                 status=ConversionStatus(job.status),
-                source_file=SourceFileInfo(
-                    filename=job.source_filename,
-                    size_bytes=job.source_size_bytes,
-                    content_type=job.source_content_type,
-                    retained_path=job.source_path,
-                ),
+                source_file=source_file,
                 analysis=analysis,
                 drafts=drafts,
                 created_at=job.created_at,
@@ -940,11 +985,27 @@ class ConversionService:
             )
             jobs = result.scalars().all()
 
+            # Bulk-fetch source uploads for all jobs in this page so we can
+            # resolve source_filename without an N+1 query. Source filename
+            # lives on uploaded_files.filename (post-redesign) — the
+            # conversion_jobs.source_filename column is gone.
+            file_ids = [j.source_file_id for j in jobs if j.source_file_id]
+            uploads_by_id: dict[str, str] = {}
+            if file_ids:
+                uploads_result = await session.execute(
+                    select(UploadedFileModel).where(
+                        UploadedFileModel.file_id.in_(file_ids)
+                    )
+                )
+                uploads_by_id = {
+                    u.file_id: u.filename for u in uploads_result.scalars().all()
+                }
+
             return [
                 {
                     "conversion_id": job.id,
                     "status": job.status,
-                    "source_filename": job.source_filename,
+                    "source_filename": uploads_by_id.get(job.source_file_id, ""),
                     "failure_modes_detected": job.failure_modes_detected,
                     "scope": job.scope,
                     "created_at": (
@@ -1450,7 +1511,9 @@ status: draft
     # File Discovery Scan
     # =========================================================================
 
-    async def scan_for_runbooks(self, user_id: str) -> dict:
+    async def scan_for_runbooks(
+        self, user_id: str, organization_id: Optional[str] = None
+    ) -> dict:
         """Scan data/knowledge/ for .md files not tracked in the database.
 
         Discovers runbooks created by the KB Toolkit or dropped on disk manually.
@@ -1459,13 +1522,20 @@ status: draft
         Uses an async lock to prevent concurrent scans from creating duplicate
         drafts (e.g., React StrictMode fires the mount effect twice).
 
+        Args:
+            user_id: User triggering the scan (recorded as conversion job owner).
+            organization_id: Org for scoping the conversion job + source upload.
+                Falls back to DEFAULT_ORGANIZATION_ID when None.
+
         Returns:
             {"discovered": N, "skipped": N, "errors": [...], "drafts": [...]}
         """
         async with self._scan_lock:
-            return await self._scan_for_runbooks_impl(user_id)
+            return await self._scan_for_runbooks_impl(user_id, organization_id)
 
-    async def _scan_for_runbooks_impl(self, user_id: str) -> dict:
+    async def _scan_for_runbooks_impl(
+        self, user_id: str, organization_id: Optional[str] = None
+    ) -> dict:
         import re as _re
 
         import yaml
@@ -1614,18 +1684,23 @@ status: draft
 
             fm_meta = extract_frontmatter_metadata(content)
             raw_tags = metadata.get("tags", [])
-            tags_str = (
-                ", ".join(str(t) for t in raw_tags)
-                if isinstance(raw_tags, list)
-                else str(raw_tags) if raw_tags else None
-            )
+            # ConversionDraftModel.tags is a TagsArray TypeDecorator that
+            # expects a list[str] — the decorator handles cross-dialect
+            # serialization (TEXT[] on PG, comma-joined TEXT on SQLite).
+            # Don't pre-join; pass the list shape directly.
+            if isinstance(raw_tags, list):
+                tags_list: Optional[List[str]] = [str(t) for t in raw_tags] or None
+            elif raw_tags:
+                tags_list = [str(raw_tags)]
+            else:
+                tags_list = None
 
             # Persist as a synthetic conversion job
             conversion_id = generate_conversion_id()
             await self._persist_job(
                 conversion_id=conversion_id,
                 user_id=user_id,
-                organization_id=None,
+                organization_id=organization_id,
                 scope=scope,
                 team_id=None,
                 status=ConversionStatus.COMPLETED,
@@ -1633,7 +1708,7 @@ status: draft
                     filename=md_file.name,
                     size_bytes=md_file.stat().st_size,
                     content_type="text/markdown",
-                    retained_path="",
+                    retained_path=str(md_file),
                 ),
                 analysis=AnalysisResult(
                     is_actionable=True,
@@ -1661,7 +1736,7 @@ status: draft
                         dm.domain = fm_meta.get("domain")
                         dm.service = fm_meta.get("service")
                         dm.severity = fm_meta.get("severity")
-                        dm.tags = tags_str
+                        dm.tags = tags_list
                         dm.document_type = "runbook"
                         await session.commit()
 

@@ -1219,14 +1219,26 @@ class KnowledgeService:
 
             # Extract metadata from frontmatter
             fm_meta = extract_frontmatter_metadata(content)
-            tags_str = ", ".join(tags) if tags else None
+            # ConversionDraftModel.tags is a TagsArray TypeDecorator expecting
+            # list[str]. Pass the list shape directly; the decorator handles
+            # cross-dialect serialization.
+            tags_list: Optional[List[str]] = list(tags) if tags else None
 
             # Create SQLite record (synthetic draft, immediately verified)
             if self._db_session_factory:
                 from faultmaven.infrastructure.persistence.models import (
                     ConversionDraftModel,
                     ConversionJobModel,
+                    UploadedFileModel,
                 )
+                from faultmaven.providers.tenancy.single_tenant import (
+                    SingleTenantProvider,
+                )
+
+                # Both conversion_jobs and uploaded_files require
+                # organization_id NOT NULL — fall back to the single-tenant
+                # default when no explicit org is in scope.
+                org_id = SingleTenantProvider.DEFAULT_ORG_ID
 
                 conversion_id = f"conv_{_uuid.uuid4().hex[:12]}"
                 draft_id = f"draft_{_uuid.uuid4().hex[:12]}"
@@ -1246,16 +1258,33 @@ class KnowledgeService:
                 file_path.write_text(content, encoding="utf-8")
 
                 async with self._db_session_factory() as session:
+                    # Per the post-redesign schema: source_* columns on
+                    # conversion_jobs were dropped in favor of source_file_id
+                    # FK to uploaded_files. Create the upload row first.
+                    source_file_id = f"file_{_uuid.uuid4().hex[:12]}"
+                    upload = UploadedFileModel(
+                        file_id=source_file_id,
+                        organization_id=org_id,
+                        case_id=None,  # KB-bound, not case-bound
+                        uploaded_by=owner_id,
+                        filename=filename,
+                        size_bytes=len(content.encode()),
+                        content_type="text/markdown",
+                        storage_ref=str(file_path),
+                        upload_source="conversion_source",
+                        uploaded_at_turn=0,
+                    )
+                    session.add(upload)
+                    await session.flush()
+
                     job = ConversionJobModel(
                         id=conversion_id,
-                        user_id=owner_id or "system",
+                        user_id=owner_id,  # NULL if anonymous; FK SET NULL
+                        organization_id=org_id,
                         scope=scope,
                         team_id=team_id,
                         status="completed",
-                        source_filename=filename,
-                        source_content_type="text/markdown",
-                        source_size_bytes=len(content.encode()),
-                        source_path=str(file_path),
+                        source_file_id=source_file_id,
                         source_type="upload",
                         failure_modes_detected=0,
                         analysis_result={},
@@ -1266,6 +1295,7 @@ class KnowledgeService:
 
                     draft = ConversionDraftModel(
                         id=draft_id,
+                        organization_id=org_id,
                         conversion_id=conversion_id,
                         runbook_id=document_id,
                         title=title,
@@ -1277,11 +1307,11 @@ class KnowledgeService:
                         domain=fm_meta.get("domain"),
                         service=fm_meta.get("service"),
                         severity=fm_meta.get("severity"),
-                        tags=tags_str,
+                        tags=tags_list,
                         document_type=document_type,
                         created_at=created_at,
                         verified_at=created_at,
-                        verified_by=owner_id or "system",
+                        verified_by=owner_id,  # NULL if anonymous; FK SET NULL
                     )
                     session.add(draft)
                     await session.commit()
