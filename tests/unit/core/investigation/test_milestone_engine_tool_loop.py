@@ -1356,7 +1356,10 @@ class TestVectorizedFlagPersistence:
         class _Ev:
             def __init__(self, ev_id, size, vectorized):
                 self.evidence_id = ev_id
-                self.content_size_bytes = size
+                # Post-redesign: size is read via the extract length when no
+                # uploaded_files row backs the evidence (inline path).
+                self.extract = "x" * size
+                self.source_file_id = None
                 self.vectorized = vectorized
 
         engine, _ = await self._make_engine_with_tool(tool_success=True)
@@ -1371,6 +1374,9 @@ class TestVectorizedFlagPersistence:
             _Ev("ev_already", big, vectorized=True),
             _Ev("ev_new", big, vectorized=False),
         ]
+        # Skip the FK-traversal branch so the inline size fallback runs
+        # against the stub's extract length.
+        case.find_uploaded_file = MagicMock(return_value=None)
 
         tasks = await engine._start_proactive_vectorization(case, MagicMock())
 
@@ -1417,11 +1423,16 @@ class TestInflightVectorizeDedup:
         class _Ev:
             def __init__(self, ev_id, sz, vec):
                 self.evidence_id = ev_id
-                self.content_size_bytes = sz
+                # Post-redesign: size flows from extract length on the inline
+                # path (no source_file_id), or from uploaded_files.size_bytes
+                # via FK traversal otherwise.
+                self.extract = "x" * sz
+                self.source_file_id = None
                 self.vectorized = vec
 
         case = MagicMock()
         case.evidence = [_Ev(evidence_id, size, vectorized)]
+        case.find_uploaded_file = MagicMock(return_value=None)
         return case
 
     async def test_second_call_reuses_inflight_task(self):
@@ -1518,13 +1529,17 @@ class TestReactiveVectorizeTimeout:
             1,
         )
 
-        # Evidence large enough to pass the size gate.
+        # Evidence large enough to pass the size gate. Post-redesign:
+        # content_size_bytes was dropped — size now comes from the extract
+        # length when source_file_id is unset (inline-evidence path).
         ev = MagicMock()
         ev.evidence_id = "ev_slow"
-        ev.content_size_bytes = 1_000_000
+        ev.extract = "x" * 1_000_000
+        ev.source_file_id = None
         ev.vectorized = False
         case = MagicMock()
         case.evidence = [ev]
+        case.find_uploaded_file = MagicMock(return_value=None)
         ctx = MagicMock()
         ctx.in_memory_case = case
         ctx.case_id = "case_test"

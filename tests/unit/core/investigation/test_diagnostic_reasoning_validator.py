@@ -666,25 +666,53 @@ def _stub_case(
     The helpers use getattr for all case fields so a SimpleNamespace is
     sufficient — no Pydantic construction or full model wiring needed.
     """
-    return SimpleNamespace(
+    ev_list = evidence or []
+    # Auto-collect any UploadedFile stubs threaded through _stub_evidence so
+    # callers don't have to wire two lists manually.
+    uf = [
+        getattr(e, "_uploaded_file", None)
+        for e in ev_list
+        if getattr(e, "_uploaded_file", None) is not None
+    ]
+    ns = SimpleNamespace(
         current_turn=current_turn,
-        evidence=evidence or [],
+        evidence=ev_list,
         hypotheses=hypotheses or {},
         investigation_journal=journal or [],
+        uploaded_files=uf,
     )
+    # Mimic Case.find_uploaded_file (post-redesign aggregate-traversal helper).
+    # Tests that exercise file-backed evidence attach UploadedFile stubs via
+    # _stub_evidence(file=...) which appends here; the lookup matches by
+    # file_id like the real implementation.
+    ns.find_uploaded_file = lambda fid: next(
+        (f for f in uf if getattr(f, "file_id", None) == fid), None
+    )
+    return ns
 
 
 def _stub_evidence(
     *,
     collected_at_turn: int,
-    original_filename: str | None = None,
-    data_type: str | None = None,
+    source_type: str | None = None,
+    filename: str | None = None,
 ):
-    return SimpleNamespace(
+    """Build an evidence stub. Pass ``source_type`` for type-label matching.
+    Pass ``filename`` to attach a synthetic UploadedFile (caller must add the
+    returned ``_uploaded_file`` to a stub case's ``uploaded_files`` list)."""
+    file_id = None
+    uploaded_file = None
+    if filename is not None:
+        file_id = f"file_{filename.replace('.', '_').replace('/', '_')}"
+        uploaded_file = SimpleNamespace(file_id=file_id, filename=filename)
+    st = SimpleNamespace(value=source_type) if source_type else None
+    ev = SimpleNamespace(
         collected_at_turn=collected_at_turn,
-        original_filename=original_filename,
-        data_type=data_type,
+        source_file_id=file_id,
+        source_type=st,
     )
+    ev._uploaded_file = uploaded_file  # caller threads into case.uploaded_files
+    return ev
 
 
 def _stub_hypothesis(*, statement: str, status: str = "refuted"):
@@ -768,17 +796,18 @@ class TestReferencesPriorContext:
     def test_short_response_exempt(self):
         """Responses below min_length return True (exempt from the check)."""
         case = _stub_case(
-            evidence=[_stub_evidence(collected_at_turn=1, original_filename="x.log")]
+            evidence=[_stub_evidence(collected_at_turn=1, filename="x.log")]
         )
         assert _references_prior_context("Short.", case, min_length=300) is True
 
     @pytest.mark.unit
     def test_filename_label_match_counts_as_reference(self):
+        # Filename matching now flows through case.find_uploaded_file (FK
+        # traversal): _stub_evidence(filename=...) attaches a synthetic
+        # UploadedFile that _stub_case auto-wires into uploaded_files.
         case = _stub_case(
             current_turn=5,
-            evidence=[
-                _stub_evidence(collected_at_turn=1, original_filename="nginx-error.log")
-            ],
+            evidence=[_stub_evidence(collected_at_turn=1, filename="nginx-error.log")],
         )
         response = (
             "Looking at nginx-error.log from earlier, I can see the pattern "
@@ -787,11 +816,13 @@ class TestReferencesPriorContext:
         assert _references_prior_context(response, case) is True
 
     @pytest.mark.unit
-    def test_data_type_label_match_counts_as_reference(self):
+    def test_source_type_label_match_counts_as_reference(self):
+        # Post-redesign: data_type was dropped; source_type carries the
+        # category label that this branch now matches against.
         case = _stub_case(
             current_turn=5,
             evidence=[
-                _stub_evidence(collected_at_turn=1, data_type="deployment_history")
+                _stub_evidence(collected_at_turn=1, source_type="deployment_history")
             ],
         )
         response = (
@@ -806,9 +837,7 @@ class TestReferencesPriorContext:
         is about integrating older content."""
         case = _stub_case(
             current_turn=5,
-            evidence=[
-                _stub_evidence(collected_at_turn=5, original_filename="fresh.log")
-            ],
+            evidence=[_stub_evidence(collected_at_turn=5, filename="fresh.log")],
         )
         response = "Looking at fresh.log, I see the pattern. " + "x " * 200
         assert _references_prior_context(response, case) is False
@@ -833,9 +862,7 @@ class TestReferencesPriorContext:
     def test_no_match_returns_false(self):
         case = _stub_case(
             current_turn=5,
-            evidence=[
-                _stub_evidence(collected_at_turn=1, original_filename="alpha.log")
-            ],
+            evidence=[_stub_evidence(collected_at_turn=1, filename="alpha.log")],
         )
         # Response is long and discusses something unrelated to the prior evidence
         response = (

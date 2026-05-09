@@ -222,7 +222,15 @@ def record_triage_escalation_if_same_turn(evidence, case, tool_name: str) -> boo
             return False
         if collected_at_turn != current_turn:
             return False
-        data_type = getattr(evidence, "data_type", None) or "unknown"
+        # Post-redesign: Evidence.data_type was dropped; the equivalent
+        # category lives on Evidence.source_type (logs / metrics /
+        # configuration / visual / user_description). Use its enum value
+        # for the metric label, falling back to "unknown" only when the
+        # field is unset (label name preserved for dashboard compatibility).
+        source_type = getattr(evidence, "source_type", None)
+        data_type = (
+            getattr(source_type, "value", source_type) if source_type else "unknown"
+        )
         AGENT_TRIAGE_ESCALATION_TOTAL.labels(
             data_type=str(data_type),
             tool=tool_name,

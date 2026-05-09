@@ -406,16 +406,26 @@ def _references_prior_context(
 
     response_lower = response.lower()
 
-    # Prior evidence — by label (filename / data_type)
+    # Prior evidence — by label (filename via FK traversal / source_type).
+    # Post-redesign: original_filename and data_type were dropped from
+    # Evidence; the filename now lives on uploaded_files (via source_file_id)
+    # and the type label is on Evidence.source_type. Use the same aggregate-
+    # traversal pattern as the rest of the case-domain consumer code.
     current_turn = getattr(case, "current_turn", 0) or 0
     evidence = getattr(case, "evidence", []) or []
     for ev in evidence:
         collected_at_turn = getattr(ev, "collected_at_turn", None)
         if collected_at_turn is None or collected_at_turn >= current_turn:
             continue  # not prior — skip
-        for attr in ("original_filename", "data_type"):
-            label = getattr(ev, attr, None)
-            if label and len(str(label)) > 3 and str(label).lower() in response_lower:
+        labels: list[str] = []
+        file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
+        if file_meta is not None and file_meta.filename:
+            labels.append(str(file_meta.filename))
+        source_type = getattr(ev, "source_type", None)
+        if source_type is not None:
+            labels.append(str(getattr(source_type, "value", source_type)))
+        for label in labels:
+            if label and len(label) > 3 and label.lower() in response_lower:
                 return True
 
     # Refuted / retired hypotheses — by statement keywords

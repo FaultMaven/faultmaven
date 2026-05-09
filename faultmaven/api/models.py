@@ -236,57 +236,12 @@ class EvidenceUpdateRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
-class EvidenceResponse(BaseModel):
-    """Response model for evidence artifact."""
-
-    evidence_id: str
-    case_id: str
-    user_id: str
-    organization_id: str
-    original_filename: str
-    evidence_type: EvidenceArtifactType
-    mime_type: str
-    file_size: int
-    description: Optional[str] = None
-    is_primary: bool
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-    @classmethod
-    def from_domain(cls, evidence: Any) -> "EvidenceResponse":
-        """Create EvidenceResponse from a domain evidence object.
-
-        Args:
-            evidence: A domain object exposing the fields below.
-
-        Returns:
-            EvidenceResponse instance
-        """
-        return cls(
-            evidence_id=evidence.evidence_id,
-            case_id=evidence.case_id,
-            user_id=evidence.user_id,
-            organization_id=evidence.organization_id,
-            original_filename=evidence.original_filename,
-            evidence_type=evidence.evidence_type,
-            mime_type=evidence.mime_type,
-            file_size=evidence.file_size,
-            description=evidence.description,
-            is_primary=evidence.is_primary,
-            created_at=evidence.created_at,
-            updated_at=evidence.updated_at,
-        )
-
-
-class EvidenceListResponse(BaseModel):
-    """Response model for evidence list."""
-
-    items: List[EvidenceResponse]
-    total: int
-    limit: int
-    offset: int
+# EvidenceResponse / EvidenceListResponse removed (2026-05): both classes
+# were dead code referencing dropped Evidence attributes (original_filename,
+# evidence_type, mime_type, file_size, user_id) — none of which survive on
+# the post-redesign Evidence model. Verified by grep: no consumer imported
+# either class. Evidence is exposed to the API via the case-detail aggregate
+# (case_ui_adapter), not via a standalone evidence-list endpoint.
 
 
 # ============================================================

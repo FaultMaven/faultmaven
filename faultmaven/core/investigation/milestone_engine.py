@@ -2909,7 +2909,16 @@ class MilestoneEngine:
         tasks: dict[str, asyncio.Task] = {}
 
         for ev in getattr(case, "evidence", []):
-            size = getattr(ev, "content_size_bytes", 0) or 0
+            # Post-redesign: content_size_bytes was dropped. For file-backed
+            # evidence, size lives on uploaded_files.size_bytes; for inline
+            # evidence, fall back to the length of the in-memory extract
+            # (which won't typically clear the vectorization threshold).
+            file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
+            size = (
+                int(file_meta.size_bytes)
+                if file_meta and file_meta.size_bytes
+                else len(getattr(ev, "extract", "") or "")
+            )
             if not (
                 size >= min_size
                 and size <= VECTORIZATION_MAX_SIZE_BYTES
@@ -3196,7 +3205,15 @@ class MilestoneEngine:
             if case is not None:
                 for ev in getattr(case, "evidence", []) or []:
                     if getattr(ev, "evidence_id", None) == evidence_id:
-                        ev_size = int(getattr(ev, "content_size_bytes", 0) or 0)
+                        # Post-redesign: content_size_bytes dropped from
+                        # Evidence; size lives on uploaded_files via FK.
+                        file_meta = case.find_uploaded_file(
+                            getattr(ev, "source_file_id", None)
+                        )
+                        if file_meta and file_meta.size_bytes:
+                            ev_size = int(file_meta.size_bytes)
+                        else:
+                            ev_size = len(getattr(ev, "extract", "") or "")
                         break
         except Exception:
             return result_text
