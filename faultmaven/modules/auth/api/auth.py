@@ -56,6 +56,10 @@ from faultmaven.modules.auth.domain.models.auth import DevUser, TokenStatus
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
+from faultmaven.modules.auth.domain.services.organization_api_service import (
+    ROLE_ADMIN,
+    ROLE_OWNER,
+)
 from faultmaven.utils.serialization import to_json_compatible
 
 # Initialize router and logger
@@ -764,6 +768,60 @@ async def get_current_user_profile(
         raise HTTPException(
             status_code=500, detail=f"Could not retrieve user profile: {str(e)}"
         )
+
+
+class AvailableScopesResponse(BaseModel):
+    """Knowledge-base scopes the calling user may publish to."""
+
+    scopes: List[str]
+
+
+@router.get("/me/available-scopes", response_model=AvailableScopesResponse)
+@trace("auth_available_scopes")
+async def get_available_scopes(
+    request: Request,
+    current_user: DevUser = Depends(require_authentication),
+) -> AvailableScopesResponse:
+    """Return KB scopes the calling user can target when publishing.
+
+    Gated by the user's actual memberships, not AUTH_MODE — the picker
+    should omit any scope that would produce an unresolvable runbook
+    (e.g. TEAM when the user has no team membership).
+
+    Always returned: ``personal``, ``global`` (GLOBAL write is admin-gated
+    by the publish endpoint, not by this picker). ``team`` is added when
+    the user has any team membership; ``organization`` is added when the
+    user's org has 2+ members or the user is an org owner/admin.
+    """
+    scopes: List[str] = ["personal", "global"]
+
+    org_id = getattr(current_user, "organization_id", None)
+
+    team_service = getattr(request.app.state, "team_service", None)
+    if team_service is not None and org_id:
+        try:
+            teams = await team_service.list_user_teams(current_user.user_id, org_id)
+            if teams:
+                scopes.insert(1, "team")
+        except Exception as e:
+            logger.warning(f"available-scopes: team lookup failed: {e}")
+
+    org_service = getattr(request.app.state, "organization_service", None)
+    if org_service is not None and org_id:
+        try:
+            members = await org_service.list_organization_members(org_id)
+            is_org_admin = any(
+                m.user_id == current_user.user_id
+                and m.role_id in (ROLE_OWNER, ROLE_ADMIN)
+                for m in members
+            )
+            if len(members) >= 2 or is_org_admin:
+                # Insert before "global" to keep ordering predictable
+                scopes.insert(-1, "organization")
+        except Exception as e:
+            logger.warning(f"available-scopes: org member lookup failed: {e}")
+
+    return AvailableScopesResponse(scopes=scopes)
 
 
 @router.get("/health")
