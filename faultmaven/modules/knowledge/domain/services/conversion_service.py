@@ -15,7 +15,6 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
-
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -1330,17 +1329,23 @@ class ConversionService:
                     import uuid as _uuid
 
                     knowledge_item_id = f"kb_{_uuid.uuid4().hex[:12]}"
-                    chunks_created = (
-                        await self._knowledge_service.ingest_to_vector_store(
-                            document_id=knowledge_item_id,
-                            title=dm.title,
-                            content=content,
-                            document_type="runbook",
-                            source_url=f"conversion:{conversion_id}",
-                            scope=job.scope,
-                            owner_id=user_id,
-                            team_id=job.team_id,
-                        )
+                    # ingest_runbook writes both the relational knowledge_items
+                    # row AND the ChromaDB embeddings. SQL-first ordering means
+                    # a ChromaDB failure leaves the SQL row in place for a
+                    # scan-and-recover pass to re-embed; we keep the
+                    # log-and-continue handler exactly so that recovery path
+                    # has something to discover.
+                    chunks_created = await self._knowledge_service.ingest_runbook(
+                        document_id=knowledge_item_id,
+                        title=dm.title,
+                        content=content,
+                        organization_id=job.organization_id,
+                        document_type="runbook",
+                        source_url=f"conversion:{conversion_id}",
+                        scope=job.scope,
+                        owner_id=user_id,
+                        team_id=job.team_id,
+                        verified_by=user_id,
                     )
                 except Exception as e:
                     logger.error(f"Ingestion failed for draft {draft_id}: {e}")

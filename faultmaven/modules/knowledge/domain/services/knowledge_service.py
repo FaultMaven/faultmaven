@@ -1162,23 +1162,89 @@ class KnowledgeService:
         except Exception as e:
             logger.error(f"Failed to remove document from vector store: {e}")
 
-    async def ingest_to_vector_store(
+    async def ingest_runbook(
         self,
         document_id: str,
         title: str,
         content: str,
+        organization_id: str,
         document_type: str = "runbook",
         tags: Optional[List[str]] = None,
         source_url: Optional[str] = None,
         scope: str = "global",
         owner_id: Optional[str] = None,
         team_id: Optional[str] = None,
+        verified_by: Optional[str] = None,
     ) -> int:
-        """Chunk, embed, and store a document in ChromaDB. No SQLite or Redis writes.
+        """Promote runbook content to a fully-published KnowledgeItem.
 
-        This is the public API for verify_draft and batch ingestion.
-        Returns the number of chunks indexed (0 on failure).
+        Atomically maintains both stores by writing the relational source-of-
+        truth first, then the ChromaDB embeddings. On ChromaDB failure: leave
+        the SQL row, surface the error, do NOT roll back. The recovery path
+        is a future scan-and-recover pass that re-embeds rows missing from
+        ChromaDB; rolling back would erase the only evidence that the row
+        needs re-embedding.
+
+        Args:
+            document_id: Stable id used for both the relational row and the
+                ChromaDB document.
+            organization_id: Required for the KnowledgeItem row (NOT NULL FK).
+            verified_by: User id of the verifier when called from verify_draft;
+                None for unverified uploads. Drives initial verification_level.
+
+        Returns:
+            Number of chunks indexed in ChromaDB. The SQL row exists either
+            way (success or ChromaDB failure).
         """
+        # Lazy imports keep this method self-contained against the knowledge
+        # vertical (avoids top-level cycles between service and persistence).
+        from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+            KnowledgeItem,
+            KnowledgeItemType,
+            KnowledgeScope,
+            VerificationLevel,
+        )
+        from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+            DatabaseKnowledgeItemRepository,
+        )
+
+        now = datetime.now(timezone.utc)
+
+        # 1) SQL first — relational source-of-truth. If this fails, ChromaDB
+        # is never touched; if ChromaDB later fails, the SQL row remains
+        # discoverable by a scan-and-recover pass.
+        if self._db_session_factory is None:
+            raise ServiceException(
+                "ingest_runbook requires a db_session_factory; "
+                "vector-only ingestion is no longer supported"
+            )
+        item = KnowledgeItem(
+            item_id=document_id,
+            organization_id=organization_id,
+            title=title,
+            content=content,
+            item_type=KnowledgeItemType.RUNBOOK,
+            scope=KnowledgeScope(scope),
+            owner_id=owner_id,
+            team_id=team_id,
+            tags=list(tags) if tags else [],
+            source_url=source_url,
+            verification_level=(
+                VerificationLevel.COMMUNITY
+                if verified_by
+                else VerificationLevel.EXPERIMENTAL
+            ),
+            verified_by=verified_by,
+            verified_at=now if verified_by else None,
+            created_at=now,
+            updated_at=now,
+        )
+        async with self._db_session_factory() as session:
+            repo = DatabaseKnowledgeItemRepository(session)
+            await repo.create(item)
+
+        # 2) ChromaDB second — chunks + embeddings. Failure here leaves the
+        # SQL row in place for recovery.
         doc_model = KnowledgeBaseDocument(
             document_id=document_id,
             title=title,
@@ -1189,8 +1255,8 @@ class KnowledgeService:
             scope=scope,
             owner_id=owner_id,
             team_id=team_id,
-            created_at=to_json_compatible(datetime.now(timezone.utc)),
-            updated_at=to_json_compatible(datetime.now(timezone.utc)),
+            created_at=to_json_compatible(now),
+            updated_at=to_json_compatible(now),
         )
         return await self._index_document_in_vector_store(doc_model)
 
@@ -1224,6 +1290,16 @@ class KnowledgeService:
             # cross-dialect serialization.
             tags_list: Optional[List[str]] = list(tags) if tags else None
 
+            # Both conversion_jobs / uploaded_files / knowledge_items require
+            # organization_id NOT NULL — fall back to the single-tenant
+            # default when no explicit org is in scope. Hoisted out of the
+            # db-session block so ingest_runbook below has it regardless.
+            from faultmaven.providers.tenancy.single_tenant import (
+                SingleTenantProvider,
+            )
+
+            org_id = SingleTenantProvider.DEFAULT_ORG_ID
+
             # Create SQLite record (synthetic draft, immediately verified)
             if self._db_session_factory:
                 from faultmaven.infrastructure.persistence.models import (
@@ -1231,14 +1307,6 @@ class KnowledgeService:
                     ConversionJobModel,
                     UploadedFileModel,
                 )
-                from faultmaven.providers.tenancy.single_tenant import (
-                    SingleTenantProvider,
-                )
-
-                # Both conversion_jobs and uploaded_files require
-                # organization_id NOT NULL — fall back to the single-tenant
-                # default when no explicit org is in scope.
-                org_id = SingleTenantProvider.DEFAULT_ORG_ID
 
                 conversion_id = f"conv_{_uuid.uuid4().hex[:12]}"
                 draft_id = f"draft_{_uuid.uuid4().hex[:12]}"
@@ -1316,17 +1384,22 @@ class KnowledgeService:
                     session.add(draft)
                     await session.commit()
 
-            # Ingest into ChromaDB
-            chunks_created = await self.ingest_to_vector_store(
+            # Ingest both relationally and into ChromaDB.
+            # upload_document is called by anonymous / non-verified upload
+            # paths, so verified_by is None (verification_level defaults to
+            # EXPERIMENTAL inside ingest_runbook).
+            chunks_created = await self.ingest_runbook(
                 document_id=document_id,
                 title=title,
                 content=content,
+                organization_id=org_id,
                 document_type=document_type,
                 tags=tags,
                 source_url=source_url,
                 scope=scope,
                 owner_id=owner_id,
                 team_id=team_id,
+                verified_by=None,
             )
 
             logger.info(

@@ -321,6 +321,14 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 not_helpful_count=item.not_helpful_count,
                 last_retrieved_at=item.last_retrieved_at,
                 is_published=item.is_published,
+                # Verification metadata. Coerce IntEnum → int for the column;
+                # the IntEnum compares equal to its value but SQLAlchemy
+                # serializes the int form more predictably across dialects.
+                verification_level=int(item.verification_level),
+                verification_reason=item.verification_reason,
+                verified_by=item.verified_by,
+                verified_at=item.verified_at,
+                source_suggestion_id=item.source_suggestion_id,
                 created_at=item.created_at,
                 updated_at=item.updated_at,
                 knowledge_metadata=json.dumps(item.metadata) if item.metadata else "{}",
@@ -404,6 +412,11 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                     not_helpful_count=item.not_helpful_count,
                     last_retrieved_at=item.last_retrieved_at,
                     is_published=item.is_published,
+                    verification_level=int(item.verification_level),
+                    verification_reason=item.verification_reason,
+                    verified_by=item.verified_by,
+                    verified_at=item.verified_at,
+                    source_suggestion_id=item.source_suggestion_id,
                     updated_at=item.updated_at,
                     knowledge_metadata=(
                         json.dumps(item.metadata) if item.metadata else "{}"
@@ -745,6 +758,11 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             not_helpful_count=model.not_helpful_count,
             last_retrieved_at=self._ensure_tz_aware(model.last_retrieved_at),
             is_published=model.is_published,
+            verification_level=model.verification_level,
+            verification_reason=model.verification_reason,
+            verified_by=model.verified_by,
+            verified_at=self._ensure_tz_aware(model.verified_at),
+            source_suggestion_id=model.source_suggestion_id,
             created_at=self._ensure_tz_aware(model.created_at),
             updated_at=self._ensure_tz_aware(model.updated_at),
             metadata=metadata,

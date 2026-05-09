@@ -1,0 +1,275 @@
+"""Integration test for KnowledgeService.ingest_runbook against a real
+in-memory SQLAlchemy engine.
+
+The method is the single atomic dual-write entry point introduced in
+commit H (post-redesign cleanup). It replaces the old
+``ingest_to_vector_store``, which silently published to ChromaDB without
+ever writing the relational ``knowledge_items`` row — leaving every
+verified runbook with a dangling ``ConversionDraftModel.knowledge_item_id``.
+
+This test pins three invariants:
+
+1. **Happy path** — the SQL row exists with the expected verification
+   level, scope, and timestamps; ChromaDB ingestion was invoked.
+2. **ChromaDB failure leaves the SQL row in place** — the recovery
+   contract requires the relational source-of-truth to remain
+   discoverable so a future scan-and-recover pass can re-embed.
+3. **SQL failure short-circuits before ChromaDB** — ordering matters;
+   ChromaDB must not be touched if the SQL write didn't succeed.
+
+If any of those regress, this test fails on a real INSERT, not a mock.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from faultmaven.infrastructure.persistence.models import (
+    Base,
+    EnterpriseModel,
+    KnowledgeItemModel,
+    OrganizationModel,
+)
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    KnowledgeItemType,
+    KnowledgeScope,
+    VerificationLevel,
+)
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    KnowledgeService,
+)
+
+# =============================================================================
+# Fixtures
+# =============================================================================
+
+DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
+DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
+
+
+@pytest.fixture(scope="function")
+async def engine():
+    eng = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield eng
+    await eng.dispose()
+
+
+@pytest.fixture(scope="function")
+async def session_factory(engine):
+    return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+@pytest.fixture(scope="function")
+async def seeded_session_factory(session_factory):
+    """Seed default enterprise + org so knowledge_items.organization_id FK is satisfied."""
+    async with session_factory() as session:
+        session.add(
+            EnterpriseModel(
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
+                name="Default Enterprise",
+                slug="default",
+            )
+        )
+        session.add(
+            OrganizationModel(
+                organization_id=DEFAULT_ORG_ID,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
+                name="Default Org",
+                slug="default-org",
+            )
+        )
+        await session.commit()
+    return session_factory
+
+
+def make_service(
+    session_factory,
+    *,
+    chroma_returns: int = 5,
+    chroma_raises: Optional[Exception] = None,
+) -> KnowledgeService:
+    """Construct a KnowledgeService wired with mocks for everything except
+    the db_session_factory. The vector-store half is mocked because we
+    want to assert SQL persistence without booting ChromaDB.
+    """
+    service = KnowledgeService(
+        knowledge_ingester=MagicMock(),
+        sanitizer=MagicMock(),
+        tracer=MagicMock(),
+        vector_store=MagicMock(),
+        db_session_factory=session_factory,
+    )
+
+    # _index_document_in_vector_store is the inner ChromaDB call.
+    if chroma_raises is not None:
+        service._index_document_in_vector_store = AsyncMock(side_effect=chroma_raises)
+    else:
+        service._index_document_in_vector_store = AsyncMock(return_value=chroma_returns)
+    return service
+
+
+# =============================================================================
+# Tests
+# =============================================================================
+
+
+class TestIngestRunbookDualWrite:
+    """Invariants of the renamed ingest_runbook method."""
+
+    @pytest.mark.asyncio
+    async def test_happy_path_writes_sql_row_then_chromadb(
+        self, seeded_session_factory
+    ):
+        """SQL row exists with verifier metadata; ChromaDB was invoked once."""
+        service = make_service(seeded_session_factory, chroma_returns=7)
+        item_id = "kb_abc123def456"
+
+        chunks = await service.ingest_runbook(
+            document_id=item_id,
+            title="Redis OOM",
+            content="# Redis OOM\n\nIncrease maxmemory.",
+            organization_id=DEFAULT_ORG_ID,
+            scope="global",
+            owner_id="user-1",
+            verified_by="user-1",
+        )
+
+        assert chunks == 7
+        assert service._index_document_in_vector_store.await_count == 1
+
+        async with seeded_session_factory() as session:
+            row = (
+                await session.execute(
+                    select(KnowledgeItemModel).where(
+                        KnowledgeItemModel.item_id == item_id
+                    )
+                )
+            ).scalar_one_or_none()
+            assert row is not None
+            assert row.title == "Redis OOM"
+            assert row.scope == "global"
+            assert row.organization_id == DEFAULT_ORG_ID
+            assert row.item_type == KnowledgeItemType.RUNBOOK.value
+            assert row.verification_level == int(VerificationLevel.COMMUNITY)
+            assert row.verified_by == "user-1"
+            assert row.verified_at is not None
+
+    @pytest.mark.asyncio
+    async def test_unverified_upload_uses_experimental_level(
+        self, seeded_session_factory
+    ):
+        """upload_document path passes verified_by=None → EXPERIMENTAL level, no verified_at."""
+        service = make_service(seeded_session_factory)
+        item_id = "kb_unverif00001"
+
+        await service.ingest_runbook(
+            document_id=item_id,
+            title="Unverified",
+            content="raw content",
+            organization_id=DEFAULT_ORG_ID,
+            scope="personal",
+            owner_id="user-2",
+            verified_by=None,
+        )
+
+        async with seeded_session_factory() as session:
+            row = (
+                await session.execute(
+                    select(KnowledgeItemModel).where(
+                        KnowledgeItemModel.item_id == item_id
+                    )
+                )
+            ).scalar_one()
+            assert row.verification_level == int(VerificationLevel.EXPERIMENTAL)
+            assert row.verified_by is None
+            assert row.verified_at is None
+            assert row.scope == KnowledgeScope.PERSONAL.value
+
+    @pytest.mark.asyncio
+    async def test_chromadb_failure_leaves_sql_row(self, seeded_session_factory):
+        """If ChromaDB fails, the SQL row must remain — recovery scans
+        re-embed missing rows; rolling back would erase the only signal."""
+        service = make_service(
+            seeded_session_factory, chroma_raises=RuntimeError("chroma down")
+        )
+        item_id = "kb_chromaf00001"
+
+        with pytest.raises(RuntimeError, match="chroma down"):
+            await service.ingest_runbook(
+                document_id=item_id,
+                title="Doomed embed",
+                content="content",
+                organization_id=DEFAULT_ORG_ID,
+                scope="global",
+                verified_by="user-3",
+            )
+
+        async with seeded_session_factory() as session:
+            row = (
+                await session.execute(
+                    select(KnowledgeItemModel).where(
+                        KnowledgeItemModel.item_id == item_id
+                    )
+                )
+            ).scalar_one_or_none()
+            assert (
+                row is not None
+            ), "SQL row must persist on ChromaDB failure (scan-and-recover contract)"
+            assert row.title == "Doomed embed"
+
+    @pytest.mark.asyncio
+    async def test_sql_failure_short_circuits_chromadb(self, seeded_session_factory):
+        """If the SQL write fails (here: duplicate item_id), ChromaDB is
+        never invoked — there's no inverted state to recover from."""
+        service = make_service(seeded_session_factory)
+        item_id = "kb_dup00000001"
+
+        # First write succeeds.
+        await service.ingest_runbook(
+            document_id=item_id,
+            title="Original",
+            content="c",
+            organization_id=DEFAULT_ORG_ID,
+            scope="global",
+        )
+        first_chroma_count = service._index_document_in_vector_store.await_count
+
+        # Second write with the same id should raise from the SQL repo
+        # (PRIMARY KEY violation on knowledge_items.item_id) and leave
+        # ChromaDB untouched on this attempt.
+        with pytest.raises(Exception):
+            await service.ingest_runbook(
+                document_id=item_id,
+                title="Duplicate",
+                content="c2",
+                organization_id=DEFAULT_ORG_ID,
+                scope="global",
+            )
+
+        assert service._index_document_in_vector_store.await_count == first_chroma_count
+
+    @pytest.mark.asyncio
+    async def test_missing_session_factory_raises(self, engine):
+        """ingest_runbook without a db_session_factory is a misconfiguration
+        (not a graceful no-op). Vector-only ingestion was the bug we're fixing."""
+        service = KnowledgeService(
+            knowledge_ingester=MagicMock(),
+            sanitizer=MagicMock(),
+            tracer=MagicMock(),
+            vector_store=MagicMock(),
+            db_session_factory=None,
+        )
+        with pytest.raises(Exception, match="db_session_factory"):
+            await service.ingest_runbook(
+                document_id="kb_nosession001",
+                title="x",
+                content="x",
+                organization_id=DEFAULT_ORG_ID,
+            )

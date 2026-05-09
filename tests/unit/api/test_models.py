@@ -23,8 +23,6 @@ from faultmaven.api.models import (
     CaseResponse,
     CaseUpdateRequest,
     ErrorResponse,
-    EvidenceListResponse,
-    EvidenceResponse,
     EvidenceUpdateRequest,
     SessionCreateRequest,
     SessionListResponse,
@@ -34,7 +32,6 @@ from faultmaven.api.models import (
 )
 from faultmaven.models.investigation_session import SessionStatus
 from faultmaven.modules.case.domain.models import CaseSeverity, CaseStatus
-from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
 
 # ============================================================
 # CaseCreateRequest Tests
@@ -423,75 +420,11 @@ class TestEvidenceUpdateRequest:
         assert request.is_primary is True
 
 
-# ============================================================
-# EvidenceResponse Tests
-# ============================================================
-
-
-class TestEvidenceResponse:
-    """Tests for EvidenceResponse model."""
-
-    def test_evidence_response_all_fields(self):
-        """Test evidence response with all fields."""
-        now = datetime.now(timezone.utc)
-        response = EvidenceResponse(
-            evidence_id="evd_123",
-            case_id="case_456",
-            user_id="user_789",
-            organization_id="org_abc",
-            original_filename="screenshot.png",
-            evidence_type=EvidenceArtifactType.SCREENSHOT,
-            mime_type="image/png",
-            file_size=1024,
-            description="Login error",
-            is_primary=True,
-            created_at=now,
-            updated_at=now,
-        )
-        assert response.evidence_id == "evd_123"
-        assert response.evidence_type == EvidenceArtifactType.SCREENSHOT
-        assert response.file_size == 1024
-
-    def test_evidence_response_from_domain(self):
-        """Test creating response from domain model."""
-        now = datetime.now(timezone.utc)
-        mock_evidence = MagicMock()
-        mock_evidence.evidence_id = "evd_123"
-        mock_evidence.case_id = "case_456"
-        mock_evidence.user_id = "user_789"
-        mock_evidence.organization_id = "org_abc"
-        mock_evidence.original_filename = "error.log"
-        mock_evidence.evidence_type = EvidenceArtifactType.LOG_FILE
-        mock_evidence.mime_type = "text/plain"
-        mock_evidence.file_size = 2048
-        mock_evidence.description = "Error logs"
-        mock_evidence.is_primary = False
-        mock_evidence.created_at = now
-        mock_evidence.updated_at = now
-
-        response = EvidenceResponse.from_domain(mock_evidence)
-        assert response.evidence_id == "evd_123"
-        assert response.evidence_type == EvidenceArtifactType.LOG_FILE
-        assert response.original_filename == "error.log"
-
-    def test_evidence_response_all_types(self):
-        """Test all evidence types."""
-        now = datetime.now(timezone.utc)
-        for evidence_type in EvidenceArtifactType:
-            response = EvidenceResponse(
-                evidence_id="evd_123",
-                case_id="case_456",
-                user_id="user_789",
-                organization_id="org_abc",
-                original_filename="file",
-                evidence_type=evidence_type,
-                mime_type="application/octet-stream",
-                file_size=100,
-                is_primary=False,
-                created_at=now,
-                updated_at=now,
-            )
-            assert response.evidence_type == evidence_type
+# EvidenceResponse / EvidenceListResponse tests removed in 2026-05 cleanup
+# — both classes were deleted from faultmaven/api/models.py because they
+# referenced dropped Evidence attributes (original_filename, evidence_type,
+# mime_type, file_size, user_id) and were never imported by any consumer.
+# Evidence is now exposed via the case-detail aggregate (case_ui_adapter).
 
 
 # ============================================================
