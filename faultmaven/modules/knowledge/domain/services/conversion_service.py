@@ -1311,10 +1311,12 @@ class ConversionService:
                 try:
                     raw_fm = yaml.safe_load(fm_match.group(1)) or {}
                     raw_tags = raw_fm.get("tags", [])
+                    # ConversionDraftModel.tags is a TagsArray TypeDecorator
+                    # expecting list[str]; pass the list shape directly.
                     if isinstance(raw_tags, list):
-                        dm.tags = ", ".join(str(t) for t in raw_tags)
-                    elif isinstance(raw_tags, str):
-                        dm.tags = raw_tags
+                        dm.tags = [str(t) for t in raw_tags] or None
+                    elif isinstance(raw_tags, str) and raw_tags:
+                        dm.tags = [raw_tags]
                 except Exception:
                     pass
 
