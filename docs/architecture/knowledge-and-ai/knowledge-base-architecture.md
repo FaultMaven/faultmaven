@@ -456,7 +456,7 @@ In the local (single-user) deployment, this is the only KB tier available. The u
 
 ### Storage Architecture
 
-**Write path**: `upload_document()` → SQLite (`conversion_drafts` record) + ChromaDB (chunked vector embeddings via `ingest_to_vector_store()`)
+**Write path**: `upload_document()` and `verify_draft()` → `ingest_runbook()`, which writes the relational `knowledge_items` row first (source-of-truth) and then the ChromaDB chunks + embeddings. Both stores receive the same `kb_<uuid>` id; ChromaDB-side failures leave the SQL row in place for a future scan-and-recover pass to re-embed (rolling back would erase the only signal that re-embedding is needed). Conversion-bookkeeping rows (`conversion_jobs`, `conversion_drafts`) are written in addition for the upload-flow audit trail.
 
 **Read path**: `list_documents()` and `get_document()` read from **SQLite** (`conversion_drafts` joined with `conversion_jobs`). Full content read from markdown file on disk. ChromaDB is not queried for listing or retrieval.
 

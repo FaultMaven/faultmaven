@@ -53,12 +53,12 @@ Scope and ownership come from the joined `conversion_jobs` table (`scope`, `user
   1. Validate and read file
   2. Create `ConversionDraftModel` + `ConversionJobModel` in SQLite (status=verified)
   3. Write markdown to disk in `data/knowledge/{scope}/`
-  4. Chunk + embed (BGE-M3) + store in ChromaDB via `ingest_to_vector_store()`
+  4. Insert `knowledge_items` row + chunk/embed/store in ChromaDB via `ingest_runbook()` (SQL-first dual write)
   5. Return `{ document_id, status, metadata }`
 
 - **Activate** (POST `/api/v1/knowledge/conversions/{id}/drafts/{draft_id}/verify`)
   1. Update SQLite: status=verified, populate domain/service/severity/tags from frontmatter
-  2. Chunk + embed + store in ChromaDB via `ingest_to_vector_store()`
+  2. Insert `knowledge_items` row (verification_level=COMMUNITY, verified_by=user_id) + chunk/embed/store in ChromaDB via `ingest_runbook()` (SQL-first dual write)
   3. Set `knowledge_item_id` on draft record
 
 - **Batch Activate** (POST `/api/v1/knowledge/drafts/verify-batch`)

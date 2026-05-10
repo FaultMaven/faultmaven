@@ -589,11 +589,15 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
-### Key Tables (33 total, 3 domains)
+### Key Tables (32 total, 4 domains)
 
 **User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes`
 
-**Case domain:** `cases` (includes `is_archived` bool + `archived_at` for data lifecycle), `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `evidence`, `evidence_artifacts`, `hypotheses`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `agent_tool_calls_v2`, `standalone_evidence`, `knowledge_items`, `knowledge_suggestions`, `sessions`, `reports`, `conversion_jobs`, `conversion_drafts`
+**Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `reports`, `conversion_jobs`, `conversion_drafts`
+
+**Knowledge domain (case-adjacent):** `knowledge_items`, `knowledge_suggestions`
+
+**Tenancy:** `enterprises` (top-tier container), with `users.enterprise_id` and `organizations.enterprise_id` NOT NULL FKs.
 
 **Config domain:** `llm_config_overrides` (dashboard-managed settings, hot-reloaded at runtime — cloud mode only; local mode uses .env as sole source of truth)
 
@@ -601,7 +605,7 @@ All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/
 
 ### Migration
 
-Baseline `001_clean_baseline` (revision `424078e5aa04`) creates 30 tables + RBAC seed data. Subsequent migrations add `conversion_jobs`/`conversion_drafts` (20260326) and `reports` (20260329) for a current total of 33 tables.
+Baseline `001_clean_baseline` (revision `c4689af8aa3f`) creates 32 tables + RBAC seed data. Subsequent migrations 002–008 cover the post-baseline cleanups: evidence `summary`/`extract` two-field shape (002), enterprise-tier transitional nullability (003), uploaded_files cleanup (004), description CHECK relaxation (005), enterprise-tier NOT NULL tightening (006), drop `users_password_or_sso` CHECK to permit dev-login (007), and `case_actions.triggered_by` audit column + read-path wiring (008). Current head: `317a8c329673`. See `docs/architecture/data-and-storage/schemas/case-schema.md` for the full migration table.
 
 ## Key Patterns
 
@@ -724,7 +728,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `faultmaven/modules/knowledge/api/conversion_routes.py` | Conversion API endpoints (feature-flagged) |
 | `.env.example` | Configuration template |
 | `pyproject.toml` | Dependencies and tool config |
-| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 33 tables) |
+| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 32 tables) |
 | `faultmaven/config/llm_config_overrides.py` | Config override application + hot-reload (cloud mode only) |
 | `faultmaven/api/routes/admin_config.py` | Admin endpoints: LLM config, env status, features, connection test |
 | `.importlinter` | Architecture contracts (13 rules) |

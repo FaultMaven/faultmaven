@@ -1,6 +1,6 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-05-08 05:44 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-05-10 01:19 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
@@ -12,7 +12,7 @@
 |-------|---------|-------------|--------------|
 | `agent_executions` | 17 | `execution_id` | cases, investigation_sessions, organizations |
 | `agent_tool_calls` | 13 | `tool_call_id` | agent_executions, organizations |
-| `case_actions` | 8 | `transition_id` | cases, organizations |
+| `case_actions` | 9 | `transition_id` | cases, organizations |
 | `case_checkpoints` | 9 | `checkpoint_id` | cases, organizations |
 | `case_entities` | 8 | `case_id, entity_type, entity_value, evidence_id` | cases, evidence, organizations |
 | `case_messages` | 9 | `message_id` | cases, organizations |
@@ -88,6 +88,7 @@ erDiagram
         VARCHAR from_status
         VARCHAR to_status
         TEXT reason
+        VARCHAR triggered_by
         TEXT metadata
         DATETIME transitioned_at
     }

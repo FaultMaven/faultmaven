@@ -1,10 +1,10 @@
 # FaultMaven Case Storage Design - Performant Production Standard
 
-**Version**: 4.0
+**Version**: 4.1
 **Status**: Authoritative Standard
-**Last Updated**: 2026-05-08
+**Last Updated**: 2026-05-10
 
-> **Scope**: This document reflects the live schema as of migration `be112b702fd4` (006). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
+> **Scope**: This document reflects the live schema as of migration `317a8c329673` (008). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
 
 > **NOTE on `organization_id` placement**: All tenanted case-domain tables carry `organization_id NOT NULL FK` for RLS policy enforcement in PostgreSQL and direct repository-layer filtering in both dialects. The per-table DDL below reflects this placement on every tenanted table.
 
@@ -32,13 +32,13 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 
 ## Implementation Status
 
-**Current State** (as of 2026-05-08):
+**Current State** (as of 2026-05-10):
 
 | Component | Status | Location |
 | --- | --- | --- |
 | ✅ Design | Approved | This document |
 | ✅ ORM Models | Complete | `faultmaven/infrastructure/persistence/models.py` (32 tables) |
-| ✅ Migration Chain | Complete | `alembic/versions/` — head revision `be112b702fd4` (006) |
+| ✅ Migration Chain | Complete | `alembic/versions/` — head revision `317a8c329673` (008) |
 | ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository.py` |
 | ✅ SQLite Repository | Complete | `sqlite_case_repository.py` |
 | ✅ SQLite Integration Tests | Complete | Tests passing with real SQLite database |
@@ -46,7 +46,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ⏳ Performance Validation | Pending | Benchmarks needed |
 | ⏳ Production Deploy | Pending | PostgreSQL not yet deployed to K8s |
 
-**Migration Chain** (linear; current head is `be112b702fd4`):
+**Migration Chain** (linear; current head is `317a8c329673`):
 
 | # | Revision | Description |
 | --- | --- | --- |
@@ -56,6 +56,8 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | 004 | `f7bbadb43e4c` | `uploaded_files`: drop `preprocessing_summary` column |
 | 005 | `24a5adc58c77` | `cases`: relax description CHECK to `status IN ('inquiry','closed') OR LENGTH(TRIM(description)) > 0` |
 | 006 | `be112b702fd4` | Enterprise tier bootstrap: seed default enterprise, backfill, tighten `enterprise_id` to NOT NULL |
+| 007 | `05b6eaf5baad` | Drop `users_password_or_sso` CHECK constraint to permit passwordless dev-login |
+| 008 | `317a8c329673` | `case_actions`: add `triggered_by VARCHAR(50) NOT NULL` (drop existing rows, no backfill) |
 
 **Active Implementations**:
 
@@ -879,46 +881,47 @@ CREATE INDEX idx_case_messages_created_at ON case_messages(created_at DESC);
 COMMENT ON TABLE case_messages IS 'Turn-by-turn conversation messages (high volume)';
 ```
 
-### 4.8 case_actions (Audit Table — Python alias: CaseStatusTransitionModel)
+### 4.8 case_actions (Audit Table)
 
-> **Column discrepancies vs. live ORM**:
->
-> - `transition_id UUID PRIMARY KEY DEFAULT gen_random_uuid()` — live ORM uses `Integer autoincrement` PK. UUID PK is Tier 2 (PostgreSQL-only) aspirational.
-> - `from_status VARCHAR(20) NOT NULL`, `to_status VARCHAR(20) NOT NULL` — live ORM uses `String(50)` and `from_status` is nullable.
-> - `triggered_by VARCHAR(255)` — not present in live ORM.
-> - `CONSTRAINT case_actions_status_check` — not present in live ORM; marking Tier 2 (PostgreSQL-only).
+The audit trail of phase transitions on a case. Migration 008 added
+`triggered_by NOT NULL` so every row records *who* drove the transition
+(user UUID for human actions, sentinel like `"system"` / `"agent"` /
+`"scheduler"` for automatic actions). Both repositories now hydrate
+`Case.action_history` from this table on read; before migration 008 the
+table was effectively write-only (`action_history` was hardcoded to
+`[]` in `_to_domain`).
 
 ```sql
--- The live table is case_actions. A Python-level alias (CaseStatusTransitionModel)
--- points at this table for back-compat; there is no separate case_status_transitions
--- table in the database.
 CREATE TABLE case_actions (
-    -- Live ORM: Integer autoincrement PK.
-    -- UUID PK with gen_random_uuid() is Tier 2 (PostgreSQL-only) — aspirational.
-    transition_id INTEGER PRIMARY KEY,          -- Tier 1 reality (live ORM)
-    -- transition_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Tier 2 (PostgreSQL-only)
+    -- Integer autoincrement PK (Tier 1 reality on both dialects).
+    transition_id INTEGER PRIMARY KEY,
     case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id)
+        ON DELETE CASCADE,
 
     -- ============================================================
     -- Transition Data
     -- ============================================================
-    from_status VARCHAR(50),                    -- nullable in live ORM; String(50)
-    to_status VARCHAR(50) NOT NULL,             -- String(50) in live ORM
-    reason VARCHAR(500),
-    -- triggered_by not present in live ORM (Proposed)
-    -- triggered_by VARCHAR(255),
+    from_status VARCHAR(50),                    -- nullable: NULL on case creation
+    to_status VARCHAR(50) NOT NULL,
+    reason TEXT,                                -- free-form prose
+
+    -- Free-form actor identifier. Heterogeneous value space:
+    --   - user UUID (human action)
+    --   - "system" (auto-transitions, cleanup jobs)
+    --   - "agent" (LLM-driven transitions)
+    --   - "scheduler" (timed/idle transitions)
+    -- Not a FK to users.user_id because the sentinel set is real and
+    -- forcing a FK would mean inventing a sentinel users row (the same
+    -- anti-pattern removed elsewhere). A CHECK constraint on the
+    -- sentinel set may be added later once the values stabilize.
+    triggered_by VARCHAR(50) NOT NULL,
 
     -- ============================================================
     -- Metadata
     -- ============================================================
-    transitioned_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-
-    -- Tier 2 (PostgreSQL-only)
-    CONSTRAINT case_actions_status_check
-        CHECK (
-            from_status IN ('inquiry', 'investigating', 'resolved', 'closed') AND
-            to_status IN ('inquiry', 'investigating', 'resolved', 'closed')
-        )
+    metadata JSONB NOT NULL DEFAULT '{}',       -- Tier 1: TEXT on SQLite, JSONB on PG
+    transitioned_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
 -- Indexes
@@ -927,6 +930,24 @@ CREATE INDEX idx_case_actions_timestamp ON case_actions(transitioned_at DESC);
 
 COMMENT ON TABLE case_actions IS 'Audit trail of case actions and status transitions';
 ```
+
+**Read path (post-008)**:
+
+- `SQLiteCaseRepository._load_case_actions(case_id)` issues
+  `SELECT … FROM case_actions WHERE case_id = ? ORDER BY transitioned_at ASC, transition_id ASC`
+  and constructs `[CaseAction(...)]`. Wired into `_row_to_case` via the
+  optional `actions_data` parameter (default `None` → empty list, so
+  the bulk list path stays cheap and only the detail `get()` pays the
+  extra round-trip).
+- `PostgreSQLHybridCaseRepository._load_case_actions(case_id)` mirrors
+  the SQLite helper. PG's `_row_to_case` is async and is invoked by
+  both `get()` and `list()` (which fans out to `get()` per case_id), so
+  it loads actions inline.
+
+**Pydantic mapping**: `CaseAction` (`models.py:172`) carries
+`triggered_by: str` as a required field. The `from_status` /
+`to_status` enum coercion happens in `CaseStatus(row.value)` at the
+boundary; `triggered_by` round-trips verbatim.
 
 ### 4.9 case_checkpoints (High-Cardinality Table)
 
@@ -1663,7 +1684,7 @@ Before deploying PostgreSQLHybridCaseRepository to production, validate the foll
 # Deploy PostgreSQL to K8s (if not already running)
 kubectl apply -f faultmaven-k8s-infra/applications/postgresql/
 
-# Apply migrations via alembic (chain head: be112b702fd4)
+# Apply migrations via alembic (chain head: 317a8c329673)
 alembic upgrade head
 
 # Verify all tables created
@@ -1829,10 +1850,11 @@ psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM evidence WHERE case_id 
 
 - [x] Design approved (this document)
 - [x] ORM models (`faultmaven/infrastructure/persistence/models.py`)
-- [x] Migration chain through head `be112b702fd4` (006)
+- [x] Migration chain through head `317a8c329673` (008)
 - [x] Repository implementation (`postgresql_hybrid_case_repository.py`, `sqlite_case_repository.py`)
 - [x] Container.py wiring (`CASE_STORAGE_TYPE=database`)
 - [x] Enterprise tier bootstrap (default enterprise seed; NOT NULL `enterprise_id` on users/orgs)
+- [x] `case_actions.triggered_by` column + read path wired (migration 008)
 
 ### ⏳ Pending (Before Production)
 
@@ -1900,11 +1922,31 @@ The following tables and columns existed in earlier iterations of this design bu
 
 - **Author**: FaultMaven Team
 - **Created**: 2025-11-09
-- **Last Updated**: 2026-05-08
-- **Version**: 4.0 (Authoritative)
-- **Status**: ✅ Implemented — live schema (migration chain head `be112b702fd4`)
+- **Last Updated**: 2026-05-10
+- **Version**: 4.1 (Authoritative)
+- **Status**: ✅ Implemented — live schema (migration chain head `317a8c329673`)
 
 **Changelog**:
+
+**4.1 — 2026-05-10**
+
+Migration chain extended through 008.
+
+- §4.8 `case_actions`: rewrote the table description and DDL to reflect
+  the post-008 reality. `triggered_by VARCHAR(50) NOT NULL` is now a
+  real column (free-form actor identifier; not a FK because the value
+  space is heterogeneous user UUIDs + sentinels). Removed the
+  "Proposed but absent" caveat that lied about the column's status.
+  Documented the read path: both repos hydrate `Case.action_history`
+  from `case_actions` rows in `_to_domain` (was previously hardcoded
+  to `[]`). Cleaned the Tier 2-only CHECK that wasn't in the ORM.
+- Migration chain table: added rows 007 (`05b6eaf5baad` — drop
+  `users_password_or_sso` CHECK) and 008 (`317a8c329673` —
+  `case_actions.triggered_by`).
+- Header revision + Implementation Status row + the `alembic upgrade
+  head` example all bumped to 008's revision (`317a8c329673`).
+- Implementation checklist gained a `case_actions.triggered_by`
+  completion line.
 
 **4.0 — 2026-05-08**
 
