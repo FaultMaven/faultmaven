@@ -102,10 +102,10 @@ logger = logging.getLogger(__name__)
 _TRUNCATION_MARKER = "[...analysis removed for brevity...]"
 
 
-def _parse_preprocessed_content(raw: str) -> tuple[str, str | None, dict]:
-    """Parse preprocessed_content into (file_extract, search_map, file_meta).
+def _parse_extract(raw: str) -> tuple[str, str | None, dict]:
+    """Parse Evidence.extract into (file_extract, search_map, file_meta).
 
-    New format is JSON with {"v": 1, "file_extract": ..., "search_map": ...,
+    Format is JSON with {"v": 1, "file_extract": ..., "search_map": ...,
     "file_meta": ...} (see extractors/protocol.py SCHEMA_VERSION). Falls back
     to treating the raw string as file_extract for legacy plaintext records.
     """
@@ -1045,9 +1045,7 @@ def _build_evidence_context(
 
     # Tier A: Recent data evidence with structural index
     for ev in tier_a:
-        file_extract, search_map, file_meta = _parse_preprocessed_content(
-            ev.extract or ""
-        )
+        file_extract, search_map, file_meta = _parse_extract(ev.extract or "")
 
         # Rerank page capture sections by query relevance before truncation
         # so the most pertinent panels/messages survive the per-item char cap.

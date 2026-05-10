@@ -157,7 +157,7 @@ class TestExtractResultRoundTrip:
         assert "file_extract" in d
 
     def test_from_json_legacy_plaintext_is_not_supported(self):
-        """from_json expects valid JSON — callers handle legacy via _parse_preprocessed_content."""
+        """from_json expects valid JSON — callers handle legacy via _parse_extract."""
         with pytest.raises((json.JSONDecodeError, ValueError)):
             ExtractResult.from_json("this is plain text, not JSON")
 
