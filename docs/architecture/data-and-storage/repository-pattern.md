@@ -473,8 +473,8 @@ class CaseRepository(ABC):
 | --- | --- |
 | Evidence | `delete_evidence(case_id, evidence_id)` |
 | Uploaded file | `delete_uploaded_file(case_id, file_id)` |
-| Hypothesis | `IHypothesisRepository.delete_hypothesis(hypothesis_id, organization_id)` |
-| Solution | `ISolutionRepository.delete_solution(solution_id, organization_id)` |
+| Hypothesis | — (no single-hypothesis delete API today; add one explicitly if needed) |
+| Solution | — (no single-solution delete API today; add one explicitly if needed) |
 | Message | — (append-only log; no domain operation intentionally removes messages) |
 
 **Scoped UPDATE methods**. For background tasks that need to persist a single-field change on one row, prefer scoped methods over aggregate save:

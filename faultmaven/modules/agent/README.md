@@ -32,7 +32,6 @@ faultmaven/modules/agent/
 │   └── services/
 │       ├── __init__.py
 │       ├── agent_orchestration_service.py  # Low-level LLM + tool execution
-│       ├── investigation_orchestrator.py   # Mid-level workflow state
 │       └── investigation_service.py        # High-level investigation management
 ├── infrastructure/
 │   ├── __init__.py
@@ -63,9 +62,9 @@ faultmaven/modules/agent/
 
 ## Key Components
 
-### Services (3-Tier Architecture)
+### Services (2-Tier Architecture)
 
-The Agent module maintains **three separate services** with clear separation of concerns by abstraction level:
+The Agent module maintains **two separate services** with clear separation of concerns by abstraction level:
 
 #### 1. AgentOrchestrationService (Low-Level)
 - **Responsibility**: LLM calls, streaming, tool execution primitives, orchestration hardening
@@ -80,25 +79,15 @@ The Agent module maintains **three separate services** with clear separation of 
   - **Per-evidence DA failure tracking** (R4): Track DA failure signals per evidence via `EvidenceDAState`, auto-vectorize large files on repeated failures, inject raw content for small files
   - **Context budget tracking** (R5): 30K char budget for tool results with standard/aggressive compression preserving high-signal lines
 
-#### 2. InvestigationOrchestrator (Mid-Level)
-- **Responsibility**: Workflow state, phase transitions, hypothesis tracking
-- **Size**: 911 LOC
-- **Dependencies**: Milestone engine, AgentOrchestrationService
-- **Key Operations**:
-  - Manage investigation stages (Understanding, Diagnosing, Resolving)
-  - Track hypotheses and working conclusions
-  - Coordinate status transitions
-  - Maintain investigation state
+#### 2. InvestigationService (High-Level)
 
-#### 3. InvestigationService (High-Level)
-- **Responsibility**: Milestone tracking, milestone coordination, progress management
-- **Size**: 369 LOC
-- **Dependencies**: InvestigationOrchestrator, case service
+- **Responsibility**: Investigation turn lifecycle and milestone coordination
+- **Dependencies**: MilestoneEngine, CaseRepository, preprocessing service, file storage service
 - **Key Operations**:
-  - Track investigation milestones
-  - Monitor investigation progress
-  - Coordinate investigation milestones
-  - Generate investigation summaries
+  - Process investigation turns (user input → milestone advancement)
+  - Coordinate evidence intake through preprocessing
+  - Resolve user intent against pending agent suggestions
+  - Manage milestone progress and status transitions
 
 ### Tools (13 Tools)
 
@@ -276,7 +265,7 @@ from faultmaven.services import AgentOrchestrationService
 ## Testing
 
 ### Unit Tests
-- Service logic tests (AgentOrchestrationService, InvestigationOrchestrator, InvestigationService)
+- Service logic tests (AgentOrchestrationService, InvestigationService)
 - Tool tests (each tool class)
 - Model validation tests
 

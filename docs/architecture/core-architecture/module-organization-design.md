@@ -767,7 +767,7 @@ from faultmaven.modules.evidence.domain import EvidenceService
 from faultmaven.modules.evidence.domain.validators import validate_evidence
 
 # ❌ WRONG: Domain Service imports another Domain Service's internals
-from faultmaven.modules.agent.domain.orchestrator import InvestigationOrchestrator
+from faultmaven.modules.agent.domain.services.investigation_service import InvestigationService
 ```
 
 #### 3. Convention
