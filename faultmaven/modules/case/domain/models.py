@@ -1496,6 +1496,17 @@ class UploadedFile(BaseModel):
 
     filename: str = Field(description="Original filename", min_length=1, max_length=255)
 
+    @field_validator("filename", mode="after")
+    @classmethod
+    def _filename_not_empty(cls, v: str) -> str:
+        """Mirror of the DB uploaded_files_filename_not_empty CHECK:
+        filename must not be whitespace-only. Pydantic ``min_length=1``
+        accepts a single space; the DB rejects it. Same rule, two layers
+        — neither bypassable independently."""
+        if not v.strip():
+            raise ValueError("filename must not be whitespace-only")
+        return v
+
     size_bytes: int = Field(ge=0, description="File size in bytes")
 
     content_type: Optional[str] = Field(
@@ -1611,6 +1622,17 @@ class Evidence(BaseModel):
         min_length=1,
         max_length=500,
     )
+
+    @field_validator("summary", mode="after")
+    @classmethod
+    def _summary_not_empty(cls, v: str) -> str:
+        """Mirror of the DB evidence_summary_not_empty CHECK: summary must
+        not be whitespace-only. Pydantic ``min_length=1`` accepts a single
+        space; the DB rejects it. Same rule, two layers — neither
+        bypassable independently."""
+        if not v.strip():
+            raise ValueError("summary must not be whitespace-only")
+        return v
 
     extract: Optional[str] = Field(
         default=None,
@@ -2017,6 +2039,17 @@ class Hypothesis(BaseModel):
         min_length=1,
         max_length=500,
     )
+
+    @field_validator("statement", mode="after")
+    @classmethod
+    def _statement_not_empty(cls, v: str) -> str:
+        """Mirror of the DB hypotheses_statement_not_empty CHECK: statement
+        must not be whitespace-only. Pydantic ``min_length=1`` accepts a
+        single space; the DB rejects it. Same rule, two layers — neither
+        bypassable independently."""
+        if not v.strip():
+            raise ValueError("statement must not be whitespace-only")
+        return v
 
     category: HypothesisCategory = Field(
         description="Hypothesis category (for anchoring detection)"
