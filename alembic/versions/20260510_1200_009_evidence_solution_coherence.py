@@ -178,21 +178,25 @@ def downgrade() -> None:
         batch.drop_column("proposed_by")
         batch.alter_column("verified_at", new_column_name="verification_timestamp")
         batch.alter_column("applied_at", new_column_name="implemented_at")
-        batch.add_column(
-            sa.Column(
-                "updated_by",
-                sa.String(length=36),
-                sa.ForeignKey("users.user_id", ondelete="SET NULL"),
-                nullable=True,
-            )
+        # Restore the dropped FK columns. Inline ForeignKey objects must
+        # carry an explicit name in batch mode (alembic's batch rebuild
+        # raises "Constraint must have a name" otherwise), so add the
+        # columns first then create the FKs explicitly with names.
+        batch.add_column(sa.Column("updated_by", sa.String(length=36), nullable=True))
+        batch.add_column(sa.Column("created_by", sa.String(length=36), nullable=True))
+        batch.create_foreign_key(
+            "fk_solutions_updated_by",
+            "users",
+            ["updated_by"],
+            ["user_id"],
+            ondelete="SET NULL",
         )
-        batch.add_column(
-            sa.Column(
-                "created_by",
-                sa.String(length=36),
-                sa.ForeignKey("users.user_id", ondelete="SET NULL"),
-                nullable=True,
-            )
+        batch.create_foreign_key(
+            "fk_solutions_created_by",
+            "users",
+            ["created_by"],
+            ["user_id"],
+            ondelete="SET NULL",
         )
 
     op.create_index(
