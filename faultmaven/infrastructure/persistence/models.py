@@ -826,6 +826,22 @@ class EvidenceModel(Base):
         nullable=False,
     )
 
+    # What this evidence validates (milestone name or hypothesis ID).
+    # Server default 'legacy' allows pre-009 rows to satisfy NOT NULL;
+    # new writers must populate explicitly.
+    primary_purpose = Column(String(100), nullable=False, server_default="legacy")
+
+    # Free-form agent analysis of this evidence and its significance.
+    analysis = Column(Text, nullable=True)
+
+    # Processing mode used to extract this evidence:
+    # triage | directed_analysis | semantic_search.
+    processing_mode = Column(String(50), nullable=True)
+
+    # Which milestones this evidence helped complete. TagsArray shape
+    # (TEXT[] on PG, comma-encoded TEXT on SQLite); empty when none.
+    advances_milestones = Column(TagsArray, nullable=True)
+
     # Two-field shape per the three-path evidence design (see case-schema.md
     # §4.3 "Role of summary vs extract"):
     #
@@ -852,6 +868,13 @@ class EvidenceModel(Base):
 
     # Lifecycle: True once vectorized into the case vector store.
     vectorized = Column(Boolean, nullable=False, server_default="0")
+
+    # Who collected: user UUID or sentinel ('system' for automated
+    # collection). Free-form VARCHAR per case_actions.triggered_by
+    # precedent — value space is heterogeneous, FK would force
+    # inventing sentinel users rows. Server default 'system' covers
+    # pre-009 rows without losing them.
+    collected_by = Column(String(50), nullable=False, server_default="system")
 
     evidence_metadata = Column(
         "metadata", JsonBlob, nullable=False, server_default="{}"
@@ -1092,18 +1115,25 @@ class SolutionModel(Base):
     implementation_steps = Column(JsonBlob, nullable=True)
     commands = Column(JsonBlob, nullable=True)
     risks = Column(JsonBlob, nullable=True)
-    verification_result = Column(Text, nullable=True)
-    verification_timestamp = Column(DateTime(timezone=True), nullable=True)
 
-    created_by = Column(
+    # Sentinel-friendly actor columns. Free-form VARCHAR per the
+    # case_actions.triggered_by precedent — Pydantic Solution uses
+    # 'agent' as a valid value, which a FK to users could not store.
+    proposed_by = Column(String(50), nullable=False, server_default="agent")
+    applied_by = Column(String(50), nullable=True)
+
+    # Verification metadata. ``verification_method`` and
+    # ``effectiveness`` complete the audit trail the Pydantic model
+    # has been carrying without storage.
+    verification_method = Column(String(500), nullable=True)
+    verification_evidence_id = Column(
         String(36),
-        ForeignKey("users.user_id", ondelete="SET NULL"),
+        ForeignKey("evidence.evidence_id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
-    updated_by = Column(
-        String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
-    )
+    effectiveness = Column(Float, nullable=True)
+    verification_result = Column(Text, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
 
     solution_metadata = Column(
         "metadata", JsonBlob, nullable=False, server_default="{}"
@@ -1112,7 +1142,7 @@ class SolutionModel(Base):
     proposed_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    implemented_at = Column(DateTime(timezone=True), nullable=True)
+    applied_at = Column(DateTime(timezone=True), nullable=True)
     updated_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -1133,6 +1163,10 @@ class SolutionModel(Base):
         CheckConstraint(
             "risk_level IS NULL OR risk_level IN ('low', 'medium', 'high', 'critical')",
             name="solutions_risk_level_check",
+        ),
+        CheckConstraint(
+            "effectiveness IS NULL OR (effectiveness >= 0 AND effectiveness <= 1)",
+            name="solutions_effectiveness_range",
         ),
     )
 

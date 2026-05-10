@@ -354,11 +354,21 @@ class SQLiteCaseRepository(CaseRepository):
         return by_hyp
 
     async def _load_solutions(self, case_id: str) -> list[dict]:
-        """Load solutions for a case."""
+        """Load solutions for a case.
+
+        Selects the full audit trail (proposed_by, applied_at/by,
+        verified_at, verification_method, verification_evidence_id,
+        effectiveness) so ``Solution(**s)`` reconstruction is faithful
+        to what was persisted. Pre-009 this loader returned only a
+        subset, leaving every audit field at its Pydantic default.
+        """
         query = text("""
             SELECT solution_id, solution_type, title, immediate_action, longterm_fix,
                    implementation_steps, commands, risks,
-                   proposed_at, updated_at, metadata
+                   proposed_at, proposed_by,
+                   applied_at, applied_by,
+                   verified_at, verification_method,
+                   verification_evidence_id, effectiveness
             FROM solutions
             WHERE case_id = :case_id
         """)
@@ -378,8 +388,13 @@ class SQLiteCaseRepository(CaseRepository):
                     "commands": json.loads(row[6]) if row[6] else [],
                     "risks": json.loads(row[7]) if row[7] else [],
                     "proposed_at": row[8],
-                    "updated_at": row[9],
-                    "metadata": json.loads(row[10]) if row[10] else {},
+                    "proposed_by": row[9],
+                    "applied_at": row[10],
+                    "applied_by": row[11],
+                    "verified_at": row[12],
+                    "verification_method": row[13],
+                    "verification_evidence_id": row[14],
+                    "effectiveness": row[15],
                 }
             )
         return solutions
@@ -667,7 +682,10 @@ class SQLiteCaseRepository(CaseRepository):
         query = text(f"""
             SELECT case_id, solution_id, solution_type, title, immediate_action,
                    longterm_fix, implementation_steps, commands, risks,
-                   proposed_at, updated_at, metadata
+                   proposed_at, proposed_by,
+                   applied_at, applied_by,
+                   verified_at, verification_method,
+                   verification_evidence_id, effectiveness
             FROM solutions
             WHERE case_id IN ({placeholders})
         """)
@@ -686,8 +704,13 @@ class SQLiteCaseRepository(CaseRepository):
                     "commands": json.loads(row[7]) if row[7] else [],
                     "risks": json.loads(row[8]) if row[8] else [],
                     "proposed_at": row[9],
-                    "updated_at": row[10],
-                    "metadata": json.loads(row[11]) if row[11] else {},
+                    "proposed_by": row[10],
+                    "applied_at": row[11],
+                    "applied_by": row[12],
+                    "verified_at": row[13],
+                    "verification_method": row[14],
+                    "verification_evidence_id": row[15],
+                    "effectiveness": row[16],
                 }
             )
         return by_case
@@ -2196,29 +2219,34 @@ class SQLiteCaseRepository(CaseRepository):
 
         Purely additive — see `_upsert_evidence` for rationale. For
         intentional removal, use `ISolutionRepository.delete_solution`.
+
+        Post-009 schema: writes the full Solution audit trail
+        (proposed_by, applied_at/by, verified_at, verification_method,
+        verification_evidence_id, effectiveness). Status is included
+        in ON CONFLICT UPDATE so the lifecycle can advance.
         """
         for solution in solutions_list:
-            solution_id = (
-                solution.solution_id
-                if hasattr(solution, "solution_id")
-                else f"sol_{uuid4().hex[:12]}"
-            )
+            applied_at = solution.applied_at
+            verified_at = solution.verified_at
+            status = self._derive_solution_status(solution)
 
             query = text("""
                 INSERT INTO solutions (
-                    solution_id, case_id, organization_id, solution_type, title, immediate_action,
-                    longterm_fix, implementation_steps, commands, risks,
+                    solution_id, case_id, organization_id, solution_type, title,
+                    immediate_action, longterm_fix, implementation_steps, commands, risks,
                     description, status,
-                    risk_level, estimated_effort, verification_result, verification_timestamp,
-                    proposed_at, implemented_at, updated_at, metadata,
-                    created_by, updated_by, hypothesis_id
+                    proposed_by, applied_by,
+                    verification_method, verification_evidence_id, effectiveness,
+                    verification_result, verified_at,
+                    proposed_at, applied_at, updated_at, metadata
                 ) VALUES (
-                    :solution_id, :case_id, :organization_id, :solution_type, :title, :immediate_action,
-                    :longterm_fix, :implementation_steps, :commands, :risks,
+                    :solution_id, :case_id, :organization_id, :solution_type, :title,
+                    :immediate_action, :longterm_fix, :implementation_steps, :commands, :risks,
                     :description, :status,
-                    :risk_level, :estimated_effort, :verification_result, :verification_timestamp,
-                    :proposed_at, :implemented_at, :updated_at, :metadata,
-                    :created_by, :updated_by, :hypothesis_id
+                    :proposed_by, :applied_by,
+                    :verification_method, :verification_evidence_id, :effectiveness,
+                    :verification_result, :verified_at,
+                    :proposed_at, :applied_at, :updated_at, :metadata
                 )
                 ON CONFLICT (solution_id) DO UPDATE SET
                     solution_type = EXCLUDED.solution_type,
@@ -2230,78 +2258,71 @@ class SQLiteCaseRepository(CaseRepository):
                     risks = EXCLUDED.risks,
                     description = EXCLUDED.description,
                     status = EXCLUDED.status,
-                    risk_level = EXCLUDED.risk_level,
-                    estimated_effort = EXCLUDED.estimated_effort,
+                    proposed_by = EXCLUDED.proposed_by,
+                    applied_by = EXCLUDED.applied_by,
+                    verification_method = EXCLUDED.verification_method,
+                    verification_evidence_id = EXCLUDED.verification_evidence_id,
+                    effectiveness = EXCLUDED.effectiveness,
                     verification_result = EXCLUDED.verification_result,
-                    verification_timestamp = EXCLUDED.verification_timestamp,
-                    implemented_at = EXCLUDED.implemented_at,
+                    verified_at = EXCLUDED.verified_at,
+                    applied_at = EXCLUDED.applied_at,
                     updated_at = EXCLUDED.updated_at,
-                    metadata = EXCLUDED.metadata,
-                    hypothesis_id = EXCLUDED.hypothesis_id
+                    metadata = EXCLUDED.metadata
             """)
 
             await self.db.execute(
                 query,
                 {
-                    "solution_id": solution_id,
+                    "solution_id": solution.solution_id,
                     "case_id": case_id,
                     "organization_id": organization_id,
-                    "solution_type": (
-                        solution.solution_type.value
-                        if hasattr(solution, "solution_type") and solution.solution_type
-                        else "other"
-                    ),
-                    "title": (
-                        solution.title
-                        if hasattr(solution, "title") and solution.title
-                        else "Untitled solution"
-                    ),
-                    "immediate_action": getattr(solution, "immediate_action", None),
-                    "longterm_fix": getattr(solution, "longterm_fix", None),
+                    "solution_type": solution.solution_type.value,
+                    "title": solution.title,
+                    "immediate_action": solution.immediate_action,
+                    "longterm_fix": solution.longterm_fix,
                     "implementation_steps": json.dumps(
-                        solution.implementation_steps
-                        if hasattr(solution, "implementation_steps")
-                        else []
+                        list(solution.implementation_steps)
                     ),
-                    "commands": json.dumps(
-                        solution.commands if hasattr(solution, "commands") else []
-                    ),
-                    "risks": json.dumps(
-                        solution.risks if hasattr(solution, "risks") else []
-                    ),
+                    "commands": json.dumps(list(solution.commands)),
+                    "risks": json.dumps(list(solution.risks)),
                     "description": (
                         solution.immediate_action
-                        if hasattr(solution, "immediate_action")
-                        and solution.immediate_action
-                        else (
-                            solution.title
-                            if hasattr(solution, "title")
-                            else str(solution)
-                        )
+                        or solution.longterm_fix
+                        or solution.title
                     ),
-                    "status": "proposed",
-                    "risk_level": (
-                        solution.risk_level if hasattr(solution, "risk_level") else None
-                    ),
-                    "estimated_effort": (
-                        solution.effort if hasattr(solution, "effort") else None
-                    ),
+                    "status": status,
+                    "proposed_by": solution.proposed_by,
+                    "applied_by": solution.applied_by,
+                    "verification_method": solution.verification_method,
+                    "verification_evidence_id": solution.verification_evidence_id,
+                    "effectiveness": solution.effectiveness,
                     "verification_result": None,
-                    "verification_timestamp": None,
-                    "proposed_at": getattr(solution, "proposed_at", None)
-                    or datetime.now(UTC),
-                    "implemented_at": None,
+                    "verified_at": verified_at,
+                    "proposed_at": solution.proposed_at,
+                    "applied_at": applied_at,
                     "updated_at": datetime.now(UTC),
                     "metadata": json.dumps({}),
-                    "created_by": None,
-                    "updated_by": None,
-                    # Phase 6 Tier 1: link solution to addressed hypothesis when known.
-                    # TODO: SolutionsToAdd schema does not yet carry hypothesis_id;
-                    # populate once the LLM update schema is extended. Nullable for
-                    # now (fast-track / pre-hypothesis solutions remain NULL).
-                    "hypothesis_id": getattr(solution, "hypothesis_id", None),
                 },
             )
+
+    @staticmethod
+    def _derive_solution_status(solution: Solution) -> str:
+        """Map Pydantic Solution lifecycle fields to the schema's
+        status CHECK vocabulary ('proposed', 'accepted', 'rejected',
+        'implemented', 'verified'). Single source of truth for the
+        write path, used by both ``_upsert_solutions`` and the PG
+        hybrid repo.
+
+        verified_at present  -> 'verified' (the model_validator
+                                guarantees effectiveness is also set)
+        applied_at present   -> 'implemented'
+        otherwise            -> 'proposed'
+        """
+        if solution.verified_at is not None:
+            return "verified"
+        if solution.applied_at is not None:
+            return "implemented"
+        return "proposed"
 
     async def _upsert_uploaded_files(
         self,

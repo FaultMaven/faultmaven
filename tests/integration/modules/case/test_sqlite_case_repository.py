@@ -176,7 +176,9 @@ async def create_test_schema(session: AsyncSession):
         )
     """))
 
-    # Create solutions table
+    # Create solutions table (post-009 schema: dropped created_by/updated_by;
+    # renamed implemented_at -> applied_at, verification_timestamp -> verified_at;
+    # added proposed_by/applied_by/verification_method/verification_evidence_id/effectiveness).
     await session.execute(text("""
         CREATE TABLE IF NOT EXISTS solutions (
             solution_id TEXT PRIMARY KEY,
@@ -193,18 +195,22 @@ async def create_test_schema(session: AsyncSession):
             risks TEXT,
             risk_level TEXT,
             estimated_effort TEXT,
+            proposed_by TEXT NOT NULL DEFAULT 'agent',
+            applied_by TEXT,
+            verification_method TEXT,
+            verification_evidence_id TEXT,
+            effectiveness REAL,
             verification_result TEXT,
-            verification_timestamp TIMESTAMP,
+            verified_at TIMESTAMP,
             proposed_at TIMESTAMP,
-            implemented_at TIMESTAMP,
+            applied_at TIMESTAMP,
             updated_at TIMESTAMP,
             metadata TEXT,
-            created_by TEXT,
-            updated_by TEXT,
             -- Phase 6 Tier 1 column addition (storage redesign 2026-04).
             hypothesis_id TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE,
-            FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(hypothesis_id) ON DELETE SET NULL
+            FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(hypothesis_id) ON DELETE SET NULL,
+            FOREIGN KEY (verification_evidence_id) REFERENCES evidence(evidence_id) ON DELETE SET NULL
         )
     """))
 

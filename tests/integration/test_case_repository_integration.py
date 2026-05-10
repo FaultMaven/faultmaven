@@ -644,3 +644,118 @@ async def test_action_history_round_trip(db_repository: SQLiteCaseRepository):
     assert second.to_status == CaseStatus.CLOSED
     assert second.triggered_by == "system"
     assert second.reason == "auto-closed: stale investigation"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_solution_full_audit_round_trip(
+    db_repository: SQLiteCaseRepository,
+):
+    """Solution round-trips with full audit trail across lifecycle stages.
+
+    Pre-009 the repo persisted a hollow shell: ``proposed_by``,
+    ``applied_at/by``, ``verified_at``, ``verification_method``,
+    ``verification_evidence_id`` and ``effectiveness`` were all dropped
+    or hardcoded ``None`` on insert; ``status`` was hardcoded
+    ``"proposed"`` and the ON CONFLICT UPDATE clause omitted it. This
+    test pins the post-009 fix by walking a Solution through three
+    lifecycle stages — proposed -> implemented -> verified — and
+    asserting every audit field survives the round-trip on each save.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    case_id = f"case_{uuid4().hex[:12]}"
+    case = Case(
+        case_id=case_id,
+        user_id="complex-test-user",
+        organization_id="complex-test-org",
+        title="Solution Audit Round-trip",
+        description="Pin the full audit trail across lifecycle stages",
+        status=CaseStatus.INVESTIGATING,
+        inquiry=InquiryData(
+            proposed_problem_statement="testing solution persistence",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+        ),
+    )
+
+    base_ts = datetime(2026, 5, 10, 9, 0, 0, tzinfo=timezone.utc)
+    solution = Solution(
+        solution_id=f"sol_{uuid4().hex[:12]}",
+        solution_type=SolutionType.RESTART,
+        title="Restart the connection pool",
+        immediate_action="Bounce the pool to clear leaked handles",
+        longterm_fix="Add idle-connection reaper to drop stale handles",
+        implementation_steps=["1. Drain traffic", "2. Restart pool", "3. Resume"],
+        commands=["systemctl restart pgbouncer"],
+        risks=["Brief connection blip during restart"],
+        proposed_at=base_ts,
+        proposed_by="agent",
+    )
+    case.solutions = [solution]
+
+    # Stage 1: proposed --------------------------------------------------
+    await db_repository.save(case)
+    retrieved = await db_repository.get(case_id)
+    assert retrieved is not None
+    assert len(retrieved.solutions) == 1
+    loaded = retrieved.solutions[0]
+
+    assert loaded.solution_id == solution.solution_id
+    assert loaded.title == "Restart the connection pool"
+    assert loaded.proposed_by == "agent"
+    assert loaded.proposed_at == base_ts
+    assert loaded.applied_at is None
+    assert loaded.applied_by is None
+    assert loaded.verified_at is None
+    assert loaded.verification_method is None
+    assert loaded.verification_evidence_id is None
+    assert loaded.effectiveness is None
+    assert list(loaded.implementation_steps) == [
+        "1. Drain traffic",
+        "2. Restart pool",
+        "3. Resume",
+    ]
+    assert list(loaded.commands) == ["systemctl restart pgbouncer"]
+    assert list(loaded.risks) == ["Brief connection blip during restart"]
+
+    # Stage 2: implemented ----------------------------------------------
+    applied_ts = base_ts + timedelta(minutes=5)
+    loaded.applied_at = applied_ts
+    loaded.applied_by = "complex-test-user"
+    retrieved.solutions = [loaded]
+
+    await db_repository.save(retrieved)
+    re_retrieved = await db_repository.get(case_id)
+    assert re_retrieved is not None
+    re_loaded = re_retrieved.solutions[0]
+
+    assert re_loaded.applied_at == applied_ts
+    assert re_loaded.applied_by == "complex-test-user"
+    # proposed_by must survive update — pre-009 the lifecycle column was
+    # silently overwritten on every upsert.
+    assert re_loaded.proposed_by == "agent"
+    assert re_loaded.verified_at is None
+    assert re_loaded.effectiveness is None
+
+    # Stage 3: verified --------------------------------------------------
+    verified_ts = applied_ts + timedelta(minutes=10)
+    re_loaded.verified_at = verified_ts
+    re_loaded.verification_method = "Confirmed pool size returned to baseline"
+    re_loaded.effectiveness = 0.95
+    re_retrieved.solutions = [re_loaded]
+
+    await db_repository.save(re_retrieved)
+    final = await db_repository.get(case_id)
+    assert final is not None
+    final_solution = final.solutions[0]
+
+    assert final_solution.verified_at == verified_ts
+    assert (
+        final_solution.verification_method == "Confirmed pool size returned to baseline"
+    )
+    assert final_solution.effectiveness == 0.95
+    # All earlier-stage fields must still be present.
+    assert final_solution.proposed_by == "agent"
+    assert final_solution.applied_at == applied_ts
+    assert final_solution.applied_by == "complex-test-user"

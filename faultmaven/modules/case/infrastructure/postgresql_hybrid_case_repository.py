@@ -271,27 +271,27 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                         '[]'::json
                     ) as hypotheses_data,
 
-                    -- Solutions (aggregated as JSON)
+                    -- Solutions (aggregated as JSON). Keys mirror Pydantic
+                    -- Solution field names so Solution(**s) reconstruction
+                    -- in _row_to_case is direct (no name translation).
                     COALESCE(
                         json_agg(DISTINCT jsonb_build_object(
                             'solution_id', s.solution_id,
                             'solution_type', s.solution_type,
                             'title', s.title,
-                            'description', s.description,
-                            'status', s.status,
                             'immediate_action', s.immediate_action,
                             'longterm_fix', s.longterm_fix,
                             'implementation_steps', s.implementation_steps,
                             'commands', s.commands,
                             'risks', s.risks,
-                            'risk_level', s.risk_level,
-                            'estimated_effort', s.estimated_effort,
-                            'verification_result', s.verification_result,
-                            'verification_timestamp', s.verification_timestamp,
                             'proposed_at', s.proposed_at,
-                            'implemented_at', s.implemented_at,
-                            'updated_at', s.updated_at,
-                            'metadata', s.metadata
+                            'proposed_by', s.proposed_by,
+                            'applied_at', s.applied_at,
+                            'applied_by', s.applied_by,
+                            'verified_at', s.verified_at,
+                            'verification_method', s.verification_method,
+                            'verification_evidence_id', s.verification_evidence_id,
+                            'effectiveness', s.effectiveness
                         )) FILTER (WHERE s.solution_id IS NOT NULL),
                         '[]'::json
                     ) as solutions_data,
@@ -1856,30 +1856,35 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         Purely additive — see `_upsert_evidence` for rationale. For
         intentional removal, use `ISolutionRepository.delete_solution`.
+
+        Post-009 schema: writes the full Solution audit trail
+        (proposed_by, applied_at/by, verified_at, verification_method,
+        verification_evidence_id, effectiveness). Status is derived
+        from the lifecycle fields and included in ON CONFLICT UPDATE.
         """
-        # Upsert each solution
         for solution in solutions_list:
-            solution_id = (
-                solution.solution_id
-                if hasattr(solution, "solution_id")
-                else f"sol_{uuid4().hex[:12]}"
-            )
+            applied_at = solution.applied_at
+            verified_at = solution.verified_at
+            status = self._derive_solution_status(solution)
 
             query = text("""
                 INSERT INTO solutions (
-                    solution_id, case_id, organization_id, solution_type, title, immediate_action,
-                    longterm_fix, implementation_steps, commands, risks,
+                    solution_id, case_id, organization_id, solution_type, title,
+                    immediate_action, longterm_fix, implementation_steps, commands, risks,
                     description, status,
-                    risk_level, estimated_effort, verification_result, verification_timestamp,
-                    proposed_at, implemented_at, updated_at, metadata,
-                    created_by, updated_by, hypothesis_id
+                    proposed_by, applied_by,
+                    verification_method, verification_evidence_id, effectiveness,
+                    verification_result, verified_at,
+                    proposed_at, applied_at, updated_at, metadata
                 ) VALUES (
-                    :solution_id, :case_id, :organization_id, :solution_type, :title, :immediate_action,
-                    :longterm_fix, :implementation_steps, :commands::jsonb, :risks::jsonb,
+                    :solution_id, :case_id, :organization_id, :solution_type, :title,
+                    :immediate_action, :longterm_fix, :implementation_steps::jsonb,
+                    :commands::jsonb, :risks::jsonb,
                     :description, :status,
-                    :risk_level, :estimated_effort, :verification_result, :verification_timestamp,
-                    :proposed_at, :implemented_at, :updated_at, :metadata::jsonb,
-                    :created_by, :updated_by, :hypothesis_id
+                    :proposed_by, :applied_by,
+                    :verification_method, :verification_evidence_id, :effectiveness,
+                    :verification_result, :verified_at,
+                    :proposed_at, :applied_at, :updated_at, :metadata::jsonb
                 )
                 ON CONFLICT (solution_id) DO UPDATE SET
                     solution_type = EXCLUDED.solution_type,
@@ -1891,79 +1896,63 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     risks = EXCLUDED.risks,
                     description = EXCLUDED.description,
                     status = EXCLUDED.status,
-                    risk_level = EXCLUDED.risk_level,
-                    estimated_effort = EXCLUDED.estimated_effort,
+                    proposed_by = EXCLUDED.proposed_by,
+                    applied_by = EXCLUDED.applied_by,
+                    verification_method = EXCLUDED.verification_method,
+                    verification_evidence_id = EXCLUDED.verification_evidence_id,
+                    effectiveness = EXCLUDED.effectiveness,
                     verification_result = EXCLUDED.verification_result,
-                    verification_timestamp = EXCLUDED.verification_timestamp,
-                    implemented_at = EXCLUDED.implemented_at,
+                    verified_at = EXCLUDED.verified_at,
+                    applied_at = EXCLUDED.applied_at,
                     updated_at = EXCLUDED.updated_at,
-                    metadata = EXCLUDED.metadata,
-                    hypothesis_id = EXCLUDED.hypothesis_id
+                    metadata = EXCLUDED.metadata
             """)
 
             await self.db.execute(
                 query,
                 {
-                    "solution_id": solution_id,
+                    "solution_id": solution.solution_id,
                     "case_id": case_id,
                     "organization_id": organization_id,
-                    "solution_type": (
-                        solution.solution_type.value
-                        if hasattr(solution, "solution_type") and solution.solution_type
-                        else "other"
-                    ),
-                    "title": (
-                        solution.title
-                        if hasattr(solution, "title") and solution.title
-                        else "Untitled solution"
-                    ),
-                    "immediate_action": getattr(solution, "immediate_action", None),
-                    "longterm_fix": getattr(solution, "longterm_fix", None),
+                    "solution_type": solution.solution_type.value,
+                    "title": solution.title,
+                    "immediate_action": solution.immediate_action,
+                    "longterm_fix": solution.longterm_fix,
                     "implementation_steps": json.dumps(
-                        solution.implementation_steps
-                        if hasattr(solution, "implementation_steps")
-                        else []
+                        list(solution.implementation_steps)
                     ),
-                    "commands": json.dumps(
-                        solution.commands if hasattr(solution, "commands") else []
-                    ),
-                    "risks": json.dumps(
-                        solution.risks if hasattr(solution, "risks") else []
-                    ),
+                    "commands": json.dumps(list(solution.commands)),
+                    "risks": json.dumps(list(solution.risks)),
                     "description": (
                         solution.immediate_action
-                        if hasattr(solution, "immediate_action")
-                        and solution.immediate_action
-                        else (
-                            solution.title
-                            if hasattr(solution, "title")
-                            else str(solution)
-                        )
+                        or solution.longterm_fix
+                        or solution.title
                     ),
-                    "status": "proposed",
-                    "risk_level": (
-                        solution.risk_level if hasattr(solution, "risk_level") else None
-                    ),
-                    "estimated_effort": (
-                        solution.effort if hasattr(solution, "effort") else None
-                    ),
+                    "status": status,
+                    "proposed_by": solution.proposed_by,
+                    "applied_by": solution.applied_by,
+                    "verification_method": solution.verification_method,
+                    "verification_evidence_id": solution.verification_evidence_id,
+                    "effectiveness": solution.effectiveness,
                     "verification_result": None,
-                    "verification_timestamp": None,
-                    "proposed_at": getattr(solution, "proposed_at", None)
-                    or datetime.now(timezone.utc),
-                    "implemented_at": None,
+                    "verified_at": verified_at,
+                    "proposed_at": solution.proposed_at,
+                    "applied_at": applied_at,
                     "updated_at": datetime.now(timezone.utc),
                     "metadata": json.dumps({}),
-                    "created_by": None,
-                    "updated_by": None,
-                    # Phase 6 Tier 1: optional FK to addressed hypothesis.
-                    # TODO: SolutionsToAdd schema does not yet carry
-                    # hypothesis_id; populate once the LLM update schema is
-                    # extended. Nullable for now (fast-track / pre-hypothesis
-                    # solutions remain NULL).
-                    "hypothesis_id": getattr(solution, "hypothesis_id", None),
                 },
             )
+
+    @staticmethod
+    def _derive_solution_status(solution: Solution) -> str:
+        """Map Pydantic Solution lifecycle fields to the schema's
+        status CHECK vocabulary. Mirrors the SQLite repo logic.
+        """
+        if solution.verified_at is not None:
+            return "verified"
+        if solution.applied_at is not None:
+            return "implemented"
+        return "proposed"
 
     async def _upsert_uploaded_files(
         self, case_id: str, files_list: List[UploadedFile], organization_id: str
