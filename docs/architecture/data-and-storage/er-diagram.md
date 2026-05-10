@@ -1,6 +1,6 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-05-10 01:19 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-05-10 06:41 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
@@ -21,7 +21,7 @@
 | `conversion_drafts` | 22 | `id` | conversion_jobs, knowledge_items, organizations, users |
 | `conversion_jobs` | 13 | `id` | cases, organizations, teams, uploaded_files, users |
 | `enterprises` | 11 | `enterprise_id` | — |
-| `evidence` | 19 | `evidence_id` | cases, organizations, uploaded_files |
+| `evidence` | 24 | `evidence_id` | cases, organizations, uploaded_files |
 | `hypotheses` | 23 | `hypothesis_id` | cases, organizations, users |
 | `hypothesis_evidence` | 8 | `hypothesis_id, evidence_id` | evidence, hypotheses, organizations, users |
 | `investigation_sessions` | 17 | `session_id` | cases, organizations, users |
@@ -36,7 +36,7 @@
 | `reports` | 16 | `report_id` | cases, organizations, users |
 | `role_permissions` | 2 | `role_id, permission_id` | permissions, roles |
 | `roles` | 7 | `role_id` | — |
-| `solutions` | 23 | `solution_id` | cases, hypotheses, organizations, users |
+| `solutions` | 26 | `solution_id` | cases, evidence, hypotheses, organizations |
 | `team_members` | 4 | `user_id, team_id` | teams, users |
 | `teams` | 7 | `team_id` | organizations |
 | `uploaded_files` | 13 | `file_id` | cases, organizations, users |
@@ -219,6 +219,10 @@ erDiagram
         VARCHAR category
         VARCHAR source_type
         VARCHAR form
+        VARCHAR primary_purpose
+        TEXT analysis
+        VARCHAR processing_mode
+        TEXT advances_milestones
         VARCHAR summary
         TEXT extract
         BOOLEAN is_primary
@@ -228,6 +232,7 @@ erDiagram
         DATETIME coverage_start_ts
         DATETIME coverage_end_ts
         BOOLEAN vectorized
+        VARCHAR collected_by
         TEXT metadata
         DATETIME created_at
         DATETIME updated_at
@@ -442,13 +447,16 @@ erDiagram
         TEXT implementation_steps
         TEXT commands
         TEXT risks
+        VARCHAR proposed_by
+        VARCHAR applied_by
+        VARCHAR verification_method
+        VARCHAR verification_evidence_id FK
+        FLOAT effectiveness
         TEXT verification_result
-        DATETIME verification_timestamp
-        VARCHAR created_by FK
-        VARCHAR updated_by FK
+        DATETIME verified_at
         TEXT metadata
         DATETIME proposed_at
-        DATETIME implemented_at
+        DATETIME applied_at
         DATETIME updated_at
     }
     team_members {
@@ -535,6 +543,7 @@ erDiagram
     enterprises ||--o{ users : ""
     evidence ||--o{ case_entities : ""
     evidence ||--o{ hypothesis_evidence : ""
+    evidence ||--o{ solutions : ""
     hypotheses ||--o{ hypothesis_evidence : ""
     hypotheses ||--o{ solutions : ""
     investigation_sessions ||--o{ agent_executions : ""
@@ -584,7 +593,6 @@ erDiagram
     users ||--o{ organization_members : ""
     users ||--o{ organizations : ""
     users ||--o{ reports : ""
-    users ||--o{ solutions : ""
     users ||--o{ team_members : ""
     users ||--o{ uploaded_files : ""
     users ||--o{ user_audit_log : ""

@@ -4,7 +4,7 @@
 **Status**: Authoritative Standard
 **Last Updated**: 2026-05-10
 
-> **Scope**: This document reflects the live schema as of migration `317a8c329673` (008). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
+> **Scope**: This document reflects the live schema as of migration `4b7e2f9d3a18` (009). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
 
 > **NOTE on `organization_id` placement**: All tenanted case-domain tables carry `organization_id NOT NULL FK` for RLS policy enforcement in PostgreSQL and direct repository-layer filtering in both dialects. The per-table DDL below reflects this placement on every tenanted table.
 
@@ -38,7 +38,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | --- | --- | --- |
 | ✅ Design | Approved | This document |
 | ✅ ORM Models | Complete | `faultmaven/infrastructure/persistence/models.py` (32 tables) |
-| ✅ Migration Chain | Complete | `alembic/versions/` — head revision `317a8c329673` (008) |
+| ✅ Migration Chain | Complete | `alembic/versions/` — head revision `4b7e2f9d3a18` (009) |
 | ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository.py` |
 | ✅ SQLite Repository | Complete | `sqlite_case_repository.py` |
 | ✅ SQLite Integration Tests | Complete | Tests passing with real SQLite database |
@@ -46,7 +46,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ⏳ Performance Validation | Pending | Benchmarks needed |
 | ⏳ Production Deploy | Pending | PostgreSQL not yet deployed to K8s |
 
-**Migration Chain** (linear; current head is `317a8c329673`):
+**Migration Chain** (linear; current head is `4b7e2f9d3a18`):
 
 | # | Revision | Description |
 | --- | --- | --- |
@@ -58,6 +58,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | 006 | `be112b702fd4` | Enterprise tier bootstrap: seed default enterprise, backfill, tighten `enterprise_id` to NOT NULL |
 | 007 | `05b6eaf5baad` | Drop `users_password_or_sso` CHECK constraint to permit passwordless dev-login |
 | 008 | `317a8c329673` | `case_actions`: add `triggered_by VARCHAR(50) NOT NULL` (drop existing rows, no backfill) |
+| 009 | `4b7e2f9d3a18` | Evidence/Solution coherence: `evidence` adds `primary_purpose`, `analysis`, `processing_mode`, `advances_milestones`, `collected_by`; `solutions` drops dead `created_by`/`updated_by`, renames `implemented_at`→`applied_at` and `verification_timestamp`→`verified_at`, adds `proposed_by`, `applied_by`, `verification_method`, `verification_evidence_id` (FK), `effectiveness` |
 
 **Active Implementations**:
 
@@ -538,6 +539,23 @@ CREATE TABLE evidence (
     summary             VARCHAR(500) NOT NULL,
     extract             TEXT,                                    -- nullable for Path 2 (no verbatim quote)
 
+    -- Audit / classification metadata (added in migration 009).
+    -- ``primary_purpose`` is what this evidence validates (milestone
+    -- name or hypothesis ID). Server default 'legacy' lets pre-009
+    -- rows satisfy NOT NULL; new writers populate explicitly.
+    primary_purpose     VARCHAR(100) NOT NULL DEFAULT 'legacy',
+    -- Free-form agent analysis attached to the evidence row.
+    analysis            TEXT,
+    -- Processing mode used to extract: triage | directed_analysis | semantic_search.
+    processing_mode     VARCHAR(50),
+    -- Which milestones this evidence helped complete. TagsArray shape:
+    -- TEXT[] on PG, comma-encoded TEXT on SQLite (same TypeDecorator as ``tags``).
+    advances_milestones TEXT,
+    -- Who collected: user UUID or sentinel ('system' for automated). Free-form
+    -- VARCHAR per the case_actions.triggered_by precedent — the value space is
+    -- heterogeneous, FK to users would force inventing sentinel users rows.
+    collected_by        VARCHAR(50) NOT NULL DEFAULT 'system',
+
     -- Investigation context
     is_primary          BOOLEAN NOT NULL DEFAULT FALSE,
     reliability_score   REAL,                                    -- 0..1 when set
@@ -557,6 +575,7 @@ CREATE TABLE evidence (
     -- ============================================================
     -- Constraints (live in ORM; Tier 1, both dialects)
     -- ============================================================
+    -- Mirrored at the Pydantic layer in Evidence._summary_not_empty
     CONSTRAINT evidence_summary_not_empty
         CHECK (LENGTH(TRIM(summary)) > 0),
     -- Mirrored at the Pydantic layer in Evidence._extract_not_empty_when_set
@@ -684,6 +703,7 @@ CREATE TABLE hypotheses (
     proposed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 
+    -- Mirrored at the Pydantic layer in Hypothesis._statement_not_empty
     CONSTRAINT hypotheses_statement_not_empty
         CHECK (LENGTH(TRIM(statement)) > 0),
     CONSTRAINT hypotheses_status_check
@@ -744,7 +764,9 @@ CREATE TABLE solutions (
     title VARCHAR(500) NOT NULL,
     description TEXT NOT NULL,
     solution_type VARCHAR(30) NOT NULL DEFAULT 'other',
-    -- SolutionStatus enum: proposed | accepted | rejected | implemented | verified
+    -- SolutionStatus enum: proposed | accepted | rejected | implemented | verified.
+    -- Repository derives this from lifecycle fields: verified_at set -> 'verified',
+    -- applied_at set -> 'implemented', otherwise 'proposed'.
     status VARCHAR(20) NOT NULL DEFAULT 'proposed',
     risk_level VARCHAR(20),                          -- low | medium | high | critical when set
     estimated_effort VARCHAR(50),
@@ -753,16 +775,27 @@ CREATE TABLE solutions (
     implementation_steps JSONB,
     commands JSONB,
     risks JSONB,
-    verification_result TEXT,
-    verification_timestamp TIMESTAMP WITH TIME ZONE,
 
-    created_by VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
-    updated_by VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
+    -- Sentinel-friendly actor columns (added in migration 009; replace the
+    -- dropped ``created_by``/``updated_by`` FKs that the repo always wrote
+    -- NULL for). Free-form VARCHAR per the case_actions.triggered_by
+    -- precedent — Pydantic Solution.proposed_by defaults to 'agent', a value
+    -- a FK to users could not represent.
+    proposed_by VARCHAR(50) NOT NULL DEFAULT 'agent',
+    applied_by VARCHAR(50),
+
+    -- Verification metadata (added in migration 009 — completes the audit
+    -- trail the Pydantic Solution model has carried without storage).
+    verification_method VARCHAR(500),
+    verification_evidence_id VARCHAR(36) REFERENCES evidence(evidence_id) ON DELETE SET NULL,
+    effectiveness REAL,                              -- 0..1 when set
+    verification_result TEXT,
+    verified_at TIMESTAMP WITH TIME ZONE,            -- renamed from verification_timestamp in 009
 
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,     -- Python attr: solution_metadata
 
     proposed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    implemented_at TIMESTAMP WITH TIME ZONE,
+    applied_at TIMESTAMP WITH TIME ZONE,             -- renamed from implemented_at in 009
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 
     CONSTRAINT solutions_description_not_empty
@@ -770,14 +803,15 @@ CREATE TABLE solutions (
     CONSTRAINT solutions_status_check
         CHECK (status IN ('proposed', 'accepted', 'rejected', 'implemented', 'verified')),
     CONSTRAINT solutions_risk_level_check
-        CHECK (risk_level IS NULL OR risk_level IN ('low', 'medium', 'high', 'critical'))
+        CHECK (risk_level IS NULL OR risk_level IN ('low', 'medium', 'high', 'critical')),
+    CONSTRAINT solutions_effectiveness_range
+        CHECK (effectiveness IS NULL OR (effectiveness >= 0 AND effectiveness <= 1))
 );
 
 CREATE INDEX ix_solutions_case_id ON solutions(case_id);
 CREATE INDEX ix_solutions_organization_id ON solutions(organization_id);
 CREATE INDEX ix_solutions_hypothesis_id ON solutions(hypothesis_id);
 CREATE INDEX ix_solutions_status ON solutions(status);
-CREATE INDEX ix_solutions_created_by ON solutions(created_by);
 
 COMMENT ON TABLE solutions IS 'Proposed and verified solutions';
 ```
@@ -1684,7 +1718,7 @@ Before deploying PostgreSQLHybridCaseRepository to production, validate the foll
 # Deploy PostgreSQL to K8s (if not already running)
 kubectl apply -f faultmaven-k8s-infra/applications/postgresql/
 
-# Apply migrations via alembic (chain head: 317a8c329673)
+# Apply migrations via alembic (chain head: 4b7e2f9d3a18)
 alembic upgrade head
 
 # Verify all tables created
@@ -1850,11 +1884,12 @@ psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM evidence WHERE case_id 
 
 - [x] Design approved (this document)
 - [x] ORM models (`faultmaven/infrastructure/persistence/models.py`)
-- [x] Migration chain through head `317a8c329673` (008)
+- [x] Migration chain through head `4b7e2f9d3a18` (009)
 - [x] Repository implementation (`postgresql_hybrid_case_repository.py`, `sqlite_case_repository.py`)
 - [x] Container.py wiring (`CASE_STORAGE_TYPE=database`)
 - [x] Enterprise tier bootstrap (default enterprise seed; NOT NULL `enterprise_id` on users/orgs)
 - [x] `case_actions.triggered_by` column + read path wired (migration 008)
+- [x] Evidence/Solution audit fields wired end-to-end (migration 009): `Evidence` adds `primary_purpose`/`analysis`/`processing_mode`/`advances_milestones`/`collected_by`; `Solution` adds `proposed_by`/`applied_by`/`verification_method`/`verification_evidence_id`/`effectiveness` and renames `implemented_at`→`applied_at`, `verification_timestamp`→`verified_at`
 
 ### ⏳ Pending (Before Production)
 
@@ -1923,10 +1958,37 @@ The following tables and columns existed in earlier iterations of this design bu
 - **Author**: FaultMaven Team
 - **Created**: 2025-11-09
 - **Last Updated**: 2026-05-10
-- **Version**: 4.1 (Authoritative)
-- **Status**: ✅ Implemented — live schema (migration chain head `317a8c329673`)
+- **Version**: 4.2 (Authoritative)
+- **Status**: ✅ Implemented — live schema (migration chain head `4b7e2f9d3a18`)
 
 **Changelog**:
+
+**4.2 — 2026-05-10**
+
+Migration chain extended through 009; closes the Evidence/Solution
+silent-data-loss gap surfaced by the schema-redesign coherence audit.
+
+- §4.3 `evidence`: added `primary_purpose` (NOT NULL, server default
+  `'legacy'`), `analysis`, `processing_mode`, `advances_milestones`
+  (TagsArray), and `collected_by` (NOT NULL, server default
+  `'system'`). Documented the Pydantic mirror for
+  `evidence_summary_not_empty`.
+- §4.4 `hypotheses`: documented the Pydantic mirror for
+  `hypotheses_statement_not_empty`.
+- §4.5 `solutions`: dropped dead FK columns (`created_by`, `updated_by`
+  — repo always wrote NULL); renamed `implemented_at` → `applied_at`
+  and `verification_timestamp` → `verified_at` to match domain naming;
+  added `proposed_by` (NOT NULL, server default `'agent'`),
+  `applied_by`, `verification_method`, `verification_evidence_id`
+  (FK to `evidence` with SET NULL), and `effectiveness` with
+  range CHECK. Documented the repo-derived `status` lifecycle
+  (`verified_at` → 'verified', `applied_at` → 'implemented',
+  otherwise 'proposed').
+- Migration chain table: added row 009 (`4b7e2f9d3a18`).
+- Header revision + Implementation Status row + the `alembic upgrade
+  head` example all bumped to 009's revision (`4b7e2f9d3a18`).
+- Implementation checklist gained an Evidence/Solution audit-fields
+  completion line.
 
 **4.1 — 2026-05-10**
 
