@@ -426,9 +426,6 @@ async def lifespan(app: FastAPI):
             app.state.session_service = container.get_session_service()
             app.state.case_service = container.get_case_service()
             app.state.investigation_service = container.get_investigation_service()
-            app.state.investigation_orchestrator = (
-                container.get_investigation_orchestrator()
-            )
             app.state.knowledge_service = container.get_knowledge_service()
 
             # Document-to-runbook conversion service

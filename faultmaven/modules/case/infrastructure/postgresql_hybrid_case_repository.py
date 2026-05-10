@@ -1758,8 +1758,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     ) -> None:
         """Upsert hypotheses records (post-redesign schema).
 
-        Purely additive — see `_upsert_evidence` for rationale. For
-        intentional removal, use `IHypothesisRepository.delete_hypothesis`.
+        Purely additive — see `_upsert_evidence` for rationale. There is
+        no concrete delete-hypothesis API on the case repo today; if a
+        single-hypothesis remove path is needed, add it explicitly.
 
         The dropped ``hypotheses.evidence_links`` JSON blob has been
         replaced by the ``hypothesis_evidence`` junction table; that
@@ -1895,8 +1896,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     ) -> None:
         """Upsert solutions records (normalized table).
 
-        Purely additive — see `_upsert_evidence` for rationale. For
-        intentional removal, use `ISolutionRepository.delete_solution`.
+        Purely additive — see `_upsert_evidence` for rationale. There is
+        no concrete delete-solution API on the case repo today; if a
+        single-solution remove path is needed, add it explicitly.
 
         Post-009 schema: writes the full Solution audit trail
         (proposed_by, applied_at/by, verified_at, verification_method,

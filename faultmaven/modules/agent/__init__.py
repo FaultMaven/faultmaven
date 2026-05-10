@@ -18,7 +18,6 @@ Public API:
 
     From domain.services (import directly):
         - AgentOrchestrationService
-        - InvestigationOrchestrator
         - InvestigationService
 
     From tools:

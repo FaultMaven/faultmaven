@@ -5,6 +5,5 @@ Don't eagerly import to avoid circular imports.
 
 __all__ = [
     "agent_orchestration_service",
-    "investigation_orchestrator",
     "investigation_service",
 ]
