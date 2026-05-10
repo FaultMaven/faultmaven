@@ -1200,6 +1200,11 @@ class CaseActionModel(Base):
     from_status = Column(String(50), nullable=True)
     to_status = Column(String(50), nullable=False)
     reason = Column(Text, nullable=True)
+    # Free-form actor identifier: user UUID or sentinel like "system",
+    # "agent", "scheduler". Not a FK because the value space is heterogeneous;
+    # a FK would force inventing a sentinel users row. CHECK can be added
+    # later once the sentinel set stabilizes.
+    triggered_by = Column(String(50), nullable=False)
     transition_metadata = Column(
         "metadata", JsonBlob, nullable=False, server_default="{}"
     )

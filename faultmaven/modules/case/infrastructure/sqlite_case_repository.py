@@ -227,10 +227,16 @@ class SQLiteCaseRepository(CaseRepository):
             solutions_data = await self._load_solutions(case_id)
             uploaded_files_data = await self._load_uploaded_files(case_id)
             messages_data = await self._load_messages(case_id)
+            actions_data = await self._load_case_actions(case_id)
 
             # Reconstruct Case domain object
             case = self._row_to_case(
-                row, hypotheses_data, solutions_data, uploaded_files_data, messages_data
+                row,
+                hypotheses_data,
+                solutions_data,
+                uploaded_files_data,
+                messages_data,
+                actions_data,
             )
 
             # Load evidence directly
@@ -2414,9 +2420,11 @@ class SQLiteCaseRepository(CaseRepository):
         for transition in transitions:
             query = text("""
                 INSERT INTO case_actions (
-                    case_id, organization_id, from_status, to_status, reason, transitioned_at, metadata
+                    case_id, organization_id, from_status, to_status, reason,
+                    triggered_by, transitioned_at, metadata
                 ) VALUES (
-                    :case_id, :organization_id, :from_status, :to_status, :reason, :transitioned_at, :metadata
+                    :case_id, :organization_id, :from_status, :to_status, :reason,
+                    :triggered_by, :transitioned_at, :metadata
                 )
                 ON CONFLICT DO NOTHING
             """)
@@ -2433,10 +2441,41 @@ class SQLiteCaseRepository(CaseRepository):
                     "reason": (
                         transition.reason if hasattr(transition, "reason") else None
                     ),
+                    "triggered_by": transition.triggered_by,
                     "transitioned_at": transition.triggered_at,
                     "metadata": json.dumps({}),
                 },
             )
+
+    async def _load_case_actions(self, case_id: str) -> builtins.list[CaseAction]:
+        """Hydrate the audit trail for a case from ``case_actions``.
+
+        Replaces the prior write-only pattern (``action_history=[]`` hardcoded
+        in ``_to_domain``). Rows are returned ordered oldest-first to match
+        the in-memory append order.
+        """
+        query = text("""
+            SELECT from_status, to_status, reason, triggered_by, transitioned_at
+            FROM case_actions
+            WHERE case_id = :case_id
+            ORDER BY transitioned_at ASC, transition_id ASC
+        """)
+        result = await self.db.execute(query, {"case_id": case_id})
+        rows = result.fetchall()
+        actions: builtins.list[CaseAction] = []
+        for row in rows:
+            actions.append(
+                CaseAction(
+                    from_status=(
+                        CaseStatus(row.from_status) if row.from_status else None
+                    ),
+                    to_status=CaseStatus(row.to_status),
+                    triggered_at=row.transitioned_at,
+                    triggered_by=row.triggered_by,
+                    reason=row.reason or "",
+                )
+            )
+        return actions
 
     def _convert_legacy_inquiry_data(self, data: dict) -> dict:
         """Convert legacy LLM schema format to domain model format for backward compatibility.
@@ -2476,6 +2515,7 @@ class SQLiteCaseRepository(CaseRepository):
         solutions_data: builtins.list[dict],
         uploaded_files_data: builtins.list[dict],
         messages_data: builtins.list[dict] | None = None,
+        actions_data: builtins.list[CaseAction] | None = None,
     ) -> Case:
         """Reconstruct Case domain object from database row."""
         # Parse JSON columns with backward compatibility for legacy schema
@@ -2547,7 +2587,7 @@ class SQLiteCaseRepository(CaseRepository):
             "organization_id": row.organization_id,  # NOT NULL in DB
             "title": row.title,
             "status": CaseStatus(row.status),
-            "action_history": [],
+            "action_history": actions_data or [],
             "closure_reason": row.closure_reason,
             "pending_transition": metadata.get("pending_transition"),
             "progress": progress,

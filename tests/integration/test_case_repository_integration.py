@@ -577,3 +577,70 @@ async def test_complex_case_persistence(db_repository: SQLiteCaseRepository):
     assert retrieved.current_turn == 5
     assert retrieved.turns_without_progress == 1
     assert retrieved.message_count == 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_action_history_round_trip(db_repository: SQLiteCaseRepository):
+    """CaseAction round-trips through case_actions, including triggered_by.
+
+    Pre-migration-008, the table was write-only: ``action_history`` was
+    hardcoded to ``[]`` in ``_to_domain``, and ``triggered_by`` had no
+    column at all. This test pins both halves of the fix:
+    - INSERT writes ``triggered_by`` (NOT NULL column from migration 008).
+    - SELECT path hydrates ``action_history`` from rows, in chronological
+      order, with the original ``triggered_by`` value preserved.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from faultmaven.modules.case.domain.models import CaseAction
+
+    case_id = f"case_{uuid4().hex[:12]}"
+    case = Case(
+        case_id=case_id,
+        user_id="lifecycle-test-user",
+        organization_id="lifecycle-test-org",
+        title="Action Trail Test",
+        description="Round-trip case_actions including triggered_by",
+        status=CaseStatus.INVESTIGATING,
+        inquiry=InquiryData(
+            proposed_problem_statement="Pinning the audit trail",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+        ),
+    )
+
+    base_ts = datetime(2026, 5, 9, 12, 0, 0, tzinfo=timezone.utc)
+    case.action_history = [
+        CaseAction(
+            from_status=CaseStatus.INQUIRY,
+            to_status=CaseStatus.INVESTIGATING,
+            triggered_at=base_ts,
+            triggered_by="lifecycle-test-user",
+            reason="user confirmed problem",
+        ),
+        CaseAction(
+            from_status=CaseStatus.INVESTIGATING,
+            to_status=CaseStatus.CLOSED,
+            triggered_at=base_ts + timedelta(seconds=30),
+            triggered_by="system",
+            reason="auto-closed: stale investigation",
+        ),
+    ]
+
+    await db_repository.save(case)
+    retrieved = await db_repository.get(case_id)
+
+    assert retrieved is not None
+    assert len(retrieved.action_history) == 2
+
+    first, second = retrieved.action_history
+    assert first.from_status == CaseStatus.INQUIRY
+    assert first.to_status == CaseStatus.INVESTIGATING
+    assert first.triggered_by == "lifecycle-test-user"
+    assert first.reason == "user confirmed problem"
+
+    assert second.from_status == CaseStatus.INVESTIGATING
+    assert second.to_status == CaseStatus.CLOSED
+    assert second.triggered_by == "system"
+    assert second.reason == "auto-closed: stale investigation"

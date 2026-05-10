@@ -253,6 +253,8 @@ async def create_test_schema(session: AsyncSession):
             from_status TEXT,
             to_status TEXT NOT NULL,
             reason TEXT,
+            -- Migration 008 (2026-05): triggered_by NOT NULL.
+            triggered_by TEXT NOT NULL,
             transitioned_at TIMESTAMP,
             metadata TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE

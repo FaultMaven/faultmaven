@@ -2082,9 +2082,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         for transition in transitions:
             query = text("""
                 INSERT INTO case_actions (
-                    case_id, organization_id, from_status, to_status, reason, transitioned_at, metadata
+                    case_id, organization_id, from_status, to_status, reason,
+                    triggered_by, transitioned_at, metadata
                 ) VALUES (
-                    :case_id, :organization_id, :from_status, :to_status, :reason, :transitioned_at, :metadata::jsonb
+                    :case_id, :organization_id, :from_status, :to_status, :reason,
+                    :triggered_by, :transitioned_at, :metadata::jsonb
                 )
                 ON CONFLICT DO NOTHING
             """)
@@ -2101,10 +2103,40 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "reason": (
                         transition.reason if hasattr(transition, "reason") else None
                     ),
+                    "triggered_by": transition.triggered_by,
                     "transitioned_at": transition.triggered_at,
                     "metadata": json.dumps({}),
                 },
             )
+
+    async def _load_case_actions(self, case_id: str) -> List[CaseAction]:
+        """Hydrate the audit trail for a case from ``case_actions``.
+
+        Replaces the prior write-only pattern (``action_history=[]`` hardcoded
+        in ``_to_domain``). Rows are returned ordered oldest-first.
+        """
+        query = text("""
+            SELECT from_status, to_status, reason, triggered_by, transitioned_at
+            FROM case_actions
+            WHERE case_id = :case_id
+            ORDER BY transitioned_at ASC, transition_id ASC
+        """)
+        result = await self.db.execute(query, {"case_id": case_id})
+        rows = result.fetchall()
+        actions: List[CaseAction] = []
+        for row in rows:
+            actions.append(
+                CaseAction(
+                    from_status=(
+                        CaseStatus(row.from_status) if row.from_status else None
+                    ),
+                    to_status=CaseStatus(row.to_status),
+                    triggered_at=row.transitioned_at,
+                    triggered_by=row.triggered_by,
+                    reason=row.reason or "",
+                )
+            )
+        return actions
 
     def _convert_legacy_inquiry_data(self, data: dict) -> dict:
         """Convert legacy LLM schema format to domain model format for backward compatibility.
@@ -2242,13 +2274,18 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     f"from proposed_problem_statement"
                 )
 
+        # Hydrate the audit trail. PG's _row_to_case is async and is used
+        # by both get() and list() (list calls get() per case_id), so the
+        # extra round-trip is acceptable at list granularity.
+        actions_data = await self._load_case_actions(row.case_id)
+
         case_data: Dict[str, Any] = {
             "case_id": row.case_id,
             "user_id": row.user_id,
             "organization_id": row.organization_id,
             "title": row.title,
             "status": CaseStatus(row.status),
-            "action_history": [],
+            "action_history": actions_data,
             "closure_reason": row.closure_reason,
             "pending_transition": metadata.get("pending_transition"),
             "progress": progress,
