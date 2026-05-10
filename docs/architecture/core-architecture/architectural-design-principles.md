@@ -754,7 +754,7 @@ pytest -m "evaluation" --benchmark
 │  Owns: Investigation state, hypotheses, retries │
 │                                                  │
 │  • MilestoneEngine (opportunistic investigation) │
-│  • InvestigationOrchestrator                    │
+│  • InvestigationService (turn lifecycle)        │
 │  • HypothesisManager (confidence scoring)       │
 │  • LLMRouter (provider fallback chain)          │
 └─────────────────────────────────────────────────┘
