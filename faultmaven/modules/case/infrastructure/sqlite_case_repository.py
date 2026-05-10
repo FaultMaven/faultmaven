@@ -354,11 +354,21 @@ class SQLiteCaseRepository(CaseRepository):
         return by_hyp
 
     async def _load_solutions(self, case_id: str) -> list[dict]:
-        """Load solutions for a case."""
+        """Load solutions for a case.
+
+        Selects the full audit trail (proposed_by, applied_at/by,
+        verified_at, verification_method, verification_evidence_id,
+        effectiveness) so ``Solution(**s)`` reconstruction is faithful
+        to what was persisted. Pre-009 this loader returned only a
+        subset, leaving every audit field at its Pydantic default.
+        """
         query = text("""
             SELECT solution_id, solution_type, title, immediate_action, longterm_fix,
                    implementation_steps, commands, risks,
-                   proposed_at, updated_at, metadata
+                   proposed_at, proposed_by,
+                   applied_at, applied_by,
+                   verified_at, verification_method,
+                   verification_evidence_id, effectiveness
             FROM solutions
             WHERE case_id = :case_id
         """)
@@ -378,8 +388,13 @@ class SQLiteCaseRepository(CaseRepository):
                     "commands": json.loads(row[6]) if row[6] else [],
                     "risks": json.loads(row[7]) if row[7] else [],
                     "proposed_at": row[8],
-                    "updated_at": row[9],
-                    "metadata": json.loads(row[10]) if row[10] else {},
+                    "proposed_by": row[9],
+                    "applied_at": row[10],
+                    "applied_by": row[11],
+                    "verified_at": row[12],
+                    "verification_method": row[13],
+                    "verification_evidence_id": row[14],
+                    "effectiveness": row[15],
                 }
             )
         return solutions
@@ -477,11 +492,14 @@ class SQLiteCaseRepository(CaseRepository):
     async def _load_evidence_for_case(self, case: Case) -> None:
         """Load investigation evidence from the evidence table.
 
-        Post-redesign columns: ``evidence_id``, ``category``, ``source_type``,
-        ``form``, ``summary``, ``extract``, ``is_primary``,
-        ``reliability_score``, ``tags``, ``collected_at_turn``, ``source_file_id``,
-        ``vectorized``, ``coverage_start_ts``, ``coverage_end_ts``,
-        ``metadata``, ``created_at``.
+        Post-009 columns selected (in this fixed order, consumed
+        positionally by ``_row_to_evidence``): ``evidence_id``, ``category``,
+        ``source_type``, ``form``, ``summary``, ``extract``, ``is_primary``,
+        ``reliability_score``, ``tags``, ``collected_at_turn``,
+        ``source_file_id``, ``vectorized``, ``coverage_start_ts``,
+        ``coverage_end_ts``, ``metadata``, ``created_at``,
+        ``primary_purpose``, ``analysis``, ``processing_mode``,
+        ``advances_milestones``, ``collected_by``.
         """
         try:
             query = text("""
@@ -491,7 +509,9 @@ class SQLiteCaseRepository(CaseRepository):
                     is_primary, reliability_score, tags,
                     collected_at_turn, source_file_id, vectorized,
                     coverage_start_ts, coverage_end_ts,
-                    metadata, created_at
+                    metadata, created_at,
+                    primary_purpose, analysis, processing_mode,
+                    advances_milestones, collected_by
                 FROM evidence
                 WHERE case_id = :case_id
                 ORDER BY created_at DESC
@@ -515,7 +535,8 @@ class SQLiteCaseRepository(CaseRepository):
         Column order (fixed): ``evidence_id, category, source_type, form,
         summary, extract, is_primary, reliability_score, tags,
         collected_at_turn, source_file_id, vectorized, coverage_start_ts,
-        coverage_end_ts, metadata, created_at``.
+        coverage_end_ts, metadata, created_at, primary_purpose, analysis,
+        processing_mode, advances_milestones, collected_by``.
 
         Returns ``None`` and logs a warning when reconstruction fails so
         one bad row doesn't blank an entire result set.
@@ -563,16 +584,19 @@ class SQLiteCaseRepository(CaseRepository):
             return Evidence(
                 evidence_id=str(row[0]),
                 category=category,
-                primary_purpose="loaded_evidence",
+                primary_purpose=row[16] or "legacy",
                 summary=row[4] if row[4] else "Evidence",
                 extract=row[5],
+                analysis=row[17],
+                processing_mode=row[18],
                 source_type=source_type,
                 form=form,
                 source_file_id=row[10],
                 is_primary=bool(row[6]),
                 reliability_score=(float(row[7]) if row[7] is not None else None),
                 tags=_deserialize_tags(row[8]),
-                collected_by="user",
+                advances_milestones=_deserialize_tags(row[19]),
+                collected_by=row[20] or "system",
                 collected_at=collected_at,
                 collected_at_turn=row[9] if row[9] else 0,
                 vectorized=bool(row[11]),
@@ -667,7 +691,10 @@ class SQLiteCaseRepository(CaseRepository):
         query = text(f"""
             SELECT case_id, solution_id, solution_type, title, immediate_action,
                    longterm_fix, implementation_steps, commands, risks,
-                   proposed_at, updated_at, metadata
+                   proposed_at, proposed_by,
+                   applied_at, applied_by,
+                   verified_at, verification_method,
+                   verification_evidence_id, effectiveness
             FROM solutions
             WHERE case_id IN ({placeholders})
         """)
@@ -686,8 +713,13 @@ class SQLiteCaseRepository(CaseRepository):
                     "commands": json.loads(row[7]) if row[7] else [],
                     "risks": json.loads(row[8]) if row[8] else [],
                     "proposed_at": row[9],
-                    "updated_at": row[10],
-                    "metadata": json.loads(row[11]) if row[11] else {},
+                    "proposed_by": row[10],
+                    "applied_at": row[11],
+                    "applied_by": row[12],
+                    "verified_at": row[13],
+                    "verification_method": row[14],
+                    "verification_evidence_id": row[15],
+                    "effectiveness": row[16],
                 }
             )
         return by_case
@@ -791,7 +823,9 @@ class SQLiteCaseRepository(CaseRepository):
                     is_primary, reliability_score, tags,
                     collected_at_turn, source_file_id, vectorized,
                     coverage_start_ts, coverage_end_ts,
-                    metadata, created_at
+                    metadata, created_at,
+                    primary_purpose, analysis, processing_mode,
+                    advances_milestones, collected_by
                 FROM evidence
                 WHERE case_id IN ({placeholders})
                 ORDER BY created_at DESC
@@ -821,6 +855,11 @@ class SQLiteCaseRepository(CaseRepository):
                     row[14],  # coverage_end_ts
                     row[15],  # metadata
                     row[16],  # created_at
+                    row[17],  # primary_purpose
+                    row[18],  # analysis
+                    row[19],  # processing_mode
+                    row[20],  # advances_milestones
+                    row[21],  # collected_by
                 )
                 ev = self._row_to_evidence(ev_row)
                 if ev is not None:
@@ -983,7 +1022,9 @@ class SQLiteCaseRepository(CaseRepository):
                     e.is_primary, e.reliability_score, e.tags,
                     e.collected_at_turn, e.source_file_id, e.vectorized,
                     e.coverage_start_ts, e.coverage_end_ts,
-                    e.metadata, e.created_at
+                    e.metadata, e.created_at,
+                    e.primary_purpose, e.analysis, e.processing_mode,
+                    e.advances_milestones, e.collected_by
                 FROM evidence e
                 INNER JOIN uploaded_files uf ON uf.file_id = e.source_file_id
                 WHERE e.case_id = :case_id
@@ -1038,7 +1079,9 @@ class SQLiteCaseRepository(CaseRepository):
                     is_primary, reliability_score, tags,
                     collected_at_turn, source_file_id, vectorized,
                     coverage_start_ts, coverage_end_ts,
-                    metadata, created_at
+                    metadata, created_at,
+                    primary_purpose, analysis, processing_mode,
+                    advances_milestones, collected_by
                 FROM evidence
                 WHERE {' AND '.join(where_clauses)}
                 ORDER BY coverage_start_ts ASC
@@ -1981,16 +2024,18 @@ class SQLiteCaseRepository(CaseRepository):
                     evidence_id, case_id, organization_id, source_file_id,
                     category, source_type, form,
                     summary, extract,
+                    primary_purpose, analysis, processing_mode, advances_milestones,
                     is_primary, reliability_score, tags,
-                    collected_at_turn, vectorized,
+                    collected_at_turn, collected_by, vectorized,
                     coverage_start_ts, coverage_end_ts,
                     metadata, created_at, updated_at
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :source_file_id,
                     :category, :source_type, :form,
                     :summary, :extract,
+                    :primary_purpose, :analysis, :processing_mode, :advances_milestones,
                     :is_primary, :reliability_score, :tags,
-                    :collected_at_turn, :vectorized,
+                    :collected_at_turn, :collected_by, :vectorized,
                     :coverage_start_ts, :coverage_end_ts,
                     :metadata, :created_at, :updated_at
                 )
@@ -2001,10 +2046,15 @@ class SQLiteCaseRepository(CaseRepository):
                     form = EXCLUDED.form,
                     summary = EXCLUDED.summary,
                     extract = EXCLUDED.extract,
+                    primary_purpose = EXCLUDED.primary_purpose,
+                    analysis = EXCLUDED.analysis,
+                    processing_mode = EXCLUDED.processing_mode,
+                    advances_milestones = EXCLUDED.advances_milestones,
                     is_primary = EXCLUDED.is_primary,
                     reliability_score = EXCLUDED.reliability_score,
                     tags = EXCLUDED.tags,
                     collected_at_turn = EXCLUDED.collected_at_turn,
+                    collected_by = EXCLUDED.collected_by,
                     vectorized = EXCLUDED.vectorized,
                     coverage_start_ts = EXCLUDED.coverage_start_ts,
                     coverage_end_ts = EXCLUDED.coverage_end_ts,
@@ -2028,10 +2078,20 @@ class SQLiteCaseRepository(CaseRepository):
                     "form": evidence.form.value,
                     "summary": evidence.summary,
                     "extract": evidence.extract,
+                    "primary_purpose": evidence.primary_purpose,
+                    "analysis": evidence.analysis,
+                    "processing_mode": evidence.processing_mode,
+                    # advances_milestones uses the same TagsArray storage
+                    # shape as tags — comma-encoded TEXT on SQLite,
+                    # TEXT[] on PG. The same _serialize_tags helper applies.
+                    "advances_milestones": _serialize_tags(
+                        list(evidence.advances_milestones)
+                    ),
                     "is_primary": 1 if evidence.is_primary else 0,
                     "reliability_score": evidence.reliability_score,
                     "tags": _serialize_tags(evidence.tags),
                     "collected_at_turn": evidence.collected_at_turn,
+                    "collected_by": evidence.collected_by,
                     "vectorized": 1 if evidence.vectorized else 0,
                     "coverage_start_ts": (
                         evidence.coverage_start_ts.isoformat()
@@ -2196,29 +2256,34 @@ class SQLiteCaseRepository(CaseRepository):
 
         Purely additive — see `_upsert_evidence` for rationale. For
         intentional removal, use `ISolutionRepository.delete_solution`.
+
+        Post-009 schema: writes the full Solution audit trail
+        (proposed_by, applied_at/by, verified_at, verification_method,
+        verification_evidence_id, effectiveness). Status is included
+        in ON CONFLICT UPDATE so the lifecycle can advance.
         """
         for solution in solutions_list:
-            solution_id = (
-                solution.solution_id
-                if hasattr(solution, "solution_id")
-                else f"sol_{uuid4().hex[:12]}"
-            )
+            applied_at = solution.applied_at
+            verified_at = solution.verified_at
+            status = self._derive_solution_status(solution)
 
             query = text("""
                 INSERT INTO solutions (
-                    solution_id, case_id, organization_id, solution_type, title, immediate_action,
-                    longterm_fix, implementation_steps, commands, risks,
+                    solution_id, case_id, organization_id, solution_type, title,
+                    immediate_action, longterm_fix, implementation_steps, commands, risks,
                     description, status,
-                    risk_level, estimated_effort, verification_result, verification_timestamp,
-                    proposed_at, implemented_at, updated_at, metadata,
-                    created_by, updated_by, hypothesis_id
+                    proposed_by, applied_by,
+                    verification_method, verification_evidence_id, effectiveness,
+                    verification_result, verified_at,
+                    proposed_at, applied_at, updated_at, metadata
                 ) VALUES (
-                    :solution_id, :case_id, :organization_id, :solution_type, :title, :immediate_action,
-                    :longterm_fix, :implementation_steps, :commands, :risks,
+                    :solution_id, :case_id, :organization_id, :solution_type, :title,
+                    :immediate_action, :longterm_fix, :implementation_steps, :commands, :risks,
                     :description, :status,
-                    :risk_level, :estimated_effort, :verification_result, :verification_timestamp,
-                    :proposed_at, :implemented_at, :updated_at, :metadata,
-                    :created_by, :updated_by, :hypothesis_id
+                    :proposed_by, :applied_by,
+                    :verification_method, :verification_evidence_id, :effectiveness,
+                    :verification_result, :verified_at,
+                    :proposed_at, :applied_at, :updated_at, :metadata
                 )
                 ON CONFLICT (solution_id) DO UPDATE SET
                     solution_type = EXCLUDED.solution_type,
@@ -2230,78 +2295,71 @@ class SQLiteCaseRepository(CaseRepository):
                     risks = EXCLUDED.risks,
                     description = EXCLUDED.description,
                     status = EXCLUDED.status,
-                    risk_level = EXCLUDED.risk_level,
-                    estimated_effort = EXCLUDED.estimated_effort,
+                    proposed_by = EXCLUDED.proposed_by,
+                    applied_by = EXCLUDED.applied_by,
+                    verification_method = EXCLUDED.verification_method,
+                    verification_evidence_id = EXCLUDED.verification_evidence_id,
+                    effectiveness = EXCLUDED.effectiveness,
                     verification_result = EXCLUDED.verification_result,
-                    verification_timestamp = EXCLUDED.verification_timestamp,
-                    implemented_at = EXCLUDED.implemented_at,
+                    verified_at = EXCLUDED.verified_at,
+                    applied_at = EXCLUDED.applied_at,
                     updated_at = EXCLUDED.updated_at,
-                    metadata = EXCLUDED.metadata,
-                    hypothesis_id = EXCLUDED.hypothesis_id
+                    metadata = EXCLUDED.metadata
             """)
 
             await self.db.execute(
                 query,
                 {
-                    "solution_id": solution_id,
+                    "solution_id": solution.solution_id,
                     "case_id": case_id,
                     "organization_id": organization_id,
-                    "solution_type": (
-                        solution.solution_type.value
-                        if hasattr(solution, "solution_type") and solution.solution_type
-                        else "other"
-                    ),
-                    "title": (
-                        solution.title
-                        if hasattr(solution, "title") and solution.title
-                        else "Untitled solution"
-                    ),
-                    "immediate_action": getattr(solution, "immediate_action", None),
-                    "longterm_fix": getattr(solution, "longterm_fix", None),
+                    "solution_type": solution.solution_type.value,
+                    "title": solution.title,
+                    "immediate_action": solution.immediate_action,
+                    "longterm_fix": solution.longterm_fix,
                     "implementation_steps": json.dumps(
-                        solution.implementation_steps
-                        if hasattr(solution, "implementation_steps")
-                        else []
+                        list(solution.implementation_steps)
                     ),
-                    "commands": json.dumps(
-                        solution.commands if hasattr(solution, "commands") else []
-                    ),
-                    "risks": json.dumps(
-                        solution.risks if hasattr(solution, "risks") else []
-                    ),
+                    "commands": json.dumps(list(solution.commands)),
+                    "risks": json.dumps(list(solution.risks)),
                     "description": (
                         solution.immediate_action
-                        if hasattr(solution, "immediate_action")
-                        and solution.immediate_action
-                        else (
-                            solution.title
-                            if hasattr(solution, "title")
-                            else str(solution)
-                        )
+                        or solution.longterm_fix
+                        or solution.title
                     ),
-                    "status": "proposed",
-                    "risk_level": (
-                        solution.risk_level if hasattr(solution, "risk_level") else None
-                    ),
-                    "estimated_effort": (
-                        solution.effort if hasattr(solution, "effort") else None
-                    ),
+                    "status": status,
+                    "proposed_by": solution.proposed_by,
+                    "applied_by": solution.applied_by,
+                    "verification_method": solution.verification_method,
+                    "verification_evidence_id": solution.verification_evidence_id,
+                    "effectiveness": solution.effectiveness,
                     "verification_result": None,
-                    "verification_timestamp": None,
-                    "proposed_at": getattr(solution, "proposed_at", None)
-                    or datetime.now(UTC),
-                    "implemented_at": None,
+                    "verified_at": verified_at,
+                    "proposed_at": solution.proposed_at,
+                    "applied_at": applied_at,
                     "updated_at": datetime.now(UTC),
                     "metadata": json.dumps({}),
-                    "created_by": None,
-                    "updated_by": None,
-                    # Phase 6 Tier 1: link solution to addressed hypothesis when known.
-                    # TODO: SolutionsToAdd schema does not yet carry hypothesis_id;
-                    # populate once the LLM update schema is extended. Nullable for
-                    # now (fast-track / pre-hypothesis solutions remain NULL).
-                    "hypothesis_id": getattr(solution, "hypothesis_id", None),
                 },
             )
+
+    @staticmethod
+    def _derive_solution_status(solution: Solution) -> str:
+        """Map Pydantic Solution lifecycle fields to the schema's
+        status CHECK vocabulary ('proposed', 'accepted', 'rejected',
+        'implemented', 'verified'). Single source of truth for the
+        write path, used by both ``_upsert_solutions`` and the PG
+        hybrid repo.
+
+        verified_at present  -> 'verified' (the model_validator
+                                guarantees effectiveness is also set)
+        applied_at present   -> 'implemented'
+        otherwise            -> 'proposed'
+        """
+        if solution.verified_at is not None:
+            return "verified"
+        if solution.applied_at is not None:
+            return "implemented"
+        return "proposed"
 
     async def _upsert_uploaded_files(
         self,

@@ -101,7 +101,9 @@ async def create_test_schema(session: AsyncSession):
         )
     """))
 
-    # Create evidence table
+    # Create evidence table (post-009: includes primary_purpose, analysis,
+    # processing_mode, advances_milestones, collected_by). Schema mirrors
+    # what migration 009 produces; see EvidenceModel for the canonical shape.
     await session.execute(text("""
         CREATE TABLE IF NOT EXISTS evidence (
             evidence_id TEXT PRIMARY KEY,
@@ -119,12 +121,24 @@ async def create_test_schema(session: AsyncSession):
             content_hash TEXT,
             collected_at_turn INTEGER,
             source_file_id TEXT,
+            extract TEXT,
             -- Phase 6 Tier 1 column additions (storage redesign 2026-04).
             form TEXT NOT NULL DEFAULT 'text',
             is_primary INTEGER NOT NULL DEFAULT 0,
             content_type TEXT,
             reliability_score REAL,
             tags TEXT,
+            vectorized INTEGER NOT NULL DEFAULT 0,
+            coverage_start_ts TIMESTAMP,
+            coverage_end_ts TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            -- Migration 009 columns.
+            primary_purpose TEXT NOT NULL DEFAULT 'legacy',
+            analysis TEXT,
+            processing_mode TEXT,
+            advances_milestones TEXT,
+            collected_by TEXT NOT NULL DEFAULT 'system',
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
     """))
@@ -176,7 +190,9 @@ async def create_test_schema(session: AsyncSession):
         )
     """))
 
-    # Create solutions table
+    # Create solutions table (post-009 schema: dropped created_by/updated_by;
+    # renamed implemented_at -> applied_at, verification_timestamp -> verified_at;
+    # added proposed_by/applied_by/verification_method/verification_evidence_id/effectiveness).
     await session.execute(text("""
         CREATE TABLE IF NOT EXISTS solutions (
             solution_id TEXT PRIMARY KEY,
@@ -193,18 +209,22 @@ async def create_test_schema(session: AsyncSession):
             risks TEXT,
             risk_level TEXT,
             estimated_effort TEXT,
+            proposed_by TEXT NOT NULL DEFAULT 'agent',
+            applied_by TEXT,
+            verification_method TEXT,
+            verification_evidence_id TEXT,
+            effectiveness REAL,
             verification_result TEXT,
-            verification_timestamp TIMESTAMP,
+            verified_at TIMESTAMP,
             proposed_at TIMESTAMP,
-            implemented_at TIMESTAMP,
+            applied_at TIMESTAMP,
             updated_at TIMESTAMP,
             metadata TEXT,
-            created_by TEXT,
-            updated_by TEXT,
             -- Phase 6 Tier 1 column addition (storage redesign 2026-04).
             hypothesis_id TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE,
-            FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(hypothesis_id) ON DELETE SET NULL
+            FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(hypothesis_id) ON DELETE SET NULL,
+            FOREIGN KEY (verification_evidence_id) REFERENCES evidence(evidence_id) ON DELETE SET NULL
         )
     """))
 
