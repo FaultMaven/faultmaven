@@ -7,6 +7,16 @@ Implemented by:
 - PostgreSQLOrganizationRepository
 - PostgreSQLTeamRepository
 - PostgreSQLUserRepository (enhanced)
+
+Cross-layer parity:
+- ``Organization.name``, ``Team.name`` mirror DB ``LENGTH(TRIM(...)) > 0``
+  CHECKs (organizations_name_not_empty, teams_name_not_empty).
+- ``Organization.slug`` mirrors DB ``LENGTH(slug) > 0`` (no TRIM, by design).
+- ``Role.scope`` is typed as :class:`RoleScope` to mirror DB roles_scope_check.
+
+Sibling file ``faultmaven.models.interfaces_user`` defines a parallel
+Pydantic family for the same DB rows (legacy migration in progress);
+keep validators in sync until consolidation lands.
 """
 
 from abc import ABC, abstractmethod
@@ -14,7 +24,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ============================================================================
 # Enums
@@ -27,6 +37,15 @@ class OrgPlanTier(str, Enum):
     FREE = "free"
     PRO = "pro"
     ENTERPRISE = "enterprise"
+
+
+class RoleScope(str, Enum):
+    """RBAC role scope levels. Mirrors the DB roles_scope_check CHECK."""
+
+    SYSTEM = "system"
+    ENTERPRISE = "enterprise"
+    ORGANIZATION = "organization"
+    TEAM = "team"
 
 
 class AuditEventType(str, Enum):
@@ -62,8 +81,8 @@ class Organization(BaseModel):
     """Organization (workspace/tenant) model."""
 
     organization_id: str
-    name: str
-    slug: str
+    name: str = Field(min_length=1)
+    slug: str = Field(min_length=1)
     description: Optional[str] = None
     plan_tier: OrgPlanTier = OrgPlanTier.FREE
     max_members: int = 5
@@ -72,6 +91,17 @@ class Organization(BaseModel):
     created_at: datetime
     updated_at: datetime
     deleted_at: Optional[datetime] = None
+
+    @field_validator("name", mode="after")
+    @classmethod
+    def _name_not_empty(cls, v: str) -> str:
+        """Mirror of the DB organizations_name_not_empty CHECK: name must
+        not be whitespace-only. Pydantic ``min_length=1`` accepts a single
+        space; the DB ``LENGTH(TRIM(name)) > 0`` rejects it. Same rule, two
+        layers — neither bypassable independently."""
+        if not v.strip():
+            raise ValueError("name must not be whitespace-only")
+        return v
 
 
 class OrganizationMember(BaseModel):
@@ -89,11 +119,22 @@ class Team(BaseModel):
 
     team_id: str
     organization_id: str
-    name: str
+    name: str = Field(min_length=1)
     description: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     deleted_at: Optional[datetime] = None
+
+    @field_validator("name", mode="after")
+    @classmethod
+    def _name_not_empty(cls, v: str) -> str:
+        """Mirror of the DB teams_name_not_empty CHECK: name must not be
+        whitespace-only. Pydantic ``min_length=1`` accepts a single space;
+        the DB ``LENGTH(TRIM(name)) > 0`` rejects it. Same rule, two layers
+        — neither bypassable independently."""
+        if not v.strip():
+            raise ValueError("name must not be whitespace-only")
+        return v
 
 
 class TeamMember(BaseModel):
@@ -106,12 +147,17 @@ class TeamMember(BaseModel):
 
 
 class Role(BaseModel):
-    """RBAC role definition."""
+    """RBAC role definition.
+
+    ``scope`` is typed as :class:`RoleScope` to mirror the DB
+    ``roles_scope_check`` CHECK at the domain layer. Same rule, two
+    layers — neither bypassable independently.
+    """
 
     role_id: str
     name: str
     description: Optional[str] = None
-    scope: str  # 'system', 'organization', 'team'
+    scope: RoleScope
     is_system_role: bool = False
     created_at: datetime
 
