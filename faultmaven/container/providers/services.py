@@ -189,31 +189,6 @@ def create_investigation_service(
         return None
 
 
-def create_investigation_orchestrator(
-    hypothesis_repository: Any | None,
-    solution_repository: Any | None,
-) -> Any | None:
-    """Create investigation orchestrator for hypothesis/solution workflow."""
-    if not hypothesis_repository or not solution_repository:
-        logger.debug("InvestigationOrchestrator skipped (missing repositories)")
-        return None
-
-    try:
-        from faultmaven.modules.agent.domain.services.investigation_orchestrator import (
-            InvestigationOrchestrator,
-        )
-
-        orchestrator = InvestigationOrchestrator(
-            hypothesis_repo=hypothesis_repository,
-            solution_repo=solution_repository,
-        )
-        logger.debug("InvestigationOrchestrator initialized")
-        return orchestrator
-    except Exception as e:
-        logger.warning(f"InvestigationOrchestrator initialization failed: {e}")
-        return None
-
-
 def create_session_service(
     session_store: Any | None,
     settings: FaultMavenSettings,
@@ -687,8 +662,6 @@ def register_services(container: BaseDIContainer) -> None:
     case_repository = getattr(container, "case_repository", None)
     session_store = container.get_service("session_store")
     case_vector_store = getattr(container, "case_vector_store", None)
-    hypothesis_repository = getattr(container, "hypothesis_repository", None)
-    solution_repository = getattr(container, "solution_repository", None)
     db_session = getattr(container, "db_session", None)
     vector_store = container.get_service("vector_store")
     knowledge_ingester = getattr(container, "knowledge_ingester", None)
@@ -846,16 +819,6 @@ def register_services(container: BaseDIContainer) -> None:
     container.investigation_service = investigation_service
     if investigation_service:
         container._register_service("investigation_service", investigation_service)
-
-    # Investigation Orchestrator
-    investigation_orchestrator = create_investigation_orchestrator(
-        hypothesis_repository, solution_repository
-    )
-    container.investigation_orchestrator = investigation_orchestrator
-    if investigation_orchestrator:
-        container._register_service(
-            "investigation_orchestrator", investigation_orchestrator
-        )
 
     # Team Service (organization_repository already created above)
     team_service = create_team_service(db_session, organization_repository, settings)

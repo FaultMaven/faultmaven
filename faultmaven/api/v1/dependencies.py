@@ -85,16 +85,6 @@ async def get_investigation_service(request: Request):
     return service
 
 
-async def get_investigation_orchestrator(request: Request):
-    """Get InvestigationOrchestrator instance from app.state (TASK-026)"""
-    orchestrator = request.app.state.investigation_orchestrator
-    if orchestrator is None:
-        raise HTTPException(
-            status_code=503, detail="Investigation orchestrator not available"
-        )
-    return orchestrator
-
-
 # TD-001: get_report_store removed - reports now accessed via get_case_repository()
 
 

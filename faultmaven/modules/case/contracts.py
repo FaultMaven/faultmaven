@@ -305,130 +305,6 @@ class ICaseRepository(Protocol):
 
 
 # ============================================================
-# Hypothesis & Solution Repository Contracts
-# ============================================================
-
-
-class IHypothesisRepository(Protocol):
-    """Repository interface for Hypothesis persistence operations.
-
-    Agent module should import this Protocol instead of the concrete
-    HypothesisRepository ABC from infrastructure.persistence.
-    """
-
-    async def create_hypothesis(
-        self,
-        case_id: str,
-        organization_id: str,
-        statement: str,
-        created_by: str,
-        status: Optional[str] = "captured",
-        likelihood: Optional[Decimal] = None,
-        category: str = "other",
-        evidence_links: Optional[Dict] = None,
-        metadata: Optional[Dict] = None,
-    ) -> "Hypothesis": ...
-
-    async def get_hypothesis(
-        self,
-        hypothesis_id: str,
-        organization_id: str,
-    ) -> Optional["Hypothesis"]: ...
-
-    async def list_hypotheses_by_case(
-        self,
-        case_id: str,
-        organization_id: str,
-        status: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> Tuple[List["Hypothesis"], int]: ...
-
-    async def update_hypothesis(
-        self,
-        hypothesis_id: str,
-        organization_id: str,
-        updated_by: str,
-        statement: Optional[str] = None,
-        status: Optional[str] = None,
-        likelihood: Optional[Decimal] = None,
-        evidence_links: Optional[Dict] = None,
-        retirement_reason: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Optional["Hypothesis"]: ...
-
-    async def delete_hypothesis(
-        self,
-        hypothesis_id: str,
-        organization_id: str,
-    ) -> bool: ...
-
-    async def count_hypotheses_by_case(
-        self,
-        case_id: str,
-        organization_id: str,
-        status: Optional[str] = None,
-    ) -> int: ...
-
-
-class ISolutionRepository(Protocol):
-    """Repository interface for Solution persistence operations.
-
-    Agent module should import this Protocol instead of the concrete
-    SolutionRepository ABC from infrastructure.persistence.
-    """
-
-    async def create_solution(
-        self,
-        case_id: str,
-        organization_id: str,
-        description: str,
-        created_by: str,
-        status: Optional[str] = "proposed",
-        implementation_steps: Optional[List[str]] = None,
-        risk_level: Optional[str] = None,
-        estimated_effort: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> "Solution": ...
-
-    async def get_solution(
-        self,
-        solution_id: str,
-        organization_id: str,
-    ) -> Optional["Solution"]: ...
-
-    async def list_solutions_by_case(
-        self,
-        case_id: str,
-        organization_id: str,
-        status: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> Tuple[List["Solution"], int]: ...
-
-    async def update_solution(
-        self,
-        solution_id: str,
-        organization_id: str,
-        updated_by: str,
-        description: Optional[str] = None,
-        status: Optional[str] = None,
-        implementation_steps: Optional[List[str]] = None,
-        risk_level: Optional[str] = None,
-        estimated_effort: Optional[str] = None,
-        verification_result: Optional[str] = None,
-        implemented: Optional[bool] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Optional["Solution"]: ...
-
-    async def delete_solution(
-        self,
-        solution_id: str,
-        organization_id: str,
-    ) -> bool: ...
-
-
-# ============================================================
 # Service Contract
 # ============================================================
 
@@ -554,8 +430,6 @@ __all__ = [
     # Repository and Service Contracts
     "ICaseRepository",
     "ICaseService",
-    "IHypothesisRepository",
-    "ISolutionRepository",
     # DTOs
     "CaseStatusDTO",
     "CaseDTO",

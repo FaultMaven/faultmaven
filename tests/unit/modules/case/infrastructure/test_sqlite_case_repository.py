@@ -447,8 +447,9 @@ class TestRelatedDataRoundTrip:
     @pytest.mark.asyncio
     async def test_hypothesis_upsert_is_purely_additive(self, repository):
         """save(case) must NOT delete hypotheses absent from the in-memory
-        case.hypotheses dict. Removal is explicit via the hypothesis
-        repository — see `IHypothesisRepository.delete_hypothesis`.
+        case.hypotheses dict. Removal is intentionally explicit and not
+        currently exposed on the repo; add a delete-hypothesis API if
+        single-row removal is needed.
         """
         case = _make_case()
         h1 = _make_hypothesis(statement="Hypothesis A")

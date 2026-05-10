@@ -788,17 +788,6 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "investigation_service", None)
 
-    def get_investigation_orchestrator(self):
-        """Get the investigation orchestrator service (TASK-026)"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                "Investigation orchestrator requested but container not initialized"
-            )
-            if not getattr(self, "_initializing", False):
-                pass  # Container must be initialized via await container.initialize() at startup
-        return getattr(self, "investigation_orchestrator", None)
-
     def get_evidence_service(self):
         """Get the evidence service (PR #46b - Evidence management)"""
         if not self._initialized:
