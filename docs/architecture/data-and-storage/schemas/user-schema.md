@@ -250,6 +250,10 @@ CREATE TABLE organizations (
     deleted_at TIMESTAMPTZ,
 
     -- Constraints
+    -- Tier 1 (live ORM) — mirrored on Pydantic ``Organization.name`` via field validator
+    CONSTRAINT organizations_name_not_empty CHECK (LENGTH(TRIM(name)) > 0),
+    -- Tier 1 (live ORM) — note: no TRIM, by design. Mirrored on Pydantic via ``min_length=1``
+    CONSTRAINT organizations_slug_not_empty CHECK (LENGTH(slug) > 0),
     -- Tier 2 (PostgreSQL-only) — regex CHECK not in live ORM
     CONSTRAINT organizations_slug_format CHECK (slug ~* '^[a-z0-9-]+$'),
     -- Tier 2 (PostgreSQL-only) — enum CHECK not in live ORM
@@ -324,7 +328,11 @@ CREATE TABLE teams (
     deleted_at TIMESTAMPTZ,
 
     -- Unique name within organization
-    UNIQUE (organization_id, name)
+    UNIQUE (organization_id, name),
+
+    -- Constraints
+    -- Tier 1 (live ORM) — mirrored on Pydantic ``Team.name`` via field validator
+    CONSTRAINT teams_name_not_empty CHECK (LENGTH(TRIM(name)) > 0)
 );
 
 -- Tier 2 (PostgreSQL-only) — partial index (WHERE deleted_at IS NULL)
@@ -368,7 +376,7 @@ CREATE TABLE roles (
     description TEXT,
 
     -- Scope
-    scope VARCHAR(20) NOT NULL DEFAULT 'organization',  -- 'system', 'organization', 'team'
+    scope VARCHAR(20) NOT NULL DEFAULT 'organization',  -- 'system', 'enterprise', 'organization', 'team'
 
     -- Built-in vs Custom
     is_system_role BOOLEAN NOT NULL DEFAULT false,
@@ -378,8 +386,8 @@ CREATE TABLE roles (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- Constraints
-    -- Tier 2 (PostgreSQL-only) — enum CHECK not in live ORM
-    CONSTRAINT roles_scope_valid CHECK (scope IN ('system', 'organization', 'team'))
+    -- Tier 1 (live ORM) — mirrored on Pydantic ``Role.scope`` typed as RoleScope enum
+    CONSTRAINT roles_scope_check CHECK (scope IN ('system', 'enterprise', 'organization', 'team'))
 );
 
 -- Seed System Roles
@@ -803,6 +811,7 @@ HAVING COUNT(*) > 5;
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 3.4 | 2026-05-10 | Cat #10/#11 audit follow-up (Item 1): added live ORM CHECKs missing from §2.2 DDL — `organizations_name_not_empty`, `organizations_slug_not_empty`, `teams_name_not_empty` (all Tier 1, mirrored on Pydantic via field validators / `min_length=1`). Corrected `roles_scope_valid` → `roles_scope_check` (live ORM name, was previously misclassified as Tier 2-only); enum values updated to match the live ORM (added `'enterprise'`). Pydantic now mirrors via the `RoleScope` enum on `Role.scope`. The `enterprises` table itself is not yet documented here — separate follow-up. |
 | 3.3 | 2026-04-19 | Audit fix (storage redesign Phase 9): §2.2 organizations DDL updated to include four columns present in the live ORM `OrganizationModel` and ER diagram but missing from the DDL: `owner_id VARCHAR(36) NULL`, `is_active BOOLEAN NOT NULL DEFAULT TRUE`, `description TEXT NULL`, `metadata TEXT NULL` (ORM attribute `metadata_` to avoid SQLAlchemy collision; physical column is `metadata`). This resolves the internal doc conflict between user-schema.md §2.2 and er-diagram.md (Audit Issue 9). |
 | 3.2 | 2026-04-19 | Aligned with deployment-schema-strategy.md v2.1 (locked design). Sessions are Redis-only (no SQL table) — §5.3 rewritten with explicit Redis-only statement and Anti-Pattern 1 callout. `investigation_sessions` clarified as case-owned (not auth-owned). FK widths normalized to VARCHAR(36) throughout all DDL (previously inconsistent at VARCHAR(20)/VARCHAR(36)/VARCHAR(64)). Stripe/billing columns (`stripe_customer_id`, `stripe_subscription_id`, `trial_ends_at`, `domain`) removed from organizations DDL — marked out of current scope rather than Proposed. Deployment Applicability banner updated with sessions deletion note and investigation\_sessions clarification. |
 | 3.1 | 2026-04-18 | Aligned with deployment-schema-strategy.md v1.0. Added Deployment Applicability banner covering Tier 1/2 policy, tenancy context in Local Deployment, and OAuth table Cloud-only behavior. Marked as Tier 2 (PostgreSQL-only): `users_email_format` regex CHECK, `users_password_or_sso` CHECK, `UNIQUE(sso_provider, sso_provider_id)`, `organizations_slug_format` CHECK, `organizations_plan_tier_valid` CHECK, `org_members_accepted_after_invited` CHECK, `roles_scope_valid` CHECK, all partial `WHERE deleted_at IS NULL` indexes. Fixed Tier 1 reality for `audit_id` (Integer, not BIGSERIAL) and `ip_address` (VARCHAR(45), not INET). Added undocumented ORM columns: `organization_members.last_active_at`, `team_members.team_role`. Added Known FK width inconsistency note (VARCHAR(36) vs VARCHAR(64) vs VARCHAR(20)). Marked `organizations.domain`, `stripe_customer_id`, `stripe_subscription_id`, `trial_ends_at` as Proposed (cloud billing integration — not in models.py). |
