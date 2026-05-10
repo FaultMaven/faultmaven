@@ -492,11 +492,14 @@ class SQLiteCaseRepository(CaseRepository):
     async def _load_evidence_for_case(self, case: Case) -> None:
         """Load investigation evidence from the evidence table.
 
-        Post-redesign columns: ``evidence_id``, ``category``, ``source_type``,
-        ``form``, ``summary``, ``extract``, ``is_primary``,
-        ``reliability_score``, ``tags``, ``collected_at_turn``, ``source_file_id``,
-        ``vectorized``, ``coverage_start_ts``, ``coverage_end_ts``,
-        ``metadata``, ``created_at``.
+        Post-009 columns selected (in this fixed order, consumed
+        positionally by ``_row_to_evidence``): ``evidence_id``, ``category``,
+        ``source_type``, ``form``, ``summary``, ``extract``, ``is_primary``,
+        ``reliability_score``, ``tags``, ``collected_at_turn``,
+        ``source_file_id``, ``vectorized``, ``coverage_start_ts``,
+        ``coverage_end_ts``, ``metadata``, ``created_at``,
+        ``primary_purpose``, ``analysis``, ``processing_mode``,
+        ``advances_milestones``, ``collected_by``.
         """
         try:
             query = text("""
@@ -506,7 +509,9 @@ class SQLiteCaseRepository(CaseRepository):
                     is_primary, reliability_score, tags,
                     collected_at_turn, source_file_id, vectorized,
                     coverage_start_ts, coverage_end_ts,
-                    metadata, created_at
+                    metadata, created_at,
+                    primary_purpose, analysis, processing_mode,
+                    advances_milestones, collected_by
                 FROM evidence
                 WHERE case_id = :case_id
                 ORDER BY created_at DESC
@@ -530,7 +535,8 @@ class SQLiteCaseRepository(CaseRepository):
         Column order (fixed): ``evidence_id, category, source_type, form,
         summary, extract, is_primary, reliability_score, tags,
         collected_at_turn, source_file_id, vectorized, coverage_start_ts,
-        coverage_end_ts, metadata, created_at``.
+        coverage_end_ts, metadata, created_at, primary_purpose, analysis,
+        processing_mode, advances_milestones, collected_by``.
 
         Returns ``None`` and logs a warning when reconstruction fails so
         one bad row doesn't blank an entire result set.
@@ -578,16 +584,19 @@ class SQLiteCaseRepository(CaseRepository):
             return Evidence(
                 evidence_id=str(row[0]),
                 category=category,
-                primary_purpose="loaded_evidence",
+                primary_purpose=row[16] or "legacy",
                 summary=row[4] if row[4] else "Evidence",
                 extract=row[5],
+                analysis=row[17],
+                processing_mode=row[18],
                 source_type=source_type,
                 form=form,
                 source_file_id=row[10],
                 is_primary=bool(row[6]),
                 reliability_score=(float(row[7]) if row[7] is not None else None),
                 tags=_deserialize_tags(row[8]),
-                collected_by="user",
+                advances_milestones=_deserialize_tags(row[19]),
+                collected_by=row[20] or "system",
                 collected_at=collected_at,
                 collected_at_turn=row[9] if row[9] else 0,
                 vectorized=bool(row[11]),
@@ -814,7 +823,9 @@ class SQLiteCaseRepository(CaseRepository):
                     is_primary, reliability_score, tags,
                     collected_at_turn, source_file_id, vectorized,
                     coverage_start_ts, coverage_end_ts,
-                    metadata, created_at
+                    metadata, created_at,
+                    primary_purpose, analysis, processing_mode,
+                    advances_milestones, collected_by
                 FROM evidence
                 WHERE case_id IN ({placeholders})
                 ORDER BY created_at DESC
@@ -844,6 +855,11 @@ class SQLiteCaseRepository(CaseRepository):
                     row[14],  # coverage_end_ts
                     row[15],  # metadata
                     row[16],  # created_at
+                    row[17],  # primary_purpose
+                    row[18],  # analysis
+                    row[19],  # processing_mode
+                    row[20],  # advances_milestones
+                    row[21],  # collected_by
                 )
                 ev = self._row_to_evidence(ev_row)
                 if ev is not None:
@@ -1006,7 +1022,9 @@ class SQLiteCaseRepository(CaseRepository):
                     e.is_primary, e.reliability_score, e.tags,
                     e.collected_at_turn, e.source_file_id, e.vectorized,
                     e.coverage_start_ts, e.coverage_end_ts,
-                    e.metadata, e.created_at
+                    e.metadata, e.created_at,
+                    e.primary_purpose, e.analysis, e.processing_mode,
+                    e.advances_milestones, e.collected_by
                 FROM evidence e
                 INNER JOIN uploaded_files uf ON uf.file_id = e.source_file_id
                 WHERE e.case_id = :case_id
@@ -1061,7 +1079,9 @@ class SQLiteCaseRepository(CaseRepository):
                     is_primary, reliability_score, tags,
                     collected_at_turn, source_file_id, vectorized,
                     coverage_start_ts, coverage_end_ts,
-                    metadata, created_at
+                    metadata, created_at,
+                    primary_purpose, analysis, processing_mode,
+                    advances_milestones, collected_by
                 FROM evidence
                 WHERE {' AND '.join(where_clauses)}
                 ORDER BY coverage_start_ts ASC
@@ -2004,16 +2024,18 @@ class SQLiteCaseRepository(CaseRepository):
                     evidence_id, case_id, organization_id, source_file_id,
                     category, source_type, form,
                     summary, extract,
+                    primary_purpose, analysis, processing_mode, advances_milestones,
                     is_primary, reliability_score, tags,
-                    collected_at_turn, vectorized,
+                    collected_at_turn, collected_by, vectorized,
                     coverage_start_ts, coverage_end_ts,
                     metadata, created_at, updated_at
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :source_file_id,
                     :category, :source_type, :form,
                     :summary, :extract,
+                    :primary_purpose, :analysis, :processing_mode, :advances_milestones,
                     :is_primary, :reliability_score, :tags,
-                    :collected_at_turn, :vectorized,
+                    :collected_at_turn, :collected_by, :vectorized,
                     :coverage_start_ts, :coverage_end_ts,
                     :metadata, :created_at, :updated_at
                 )
@@ -2024,10 +2046,15 @@ class SQLiteCaseRepository(CaseRepository):
                     form = EXCLUDED.form,
                     summary = EXCLUDED.summary,
                     extract = EXCLUDED.extract,
+                    primary_purpose = EXCLUDED.primary_purpose,
+                    analysis = EXCLUDED.analysis,
+                    processing_mode = EXCLUDED.processing_mode,
+                    advances_milestones = EXCLUDED.advances_milestones,
                     is_primary = EXCLUDED.is_primary,
                     reliability_score = EXCLUDED.reliability_score,
                     tags = EXCLUDED.tags,
                     collected_at_turn = EXCLUDED.collected_at_turn,
+                    collected_by = EXCLUDED.collected_by,
                     vectorized = EXCLUDED.vectorized,
                     coverage_start_ts = EXCLUDED.coverage_start_ts,
                     coverage_end_ts = EXCLUDED.coverage_end_ts,
@@ -2051,10 +2078,20 @@ class SQLiteCaseRepository(CaseRepository):
                     "form": evidence.form.value,
                     "summary": evidence.summary,
                     "extract": evidence.extract,
+                    "primary_purpose": evidence.primary_purpose,
+                    "analysis": evidence.analysis,
+                    "processing_mode": evidence.processing_mode,
+                    # advances_milestones uses the same TagsArray storage
+                    # shape as tags — comma-encoded TEXT on SQLite,
+                    # TEXT[] on PG. The same _serialize_tags helper applies.
+                    "advances_milestones": _serialize_tags(
+                        list(evidence.advances_milestones)
+                    ),
                     "is_primary": 1 if evidence.is_primary else 0,
                     "reliability_score": evidence.reliability_score,
                     "tags": _serialize_tags(evidence.tags),
                     "collected_at_turn": evidence.collected_at_turn,
+                    "collected_by": evidence.collected_by,
                     "vectorized": 1 if evidence.vectorized else 0,
                     "coverage_start_ts": (
                         evidence.coverage_start_ts.isoformat()

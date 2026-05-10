@@ -759,3 +759,98 @@ async def test_solution_full_audit_round_trip(
     assert final_solution.proposed_by == "agent"
     assert final_solution.applied_at == applied_ts
     assert final_solution.applied_by == "complex-test-user"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_evidence_full_audit_round_trip(
+    db_repository: SQLiteCaseRepository,
+):
+    """Evidence round-trips with the five fields added by migration 009.
+
+    Pre-009 the repo dropped ``primary_purpose``, ``analysis``,
+    ``processing_mode``, ``advances_milestones`` and ``collected_by``
+    on persist; the read path hardcoded ``primary_purpose="loaded_evidence"``
+    and ``collected_by="user"`` placeholders, masking the loss. This
+    test pins the post-009 fix: every field round-trips faithfully on
+    both insert and update paths.
+    """
+    case_id = f"case_{uuid4().hex[:12]}"
+    case = Case(
+        case_id=case_id,
+        user_id="evidence-test-user",
+        organization_id="evidence-test-org",
+        title="Evidence Audit Round-trip",
+        description="Pin the 5 evidence fields added by migration 009",
+        status=CaseStatus.INVESTIGATING,
+        inquiry=InquiryData(
+            proposed_problem_statement="testing evidence persistence",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+        ),
+    )
+
+    evidence = Evidence(
+        evidence_id=f"ev_{uuid4().hex[:12]}",
+        category=EvidenceCategory.CAUSAL_EVIDENCE,
+        primary_purpose="hypothesis-test",
+        summary="Pool exhaustion correlated with deploy",
+        extract="2026-05-10T08:59:31Z pool=100/100 (full)",
+        analysis=(
+            "Pool fully saturated 30s before first error wave; "
+            "directly supports the 'pool exhaustion' hypothesis."
+        ),
+        processing_mode="directed_analysis",
+        source_type=EvidenceSourceType.LOGS,
+        form=EvidenceForm.DOCUMENT,
+        is_primary=True,
+        tags=["pool", "saturation", "deploy-correlation"],
+        advances_milestones=["root_cause_identified"],
+        collected_by="evidence-test-user",
+        collected_at_turn=3,
+    )
+    case.evidence = [evidence]
+
+    # Insert path -------------------------------------------------------
+    await db_repository.save(case)
+    retrieved = await db_repository.get(case_id)
+    assert retrieved is not None
+    assert len(retrieved.evidence) == 1
+    loaded = retrieved.evidence[0]
+
+    assert loaded.evidence_id == evidence.evidence_id
+    # The five migration-009 columns the audit was created to surface:
+    assert loaded.primary_purpose == "hypothesis-test"
+    assert loaded.analysis == evidence.analysis
+    assert loaded.processing_mode == "directed_analysis"
+    assert sorted(loaded.advances_milestones) == ["root_cause_identified"]
+    assert loaded.collected_by == "evidence-test-user"
+    # Existing audit data must keep round-tripping.
+    assert loaded.summary == "Pool exhaustion correlated with deploy"
+    assert sorted(loaded.tags) == sorted(evidence.tags)
+    assert loaded.is_primary is True
+    assert loaded.collected_at_turn == 3
+
+    # Update path: mutate the new fields and re-save -------------------
+    loaded.analysis = "After re-review with broader context, this is the smoking gun."
+    loaded.processing_mode = "semantic_search"
+    loaded.advances_milestones = [
+        "root_cause_identified",
+        "solution_proposed",
+    ]
+    retrieved.evidence = [loaded]
+
+    await db_repository.save(retrieved)
+    re_retrieved = await db_repository.get(case_id)
+    assert re_retrieved is not None
+    re_loaded = re_retrieved.evidence[0]
+
+    assert re_loaded.analysis == loaded.analysis
+    assert re_loaded.processing_mode == "semantic_search"
+    assert sorted(re_loaded.advances_milestones) == [
+        "root_cause_identified",
+        "solution_proposed",
+    ]
+    # Untouched fields must survive the update.
+    assert re_loaded.primary_purpose == "hypothesis-test"
+    assert re_loaded.collected_by == "evidence-test-user"

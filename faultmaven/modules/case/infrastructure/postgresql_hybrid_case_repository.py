@@ -372,11 +372,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def _load_evidence_for_case(self, case: Case) -> None:
         """Load investigation evidence from the evidence table.
 
-        Post-redesign columns: ``evidence_id``, ``category``, ``source_type``,
-        ``form``, ``summary``, ``extract``, ``is_primary``,
+        Post-009 columns selected (in this fixed order, consumed
+        positionally by ``_row_to_evidence``): ``evidence_id``, ``category``,
+        ``source_type``, ``form``, ``summary``, ``extract``, ``is_primary``,
         ``reliability_score``, ``tags``, ``collected_at_turn``,
         ``source_file_id``, ``vectorized``, ``coverage_start_ts``,
-        ``coverage_end_ts``, ``metadata``, ``created_at``.
+        ``coverage_end_ts``, ``metadata``, ``created_at``,
+        ``primary_purpose``, ``analysis``, ``processing_mode``,
+        ``advances_milestones``, ``collected_by``.
 
         File-level metadata (filename, content_hash, content_type, size,
         storage_ref) lives on ``uploaded_files`` reachable via
@@ -391,7 +394,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     is_primary, reliability_score, tags,
                     collected_at_turn, source_file_id, vectorized,
                     coverage_start_ts, coverage_end_ts,
-                    metadata, created_at
+                    metadata, created_at,
+                    primary_purpose, analysis, processing_mode,
+                    advances_milestones, collected_by
                 FROM evidence
                 WHERE case_id = :case_id
                 ORDER BY created_at DESC
@@ -415,7 +420,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Column order (fixed): ``evidence_id, category, source_type, form,
         summary, extract, is_primary, reliability_score, tags,
         collected_at_turn, source_file_id, vectorized, coverage_start_ts,
-        coverage_end_ts, metadata, created_at``.
+        coverage_end_ts, metadata, created_at, primary_purpose, analysis,
+        processing_mode, advances_milestones, collected_by``.
 
         Returns ``None`` and logs a warning when reconstruction fails so
         one bad row doesn't blank an entire result set.
@@ -465,19 +471,36 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             elif collected_at is None:
                 collected_at = datetime.now(timezone.utc)
 
+            # Postgres ARRAY(String) returns a list; the SQLite repo uses
+            # comma-encoded TEXT and _deserialize_tags. Handle both shapes.
+            advances_raw = row[19] if len(row) > 19 else None
+            if isinstance(advances_raw, list):
+                advances_milestones = list(advances_raw)
+            else:
+                advances_milestones = _deserialize_tags(advances_raw)
+
+            tags_raw = row[8]
+            if isinstance(tags_raw, list):
+                tags = list(tags_raw)
+            else:
+                tags = _deserialize_tags(tags_raw)
+
             return Evidence(
                 evidence_id=str(row[0]),
                 category=category,
-                primary_purpose="loaded_evidence",
+                primary_purpose=row[16] or "legacy",
                 summary=row[4] if row[4] else "Evidence",
                 extract=row[5],
+                analysis=row[17],
+                processing_mode=row[18],
                 source_type=source_type,
                 form=form,
                 source_file_id=row[10],
                 is_primary=bool(row[6]),
                 reliability_score=(float(row[7]) if row[7] is not None else None),
-                tags=_deserialize_tags(row[8]),
-                collected_by="user",
+                tags=tags,
+                advances_milestones=advances_milestones,
+                collected_by=row[20] or "system",
                 collected_at=collected_at,
                 collected_at_turn=row[9] if row[9] else 0,
                 vectorized=bool(row[11]),
@@ -695,7 +718,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     e.is_primary, e.reliability_score, e.tags,
                     e.collected_at_turn, e.source_file_id, e.vectorized,
                     e.coverage_start_ts, e.coverage_end_ts,
-                    e.metadata, e.created_at
+                    e.metadata, e.created_at,
+                    e.primary_purpose, e.analysis, e.processing_mode,
+                    e.advances_milestones, e.collected_by
                 FROM evidence e
                 INNER JOIN uploaded_files uf ON uf.file_id = e.source_file_id
                 WHERE e.case_id = :case_id
@@ -751,7 +776,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     is_primary, reliability_score, tags,
                     collected_at_turn, source_file_id, vectorized,
                     coverage_start_ts, coverage_end_ts,
-                    metadata, created_at
+                    metadata, created_at,
+                    primary_purpose, analysis, processing_mode,
+                    advances_milestones, collected_by
                 FROM evidence
                 WHERE {' AND '.join(where_clauses)}
                 ORDER BY coverage_start_ts ASC
@@ -1652,16 +1679,18 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     evidence_id, case_id, organization_id, source_file_id,
                     category, source_type, form,
                     summary, extract,
+                    primary_purpose, analysis, processing_mode, advances_milestones,
                     is_primary, reliability_score, tags,
-                    collected_at_turn, vectorized,
+                    collected_at_turn, collected_by, vectorized,
                     coverage_start_ts, coverage_end_ts,
                     metadata, created_at, updated_at
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :source_file_id,
                     :category, :source_type, :form,
                     :summary, :extract,
+                    :primary_purpose, :analysis, :processing_mode, :advances_milestones,
                     :is_primary, :reliability_score, :tags,
-                    :collected_at_turn, :vectorized,
+                    :collected_at_turn, :collected_by, :vectorized,
                     :coverage_start_ts, :coverage_end_ts,
                     :metadata::jsonb, :created_at, :updated_at
                 )
@@ -1672,10 +1701,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     form = EXCLUDED.form,
                     summary = EXCLUDED.summary,
                     extract = EXCLUDED.extract,
+                    primary_purpose = EXCLUDED.primary_purpose,
+                    analysis = EXCLUDED.analysis,
+                    processing_mode = EXCLUDED.processing_mode,
+                    advances_milestones = EXCLUDED.advances_milestones,
                     is_primary = EXCLUDED.is_primary,
                     reliability_score = EXCLUDED.reliability_score,
                     tags = EXCLUDED.tags,
                     collected_at_turn = EXCLUDED.collected_at_turn,
+                    collected_by = EXCLUDED.collected_by,
                     vectorized = EXCLUDED.vectorized,
                     coverage_start_ts = EXCLUDED.coverage_start_ts,
                     coverage_end_ts = EXCLUDED.coverage_end_ts,
@@ -1699,10 +1733,17 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "form": evidence.form.value,
                     "summary": evidence.summary,
                     "extract": evidence.extract,
+                    "primary_purpose": evidence.primary_purpose,
+                    "analysis": evidence.analysis,
+                    "processing_mode": evidence.processing_mode,
+                    "advances_milestones": _serialize_tags(
+                        list(evidence.advances_milestones)
+                    ),
                     "is_primary": evidence.is_primary,
                     "reliability_score": evidence.reliability_score,
                     "tags": _serialize_tags(evidence.tags),
                     "collected_at_turn": evidence.collected_at_turn,
+                    "collected_by": evidence.collected_by,
                     "vectorized": evidence.vectorized,
                     "coverage_start_ts": evidence.coverage_start_ts,
                     "coverage_end_ts": evidence.coverage_end_ts,
