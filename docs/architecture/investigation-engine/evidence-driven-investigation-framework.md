@@ -190,9 +190,15 @@ Treating mitigation as a "tool available during other stages" creates complex ro
 4. Propose solution — when root cause is identified with sufficient confidence
 
 **Evidence types accepted**:
+
 - `symptom_evidence` — data showing the problem exists
 - `causal_evidence` — data explaining why (requires hypothesis to exist)
-- `contextual_evidence` — baseline/environmental data
+
+Post-010: the dropped `contextual_evidence` category has no
+replacement. Background material lives on `uploaded_files` with its
+preprocessing artifacts and is visible to the agent via the
+structural index. No Evidence row is created until a slice is
+extracted in support of a specific claim.
 
 **Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is a **prompt-enforced audit invariant** (no Python validator rejects orphan `causal_evidence`); the canonical specification and rationale live in [Prompt Templates §HYPOTHESIS-EVIDENCE ORDERING](./prompt-templates.md#investigating-template).
 
@@ -432,37 +438,153 @@ INQUIRY ──(user confirms problem)──► DIAGNOSIS
 
 ---
 
-## 5. Evidence Model
+## 5. Evidence Model (post-010: strict two-table separation)
 
-### 5.1 Evidence Categories
+Migration 010 collapsed evidence's dual-path creation model into a
+clean two-table separation. Files are data — they live in
+`uploaded_files` with all their preprocessing artifacts. Evidence is
+a claim-anchored extract — the LLM's deliberate decision to record a
+focused slice of system output that supports a specific claim. The
+two tables play distinct roles and never carry duplicate information.
+
+```
+┌─────────────────────────┐         ┌─────────────────────────┐
+│ uploaded_files          │         │ evidence                │
+│ (the data)              │◄────────│ (the claim-anchored     │
+│                         │ FK      │  extract)               │
+│ - filename, size, MIME  │         │                         │
+│ - content_hash          │         │ - source_file_id (FK)   │
+│ - storage_ref           │         │ - summary, extract      │
+│ - summary               │         │ - category              │
+│ - structural_index      │         │ - source_type           │
+│ - data_type             │         │ - hypothesis_evidence   │
+│ - coverage timestamps   │         │   links                 │
+└─────────────────────────┘         └─────────────────────────┘
+```
+
+### 5.1 Evidence Categories (4)
 
 | Category | Description | Used In Stage | Example |
 |----------|-------------|--------------|---------|
 | `symptom_evidence` | Data showing the problem exists | DIAGNOSIS, TREATMENT | Error logs, latency spikes, alert notifications |
 | `causal_evidence` | Data explaining why the problem happened | DIAGNOSIS, TREATMENT | Deploy logs, config diffs, code changes |
-| `contextual_evidence` | Baseline/environmental data | DIAGNOSIS, TREATMENT | Architecture diagrams, normal configs |
 | `mitigation_evidence` | Data showing whether the temp fix worked | MITIGATION | Post-mitigation metrics, error rate changes |
 | `solution_evidence` | Data showing whether the fix worked | TREATMENT | Post-fix metrics, clean logs, user confirmation |
 
-### 5.2 Evidence Classification Rules
+The pre-010 `contextual_evidence` and `rejected` categories were
+removed in migration 010. Contextual material (architecture
+diagrams, baseline configs, deployment timestamps) is data, not
+evidence — it lives on `uploaded_files` with its preprocessing
+artifacts and is visible to the agent via the structural index;
+no Evidence row is created until a slice is extracted in support
+of a specific claim. Rejected submissions are expressed as the
+absence of an Evidence row.
 
-1. **Content-based, not stage-based**: Evidence is classified by what the data contains, not by which stage the investigation is in. Error logs are `symptom_evidence` whether submitted during DIAGNOSIS or TREATMENT.
+### 5.2 The Source Invariant
 
-2. **Causal evidence requires hypothesis**: The agent must create a hypothesis before classifying evidence as `causal_evidence`. This enforces the logical dependency: "X caused Y" presupposes "X might have caused Y" (the hypothesis).
+Every Evidence row has a known source. Migration 010 enforces this
+at three layers:
 
-3. **Multiple evidence items per submission**: When a user submits a large block of data (e.g., pasted logs containing errors + deploy timeline + metrics), the LLM may split it into multiple evidence records with different categories.
+1. **DB-level CHECK** (`evidence_source_invariant`):
+   `source_file_id IS NOT NULL OR source_type = 'user_description'`
+2. **Pydantic domain validator** on `Evidence`:
+   `_source_requires_file_unless_user_description`
+3. **Pydantic LLM-output validator** on `EvidenceToAdd`:
+   `_source_file_required_unless_user_description` — the LLM gets
+   a clear validation error pointing it at the `file_id` attribute
+   it should have copied from the prompt context.
 
-### 5.3 Evidence Creation Pipeline
+The only legal carve-out for `source_file_id IS NULL` is
+`source_type = USER_DESCRIPTION` — the chat-quote case where the
+LLM extracted a verbatim system-output snippet from the user's
+short chat message. The source is then recoverable via
+`collected_at_turn` + the user message at that turn (no separate
+`source_message_id` FK needed; one user message per turn is the
+invariant).
 
-The existing single-phase evidence creation pipeline remains unchanged:
+### 5.3 Evidence Classification Rules
 
-1. User submits message via `/queries/` endpoint
-2. LLM classifies submission as `user_text`, `submitted_data`, or `mixed`
-3. For `submitted_data` / `mixed`: LLM populates `evidence_to_add` with one or more evidence items
-4. System creates Evidence records from `evidence_to_add`
-5. For file uploads: preprocessing service runs Tier 0+1 pipeline, LLM receives summary
+1. **Causal evidence requires hypothesis**: The agent must create a
+   hypothesis before classifying evidence as `causal_evidence`. This
+   enforces the logical dependency: "X caused Y" presupposes
+   "X might have caused Y" (the hypothesis).
 
-No changes to the preprocessing service, context builder, or evidence storage.
+2. **Multiple extracts per file**: A single file can yield multiple
+   Evidence rows — different focused slices supporting different
+   claims (e.g., the error lines as `symptom_evidence` plus the
+   deploy timestamp as `causal_evidence`). They all share the same
+   `source_file_id`.
+
+3. **No evidence creation during INQUIRY**: Evidence presupposes a
+   confirmed claim. During INQUIRY the claim is still being formed;
+   files persist in `uploaded_files` but the LLM extracts
+   claim-anchored slices only after the case transitions to
+   INVESTIGATING. The Pydantic `InquiryResponse.InquiryStateUpdate`
+   schema does not carry an `evidence_to_add` field.
+
+4. **User words are not evidence**: The extract must be system
+   output. The user's own descriptions, opinions, or paraphrases
+   stay in `case_messages` as context — they do not become Evidence
+   rows. When a user types a verbatim system-output quote (e.g.,
+   `Got: HTTP/1.1 503 Service Unavailable`) inline in a short chat
+   message, that quote can become evidence with
+   `source_type=USER_DESCRIPTION` and no source_file_id.
+
+### 5.4 Evidence Creation Pipeline (single path)
+
+```
+                ┌──────────────────────────────────────┐
+                │   User submits attachment            │
+                │   (file upload / paste / page        │
+                │    capture; all become attachments)  │
+                └─────────────────┬────────────────────┘
+                                  │
+                                  ▼
+                ┌──────────────────────────────────────┐
+                │   Intake (case.api.routes):          │
+                │   1. Store raw bytes                 │
+                │   2. Insert UploadedFile row         │
+                │   3. Preprocessing populates         │
+                │      summary, structural_index,      │
+                │      data_type, coverage_*           │
+                │   ◄── NO Evidence row created ──────►│
+                └─────────────────┬────────────────────┘
+                                  │
+                                  ▼  (later, during INVESTIGATING)
+                ┌──────────────────────────────────────┐
+                │   Agent turn:                        │
+                │   - Reads the file's structural_index│
+                │     from prompt context              │
+                │   - Identifies claim-relevant slices │
+                │   - Emits `evidence_to_add` with     │
+                │     source_file_id copied from the   │
+                │     <evidence file_id="..."> attr    │
+                └─────────────────┬────────────────────┘
+                                  │
+                                  ▼
+                ┌──────────────────────────────────────┐
+                │   Persister (milestone_engine):      │
+                │   - Validates source invariant       │
+                │   - Inserts one Evidence row per     │
+                │     evidence_to_add entry            │
+                └──────────────────────────────────────┘
+```
+
+The single creation path replaces the pre-010 dual model where file
+uploads created an auto-Evidence row at intake (the DOCUMENT-form)
+alongside the LLM's evidence_to_add rows (the SUBMITTED_DATA-form).
+The `form` discriminator column was dropped in migration 010.
+
+### 5.5 Dedup is a file-level concern
+
+Per-case content-hash deduplication now operates on
+`uploaded_files`, not on `evidence`. The repository contract is
+`find_uploaded_file_by_content_hash(case_id, content_hash) →
+UploadedFile?`. When an attachment with a previously-seen
+content_hash is submitted, the existing UploadedFile is returned;
+no new file is stored and no Evidence is created (Evidence only
+exists when the agent extracts a claim-relevant slice, which is
+unaffected by dedup).
 
 ---
 
@@ -840,8 +962,11 @@ class InvestigationProgress(BaseModel):
 
 ### 10.3 EvidenceCategory Enum
 
+Post-010: 4 claim-anchored categories. The historical sequence was
+6 → 6 (rename) → 4 (drop), captured here for reference.
+
 ```python
-# Old
+# v1 (pre-2026-02): single-letter naming + RESOLUTION_EVIDENCE
 class EvidenceCategory(str, Enum):
     SYMPTOM_EVIDENCE = "symptom_evidence"
     CAUSAL_EVIDENCE = "causal_evidence"
@@ -849,15 +974,27 @@ class EvidenceCategory(str, Enum):
     CONTEXTUAL_EVIDENCE = "contextual_evidence"
     REJECTED = "rejected"
 
-# New
+# v2 (2026-02-11..2026-05-10): added MITIGATION; renamed RESOLUTION → SOLUTION
 class EvidenceCategory(str, Enum):
     SYMPTOM_EVIDENCE = "symptom_evidence"
     CAUSAL_EVIDENCE = "causal_evidence"
-    MITIGATION_EVIDENCE = "mitigation_evidence"    # NEW
-    SOLUTION_EVIDENCE = "solution_evidence"          # RENAMED from resolution_evidence
+    MITIGATION_EVIDENCE = "mitigation_evidence"
+    SOLUTION_EVIDENCE = "solution_evidence"
     CONTEXTUAL_EVIDENCE = "contextual_evidence"
     REJECTED = "rejected"
+
+# Post-010 (current): 4 categories, all claim-anchored
+class EvidenceCategory(str, Enum):
+    SYMPTOM_EVIDENCE = "symptom_evidence"
+    CAUSAL_EVIDENCE = "causal_evidence"
+    MITIGATION_EVIDENCE = "mitigation_evidence"
+    SOLUTION_EVIDENCE = "solution_evidence"
 ```
+
+The pre-010 `CONTEXTUAL_EVIDENCE` and `REJECTED` values were
+removed: context is data (it lives on `uploaded_files`, not in
+`evidence`), and rejection is expressed as the absence of an
+evidence row. See §5.1 for the full rationale.
 
 ### 10.4 InvestigationPath
 
@@ -994,7 +1131,6 @@ flowchart TD
         direction TB
         SE[symptom_evidence<br/>Shows problem exists]
         CE[causal_evidence<br/>Explains why<br/>⚠️ Requires hypothesis]
-        XE[contextual_evidence<br/>Baseline data]
     end
 
     subgraph MITIGATION_STAGE ["MITIGATION Stage"]
@@ -1010,7 +1146,6 @@ flowchart TD
 
     SE --> ANALYSIS[Agent Analysis]
     CE --> ANALYSIS
-    XE --> ANALYSIS
     ME --> VERIFY_MIT[Verify Mitigation]
     RE --> VERIFY_OR_REDIAG{Fix worked?}
     SE2 --> REDIAG[Re-diagnose<br/>within TREATMENT]
@@ -1030,6 +1165,11 @@ flowchart TD
     REDIAG -->|New solution proposed| USER_SOL2{User complies?}
     USER_SOL2 -->|Pastes results| VERIFY_OR_REDIAG
 ```
+
+Background/contextual material (architecture diagrams, baseline
+configs, deployment timestamps) lives on `uploaded_files` and is
+visible to the agent via the structural index — it is not an
+evidence category. See §5.1 and §5.4.
 
 ---
 
