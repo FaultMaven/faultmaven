@@ -696,10 +696,15 @@ class InquiryResponse(BaseInteractionResponse):
                 "The transition is NOT executed until the user explicitly confirms."
             ),
         )
-        evidence_to_add: Optional[List[EvidenceToAdd]] = Field(
-            default_factory=list,
-            description="Evidence to create from agent findings during this turn",
-        )
+
+        # Post-010 (strict evidence model): evidence_to_add is intentionally
+        # absent from INQUIRY. Evidence presupposes a confirmed claim; during
+        # INQUIRY the claim is still being formed. Uploaded files persist in
+        # the ``uploaded_files`` table; the LLM evaluates them and creates
+        # evidence rows via ``evidence_to_add`` once the case transitions to
+        # INVESTIGATING. See
+        # docs/architecture/investigation-engine/evidence-driven-investigation-framework.md
+        # §5 for the canonical rule.
 
     state_updates: InquiryStateUpdate
 

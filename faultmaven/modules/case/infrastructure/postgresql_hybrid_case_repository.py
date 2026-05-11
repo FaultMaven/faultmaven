@@ -685,36 +685,32 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             await self.db.rollback()
             raise RepositoryException(f"Failed to delete case {case_id}: {e}") from e
 
-    async def find_by_content_hash(
+    async def find_uploaded_file_by_content_hash(
         self, case_id: str, content_hash: str
-    ) -> Optional[Evidence]:
-        """Find oldest Evidence in a case whose backing UploadedFile's
-        ``content_hash`` matches.
+    ) -> Optional[UploadedFile]:
+        """Find oldest UploadedFile in a case whose ``content_hash`` matches.
 
-        Post-redesign: ``content_hash`` lives on ``uploaded_files`` (not
-        ``evidence``). Dedup joins the two tables by ``source_file_id``.
-        Inline-only Path 2 evidence (``source_file_id IS NULL``) cannot
-        be deduped by hash — that's the accepted tradeoff.
+        Post-010 strict evidence model: file uploads create only an
+        UploadedFile row (no auto-Evidence at intake), so dedup is a
+        file-level concern. The hydrated UploadedFile carries the
+        preprocessing artifacts (summary, structural_index, data_type,
+        coverage timestamps) added in migration 010.
         """
         if not content_hash:
             return None
         try:
             query = text("""
                 SELECT
-                    e.evidence_id, e.category, e.source_type,
-                    e.summary, e.extract,
-                    e.is_primary, e.reliability_score, e.tags,
-                    e.collected_at_turn, e.source_file_id, e.vectorized,
-                    e.coverage_start_ts, e.coverage_end_ts,
-                    e.metadata, e.created_at,
-                    e.primary_purpose, e.analysis, e.processing_mode,
-                    e.advances_milestones, e.collected_by
-                FROM evidence e
-                INNER JOIN uploaded_files uf ON uf.file_id = e.source_file_id
-                WHERE e.case_id = :case_id
-                  AND uf.content_hash = :content_hash
-                  AND uf.content_hash IS NOT NULL
-                ORDER BY e.created_at ASC
+                    file_id, organization_id, case_id, uploaded_by,
+                    filename, size_bytes, content_type, content_hash,
+                    storage_ref, upload_source, uploaded_at_turn,
+                    metadata, uploaded_at,
+                    summary, structural_index, data_type,
+                    coverage_start_ts, coverage_end_ts
+                FROM uploaded_files
+                WHERE case_id = :case_id
+                  AND content_hash = :content_hash
+                ORDER BY uploaded_at ASC
                 LIMIT 1
             """)
             result = await self.db.execute(
@@ -723,10 +719,26 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             row = result.fetchone()
             if row is None:
                 return None
-            return self._row_to_evidence(row)
+            return UploadedFile(
+                file_id=row[0],
+                uploaded_by=row[3],
+                filename=row[4],
+                size_bytes=row[5],
+                content_type=row[6],
+                content_hash=row[7],
+                storage_ref=row[8],
+                upload_source=row[9],
+                uploaded_at_turn=row[10],
+                uploaded_at=row[12],
+                summary=row[13],
+                structural_index=row[14],
+                data_type=row[15],
+                coverage_start_ts=row[16],
+                coverage_end_ts=row[17],
+            )
         except Exception as e:
             raise RepositoryException(
-                f"Failed to find evidence by content_hash for case {case_id}: {e}"
+                f"Failed to find uploaded_file by content_hash for case {case_id}: {e}"
             ) from e
 
     async def list_evidence_by_time_window(

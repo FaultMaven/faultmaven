@@ -4327,65 +4327,15 @@ class MilestoneEngine:
             )
             # This triggers Fast-Track in _check_fast_track_resolution
 
-        # Evidence creation (single-phase): Create evidence from LLM-classified submissions
-        # This code is shared between INQUIRY and INVESTIGATING phases
-
-        # Evidence creation from LLM's evidence_to_add
-        # Preprocessing now happens in Step 1 of process_turn() (before LLM).
-        # Evidence here is agent-derived findings → always SUBMITTED_DATA form.
-        has_attr = hasattr(updates, "evidence_to_add")
-        evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
-        evidence_count = len(evidence_list) if evidence_list else 0
-        logger.info(
-            f"Evidence creation check (INQUIRY): "
-            f"hasattr(updates, 'evidence_to_add')={has_attr}, "
-            f"evidence_to_add={evidence_list}, "
-            f"count={evidence_count}"
-        )
-
-        if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
-            # Derive source_file_id from uploaded files submitted this turn.
-            # Single-file case is unambiguous; multi-file or no-file cases
-            # leave it None and rely on source_type=USER_DESCRIPTION to
-            # satisfy the new ``evidence_source_invariant`` (migration 010).
-            # Batch 3 will replace this heuristic with an explicit
-            # source_file_id field on EvidenceToAdd.
-            turn_files = [
-                uf
-                for uf in case.uploaded_files
-                if uf.uploaded_at_turn == case.current_turn
-            ]
-            inferred_source_file_id = (
-                turn_files[0].file_id if len(turn_files) == 1 else None
-            )
-
-            for ev_item in updates.evidence_to_add:
-                # During INQUIRY phase, milestones are not yet being tracked,
-                # so we don't infer milestone attribution (advances_milestones will be empty)
-                # Evidence will be available for milestone validation once case transitions to INVESTIGATING
-                advances_milestones = []  # INQUIRY phase: No milestone tracking yet
-
-                ev = Evidence(
-                    evidence_id=f"ev_{uuid4().hex[:12]}",
-                    summary=ev_item.summary,
-                    extract=ev_item.extract,
-                    category=ev_item.category,
-                    source_type=ev_item.source_type,
-                    source_file_id=inferred_source_file_id,
-                    collected_at=datetime.now(UTC),
-                    collected_by=case.user_id,
-                    collected_at_turn=case.current_turn,
-                    advances_milestones=advances_milestones,
-                    primary_purpose="Investigation context",
-                )
-                case.evidence.append(ev)
-                metadata["evidence_added"].append(ev.evidence_id)
-                logger.info(
-                    f"Created evidence (INQUIRY): {ev.evidence_id} | "
-                    f"category={ev.category.value}, source_type={ev.source_type.value}, "
-                    f"source_file_id={ev.source_file_id}, "
-                    f"summary='{ev.summary[:80]}...'"
-                )
+        # Post-010 (strict evidence model): NO evidence creation during
+        # INQUIRY. Evidence presupposes a confirmed claim; during INQUIRY
+        # the claim is still being formed. Uploaded files persist in
+        # ``case.uploaded_files`` with their preprocessing artifacts
+        # (summary, structural_index, data_type, coverage timestamps);
+        # the LLM evaluates them and emits ``evidence_to_add`` once the
+        # case transitions to INVESTIGATING.
+        # See docs/architecture/investigation-engine/
+        # evidence-driven-investigation-framework.md §5.
 
     async def _apply_investigation_updates(
         self,
@@ -5393,66 +5343,12 @@ class MilestoneEngine:
 
         return uploaded_file
 
-    def _create_evidence_from_attachment(
-        self, case: Case, attachment: dict[str, Any], turn_number: int
-    ) -> Evidence:
-        """
-        Create evidence object from file attachment.
-
-        Args:
-            case: Current case
-            attachment: Attachment metadata
-            turn_number: Current turn number
-
-        Returns:
-            Evidence object
-        """
-        # Infer category based on investigation state
-        category = self._infer_evidence_category(case)
-
-        # Path 1: file upload → DOCUMENT-form Evidence. extract starts None
-        # and is populated by the preprocessing pipeline (Tier 0+1 structural
-        # index: file_extract + search_map + file_meta) before the Evidence
-        # row is considered complete. The file's storage location lives on
-        # uploaded_files.storage_ref, reachable via source_file_id.
-        evidence = Evidence(
-            evidence_id=f"ev_{uuid4().hex[:12]}",
-            summary=f"Uploaded file: {attachment.get('filename', 'unknown')}",
-            extract=None,  # populated by preprocessing pipeline
-            category=category,
-            source_type=EvidenceSourceType.LOGS,  # Default (simplified from LOG_FILE)
-            source_file_id=attachment.get("file_id"),
-            advances_milestones=[],  # Calculated later
-            collected_at=datetime.now(UTC),
-            collected_by=case.user_id,
-            collected_at_turn=turn_number,
-            primary_purpose="File Analysis",  # Mandatory
-        )
-
-        return evidence
-
-    def _infer_evidence_category(self, case: Case) -> EvidenceCategory:
-        """
-        Infer evidence category from investigation stage.
-
-        Rules:
-        - MITIGATION stage → MITIGATION_EVIDENCE
-        - TREATMENT stage → SOLUTION_EVIDENCE
-        - DIAGNOSIS stage, verification incomplete → SYMPTOM_EVIDENCE
-        - DIAGNOSIS stage, otherwise → CAUSAL_EVIDENCE
-        """
-        stage = case.progress.current_stage
-
-        if stage == InvestigationStage.MITIGATION:
-            return EvidenceCategory.MITIGATION_EVIDENCE
-
-        if stage == InvestigationStage.TREATMENT:
-            return EvidenceCategory.SOLUTION_EVIDENCE
-
-        if not case.progress.verification_complete:
-            return EvidenceCategory.SYMPTOM_EVIDENCE
-
-        return EvidenceCategory.CAUSAL_EVIDENCE
+    # Post-010: auto-Evidence creation at file-upload time is gone.
+    # Under the strict evidence model, files are data (uploaded_files)
+    # and evidence is a claim-anchored extract that the LLM produces
+    # via evidence_to_add during INVESTIGATING. The previous
+    # ``_create_evidence_from_attachment`` and ``_infer_evidence_category``
+    # helpers (auto-DOCUMENT path) have been removed.
 
     def _create_turn_record(
         self,

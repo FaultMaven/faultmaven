@@ -36,6 +36,7 @@ from faultmaven.modules.case.contracts import (
     Evidence,
     Hypothesis,
     Solution,
+    UploadedFile,
 )
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
@@ -135,13 +136,17 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             return await repo.delete(case_id)
 
-    async def find_by_content_hash(
+    async def find_uploaded_file_by_content_hash(
         self, case_id: str, content_hash: str
-    ) -> Evidence | None:
-        """Find oldest Evidence in a case whose content_hash matches."""
+    ) -> UploadedFile | None:
+        """Find oldest UploadedFile in a case whose content_hash matches.
+
+        Post-010: dedup is a file-level concern (uploads no longer
+        create an Evidence row at intake).
+        """
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
-            return await repo.find_by_content_hash(case_id, content_hash)
+            return await repo.find_uploaded_file_by_content_hash(case_id, content_hash)
 
     async def list_evidence_by_time_window(
         self,
