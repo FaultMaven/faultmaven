@@ -156,34 +156,51 @@ class VectorizeFileTool(AgentTool):
                     ),
                 )
 
-            # Get the file_extract content to vectorize (not raw JSON).
-            # Check for "file_extract" key presence rather than exact version so
-            # future schema bumps don't silently vectorize a JSON blob.
-            raw_preprocessed = evidence.extract
+            # Post-010: structural_index lives on uploaded_files (not on
+            # evidence.extract — evidence.extract is now the LLM's
+            # claim-anchored verbatim quote, much shorter than the full
+            # structural index). Pull it from the file row.
+            raw_preprocessed = (
+                file_meta.structural_index if file_meta is not None else None
+            )
             if not raw_preprocessed:
                 return ToolResult(
                     success=False,
                     data=None,
-                    error="Evidence has no preprocessed content to vectorize",
+                    error=(
+                        "Source file has no preprocessed structural_index "
+                        "to vectorize (preprocessing may have failed or been "
+                        "skipped)."
+                    ),
                 )
             structural_index = raw_preprocessed
+            # Legacy: some preprocessed payloads were stored as a JSON
+            # envelope with a `file_extract` key. Strip the envelope so we
+            # vectorize prose, not raw JSON.
             try:
                 _d = json.loads(raw_preprocessed)
                 if isinstance(_d, dict) and "file_extract" in _d:
                     structural_index = _d["file_extract"] or raw_preprocessed
             except (ValueError, TypeError):
-                pass  # Legacy plaintext — vectorize as-is
+                pass  # Plaintext structural_index — vectorize as-is
             if not structural_index:
                 return ToolResult(
                     success=False,
                     data=None,
-                    error="Evidence has no preprocessed content to vectorize",
+                    error="Source file's structural_index is empty",
                 )
 
-            # Determine data type for chunking strategy
+            # Determine data type for chunking strategy. Prefer the
+            # file-level classification (file_meta.data_type, set at
+            # preprocessing time); fall back to evidence.source_type
+            # when the file row lacks one.
             from faultmaven.core.preprocessing.models import UnifiedDataType
 
-            data_type_str = evidence.source_type.value
+            data_type_str = (
+                file_meta.data_type
+                if (file_meta is not None and file_meta.data_type)
+                else evidence.source_type.value
+            )
             try:
                 data_type = UnifiedDataType(data_type_str)
             except (ValueError, KeyError):
