@@ -42,10 +42,14 @@ class CaseStatus(str, Enum):
 
     Case Actions (phase transitions and dispositions):
       INQUIRY → INVESTIGATING  (phase transition)
-      INQUIRY → RESOLVED       (fast-track disposition)
       INQUIRY → CLOSED         (disposition)
-      INVESTIGATING → RESOLVED (disposition)
+      INVESTIGATING → RESOLVED (disposition; includes the same-turn KB-resolution variant)
       INVESTIGATING → CLOSED   (disposition)
+
+    v3: INQUIRY → RESOLVED edge removed. KB-driven cases collapse INVESTIGATING
+    to one or two turns via per-runbook Cause attribution rather than skipping
+    the phase. See docs/architecture/investigation-engine/investigation-lifecycle-logic.md
+    §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path.
     """
 
     INQUIRY = "inquiry"
@@ -215,9 +219,8 @@ def is_valid_action(from_status: CaseStatus, to_status: CaseStatus) -> bool:
 
     Valid Case Actions:
     - INQUIRY → INVESTIGATING (phase transition: start investigation)
-    - INQUIRY → RESOLVED (disposition: fast-track KB resolution)
     - INQUIRY → CLOSED (disposition: no investigation needed)
-    - INVESTIGATING → RESOLVED (disposition: solution verified)
+    - INVESTIGATING → RESOLVED (disposition: solution verified; includes same-turn KB-resolution)
     - INVESTIGATING → CLOSED (disposition: abandoned/escalated)
 
     Invalid:
@@ -225,10 +228,12 @@ def is_valid_action(from_status: CaseStatus, to_status: CaseStatus) -> bool:
     - CLOSED → * (disposition is terminal)
     - INVESTIGATING → INQUIRY (no backward phase transition)
     """
+    # v3: INQUIRY → RESOLVED edge removed. KB-resolution flows through
+    # INVESTIGATING via the same-turn milestone collapse (see
+    # investigation-lifecycle-logic.md §1.2).
     valid_actions = {
         CaseStatus.INQUIRY: [
             CaseStatus.INVESTIGATING,
-            CaseStatus.RESOLVED,
             CaseStatus.CLOSED,
         ],
         CaseStatus.INVESTIGATING: [CaseStatus.RESOLVED, CaseStatus.CLOSED],

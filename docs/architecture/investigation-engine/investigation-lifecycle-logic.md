@@ -342,6 +342,47 @@ option while a pending transition exists (e.g., "Close" is pending but user clic
 normally. This handles the case where the user changes their mind after requesting
 a transition.
 
+##### KB-Resolution Path (Same-Turn Variant)
+
+When a runbook from the KB applies cleanly to the case, the INVESTIGATING → RESOLVED handshake collapses into a single confirmation turn. This is **not** a separate transition edge — it is the same INVESTIGATING → RESOLVED disposition with all required state (`RootCauseConclusion`, `Solution`, gate milestones) populated in one turn from the matched runbook Cause rather than across many investigation turns.
+
+**Signal**: The LLM emits `knowledge_resolution` in `state_updates` when the user confirms that a runbook fix proposed in an earlier turn resolved their issue ("That fixed it", "It worked", "Yes, resolved").
+
+```python
+class KnowledgeResolution(BaseModel):
+    """User-confirmed resolution via knowledge base match.
+
+    Emitted by the LLM when the user confirms that a runbook fix proposed
+    in an earlier turn resolved their issue. Triggers same-turn milestone
+    collapse: the engine populates RootCauseConclusion, creates Solution,
+    and sets gate milestones from the attributed Cause's content, then
+    fires the standard RESOLVED transition.
+    """
+    match_id: str                # ID of the matched runbook
+    match_type: str              # "runbook" | "past_case" | "documentation"
+    solution_applied: str        # What the user actually did
+    user_confirmation: str       # User's confirmation message
+```
+
+**Engine behavior on `knowledge_resolution`** (during INVESTIGATING turn processing):
+
+1. **Attribute the active Cause.** Engine runs [Indicator resolution](./indicator-resolution.md) against current case state to identify which `### Cause <X>` from the matched runbook applies. If `verdict="single"`, proceed. If `verdict="multiple"`, defer the collapse: agent asks for a disambiguating Diagnostic Step finding before completing the transition. If `verdict="none"`, the fallback Cause is selected.
+2. **Populate `RootCauseConclusion`** by direct field copy from the attributed Cause's ChromaDB metadata (no LLM extraction call):
+   - `root_cause` ← Cause `Statement` (≤300 chars)
+   - `mechanism` ← Cause `Mechanism` (≤800 chars)
+   - `evidence_basis` ← runbook ID + user's confirmation message reference
+3. **Create `Solution`** from the attributed Cause's blocks:
+   - `immediate_action` ← Cause `Mitigation` (with risk + duration metadata)
+   - `longterm_fix` ← Cause `Resolution`
+4. **Set gate milestones** in the standard order: `solution_proposed=True`, `solution_accepted=True`, `solution_verified=True`. Progress indicator `root_cause_identified=True`.
+5. **Fire the standard handshake.** With milestone state populated, the LLM's response on this same turn emits `ProposedTransition` to RESOLVED. The user's confirmation message that triggered `knowledge_resolution` is recognized as the disposition acknowledgment — no additional confirmation turn is required.
+
+**Why the handshake collapses cleanly.** The user already confirmed the fix worked (that's what produced `knowledge_resolution`). The standard disposition invariant — explicit user confirmation — is satisfied by the same "it worked" message that serves as the `solution_verified` signal. The engine does not auto-resolve; it recognizes the user's existing confirmation as covering both signals.
+
+**Why this is not a fast-track.** Earlier designs allowed an `INQUIRY → RESOLVED` edge that bypassed INVESTIGATING entirely, producing terminal cases with empty `RootCauseConclusion` / `Solution` / `evidence` records — the Resolution Summary report had nothing to render. The unified path eliminates that edge: every RESOLVED case flows through INVESTIGATING and produces complete bookkeeping. KB-driven cases are simply the variant where INVESTIGATING completes in 1–2 turns because the cause and fix come pre-packaged from a runbook Cause subsection.
+
+**Authoring requirements upstream.** The same-turn collapse depends on runbook Causes carrying structured `Statement`, `Mechanism`, `Mitigation`, `Resolution`, and `Verification` fields — see [runbook-content-architecture.md §3](../knowledge-and-ai/runbook-content-architecture.md#3-standardized-runbook-template). Runbooks not following the v3 template cannot drive same-turn collapse; cases retrieving them fall back to standard multi-turn investigation.
+
 #### INVESTIGATING → CLOSED (Disposition)
 
 **Trigger**: User-Agent Handshake (same pattern as RESOLVED)
@@ -381,80 +422,16 @@ propose_transition(
 # User confirms → _execute_closed_transition(case, user_id, "inquiry_only")
 ```
 
-#### INQUIRY → RESOLVED (Disposition, Fast-Track)
-
-> **Implementation Status:** Design complete, wiring deferred. The `KnowledgeResolution` model exists in contracts and the `InquiryResponse.knowledge_resolution` field is in the schema, but `_process_response_structured()` does not yet process this field.
-
-**Trigger**: Knowledge base match resolves issue without formal investigation
-
-This "Fast-Track" path allows instant resolution when the knowledge base contains
-a high-confidence match for the user's problem and the user confirms the solution worked.
-
-```python
-class KnowledgeResolution(BaseModel):
-    """Records instant resolution via knowledge base match."""
-    match_id: str                # ID of case/runbook that solved it
-    match_type: str              # "past_case" | "runbook" | "documentation"
-    solution_applied: str        # What user actually did
-    user_confirmation: str       # User's message confirming fix
-    resolution_turn: int         # Turn when confirmed
-
-def fast_track_resolution(case: Case, knowledge_resolution: KnowledgeResolution):
-    """
-    Fast-Track: INQUIRY → RESOLVED (skipping INVESTIGATING)
-
-    Conditions:
-    1. Knowledge base search found high-confidence match (>70%)
-    2. Agent offered known solution to user
-    3. User tried solution and confirmed it worked
-    """
-    case.status = CaseStatus.RESOLVED
-    case.resolved_at = datetime.now(timezone.utc)
-    case.closed_at = datetime.now(timezone.utc)
-    case.closure_reason = "knowledge_base_resolution"
-    case.knowledge_resolution = knowledge_resolution
-    # DISPOSITION - no further case actions
-```
-
-**Flow**:
-```
-1. INQUIRY: Agent searches KB, finds high-confidence match
-2. INQUIRY: Agent says "This looks similar to [past case]. Solution was [X]. Try this?"
-3. INQUIRY: User tries solution
-4. INQUIRY: User confirms "Yes, that fixed it!" (explicit confirmation - follows two-step pattern)
-5. System: Transition directly to RESOLVED (skip INVESTIGATING)
-```
-
-**FAST-TRACK CONFIRMATION PATTERN**:
-
-The fast-track resolution uses the same two-step confirmation pattern:
-
-1. Agent detects KB match during INQUIRY
-2. Agent presents: "Similar past case [X]. Solution: [Y]. Try this?"
-3. User tries solution
-4. User confirms: "Yes, that fixed it!" (explicit confirmation)
-5. Agent transitions directly to RESOLVED (skips INVESTIGATING)
-
-Confirmation follows same two-step pattern as INQUIRY → INVESTIGATING.
-
-**Metrics Implications**:
-- `time_to_resolution`: Extremely low (1-2 turns)
-- `resolution_type`: "knowledge_base" (vs "investigation")
-- `knowledge_attribution`: Which KB item resolved it
-
-This keeps investigation metrics clean while highlighting KB value.
-
 ### 1.3 Valid Transitions Summary
 
 ```python
 VALID_TRANSITIONS = {
     CaseStatus.INQUIRY: [
-        CaseStatus.INVESTIGATING,  # Start formal investigation
-        CaseStatus.RESOLVED,        # Fast-Track: KB match resolved issue
+        CaseStatus.INVESTIGATING,   # Start formal investigation (always required, even for KB-matched cases)
         CaseStatus.CLOSED           # Inquiry-only, no investigation
     ],
     CaseStatus.INVESTIGATING: [
-        CaseStatus.RESOLVED,        # Solution verified (terminal)
+        CaseStatus.RESOLVED,        # Solution verified (terminal) — includes the same-turn KB-resolution variant
         CaseStatus.CLOSED           # Abandoned (terminal)
     ],
     CaseStatus.RESOLVED: [],        # DISPOSITION - no further case actions
@@ -462,7 +439,9 @@ VALID_TRANSITIONS = {
 }
 ```
 
-**Case Action Diagram** (updated with Fast-Track):
+There is no `INQUIRY → RESOLVED` edge. KB-driven cases route through INVESTIGATING via the same-turn milestone collapse documented under [INVESTIGATING → RESOLVED → KB-Resolution Path](#kb-resolution-path-same-turn-variant) — confirming problem understanding is mandatory before any solution is proposed, including for runbook-matched cases.
+
+**Case Action Diagram**:
 
 ```
 ┌──────────────┐
@@ -471,33 +450,37 @@ VALID_TRANSITIONS = {
 │ Exploring    │
 └──────┬───────┘
        │
-       ├─────(User decides to investigate)───────┐
+       ├─────(User confirms problem statement)───┐
        │                                         │
-       ├─────(KB match + user confirms)──────────┼────────────┐
-       │     [FAST-TRACK]                        │            │
-       │                                         ▼            │
-       │                             ┌────────────────────┐   │
-       │                             │   INVESTIGATING    │   │
-       │                             │                    │   │
-       │                             │ Diagnosing         │   │
-       │                             │ Mitigating         │   │
-       │                             │ Resolving          │   │
-       │                             └─────────┬──────────┘   │
-       │                                       │              │
-       │                             ┌─────────┴──────────┐   │
-       │                             │                    │   │
-       │                  (solution_verified)   (no solution) │
-       │                             │                    │   │
-       │                             ▼                    ▼   │
+       │                                         ▼
+       │                             ┌────────────────────┐
+       │                             │   INVESTIGATING    │
+       │                             │                    │
+       │                             │ Diagnosing         │
+       │                             │ Mitigating         │
+       │                             │ Resolving          │
+       │                             │                    │
+       │                             │ (collapses to 1–2  │
+       │                             │  turns when a v3   │
+       │                             │  runbook Cause     │
+       │                             │  applies; standard │
+       │                             │  multi-turn        │
+       │                             │  otherwise)        │
+       │                             └─────────┬──────────┘
+       │                                       │
+       │                             ┌─────────┴──────────┐
+       │                             │                    │
+       │                  (solution_verified)   (no solution)
+       │                             │                    │
+       │                             ▼                    ▼
        │                     ┌──────────────┐    ┌──────────────┐
-       │                     │   RESOLVED   │◄───┘              │
-       │                     │              │                   │
-       │                     │ DISPOSITION  │    ┌──────────────┐
-       │                     │ With solution│    │    CLOSED    │
-       │                     └──────────────┘    │              │
-       │                                         │ DISPOSITION  │
-       └──(inquiry-only)─────────────────────────► No solution  │
-                                                 └──────────────┘
+       │                     │   RESOLVED   │    │    CLOSED    │
+       │                     │              │    │              │
+       │                     │ DISPOSITION  │    │ DISPOSITION  │
+       │                     │ With solution│    │ No solution  │
+       │                     └──────────────┘    └──────────────┘
+       │                                                 ▲
+       └──(inquiry-only)────────────────────────────────┘
 ```
 
 ### 1.4 Automatic Milestone Tracking and Stage Transitions
@@ -574,6 +557,8 @@ async def process_turn(case: Case, user_message: str) -> str:
 #   - Trigger: Agent proposes via ProposedTransition + user confirms
 #   - Automatic: No (requires User-Agent Handshake)
 #   - Disposition: Yes (irreversible)
+#   - KB-resolution variant: same edge, milestone state populated in one
+#     turn from the matched runbook Cause (see §1.2 INVESTIGATING → RESOLVED).
 #
 # INVESTIGATING → CLOSED:
 #   - Trigger: User explicit action (force_close via UI or chat)
@@ -584,9 +569,8 @@ async def process_turn(case: Case, user_message: str) -> str:
 #   - Trigger: User explicit action (close_from_inquiry)
 #   - Disposition: Yes (irreversible)
 #
-# INQUIRY → RESOLVED:
-#   - Trigger: Fast-track KB resolution + user confirmation
-#   - Disposition: Yes (irreversible)
+# (INQUIRY → RESOLVED is not a valid edge — KB-matched cases route through
+#  INVESTIGATING; see VALID_TRANSITIONS in §1.3.)
 
 
 # ============================================================
@@ -1711,18 +1695,26 @@ This section outlines all possible case lifecycles and their associated mileston
 
 ---
 
-### 4.2 Fast-Track Resolution (Knowledge Base Match)
-**User Goal**: Resolve a known issue quickly using past cases or runbooks.
-**Flow**: `INQUIRY` → `RESOLVED` (Skips `INVESTIGATING`)
+### 4.2 KB-Resolution Path (Same-Turn Collapse)
+
+**User Goal**: Resolve a known issue quickly using a runbook match.
+**Flow**: `INQUIRY` → `INVESTIGATING` → `RESOLVED` (with INVESTIGATING typically completing in 1–2 turns)
+
+This is not a separate lifecycle edge — it is the standard `INQUIRY → INVESTIGATING → RESOLVED` flow where INVESTIGATING completes rapidly because the matched runbook Cause supplies the root cause, mechanism, and fix without requiring multi-turn evidence gathering. See [§1.2 INVESTIGATING → RESOLVED → KB-Resolution Path](#kb-resolution-path-same-turn-variant) for the engine mechanism.
 
 #### Workflow Steps
-1.  **Detection**: Agent detects high-confidence Knowledge Base match during Inquiry.
-2.  **Proposal**: Agent suggests the known solution from the KB match.
-3.  **Verification**: User tries the solution and confirms it works.
-4.  **Transition**: Case transitions directly to `RESOLVED`.
+
+1.  **Detection (during INQUIRY)**: Agent calls `kb_qa` for the symptom and identifies a high-confidence runbook match. KB match is held back from the user until problem statement is confirmed.
+2.  **Problem confirmation (INQUIRY → INVESTIGATING)**: Agent presents problem statement; user confirms. Standard INQUIRY → INVESTIGATING transition fires.
+3.  **Cause attribution (early INVESTIGATING)**: Engine runs [Indicator resolution](./indicator-resolution.md) against current case state to attribute the active `### Cause <X>` from the retrieved runbook. If attribution is unambiguous, agent proposes the Cause's `Mitigation` + `Resolution` to the user.
+4.  **User applies the fix and confirms** ("That fixed it" / "It worked"). LLM emits `knowledge_resolution` in `state_updates`.
+5.  **Same-turn milestone collapse**: Engine populates `RootCauseConclusion` (Statement → `root_cause`, Mechanism → `mechanism`), creates `Solution` (Mitigation → `immediate_action`, Resolution → `longterm_fix`), and sets `root_cause_identified`, `solution_accepted`, `solution_verified`.
+6.  **Standard RESOLVED handshake**: LLM emits `ProposedTransition`; user's same confirmation message is recognized as the disposition acknowledgment; transition executes.
 
 #### Milestones
-*   `knowledge_resolution` (Record of KB match application)
+
+* All standard INVESTIGATING milestones populated in the collapse turn: `symptom_verified`, `root_cause_identified`, `solution_proposed`, `solution_accepted`, `solution_verified`.
+* `knowledge_resolution` signal recorded for KB-attribution metrics.
 
 ---
 

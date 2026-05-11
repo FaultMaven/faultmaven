@@ -4328,7 +4328,16 @@ class MilestoneEngine:
                 solution_applied=updates.knowledge_resolution.solution_applied,
                 user_confirmation=updates.knowledge_resolution.user_confirmation,
             )
-            # This triggers Fast-Track in _check_fast_track_resolution
+            # v3: knowledge_resolution received during INQUIRY is stored
+            # for visibility but is NOT a transition trigger. The LLM
+            # should emit knowledge_resolution during INVESTIGATING (when
+            # the user confirms a runbook fix worked), not INQUIRY.
+            logger.warning(
+                "Case %s: knowledge_resolution emitted during INQUIRY; "
+                "v3 expects this during INVESTIGATING (after problem confirmation). "
+                "Storing for audit but not transitioning.",
+                case.case_id,
+            )
 
         # Post-010 (strict evidence model): NO evidence creation during
         # INQUIRY. Evidence presupposes a confirmed claim; during INQUIRY
@@ -4400,6 +4409,32 @@ class MilestoneEngine:
                 evidence_basis=rcc.evidence_ids,
                 likelihood=rcc.likelihood,
                 confidence_level=ConfidenceLevel.from_score(rcc.likelihood),
+            )
+
+        # 1b. v3 KB-Resolution signal: same-turn milestone collapse.
+        # When the user confirms a runbook fix worked, the LLM emits
+        # `knowledge_resolution` alongside `root_cause_conclusion`,
+        # `solutions_to_add`, and the gate milestones (`solution_accepted`).
+        # The standard ProposedTransition handshake (handled later in the
+        # turn) recognizes the user's confirmation as the disposition
+        # acknowledgment. We store the resolution signal here for metrics
+        # and audit. See investigation-lifecycle-logic.md §1.2 →
+        # "KB-Resolution Path (Same-Turn Variant)".
+        if hasattr(updates, "knowledge_resolution") and updates.knowledge_resolution:
+            kr = updates.knowledge_resolution
+            case.inquiry.knowledge_resolution = KnowledgeResolution(
+                match_id=kr.match_id,
+                match_type=kr.match_type,
+                solution_applied=kr.solution_applied,
+                user_confirmation=kr.user_confirmation,
+            )
+            metadata["knowledge_resolution_signalled"] = True
+            logger.info(
+                "Case %s: knowledge_resolution signalled during INVESTIGATING; "
+                "match_id=%s, type=%s. Standard ProposedTransition handshake handles disposition.",
+                case.case_id,
+                kr.match_id,
+                kr.match_type,
             )
 
         # 1. Update Milestones
@@ -4925,7 +4960,11 @@ class MilestoneEngine:
 
         Automatic Transitions (non-terminal):
         - INQUIRY -> INVESTIGATING when decided_to_investigate=True
-        - INQUIRY -> RESOLVED for fast-track KB resolution (user already confirmed)
+
+        v3: INQUIRY -> RESOLVED edge removed. KB-driven cases route through
+        INVESTIGATING via same-turn milestone collapse — see
+        docs/architecture/investigation-engine/investigation-lifecycle-logic.md
+        §1.2 INVESTIGATING -> RESOLVED -> KB-Resolution Path.
 
         User-Agent Handshake Transitions (terminal):
         - INVESTIGATING -> RESOLVED requires ProposedTransition + user confirmation
@@ -5020,21 +5059,12 @@ class MilestoneEngine:
                 # else: user said something ambiguous, let LLM handle it
 
         # 1. INQUIRY transitions
+        # v3: INQUIRY → RESOLVED edge removed. KB-driven cases route through
+        # INVESTIGATING via the same-turn milestone collapse documented in
+        # docs/architecture/investigation-engine/investigation-lifecycle-logic.md
+        # §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path. Confirming the
+        # problem statement is mandatory even when a runbook applies cleanly.
         if case.status == CaseStatus.INQUIRY:
-            # Check for fast-track resolution via KB
-            if self._check_fast_track_resolution(case):
-                # Status changed in _check_fast_track_resolution
-                metadata["status_transitioned"] = True
-                case.action_history.append(
-                    CaseAction(
-                        from_status=old_status,
-                        to_status=CaseStatus.RESOLVED,
-                        triggered_by="system",
-                        reason="Fast-track resolution via KB match",
-                    )
-                )
-                return case
-
             # Check for transition to investigation
             if case.inquiry.decided_to_investigate or (
                 case.inquiry.problem_statement_confirmed
@@ -5204,75 +5234,13 @@ class MilestoneEngine:
         ]
         return any(msg.startswith(p) or msg == p for p in decline_patterns)
 
-    # Documented >70% confidence threshold for KB fast-track resolution
-    # References: investigation-lifecycle-logic.md §1.2 (INQUIRY → RESOLVED Fast-Track),
-    #             templates.py line 50
-    KB_FAST_TRACK_THRESHOLD = 0.7
-
-    def _check_fast_track_resolution(self, case: Case) -> bool:
-        """Check if case can be Fast-Track resolved via KB match.
-
-        Fast-track resolution uses closure_reason="resolved" (same as normal resolution)
-        because a solution WAS found (via knowledge base). The distinction between
-        fast-track and normal resolution is captured in case.inquiry.knowledge_resolution
-        and status transition history.
-
-        Gap #5b: Validates that a stored KB match meets the >70% confidence threshold
-        before allowing fast-track resolution. If no stored matches exist (edge case),
-        the resolution proceeds with a warning log.
-        """
-        if case.inquiry.knowledge_resolution:
-            # Gap #5b: Validate confidence threshold against stored matches
-            resolution = case.inquiry.knowledge_resolution
-            best_match = max(
-                case.inquiry.knowledge_matches,
-                key=lambda m: m.relevance_score,
-                default=None,
-            )
-
-            if best_match and best_match.relevance_score < self.KB_FAST_TRACK_THRESHOLD:
-                logger.warning(
-                    f"KB fast-track blocked for case {case.case_id}: "
-                    f"best match confidence {best_match.relevance_score:.2f} "
-                    f"< threshold {self.KB_FAST_TRACK_THRESHOLD}. "
-                    f"match_id={resolution.match_id}",
-                    extra={
-                        "case_id": case.case_id,
-                        "match_confidence": best_match.relevance_score,
-                        "threshold": self.KB_FAST_TRACK_THRESHOLD,
-                        "metric": "kb.fast_track_blocked",
-                    },
-                )
-                return False
-
-            if not best_match:
-                # Edge case: resolution without stored match (shouldn't happen with 5a fix,
-                # but could occur if knowledge_match wasn't in the LLM response)
-                logger.warning(
-                    f"KB fast-track for case {case.case_id} proceeding without stored match "
-                    f"confidence validation. match_id={resolution.match_id}",
-                    extra={
-                        "case_id": case.case_id,
-                        "metric": "kb.fast_track_no_match",
-                    },
-                )
-
-            case.status = CaseStatus.RESOLVED
-            case.resolved_at = datetime.now(UTC)
-            case.closed_at = datetime.now(UTC)
-            case.closure_reason = "resolved"  # KB match = solution found = resolved
-            case.progress.solution_verified = True
-
-            # Log transition
-            match_confidence = (
-                f", confidence={best_match.relevance_score:.2f}" if best_match else ""
-            )
-            logger.info(
-                f"Case {case.case_id} Fast-Track resolved via KB match: "
-                f"{case.inquiry.knowledge_resolution.match_id}{match_confidence}"
-            )
-            return True
-        return False
+    # v3: `_check_fast_track_resolution` and `KB_FAST_TRACK_THRESHOLD` removed.
+    # KB-driven cases route through INVESTIGATING via same-turn milestone
+    # collapse. See indicator-resolution.md + investigation-lifecycle-logic.md
+    # §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path. The collapse is
+    # applied in `_apply_investigation_updates`'s `knowledge_resolution`
+    # branch (gate milestones set there); RootCauseConclusion + Solution
+    # are populated from the LLM's structured emissions in the same turn.
 
     def _determine_turn_outcome(
         self, case: Case, metadata: dict[str, Any], reported_outcome: TurnOutcome

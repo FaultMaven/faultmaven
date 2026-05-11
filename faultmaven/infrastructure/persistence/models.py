@@ -1085,7 +1085,9 @@ class HypothesisEvidenceModel(Base):
 
 class SolutionModel(Base):
     """Proposed and applied solution. May or may not link to a hypothesis;
-    fast-track resolutions skip hypothesis formulation entirely."""
+    KB-resolved cases populate Solution from the matched runbook Cause's
+    Mitigation/Resolution blocks without going through hypothesis
+    formulation (see indicator-resolution.md + KB-Resolution Path)."""
 
     __tablename__ = "solutions"
 
