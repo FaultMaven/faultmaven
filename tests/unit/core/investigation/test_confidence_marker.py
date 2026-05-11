@@ -42,11 +42,14 @@ def _next_ev_id() -> str:
 
 
 def _make_evidence(metadata=None, extract="Structural index content"):
-    return Evidence(
+    ev = Evidence(
         evidence_id=_next_ev_id(),
         source_file_id="file_abc123def456",
         summary="Test summary",
-        extract=extract,
+        # Post-010: the test's ``extract`` argument is the structural-index
+        # content production routes to uploaded_files.structural_index.
+        # _make_case mirrors it onto the backing UploadedFile row.
+        extract=None,
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
         source_type=EvidenceSourceType.LOGS,
         collected_at=datetime.now(UTC),
@@ -55,9 +58,29 @@ def _make_evidence(metadata=None, extract="Structural index content"):
         primary_purpose="Test",
         metadata=metadata,
     )
+    ev.__test_structural_index__ = extract  # type: ignore[attr-defined]
+    return ev
 
 
 def _make_case(evidence_list):
+    # Synthesize backing UploadedFile rows (with structural_index) for any
+    # source_file_id referenced by evidence, mirroring the production
+    # write path post-010.
+    seen: set[str] = set()
+    uploaded_files: list = []
+    for ev in evidence_list:
+        fid = getattr(ev, "source_file_id", None)
+        if fid and fid not in seen:
+            seen.add(fid)
+            uploaded_files.append(
+                UploadedFile(
+                    file_id=fid,
+                    filename="logs",
+                    size_bytes=128,
+                    uploaded_at_turn=1,
+                    structural_index=getattr(ev, "__test_structural_index__", None),
+                )
+            )
     return Case(
         case_id="case_aabb11223344",
         title="Test Case",
@@ -71,6 +94,7 @@ def _make_case(evidence_list):
             proposed_problem_statement="Test description",
         ),
         evidence=evidence_list,
+        uploaded_files=uploaded_files,
     )
 
 

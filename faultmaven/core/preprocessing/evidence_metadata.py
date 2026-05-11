@@ -60,7 +60,9 @@ class ExtractorAttempt(BaseModel):
       classifier (``triggered_by = "user_override"``).
 
     The list is chronological: the most recent attempt is the one whose
-    output is currently persisted as ``evidence.preprocessed_content``.
+    output is currently persisted as ``uploaded_files.structural_index``
+    (post-010: preprocessing artifacts live on the file row, not on
+    Evidence).
     Hard cap: 5 entries; oldest rotate off the head when exceeded.
     """
 
@@ -77,7 +79,7 @@ class ExtractorAttempt(BaseModel):
 
 
 class ExtractorMetadata(BaseModel):
-    """Which extractor produced preprocessed_content, and its retry
+    """Which extractor produced the structural index, and its retry
     history. Pure observability in Phase 1; ``attempts`` gets populated
     in Phase 2 when the retry path lands."""
 

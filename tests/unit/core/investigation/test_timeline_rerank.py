@@ -35,6 +35,7 @@ from faultmaven.modules.case.domain.models import (
     EvidenceCategory,
     EvidenceSourceType,
     InquiryData,
+    UploadedFile,
 )
 
 # ---------------------------------------------------------------------------
@@ -47,6 +48,7 @@ def _ev(
     end: datetime | None = None,
     data_type: str = "logs",
     content: str = "structural index content " * 20,
+    source_file_id: str = "file_aabb12345678",
 ) -> Evidence:
     # Map legacy `data_type` strings to EvidenceSourceType.
     source_map = {
@@ -56,23 +58,46 @@ def _ev(
         "code": EvidenceSourceType.CODE,
     }
     source_type = source_map.get(data_type, EvidenceSourceType.LOGS)
-    return Evidence(
+    ev = Evidence(
         evidence_id=f"ev_{uuid4().hex[:12]}",
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
         primary_purpose="Test",
         summary="Test evidence",
-        extract=content,
+        # Post-010: ``content`` is the file's structural index; production
+        # writes it to uploaded_files.structural_index. _case() mirrors it
+        # onto the synthesized UploadedFile.
+        extract=None,
         source_type=source_type,
-        source_file_id="file_aabb12345678",
+        source_file_id=source_file_id,
         collected_by="user",
         collected_at=datetime.now(UTC),
         collected_at_turn=1,
         coverage_start_ts=start,
         coverage_end_ts=end,
     )
+    ev.__test_structural_index__ = content  # type: ignore[attr-defined]
+    return ev
 
 
 def _case(evidence_list: list[Evidence]) -> Case:
+    # Synthesize the backing UploadedFile rows so the file-level
+    # structural_index from the test fixture is visible to the context
+    # builder (which reads from uploaded_files post-010).
+    seen: set[str] = set()
+    uploaded_files: list = []
+    for ev in evidence_list:
+        fid = getattr(ev, "source_file_id", None)
+        if fid and fid not in seen:
+            seen.add(fid)
+            uploaded_files.append(
+                UploadedFile(
+                    file_id=fid,
+                    filename=f"{ev.source_type.value}.dat",
+                    size_bytes=128,
+                    uploaded_at_turn=1,
+                    structural_index=getattr(ev, "__test_structural_index__", None),
+                )
+            )
     return Case(
         case_id=f"case_{uuid4().hex[:12]}",
         title="Test",
@@ -86,6 +111,7 @@ def _case(evidence_list: list[Evidence]) -> Case:
             proposed_problem_statement="Test",
         ),
         evidence=evidence_list,
+        uploaded_files=uploaded_files,
     )
 
 

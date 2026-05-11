@@ -98,10 +98,13 @@ class ReadFileTool(AgentTool):
     ) -> ToolResult:
         """Read an evidence file's contents.
 
-        Storage redesign 2026-04 phase 2: evidence is case-tied only. We look
-        it up on `case.evidence` (via `context.case_repository` /
-        `context.in_memory_case`) and read the raw file via FileStorageService
-        using `content_ref`.
+        Evidence is case-tied: we look it up on ``case.evidence`` (via
+        ``context.case_repository`` / ``context.in_memory_case``), resolve
+        the backing file by walking ``evidence.source_file_id`` →
+        ``uploaded_files.storage_ref``, and read the raw bytes via
+        ``FileStorageService``. Chat-extracted evidence (source_file_id
+        IS NULL, source_type=USER_DESCRIPTION) has no stored file and
+        is rejected with a "no backing file" error.
 
         Args:
             params: Parameters including evidence_id, max_lines, offset

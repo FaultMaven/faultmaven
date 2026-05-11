@@ -59,15 +59,24 @@ def _make_evidence(
     source_file_id: str | None = "file_aabb12345678",
     **overrides,
 ) -> Evidence:
-    """Create an Evidence instance for context builder tests."""
-    # The extract field validator rejects whitespace-only strings; map ""
-    # (a common test signal for "no structural content") to None.
-    normalized_extract = extract if extract else None
+    """Create an Evidence instance for context builder tests.
+
+    Post-010 NOTE on the ``extract`` parameter: the test helper treats
+    ``extract`` as the structural-index content that production routes
+    to ``uploaded_files.structural_index``. ``_make_case_with_evidence``
+    walks the synthesized fixture and mirrors the value onto the
+    backing UploadedFile row. ``Evidence.extract`` itself is left as
+    None — most context-builder tests exercise the structural-index
+    render path, not the verbatim-quote slot.
+    """
+    # The structural-index content gets routed to uploaded_file by the
+    # case-fixture helper; the Evidence row's own ``extract`` slot stays
+    # empty (= "no verbatim quote") for the common test case.
     defaults = {
         "evidence_id": evidence_id or _next_ev_id(),
         "source_file_id": source_file_id,
         "summary": summary,
-        "extract": normalized_extract,
+        "extract": None,
         "category": EvidenceCategory.SYMPTOM_EVIDENCE,
         "source_type": source_type,
         "collected_at": datetime.now(UTC),
@@ -76,17 +85,33 @@ def _make_evidence(
         "primary_purpose": "Test",
     }
     defaults.update(overrides)
-    return Evidence(**defaults)
+    ev = Evidence(**defaults)
+    # Stash the test-supplied structural-index content on the instance so
+    # _make_case_with_evidence can route it to the backing UploadedFile.
+    ev.__pydantic_extra__ = ev.__pydantic_extra__ or {}
+    ev.__test_structural_index__ = extract if extract else None  # type: ignore[attr-defined]
+    return ev
 
 
 def _make_case_with_evidence(evidence_list: list) -> Case:
     """Create a minimal Case with given evidence list.
 
-    Post-010: also auto-creates the backing UploadedFile rows so the
+    Post-010: auto-creates the backing UploadedFile rows so the
     context builder's ``file_lookup`` resolves and the ``file_id``
     attribute renders. Each unique ``ev.source_file_id`` gets one
-    synthesized UploadedFile.
+    synthesized UploadedFile, with ``structural_index`` populated from
+    the test fixture's ``extract`` parameter (which production routes
+    to the file row, not the evidence row).
     """
+    # Group test-supplied structural-index payloads by source_file_id so we
+    # can write them to the corresponding UploadedFile rows below.
+    structural_by_file: dict[str, str] = {}
+    for ev in evidence_list:
+        fid = getattr(ev, "source_file_id", None)
+        payload = getattr(ev, "__test_structural_index__", None)
+        if fid and payload and fid not in structural_by_file:
+            structural_by_file[fid] = payload
+
     seen_file_ids: set[str] = set()
     uploaded_files: list = []
     for ev in evidence_list:
@@ -106,6 +131,7 @@ def _make_case_with_evidence(evidence_list: list) -> Case:
                     uploaded_at_turn=1,
                     uploaded_at=datetime.now(UTC),
                     uploaded_by="user_123",
+                    structural_index=structural_by_file.get(fid),
                 )
             )
     return Case(
@@ -202,12 +228,14 @@ class TestTierA:
         assert "timeout" in result
 
     def test_three_recent_items_all_tier_a(self):
-        """3 recent data evidence items → all get Tier A treatment."""
+        """3 recent data evidence items from distinct files → all Tier A,
+        each surfacing its own structural index."""
         evidence = [
             _make_evidence(
                 summary=f"Evidence item {i}",
                 extract=f"Structural index for item {i}",
                 collected_at_turn=i + 1,
+                source_file_id=f"file_aaaaaaaa{i:04d}",
             )
             for i in range(3)
         ]
@@ -292,12 +320,15 @@ class TestTierB:
 
     def test_older_data_evidence_is_summary_only(self):
         """Data evidence beyond RECENT_COUNT shows summary only (no structural_index)."""
-        # Create 5 items: first 2 are older (Tier B), last 3 are recent (Tier A)
+        # Create 5 items, each from a distinct file, so each carries its
+        # own file-level structural_index post-010. First 2 are older
+        # (Tier B), last 3 are recent (Tier A).
         evidence = [
             _make_evidence(
                 summary=f"Summary for item {i}",
                 extract=f"Structural index for item {i}",
                 collected_at_turn=i + 1,
+                source_file_id=f"file_aaaaaaaa{i:04d}",
             )
             for i in range(5)
         ]
@@ -368,13 +399,14 @@ class TestMixedForms:
     """Test correct tier assignment with mixed evidence forms."""
 
     def test_mixed_forms_correct_tier_assignment(self):
-        """DOCUMENT/SUBMITTED_DATA go to Tier A/B, USER_TEXT goes to Tier C."""
+        """File-backed evidence routes to Tier A/B; chat-extracted to Tier C."""
         evidence = [
             # Older data (Tier B)
             _make_evidence(
                 summary="Old document evidence",
                 extract="Old structural index",
                 collected_at_turn=1,
+                source_file_id="file_dddddddd0000",
             ),
             # User text (Tier C)
             _make_evidence(
@@ -384,21 +416,24 @@ class TestMixedForms:
                 extract="User text content",
                 collected_at_turn=2,
             ),
-            # Recent data - these 3 should be Tier A
+            # Recent data - these 3 should be Tier A, each from its own file
             _make_evidence(
                 summary="Recent log file",
                 extract="Crime scene extraction: errors found",
                 collected_at_turn=3,
+                source_file_id="file_cccccccc0001",
             ),
             _make_evidence(
                 summary="Recent metrics file",
                 extract="Statistical profile: anomalies detected",
                 collected_at_turn=4,
+                source_file_id="file_cccccccc0002",
             ),
             _make_evidence(
                 summary="Search result finding",
                 extract="Matched patterns in raw file",
                 collected_at_turn=5,
+                source_file_id="file_cccccccc0003",
             ),
         ]
         case = _make_case_with_evidence(evidence)
@@ -459,6 +494,7 @@ class TestFilenameAttribution:
                 filename="nginx-access.log",
                 size_bytes=5000,
                 uploaded_at_turn=1,
+                structural_index="ERROR: 503 at /api/health",
             )
         ]
         result = _build_evidence_context(case)
@@ -490,6 +526,7 @@ class TestFilenameAttribution:
                 filename="app-server.log",
                 size_bytes=3000,
                 uploaded_at_turn=1,
+                structural_index="Old structural index",
             )
         ]
         result = _build_evidence_context(case)
@@ -533,12 +570,14 @@ class TestFilenameAttribution:
                 filename="nginx-access.log",
                 size_bytes=5000,
                 uploaded_at_turn=1,
+                structural_index="503 errors",
             ),
             UploadedFile(
                 file_id="file_eeff11223344",
                 filename="app-server.log",
                 size_bytes=8000,
                 uploaded_at_turn=2,
+                structural_index="NullPointerException",
             ),
         ]
         result = _build_evidence_context(case)
@@ -745,6 +784,7 @@ class TestPageCaptureRerankingIntegration:
                 size_bytes=len(_PAGE_CAPTURE_CONTENT),
                 uploaded_at_turn=1,
                 upload_source="page_capture",
+                structural_index=_PAGE_CAPTURE_CONTENT,
             )
         ]
         result = _build_evidence_context(case, user_query="CPU usage high")
@@ -780,6 +820,7 @@ class TestPageCaptureRerankingIntegration:
                 size_bytes=len(content),
                 uploaded_at_turn=1,
                 upload_source="file_upload",
+                structural_index=content,
             )
         ]
         result = _build_evidence_context(case, user_query="alpha")
@@ -805,6 +846,7 @@ class TestPageCaptureRerankingIntegration:
                 size_bytes=len(_PAGE_CAPTURE_CONTENT),
                 uploaded_at_turn=1,
                 upload_source="page_capture",
+                structural_index=_PAGE_CAPTURE_CONTENT,
             )
         ]
         result = _build_evidence_context(case)  # no user_query
@@ -839,6 +881,7 @@ class TestPageCaptureRerankingIntegration:
                 size_bytes=len(content),
                 uploaded_at_turn=1,
                 upload_source="page_capture",
+                structural_index=content,
             )
         ]
         result = _build_evidence_context(case, user_query="CPU load average")
