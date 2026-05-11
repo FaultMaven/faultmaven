@@ -463,6 +463,12 @@ evidence records:
                     source file. Leave blank ONLY when the extract is
                     a verbatim system-output quote the user typed in
                     their chat message.
+- Optional field:
+  * extract: A verbatim system-output snippet (a log line, a metric
+             reading, a config slice) supporting the summary. The system
+             surfaces it back to you as <verbatim_quote>...</verbatim_quote>
+             on later turns so you can re-ground the claim without
+             re-reading the whole file. Omit when summary is self-contained.
 
 FOLLOW-UP SUGGESTIONS (suggested_follow_ups):
 Generate 2-4 suggestions to guide the user's next action. For each, think about what you
@@ -705,6 +711,14 @@ captured:
                     file the slice came from. Leave blank ONLY when
                     the extract is a verbatim system-output quote the
                     user typed in their chat message.
+- Optional field:
+  * extract: A verbatim system-output snippet (a log line, a metric
+             reading, a config slice) that supports the summary. One
+             or a few lines, not paraphrased. The system surfaces it
+             back to you on later turns as <verbatim_quote>...</verbatim_quote>
+             inside the evidence block, so future you can re-ground
+             the claim without re-reading the whole file. Omit when
+             the summary is self-contained.
 
 Example — analysis reveals an error pattern in an uploaded log:
   evidence_to_add:
