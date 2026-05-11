@@ -20,7 +20,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from faultmaven.core.investigation.schemas import CauseChunk
+from faultmaven.core.investigation.cause_schemas import CauseChunk
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )

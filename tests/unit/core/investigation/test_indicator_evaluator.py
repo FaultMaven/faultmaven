@@ -13,7 +13,7 @@ from typing import Optional
 import pytest
 
 from faultmaven.core.investigation.indicator_evaluator import IndicatorEvaluator
-from faultmaven.core.investigation.schemas import CauseChunk
+from faultmaven.core.investigation.cause_schemas import CauseChunk
 
 
 def _cause(

@@ -22,7 +22,7 @@ import logging
 import re
 from typing import Awaitable, Callable, List, Optional
 
-from faultmaven.core.investigation.schemas import (
+from faultmaven.core.investigation.cause_schemas import (
     CauseChunk,
     CauseMatch,
     CauseMatchResult,
