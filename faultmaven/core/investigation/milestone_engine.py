@@ -4344,13 +4344,20 @@ class MilestoneEngine:
         )
 
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
-            # Derive source filename from uploaded files submitted this turn
+            # Derive source_file_id from uploaded files submitted this turn.
+            # Single-file case is unambiguous; multi-file or no-file cases
+            # leave it None and rely on source_type=USER_DESCRIPTION to
+            # satisfy the new ``evidence_source_invariant`` (migration 010).
+            # Batch 3 will replace this heuristic with an explicit
+            # source_file_id field on EvidenceToAdd.
             turn_files = [
                 uf
                 for uf in case.uploaded_files
                 if uf.uploaded_at_turn == case.current_turn
             ]
-            source_filename = turn_files[0].filename if len(turn_files) == 1 else None
+            inferred_source_file_id = (
+                turn_files[0].file_id if len(turn_files) == 1 else None
+            )
 
             for ev_item in updates.evidence_to_add:
                 # During INQUIRY phase, milestones are not yet being tracked,
@@ -4358,16 +4365,13 @@ class MilestoneEngine:
                 # Evidence will be available for milestone validation once case transitions to INVESTIGATING
                 advances_milestones = []  # INQUIRY phase: No milestone tracking yet
 
-                # Path 2: LLM evidence_to_add → Evidence. Direct field mapping;
-                # no joining or merging. Inline evidence loses content_hash
-                # dedup (accepted tradeoff — only file-backed evidence dedups
-                # via uploaded_files.content_hash).
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
                     extract=ev_item.extract,
                     category=ev_item.category,
                     source_type=ev_item.source_type,
+                    source_file_id=inferred_source_file_id,
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
@@ -4379,7 +4383,7 @@ class MilestoneEngine:
                 logger.info(
                     f"Created evidence (INQUIRY): {ev.evidence_id} | "
                     f"category={ev.category.value}, source_type={ev.source_type.value}, "
-                    f"form={ev.form.value}, "
+                    f"source_file_id={ev.source_file_id}, "
                     f"summary='{ev.summary[:80]}...'"
                 )
 
@@ -4579,13 +4583,16 @@ class MilestoneEngine:
         )
 
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
-            # Derive source filename from uploaded files submitted this turn
+            # Derive source_file_id from uploaded files submitted this turn.
+            # See the INQUIRY-phase site for rationale; same heuristic.
             turn_files = [
                 uf
                 for uf in case.uploaded_files
                 if uf.uploaded_at_turn == case.current_turn
             ]
-            source_filename = turn_files[0].filename if len(turn_files) == 1 else None
+            inferred_source_file_id = (
+                turn_files[0].file_id if len(turn_files) == 1 else None
+            )
 
             for ev_item in updates.evidence_to_add:
                 # Infer milestone attribution (Tier 2 + Tier 3)
@@ -4609,14 +4616,13 @@ class MilestoneEngine:
                         ev_item.category, milestones_completed_this_turn
                     )
 
-                # Path 2: LLM evidence_to_add → Evidence. Direct field mapping;
-                # see the INQUIRY-phase site above for the same pattern.
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
                     extract=ev_item.extract,
                     category=ev_item.category,
                     source_type=ev_item.source_type,
+                    source_file_id=inferred_source_file_id,
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
@@ -4628,7 +4634,7 @@ class MilestoneEngine:
                 logger.info(
                     f"Created evidence: {ev.evidence_id} | "
                     f"category={ev.category.value}, source_type={ev.source_type.value}, "
-                    f"form={ev.form.value}, "
+                    f"source_file_id={ev.source_file_id}, "
                     f"summary='{ev.summary[:80]}...'"
                 )
 
