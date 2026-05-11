@@ -1329,17 +1329,12 @@ class EvidenceSourceType(str, Enum):
 
     TEXT = "text"
     """
-    Unstructured prose.
-
-    Includes:
-    - User's typed narrative
-    - Problem descriptions
-    - Observations
-    - Impact reports
-    - Steps to reproduce
-    - Context explanations
-
-    Characteristics: Human-written context, not machine-generated data
+    Prose content from a file (uploaded documentation, README, runbook
+    excerpt, ticket export). Post-010: this is for prose *files*, not
+    for the user's own typed narrative or observations — those aren't
+    evidence under the strict model. For verbatim system-output quotes
+    the user typed inline in chat (e.g., "Got: HTTP/1.1 503 Service
+    Unavailable"), use ``USER_DESCRIPTION`` instead.
     """
 
     IMAGE = "image"
@@ -1399,22 +1394,24 @@ class EvidenceStance(str, Enum):
 
 class UploadedFile(BaseModel):
     """
-    Raw file metadata for files uploaded to a case.
+    File the user submitted to a case (upload, paste, page capture).
 
-    Key Distinction:
-    - UploadedFile: Raw file metadata, exists in ANY case state (INQUIRY, INVESTIGATING, etc.)
-    - Evidence: Data classified by the LLM based on content. Created via evidence_to_add
-      when the LLM evaluates the submission.
+    Post-010 strict evidence model — two-table separation:
+    - **UploadedFile**: the file-of-record. Exists in any case state
+      (INQUIRY, INVESTIGATING, terminal). Carries the raw bytes (via
+      ``storage_ref``) and the preprocessing artifacts (``summary``,
+      ``structural_index``, ``data_type``, coverage timestamps) that
+      describe the file's content.
+    - **Evidence**: the claim-anchored extract-of-record. Created only
+      during INVESTIGATING when the LLM extracts a focused slice via
+      ``evidence_to_add`` to support a specific claim (symptom, cause,
+      mitigation, or solution).
 
-    Evidence classification is content-based, not stage-based (see Section 5.2 of
-    evidence-driven-investigation-framework.md). The LLM evaluates the data and
-    classifies it by what it contains:
-    - Error logs → symptom_evidence (even during INQUIRY)
-    - Normal configs → contextual_evidence
-    - Post-fix metrics → solution_evidence
-
-    UploadedFile records exist independently of Evidence. Not all uploaded files
-    produce Evidence — the LLM decides what is relevant during its analysis.
+    Files are not evidence. An evidence row references its source file
+    via ``Evidence.source_file_id``; the file row holds the file-level
+    metadata so the evidence row can stay focused on the claim it
+    supports. Not all uploaded files produce evidence — the LLM
+    decides which slices, if any, are claim-relevant.
     """
 
     file_id: str = Field(
