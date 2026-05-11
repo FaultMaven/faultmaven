@@ -27,11 +27,15 @@ pytestmark = pytest.mark.integration
 async def _setup_fresh_db(db_path: str) -> AsyncSession:
     """Run all migrations on a fresh SQLite file, return a session."""
     import subprocess
+    import sys
 
     env = os.environ.copy()
     env["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+    # Use the running interpreter rather than hardcoding ``.venv/bin/python``;
+    # the local-dev venv path does not exist in the CI runner (Python lives
+    # at /opt/hostedtoolcache/Python/.../python there).
     subprocess.run(
-        [".venv/bin/python", "-m", "alembic", "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=Path(__file__).parents[2],
         env=env,
         check=True,
