@@ -260,7 +260,6 @@ def mock_investigation_service(mock_case_service):
         from faultmaven.modules.case.contracts import (
             Evidence,
             EvidenceCategory,
-            EvidenceForm,
             EvidenceSourceType,
             UploadedFile,
         )
@@ -331,18 +330,17 @@ def mock_investigation_service(mock_case_service):
                         extract="Test content",
                         category=category,
                         source_type=source_type,
-                        form=EvidenceForm.DOCUMENT,
+                        source_file_id=file_id,
                         summary=summary,
                         collected_at_turn=1,
                         collected_by="system",
-                        source_file_id=file_id,
                         primary_purpose=primary_purpose,
                     )
                     case.evidence.append(ev)
 
                     attachments_processed.append(
                         AttachmentResult(
-                            evidence_id=ev.evidence_id,
+                            file_id=file_id,
                             filename=filename,
                             source_type=data_type,
                             file_size=len(attachment.content),

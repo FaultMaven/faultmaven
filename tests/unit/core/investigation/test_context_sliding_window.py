@@ -4,7 +4,7 @@ Tests the three-tier evidence context system that includes structural indexes
 in LLM prompts for recent evidence, fixing the "I don't have access to file
 content" bug.
 
-Tier A: Last N data evidence items (form=DOCUMENT or SUBMITTED_DATA)
+Tier A: file-backed evidence (source_file_id IS NOT NULL)
         → include preprocessed_content (structural index), capped per item.
 Tier B: Older data evidence → summary only.
 Tier C: USER_TEXT evidence → summary only, always.
@@ -30,7 +30,6 @@ from faultmaven.modules.case.contracts import (
     CaseStatus,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     InquiryData,
     UploadedFile,
@@ -54,10 +53,10 @@ def _next_ev_id() -> str:
 
 def _make_evidence(
     evidence_id: str | None = None,
-    form: EvidenceForm = EvidenceForm.DOCUMENT,
     summary: str = "Test evidence summary",
     extract: str | None = "Structural index content",
     source_type: EvidenceSourceType = EvidenceSourceType.LOGS,
+    source_file_id: str | None = "file_aabb12345678",
     **overrides,
 ) -> Evidence:
     """Create an Evidence instance for context builder tests."""
@@ -66,7 +65,7 @@ def _make_evidence(
     normalized_extract = extract if extract else None
     defaults = {
         "evidence_id": evidence_id or _next_ev_id(),
-        "form": form,
+        "source_file_id": source_file_id,
         "summary": summary,
         "extract": normalized_extract,
         "category": EvidenceCategory.SYMPTOM_EVIDENCE,
@@ -81,7 +80,34 @@ def _make_evidence(
 
 
 def _make_case_with_evidence(evidence_list: list) -> Case:
-    """Create a minimal Case with given evidence list."""
+    """Create a minimal Case with given evidence list.
+
+    Post-010: also auto-creates the backing UploadedFile rows so the
+    context builder's ``file_lookup`` resolves and the ``file_id``
+    attribute renders. Each unique ``ev.source_file_id`` gets one
+    synthesized UploadedFile.
+    """
+    seen_file_ids: set[str] = set()
+    uploaded_files: list = []
+    for ev in evidence_list:
+        fid = getattr(ev, "source_file_id", None)
+        if fid and fid not in seen_file_ids:
+            seen_file_ids.add(fid)
+            uploaded_files.append(
+                UploadedFile(
+                    file_id=fid,
+                    filename=(
+                        f"{ev.source_type.value}.log"
+                        if getattr(ev, "source_type", None)
+                        else "data.txt"
+                    ),
+                    size_bytes=128,
+                    content_type="text/plain",
+                    uploaded_at_turn=1,
+                    uploaded_at=datetime.now(UTC),
+                    uploaded_by="user_123",
+                )
+            )
     return Case(
         case_id="case_aabb11223344",
         title="Test Case",
@@ -95,6 +121,7 @@ def _make_case_with_evidence(evidence_list: list) -> Case:
             proposed_problem_statement="Test description",
         ),
         evidence=evidence_list,
+        uploaded_files=uploaded_files,
     )
 
 
@@ -147,7 +174,6 @@ class TestTierA:
     def test_single_recent_document_includes_structural_index(self):
         """1 recent DOCUMENT evidence → Tier A with full structural_index."""
         ev = _make_evidence(
-            form=EvidenceForm.DOCUMENT,
             summary="Error burst detected in application logs",
             extract="============\nCRIME SCENE EXTRACTION\n============\nERROR: Connection timeout at 14:03:21",
             source_type=EvidenceSourceType.LOGS,
@@ -156,7 +182,7 @@ class TestTierA:
         result = _build_evidence_context(case)
 
         assert f'id="{ev.evidence_id}"' in result
-        assert 'form="document"' in result
+        assert 'file_id="' in result
         assert 'data_type="logs"' in result
         assert "<file_extract>" in result
         assert "CRIME SCENE EXTRACTION" in result
@@ -165,14 +191,13 @@ class TestTierA:
     def test_recent_submitted_data_is_tier_a(self):
         """SUBMITTED_DATA form is also treated as Tier A (data evidence)."""
         ev = _make_evidence(
-            form=EvidenceForm.SUBMITTED_DATA,
             summary="Search result finding",
             extract="Matched lines with 'timeout'",
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
 
-        assert 'form="submitted_data"' in result
+        assert 'file_id="' in result
         assert "<file_extract>" in result
         assert "timeout" in result
 
@@ -300,7 +325,8 @@ class TestTierC:
     def test_user_text_is_always_summary_only(self):
         """USER_TEXT evidence → summary only, never structural_index."""
         ev = _make_evidence(
-            form=EvidenceForm.USER_TEXT,
+            source_file_id=None,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
             summary="User described intermittent timeouts every 5 minutes",
             extract="This should NOT appear in context",
         )
@@ -308,7 +334,7 @@ class TestTierC:
         result = _build_evidence_context(case)
 
         assert "User described intermittent timeouts" in result
-        assert 'form="user_text"' in result
+        # Post-010: chat-extracted evidence has no file_id attribute (skipped)
         # USER_TEXT preprocessed_content should NOT be in the output
         # (it goes to Tier C which is summary-only)
         # Note: the implementation separates text_evidence from data_evidence
@@ -317,7 +343,8 @@ class TestTierC:
         """USER_TEXT evidence capped at 5 most recent items."""
         evidence = [
             _make_evidence(
-                form=EvidenceForm.USER_TEXT,
+                source_file_id=None,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
                 summary=f"User text item {i}",
                 collected_at_turn=i + 1,
             )
@@ -345,33 +372,30 @@ class TestMixedForms:
         evidence = [
             # Older data (Tier B)
             _make_evidence(
-                form=EvidenceForm.DOCUMENT,
                 summary="Old document evidence",
                 extract="Old structural index",
                 collected_at_turn=1,
             ),
             # User text (Tier C)
             _make_evidence(
-                form=EvidenceForm.USER_TEXT,
+                source_file_id=None,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
                 summary="User observation about timeouts",
                 extract="User text content",
                 collected_at_turn=2,
             ),
             # Recent data - these 3 should be Tier A
             _make_evidence(
-                form=EvidenceForm.DOCUMENT,
                 summary="Recent log file",
                 extract="Crime scene extraction: errors found",
                 collected_at_turn=3,
             ),
             _make_evidence(
-                form=EvidenceForm.DOCUMENT,
                 summary="Recent metrics file",
                 extract="Statistical profile: anomalies detected",
                 collected_at_turn=4,
             ),
             _make_evidence(
-                form=EvidenceForm.SUBMITTED_DATA,
                 summary="Search result finding",
                 extract="Matched patterns in raw file",
                 collected_at_turn=5,
@@ -390,13 +414,14 @@ class TestMixedForms:
 
         # Tier C: user text with summary only
         assert "User observation about timeouts" in result
-        assert 'form="user_text"' in result
+        # Post-010: chat-extracted evidence has no file_id attribute (skipped)
 
     def test_no_data_evidence_only_user_text(self):
         """Case with only USER_TEXT evidence → no structural indexes, summaries only."""
         evidence = [
             _make_evidence(
-                form=EvidenceForm.USER_TEXT,
+                source_file_id=None,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
                 summary=f"User observation {i}",
                 collected_at_turn=i + 1,
             )
@@ -422,7 +447,6 @@ class TestFilenameAttribution:
     def test_tier_a_evidence_includes_filename(self):
         """Tier A evidence with source_file_id → filename attribute in XML."""
         ev = _make_evidence(
-            form=EvidenceForm.DOCUMENT,
             summary="Nginx access log errors",
             extract="ERROR: 503 at /api/health",
             source_type=EvidenceSourceType.LOGS,
@@ -473,11 +497,15 @@ class TestFilenameAttribution:
         assert 'filename="app-server.log"' in result
 
     def test_no_filename_when_no_source_file_id(self):
-        """Evidence without source_file_id → no filename attribute."""
+        """Evidence without source_file_id (chat-extracted) → no
+        filename attribute. Post-010: source_file_id=None requires
+        source_type=USER_DESCRIPTION to satisfy the source-invariant.
+        """
         ev = _make_evidence(
-            form=EvidenceForm.DOCUMENT,
             summary="User pasted logs",
             extract="Some content",
+            source_file_id=None,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
@@ -534,7 +562,6 @@ class TestProcessingModeOrientation:
     def test_da_mode_adds_role_orientation(self):
         """processing_mode='directed_analysis' → <file_extract role="orientation">."""
         ev = _make_evidence(
-            form=EvidenceForm.DOCUMENT,
             summary="Nginx errors",
             extract="CRIME SCENE: 502 errors at 14:00",
         )
@@ -547,7 +574,6 @@ class TestProcessingModeOrientation:
     def test_triage_mode_no_role_attribute(self):
         """processing_mode='triage' → <file_extract> (no role)."""
         ev = _make_evidence(
-            form=EvidenceForm.DOCUMENT,
             summary="Nginx errors",
             extract="CRIME SCENE: 502 errors at 14:00",
         )
@@ -560,7 +586,6 @@ class TestProcessingModeOrientation:
     def test_none_mode_no_role_attribute(self):
         """processing_mode=None (default) → <file_extract> (no role)."""
         ev = _make_evidence(
-            form=EvidenceForm.DOCUMENT,
             summary="Nginx errors",
             extract="CRIME SCENE: 502 errors at 14:00",
         )
@@ -707,7 +732,6 @@ class TestPageCaptureRerankingIntegration:
         has its sections reranked by user_query."""
         file_id = "file_aaccccccdd11"
         ev = _make_evidence(
-            form=EvidenceForm.DOCUMENT,
             summary="Grafana dashboard capture",
             extract=_PAGE_CAPTURE_CONTENT,
             source_type=EvidenceSourceType.TEXT,
@@ -743,7 +767,6 @@ class TestPageCaptureRerankingIntegration:
         )
         file_id = "file_bbccccccdd44"
         ev = _make_evidence(
-            form=EvidenceForm.DOCUMENT,
             summary="Regular log file",
             extract=content,
             source_type=EvidenceSourceType.LOGS,
@@ -769,7 +792,6 @@ class TestPageCaptureRerankingIntegration:
         """Without user_query, page capture sections stay in original order."""
         file_id = "file_aaccccccdd22"
         ev = _make_evidence(
-            form=EvidenceForm.DOCUMENT,
             summary="Dashboard",
             extract=_PAGE_CAPTURE_CONTENT,
             source_type=EvidenceSourceType.TEXT,
@@ -804,7 +826,6 @@ class TestPageCaptureRerankingIntegration:
         )
         file_id = "file_aaccccccdd33"
         ev = _make_evidence(
-            form=EvidenceForm.DOCUMENT,
             summary="Large dashboard",
             extract=content,
             source_type=EvidenceSourceType.TEXT,

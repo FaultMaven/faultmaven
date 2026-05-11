@@ -44,7 +44,6 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 from faultmaven.modules.case.contracts import (
     CaseStatus,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
 )
 from faultmaven.modules.case.domain.models import (

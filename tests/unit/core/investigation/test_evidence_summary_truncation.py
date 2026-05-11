@@ -28,10 +28,13 @@ from faultmaven.modules.case.contracts import (
 
 
 def _mk_evidence(summary: str) -> EvidenceToAdd:
+    # Post-010: 4 categories survive; USER_DESCRIPTION source_type lets us
+    # construct without needing a source_file_id (the source-invariant
+    # validator's exception case).
     return EvidenceToAdd(
         summary=summary,
-        category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
-        source_type=EvidenceSourceType.TEXT,
+        category=EvidenceCategory.SYMPTOM_EVIDENCE,
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
     )
 
 

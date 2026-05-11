@@ -20,7 +20,6 @@ from pydantic import ValidationError
 from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,
@@ -35,7 +34,7 @@ def _evidence_kwargs(**overrides):
         primary_purpose="symptom_verified",
         summary="non-empty summary",
         source_type=EvidenceSourceType.LOGS,
-        form=EvidenceForm.DOCUMENT,
+        source_file_id="file_aabb12345678",
         collected_by="user-1",
         collected_at_turn=1,
     )

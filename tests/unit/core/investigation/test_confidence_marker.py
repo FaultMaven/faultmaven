@@ -26,7 +26,6 @@ from faultmaven.modules.case.contracts import (
     CaseStatus,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     InquiryData,
     UploadedFile,
@@ -45,7 +44,7 @@ def _next_ev_id() -> str:
 def _make_evidence(metadata=None, extract="Structural index content"):
     return Evidence(
         evidence_id=_next_ev_id(),
-        form=EvidenceForm.DOCUMENT,
+        source_file_id="file_abc123def456",
         summary="Test summary",
         extract=extract,
         category=EvidenceCategory.SYMPTOM_EVIDENCE,

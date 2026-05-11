@@ -121,7 +121,6 @@ class TestMilestoneEngine:
         from faultmaven.modules.case.contracts import (
             Evidence,
             EvidenceCategory,
-            EvidenceForm,
             EvidenceSourceType,
         )
 
@@ -139,14 +138,14 @@ class TestMilestoneEngine:
                 summary="Test evidence",
                 content_ref="test.log",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
-                source_type=EvidenceSourceType.LOGS,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
                 collected_at=datetime.now(timezone.utc),
                 collected_by="user_123",
                 primary_purpose="Testing",
                 preprocessed_content="Log content",
                 content_size_bytes=100,
                 preprocessing_method="manual",
-                form=EvidenceForm.USER_TEXT,
+                source_file_id=None,
                 collected_at_turn=1,
             )
         )
@@ -176,7 +175,10 @@ class TestMilestoneEngine:
                             "summary": "Error logs showing 500 errors",
                             "category": "symptom_evidence",
                             "source_type": "logs",
-                            "content_ref": "ERROR 500 at /api/checkout",
+                            "extract": "ERROR 500 at /api/checkout",
+                            # Post-010: source_file_id required unless
+                            # source_type=USER_DESCRIPTION.
+                            "source_file_id": "file_aabb12345678",
                         }
                     ],
                     "hypotheses_to_add": [],
@@ -276,7 +278,6 @@ class TestMilestoneEngine:
         from faultmaven.modules.case.contracts import (
             Evidence,
             EvidenceCategory,
-            EvidenceForm,
             EvidenceSourceType,
         )
 
@@ -287,14 +288,14 @@ class TestMilestoneEngine:
                 summary="Test evidence",
                 content_ref="test.log",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
-                source_type=EvidenceSourceType.LOGS,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
                 collected_at=datetime.now(timezone.utc),
                 collected_by="user_123",
                 primary_purpose="Testing",
                 preprocessed_content="Log content",
                 content_size_bytes=100,
                 preprocessing_method="manual",
-                form=EvidenceForm.USER_TEXT,
+                source_file_id=None,
                 collected_at_turn=1,
             )
         )
@@ -1296,6 +1297,7 @@ class TestReadinessAssessments:
         from faultmaven.modules.case.contracts import (
             Evidence,
             EvidenceCategory,
+            EvidenceSourceType,
             RootCauseConclusion,
             Solution,
             SolutionType,
@@ -1323,11 +1325,9 @@ class TestReadinessAssessments:
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
                 primary_purpose="symptom_verified",
                 summary="Timeout errors in application logs at 14:03 UTC",
-                preprocessed_content="Error: connection timeout after 1000ms",
-                content_size_bytes=1024,
-                preprocessing_method="crime_scene_extraction",
-                source_type="logs",
-                form="document",
+                extract="Error: connection timeout after 1000ms",
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id="file_aabb12345678",
                 collected_by="user_123",
                 collected_at_turn=1,
             )
@@ -1534,18 +1534,20 @@ class TestRunbookSuggestion:
         # Add commands + evidence so runbook readiness is fully READY
         case.solutions[0].commands = ["kubectl edit configmap"]
         case.solutions[0].verification_method = "Check p99 < 500ms for 30 min"
-        from faultmaven.modules.case.contracts import Evidence, EvidenceCategory
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+        )
 
         case.evidence = [
             Evidence(
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
                 primary_purpose="symptom_verified",
                 summary="Timeout errors in logs",
-                preprocessed_content="Error: timeout",
-                content_size_bytes=100,
-                preprocessing_method="crime_scene_extraction",
-                source_type="logs",
-                form="document",
+                extract="Error: timeout",
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id="file_aabb12345678",
                 collected_by="u1",
                 collected_at_turn=1,
             )

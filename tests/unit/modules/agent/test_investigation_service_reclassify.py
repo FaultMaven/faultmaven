@@ -25,7 +25,6 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
 from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     UploadedFile,
 )
@@ -48,15 +47,20 @@ def _evidence(
     data_type: str = "metrics",
     metadata: dict | None = None,
     source_file_id: str | None = "file_aaaaaaaaaaaa",
+    source_type: EvidenceSourceType | None = None,
 ) -> Evidence:
+    resolved_source_type = (
+        source_type
+        if source_type is not None
+        else _SOURCE_TYPE_MAP.get(data_type, EvidenceSourceType.METRICS)
+    )
     return Evidence(
         evidence_id=evidence_id,
-        category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
+        category=EvidenceCategory.SYMPTOM_EVIDENCE,
         primary_purpose="Test",
         summary="Old summary",
         extract="old index",
-        source_type=_SOURCE_TYPE_MAP.get(data_type, EvidenceSourceType.METRICS),
-        form=EvidenceForm.DOCUMENT,
+        source_type=resolved_source_type,
         source_file_id=source_file_id,
         collected_by="user",
         collected_at=datetime.now(UTC),
@@ -207,10 +211,16 @@ class TestAuthAndLookup:
     async def test_evidence_without_content_ref_raises_validation(
         self, service, repo_with_case
     ):
-        """Pasted text evidence has no stored raw file — no re-extraction
-        is possible. Must raise ValidationException (endpoint maps to 409)."""
+        """Chat-extracted evidence (source_file_id=None, source_type=
+        USER_DESCRIPTION) has no stored raw file — no re-extraction is
+        possible. Must raise ValidationException (endpoint maps to 409)."""
         _, case = repo_with_case
-        case.evidence = [_evidence(source_file_id=None)]
+        case.evidence = [
+            _evidence(
+                source_file_id=None,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+            )
+        ]
         case.uploaded_files = []
         with pytest.raises(ValidationException):
             await service.reclassify_evidence(

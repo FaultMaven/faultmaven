@@ -43,6 +43,9 @@ def _make_context(case_id: str = "case_123", evidence_items=None):
     case.evidence = evidence_items if evidence_items is not None else [_make_evidence()]
 
     # Build a uploaded_files list and wire find_uploaded_file to return matches.
+    # Post-010: preprocessing artifacts (structural_index, data_type) live
+    # on the UploadedFile, not on Evidence. The vectorize_file tool reads
+    # from the file row, so the test fixture must populate those fields.
     uploaded_files = []
     for ev in case.evidence:
         f = MagicMock()
@@ -50,6 +53,10 @@ def _make_context(case_id: str = "case_123", evidence_items=None):
         f.size_bytes = getattr(ev, "_test_size_bytes", 0)
         f.filename = "test.log"
         f.upload_source = "file_upload"
+        # Mirror the evidence's extract into the file's structural_index —
+        # this is what production now reads (batch 4).
+        f.structural_index = ev.extract
+        f.data_type = ev.source_type.value
         uploaded_files.append(f)
     case.uploaded_files = uploaded_files
 
@@ -174,6 +181,9 @@ class TestVectorization:
 
     @pytest.mark.asyncio
     async def test_no_preprocessed_content(self, tool, mock_settings):
+        # Post-010: structural_index lives on uploaded_files; the
+        # _make_context helper mirrors evidence.extract → file.structural_index,
+        # so extract=None yields a file with no structural_index.
         ev = _make_evidence(extract=None)
         context = _make_context(evidence_items=[ev])
 
@@ -183,7 +193,7 @@ class TestVectorization:
         )
 
         assert result.success is False
-        assert "no preprocessed content" in result.error
+        assert "no preprocessed structural_index" in result.error
 
 
 class TestValidation:

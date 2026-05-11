@@ -45,6 +45,7 @@ from faultmaven.models.api_models import (
 from faultmaven.modules.case.contracts import Case, CaseStatus
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
 from faultmaven.modules.case.domain.models import (
+    Evidence,
     EvidenceSourceType,
     UploadedFile,
 )
@@ -481,25 +482,22 @@ class InvestigationService:
                     action=intent.action if intent else None,
                 )
             elif intent_type == IntentType.CONVERSATION:
-                # Build attachment metadata for the engine
+                # Build attachment metadata for the engine. Post-010:
+                # uploads create only an UploadedFile (no auto-Evidence),
+                # so the metadata is sourced directly from those rows.
                 attachment_metadata = []
-                for att, ev in zip(payload.attachments, evidence_created):
+                for att, uf in zip(payload.attachments, uploaded_files_this_turn):
                     is_paste = att.filename.startswith("pasted-content-")
                     source = "paste" if is_paste else "file_upload"
-                    # UploadedFile.file_id requires ^(file_|data_)[a-f0-9]{12,16}$
-                    ev_hex = ev.evidence_id.removeprefix("ev_")
-                    file_id = f"data_{ev_hex}" if is_paste else f"file_{ev_hex}"
-                    file_meta = case.find_uploaded_file(ev.source_file_id)
                     attachment_metadata.append(
                         {
-                            "evidence_id": ev.evidence_id,
-                            "file_id": file_id,
-                            "filename": att.filename,
-                            "data_type": ev.source_type.value,
-                            "size": file_meta.size_bytes if file_meta else 0,
+                            "file_id": uf.file_id,
+                            "filename": uf.filename,
+                            "data_type": uf.data_type or "",
+                            "size": uf.size_bytes,
                             "source_type": source,
-                            "summary": ev.summary,
-                            "s3_uri": file_meta.storage_ref if file_meta else None,
+                            "summary": uf.summary or "",
+                            "s3_uri": uf.storage_ref,
                         }
                     )
                 # DA evidence search is handled inside MilestoneEngine's tool loop.
@@ -613,7 +611,7 @@ class InvestigationService:
             logger.info(
                 f"Processed turn {response.turn_number} for case {case_id}, "
                 f"status={response.case_status}, milestones={len(response.milestones_completed)}, "
-                f"attachments={len(evidence_created)}, messages={updated_case.message_count}"
+                f"attachments={len(uploaded_files_this_turn)}, messages={updated_case.message_count}"
             )
 
             return response
