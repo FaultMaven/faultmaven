@@ -789,23 +789,6 @@ class InvestigationService:
                 duplicate_turn=existing_file.uploaded_at_turn,
             )
 
-        # Lift the namespaced evidence_metadata block out of the
-        # preprocessing result (classifier confidence in Phase 1, extractor
-        # attempts in Phase 2, entity overflow markers in Phase 4). Absent
-        # for any PreprocessingResult produced before the Phase 1 wiring,
-        # hence the defensive extraction below. See
-        # docs/architecture/data-and-storage/schemas/case-schema.md §4.3.
-        #
-        # Accept only dict-shaped metadata — test doubles may return a
-        # MagicMock from `.get()` which would otherwise fail Evidence's
-        # Dict[str, Any] validator downstream.
-        pp_metadata = preprocessing_result.extraction_metadata
-        evidence_metadata: Optional[Dict[str, Any]] = None
-        if isinstance(pp_metadata, dict):
-            candidate = pp_metadata.get("evidence_metadata")
-            if isinstance(candidate, dict):
-                evidence_metadata = candidate
-
         # Post-010 strict evidence model: file upload creates only an
         # UploadedFile row (with preprocessing artifacts attached).
         # 1. Store raw content; storage_result.file_path becomes the
@@ -880,16 +863,12 @@ class InvestigationService:
         uploaded_file.coverage_start_ts = preprocessing_result.coverage_start_ts
         uploaded_file.coverage_end_ts = preprocessing_result.coverage_end_ts
 
-        # ``evidence_metadata`` (preprocessing classifier confidence,
-        # entity overflow markers, etc.) is currently dropped at this
-        # path post-010 — it used to live on the auto-Evidence row,
-        # but Evidence at INVESTIGATING time will be claim-anchored
-        # slices that don't share the same metadata semantics. If we
-        # need to preserve preprocessor diagnostics, the natural
-        # landing zone is ``uploaded_files.metadata`` (JSON blob).
-        # Tracked for follow-up; not regressing any currently-shipping
-        # feature.
-        _ = evidence_metadata  # silence unused-var
+        # Preprocessor diagnostics (classifier confidence, extractor
+        # attempts, entity overflow markers) previously rode on the
+        # auto-Evidence row as ``metadata``. Under post-010 they have
+        # no claim-anchored Evidence to land on; the natural home is
+        # ``uploaded_files.metadata`` (JSON blob). Tracked as a
+        # follow-up — no currently-shipping feature regresses.
 
         # Post-010: case_entities population is deferred. Under the
         # dual-path model these rows were anchored to the auto-Evidence
