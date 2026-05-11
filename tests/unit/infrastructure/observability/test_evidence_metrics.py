@@ -25,8 +25,8 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
 from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
+    UploadedFile,
 )
 
 # Import test fixtures from the agent-module conftest
@@ -100,27 +100,28 @@ def _make_preprocessing_result(content_hash: str = "hash_xyz"):
     return result
 
 
-def _make_existing_evidence(content_hash: str) -> Evidence:
-    return Evidence(
-        evidence_id="ev_abcdef123456",
-        category=EvidenceCategory.SYMPTOM_EVIDENCE,
-        primary_purpose="symptom_verified",
-        summary="existing evidence",
-        preprocessed_content="prior",
-        content_size_bytes=100,
-        preprocessing_method="crime_scene",
-        source_type=EvidenceSourceType.LOGS,
-        form=EvidenceForm.DOCUMENT,
-        collected_by="user",
-        collected_at_turn=2,
+def _make_existing_uploaded_file(content_hash: str) -> UploadedFile:
+    """Post-010: dedup is file-level. The dedup target is an
+    UploadedFile, not an Evidence row."""
+    return UploadedFile(
+        file_id="file_aabb12345678",
+        filename="app.log",
+        size_bytes=100,
         content_hash=content_hash,
+        uploaded_at_turn=2,
+        uploaded_by="user",
+        upload_source="file_upload",
+        summary="existing file summary",
+        structural_index="prior structural index",
+        data_type="logs",
     )
 
 
 class _DedupCapableRepo(MockCaseRepository):
     def __init__(self):
         super().__init__()
-        self.find_by_content_hash = AsyncMock(return_value=None)
+        # Post-010: dedup retargeted from Evidence to UploadedFile.
+        self.find_uploaded_file_by_content_hash = AsyncMock(return_value=None)
 
 
 class TestDedupHitCounterEmission:
@@ -147,11 +148,11 @@ class TestDedupHitCounterEmission:
     @pytest.mark.asyncio
     async def test_counter_increments_on_dedup_hit(self):
         repo = _DedupCapableRepo()
-        existing = _make_existing_evidence(content_hash="hash_xyz")
-        repo.find_by_content_hash.return_value = existing
+        existing = _make_existing_uploaded_file(content_hash="hash_xyz")
+        repo.find_uploaded_file_by_content_hash.return_value = existing
         case = create_sample_case()
         case.user_id = "user_owner"
-        case.evidence.append(existing)
+        case.uploaded_files.append(existing)
         await repo.save(case)
 
         before = self._current()
@@ -179,7 +180,9 @@ class TestDedupHitCounterEmission:
     @pytest.mark.asyncio
     async def test_counter_does_not_increment_on_new_upload(self):
         repo = _DedupCapableRepo()
-        repo.find_by_content_hash.return_value = None  # no match → new evidence
+        repo.find_uploaded_file_by_content_hash.return_value = (
+            None  # no match → new evidence
+        )
         case = create_sample_case()
         case.user_id = "user_owner"
         await repo.save(case)

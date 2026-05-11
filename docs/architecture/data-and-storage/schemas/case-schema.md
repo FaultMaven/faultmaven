@@ -4,7 +4,7 @@
 **Status**: Authoritative Standard
 **Last Updated**: 2026-05-10
 
-> **Scope**: This document reflects the live schema as of migration `4b7e2f9d3a18` (009). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
+> **Scope**: This document reflects the live schema as of migration `0b5e8c4f7d29` (010). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
 
 > **NOTE on `organization_id` placement**: All tenanted case-domain tables carry `organization_id NOT NULL FK` for RLS policy enforcement in PostgreSQL and direct repository-layer filtering in both dialects. The per-table DDL below reflects this placement on every tenanted table.
 
@@ -32,13 +32,13 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 
 ## Implementation Status
 
-**Current State** (as of 2026-05-10):
+**Current State** (as of 2026-05-11):
 
 | Component | Status | Location |
 | --- | --- | --- |
 | ✅ Design | Approved | This document |
 | ✅ ORM Models | Complete | `faultmaven/infrastructure/persistence/models.py` (32 tables) |
-| ✅ Migration Chain | Complete | `alembic/versions/` — head revision `4b7e2f9d3a18` (009) |
+| ✅ Migration Chain | Complete | `alembic/versions/` — head revision `0b5e8c4f7d29` (010) |
 | ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository.py` |
 | ✅ SQLite Repository | Complete | `sqlite_case_repository.py` |
 | ✅ SQLite Integration Tests | Complete | Tests passing with real SQLite database |
@@ -46,7 +46,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ⏳ Performance Validation | Pending | Benchmarks needed |
 | ⏳ Production Deploy | Pending | PostgreSQL not yet deployed to K8s |
 
-**Migration Chain** (linear; current head is `4b7e2f9d3a18`):
+**Migration Chain** (linear; current head is `0b5e8c4f7d29`):
 
 | # | Revision | Description |
 | --- | --- | --- |
@@ -59,6 +59,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | 007 | `05b6eaf5baad` | Drop `users_password_or_sso` CHECK constraint to permit passwordless dev-login |
 | 008 | `317a8c329673` | `case_actions`: add `triggered_by VARCHAR(50) NOT NULL` (drop existing rows, no backfill) |
 | 009 | `4b7e2f9d3a18` | Evidence/Solution coherence: `evidence` adds `primary_purpose`, `analysis`, `processing_mode`, `advances_milestones`, `collected_by`; `solutions` drops dead `created_by`/`updated_by`, renames `implemented_at`→`applied_at` and `verification_timestamp`→`verified_at`, adds `proposed_by`, `applied_by`, `verification_method`, `verification_evidence_id` (FK), `effectiveness` |
+| 010 | `0b5e8c4f7d29` | Strict evidence-model redesign: collapse the dual evidence-creation paths. `uploaded_files` adds `summary`, `structural_index`, `data_type`, `coverage_start_ts`, `coverage_end_ts` (preprocessing artifacts move here from the auto-DOCUMENT Evidence rows). `evidence` drops `form` column and adds `evidence_source_invariant` CHECK: `source_file_id IS NOT NULL OR source_type = 'user_description'` — every Evidence row has a known source. All existing evidence rows are dropped (pre-production; their `extract` carried structural-index dumps incompatible with the new claim-anchored semantics). Pydantic ``EvidenceCategory`` collapses to 4 values (drops `CONTEXTUAL_EVIDENCE` and `REJECTED`); ``EvidenceSourceType`` gains `USER_DESCRIPTION` (the chat-quote case). |
 
 **Active Implementations**:
 
@@ -486,23 +487,23 @@ Every `evidence` row carries two semantically distinct content fields. They are 
 
 | Field | Type | Required? | What it carries |
 | --- | --- | --- | --- |
-| `summary` | `VARCHAR(500) NOT NULL` | always | Short label for this row. Used for UI list views, headers, and quick scanning. |
-| `extract` | `TEXT NULL` | conditional | Bulk content backing the summary. Required for Paths 1 and 3 (application-enforced); optional for Path 2 (DB allows NULL). |
+| `summary` | `VARCHAR(500) NOT NULL` | always | Short label for this row, written by the LLM in `evidence_to_add`. Used for UI list views, headers, and quick scanning. |
+| `extract` | `TEXT NULL` | optional | Verbatim quote (the focused slice supporting the claim). May be NULL when the summary is self-contained. |
 
-The two fields are filled differently per the three evidence-creation paths (see [evidence-flow-architecture.md](../../data-processing/evidence-flow-architecture.md)):
+Post-010 single creation path: every Evidence row originates as an `EvidenceToAdd` entry the LLM declared during INVESTIGATING. The system fills lifecycle fields (id, timestamps, `advances_milestones` via `CATEGORY_MILESTONE_MAP`); everything else is the LLM's declaration.
 
-| Path | `form` | Source of `summary` | Source of `extract` |
-| --- | --- | --- | --- |
-| **1. File upload** (Tier 0+1, no LLM) | `DOCUMENT` | Auto-generated file summary | Structural index from preprocessor (`file_extract` + `search_map` + `file_meta`) — what the LLM reads in `<evidence_collected>` |
-| **2. LLM `evidence_to_add`** as user-typed text | `USER_TEXT` | LLM's brief description | LLM's verbatim quote of the user-provided text |
-| **2-bis. LLM `evidence_to_add`** as agent finding | `SUBMITTED_DATA` | LLM's brief description | LLM's optional verbatim quote (the only path where `extract` may be NULL) |
-| **3. Tier 2/3 tool findings** (`search_file`, `deep_analysis`) | `SUBMITTED_DATA` | Agent-written description | Tool's search excerpts or analysis answer |
+| Field | Filled by | Notes |
+| --- | --- | --- |
+| `summary` | LLM | Always set. Short, scannable. |
+| `extract` | LLM (optional) | Verbatim system-output quote. Omit when summary is self-contained. |
+| `category` | LLM | One of four claim-anchored values (symptom / causal / mitigation / solution). |
+| `source_type` | LLM | One of `EvidenceSourceType`; `USER_DESCRIPTION` for chat-extracted quotes. |
+| `source_file_id` | LLM | FK to `uploaded_files`. Required unless `source_type=USER_DESCRIPTION` — guarded by `evidence_source_invariant` CHECK. |
+| `advances_milestones` | System (LLM override) | Inferred from category + this-turn milestones; LLM may override. |
 
-The `EvidenceForm` enum has exactly three values: `DOCUMENT`, `USER_TEXT`, `SUBMITTED_DATA`.
+**File-level preprocessing artifacts live on `uploaded_files`.** Structural index, file summary, file-level `data_type`, and coverage timestamps describe the FILE, not any specific claim; they belong with the file row. The `evidence.extract` field is reserved for claim-relevant verbatim quotes.
 
-**Why this matters.** The structural index on Path 1 is what the agent actually reads to investigate; without it the LLM has nothing to work with except a 500-char label. The verbatim quote on Path 2 grounds the LLM's finding in a specific snippet so a reader can verify the claim. Same column (`extract`) carries both because the role is identical: bulk content backing the summary label. The column name reflects that — extracted text from a source.
-
-**File pointer is separate.** Neither `summary` nor `extract` carries the storage location of the original raw file. That lives on `uploaded_files.storage_ref`, reachable from `evidence.source_file_id`. Inline-only evidence (Path 2 with no quote) has both `extract IS NULL` and `source_file_id IS NULL`.
+**File pointer is separate.** Neither `summary` nor `extract` carries the storage location of the original raw file. That lives on `uploaded_files.storage_ref`, reachable from `evidence.source_file_id`. Chat-extracted evidence (`source_type=USER_DESCRIPTION`) has `source_file_id IS NULL`; its source is the user's chat message at `collected_at_turn`.
 
 **CHECK constraints (mirrored at the Pydantic layer):**
 
@@ -537,7 +538,7 @@ CREATE TABLE evidence (
 
     -- Two-field content shape (see "Role of summary vs extract" above):
     summary             VARCHAR(500) NOT NULL,
-    extract             TEXT,                                    -- nullable for Path 2 (no verbatim quote)
+    extract             TEXT,                                    -- nullable when summary is self-contained
 
     -- Audit / classification metadata (added in migration 009).
     -- ``primary_purpose`` is what this evidence validates (milestone
@@ -602,7 +603,7 @@ COMMENT ON TABLE evidence IS 'Investigation evidence — single table, case_id N
 
 **Notes**:
 
-- `summary` is `NOT NULL` and always present; `extract` is nullable to accommodate Path 2 (LLM `evidence_to_add` without a verbatim quote).
+- `summary` is `NOT NULL` and always present; `extract` is nullable so the LLM can omit a verbatim quote when the summary is self-contained.
 - `vectorized` flips to `TRUE` once the row is indexed into the case vector store.
 - `coverage_start_ts` / `coverage_end_ts` are the queryable projection of the extractor's time range; the rest of the coverage detail lives in `metadata.coverage`.
 - `metadata` is the SQL column name (Python attribute is `evidence_metadata`).

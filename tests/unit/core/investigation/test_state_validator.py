@@ -17,7 +17,6 @@ from faultmaven.modules.case.contracts import (
     CaseStatus,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,

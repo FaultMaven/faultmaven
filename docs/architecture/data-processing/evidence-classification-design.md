@@ -2,8 +2,12 @@
 
 **Version:** 2.3
 **Date:** 2026-04-28
-**Status:** Design Specification
+**Status:** **SUPERSEDED by migration 010** (2026-05-11) — preserved for design history. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) for the current model.
 **Context:** Evidence classification taxonomy, single-phase creation, and milestone advancement attribution
+
+---
+
+> **Migration 010 supersession note.** The pre-010 design captured here described a 6-category taxonomy with `CONTEXTUAL_EVIDENCE` and `REJECTED`, an `EvidenceForm` discriminator, INQUIRY-phase evidence creation with retroactive milestone attribution, and an `EvidenceCategory.CONTEXTUAL_EVIDENCE` fallback for invalid LLM categories. **None of that applies post-010.** The current model has 4 claim-anchored categories (SYMPTOM/CAUSAL/MITIGATION/SOLUTION), no `EvidenceForm`, no INQUIRY-phase evidence, no retroactive attribution, and raises validation errors on invalid categories. File-level metadata that used to ride on `CONTEXTUAL_EVIDENCE` rows now lives on `uploaded_files` (`summary`, `structural_index`, `data_type`, coverage timestamps).
 
 ---
 

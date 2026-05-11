@@ -24,19 +24,16 @@ def _format_searchable_alternatives(
     """Build a redirect hint listing file-backed evidence_ids in this case.
 
     ISS-025: when the LLM picks a non-file-backed evidence_id (e.g. a
-    symptom_evidence record it created itself), the tool error should
-    point it at the actual searchable upload(s) so the next iteration
+    chat-extracted USER_DESCRIPTION row), the tool error should point
+    it at the actual searchable upload(s) so the next iteration
     succeeds.
     """
-    from faultmaven.modules.case.contracts import EvidenceForm
-
     alternatives = []
     for ev in all_evidence:
         ev_id = getattr(ev, "evidence_id", None)
         if not ev_id or ev_id == excluded_evidence_id:
             continue
-        ev_form = getattr(ev, "form", None)
-        if ev_form != EvidenceForm.DOCUMENT:
+        if getattr(ev, "source_file_id", None) is None:
             continue
         file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
         if file_meta is None:
@@ -150,26 +147,20 @@ class DeepAnalysisTool(AgentTool):
                     error=f"Evidence {evidence_id} not found in this case.{alts}",
                 )
 
-            # Reject non-file-backed evidence forms BEFORE hitting storage.
-            # ISS-025: agent-created symptom_evidence records have form=
-            # submitted_data and a synthetic content_ref like 'file:NAME' that
-            # doesn't resolve to stored bytes. Without this guard the LLM was
-            # passing those evidence_ids to deep_analysis, getting an opaque
-            # storage error, and giving up on follow-up questions.
-            from faultmaven.modules.case.contracts import EvidenceForm
-
-            ev_form = getattr(evidence, "form", None)
-            if ev_form is not None and ev_form != EvidenceForm.DOCUMENT:
-                ev_form_value = (
-                    ev_form.value if hasattr(ev_form, "value") else str(ev_form)
-                )
+            # Reject non-file-backed evidence BEFORE hitting storage.
+            # Post-010: chat-extracted evidence has source_file_id IS
+            # NULL and cannot be deep-analyzed (no stored bytes to
+            # analyze). Without this guard the LLM would pass those
+            # evidence_ids to deep_analysis, get an opaque storage
+            # error, and give up on follow-up questions.
+            if getattr(evidence, "source_file_id", None) is None:
                 alts = _format_searchable_alternatives(all_evidence, evidence_id, case)
                 return ToolResult(
                     success=False,
                     data=None,
                     error=(
-                        f"Evidence {evidence_id} is form={ev_form_value} (a "
-                        f"derived finding or user statement, not a stored file) "
+                        f"Evidence {evidence_id} has no stored file behind it "
+                        f"(it's a verbatim quote from the user's chat message) "
                         f"and cannot be analyzed. Use a file-backed evidence_id "
                         f'(searchable="true") for deep_analysis.{alts}'
                     ),

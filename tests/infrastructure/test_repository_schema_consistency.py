@@ -7,9 +7,12 @@ Tests verify:
 - UploadedFile schema matches between Pydantic and SQL
 - Messages don't contain session_id
 - Session → User → Cases pattern (no direct session-to-case filtering)
-- Field names match the post-redesign shape (size_bytes, content_type,
-  storage_ref, upload_source — no data_type, content_ref,
-  preprocessing_summary, or source_type on UploadedFile)
+- Field names match the post-010 shape (size_bytes, content_type,
+  storage_ref, upload_source — no content_ref, preprocessing_summary,
+  or source_type on UploadedFile; ``data_type`` is now a real column
+  on uploaded_files, added by migration 010 to carry the file-level
+  data classification that previously rode on the auto-DOCUMENT
+  Evidence row)
 - Optional fields are properly handled
 """
 
@@ -51,9 +54,12 @@ class TestUploadedFileSchemaConsistency:
             uploaded_by="user_001",
             upload_source="file_upload",
             storage_ref="s3://bucket/key",
+            summary="head/tail preprocessing summary",
+            structural_index='{"v":1,"file_extract":"..."}',
+            data_type="logs",
         )
 
-        # Current field set
+        # Current field set (post-010)
         for field in (
             "file_id",
             "filename",
@@ -65,13 +71,19 @@ class TestUploadedFileSchemaConsistency:
             "uploaded_by",
             "upload_source",
             "storage_ref",
+            # Migration 010: preprocessing artifacts moved from auto-DOCUMENT
+            # Evidence rows to uploaded_files (where they semantically belong).
+            "summary",
+            "structural_index",
+            "data_type",
+            "coverage_start_ts",
+            "coverage_end_ts",
         ):
             assert hasattr(uploaded_file, field), f"missing field: {field}"
 
         # Old/renamed/dropped field names must not exist
         for field in (
             "file_size",  # → size_bytes
-            "data_type",  # dropped (was redundant with evidence.source_type)
             "source_type",  # → upload_source on UploadedFile
             "content_ref",  # → storage_ref
             "storage_path",  # legacy

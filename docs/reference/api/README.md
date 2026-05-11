@@ -79,7 +79,7 @@ All data submitted to the API is processed through privacy-first pipelines with:
 
 **Version:** 1.0.0  
 **Base URL:** `/`  
-**Generated:** 2026-05-04T19:28:24.785550Z
+**Generated:** 2026-05-11T06:20:11.371335Z
 
 ## Authentication
 
@@ -916,6 +916,37 @@ including profile data and token statistics.
 
 ---
 
+### `/api/v1/auth/me/available-scopes`
+
+#### GET
+
+**Get Available Scopes**
+
+Return KB scopes the calling user can target when publishing.
+
+Gated by the user's actual memberships, not AUTH_MODE — the picker
+should omit any scope that would produce an unresolvable runbook
+(e.g. TEAM when the user has no team membership).
+
+Always returned: ``personal``, ``global`` (GLOBAL write is admin-gated
+by the publish endpoint, not by this picker). ``team`` is added when
+the user has any team membership; ``organization`` is added when the
+user's org has 2+ members or the user is an org owner/admin.
+
+**Tags:** `authentication`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
 ### `/api/v1/auth/register`
 
 #### POST
@@ -1268,35 +1299,6 @@ Get case analytics and metrics
 
 Returns analytics data including message counts, participant activity,
 resolution time, and other case metrics.
-
-**Tags:** `cases`
-
-**Parameters:**
-
-- `case_id` (path) ✅ - No description
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/cases/{case_id}/archive`
-
-#### POST
-
-**Archive Case**
-
-Archive a case — hide it from the default list view.
-
-Only terminal cases (RESOLVED or CLOSED) can be archived.
-Archived cases remain fully accessible and can be unarchived.
-
-Returns:
-    {"case_id": str, "is_archived": true}
 
 **Tags:** `cases`
 
@@ -2447,32 +2449,6 @@ Returns different response schemas based on case status:
 
 This endpoint eliminates multiple API calls by returning all UI state
 in a single response optimized for the current investigation phase.
-
-**Tags:** `cases`
-
-**Parameters:**
-
-- `case_id` (path) ✅ - No description
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/cases/{case_id}/unarchive`
-
-#### POST
-
-**Unarchive Case**
-
-Unarchive a case — restore it to the default list view.
-
-Returns:
-    {"case_id": str, "is_archived": false}
 
 **Tags:** `cases`
 
@@ -5062,16 +5038,23 @@ Used when stream=false in the request.
 
 Result of preprocessing a single attachment.
 
+Post-010 strict evidence model: file uploads no longer create an
+Evidence row at intake — they create an UploadedFile row.
+``file_id`` is the uploaded_files row identifier (frontend uses it
+to reference the attachment; Evidence rows that later reference
+this file via ``source_file_id`` are born during INVESTIGATING
+when the LLM extracts claim-anchored slices).
+
 **Properties:**
 
-- `evidence_id` (string) ✅ - No description
+- `file_id` (string) ✅ - UploadedFile row identifier for this attachment.
 - `filename` (string) ✅ - No description
-- `data_type` (string) ✅ - No description
 - `file_size` (integer) ✅ - No description
 - `processing_status` (string) ✅ - No description
 - `uploaded_at` (string) ❌ - ISO 8601 timestamp of when the attachment was processed
-- `source_type` (string) ❌ - Input origin: file_upload | text_paste | page_capture
-- `duplicate_of` (unknown) ❌ - If set, this attachment was a per-case content-hash duplicate of an earlier upload. No new Evidence was created; this field carries the existing evidence_id. Frontend should render a non-blocking toast.
+- `source_type` (string) ✅ - Data-type classification from preprocessing: logs | metrics | configuration | code | text | image
+- `upload_source` (string) ❌ - Input origin: file_upload | paste | page_capture | screenshot | agent_generated
+- `duplicate_of` (unknown) ❌ - If set, this attachment was a per-case content-hash duplicate of an earlier upload. No new UploadedFile was created; this field carries the existing file_id. Frontend should render a non-blocking toast.
 - `duplicate_turn` (unknown) ❌ - Turn number where the original was uploaded (for toast text).
 
 ---
@@ -5158,6 +5141,16 @@ Includes token, expiration, user information, and session ID.
 
 ---
 
+### AvailableScopesResponse
+
+Knowledge-base scopes the calling user may publish to.
+
+**Properties:**
+
+- `scopes` (array) ✅ - No description
+
+---
+
 ### BatchDraftRef
 
 **Properties:**
@@ -5238,7 +5231,7 @@ Represents one complete troubleshooting investigation.
 **Properties:**
 
 - `case_id` (string) ❌ - Unique case identifier
-- `user_id` (string) ✅ - User who created the case
+- `user_id` (unknown) ❌ - User who created the case. NULL after the originating user is deleted (FK SET NULL). Required to be non-empty at creation time; creation logic enforces this separately from Pydantic validation.
 - `organization_id` (string) ✅ - Organization this case belongs to
 - `title` (string) ✅ - Short case title for list views and headers (e.g., 'API Performance Issue')
 - `description` (string) ❌ - 
@@ -5326,8 +5319,6 @@ Represents one complete troubleshooting investigation.
 - `version` (integer) ❌ - Optimistic concurrency control token. Incremented on every successful aggregate save. Callers that read-modify-write a case must pass the loaded version back through save(case); `save` raises StaleCaseException on mismatch. Scoped single-row UPDATEs (update_evidence_vectorized, etc.) do NOT bump this field — they operate on child tables.
 - `resolved_at` (unknown) ❌ - When case reached RESOLVED status
 - `closed_at` (unknown) ❌ - When case reached terminal state (RESOLVED or CLOSED)
-- `is_archived` (boolean) ❌ - Whether the case has been archived by the user. Archived cases are hidden from the default list view but remain fully accessible. Independent of case status.
-- `archived_at` (unknown) ❌ - When the case was archived
 
 ---
 
@@ -5512,7 +5503,6 @@ Minimal case information for list views.
 - `current_turn` (integer) ✅ - No description
 - `milestones_completed` (integer) ✅ - No description
 - `total_milestones` (integer) ❌ - No description
-- `is_archived` (boolean) ❌ - No description
 - `is_terminal` (boolean) ✅ - No description
 - `valid_next_states` (array) ❌ - Allowed status transitions from current state for user-initiated changes
 
@@ -5663,9 +5653,7 @@ Summary of evidence derived from an uploaded file.
 - `summary` (string) ✅ - No description
 - `category` (string) ✅ - SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER
 - `collected_at_turn` (integer) ✅ - No description
-- `source_type` (string) ✅ - LOGS | METRICS | TRACES | etc.
-- `content_hash` (unknown) ❌ - No description
-- `preprocessing_method` (unknown) ❌ - No description
+- `source_type` (string) ✅ - LOGS | METRICS | CONFIGURATION | CODE | TEXT | IMAGE
 - `primary_purpose` (unknown) ❌ - No description
 - `related_hypothesis_ids` (array) ❌ - No description
 
@@ -5794,61 +5782,36 @@ Reason for escalation
 
 ### Evidence
 
-Evidence collected during investigation.
-Categorized by purpose to drive milestone advancement.
+A claim-anchored extract recorded during INVESTIGATING.
 
-NOTE: Evidence.category is SYSTEM-INFERRED, not LLM-specified!
-System categorizes based on:
-- Which milestones are incomplete (if symptom not verified -> SYMPTOM_EVIDENCE)
-- Hypothesis evaluation results (if creates hypothesis_evidence links -> CAUSAL_EVIDENCE)
-- Solution state (if solution proposed -> RESOLUTION_EVIDENCE)
+Post-010 single creation path: every Evidence row originates as an
+``EvidenceToAdd`` entry the LLM declared on a specific turn. The LLM
+chooses the ``category`` from the four claim-anchored values and the
+``source_type`` from ``EvidenceSourceType``. The system only infers
+``advances_milestones`` (Tier 2 inference via ``CATEGORY_MILESTONE_MAP``),
+and only when the LLM has not already overridden it (Tier 3).
 
-LLM provides: summary, analysis
+LLM declares: summary, extract (optional), category, source_type,
+    source_file_id (required unless source_type=USER_DESCRIPTION),
+    likelihood, optionally advances_milestones
 LLM evaluates: stance per hypothesis (creates hypothesis_evidence links)
-System infers: category, advances_milestones
+System fills: evidence_id, collected_at_turn, collected_by,
+    coverage timestamps (parsed from extract), advances_milestones (Tier 2)
 
 **Properties:**
 
 - `evidence_id` (string) ❌ - Unique evidence identifier
-- `category` (unknown) ✅ - System-inferred category: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER
+- `category` (unknown) ✅ - Claim-anchored category declared by the LLM: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | MITIGATION_EVIDENCE | SOLUTION_EVIDENCE
 - `primary_purpose` (string) ✅ - What this evidence validates (milestone name or hypothesis ID)
-- `summary` (string) ✅ - Brief summary of evidence content (<500 chars) for UI display and quick scanning
-- `preprocessed_content` (string) ✅ - 
-        Extracted relevant diagnostic information from preprocessing pipeline.
-
-        This is what the agent uses for hypothesis evaluation and evidence analysis.
-        Contains only the high-signal portions extracted from raw files.
-
-        Examples:
-        - Logs: Crime scene extraction (approx. 200 lines around errors)
-        - Metrics: Anomaly detection results with statistical analysis
-        - Config: Parsed configuration with secrets redacted
-        - Code: AST-extracted functions and classes
-        - Text: LLM-generated summary
-        - Images: Vision model description
-
-        Size: Typically 5 to 50 KB (compressed from larger raw files).
-        Compression ratios: 200:1 for logs, 167:1 for metrics, 50:1 for code.
-
-        This field is REQUIRED for all evidence. Raw files remain in S3 for audit/deep dive.
-        
-- `content_ref` (unknown) ❌ - S3 URI to original raw file (1-10MB) for audit, compliance, and deep dive analysis. May be None for user-typed evidence.
-- `content_size_bytes` (integer) ✅ - Size of original raw file in bytes
-- `preprocessing_method` (string) ✅ - 
-        Preprocessing method used to extract preprocessed_content from raw file.
-        Examples: crime_scene_extraction, anomaly_detection, parse_and_sanitize,
-        ast_extraction, vision_analysis, single_shot_summary, map_reduce_summary
-        
-- `compression_ratio` (unknown) ❌ - Ratio of preprocessed to raw content size (e.g., 0.005 = 200:1 compression)
+- `summary` (string) ✅ - Short label (≤500 chars) the LLM wrote when declaring this evidence via ``evidence_to_add``. ALWAYS present — use it for UI list views, headers, and quick scanning. The optional ``extract`` field carries the verbatim slice that supports the summary.
+- `extract` (unknown) ❌ - Optional verbatim quote that supports the ``summary``. The LLM populates this when grounding the finding in a specific system-output slice (a log line, a metric reading, a config snippet). Distinct from ``summary`` (short label) and from ``uploaded_files.storage_ref`` (file pointer). May be NULL when the summary is self-contained. File-level preprocessing artifacts (structural index, file summary) live on ``uploaded_files``, never here — this field is for claim-relevant quotes only.
 - `analysis` (unknown) ❌ - Agent analysis of this evidence and its significance to the investigation
-- `data_type` (unknown) ❌ - Unified data type from preprocessing (logs, metrics, configuration, code, text, image). None for legacy evidence without preprocessing.
-- `content_hash` (unknown) ❌ - SHA-256 hash of raw file content for deduplication. Computed from raw bytes before any extraction. UNIQUE per (case_id, content_hash) — prevents duplicate uploads.
-- `extraction_method` (unknown) ❌ - Extraction method used: structural_index, statistical_profile, parse_and_sanitize, ast_extraction, structure_extraction, metadata_extraction
 - `processing_mode` (unknown) ❌ - Processing mode: triage | directed_analysis | semantic_search
 - `source_type` (unknown) ✅ - Type of evidence source
-- `form` (unknown) ✅ - How evidence was provided: DOCUMENT, USER_TEXT, or SUBMITTED_DATA
-- `source_file_id` (unknown) ❌ - ID of the UploadedFile this evidence was derived from (None if from user input)
-- `original_filename` (unknown) ❌ - Original filename when uploaded (e.g., 'OpenSSH_2k.log'). Used by search_file tool for display.
+- `source_file_id` (unknown) ❌ - FK to the UploadedFile this extract came from. Required unless ``source_type=USER_DESCRIPTION`` (the narrow case where the LLM extracted a verbatim system-output quote from the user's short chat message — no file involved). Enforced by the ``evidence_source_invariant`` CHECK constraint at the DB level and by the ``_source_requires_file_unless_user_description`` validator at the Pydantic level.
+- `is_primary` (boolean) ❌ - True for the principal evidence row in this case (the one that anchors the investigation summary). list_evidence_tool uses this for surface-level dashboards.
+- `reliability_score` (unknown) ❌ - LLM-assessed reliability of this evidence (0.0-1.0). NULL when the agent has not scored the evidence.
+- `tags` (array) ❌ - Free-form tag list for evidence classification. Tag values must not contain commas (the SQLite serializer uses comma-separation; the comma-ban keeps round-trip lossless).
 - `vectorized` (boolean) ❌ - Whether this evidence's structural index has been persisted into the case vector store. Set to True by the investigation engine after a successful vectorize_file run; persisted across turns so proactive and reactive vectorization paths skip already-indexed evidence instead of re-embedding on every turn.
 - `advances_milestones` (array) ❌ - Which milestones this evidence helped complete
 - `collected_at` (string) ❌ - When evidence was collected
@@ -5864,12 +5827,18 @@ System infers: category, advances_milestones
 
 Evidence classification by investigation purpose.
 
-Post-redesign (2026-02-11):
-- UNCLASSIFIED removed (single-phase evidence creation)
-- OTHER renamed to CONTEXTUAL_EVIDENCE (clearer purpose)
-- REJECTED added (track rejected submissions for deduplication)
+Post-010 redesign: 4 claim-attached categories. Each row is the LLM's
+deliberate decision to record a specific extract as evidence for a
+specific claim, created only during INVESTIGATING. The dropped
+categories (CONTEXTUAL_EVIDENCE, REJECTED) had no claim attachment
+and were structurally incompatible with the strict model:
 
-Evidence is created AFTER LLM evaluation with complete classification.
+- Contextual data now lives on ``uploaded_files`` (the file itself is
+  the data; no evidence row is needed until the agent extracts a
+  claim-relevant slice).
+- Rejected submissions are expressed as the absence of an evidence
+  row (the agent simply doesn't promote them); hypothesis-level
+  refutation lives on ``hypothesis_evidence.stance``.
 
 ---
 
@@ -5887,22 +5856,10 @@ Detailed evidence information with source and hypothesis linkage.
 - `collected_at_turn` (integer) ✅ - No description
 - `collected_at` (string) ✅ - No description
 - `collected_by` (string) ✅ - No description
-- `source_file` (unknown) ❌ - Source file this evidence was derived from (null if from user input)
+- `source_file` (unknown) ❌ - Source file this evidence was derived from. NULL only when the evidence is a verbatim quote extracted from the user's chat message (source_type=USER_DESCRIPTION).
 - `related_hypotheses` (array) ❌ - No description
-- `preprocessed_content` (string) ✅ - No description
-- `content_size_bytes` (integer) ✅ - No description
+- `extract` (unknown) ❌ - Optional verbatim quote backing the summary. NULL when the LLM omitted it (the summary is self-contained).
 - `analysis` (unknown) ❌ - No description
-
----
-
-### EvidenceForm
-
-How evidence entered the system.
-
-Form is determined by payload context:
-- DOCUMENT: Turn had attachments (file upload or pasted data)
-- USER_TEXT: Query-only turn, no attachments
-- SUBMITTED_DATA: Evidence created by agent tools (search_file, deep_analysis)
 
 ---
 
@@ -6000,16 +5957,17 @@ Philosophy: Hypotheses are OPTIONAL. Agent may:
 - `status` (unknown) ❌ - Current hypothesis status
 - `likelihood` (number) ❌ - Estimated likelihood this hypothesis is correct (0.0-1.0)
 - `initial_likelihood` (number) ❌ - Original likelihood when hypothesis was generated
-- `evidence_links` (object) ❌ - 
-        Maps evidence_id to relationship details.
+- `evidence_links` (array) ❌ - 
+        Relationship rows from the hypothesis_evidence junction table.
 
         ONE evidence can:
-        - STRONGLY_SUPPORTS hypothesis A
+        - SUPPORTS hypothesis A
         - REFUTES hypothesis B
-        - Be IRRELEVANT to hypothesis C
+        - Be NEUTRAL to hypothesis C
 
-        Backed by hypothesis_evidence junction table in database.
-        LLM evaluates each evidence against ALL active hypotheses after submission.
+        Each list entry binds (hypothesis_id, evidence_id, stance, reasoning,
+        stance_confidence). LLM evaluates each evidence against ALL active
+        hypotheses after submission.
         
 - `generated_at_turn` (integer) ✅ - Turn number when hypothesis was generated
 - `last_updated_turn` (integer) ❌ - Turn number when hypothesis was last updated
@@ -7111,6 +7069,22 @@ Request model for creating investigation session.
 
 ---
 
+### SessionResponse
+
+**Properties:**
+
+- `session_id` (string) ✅ - Unique session identifier
+- `user_id` (string) ❌ - Associated user identifier
+- `client_id` (string) ❌ - Client/device identifier for session resumption
+- `status` (string) ✅ - Current session status
+- `created_at` (string) ❌ - Session creation timestamp
+- `session_resumed` (boolean) ❌ - Indicates if this was an existing session resumed
+- `session_type` (string) ❌ - Type of session (e.g., troubleshooting)
+- `message` (string) ❌ - Status message about session creation/resumption
+- `metadata` (object) ❌ - Session metadata and context
+
+---
+
 ### SessionRestoreRequest
 
 Request model for session restoration.
@@ -7418,34 +7392,42 @@ Response for POST /cases/{id}/turns.
 
 ### UploadedFile
 
-Raw file metadata for files uploaded to a case.
+File the user submitted to a case (upload, paste, page capture).
 
-Key Distinction:
-- UploadedFile: Raw file metadata, exists in ANY case state (INQUIRY, INVESTIGATING, etc.)
-- Evidence: Data classified by the LLM based on content. Created via evidence_to_add
-  when the LLM evaluates the submission.
+Post-010 strict evidence model — two-table separation:
+- **UploadedFile**: the file-of-record. Exists in any case state
+  (INQUIRY, INVESTIGATING, terminal). Carries the raw bytes (via
+  ``storage_ref``) and the preprocessing artifacts (``summary``,
+  ``structural_index``, ``data_type``, coverage timestamps) that
+  describe the file's content.
+- **Evidence**: the claim-anchored extract-of-record. Created only
+  during INVESTIGATING when the LLM extracts a focused slice via
+  ``evidence_to_add`` to support a specific claim (symptom, cause,
+  mitigation, or solution).
 
-Evidence classification is content-based, not stage-based (see Section 5.2 of
-evidence-driven-investigation-framework.md). The LLM evaluates the data and
-classifies it by what it contains:
-- Error logs → symptom_evidence (even during INQUIRY)
-- Normal configs → contextual_evidence
-- Post-fix metrics → solution_evidence
-
-UploadedFile records exist independently of Evidence. Not all uploaded files
-produce Evidence — the LLM decides what is relevant during its analysis.
+Files are not evidence. An evidence row references its source file
+via ``Evidence.source_file_id``; the file row holds the file-level
+metadata so the evidence row can stay focused on the claim it
+supports. Not all uploaded files produce evidence — the LLM
+decides which slices, if any, are claim-relevant.
 
 **Properties:**
 
 - `file_id` (string) ❌ - Unique file identifier (same as data_id in data service)
 - `filename` (string) ✅ - Original filename
 - `size_bytes` (integer) ✅ - File size in bytes
-- `data_type` (string) ✅ - Detected data type from preprocessing (log, metric, config, code, text, image, etc.)
+- `content_type` (unknown) ❌ - MIME type as reported on upload (e.g., text/plain, application/pdf).
+- `content_hash` (unknown) ❌ - SHA-256 of the raw file content. Used for storage-backend dedup and integrity checks. NULL when the upload is still streaming or hashing was skipped.
 - `uploaded_at_turn` (integer) ✅ - Turn number when file was uploaded
 - `uploaded_at` (string) ❌ - Upload timestamp
-- `source_type` (string) ❌ - file_upload | paste | screenshot | page_injection | agent_generated
-- `preprocessing_summary` (unknown) ❌ - Brief summary from preprocessing pipeline (<500 chars)
-- `content_ref` (unknown) ❌ - Reference to stored file content (S3 URI or data_id). May be None if processing pending.
+- `uploaded_by` (unknown) ❌ - User who uploaded the file. NULL for system-generated uploads or after the originating user is deleted (FK SET NULL).
+- `upload_source` (string) ❌ - Provenance of the upload: how the file got into the system. Values: file_upload, paste, screenshot, page_capture, agent_generated, conversion_source. Distinct from evidence.source_type, which classifies the data shape. page_capture is the marker the rerank-page-sections pass uses to detect Copilot extension page submissions; see context_builder.py.
+- `storage_ref` (unknown) ❌ - Opaque key passed to IFileStorageBackend.retrieve_file(). The backend interprets it (local FS path, S3 key, Azure blob name, etc.). May be None if processing pending.
+- `summary` (unknown) ❌ - Preprocessing-generated short summary of the file. Used by the investigation agent to orient on file content without loading the whole file. May be None when preprocessing was skipped (e.g., KB-conversion source uploads).
+- `structural_index` (unknown) ❌ - Preprocessing-generated structural index of the file content (file_extract + search_map + file_meta). Read by the LLM in <evidence_collected> when the agent inspects the file. May be None when preprocessing was skipped.
+- `data_type` (unknown) ❌ - Preprocessor's data-type classification of the file's content (e.g., 'logs', 'metrics', 'configuration'). Distinct from evidence.source_type, which classifies an individual extract's source type.
+- `coverage_start_ts` (unknown) ❌ - Earliest timestamp parsed from the file's content. None when the file has no parseable timestamps.
+- `coverage_end_ts` (unknown) ❌ - Latest timestamp parsed from the file's content. None when the file has no parseable timestamps.
 
 ---
 
@@ -7459,11 +7441,12 @@ Detailed information about an uploaded file with evidence linkage.
 - `filename` (string) ✅ - No description
 - `size_bytes` (integer) ✅ - No description
 - `size_display` (string) ✅ - No description
+- `content_type` (unknown) ❌ - MIME type as reported on upload
+- `content_hash` (unknown) ❌ - SHA-256 of file contents (storage-backend dedup)
 - `uploaded_at_turn` (integer) ✅ - No description
 - `uploaded_at` (string) ✅ - No description
-- `source_type` (string) ✅ - No description
-- `data_type` (string) ✅ - No description
-- `summary` (unknown) ❌ - No description
+- `upload_source` (string) ✅ - Provenance: file_upload | paste | screenshot | page_capture | agent_generated | conversion_source
+- `summary` (unknown) ❌ - File-level preprocessing summary, set by the ingestion pipeline.
 - `derived_evidence` (array) ❌ - No description
 - `evidence_count` (integer) ✅ - No description
 
@@ -7686,31 +7669,6 @@ Agent's current understanding during INVESTIGATING phase.
 
 ---
 
-### faultmaven__api__models__SessionResponse
-
-Response model for investigation session.
-
-**Properties:**
-
-- `session_id` (string) ✅ - No description
-- `case_id` (string) ✅ - No description
-- `user_id` (string) ✅ - No description
-- `organization_id` (string) ✅ - No description
-- `status` (unknown) ✅ - No description
-- `started_at` (string) ✅ - No description
-- `ended_at` (unknown) ❌ - No description
-- `last_activity_at` (string) ✅ - No description
-- `total_duration_ms` (unknown) ❌ - No description
-- `session_goal` (unknown) ❌ - No description
-- `findings_summary` (unknown) ❌ - No description
-- `total_token_usage` (integer) ✅ - No description
-- `total_agent_executions` (integer) ✅ - No description
-- `token_budget_limit` (unknown) ❌ - No description
-- `created_at` (string) ✅ - No description
-- `updated_at` (string) ✅ - No description
-
----
-
 ### faultmaven__models__api__SessionResponse
 
 Response payload for auth session operations - API spec compliance.
@@ -7855,22 +7813,6 @@ Response payload for auth session operations - API spec compliance.
   }
 }
 ```
-
----
-
-### SessionResponse
-
-**Properties:**
-
-- `session_id` (string) ✅ - Unique session identifier
-- `user_id` (string) ❌ - Associated user identifier
-- `client_id` (string) ❌ - Client/device identifier for session resumption
-- `status` (string) ✅ - Current session status
-- `created_at` (string) ❌ - Session creation timestamp
-- `session_resumed` (boolean) ❌ - Indicates if this was an existing session resumed
-- `session_type` (string) ❌ - Type of session (e.g., troubleshooting)
-- `message` (string) ❌ - Status message about session creation/resumption
-- `metadata` (object) ❌ - Session metadata and context
 
 ---
 

@@ -67,7 +67,6 @@ from faultmaven.modules.case.contracts import (
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     EvidenceStance,
     HypothesisStatus,
@@ -128,10 +127,9 @@ CATEGORY_MILESTONE_MAP = {
         # Solution evidence verifies permanent fix effectiveness
         # solution_verified is a stage-gate milestone (set via User-Agent Handshake)
     ],
-    EvidenceCategory.CONTEXTUAL_EVIDENCE: [
-        # Contextual evidence provides baseline/environmental info
-        # It informs investigation but doesn't directly advance milestones
-    ],
+    # Post-010: CONTEXTUAL_EVIDENCE was dropped. Baseline/environmental
+    # data lives on ``uploaded_files`` (not promoted to Evidence until
+    # the agent extracts a claim-relevant slice).
 }
 
 
@@ -273,7 +271,8 @@ def _infer_milestones(
     - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md
 
     Args:
-        category: The evidence category (SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL)
+        category: The evidence category (one of SYMPTOM / CAUSAL /
+            MITIGATION / SOLUTION — the four post-010 values)
         milestones_completed_this_turn: Milestones completed this turn from MilestoneUpdates
 
     Returns:
@@ -296,9 +295,12 @@ def _infer_milestones(
         that turn get attributed to it. No guessing needed.
 
     Note:
-        - CONTEXTUAL_EVIDENCE returns [] (doesn't directly advance milestones)
-        - If category not in map, returns [] (safe fallback)
-        - LLM can override by explicitly setting advances_milestones in EvidenceToAdd
+        - Post-010: 4 categories (SYMPTOM/CAUSAL/MITIGATION/SOLUTION).
+          MITIGATION_EVIDENCE and SOLUTION_EVIDENCE map to [] —
+          mitigation_verified / solution_verified are gate milestones
+          set by compliance detection, not by evidence category.
+        - If category not in map, returns [] (safe fallback).
+        - LLM can override by explicitly setting advances_milestones in EvidenceToAdd.
     """
     # Get eligible milestones for this category
     eligible_milestones = CATEGORY_MILESTONE_MAP.get(category, [])
@@ -437,22 +439,14 @@ def validate_reasoning_first(
     evidence_being_added = (
         getattr(response_obj.state_updates, "evidence_to_add", []) or []
     )
-    non_contextual_evidence = [
-        e for e in case.evidence if e.category != EvidenceCategory.CONTEXTUAL_EVIDENCE
-    ]
-    non_contextual_being_added = [
-        e
-        for e in evidence_being_added
-        if e.category != EvidenceCategory.CONTEXTUAL_EVIDENCE
-    ]
-    has_actionable_evidence = bool(non_contextual_evidence) or bool(
-        non_contextual_being_added
-    )
+    # Post-010: every evidence row is claim-anchored and actionable
+    # (CONTEXTUAL_EVIDENCE was dropped). Any existing or to-add row
+    # counts as actionable.
+    has_actionable_evidence = bool(case.evidence) or bool(evidence_being_added)
 
     if internal_reasoning.milestone_justifications and not has_actionable_evidence:
         errors.append(
             "Cannot complete milestones when no actionable evidence has been collected. "
-            "Contextual evidence alone cannot justify milestones. "
             "You must first analyze and classify evidence before completing milestones."
         )
 
@@ -2909,15 +2903,14 @@ class MilestoneEngine:
         tasks: dict[str, asyncio.Task] = {}
 
         for ev in getattr(case, "evidence", []):
-            # Post-redesign: content_size_bytes was dropped. For file-backed
-            # evidence, size lives on uploaded_files.size_bytes; for inline
-            # evidence, fall back to the length of the in-memory extract
-            # (which won't typically clear the vectorization threshold).
+            # Vectorization size gate. Post-010: file-backed evidence has
+            # its size on uploaded_files.size_bytes; chat-extracted evidence
+            # (USER_DESCRIPTION, source_file_id IS NULL) has no backing file
+            # and is never large enough to vectorize — treat size=0 so it
+            # falls below the min-size threshold.
             file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
             size = (
-                int(file_meta.size_bytes)
-                if file_meta and file_meta.size_bytes
-                else len(getattr(ev, "extract", "") or "")
+                int(file_meta.size_bytes) if file_meta and file_meta.size_bytes else 0
             )
             if not (
                 size >= min_size
@@ -3205,15 +3198,18 @@ class MilestoneEngine:
             if case is not None:
                 for ev in getattr(case, "evidence", []) or []:
                     if getattr(ev, "evidence_id", None) == evidence_id:
-                        # Post-redesign: content_size_bytes dropped from
-                        # Evidence; size lives on uploaded_files via FK.
+                        # Post-010: size lives on uploaded_files via the
+                        # source_file_id FK. Chat-extracted evidence has no
+                        # backing file → size=0 (which falls below the
+                        # vectorization min-size gate below).
                         file_meta = case.find_uploaded_file(
                             getattr(ev, "source_file_id", None)
                         )
-                        if file_meta and file_meta.size_bytes:
-                            ev_size = int(file_meta.size_bytes)
-                        else:
-                            ev_size = len(getattr(ev, "extract", "") or "")
+                        ev_size = (
+                            int(file_meta.size_bytes)
+                            if file_meta and file_meta.size_bytes
+                            else 0
+                        )
                         break
         except Exception:
             return result_text
@@ -4334,62 +4330,15 @@ class MilestoneEngine:
             )
             # This triggers Fast-Track in _check_fast_track_resolution
 
-        # Evidence creation (single-phase): Create evidence from LLM-classified submissions
-        # This code is shared between INQUIRY and INVESTIGATING phases
-
-        # Evidence creation from LLM's evidence_to_add
-        # Preprocessing now happens in Step 1 of process_turn() (before LLM).
-        # Evidence here is agent-derived findings → always SUBMITTED_DATA form.
-        has_attr = hasattr(updates, "evidence_to_add")
-        evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
-        evidence_count = len(evidence_list) if evidence_list else 0
-        logger.info(
-            f"Evidence creation check (INQUIRY): "
-            f"hasattr(updates, 'evidence_to_add')={has_attr}, "
-            f"evidence_to_add={evidence_list}, "
-            f"count={evidence_count}"
-        )
-
-        if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
-            # Derive source filename from uploaded files submitted this turn
-            turn_files = [
-                uf
-                for uf in case.uploaded_files
-                if uf.uploaded_at_turn == case.current_turn
-            ]
-            source_filename = turn_files[0].filename if len(turn_files) == 1 else None
-
-            for ev_item in updates.evidence_to_add:
-                # During INQUIRY phase, milestones are not yet being tracked,
-                # so we don't infer milestone attribution (advances_milestones will be empty)
-                # Evidence will be available for milestone validation once case transitions to INVESTIGATING
-                advances_milestones = []  # INQUIRY phase: No milestone tracking yet
-
-                # Path 2: LLM evidence_to_add → Evidence. Direct field mapping;
-                # no joining or merging. Inline evidence loses content_hash
-                # dedup (accepted tradeoff — only file-backed evidence dedups
-                # via uploaded_files.content_hash).
-                ev = Evidence(
-                    evidence_id=f"ev_{uuid4().hex[:12]}",
-                    summary=ev_item.summary,
-                    extract=ev_item.extract,
-                    category=ev_item.category,
-                    source_type=ev_item.source_type,
-                    collected_at=datetime.now(UTC),
-                    collected_by=case.user_id,
-                    collected_at_turn=case.current_turn,
-                    form=EvidenceForm.SUBMITTED_DATA,
-                    advances_milestones=advances_milestones,
-                    primary_purpose="Investigation context",
-                )
-                case.evidence.append(ev)
-                metadata["evidence_added"].append(ev.evidence_id)
-                logger.info(
-                    f"Created evidence (INQUIRY): {ev.evidence_id} | "
-                    f"category={ev.category.value}, source_type={ev.source_type.value}, "
-                    f"form={ev.form.value}, "
-                    f"summary='{ev.summary[:80]}...'"
-                )
+        # Post-010 (strict evidence model): NO evidence creation during
+        # INQUIRY. Evidence presupposes a confirmed claim; during INQUIRY
+        # the claim is still being formed. Uploaded files persist in
+        # ``case.uploaded_files`` with their preprocessing artifacts
+        # (summary, structural_index, data_type, coverage timestamps);
+        # the LLM evaluates them and emits ``evidence_to_add`` once the
+        # case transitions to INVESTIGATING.
+        # See docs/architecture/investigation-engine/
+        # evidence-driven-investigation-framework.md §5.
 
     async def _apply_investigation_updates(
         self,
@@ -4573,9 +4522,11 @@ class MilestoneEngine:
                 )
 
         # 2. Add Evidence
-        # Preprocessing now happens in Step 1 of process_turn() (before LLM).
-        # Evidence from evidence_to_add is agent-derived findings → always SUBMITTED_DATA form.
-        # Evidence from attachments was already created in Step 1 with form=DOCUMENT.
+        # Post-010: every Evidence row comes from the LLM declaring an
+        # `evidence_to_add` entry on this turn. Files uploaded earlier in
+        # the turn live on `uploaded_files` only — they become Evidence
+        # only when the LLM extracts a claim-relevant slice and records
+        # it here.
         has_attr = hasattr(updates, "evidence_to_add")
         evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
         evidence_count = len(evidence_list) if evidence_list else 0
@@ -4587,14 +4538,15 @@ class MilestoneEngine:
         )
 
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
-            # Derive source filename from uploaded files submitted this turn
-            turn_files = [
-                uf
-                for uf in case.uploaded_files
-                if uf.uploaded_at_turn == case.current_turn
-            ]
-            source_filename = turn_files[0].filename if len(turn_files) == 1 else None
-
+            # Post-010: source_file_id is declared by the LLM directly on
+            # EvidenceToAdd. The Pydantic ``_source_file_required_unless_user_description``
+            # validator on EvidenceToAdd has already enforced the
+            # ``evidence_source_invariant``: by the time we get here,
+            # ``ev_item.source_file_id is None`` implies
+            # ``source_type == USER_DESCRIPTION``. We pass the value
+            # through unchanged — no turn-file fallback, because that
+            # would silently mis-attribute a chat-extracted USER_DESCRIPTION
+            # quote to whatever file happens to be in the same turn.
             for ev_item in updates.evidence_to_add:
                 # Infer milestone attribution (Tier 2 + Tier 3)
                 # Tier 2: System infers from category + milestones completed this turn
@@ -4617,18 +4569,16 @@ class MilestoneEngine:
                         ev_item.category, milestones_completed_this_turn
                     )
 
-                # Path 2: LLM evidence_to_add → Evidence. Direct field mapping;
-                # see the INQUIRY-phase site above for the same pattern.
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
                     extract=ev_item.extract,
                     category=ev_item.category,
                     source_type=ev_item.source_type,
+                    source_file_id=ev_item.source_file_id,
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
-                    form=EvidenceForm.SUBMITTED_DATA,
                     advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",
                 )
@@ -4637,7 +4587,7 @@ class MilestoneEngine:
                 logger.info(
                     f"Created evidence: {ev.evidence_id} | "
                     f"category={ev.category.value}, source_type={ev.source_type.value}, "
-                    f"form={ev.form.value}, "
+                    f"source_file_id={ev.source_file_id}, "
                     f"summary='{ev.summary[:80]}...'"
                 )
 
@@ -4913,29 +4863,9 @@ class MilestoneEngine:
             f"Selected investigation path: {case.path_selection.path} (reason: {case.path_selection.rationale})"
         )
 
-        # Gap #4: Retroactively attribute milestones to INQUIRY-phase evidence.
-        # During INQUIRY, evidence was created with advances_milestones=[] because
-        # milestone tracking wasn't active yet. Now that we've initialized progress,
-        # we can infer milestone attribution based on evidence categories.
-        # Contextual evidence naturally gets [] from _infer_milestones() because
-        # CATEGORY_MILESTONE_MAP[CONTEXTUAL_EVIDENCE] = [].
-        if case.evidence:
-            # Check which milestones are already satisfied from the transition itself
-            initial_milestones = []
-            if case.progress.verification_complete:
-                initial_milestones.append("symptom_verified")
-
-            for ev in case.evidence:
-                if not ev.advances_milestones:
-                    inferred = _infer_milestones(ev.category, initial_milestones)
-                    if inferred:
-                        ev.advances_milestones = inferred
-                        logger.info(
-                            f"Gap #4: Retroactively attributed milestones {inferred} "
-                            f"to INQUIRY evidence {ev.evidence_id} "
-                            f"(category={ev.category.value})"
-                        )
-
+        # Post-010: no retroactive milestone attribution at INQUIRY→
+        # INVESTIGATING. INQUIRY no longer creates Evidence rows, so
+        # there is no INQUIRY-phase evidence to back-fill milestones for.
         # KB pre-fetch: search for runbooks matching the confirmed problem.
         # Deterministic, code-level — not an LLM tool call decision.
         # Results are stored on the case and injected into context by
@@ -5396,67 +5326,12 @@ class MilestoneEngine:
 
         return uploaded_file
 
-    def _create_evidence_from_attachment(
-        self, case: Case, attachment: dict[str, Any], turn_number: int
-    ) -> Evidence:
-        """
-        Create evidence object from file attachment.
-
-        Args:
-            case: Current case
-            attachment: Attachment metadata
-            turn_number: Current turn number
-
-        Returns:
-            Evidence object
-        """
-        # Infer category based on investigation state
-        category = self._infer_evidence_category(case)
-
-        # Path 1: file upload → DOCUMENT-form Evidence. extract starts None
-        # and is populated by the preprocessing pipeline (Tier 0+1 structural
-        # index: file_extract + search_map + file_meta) before the Evidence
-        # row is considered complete. The file's storage location lives on
-        # uploaded_files.storage_ref, reachable via source_file_id.
-        evidence = Evidence(
-            evidence_id=f"ev_{uuid4().hex[:12]}",
-            summary=f"Uploaded file: {attachment.get('filename', 'unknown')}",
-            extract=None,  # populated by preprocessing pipeline
-            category=category,
-            source_type=EvidenceSourceType.LOGS,  # Default (simplified from LOG_FILE)
-            form=EvidenceForm.DOCUMENT,
-            source_file_id=attachment.get("file_id"),
-            advances_milestones=[],  # Calculated later
-            collected_at=datetime.now(UTC),
-            collected_by=case.user_id,
-            collected_at_turn=turn_number,
-            primary_purpose="File Analysis",  # Mandatory
-        )
-
-        return evidence
-
-    def _infer_evidence_category(self, case: Case) -> EvidenceCategory:
-        """
-        Infer evidence category from investigation stage.
-
-        Rules:
-        - MITIGATION stage → MITIGATION_EVIDENCE
-        - TREATMENT stage → SOLUTION_EVIDENCE
-        - DIAGNOSIS stage, verification incomplete → SYMPTOM_EVIDENCE
-        - DIAGNOSIS stage, otherwise → CAUSAL_EVIDENCE
-        """
-        stage = case.progress.current_stage
-
-        if stage == InvestigationStage.MITIGATION:
-            return EvidenceCategory.MITIGATION_EVIDENCE
-
-        if stage == InvestigationStage.TREATMENT:
-            return EvidenceCategory.SOLUTION_EVIDENCE
-
-        if not case.progress.verification_complete:
-            return EvidenceCategory.SYMPTOM_EVIDENCE
-
-        return EvidenceCategory.CAUSAL_EVIDENCE
+    # Post-010: auto-Evidence creation at file-upload time is gone.
+    # Under the strict evidence model, files are data (uploaded_files)
+    # and evidence is a claim-anchored extract that the LLM produces
+    # via evidence_to_add during INVESTIGATING. The previous
+    # ``_create_evidence_from_attachment`` and ``_infer_evidence_category``
+    # helpers (auto-DOCUMENT path) have been removed.
 
     def _create_turn_record(
         self,

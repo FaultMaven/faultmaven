@@ -3375,8 +3375,9 @@ async def get_evidence_details(
                 detail=f"Evidence {evidence_id} not found in case {case_id}",
             )
 
-        # Source file via canonical FK. Inline-only evidence (Path 2,
-        # source_file_id IS NULL) returns source_file=None.
+        # Source file via canonical FK. Chat-extracted evidence
+        # (source_type=USER_DESCRIPTION, source_file_id IS NULL) returns
+        # source_file=None.
         matched_file = case.find_uploaded_file(evidence.source_file_id)
         source_file = (
             SourceFileReference(

@@ -16,7 +16,6 @@ from faultmaven.modules.case.domain.models import (
     CaseStatus,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     InquiryData,
 )
@@ -33,14 +32,14 @@ def _evidence(
 ) -> Evidence:
     return Evidence(
         evidence_id=evidence_id or f"ev_{uuid4().hex[:12]}",
-        category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
+        category=EvidenceCategory.SYMPTOM_EVIDENCE,
         primary_purpose="Test",
         summary="Test evidence",
         preprocessed_content="...",
         content_size_bytes=100,
         data_type=data_type,
         source_type=EvidenceSourceType.LOGS,
-        form=EvidenceForm.DOCUMENT,
+        source_file_id="file_aabb12345678",
         preprocessing_method="crime_scene",
         extraction_method="crime_scene",
         collected_by="user",

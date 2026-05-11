@@ -25,7 +25,6 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
 from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     UploadedFile,
 )
@@ -48,15 +47,20 @@ def _evidence(
     data_type: str = "metrics",
     metadata: dict | None = None,
     source_file_id: str | None = "file_aaaaaaaaaaaa",
+    source_type: EvidenceSourceType | None = None,
 ) -> Evidence:
+    resolved_source_type = (
+        source_type
+        if source_type is not None
+        else _SOURCE_TYPE_MAP.get(data_type, EvidenceSourceType.METRICS)
+    )
     return Evidence(
         evidence_id=evidence_id,
-        category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
+        category=EvidenceCategory.SYMPTOM_EVIDENCE,
         primary_purpose="Test",
         summary="Old summary",
         extract="old index",
-        source_type=_SOURCE_TYPE_MAP.get(data_type, EvidenceSourceType.METRICS),
-        form=EvidenceForm.DOCUMENT,
+        source_type=resolved_source_type,
         source_file_id=source_file_id,
         collected_by="user",
         collected_at=datetime.now(UTC),
@@ -207,10 +211,16 @@ class TestAuthAndLookup:
     async def test_evidence_without_content_ref_raises_validation(
         self, service, repo_with_case
     ):
-        """Pasted text evidence has no stored raw file — no re-extraction
-        is possible. Must raise ValidationException (endpoint maps to 409)."""
+        """Chat-extracted evidence (source_file_id=None, source_type=
+        USER_DESCRIPTION) has no stored raw file — no re-extraction is
+        possible. Must raise ValidationException (endpoint maps to 409)."""
         _, case = repo_with_case
-        case.evidence = [_evidence(source_file_id=None)]
+        case.evidence = [
+            _evidence(
+                source_file_id=None,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+            )
+        ]
         case.uploaded_files = []
         with pytest.raises(ValidationException):
             await service.reclassify_evidence(
@@ -223,11 +233,18 @@ class TestAuthAndLookup:
 
 class TestHappyPath:
     @pytest.mark.asyncio
-    async def test_reclassification_updates_evidence(
+    async def test_reclassification_updates_file_and_evidence_source_type(
         self, service, repo_with_case, preprocessing_service
     ):
+        """Post-010: structural_index / summary / data_type land on the
+        backing UploadedFile (file-level metadata). Evidence.source_type
+        is re-aligned so the agent sees a consistent picture. The LLM's
+        own summary/extract fields on Evidence are not touched —
+        reclassifying a file doesn't rewrite the claim built on it."""
         _, case = repo_with_case
         previous_source_type = case.evidence[0].source_type.value
+        previous_summary = case.evidence[0].summary
+        previous_extract = case.evidence[0].extract
 
         updated = await service.reclassify_evidence(
             case_id=case.case_id,
@@ -236,14 +253,19 @@ class TestHappyPath:
             data_type=DataType.LOGS_AND_ERRORS,
         )
 
-        # Returned Evidence reflects a re-mapped source_type.
-        # Reclassify routes preprocessing_result.data_type (UnifiedDataType)
-        # through _infer_source_type, which is keyed on the detailed
-        # DataType enum and falls through to TEXT for UnifiedDataType inputs.
-        # The contract under test here is that the row was updated and
-        # source_type changed, not the specific mapping value.
-        assert updated.extract == "new index content"
+        # Evidence.source_type re-aligned with new data_type
         assert previous_source_type != updated.source_type.value
+
+        # LLM-authored claim fields untouched on Evidence
+        assert updated.summary == previous_summary
+        assert updated.extract == previous_extract
+
+        # File-level preprocessing artifacts landed on UploadedFile
+        saved = await service.repository.get(case.case_id)
+        uf = next(f for f in saved.uploaded_files if f.file_id == "file_aaaaaaaaaaaa")
+        assert uf.structural_index == "new index content"
+        assert uf.summary == "new summary"
+        assert uf.data_type == updated.source_type.value
 
         # Preprocessing was called with user_override + previous metadata.
         kwargs = preprocessing_service.reclassify_evidence.call_args.kwargs
@@ -318,3 +340,9 @@ class TestHappyPath:
         )
         assert untouched.source_type.value == EvidenceSourceType.CONFIGURATION.value
         assert untouched.extract == "old index"
+        # The unrelated UploadedFile must also be untouched.
+        untouched_file = next(
+            f for f in saved.uploaded_files if f.file_id == "file_bbbbbbbbbbbb"
+        )
+        assert untouched_file.structural_index is None
+        assert untouched_file.summary is None

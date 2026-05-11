@@ -173,14 +173,16 @@ class ICaseRepository(Protocol):
         """Clean up expired/old cases."""
         ...
 
-    async def find_by_content_hash(
+    async def find_uploaded_file_by_content_hash(
         self, case_id: str, content_hash: str
-    ) -> Optional["Evidence"]:
-        """Return the oldest Evidence in this case whose content_hash matches.
+    ) -> Optional["UploadedFile"]:
+        """Return the oldest UploadedFile in this case whose content_hash matches.
 
-        Used for per-case content-based deduplication: an attachment whose
-        SHA-256 content hash already exists on the same case returns the
-        existing Evidence instead of creating a new row.
+        Post-010 strict evidence model: file uploads create only an
+        UploadedFile row (no auto-Evidence at intake), so dedup is
+        a file-level concern now. An attachment whose SHA-256 content
+        hash already exists on the same case returns the existing
+        UploadedFile instead of creating a new row.
 
         Args:
             case_id: Case to search within (scope is per-case, not global).
@@ -188,8 +190,9 @@ class ICaseRepository(Protocol):
                 PreprocessingService.classify_and_extract).
 
         Returns:
-            The oldest matching Evidence (by collection timestamp) if found,
-            None otherwise. NULL content_hash rows are never matched.
+            The oldest matching UploadedFile (by upload timestamp) if
+            found, None otherwise. NULL content_hash rows are never
+            matched.
         """
         ...
 
@@ -388,7 +391,6 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     EscalationType,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     EvidenceStance,
     GeneratedDocument,
@@ -474,7 +476,6 @@ __all__ = [
     "EscalationType",
     "Evidence",
     "EvidenceCategory",
-    "EvidenceForm",
     "EvidenceSourceType",
     "EvidenceStance",
     "GeneratedDocument",

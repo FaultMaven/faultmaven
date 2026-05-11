@@ -22,7 +22,6 @@ from faultmaven.modules.case.domain.models import (
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     InvestigationProgress,
     ProblemVerification,
@@ -243,14 +242,14 @@ async def test_ui_dropdown_resolve_needs_info_keeps_resolve_pair():
         Evidence(
             summary="Test evidence",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
             collected_at=datetime.now(timezone.utc),
             collected_by="user_test",
             primary_purpose="Alignment test",
             preprocessed_content="Sample log line",
             content_size_bytes=100,
             preprocessing_method="manual",
-            form=EvidenceForm.USER_TEXT,
+            source_file_id=None,
             collected_at_turn=1,
         )
     )
@@ -460,14 +459,14 @@ async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
         Evidence(
             summary="Test evidence",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
             collected_at=datetime.now(timezone.utc),
             collected_by="user_test",
             primary_purpose="Alignment test",
             preprocessed_content="Sample log line",
             content_size_bytes=100,
             preprocessing_method="manual",
-            form=EvidenceForm.USER_TEXT,
+            source_file_id=None,
             collected_at_turn=1,
         )
     )

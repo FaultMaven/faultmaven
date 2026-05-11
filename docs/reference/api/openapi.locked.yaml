@@ -628,6 +628,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/me/available-scopes:
+    get:
+      tags:
+      - authentication
+      summary: Get Available Scopes
+      description: "Return KB scopes the calling user can target when publishing.\n\
+        \nGated by the user's actual memberships, not AUTH_MODE \u2014 the picker\n\
+        should omit any scope that would produce an unresolvable runbook\n(e.g. TEAM\
+        \ when the user has no team membership).\n\nAlways returned: ``personal``,\
+        \ ``global`` (GLOBAL write is admin-gated\nby the publish endpoint, not by\
+        \ this picker). ``team`` is added when\nthe user has any team membership;\
+        \ ``organization`` is added when the\nuser's org has 2+ members or the user\
+        \ is an org owner/admin."
+      operationId: get_available_scopes_api_v1_auth_me_available_scopes_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableScopesResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/auth/health:
     get:
       tags:
@@ -2008,78 +2044,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/archive:
-    post:
-      tags:
-      - cases
-      summary: Archive Case
-      description: "Archive a case \u2014 hide it from the default list view.\n\n\
-        Only terminal cases (RESOLVED or CLOSED) can be archived.\nArchived cases\
-        \ remain fully accessible and can be unarchived.\n\nReturns:\n    {\"case_id\"\
-        : str, \"is_archived\": true}"
-      operationId: archive_case_api_v1_cases__case_id__archive_post
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: Authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/unarchive:
-    post:
-      tags:
-      - cases
-      summary: Unarchive Case
-      description: "Unarchive a case \u2014 restore it to the default list view.\n\
-        \nReturns:\n    {\"case_id\": str, \"is_archived\": false}"
-      operationId: unarchive_case_api_v1_cases__case_id__unarchive_post
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: Authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/cases/{case_id}/uploaded-files:
     get:
       tags:
@@ -2467,7 +2431,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2539,7 +2503,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                  $ref: '#/components/schemas/SessionResponse'
                 title: Response List Sessions Api V1 Cases  Case Id  Sessions Get
         '422':
           description: Validation Error
@@ -2585,7 +2549,7 @@ paths:
             application/json:
               schema:
                 anyOf:
-                - $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                - $ref: '#/components/schemas/SessionResponse'
                 - type: 'null'
                 title: Response Get Active Session Api V1 Cases  Case Id  Sessions
                   Active Get
@@ -2638,7 +2602,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2693,7 +2657,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2743,7 +2707,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2793,7 +2757,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2852,7 +2816,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -6964,15 +6928,13 @@ components:
         Used when stream=false in the request.'
     AttachmentResult:
       properties:
-        evidence_id:
+        file_id:
           type: string
-          title: Evidence Id
+          title: File Id
+          description: UploadedFile row identifier for this attachment.
         filename:
           type: string
           title: Filename
-        data_type:
-          type: string
-          title: Data Type
         file_size:
           type: integer
           title: File Size
@@ -6987,7 +6949,13 @@ components:
         source_type:
           type: string
           title: Source Type
-          description: 'Input origin: file_upload | text_paste | page_capture'
+          description: 'Data-type classification from preprocessing: logs | metrics
+            | configuration | code | text | image'
+        upload_source:
+          type: string
+          title: Upload Source
+          description: 'Input origin: file_upload | paste | page_capture | screenshot
+            | agent_generated'
           default: file_upload
         duplicate_of:
           anyOf:
@@ -6995,8 +6963,8 @@ components:
           - type: 'null'
           title: Duplicate Of
           description: If set, this attachment was a per-case content-hash duplicate
-            of an earlier upload. No new Evidence was created; this field carries
-            the existing evidence_id. Frontend should render a non-blocking toast.
+            of an earlier upload. No new UploadedFile was created; this field carries
+            the existing file_id. Frontend should render a non-blocking toast.
         duplicate_turn:
           anyOf:
           - type: integer
@@ -7005,13 +6973,18 @@ components:
           description: Turn number where the original was uploaded (for toast text).
       type: object
       required:
-      - evidence_id
+      - file_id
       - filename
-      - data_type
       - file_size
       - processing_status
+      - source_type
       title: AttachmentResult
-      description: Result of preprocessing a single attachment.
+      description: "Result of preprocessing a single attachment.\n\nPost-010 strict\
+        \ evidence model: file uploads no longer create an\nEvidence row at intake\
+        \ \u2014 they create an UploadedFile row.\n``file_id`` is the uploaded_files\
+        \ row identifier (frontend uses it\nto reference the attachment; Evidence\
+        \ rows that later reference\nthis file via ``source_file_id`` are born during\
+        \ INVESTIGATING\nwhen the LLM extracts claim-anchored slices)."
     AuthConfigResponse:
       properties:
         auth_mode:
@@ -7157,6 +7130,18 @@ components:
           - admin
           user_id: 550e8400-e29b-41d4-a716-446655440000
           username: john.doe
+    AvailableScopesResponse:
+      properties:
+        scopes:
+          items:
+            type: string
+          type: array
+          title: Scopes
+      type: object
+      required:
+      - scopes
+      title: AvailableScopesResponse
+      description: Knowledge-base scopes the calling user may publish to.
     BatchDraftRef:
       properties:
         conversion_id:
@@ -7315,14 +7300,17 @@ components:
           title: Case Id
           description: Unique case identifier
         user_id:
-          type: string
-          maxLength: 255
-          minLength: 1
+          anyOf:
+          - type: string
+            maxLength: 36
+          - type: 'null'
           title: User Id
-          description: User who created the case
+          description: User who created the case. NULL after the originating user
+            is deleted (FK SET NULL). Required to be non-empty at creation time; creation
+            logic enforces this separately from Pydantic validation.
         organization_id:
           type: string
-          maxLength: 255
+          maxLength: 36
           minLength: 1
           title: Organization Id
           description: Organization this case belongs to
@@ -7573,23 +7561,8 @@ components:
           - type: 'null'
           title: Closed At
           description: When case reached terminal state (RESOLVED or CLOSED)
-        is_archived:
-          type: boolean
-          title: Is Archived
-          description: Whether the case has been archived by the user. Archived cases
-            are hidden from the default list view but remain fully accessible. Independent
-            of case status.
-          default: false
-        archived_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Archived At
-          description: When the case was archived
       type: object
       required:
-      - user_id
       - organization_id
       - title
       title: Case
@@ -8077,10 +8050,6 @@ components:
           type: integer
           title: Total Milestones
           default: 8
-        is_archived:
-          type: boolean
-          title: Is Archived
-          default: false
         is_terminal:
           type: boolean
           title: Is Terminal
@@ -8527,17 +8496,7 @@ components:
         source_type:
           type: string
           title: Source Type
-          description: LOGS | METRICS | TRACES | etc.
-        content_hash:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Content Hash
-        preprocessing_method:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Preprocessing Method
+          description: LOGS | METRICS | CONFIGURATION | CODE | TEXT | IMAGE
         primary_purpose:
           anyOf:
           - type: string
@@ -8862,8 +8821,8 @@ components:
           description: Unique evidence identifier
         category:
           $ref: '#/components/schemas/EvidenceCategory'
-          description: 'System-inferred category: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE
-            | RESOLUTION_EVIDENCE | OTHER'
+          description: 'Claim-anchored category declared by the LLM: SYMPTOM_EVIDENCE
+            | CAUSAL_EVIDENCE | MITIGATION_EVIDENCE | SOLUTION_EVIDENCE'
         primary_purpose:
           type: string
           maxLength: 100
@@ -8875,53 +8834,22 @@ components:
           maxLength: 500
           minLength: 1
           title: Summary
-          description: Brief summary of evidence content (<500 chars) for UI display
-            and quick scanning
-        preprocessed_content:
-          type: string
-          title: Preprocessed Content
-          description: "\n        Extracted relevant diagnostic information from preprocessing\
-            \ pipeline.\n\n        This is what the agent uses for hypothesis evaluation\
-            \ and evidence analysis.\n        Contains only the high-signal portions\
-            \ extracted from raw files.\n\n        Examples:\n        - Logs: Crime\
-            \ scene extraction (approx. 200 lines around errors)\n        - Metrics:\
-            \ Anomaly detection results with statistical analysis\n        - Config:\
-            \ Parsed configuration with secrets redacted\n        - Code: AST-extracted\
-            \ functions and classes\n        - Text: LLM-generated summary\n     \
-            \   - Images: Vision model description\n\n        Size: Typically 5 to\
-            \ 50 KB (compressed from larger raw files).\n        Compression ratios:\
-            \ 200:1 for logs, 167:1 for metrics, 50:1 for code.\n\n        This field\
-            \ is REQUIRED for all evidence. Raw files remain in S3 for audit/deep\
-            \ dive.\n        "
-        content_ref:
+          description: "Short label (\u2264500 chars) the LLM wrote when declaring\
+            \ this evidence via ``evidence_to_add``. ALWAYS present \u2014 use it\
+            \ for UI list views, headers, and quick scanning. The optional ``extract``\
+            \ field carries the verbatim slice that supports the summary."
+        extract:
           anyOf:
           - type: string
-            maxLength: 5000
           - type: 'null'
-          title: Content Ref
-          description: S3 URI to original raw file (1-10MB) for audit, compliance,
-            and deep dive analysis. May be None for user-typed evidence.
-        content_size_bytes:
-          type: integer
-          minimum: 0.0
-          title: Content Size Bytes
-          description: Size of original raw file in bytes
-        preprocessing_method:
-          type: string
-          title: Preprocessing Method
-          description: "\n        Preprocessing method used to extract preprocessed_content\
-            \ from raw file.\n        Examples: crime_scene_extraction, anomaly_detection,\
-            \ parse_and_sanitize,\n        ast_extraction, vision_analysis, single_shot_summary,\
-            \ map_reduce_summary\n        "
-        compression_ratio:
-          anyOf:
-          - type: number
-            maximum: 1.0
-            minimum: 0.0
-          - type: 'null'
-          title: Compression Ratio
-          description: Ratio of preprocessed to raw content size (e.g., 0.005 = 200:1
-            compression)
+          title: Extract
+          description: "Optional verbatim quote that supports the ``summary``. The\
+            \ LLM populates this when grounding the finding in a specific system-output\
+            \ slice (a log line, a metric reading, a config snippet). Distinct from\
+            \ ``summary`` (short label) and from ``uploaded_files.storage_ref`` (file\
+            \ pointer). May be NULL when the summary is self-contained. File-level\
+            \ preprocessing artifacts (structural index, file summary) live on ``uploaded_files``,\
+            \ never here \u2014 this field is for claim-relevant quotes only."
         analysis:
           anyOf:
           - type: string
@@ -8930,31 +8858,6 @@ components:
           title: Analysis
           description: Agent analysis of this evidence and its significance to the
             investigation
-        data_type:
-          anyOf:
-          - type: string
-            maxLength: 50
-          - type: 'null'
-          title: Data Type
-          description: Unified data type from preprocessing (logs, metrics, configuration,
-            code, text, image). None for legacy evidence without preprocessing.
-        content_hash:
-          anyOf:
-          - type: string
-            maxLength: 64
-          - type: 'null'
-          title: Content Hash
-          description: "SHA-256 hash of raw file content for deduplication. Computed\
-            \ from raw bytes before any extraction. UNIQUE per (case_id, content_hash)\
-            \ \u2014 prevents duplicate uploads."
-        extraction_method:
-          anyOf:
-          - type: string
-            maxLength: 100
-          - type: 'null'
-          title: Extraction Method
-          description: 'Extraction method used: structural_index, statistical_profile,
-            parse_and_sanitize, ast_extraction, structure_extraction, metadata_extraction'
         processing_mode:
           anyOf:
           - type: string
@@ -8965,24 +8868,41 @@ components:
         source_type:
           $ref: '#/components/schemas/EvidenceSourceType'
           description: Type of evidence source
-        form:
-          $ref: '#/components/schemas/EvidenceForm'
-          description: 'How evidence was provided: DOCUMENT, USER_TEXT, or SUBMITTED_DATA'
         source_file_id:
           anyOf:
           - type: string
           - type: 'null'
           title: Source File Id
-          description: ID of the UploadedFile this evidence was derived from (None
-            if from user input)
-        original_filename:
+          description: "FK to the UploadedFile this extract came from. Required unless\
+            \ ``source_type=USER_DESCRIPTION`` (the narrow case where the LLM extracted\
+            \ a verbatim system-output quote from the user's short chat message \u2014\
+            \ no file involved). Enforced by the ``evidence_source_invariant`` CHECK\
+            \ constraint at the DB level and by the ``_source_requires_file_unless_user_description``\
+            \ validator at the Pydantic level."
+        is_primary:
+          type: boolean
+          title: Is Primary
+          description: True for the principal evidence row in this case (the one that
+            anchors the investigation summary). list_evidence_tool uses this for surface-level
+            dashboards.
+          default: false
+        reliability_score:
           anyOf:
-          - type: string
-            maxLength: 512
+          - type: number
+            maximum: 1.0
+            minimum: 0.0
           - type: 'null'
-          title: Original Filename
-          description: Original filename when uploaded (e.g., 'OpenSSH_2k.log'). Used
-            by search_file tool for display.
+          title: Reliability Score
+          description: LLM-assessed reliability of this evidence (0.0-1.0). NULL when
+            the agent has not scored the evidence.
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+          description: Free-form tag list for evidence classification. Tag values
+            must not contain commas (the SQLite serializer uses comma-separation;
+            the comma-ban keeps round-trip lossless).
         vectorized:
           type: boolean
           title: Vectorized
@@ -9043,35 +8963,21 @@ components:
       - category
       - primary_purpose
       - summary
-      - preprocessed_content
-      - content_size_bytes
-      - preprocessing_method
       - source_type
-      - form
       - collected_by
       - collected_at_turn
       title: Evidence
-      description: 'Evidence collected during investigation.
-
-        Categorized by purpose to drive milestone advancement.
-
-
-        NOTE: Evidence.category is SYSTEM-INFERRED, not LLM-specified!
-
-        System categorizes based on:
-
-        - Which milestones are incomplete (if symptom not verified -> SYMPTOM_EVIDENCE)
-
-        - Hypothesis evaluation results (if creates hypothesis_evidence links -> CAUSAL_EVIDENCE)
-
-        - Solution state (if solution proposed -> RESOLUTION_EVIDENCE)
-
-
-        LLM provides: summary, analysis
-
-        LLM evaluates: stance per hypothesis (creates hypothesis_evidence links)
-
-        System infers: category, advances_milestones'
+      description: "A claim-anchored extract recorded during INVESTIGATING.\n\nPost-010\
+        \ single creation path: every Evidence row originates as an\n``EvidenceToAdd``\
+        \ entry the LLM declared on a specific turn. The LLM\nchooses the ``category``\
+        \ from the four claim-anchored values and the\n``source_type`` from ``EvidenceSourceType``.\
+        \ The system only infers\n``advances_milestones`` (Tier 2 inference via ``CATEGORY_MILESTONE_MAP``),\n\
+        and only when the LLM has not already overridden it (Tier 3).\n\nLLM declares:\
+        \ summary, extract (optional), category, source_type,\n    source_file_id\
+        \ (required unless source_type=USER_DESCRIPTION),\n    likelihood, optionally\
+        \ advances_milestones\nLLM evaluates: stance per hypothesis (creates hypothesis_evidence\
+        \ links)\nSystem fills: evidence_id, collected_at_turn, collected_by,\n  \
+        \  coverage timestamps (parsed from extract), advances_milestones (Tier 2)"
     EvidenceCategory:
       type: string
       enum:
@@ -9079,23 +8985,17 @@ components:
       - causal_evidence
       - mitigation_evidence
       - solution_evidence
-      - solution_evidence
-      - contextual_evidence
-      - rejected
       title: EvidenceCategory
-      description: 'Evidence classification by investigation purpose.
-
-
-        Post-redesign (2026-02-11):
-
-        - UNCLASSIFIED removed (single-phase evidence creation)
-
-        - OTHER renamed to CONTEXTUAL_EVIDENCE (clearer purpose)
-
-        - REJECTED added (track rejected submissions for deduplication)
-
-
-        Evidence is created AFTER LLM evaluation with complete classification.'
+      description: "Evidence classification by investigation purpose.\n\nPost-010\
+        \ redesign: 4 claim-attached categories. Each row is the LLM's\ndeliberate\
+        \ decision to record a specific extract as evidence for a\nspecific claim,\
+        \ created only during INVESTIGATING. The dropped\ncategories (CONTEXTUAL_EVIDENCE,\
+        \ REJECTED) had no claim attachment\nand were structurally incompatible with\
+        \ the strict model:\n\n- Contextual data now lives on ``uploaded_files`` (the\
+        \ file itself is\n  the data; no evidence row is needed until the agent extracts\
+        \ a\n  claim-relevant slice).\n- Rejected submissions are expressed as the\
+        \ absence of an evidence\n  row (the agent simply doesn't promote them); hypothesis-level\n\
+        \  refutation lives on ``hypothesis_evidence.stance``."
     EvidenceDetailsResponse:
       properties:
         evidence_id:
@@ -9128,19 +9028,21 @@ components:
           anyOf:
           - $ref: '#/components/schemas/SourceFileReference'
           - type: 'null'
-          description: Source file this evidence was derived from (null if from user
-            input)
+          description: Source file this evidence was derived from. NULL only when
+            the evidence is a verbatim quote extracted from the user's chat message
+            (source_type=USER_DESCRIPTION).
         related_hypotheses:
           items:
             $ref: '#/components/schemas/RelatedHypothesis'
           type: array
           title: Related Hypotheses
-        preprocessed_content:
-          type: string
-          title: Preprocessed Content
-        content_size_bytes:
-          type: integer
-          title: Content Size Bytes
+        extract:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Extract
+          description: Optional verbatim quote backing the summary. NULL when the
+            LLM omitted it (the summary is self-contained).
         analysis:
           anyOf:
           - type: string
@@ -9156,27 +9058,8 @@ components:
       - collected_at_turn
       - collected_at
       - collected_by
-      - preprocessed_content
-      - content_size_bytes
       title: EvidenceDetailsResponse
       description: Detailed evidence information with source and hypothesis linkage.
-    EvidenceForm:
-      type: string
-      enum:
-      - document
-      - user_text
-      - submitted_data
-      title: EvidenceForm
-      description: 'How evidence entered the system.
-
-
-        Form is determined by payload context:
-
-        - DOCUMENT: Turn had attachments (file upload or pasted data)
-
-        - USER_TEXT: Query-only turn, no attachments
-
-        - SUBMITTED_DATA: Evidence created by agent tools (search_file, deep_analysis)'
     EvidenceSourceType:
       type: string
       enum:
@@ -9186,6 +9069,7 @@ components:
       - code
       - text
       - image
+      - user_description
       title: EvidenceSourceType
       description: "Fundamental type of data source.\n\nPost-redesign (2026-02-14):\
         \ Updated to align with data-classification-strategy.md (6 types).\n\nMigration\
@@ -9377,16 +9261,16 @@ components:
           description: Original likelihood when hypothesis was generated
           default: 0.5
         evidence_links:
-          additionalProperties:
+          items:
             $ref: '#/components/schemas/HypothesisEvidenceLink'
-          type: object
+          type: array
           title: Evidence Links
-          description: "\n        Maps evidence_id to relationship details.\n\n  \
-            \      ONE evidence can:\n        - STRONGLY_SUPPORTS hypothesis A\n \
-            \       - REFUTES hypothesis B\n        - Be IRRELEVANT to hypothesis\
-            \ C\n\n        Backed by hypothesis_evidence junction table in database.\n\
-            \        LLM evaluates each evidence against ALL active hypotheses after\
-            \ submission.\n        "
+          description: "\n        Relationship rows from the hypothesis_evidence junction\
+            \ table.\n\n        ONE evidence can:\n        - SUPPORTS hypothesis A\n\
+            \        - REFUTES hypothesis B\n        - Be NEUTRAL to hypothesis C\n\
+            \n        Each list entry binds (hypothesis_id, evidence_id, stance, reasoning,\n\
+            \        stance_confidence). LLM evaluates each evidence against ALL active\n\
+            \        hypotheses after submission.\n        "
         generated_at_turn:
           type: integer
           minimum: 0.0
@@ -11904,6 +11788,85 @@ components:
       type: object
       title: SessionCreateRequest
       description: Request model for creating investigation session.
+    SessionResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        case_id:
+          type: string
+          title: Case Id
+        user_id:
+          type: string
+          title: User Id
+        organization_id:
+          type: string
+          title: Organization Id
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ended At
+        last_activity_at:
+          type: string
+          format: date-time
+          title: Last Activity At
+        total_duration_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Duration Ms
+        session_goal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Goal
+        findings_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Findings Summary
+        total_token_usage:
+          type: integer
+          title: Total Token Usage
+        total_agent_executions:
+          type: integer
+          title: Total Agent Executions
+        token_budget_limit:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Token Budget Limit
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - session_id
+      - case_id
+      - user_id
+      - organization_id
+      - status
+      - started_at
+      - last_activity_at
+      - total_token_usage
+      - total_agent_executions
+      - created_at
+      - updated_at
+      title: SessionResponse
+      description: Response model for investigation session.
     SessionRestoreRequest:
       properties:
         restore_point:
@@ -12634,12 +12597,22 @@ components:
           minimum: 0.0
           title: Size Bytes
           description: File size in bytes
-        data_type:
-          type: string
-          maxLength: 50
-          title: Data Type
-          description: Detected data type from preprocessing (log, metric, config,
-            code, text, image, etc.)
+        content_type:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Content Type
+          description: MIME type as reported on upload (e.g., text/plain, application/pdf).
+        content_hash:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Content Hash
+          description: SHA-256 of the raw file content. Used for storage-backend dedup
+            and integrity checks. NULL when the upload is still streaming or hashing
+            was skipped.
         uploaded_at_turn:
           type: integer
           minimum: 0.0
@@ -12650,44 +12623,94 @@ components:
           format: date-time
           title: Uploaded At
           description: Upload timestamp
-        source_type:
-          type: string
-          maxLength: 50
-          title: Source Type
-          description: file_upload | paste | screenshot | page_injection | agent_generated
-          default: file_upload
-        preprocessing_summary:
+        uploaded_by:
           anyOf:
           - type: string
-            maxLength: 500
+            maxLength: 36
           - type: 'null'
-          title: Preprocessing Summary
-          description: Brief summary from preprocessing pipeline (<500 chars)
-        content_ref:
+          title: Uploaded By
+          description: User who uploaded the file. NULL for system-generated uploads
+            or after the originating user is deleted (FK SET NULL).
+        upload_source:
+          type: string
+          maxLength: 50
+          title: Upload Source
+          description: 'Provenance of the upload: how the file got into the system.
+            Values: file_upload, paste, screenshot, page_capture, agent_generated,
+            conversion_source. Distinct from evidence.source_type, which classifies
+            the data shape. page_capture is the marker the rerank-page-sections pass
+            uses to detect Copilot extension page submissions; see context_builder.py.'
+          default: file_upload
+        storage_ref:
           anyOf:
           - type: string
             maxLength: 5000
           - type: 'null'
-          title: Content Ref
-          description: Reference to stored file content (S3 URI or data_id). May be
-            None if processing pending.
+          title: Storage Ref
+          description: Opaque key passed to IFileStorageBackend.retrieve_file(). The
+            backend interprets it (local FS path, S3 key, Azure blob name, etc.).
+            May be None if processing pending.
+        summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary
+          description: Preprocessing-generated short summary of the file. Used by
+            the investigation agent to orient on file content without loading the
+            whole file. May be None when preprocessing was skipped (e.g., KB-conversion
+            source uploads).
+        structural_index:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Structural Index
+          description: Preprocessing-generated structural index of the file content
+            (file_extract + search_map + file_meta). Read by the LLM in <evidence_collected>
+            when the agent inspects the file. May be None when preprocessing was skipped.
+        data_type:
+          anyOf:
+          - type: string
+            maxLength: 50
+          - type: 'null'
+          title: Data Type
+          description: Preprocessor's data-type classification of the file's content
+            (e.g., 'logs', 'metrics', 'configuration'). Distinct from evidence.source_type,
+            which classifies an individual extract's source type.
+        coverage_start_ts:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Coverage Start Ts
+          description: Earliest timestamp parsed from the file's content. None when
+            the file has no parseable timestamps.
+        coverage_end_ts:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Coverage End Ts
+          description: Latest timestamp parsed from the file's content. None when
+            the file has no parseable timestamps.
       type: object
       required:
       - filename
       - size_bytes
-      - data_type
       - uploaded_at_turn
       title: UploadedFile
-      description: "Raw file metadata for files uploaded to a case.\n\nKey Distinction:\n\
-        - UploadedFile: Raw file metadata, exists in ANY case state (INQUIRY, INVESTIGATING,\
-        \ etc.)\n- Evidence: Data classified by the LLM based on content. Created\
-        \ via evidence_to_add\n  when the LLM evaluates the submission.\n\nEvidence\
-        \ classification is content-based, not stage-based (see Section 5.2 of\nevidence-driven-investigation-framework.md).\
-        \ The LLM evaluates the data and\nclassifies it by what it contains:\n- Error\
-        \ logs \u2192 symptom_evidence (even during INQUIRY)\n- Normal configs \u2192\
-        \ contextual_evidence\n- Post-fix metrics \u2192 solution_evidence\n\nUploadedFile\
-        \ records exist independently of Evidence. Not all uploaded files\nproduce\
-        \ Evidence \u2014 the LLM decides what is relevant during its analysis."
+      description: "File the user submitted to a case (upload, paste, page capture).\n\
+        \nPost-010 strict evidence model \u2014 two-table separation:\n- **UploadedFile**:\
+        \ the file-of-record. Exists in any case state\n  (INQUIRY, INVESTIGATING,\
+        \ terminal). Carries the raw bytes (via\n  ``storage_ref``) and the preprocessing\
+        \ artifacts (``summary``,\n  ``structural_index``, ``data_type``, coverage\
+        \ timestamps) that\n  describe the file's content.\n- **Evidence**: the claim-anchored\
+        \ extract-of-record. Created only\n  during INVESTIGATING when the LLM extracts\
+        \ a focused slice via\n  ``evidence_to_add`` to support a specific claim (symptom,\
+        \ cause,\n  mitigation, or solution).\n\nFiles are not evidence. An evidence\
+        \ row references its source file\nvia ``Evidence.source_file_id``; the file\
+        \ row holds the file-level\nmetadata so the evidence row can stay focused\
+        \ on the claim it\nsupports. Not all uploaded files produce evidence \u2014\
+        \ the LLM\ndecides which slices, if any, are claim-relevant."
     UploadedFileDetailsResponse:
       properties:
         file_id:
@@ -12702,6 +12725,18 @@ components:
         size_display:
           type: string
           title: Size Display
+        content_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Type
+          description: MIME type as reported on upload
+        content_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Hash
+          description: SHA-256 of file contents (storage-backend dedup)
         uploaded_at_turn:
           type: integer
           title: Uploaded At Turn
@@ -12709,17 +12744,17 @@ components:
           type: string
           format: date-time
           title: Uploaded At
-        source_type:
+        upload_source:
           type: string
-          title: Source Type
-        data_type:
-          type: string
-          title: Data Type
+          title: Upload Source
+          description: 'Provenance: file_upload | paste | screenshot | page_capture
+            | agent_generated | conversion_source'
         summary:
           anyOf:
           - type: string
           - type: 'null'
           title: Summary
+          description: File-level preprocessing summary, set by the ingestion pipeline.
         derived_evidence:
           items:
             $ref: '#/components/schemas/DerivedEvidenceSummary'
@@ -12737,8 +12772,7 @@ components:
       - size_display
       - uploaded_at_turn
       - uploaded_at
-      - source_type
-      - data_type
+      - upload_source
       - evidence_count
       title: UploadedFileDetailsResponse
       description: Detailed information about an uploaded file with evidence linkage.
@@ -13204,85 +13238,6 @@ components:
       - last_updated
       title: WorkingConclusionSummary
       description: Agent's current understanding during INVESTIGATING phase.
-    faultmaven__api__models__SessionResponse:
-      properties:
-        session_id:
-          type: string
-          title: Session Id
-        case_id:
-          type: string
-          title: Case Id
-        user_id:
-          type: string
-          title: User Id
-        organization_id:
-          type: string
-          title: Organization Id
-        status:
-          $ref: '#/components/schemas/SessionStatus'
-        started_at:
-          type: string
-          format: date-time
-          title: Started At
-        ended_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Ended At
-        last_activity_at:
-          type: string
-          format: date-time
-          title: Last Activity At
-        total_duration_ms:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Total Duration Ms
-        session_goal:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Session Goal
-        findings_summary:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Findings Summary
-        total_token_usage:
-          type: integer
-          title: Total Token Usage
-        total_agent_executions:
-          type: integer
-          title: Total Agent Executions
-        token_budget_limit:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Token Budget Limit
-        created_at:
-          type: string
-          format: date-time
-          title: Created At
-        updated_at:
-          type: string
-          format: date-time
-          title: Updated At
-      type: object
-      required:
-      - session_id
-      - case_id
-      - user_id
-      - organization_id
-      - status
-      - started_at
-      - last_activity_at
-      - total_token_usage
-      - total_agent_executions
-      - created_at
-      - updated_at
-      title: SessionResponse
-      description: Response model for investigation session.
     faultmaven__models__api__SessionResponse:
       properties:
         schema_version:

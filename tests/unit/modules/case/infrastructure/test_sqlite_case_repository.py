@@ -33,7 +33,6 @@ from faultmaven.modules.case.domain.models import (
     CaseStatus,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,
@@ -117,7 +116,7 @@ def _make_evidence(
         summary=summary,
         extract="ERROR: connection refused on port 5432",
         source_type=source_type,
-        form=EvidenceForm.DOCUMENT,
+        source_file_id="file_aabb12345678",
         collected_by="user_alpha",
         collected_at_turn=1,
     )

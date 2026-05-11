@@ -336,12 +336,16 @@ class TestInvestigationServiceProcessTurn:
         assert (
             meta["source_type"] == "paste"
         ), "pasted content should have source_type='paste'"
-        assert "evidence_id" in meta
+        # Post-010: attachment metadata no longer carries evidence_id —
+        # Evidence is born only when the LLM extracts a claim-anchored
+        # slice during INVESTIGATING. The UploadedFile is the file-of-
+        # record for intake.
+        assert "evidence_id" not in meta
         assert "file_id" in meta
         # file_id must match UploadedFile pattern: ^(file_|data_)[a-f0-9]{12,16}$
         assert meta["file_id"].startswith(
-            "data_"
-        ), "pasted content file_id should use data_ prefix"
+            "file_"
+        ), "uploaded file ids use the file_ prefix"
 
     @pytest.mark.asyncio
     async def test_file_upload_attachment_metadata_source_type(

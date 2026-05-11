@@ -29,7 +29,6 @@ from faultmaven.modules.case.domain.models import (
     EntityType,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
 )
 from faultmaven.modules.case.infrastructure.case_repository import (
@@ -99,7 +98,7 @@ def _make_evidence(
         summary=summary,
         extract="content",
         source_type=EvidenceSourceType.LOGS,
-        form=EvidenceForm.DOCUMENT,
+        source_file_id="file_aabb12345678",
         collected_by="user_alpha",
         collected_at_turn=1,
     )

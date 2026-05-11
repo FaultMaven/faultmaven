@@ -151,15 +151,17 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def find_by_content_hash(
+    async def find_uploaded_file_by_content_hash(
         self, case_id: str, content_hash: str
-    ) -> Optional[Evidence]:
+    ) -> Optional[UploadedFile]:
         """
-        Return the oldest Evidence in this case whose content_hash matches.
+        Return the oldest UploadedFile in this case whose content_hash matches.
 
-        Used for per-case content-based deduplication: an attachment whose
-        SHA-256 content hash already exists on the same case returns the
-        existing Evidence instead of creating a new row.
+        Post-010 strict evidence model: file uploads create only an
+        UploadedFile row (no auto-Evidence at intake), so dedup is a
+        file-level concern. An attachment whose SHA-256 content hash
+        already exists on the same case returns the existing
+        UploadedFile instead of creating a new row.
 
         Args:
             case_id: Case to search within (scope is per-case, not global).
@@ -167,8 +169,9 @@ class CaseRepository(ABC):
                 PreprocessingService.classify_and_extract).
 
         Returns:
-            The oldest matching Evidence (by collection timestamp) if found,
-            None otherwise. NULL content_hash rows are never matched.
+            The oldest matching UploadedFile (by upload timestamp) if
+            found, None otherwise. NULL content_hash rows are never
+            matched.
 
         Raises:
             RepositoryException: If lookup fails
@@ -788,36 +791,22 @@ class InMemoryCaseRepository(CaseRepository):
             return True
         return False
 
-    async def find_by_content_hash(
+    async def find_uploaded_file_by_content_hash(
         self, case_id: str, content_hash: str
-    ) -> Optional[Evidence]:
-        """Find oldest Evidence in a case whose backing UploadedFile has
-        a matching ``content_hash``.
-
-        Post-redesign: ``content_hash`` lives on ``UploadedFile`` (not
-        ``Evidence``). Dedup walks ``case.evidence`` looking for any row
-        whose ``source_file_id`` points at an ``UploadedFile`` with the
-        target hash. Inline-only evidence (``source_file_id is None``)
-        cannot be matched — that's the accepted tradeoff.
+    ) -> Optional[UploadedFile]:
+        """Find oldest UploadedFile in a case whose ``content_hash``
+        matches. Post-010: dedup is a file-level concern (no Evidence
+        rows at intake).
         """
         if not content_hash:
             return None
         case = self._cases.get(case_id)
         if case is None:
             return None
-        files_by_id = {f.file_id: f for f in case.uploaded_files}
-        matches = []
-        for ev in case.evidence:
-            if not ev.source_file_id:
-                continue
-            uf = files_by_id.get(ev.source_file_id)
-            if uf is None:
-                continue
-            if uf.content_hash == content_hash:
-                matches.append(ev)
+        matches = [uf for uf in case.uploaded_files if uf.content_hash == content_hash]
         if not matches:
             return None
-        matches.sort(key=lambda ev: getattr(ev, "collected_at_turn", 0) or 0)
+        matches.sort(key=lambda uf: getattr(uf, "uploaded_at_turn", 0) or 0)
         return matches[0]
 
     async def list_evidence_by_time_window(

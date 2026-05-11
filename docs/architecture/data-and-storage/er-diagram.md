@@ -1,6 +1,6 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-05-10 06:41 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-05-11 05:35 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
@@ -21,7 +21,7 @@
 | `conversion_drafts` | 22 | `id` | conversion_jobs, knowledge_items, organizations, users |
 | `conversion_jobs` | 13 | `id` | cases, organizations, teams, uploaded_files, users |
 | `enterprises` | 11 | `enterprise_id` | — |
-| `evidence` | 24 | `evidence_id` | cases, organizations, uploaded_files |
+| `evidence` | 23 | `evidence_id` | cases, organizations, uploaded_files |
 | `hypotheses` | 23 | `hypothesis_id` | cases, organizations, users |
 | `hypothesis_evidence` | 8 | `hypothesis_id, evidence_id` | evidence, hypotheses, organizations, users |
 | `investigation_sessions` | 17 | `session_id` | cases, organizations, users |
@@ -39,7 +39,7 @@
 | `solutions` | 26 | `solution_id` | cases, evidence, hypotheses, organizations |
 | `team_members` | 4 | `user_id, team_id` | teams, users |
 | `teams` | 7 | `team_id` | organizations |
-| `uploaded_files` | 13 | `file_id` | cases, organizations, users |
+| `uploaded_files` | 18 | `file_id` | cases, organizations, users |
 | `user_audit_log` | 11 | `audit_id` | organizations, users |
 | `users` | 19 | `user_id` | enterprises |
 
@@ -218,7 +218,6 @@ erDiagram
         VARCHAR source_file_id FK
         VARCHAR category
         VARCHAR source_type
-        VARCHAR form
         VARCHAR primary_purpose
         TEXT analysis
         VARCHAR processing_mode
@@ -487,6 +486,11 @@ erDiagram
         VARCHAR upload_source
         INTEGER uploaded_at_turn
         TEXT metadata
+        TEXT summary
+        TEXT structural_index
+        VARCHAR data_type
+        DATETIME coverage_start_ts
+        DATETIME coverage_end_ts
         DATETIME uploaded_at
     }
     user_audit_log {

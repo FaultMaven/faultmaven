@@ -1466,11 +1466,20 @@ class TestDetectCoverageGaps:
     """Tests for _detect_coverage_gaps."""
 
     def _make_case_with_evidence(self, preprocessed_content):
-        """Helper to create a case with evidence containing coverage metadata."""
+        """Helper to create a case with one evidence row whose backing
+        uploaded file carries the coverage metadata.
+
+        Post-010: structural-index (the JSON / coverage text that
+        ``_detect_coverage_gaps`` parses) lives on
+        ``uploaded_files.structural_index``, not on Evidence. Mirror
+        that here so the helper matches production wiring.
+        """
+        uploaded_file = MagicMock()
+        uploaded_file.structural_index = preprocessed_content
         evidence = MagicMock()
-        evidence.extract = preprocessed_content
         case = MagicMock()
         case.evidence = [evidence]
+        case.uploaded_files = [uploaded_file]
         return case
 
     def test_detects_timestamp_gap(self, orchestration_service):
@@ -1576,14 +1585,17 @@ class TestBuildCoverageAdvisories:
             COVERAGE_SEPARATOR,
         )
 
-        evidence = MagicMock()
-        evidence.extract = (
+        # Post-010: coverage metadata lives on uploaded_files.structural_index.
+        uploaded_file = MagicMock()
+        uploaded_file.structural_index = (
             f"log content{COVERAGE_SEPARATOR}"
             f"First timestamp: 2024-01-15 13:42:00\n"
             f"Last timestamp: 2024-01-15 13:57:00"
         )
+        evidence = MagicMock()
         case = MagicMock()
         case.evidence = [evidence]
+        case.uploaded_files = [uploaded_file]
 
         advisory = orchestration_service._build_coverage_advisories(
             "what happened at 14:00?", case
@@ -1604,14 +1616,16 @@ class TestBuildCoverageAdvisories:
             COVERAGE_SEPARATOR,
         )
 
-        evidence = MagicMock()
-        evidence.extract = (
+        uploaded_file = MagicMock()
+        uploaded_file.structural_index = (
             f"log content{COVERAGE_SEPARATOR}"
             f"First timestamp: 2024-01-15 14:00:00\n"
             f"Last timestamp: 2024-01-15 14:30:00\n"
             f"Sources: nginx"
         )
+        evidence = MagicMock()
         case = MagicMock()
+        case.uploaded_files = [uploaded_file]
         case.evidence = [evidence]
 
         advisory = orchestration_service._build_coverage_advisories(

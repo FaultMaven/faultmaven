@@ -181,43 +181,76 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
         # Same transition path as above
 ```
 
-#### 1.2.1 Evidence Classification Lifecycle
+#### 1.2.1 Evidence Classification Lifecycle (post-010)
 
-Evidence classification is **content-based, not stage-based** (see Section 5.2 of [evidence-driven-investigation-framework.md](./evidence-driven-investigation-framework.md)). The LLM evaluates data and classifies it by what it contains, not by which state the case is in.
+Migration 010 made the strict two-table separation real (see
+[Evidence-Driven Investigation Framework §5](./evidence-driven-investigation-framework.md#5-evidence-model-post-010-strict-two-table-separation)
+for the canonical definition). Files are data; evidence is a
+claim-anchored extract. Evidence is born only when the LLM
+deliberately extracts a focused slice in support of a specific
+claim — and that only happens during INVESTIGATING.
 
 **Core principles:**
 
-1. **Uploads create UploadedFile only** — file uploads create raw metadata (`UploadedFile`) in any state. Evidence records are created by the LLM via `evidence_to_add` when it evaluates the data during its analysis turn.
-2. **Classification is content-based** — error logs are `SYMPTOM_EVIDENCE` whether submitted during INQUIRY or INVESTIGATING. Normal configs are `CONTEXTUAL_EVIDENCE`. The LLM classifies based on what the data contains, not which state the case is in.
-3. **Contextual evidence is a classification judgment** — `CONTEXTUAL_EVIDENCE` means the LLM evaluated the data and found it irrelevant to the problem at hand (e.g., normal baseline configs when investigating an OOM crash). It is not a default placeholder.
-4. **Milestones emerge from evidence classification** — milestones are a natural consequence of evidence categories, not LLM-driven during transitions. `_infer_milestones()` maps evidence categories to eligible milestones via `CATEGORY_MILESTONE_MAP`.
-
-**How it works at INQUIRY → INVESTIGATING transition:**
-
-- During INQUIRY, the LLM may create evidence via `evidence_to_add` with content-appropriate categories. These have `advances_milestones=[]` because milestone tracking is not active during INQUIRY.
-- At transition, retroactive attribution runs for ALL evidence:
-  - Contextual evidence gets `[]` from `_infer_milestones()` because `CATEGORY_MILESTONE_MAP[CONTEXTUAL_EVIDENCE] = []`.
-  - Categorized evidence (e.g., `SYMPTOM_EVIDENCE`) gets milestones attributed based on category.
-- This applies uniformly — no distinction between manual and natural flow transitions.
-
-**Manual vs natural flow — implicit distinction:**
-
-- **Manual flow**: User transitions via status dropdown. Typically no evidence or only contextual evidence exists → 0 milestones attributed (natural consequence, no special flags).
-- **Natural flow**: LLM detected a problem and created categorized evidence during INQUIRY → milestones attributed from categories at transition.
-
-The distinction is implicit in the evidence state, not enforced by a `manual` flag.
+1. **Uploads create UploadedFile only.** File uploads (and pasted
+   content / page captures, which are file-ified at intake) persist
+   as an `UploadedFile` row with preprocessing artifacts attached
+   (`summary`, `structural_index`, `data_type`, coverage
+   timestamps). No Evidence row is created at intake.
+2. **No evidence creation during INQUIRY.** Evidence presupposes a
+   confirmed claim. During INQUIRY the claim is still being formed;
+   the LLM may read uploaded files for context (via the structural
+   index in the prompt) and respond conversationally, but does not
+   emit `evidence_to_add`. The Pydantic `InquiryResponse.InquiryStateUpdate`
+   schema does not carry an `evidence_to_add` field; the
+   `_apply_inquiry_updates` evidence-creation branch was removed.
+3. **Evidence is born during INVESTIGATING.** Once the case
+   transitions to INVESTIGATING, the LLM reads the uploaded files'
+   structural indexes from the prompt context and decides which
+   slices to record as Evidence. It emits `evidence_to_add` entries,
+   each carrying a `source_file_id` (copied verbatim from the
+   `<evidence file_id="...">` or `<uploaded_file file_id="...">`
+   attribute) plus the focused `extract`, `summary`, `category`, and
+   `source_type`.
+4. **The source invariant.** Every Evidence row has a known source.
+   `evidence.source_file_id` is enforced by both a DB CHECK
+   constraint (`evidence_source_invariant`) and Pydantic validators
+   on `Evidence` and `EvidenceToAdd`. The only legal NULL case is
+   `source_type=USER_DESCRIPTION` (the chat-quote case where the
+   LLM extracted a verbatim system-output snippet from the user's
+   short chat message; the source is the user message at
+   `collected_at_turn`).
+5. **Milestones from category.** Each of the four claim-anchored
+   categories maps to a milestone via `CATEGORY_MILESTONE_MAP`:
+   symptom_evidence → `symptom_verified`; causal_evidence →
+   `root_cause_identified` (also `solution_proposed` when a
+   ProposedAction is created). Mitigation and solution evidence
+   advance gate milestones via compliance detection, not via
+   category mapping.
 
 **Data layers:**
 
 ```text
-Upload time:   UploadedFile (raw file metadata)
-LLM analysis:  Evidence created via evidence_to_add with content-based category
-Transition:    Retroactive milestone attribution from evidence categories
+Upload time (any state): UploadedFile row (file metadata + summary,
+                         structural_index, data_type, coverage_*)
+INVESTIGATING turn:      Evidence rows born via evidence_to_add,
+                         each referencing an UploadedFile via
+                         source_file_id (or carrying
+                         source_type=USER_DESCRIPTION for the
+                         chat-quote case)
+Transition INQUIRY → INVESTIGATING: just flips status. No
+                         retroactive evidence creation or
+                         milestone re-attribution.
 ```
 
 **Validation:**
 
-`validate_reasoning_first` checks for non-contextual (actionable) evidence when the LLM attempts to complete milestones. Contextual evidence alone cannot justify milestone claims — the LLM must first have evaluated and classified data into actionable categories (SYMPTOM, CAUSAL, MITIGATION, or SOLUTION).
+`validate_reasoning_first` requires the case to have at least one
+actionable Evidence row (or one in `evidence_to_add`) when the LLM
+attempts to complete milestones. Under the post-010 model all
+Evidence rows are claim-anchored — there is no
+`contextual_evidence` escape hatch — so this check is naturally
+satisfied by the new model whenever Evidence exists.
 
 #### INVESTIGATING → RESOLVED (Disposition)
 

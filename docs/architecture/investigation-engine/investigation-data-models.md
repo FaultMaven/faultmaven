@@ -1473,28 +1473,28 @@ class DocumentType(str, Enum):
 > The complete evidence model specification has been moved to the Data Processing section.
 > See: **[Evidence Classification Design](../data-processing/evidence-classification-design.md)** (v2.0)
 >
-> **Current Evidence Categories (6 total)**:
+> **Current Evidence Categories (4 total, post-010)**:
 >
-> - `SYMPTOM_EVIDENCE` - Problem manifestation (used in DIAGNOSIS, TREATMENT)
-> - `CAUSAL_EVIDENCE` - Root cause indicators (used in DIAGNOSIS, TREATMENT; requires hypothesis to exist)
-> - `MITIGATION_EVIDENCE` - Temp fix validation (used in MITIGATION)
-> - `SOLUTION_EVIDENCE` - Permanent fix validation (used in TREATMENT)
-> - `CONTEXTUAL_EVIDENCE` - Baseline/environmental context (used in DIAGNOSIS, TREATMENT)
-> - `REJECTED` - Analyzed but not useful
+> - `SYMPTOM_EVIDENCE` - Problem manifestation
+> - `CAUSAL_EVIDENCE` - Root cause indicators (requires a hypothesis to attach to)
+> - `MITIGATION_EVIDENCE` - Temp fix validation
+> - `SOLUTION_EVIDENCE` - Permanent fix validation
 >
-> **Current Data Type (6 total, unified with preprocessing)**:
+> Migration 010 (2026-05-11) dropped `CONTEXTUAL_EVIDENCE` and `REJECTED`. Baseline/environmental context now lives on `uploaded_files` (the file row carries `summary`, `structural_index`, `data_type`, and coverage timestamps); rejection is expressed as the absence of an evidence row.
 >
-> - The `data_type: Optional[str]` field on `Evidence` captures the preprocessing output (values: `logs`, `metrics`, `configuration`, `code`, `text`, `image`)
-> - `EvidenceSourceType` remains the canonical evidence source classifier (stored in `Evidence.source_type`); a planned rename to `DataType` was not executed
+> **Current Data Type (unified with preprocessing)**:
 >
-> **Key Changes from Previous Design**:
+> - `EvidenceSourceType` is the canonical evidence source classifier on `Evidence.source_type`. `UploadedFile.data_type` carries the same classification on the file row.
+> - Post-010 added `USER_DESCRIPTION` to `EvidenceSourceType` for the chat-quote source case (verbatim system-output quotes embedded in a short user message, size-bounded by the 10K-char `user_message` cap).
 >
-> - ❌ `UNCLASSIFIED` category **REMOVED** (single-phase creation)
-> - ⏸️ `EvidenceSourceType` → `DataType` rename **PLANNED but not yet executed** — `EvidenceSourceType` remains in use
-> - ✅ `OTHER` **RENAMED** to `CONTEXTUAL_EVIDENCE`
-> - ✅ `REJECTED` category **ADDED**
-> - ✅ `RESOLUTION_EVIDENCE` **RENAMED** to `SOLUTION_EVIDENCE`
-> - ✅ `MITIGATION_EVIDENCE` **ADDED** (evidence for temp fix validation)
+> **Key Changes from Previous Design (now reflecting post-010)**:
+>
+> - ❌ `UNCLASSIFIED` category **REMOVED** (single-phase creation, pre-010)
+> - ❌ `CONTEXTUAL_EVIDENCE` **REMOVED** (migration 010 — files cover this in `uploaded_files`)
+> - ❌ `REJECTED` **REMOVED** (migration 010 — rejection = no row)
+> - ❌ `EvidenceForm` **REMOVED** (migration 010 — no dual-path model)
+> - ✅ `USER_DESCRIPTION` **ADDED** to `EvidenceSourceType` (migration 010 — chat-quote source)
+> - ✅ `evidence_source_invariant` CHECK constraint **ADDED** (migration 010 — `source_file_id IS NOT NULL OR source_type = 'user_description'`)
 >
 > For complete schemas, flows, and implementation details, see the canonical design documents:
 >

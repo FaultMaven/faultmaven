@@ -356,11 +356,16 @@ class TestTurnResponseModel:
         assert response.progress_made is False
 
     def test_file_upload_response(self):
-        """File upload turn includes AttachmentResult in response."""
+        """File upload turn includes AttachmentResult in response.
+
+        Post-010: AttachmentResult carries the UploadedFile's
+        ``file_id``, not an evidence_id (uploads no longer create an
+        Evidence row at intake).
+        """
         response = _make_turn_response(
             attachments_processed=[
                 AttachmentResult(
-                    evidence_id="ev_abc123def456",
+                    file_id="file_abc123def456",
                     filename="app.log",
                     source_type="logs",
                     file_size=5000,
@@ -371,7 +376,7 @@ class TestTurnResponseModel:
         )
         assert len(response.attachments_processed) == 1
         att = response.attachments_processed[0]
-        assert att.evidence_id == "ev_abc123def456"
+        assert att.file_id == "file_abc123def456"
         assert att.filename == "app.log"
         assert att.source_type == "logs"
         assert att.processing_status == "completed"
@@ -381,7 +386,7 @@ class TestTurnResponseModel:
         response = _make_turn_response(
             attachments_processed=[
                 AttachmentResult(
-                    evidence_id=f"ev_{i:012d}",
+                    file_id=f"file_{i:012d}",
                     filename=f"file{i}.log",
                     source_type="logs",
                     file_size=1000 * (i + 1),

@@ -394,9 +394,19 @@ class QueryIntent(BaseModel):
 
 
 class AttachmentResult(BaseModel):
-    """Result of preprocessing a single attachment."""
+    """Result of preprocessing a single attachment.
 
-    evidence_id: str
+    Post-010 strict evidence model: file uploads no longer create an
+    Evidence row at intake — they create an UploadedFile row.
+    ``file_id`` is the uploaded_files row identifier (frontend uses it
+    to reference the attachment; Evidence rows that later reference
+    this file via ``source_file_id`` are born during INVESTIGATING
+    when the LLM extracts claim-anchored slices).
+    """
+
+    file_id: str = Field(
+        description="UploadedFile row identifier for this attachment.",
+    )
     filename: str
     file_size: int
     processing_status: str
@@ -406,7 +416,7 @@ class AttachmentResult(BaseModel):
     )
     source_type: str = Field(
         description=(
-            "Data shape from preprocessing classifier: logs | metrics | "
+            "Data-type classification from preprocessing: logs | metrics | "
             "configuration | code | text | image"
         ),
     )
@@ -417,9 +427,10 @@ class AttachmentResult(BaseModel):
     duplicate_of: Optional[str] = Field(
         default=None,
         description=(
-            "If set, this attachment was a per-case content-hash duplicate of an "
-            "earlier upload. No new Evidence was created; this field carries the "
-            "existing evidence_id. Frontend should render a non-blocking toast."
+            "If set, this attachment was a per-case content-hash duplicate "
+            "of an earlier upload. No new UploadedFile was created; this "
+            "field carries the existing file_id. Frontend should render a "
+            "non-blocking toast."
         ),
     )
     duplicate_turn: Optional[int] = Field(
@@ -797,7 +808,7 @@ class UploadedFileDetailsResponse(BaseModel):
     )
     summary: Optional[str] = Field(
         default=None,
-        description="Case-scoped summary from the linked Evidence row, when present",
+        description="File-level preprocessing summary, set by the ingestion pipeline.",
     )
 
     # Evidence linkage
@@ -845,7 +856,11 @@ class EvidenceDetailsResponse(BaseModel):
     # Source file linkage
     source_file: Optional[SourceFileReference] = Field(
         None,
-        description="Source file this evidence was derived from (null if from user input)",
+        description=(
+            "Source file this evidence was derived from. NULL only when "
+            "the evidence is a verbatim quote extracted from the user's "
+            "chat message (source_type=USER_DESCRIPTION)."
+        ),
     )
 
     # Hypothesis linkage
@@ -855,8 +870,8 @@ class EvidenceDetailsResponse(BaseModel):
     extract: Optional[str] = Field(
         default=None,
         description=(
-            "Bulk content backing the summary. NULL for inline-only evidence "
-            "(Path 2 LLM finding without a verbatim quote)."
+            "Optional verbatim quote backing the summary. NULL when the "
+            "LLM omitted it (the summary is self-contained)."
         ),
     )
     analysis: Optional[str] = None

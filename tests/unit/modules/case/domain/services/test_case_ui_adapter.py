@@ -26,7 +26,6 @@ from faultmaven.modules.case.domain.models import (
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,
@@ -146,7 +145,7 @@ def _make_evidence(
         summary=summary,
         extract="2025-01-01 ERROR: timeout",
         source_type=source_type,
-        form=EvidenceForm.DOCUMENT,
+        source_file_id="file_aabb12345678",
         collected_by="test-user",
         collected_at_turn=turn,
     )

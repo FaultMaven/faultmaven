@@ -9,34 +9,37 @@ from typing import TYPE_CHECKING, List
 
 if TYPE_CHECKING:
     from faultmaven.core.investigation.schemas import Attachment
-    from faultmaven.modules.case.domain.models import Evidence
+    from faultmaven.modules.case.domain.models import UploadedFile
 
 
 def generate_implicit_query(
-    attachments: List["Attachment"], evidence: List["Evidence"]
+    attachments: List["Attachment"], uploaded_files: List["UploadedFile"]
 ) -> str:
     """Generate a system query when data is submitted without a question.
 
-    When a user submits attachments but no query text, this function creates
-    an implicit query so the LLM knows to analyze the submitted data.
+    When a user submits attachments but no query text, this function
+    creates an implicit query so the LLM knows to analyze the submitted
+    data. Post-010: reads classification from ``UploadedFile.data_type``
+    (was on the auto-Evidence row in the dual-path model).
 
     Args:
         attachments: Original attachments from the turn payload
-        evidence: Evidence records created from preprocessing
+        uploaded_files: UploadedFile rows created from preprocessing
 
     Returns:
         Implicit query string for the LLM
     """
-    if len(evidence) == 1:
-        ev = evidence[0]
+    if len(uploaded_files) == 1:
+        uf = uploaded_files[0]
         filename = attachments[0].filename if attachments else "data"
+        data_type_label = uf.data_type or "unclassified data"
         return (
             f"I've submitted {filename} "
-            f"(classified as {ev.source_type.value}). "
+            f"(classified as {data_type_label}). "
             f"Analyze this data and tell me what you find."
         )
     filenames = ", ".join(att.filename for att in attachments)
     return (
-        f"I've submitted {len(evidence)} files: {filenames}. "
+        f"I've submitted {len(uploaded_files)} files: {filenames}. "
         f"Analyze this data and tell me what you find."
     )

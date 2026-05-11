@@ -769,7 +769,7 @@ def register_services(container: BaseDIContainer) -> None:
 
     # Evidence service removed in storage redesign 2026-04 phase 2 (standalone path deletion).
     # Agent tools that previously used evidence_service.list_evidence_by_case now read
-    # evidence directly from case.evidence via case_repository (Path 2 / case-embedded).
+    # evidence directly from case.evidence via case_repository.
     evidence_service = None
     container.evidence_service = None
 

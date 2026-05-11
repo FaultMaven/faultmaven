@@ -51,24 +51,17 @@ def _make_evidence(
     evidence_id="ev_abc",
     content_ref="evidence/case_123/app.log",
     filename="app.log",
-    form=None,
 ):
     """Build a minimal Evidence-shaped object for case-embedded lookup.
 
-    The legacy `content_ref` kwarg now wires up an UploadedFile-shaped mock
-    stashed on the evidence (`ev._uploaded_file`) so the test helper that
-    builds the Case can install it on `case.uploaded_files`. Pass
-    `content_ref=None` to model an evidence record with no backing storage.
+    Post-010: file-backed vs chat-extracted is decided by
+    ``source_file_id`` (set when ``content_ref`` is provided, ``None``
+    otherwise). Pass ``content_ref=None`` to model a chat-extracted
+    evidence record with no backing file.
     """
-    from faultmaven.modules.case.contracts import EvidenceForm
-
     ev = MagicMock()
     ev.evidence_id = evidence_id
     ev.case_id = "case_123"
-    # Default to DOCUMENT (file-backed) so existing tests exercise the
-    # successful retrieval path. ISS-025 added a guard that rejects
-    # non-DOCUMENT forms before hitting storage.
-    ev.form = form if form is not None else EvidenceForm.DOCUMENT
     ev.source_type.value = "logs"
 
     if content_ref is not None:
@@ -257,10 +250,12 @@ class TestValidation:
         )
         assert result.success is False
         err_lower = result.error.lower()
+        # Post-010: evidence with source_file_id=None is rejected as
+        # chat-extracted (no stored file behind it).
         assert (
             "not found" in err_lower
             or "not accessible" in err_lower
-            or "no stored file content" in err_lower
+            or "no stored file" in err_lower
         )
 
 
@@ -874,9 +869,9 @@ class TestToolProperties:
 class TestNonFileBackedEvidenceGuard:
     """ISS-025 regression tests.
 
-    The agent creates symptom_evidence records (form=submitted_data) with
-    synthetic content_ref values like 'file:HealthApp_2k.log' that do NOT
-    resolve to stored bytes. When the LLM passes one of those evidence_ids
+    The agent creates symptom_evidence records whose extracts are
+    derived from chat content rather than a stored file (no
+    ``source_file_id``). When the LLM passes one of those evidence_ids
     to search_file, the tool must:
       1. Reject the call with a non-cryptic error.
       2. Enumerate file-backed evidence_ids the LLM should retry with.
@@ -885,27 +880,25 @@ class TestNonFileBackedEvidenceGuard:
     """
 
     @pytest.mark.asyncio
-    async def test_submitted_data_form_is_rejected_with_redirect(self, tool):
-        """A symptom_evidence record (form=submitted_data) must be rejected
-        before storage retrieval, with the error message naming the actual
-        file-backed evidence in the case so the LLM can retry correctly."""
-        from faultmaven.modules.case.contracts import EvidenceForm
-
-        symptom_ev = _make_evidence(
-            evidence_id="ev_symptom",
-            content_ref="file:HealthApp_2k.log",
-            form=EvidenceForm.SUBMITTED_DATA,
+    async def test_chat_extracted_evidence_is_rejected_with_redirect(self, tool):
+        """A chat-extracted evidence record (no source_file_id) must be
+        rejected before storage retrieval, with the error message naming
+        the actual file-backed evidence in the case so the LLM can
+        retry correctly. Post-010: the guard is based on source_file_id
+        presence; the form column is gone."""
+        chat_ev = _make_evidence(
+            evidence_id="ev_chat",
+            content_ref=None,  # No source_file_id → chat-extracted shape
         )
         document_ev = _make_evidence(
             evidence_id="ev_upload",
             content_ref="evidence/case_123/healthapp.log",
             filename="HealthApp_2k.log",
-            form=EvidenceForm.DOCUMENT,
         )
 
         case = MagicMock()
         case.case_id = "case_123"
-        case.evidence = [symptom_ev, document_ev]
+        case.evidence = [chat_ev, document_ev]
         _wire_case_lookup(case)
         ctx = ToolContext(
             session_id="sess_1",
@@ -916,14 +909,14 @@ class TestNonFileBackedEvidenceGuard:
         )
 
         result = await tool.execute_with_context(
-            params={"evidence_id": "ev_symptom", "query": "ERROR"},
+            params={"evidence_id": "ev_chat", "query": "ERROR"},
             context=ctx,
         )
 
         assert result.success is False
         err = result.error
-        # Names the form so the LLM understands WHY this evidence isn't searchable
-        assert "submitted_data" in err
+        # The error explains chat-extracted evidence has no stored file
+        assert "chat" in err.lower() or "no stored file" in err
         # Names the file-backed alternative so the LLM can redirect
         assert "ev_upload" in err
         assert "HealthApp_2k.log" in err
@@ -931,47 +924,13 @@ class TestNonFileBackedEvidenceGuard:
         tool.storage_service.retrieve_file.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_user_text_form_is_rejected(self, tool):
-        """USER_TEXT evidence (free-form user statements) is also non-searchable."""
-        from faultmaven.modules.case.contracts import EvidenceForm
-
-        text_ev = _make_evidence(
-            evidence_id="ev_text",
-            content_ref=None,
-            form=EvidenceForm.USER_TEXT,
-        )
-        case = MagicMock()
-        case.case_id = "case_123"
-        case.evidence = [text_ev]
-        _wire_case_lookup(case)
-        ctx = ToolContext(
-            session_id="sess_1",
-            case_id="case_123",
-            organization_id="org_1",
-            user_id="user_1",
-            in_memory_case=case,
-        )
-
-        result = await tool.execute_with_context(
-            params={"evidence_id": "ev_text", "query": "anything"},
-            context=ctx,
-        )
-
-        assert result.success is False
-        assert "user_text" in result.error
-        tool.storage_service.retrieve_file.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_missing_evidence_id_lists_alternatives(self, tool):
         """When the LLM passes an evidence_id that doesn't exist at all, the
         error should still list the file-backed evidence in the case."""
-        from faultmaven.modules.case.contracts import EvidenceForm
-
         document_ev = _make_evidence(
             evidence_id="ev_actual",
             content_ref="evidence/case_123/system.log",
             filename="system.log",
-            form=EvidenceForm.DOCUMENT,
         )
         case = MagicMock()
         case.case_id = "case_123"
@@ -997,19 +956,18 @@ class TestNonFileBackedEvidenceGuard:
         assert "system.log" in result.error
 
     @pytest.mark.asyncio
-    async def test_no_alternatives_when_only_non_document_evidence_exists(self, tool):
-        """Edge case: a case with ONLY symptom_evidence (no real uploads)
-        should still produce a clean error, no spurious 'available' line."""
-        from faultmaven.modules.case.contracts import EvidenceForm
-
-        only_symptom = _make_evidence(
-            evidence_id="ev_only_symptom",
-            content_ref="file:imagined.log",
-            form=EvidenceForm.SUBMITTED_DATA,
+    async def test_no_alternatives_when_only_chat_extracted_evidence_exists(self, tool):
+        """Edge case: a case with ONLY chat-extracted evidence (no
+        file-backed uploads) should still produce a clean error, no
+        spurious 'available' line. Post-010: non-searchable evidence
+        is identified by source_file_id IS NULL."""
+        only_chat = _make_evidence(
+            evidence_id="ev_only_chat",
+            content_ref=None,  # chat-extracted: no source_file_id
         )
         case = MagicMock()
         case.case_id = "case_123"
-        case.evidence = [only_symptom]
+        case.evidence = [only_chat]
         _wire_case_lookup(case)
         ctx = ToolContext(
             session_id="sess_1",
@@ -1020,12 +978,14 @@ class TestNonFileBackedEvidenceGuard:
         )
 
         result = await tool.execute_with_context(
-            params={"evidence_id": "ev_only_symptom", "query": "anything"},
+            params={"evidence_id": "ev_only_chat", "query": "anything"},
             context=ctx,
         )
 
         assert result.success is False
-        assert "submitted_data" in result.error
-        # No misleading "Available file-backed evidence:" line when there
-        # genuinely isn't any
+        # The error explains why the evidence is non-searchable
+        err_lower = result.error.lower()
+        assert "no stored file" in err_lower or "chat" in err_lower
+        # No misleading "Available file-backed evidence:" line when
+        # there genuinely isn't any
         assert "Available file-backed evidence" not in result.error

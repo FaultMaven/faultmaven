@@ -46,8 +46,6 @@ from faultmaven.modules.case.contracts import Case, CaseStatus
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
 from faultmaven.modules.case.domain.models import (
     Evidence,
-    EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     UploadedFile,
 )
@@ -253,14 +251,18 @@ def _build_classification_clarification_suggestions(
 class _PreprocessedAttachment:
     """Internal result of `_preprocess_attachment`.
 
-    Carries both the Evidence (new or existing-on-duplicate) and dedup signals
-    the caller needs to decide whether to append to `case.evidence` and how to
-    populate `AttachmentResult.duplicate_of`. Also carries classification
-    clarification hints when the heuristic classifier couldn't confidently
-    classify the attachment — see `_build_classification_clarification_suggestions`.
+    Post-010 strict evidence model: file uploads no longer create an
+    Evidence row at intake. This carries the UploadedFile that was
+    persisted (with preprocessing artifacts: summary, structural_index,
+    data_type, coverage timestamps) plus dedup signals the caller
+    needs to populate ``AttachmentResult.duplicate_of``.
+
+    Also carries classification clarification hints when the heuristic
+    classifier couldn't confidently classify the attachment — see
+    ``_build_classification_clarification_suggestions``.
     """
 
-    evidence: Evidence
+    uploaded_file: UploadedFile
     duplicate_of: Optional[str] = None
     duplicate_turn: Optional[int] = None
     # Classification clarification — populated only when the preprocessing
@@ -355,7 +357,14 @@ class InvestigationService:
             )
             processing_mode = classification.mode.value
 
-            evidence_created: List["Evidence"] = []
+            # Post-010 strict evidence model: preprocessing creates only
+            # UploadedFile rows (no auto-Evidence). Evidence is born
+            # later when the LLM emits ``evidence_to_add`` during
+            # INVESTIGATING. Track the UploadedFiles created this turn
+            # so the implicit-query helper can describe what the user
+            # submitted; ``case.uploaded_files`` already had each row
+            # appended inside ``_preprocess_attachment``.
+            uploaded_files_this_turn: List["UploadedFile"] = []
             preprocess_results: List[_PreprocessedAttachment] = []
             if payload.has_attachments:
                 for attachment in payload.attachments:
@@ -367,16 +376,14 @@ class InvestigationService:
                         processing_mode=processing_mode,
                     )
                     preprocess_results.append(result)
-                    evidence_created.append(result.evidence)
-                    # On dedup, the existing Evidence is already on `case.evidence`
-                    # from the DB load — don't double-append.
-                    if result.duplicate_of is None:
-                        case.evidence.append(result.evidence)
+                    uploaded_files_this_turn.append(result.uploaded_file)
 
             # Determine query (explicit or implicit)
             query = payload.query
             if not payload.has_query and payload.has_attachments:
-                query = generate_implicit_query(payload.attachments, evidence_created)
+                query = generate_implicit_query(
+                    payload.attachments, uploaded_files_this_turn
+                )
 
             # 2. Build user message and update case in-memory (NOT persisted yet).
             #    Deferring the save until after LLM processing ensures atomic
@@ -475,25 +482,22 @@ class InvestigationService:
                     action=intent.action if intent else None,
                 )
             elif intent_type == IntentType.CONVERSATION:
-                # Build attachment metadata for the engine
+                # Build attachment metadata for the engine. Post-010:
+                # uploads create only an UploadedFile (no auto-Evidence),
+                # so the metadata is sourced directly from those rows.
                 attachment_metadata = []
-                for att, ev in zip(payload.attachments, evidence_created):
+                for att, uf in zip(payload.attachments, uploaded_files_this_turn):
                     is_paste = att.filename.startswith("pasted-content-")
                     source = "paste" if is_paste else "file_upload"
-                    # UploadedFile.file_id requires ^(file_|data_)[a-f0-9]{12,16}$
-                    ev_hex = ev.evidence_id.removeprefix("ev_")
-                    file_id = f"data_{ev_hex}" if is_paste else f"file_{ev_hex}"
-                    file_meta = case.find_uploaded_file(ev.source_file_id)
                     attachment_metadata.append(
                         {
-                            "evidence_id": ev.evidence_id,
-                            "file_id": file_id,
-                            "filename": att.filename,
-                            "data_type": ev.source_type.value,
-                            "size": file_meta.size_bytes if file_meta else 0,
+                            "file_id": uf.file_id,
+                            "filename": uf.filename,
+                            "data_type": uf.data_type or "",
+                            "size": uf.size_bytes,
                             "source_type": source,
-                            "summary": ev.summary,
-                            "s3_uri": file_meta.storage_ref if file_meta else None,
+                            "summary": uf.summary or "",
+                            "s3_uri": uf.storage_ref,
                         }
                     )
                 # DA evidence search is handled inside MilestoneEngine's tool loop.
@@ -584,23 +588,15 @@ class InvestigationService:
                 progress_made=result.get("metadata", {}).get("progress_made", False),
                 attachments_processed=[
                     AttachmentResult(
-                        evidence_id=res.evidence.evidence_id,
+                        file_id=res.uploaded_file.file_id,
                         filename=att.filename,
-                        source_type=res.evidence.source_type.value,
-                        file_size=(
-                            (lambda fm: fm.size_bytes if fm else 0)(
-                                case.find_uploaded_file(res.evidence.source_file_id)
-                            )
-                        ),
+                        source_type=res.uploaded_file.data_type or "",
+                        file_size=res.uploaded_file.size_bytes,
                         processing_status=(
                             "duplicate" if res.duplicate_of else "completed"
                         ),
                         uploaded_at=datetime.now(timezone.utc).isoformat(),
-                        upload_source=(
-                            att.source_metadata.get("source_type", "file_upload")
-                            if att.source_metadata
-                            else "file_upload"
-                        ),
+                        upload_source=res.uploaded_file.upload_source,
                         duplicate_of=res.duplicate_of,
                         duplicate_turn=res.duplicate_turn,
                     )
@@ -615,7 +611,7 @@ class InvestigationService:
             logger.info(
                 f"Processed turn {response.turn_number} for case {case_id}, "
                 f"status={response.case_status}, milestones={len(response.milestones_completed)}, "
-                f"attachments={len(evidence_created)}, messages={updated_case.message_count}"
+                f"attachments={len(uploaded_files_this_turn)}, messages={updated_case.message_count}"
             )
 
             return response
@@ -701,11 +697,13 @@ class InvestigationService:
                 (triage or directed_analysis)
 
         Returns:
-            `_PreprocessedAttachment` wrapping the Evidence plus optional
-            dedup metadata. On content-hash duplicate within the same case,
-            the returned Evidence is the existing row and `duplicate_of` /
-            `duplicate_turn` are populated; no new Evidence is created and
-            no raw file is re-stored.
+            ``_PreprocessedAttachment`` wrapping the persisted
+            ``UploadedFile`` plus optional dedup metadata. Post-010
+            strict evidence model: NO Evidence row is created at this
+            intake step. On content-hash duplicate within the same
+            case, the returned UploadedFile is the existing row and
+            ``duplicate_of`` / ``duplicate_turn`` are populated; no
+            new UploadedFile is created and no raw file is re-stored.
 
         Raises:
             ServiceException: If preprocessing or storage fails
@@ -755,62 +753,51 @@ class InvestigationService:
             source_metadata=source_meta,
         )
 
-        # Per-case content-hash dedup short-circuit.
-        # An attachment whose content_hash already exists on this case returns
-        # the existing Evidence instead of creating a new row. No raw file
-        # re-storage either — storage already has the bytes under the original
-        # content_ref.
-        existing = None
+        # Per-case content-hash dedup short-circuit. Post-010: dedup is
+        # a file-level concern (uploaded_files), since uploads no longer
+        # create an Evidence row at intake. An attachment whose
+        # content_hash already exists on this case returns the existing
+        # UploadedFile instead of creating a new one. No raw file
+        # re-storage either — storage already has the bytes.
+        existing_file = None
         if preprocessing_result.content_hash:
             try:
-                existing = await self.repository.find_by_content_hash(
-                    case.case_id, preprocessing_result.content_hash
+                existing_file = (
+                    await self.repository.find_uploaded_file_by_content_hash(
+                        case.case_id, preprocessing_result.content_hash
+                    )
                 )
             except AttributeError:
                 # Repository doesn't implement dedup lookup — graceful fallback.
                 # Happens in legacy test doubles. Silently skip dedup.
-                existing = None
-        if existing is not None:
+                existing_file = None
+        if existing_file is not None:
             logger.info(
                 "Duplicate upload detected: file '%s' matches %s (turn %s) "
-                "in case %s — reusing existing evidence",
+                "in case %s — reusing existing UploadedFile",
                 attachment.filename,
-                existing.evidence_id,
-                existing.collected_at_turn,
+                existing_file.file_id,
+                existing_file.uploaded_at_turn,
                 case.case_id,
             )
             EVIDENCE_DEDUP_HITS_TOTAL.inc()
             return _PreprocessedAttachment(
-                evidence=existing,
-                duplicate_of=existing.evidence_id,
-                duplicate_turn=existing.collected_at_turn,
+                uploaded_file=existing_file,
+                duplicate_of=existing_file.file_id,
+                duplicate_turn=existing_file.uploaded_at_turn,
             )
 
-        # Lift the namespaced evidence_metadata block out of the
-        # preprocessing result (classifier confidence in Phase 1, extractor
-        # attempts in Phase 2, entity overflow markers in Phase 4). Absent
-        # for any PreprocessingResult produced before the Phase 1 wiring,
-        # hence the defensive extraction below. See
-        # docs/architecture/data-and-storage/schemas/case-schema.md §4.3.
-        #
-        # Accept only dict-shaped metadata — test doubles may return a
-        # MagicMock from `.get()` which would otherwise fail Evidence's
-        # Dict[str, Any] validator downstream.
-        pp_metadata = preprocessing_result.extraction_metadata
-        evidence_metadata: Optional[Dict[str, Any]] = None
-        if isinstance(pp_metadata, dict):
-            candidate = pp_metadata.get("evidence_metadata")
-            if isinstance(candidate, dict):
-                evidence_metadata = candidate
-
-        # Path 1 (DOCUMENT-form Evidence from a file upload):
-        # 1. Store the raw content; storage_result.file_path becomes the
-        #    UploadedFile.storage_ref the storage backend uses to retrieve.
-        # 2. Construct UploadedFile FIRST — Evidence references it via
-        #    source_file_id, so the file row must exist before the evidence row.
-        # 3. Construct Evidence pointing at the UploadedFile via source_file_id.
-        #    summary is the LLM-readable label; extract is the structural index
-        #    (file_extract + search_map + file_meta) the agent reads.
+        # Post-010 strict evidence model: file upload creates only an
+        # UploadedFile row (with preprocessing artifacts attached).
+        # 1. Store raw content; storage_result.file_path becomes the
+        #    UploadedFile.storage_ref the backend uses to retrieve.
+        # 2. Construct UploadedFile carrying file-level metadata
+        #    (filename, size, hash, mime, upload provenance).
+        # 3. Attach the preprocessing artifacts (summary,
+        #    structural_index, data_type, coverage timestamps) — these
+        #    describe the file, not any claim about it.
+        # 4. No Evidence row is created here; Evidence is born only
+        #    when the LLM emits evidence_to_add during INVESTIGATING.
         upload_source = "file_upload"
         if attachment.source_metadata:
             upload_source = attachment.source_metadata.get("source_type", "file_upload")
@@ -860,73 +847,36 @@ class InvestigationService:
                     e,
                 )
 
-        evidence = Evidence(
-            evidence_id=f"ev_{uuid4().hex[:12]}",
-            form=EvidenceForm.DOCUMENT,
-            category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
-            source_type=_infer_source_type(preprocessing_result.data_type),
-            primary_purpose="user_submitted_data",
-            summary=preprocessing_result.summary,
-            extract=preprocessing_result.structural_index,
-            source_file_id=uploaded_file.file_id,
-            processing_mode=processing_mode,
-            collected_by=user_id,
-            collected_at_turn=turn_number,
-            metadata=evidence_metadata,
-            # Phase 3 — coverage timestamps when the preprocessor parsed them
-            # out of the raw content. NULL for timeless evidence (configs,
-            # code, short pastes); the Phase 3b query filters these out
-            # of time-window queries naturally.
-            coverage_start_ts=preprocessing_result.coverage_start_ts,
-            coverage_end_ts=preprocessing_result.coverage_end_ts,
-        )
+        # Post-010 strict evidence model: write preprocessing artifacts
+        # to the UploadedFile row where they semantically belong (they
+        # describe the FILE, not any claim about it). NO Evidence row
+        # is created at this intake step — Evidence is born only when
+        # the LLM extracts a claim-anchored slice via evidence_to_add
+        # during INVESTIGATING.
+        uploaded_file.summary = preprocessing_result.summary
+        uploaded_file.structural_index = preprocessing_result.structural_index
+        uploaded_file.data_type = _infer_source_type(
+            preprocessing_result.data_type
+        ).value
+        uploaded_file.coverage_start_ts = preprocessing_result.coverage_start_ts
+        uploaded_file.coverage_end_ts = preprocessing_result.coverage_end_ts
 
-        # Phase 4 — persist extracted entities into the case-level
-        # registry. Best-effort: an entity upsert failure must not
-        # poison evidence persistence. Runs only when the preprocessor
-        # emitted observations (the feature flag is checked there).
-        entities_payload = getattr(preprocessing_result, "entities", None) or []
-        if entities_payload:
-            try:
-                from faultmaven.modules.case.domain.models import (
-                    CaseEntity,
-                    EntityType,
-                )
+        # Preprocessor diagnostics (classifier confidence, extractor
+        # attempts, entity overflow markers) previously rode on the
+        # auto-Evidence row as ``metadata``. Under post-010 they have
+        # no claim-anchored Evidence to land on; the natural home is
+        # ``uploaded_files.metadata`` (JSON blob). Tracked as a
+        # follow-up — no currently-shipping feature regresses.
 
-                case_entities: list[CaseEntity] = []
-                for obs in entities_payload:
-                    try:
-                        entity_type = EntityType(obs["entity_type"])
-                    except (KeyError, ValueError):
-                        continue
-                    value = obs.get("entity_value")
-                    if not isinstance(value, str) or not value:
-                        continue
-                    case_entities.append(
-                        CaseEntity(
-                            case_id=case.case_id,
-                            entity_type=entity_type,
-                            entity_value=value[:255],
-                            evidence_id=evidence.evidence_id,
-                            mention_count=max(1, int(obs.get("mention_count", 1) or 1)),
-                            in_error_context=bool(obs.get("in_error_context", False)),
-                            # Phase 3a coverage start doubles as the
-                            # earliest timestamp for entities extracted
-                            # from this evidence. NULL for timeless
-                            # content (configs, short pastes).
-                            first_seen_ts=preprocessing_result.coverage_start_ts,
-                        )
-                    )
-                if case_entities:
-                    upsert = getattr(self.repository, "upsert_case_entities", None)
-                    if upsert is not None:
-                        await upsert(case.case_id, evidence.evidence_id, case_entities)
-            except Exception as exc:
-                logger.warning(
-                    "upsert_case_entities failed for %s (non-fatal): %s",
-                    evidence.evidence_id,
-                    exc,
-                )
+        # Post-010: case_entities population is deferred. Under the
+        # dual-path model these rows were anchored to the auto-Evidence
+        # row's ``evidence_id``. Under the new model, entities should
+        # either anchor to the UploadedFile (schema change) or be
+        # populated lazily when the LLM creates evidence_to_add rows
+        # referencing this file. Scheduled for a follow-up batch — the
+        # case_entities feature regresses transiently but the data is
+        # still in ``preprocessing_result.entities`` for any reader
+        # that wants it.
 
         # Surface classification clarification hints when the heuristic
         # classifier produced a low-confidence result. Suggested types are
@@ -942,7 +892,7 @@ class InvestigationService:
             )
 
         return _PreprocessedAttachment(
-            evidence=evidence,
+            uploaded_file=uploaded_file,
             classification_failed=is_classification_failed,
             suggested_types=suggested_types,
             attachment_filename=attachment.filename,
@@ -1231,16 +1181,21 @@ class InvestigationService:
         data_type: DataType,
         trigger: str = "api",
     ) -> Evidence:
-        """Re-run preprocessing on an existing evidence row under a
-        user-specified data type.
+        """Re-run preprocessing on the file behind an existing evidence row
+        under a user-specified data type.
 
         Phase 1.5 — implements the "escape hatch" for confident
         misclassification. The caller (PATCH endpoint or
         ``reclassify_evidence`` agent tool) provides the new data type;
         this method fetches the stored raw bytes, re-runs extraction
-        under ``user_override=data_type``, and overwrites the
-        ``preprocessed_content`` / ``data_type`` / ``metadata`` fields
-        on the same evidence row.
+        under ``user_override=data_type``, and updates the **backing
+        UploadedFile**'s preprocessing artifacts (``data_type``,
+        ``summary``, ``structural_index``) — post-010 these live with
+        the file, not on Evidence. The Evidence row's ``source_type`` is
+        re-aligned so it stays consistent with the file's new
+        classification, but the LLM-authored ``summary`` and ``extract``
+        fields on Evidence are left untouched (they are claim content,
+        not preprocessing output).
 
         Args:
             case_id: Case owning the evidence.
@@ -1252,13 +1207,14 @@ class InvestigationService:
                 Labels the observability counter.
 
         Returns:
-            The updated Evidence row with new preprocessed_content and
-            metadata.
+            The updated Evidence row with the re-aligned
+            ``source_type``. The structural_index / summary / data_type
+            updates land on the backing UploadedFile in the same case.
 
         Raises:
             NotFoundError: case or evidence not found.
             PermissionDeniedException: user does not own the case.
-            ValidationException: evidence has no ``content_ref`` —
+            ValidationException: evidence has no backing file —
                 reclassification requires stored raw bytes to re-extract.
             ServiceException: any other failure (storage fetch,
                 preprocessing).
@@ -1333,13 +1289,36 @@ class InvestigationService:
         previous_type = evidence.source_type.value
         new_type = preprocessing_result.data_type.value
 
-        # Update the row in place via model_copy to bypass cross-field
-        # validators, then write back the list so Case's own validators
-        # see a consistent state.
+        # Post-010 routing: preprocessing artifacts (data_type, summary,
+        # structural_index) describe the FILE and land on
+        # ``uploaded_files``. Evidence carries the LLM's claim — we only
+        # re-align ``source_type`` so the agent sees consistent data on
+        # the next turn. The LLM-authored ``summary`` and ``extract``
+        # fields on Evidence are left untouched: they are claim content,
+        # not preprocessing output.
+        file_index = next(
+            (
+                i
+                for i, uf in enumerate(case.uploaded_files or [])
+                if uf.file_id == evidence.source_file_id
+            ),
+            None,
+        )
+        new_files_list = list(case.uploaded_files or [])
+        if file_index is not None:
+            new_files_list[file_index] = file_meta.model_copy(
+                update={
+                    "data_type": _infer_source_type(
+                        preprocessing_result.data_type
+                    ).value,
+                    "summary": preprocessing_result.summary,
+                    "structural_index": preprocessing_result.structural_index,
+                },
+                deep=True,
+            )
+
         updated_evidence = evidence.model_copy(
             update={
-                "extract": preprocessing_result.structural_index,
-                "summary": preprocessing_result.summary,
                 "source_type": _infer_source_type(preprocessing_result.data_type),
                 "metadata": new_evidence_metadata,
             },
@@ -1348,7 +1327,11 @@ class InvestigationService:
         new_evidence_list = list(case.evidence)
         new_evidence_list[evidence_index] = updated_evidence
         updated_case = case.model_copy(
-            update={"evidence": new_evidence_list}, deep=True
+            update={
+                "evidence": new_evidence_list,
+                "uploaded_files": new_files_list,
+            },
+            deep=True,
         )
 
         await self.repository.save(updated_case)

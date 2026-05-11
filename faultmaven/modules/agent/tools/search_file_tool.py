@@ -425,28 +425,22 @@ class SearchFileTool(AgentTool):
             return f"Evidence {evidence_id} not found in this case.{alts}"
 
         # Reject non-file-backed evidence forms BEFORE hitting storage.
-        # Agent-created symptom_evidence / mitigation_evidence records have
-        # form=submitted_data and a synthetic content_ref like 'file:NAME' that
-        # does not resolve to stored bytes. ISS-025: the LLM was retrying these
-        # against search_file and treating the resulting failure as "the file
-        # is inaccessible", giving up on follow-up questions.
-        from faultmaven.modules.case.contracts import EvidenceForm
-
-        ev_form = getattr(case_evidence, "form", None)
-        if ev_form is not None and ev_form != EvidenceForm.DOCUMENT:
-            ev_form_value = ev_form.value if hasattr(ev_form, "value") else str(ev_form)
+        # Post-010: chat-extracted evidence (source_file_id IS NULL,
+        # source_type=USER_DESCRIPTION) has no stored file behind it
+        # and cannot be searched. ISS-025: previously the LLM retried
+        # these against search_file and treated the failure as "the
+        # file is inaccessible", giving up on follow-up questions.
+        if getattr(case_evidence, "source_file_id", None) is None:
             alts = self._format_searchable_alternatives(all_evidence, evidence_id, case)
             logger.warning(
-                "search_file: evidence %s has non-searchable form=%s; pointing "
-                "LLM at file-backed alternatives",
+                "search_file: evidence %s has no source file (chat-extracted); "
+                "pointing LLM at file-backed alternatives",
                 evidence_id,
-                ev_form_value,
             )
             return (
-                f"Evidence {evidence_id} is form={ev_form_value} (a derived "
-                f"finding or user statement, not a stored file) and cannot be "
-                f"searched directly. Use a file-backed evidence_id "
-                f'(searchable="true") for this search.{alts}'
+                f"Evidence {evidence_id} has no stored file behind it (it's a "
+                f"verbatim quote from the user's chat message). Use a file-backed "
+                f'evidence_id (searchable="true") for this search.{alts}'
             )
 
         # Read raw file via UploadedFile.storage_ref
@@ -498,20 +492,17 @@ class SearchFileTool(AgentTool):
     ) -> str:
         """Build a redirect hint listing file-backed evidence_ids in this case.
 
-        ISS-025: when the LLM picks a non-file-backed evidence_id (e.g. a
-        symptom_evidence record it created itself), the tool error should
-        point it at the actual searchable upload(s) so the next iteration
-        succeeds.
+        ISS-025: when the LLM picks a non-file-backed evidence_id (e.g.
+        a chat-extracted USER_DESCRIPTION row), the tool error should
+        point it at the actual searchable upload(s) so the next
+        iteration succeeds.
         """
-        from faultmaven.modules.case.contracts import EvidenceForm
-
         alternatives = []
         for ev in all_evidence:
             ev_id = getattr(ev, "evidence_id", None)
             if not ev_id or ev_id == excluded_evidence_id:
                 continue
-            ev_form = getattr(ev, "form", None)
-            if ev_form != EvidenceForm.DOCUMENT:
+            if getattr(ev, "source_file_id", None) is None:
                 continue
             file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
             if file_meta is None:

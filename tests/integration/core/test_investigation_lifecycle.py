@@ -44,7 +44,6 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 from faultmaven.modules.case.contracts import (
     CaseStatus,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
 )
 from faultmaven.modules.case.domain.models import (
@@ -189,22 +188,20 @@ def _inquiry_response_user_confirms() -> InquiryResponse:
 
 
 def _inquiry_response_with_evidence() -> InquiryResponse:
-    """Inquiry response: user provides log data → evidence created."""
+    """Inquiry response acknowledging submitted log data.
+
+    Post-010: INQUIRY no longer creates Evidence rows — uploaded files
+    persist in ``uploaded_files`` with preprocessing artifacts but the
+    LLM extracts claim-anchored slices only after the case transitions
+    to INVESTIGATING. The acknowledgement-only InquiryResponse below
+    reflects that.
+    """
     return InquiryResponse(
         agent_response=(
             "I see the error patterns in your logs. The connection pool exhaustion "
             "correlates with the deployment time."
         ),
-        state_updates=InquiryResponse.InquiryStateUpdate(
-            evidence_to_add=[
-                EvidenceToAdd(
-                    summary="Application logs showing connection pool exhaustion after v2.1.3 deployment",
-                    category=EvidenceCategory.SYMPTOM_EVIDENCE,
-                    source_type=EvidenceSourceType.LOGS,
-                    content_ref="2026-02-15 14:03:21 ERROR [pool] Connection pool exhausted: max=50, active=50, waiting=127",
-                ),
-            ],
-        ),
+        state_updates=InquiryResponse.InquiryStateUpdate(),
     )
 
 
@@ -231,7 +228,8 @@ def _investigation_verification_response() -> InvestigationResponse_Diagnosis:
                     summary="Metrics data showing p99 latency at 5.2s (normal: 200ms)",
                     category=EvidenceCategory.SYMPTOM_EVIDENCE,
                     source_type=EvidenceSourceType.METRICS,
-                    content_ref="p99=5200ms, p95=3100ms, error_rate=12.5%",
+                    extract="p99=5200ms, p95=3100ms, error_rate=12.5%",
+                    source_file_id="file_aabb12345678",
                 ),
             ],
             outcome=TurnOutcome.MILESTONE_COMPLETED,
@@ -346,10 +344,16 @@ class TestInvestigationLifecycle:
         assert updated.inquiry.problem_confirmation.problem_type == "slowness"
         assert len(result["agent_response"]) > 0
 
-    async def test_inquiry_evidence_created_from_submitted_data(
-        self, engine, case_repo
-    ):
-        """INQUIRY turn with submitted_data → evidence record created."""
+    async def test_inquiry_turn_creates_no_evidence(self, engine, case_repo):
+        """Post-010: INQUIRY turns do NOT create Evidence rows.
+
+        Evidence presupposes a confirmed claim. During INQUIRY the
+        claim is still being formed; any data the user submits is
+        persisted as an UploadedFile and processed for context, but
+        Evidence rows are only born when the case transitions to
+        INVESTIGATING and the LLM extracts claim-anchored slices via
+        evidence_to_add.
+        """
         case = _make_inquiry_case(current_turn=2)
         case.inquiry.proposed_problem_statement = "API latency spikes in production"
         await case_repo.save(case)
@@ -365,13 +369,10 @@ class TestInvestigationLifecycle:
             )
 
         updated = result["case_updated"]
-        assert len(updated.evidence) >= 1
-        ev = updated.evidence[0]
-        assert ev.category == EvidenceCategory.SYMPTOM_EVIDENCE
-        assert ev.source_type == EvidenceSourceType.LOGS
-        # Engine-created evidence from evidence_to_add uses SUBMITTED_DATA
-        # (evidence derived from agent/LLM processing, not direct user input).
-        assert ev.form == EvidenceForm.SUBMITTED_DATA
+        # The strict invariant: no Evidence during INQUIRY.
+        assert updated.evidence == []
+        # Case stays in INQUIRY (no confirmation in this turn).
+        assert updated.status == CaseStatus.INQUIRY
 
     async def test_explicit_transition_to_investigating(self, engine, case_repo):
         """Explicit intent_type='status_transition' routes through normal INQUIRY flow.
@@ -424,9 +425,12 @@ class TestInvestigationLifecycle:
         assert updated.status == CaseStatus.INVESTIGATING
         assert updated.progress.symptom_verified is True
         assert len(updated.evidence) >= 1
-        # Engine-created evidence from evidence_to_add uses SUBMITTED_DATA
+        # Post-010: Evidence is the LLM's claim-anchored extract; the
+        # ``form`` discriminator is gone. The source is identified by
+        # source_file_id (file-backed) or source_type=USER_DESCRIPTION
+        # (chat-extracted). Here we asserted on the file-backed case.
         ev = updated.evidence[0]
-        assert ev.form == EvidenceForm.SUBMITTED_DATA
+        assert ev.source_file_id is not None
         assert len(updated.turn_history) >= 1
         assert result["metadata"]["progress_made"] is True
 
@@ -792,13 +796,15 @@ class TestEvidenceAccumulation:
                         summary="v2.1.3 deployment introduced DB connection leak causing errors from 14:03",
                         category=EvidenceCategory.CAUSAL_EVIDENCE,
                         source_type=EvidenceSourceType.LOGS,
-                        content_ref="deploy: 14:00:00 v2.1.3; errors: 14:03:21",
+                        extract="deploy: 14:00:00 v2.1.3; errors: 14:03:21",
+                        source_file_id="file_aabb12345678",
                     ),
                     EvidenceToAdd(
                         summary="Connection pool exhaustion trace confirms leak in v2.1.3 connection handler",
                         category=EvidenceCategory.CAUSAL_EVIDENCE,
                         source_type=EvidenceSourceType.LOGS,
-                        content_ref="pool.max_connections exceeded; handler.py:L42 missing conn.close()",
+                        extract="pool.max_connections exceeded; handler.py:L42 missing conn.close()",
+                        source_file_id="file_aabb12345678",
                     ),
                 ],
                 outcome=TurnOutcome.MILESTONE_COMPLETED,
