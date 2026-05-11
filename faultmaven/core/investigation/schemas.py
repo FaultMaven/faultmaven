@@ -234,45 +234,64 @@ class ProblemVerificationUpdate(BaseModel):
 
 
 class EvidenceToAdd(BaseModel):
-    """Evidence to be added to the case.
+    """A claim-anchored evidence record the LLM is creating this turn.
 
-    Milestone Attribution (Option 2.5 - Three-Tier Logic):
+    Post-010 strict evidence model: every evidence row is the LLM's
+    deliberate decision to record a focused, claim-relevant extract.
+    Files are data (``uploaded_files``); evidence is the verbatim
+    slice that supports a specific claim.
+
+    Source rule (mirrors the ``evidence_source_invariant`` DB CHECK):
+    - If the extract was drawn from an uploaded file → set
+      ``source_file_id`` to that file's id (visible in the
+      ``<evidence file_id="...">`` and ``<uploaded_file file_id="...">``
+      attributes in the prompt context).
+    - If the extract was a verbatim system-output quote the user
+      typed in their short chat message → leave ``source_file_id``
+      ``None`` and set ``source_type=USER_DESCRIPTION``.
+    - Every other source_type requires a file_id; the system rejects
+      the row otherwise.
+
+    Milestone Attribution (Option 2.5 — Three-Tier Logic):
 
     Tier 1: MilestoneUpdates drives milestone state (turn-level, LLM specifies)
     Tier 2: System infers advances_milestones from category (automatic, handles 90%)
     Tier 3: LLM overrides via advances_milestones field (optional, handles 10%)
 
-    The advances_milestones field is OPTIONAL. If omitted, the system will automatically
-    infer milestone attribution based on the evidence category and milestones completed
-    this turn using the CATEGORY_MILESTONE_MAP.
-
-    Only provide advances_milestones explicitly when:
-    - The automatic inference would be wrong (rare edge case)
-    - You need to specify a subset of eligible milestones
-    - The evidence contributed to a milestone outside normal category mapping
-
-    Design Reference:
-    - docs/working/MILESTONE-ADVANCEMENT-ANALYSIS.md (Option 2.5)
-    - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md
+    The advances_milestones field is OPTIONAL. If omitted, the system
+    will automatically infer milestone attribution based on the
+    evidence category and milestones completed this turn using
+    CATEGORY_MILESTONE_MAP.
     """
 
     summary: str
     extract: Optional[str] = Field(
         default=None,
         description=(
-            "Optional verbatim quote: a short snippet (one or a few lines) "
-            "drawn directly from a file, command output, or conversation, "
-            "to ground the finding in concrete evidence. Leave empty when "
-            "the summary is self-contained. Do NOT put a filename or "
-            "'file:NAME' here — file-backed evidence is created automatically "
-            "from uploaded attachments by the preprocessing pipeline; "
-            "evidence_to_add is for derived findings the agent draws from "
-            "those uploads, not for re-creating file references. Persisted "
-            "as Evidence.extract on the resulting row."
+            "Optional verbatim quote drawn from the source. For "
+            "file-backed evidence: a focused slice (one or a few lines) "
+            "of system output the file contains. For chat-extracted "
+            "evidence (source_type=USER_DESCRIPTION): the verbatim "
+            "system-output snippet the user typed into chat. Leave "
+            "empty when the summary is self-contained. Do NOT put "
+            "the user's own description or paraphrase here — the rule "
+            "is 'extract is system output, not user words'."
         ),
     )
     category: EvidenceCategory
     source_type: EvidenceSourceType
+    source_file_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "FK to the uploaded_files row this extract came from. "
+            "REQUIRED unless source_type=USER_DESCRIPTION (the "
+            "chat-quote case). Copy the file_id verbatim from the "
+            '<evidence file_id="..."> or <uploaded_file file_id="..."> '
+            "attributes in the prompt context. Leaving this blank for "
+            "a non-USER_DESCRIPTION extract causes the row to be "
+            "rejected by the evidence_source_invariant DB CHECK."
+        ),
+    )
     likelihood: float = Field(0.8, ge=0.0, le=1.0)
 
     @field_validator("summary", mode="before")
@@ -313,6 +332,36 @@ class EvidenceToAdd(BaseModel):
     @classmethod
     def validate_likelihood(cls, v: float) -> float:
         return max(0.0, min(1.0, v))
+
+    @model_validator(mode="after")
+    def _source_file_required_unless_user_description(self) -> "EvidenceToAdd":
+        """Mirror of the DB ``evidence_source_invariant`` CHECK: every
+        evidence row has a known source.
+
+        - ``source_file_id`` set → extract came from a file (any
+          source_type is valid)
+        - ``source_file_id`` None → only legal when
+          ``source_type == USER_DESCRIPTION`` (the chat-quote case)
+
+        Cross-layer defense: same rule applies in the ``Evidence``
+        domain model and at the DB level. Catching the violation here
+        gives the LLM a clear validation error instead of an opaque
+        IntegrityError downstream.
+        """
+        if (
+            self.source_file_id is None
+            and self.source_type != EvidenceSourceType.USER_DESCRIPTION
+        ):
+            raise ValueError(
+                "evidence_to_add.source_file_id is required unless "
+                "source_type=USER_DESCRIPTION; the LLM should copy the "
+                'file_id from the <evidence file_id="..."> or '
+                '<uploaded_file file_id="..."> attribute in the prompt '
+                "context. Leave source_file_id blank only when the "
+                "extract is a verbatim quote from the user's short chat "
+                "message (USER_DESCRIPTION)."
+            )
+        return self
 
 
 class HypothesisToAdd(BaseModel):

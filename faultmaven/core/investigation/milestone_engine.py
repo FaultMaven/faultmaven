@@ -4533,14 +4533,21 @@ class MilestoneEngine:
         )
 
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
-            # Derive source_file_id from uploaded files submitted this turn.
-            # See the INQUIRY-phase site for rationale; same heuristic.
+            # Post-010: source_file_id comes from EvidenceToAdd (the LLM
+            # declares it from the file_id attributes in the prompt
+            # context). For backwards safety we fall back to the
+            # turn-file heuristic when the LLM omitted the field but a
+            # single uploaded file unambiguously fits — older prompt
+            # versions may not have set source_file_id yet. The
+            # Pydantic validator on EvidenceToAdd already enforces the
+            # source-invariant, so by this point a None source_file_id
+            # is paired with source_type=USER_DESCRIPTION.
             turn_files = [
                 uf
                 for uf in case.uploaded_files
                 if uf.uploaded_at_turn == case.current_turn
             ]
-            inferred_source_file_id = (
+            fallback_source_file_id = (
                 turn_files[0].file_id if len(turn_files) == 1 else None
             )
 
@@ -4566,13 +4573,21 @@ class MilestoneEngine:
                         ev_item.category, milestones_completed_this_turn
                     )
 
+                # Prefer the LLM-declared source_file_id; fall back to
+                # the single-turn-file heuristic for older paths.
+                source_file_id = (
+                    ev_item.source_file_id
+                    if ev_item.source_file_id is not None
+                    else fallback_source_file_id
+                )
+
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
                     extract=ev_item.extract,
                     category=ev_item.category,
                     source_type=ev_item.source_type,
-                    source_file_id=inferred_source_file_id,
+                    source_file_id=source_file_id,
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
