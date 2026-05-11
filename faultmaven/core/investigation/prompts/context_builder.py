@@ -37,7 +37,6 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
     EntityType,
-    EvidenceForm,
     InvestigationStage,
 )
 
@@ -949,22 +948,16 @@ def _evidence_label(ev, file_lookup: dict) -> str:
     Used in the XML ``label`` attribute so the LLM can reference evidence
     by a human-readable name (e.g., "nginx-error.log") instead of the
     internal ``ev_`` ID.  The label is chosen from the best available
-    source in priority order: filename → source_type → form.
+    source in priority order: filename → source_type → fallback.
     """
     # 1. Filename from uploaded files lookup
     if ev.source_file_id and str(ev.source_file_id) in file_lookup:
         return file_lookup[str(ev.source_file_id)]
-    # 2. Pasted content
-    if ev.form.value == "document":
-        fname = getattr(ev, "source_file_id", None) or ""
-        if "pasted" in str(fname).lower():
-            return "pasted content"
-    # 3. Source type as readable label
+    # 2. Source type as readable label (handles USER_DESCRIPTION for
+    #    chat-extracted evidence and LOGS / METRICS / etc. for files
+    #    whose filename wasn't in the lookup)
     if ev.source_type:
         return ev.source_type.value.replace("_", " ")
-    # 4. Form as fallback
-    if ev.form.value == "user_text":
-        return "user-provided information"
     return "uploaded data"
 
 
@@ -980,12 +973,13 @@ def _build_evidence_context(
     includes structural indexes for recent data evidence, fixing the
     "I don't have access to file content" bug.
 
-    Tier A: Top N data evidence items by relevance score (form=DOCUMENT or
-            SUBMITTED_DATA) → Include preprocessed_content (structural index),
-            capped per item. Scored by data type, hypothesis linkage,
-            structural content richness, and recency (tiebreaker).
-    Tier B: Remaining data evidence → summary only.
-    Tier C: USER_TEXT evidence → summary only, always.
+    Tier A: Top N file-backed evidence items (``source_file_id IS NOT NULL``)
+            by relevance score → include the file's structural_index from
+            uploaded_files, capped per item. Scored by data type, hypothesis
+            linkage, content richness, and recency.
+    Tier B: Remaining file-backed evidence → summary only.
+    Tier C: Chat-extracted evidence (``source_file_id IS NULL``,
+            ``source_type=USER_DESCRIPTION``) → summary only, always.
 
     Token budget: ~4000 tokens dedicated. Worst case: 3 Tier A items x 4000
     chars = 12,000 chars (~3000 tokens).
@@ -1004,11 +998,14 @@ def _build_evidence_context(
             if uf.file_id and uf.filename:
                 file_lookup[str(uf.file_id)] = uf.filename
 
-    # Separate evidence by form for tiered treatment
-    data_evidence = []  # DOCUMENT or SUBMITTED_DATA
-    text_evidence = []  # USER_TEXT
+    # Separate evidence by source for tiered treatment. Post-010: the
+    # ``form`` column was dropped; source_file_id IS NOT NULL is the
+    # marker for file-backed evidence. The strict source-invariant
+    # CHECK ensures chat-extracted rows have source_type=USER_DESCRIPTION.
+    data_evidence = []  # source_file_id IS NOT NULL
+    text_evidence = []  # source_file_id IS NULL (chat-extracted)
     for ev in case.evidence:
-        if ev.form in (EvidenceForm.DOCUMENT, EvidenceForm.SUBMITTED_DATA):
+        if ev.source_file_id is not None:
             data_evidence.append(ev)
         else:
             text_evidence.append(ev)
@@ -1079,13 +1076,17 @@ def _build_evidence_context(
         label = _evidence_label(ev, file_lookup)
         label_attr = f' label="{label}"'
         filename_attr = ""
+        file_id_attr = ""
         if ev.source_file_id and str(ev.source_file_id) in file_lookup:
             filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
-        # Mark evidence as searchable if it has a raw file on disk
-        is_searchable = ev.form.value == "document" and ev_file_meta is not None
+            file_id_attr = f' file_id="{ev.source_file_id}"'
+        # Post-010: file-backed evidence has source_file_id set and a
+        # raw file behind it. ``searchable`` advertises that the search/
+        # deep_analysis tools can operate on this row's source file.
+        is_searchable = ev.source_file_id is not None and ev_file_meta is not None
         searchable_attr = ' searchable="true"' if is_searchable else ""
         confidence_attr, confidence_advisory = _confidence_marker(ev)
-        result += f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}>\n'
+        result += f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
         if file_extract.strip():
             role_attr = (
@@ -1116,27 +1117,28 @@ def _build_evidence_context(
         label = _evidence_label(ev, file_lookup)
         label_attr = f' label="{label}"'
         filename_attr = ""
+        file_id_attr = ""
         if ev.source_file_id and str(ev.source_file_id) in file_lookup:
             filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
+            file_id_attr = f' file_id="{ev.source_file_id}"'
         ev_file_meta = case.find_uploaded_file(ev.source_file_id)
-        is_searchable = ev.form.value == "document" and ev_file_meta is not None
+        is_searchable = ev.source_file_id is not None and ev_file_meta is not None
         searchable_attr = ' searchable="true"' if is_searchable else ""
         confidence_attr, _ = _confidence_marker(ev)
-        entry = f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{filename_attr}{searchable_attr}{confidence_attr}>'
+        entry = f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{filename_attr}{searchable_attr}{confidence_attr}>'
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
         if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
             break
         result += entry
         total_chars += len(entry)
 
-    # Tier C: USER_TEXT evidence (summary only, always — never searchable)
-    for ev in text_evidence[-5:]:  # Cap at 5 most recent text items
+    # Tier C: chat-extracted evidence (summary only, never searchable —
+    # has no source file). source_file_id IS NULL here per the new
+    # source-invariant.
+    for ev in text_evidence[-5:]:  # Cap at 5 most recent items
         label = _evidence_label(ev, file_lookup)
         label_attr = f' label="{label}"'
-        filename_attr = ""
-        if ev.source_file_id and str(ev.source_file_id) in file_lookup:
-            filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
-        entry = f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{filename_attr}>'
+        entry = f'  <evidence id="{ev.evidence_id}"{label_attr}>'
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
         if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
             break

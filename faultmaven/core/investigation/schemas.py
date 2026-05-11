@@ -300,32 +300,13 @@ class EvidenceToAdd(BaseModel):
     @classmethod
     def validate_category(cls, v):
         """
-        Fallback to CONTEXTUAL_EVIDENCE for unrecognized categories.
-
-        This handles LLM returning invalid category values due to prompt drift
-        or schema mismatch. Instead of failing validation, we fallback to a safe
-        default and log a warning for monitoring.
-
-        Reference: EVIDENCE-CREATION-FAILURE-MODES.md Scenario 3
+        Post-010: strict category validation. Unrecognized categories
+        fail loudly (no CONTEXTUAL_EVIDENCE fallback — it's no longer a
+        valid value). The LLM is instructed to use exactly one of the
+        four post-010 categories (symptom/causal/mitigation/solution).
         """
         if isinstance(v, str):
-            try:
-                return EvidenceCategory(v)
-            except ValueError:
-                import logging
-
-                logger = logging.getLogger(__name__)
-                logger.warning(
-                    f"LLM returned unrecognized category '{v}', "
-                    f"falling back to CONTEXTUAL_EVIDENCE",
-                    extra={
-                        "category_attempted": v,
-                        "alert_team": "llm_integration",
-                        "severity": "warning",
-                        "metric": "evidence.category_fallback",
-                    },
-                )
-                return EvidenceCategory.CONTEXTUAL_EVIDENCE
+            return EvidenceCategory(v)
         return v
 
     @field_validator("likelihood")

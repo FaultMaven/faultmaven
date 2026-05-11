@@ -45,7 +45,6 @@ from faultmaven.modules.case.contracts import (
     EscalationState,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     EvidenceStance,
     Hypothesis,
@@ -492,19 +491,22 @@ class SQLiteCaseRepository(CaseRepository):
     async def _load_evidence_for_case(self, case: Case) -> None:
         """Load investigation evidence from the evidence table.
 
-        Post-009 columns selected (in this fixed order, consumed
+        Post-010 columns selected (in this fixed order, consumed
         positionally by ``_row_to_evidence``): ``evidence_id``, ``category``,
-        ``source_type``, ``form``, ``summary``, ``extract``, ``is_primary``,
+        ``source_type``, ``summary``, ``extract``, ``is_primary``,
         ``reliability_score``, ``tags``, ``collected_at_turn``,
         ``source_file_id``, ``vectorized``, ``coverage_start_ts``,
         ``coverage_end_ts``, ``metadata``, ``created_at``,
         ``primary_purpose``, ``analysis``, ``processing_mode``,
         ``advances_milestones``, ``collected_by``.
+
+        The ``form`` column was dropped in migration 010; the dual-path
+        evidence-creation model collapsed to a single LLM-mediated path.
         """
         try:
             query = text("""
                 SELECT
-                    evidence_id, category, source_type, form,
+                    evidence_id, category, source_type,
                     summary, extract,
                     is_primary, reliability_score, tags,
                     collected_at_turn, source_file_id, vectorized,
@@ -532,35 +534,25 @@ class SQLiteCaseRepository(CaseRepository):
     def _row_to_evidence(self, row: Any) -> Optional[Evidence]:
         """Reconstruct a domain ``Evidence`` from a SELECT row.
 
-        Column order (fixed): ``evidence_id, category, source_type, form,
-        summary, extract, is_primary, reliability_score, tags,
-        collected_at_turn, source_file_id, vectorized, coverage_start_ts,
-        coverage_end_ts, metadata, created_at, primary_purpose, analysis,
-        processing_mode, advances_milestones, collected_by``.
+        Column order (fixed, post-010): ``evidence_id, category,
+        source_type, summary, extract, is_primary, reliability_score,
+        tags, collected_at_turn, source_file_id, vectorized,
+        coverage_start_ts, coverage_end_ts, metadata, created_at,
+        primary_purpose, analysis, processing_mode, advances_milestones,
+        collected_by``.
 
         Returns ``None`` and logs a warning when reconstruction fails so
         one bad row doesn't blank an entire result set.
         """
         try:
-            category_str = row[1] or "contextual_evidence"
-            try:
-                category = EvidenceCategory(category_str)
-            except ValueError:
-                category = EvidenceCategory.CONTEXTUAL_EVIDENCE
+            # Strict category validation — drop pre-010 CONTEXTUAL/REJECTED
+            # fallback; let bad rows fail loudly. Under the post-010 model
+            # every row is born with a valid 4-category classification.
+            category = EvidenceCategory(row[1])
 
-            source_type_str = row[2] or "logs"
-            try:
-                source_type = EvidenceSourceType(source_type_str)
-            except ValueError:
-                source_type = EvidenceSourceType.LOGS
+            source_type = EvidenceSourceType(row[2]) if row[2] else None
 
-            form_str = row[3] or EvidenceForm.DOCUMENT.value
-            try:
-                form = EvidenceForm(form_str)
-            except ValueError:
-                form = EvidenceForm.DOCUMENT
-
-            metadata_raw = row[14]
+            metadata_raw = row[13]
             parsed_metadata: Optional[Dict[str, Any]] = None
             if metadata_raw:
                 try:
@@ -570,7 +562,7 @@ class SQLiteCaseRepository(CaseRepository):
                 except (json.JSONDecodeError, TypeError):
                     parsed_metadata = None
 
-            collected_at = row[15]
+            collected_at = row[14]
             if isinstance(collected_at, str):
                 try:
                     collected_at = datetime.fromisoformat(
@@ -584,25 +576,24 @@ class SQLiteCaseRepository(CaseRepository):
             return Evidence(
                 evidence_id=str(row[0]),
                 category=category,
-                primary_purpose=row[16] or "legacy",
-                summary=row[4] if row[4] else "Evidence",
-                extract=row[5],
-                analysis=row[17],
-                processing_mode=row[18],
+                primary_purpose=row[15] or "legacy",
+                summary=row[3] if row[3] else "Evidence",
+                extract=row[4],
+                analysis=row[16],
+                processing_mode=row[17],
                 source_type=source_type,
-                form=form,
-                source_file_id=row[10],
-                is_primary=bool(row[6]),
-                reliability_score=(float(row[7]) if row[7] is not None else None),
-                tags=_deserialize_tags(row[8]),
-                advances_milestones=_deserialize_tags(row[19]),
-                collected_by=row[20] or "system",
+                source_file_id=row[9],
+                is_primary=bool(row[5]),
+                reliability_score=(float(row[6]) if row[6] is not None else None),
+                tags=_deserialize_tags(row[7]),
+                advances_milestones=_deserialize_tags(row[18]),
+                collected_by=row[19] or "system",
                 collected_at=collected_at,
-                collected_at_turn=row[9] if row[9] else 0,
-                vectorized=bool(row[11]),
+                collected_at_turn=row[8] if row[8] else 0,
+                vectorized=bool(row[10]),
                 metadata=parsed_metadata,
-                coverage_start_ts=row[12],
-                coverage_end_ts=row[13],
+                coverage_start_ts=row[11],
+                coverage_end_ts=row[12],
             )
         except Exception as ev_err:  # noqa: BLE001
             logging.getLogger(__name__).warning(
@@ -818,7 +809,7 @@ class SQLiteCaseRepository(CaseRepository):
         try:
             query = text(f"""
                 SELECT
-                    evidence_id, case_id, category, source_type, form,
+                    evidence_id, case_id, category, source_type,
                     summary, extract,
                     is_primary, reliability_score, tags,
                     collected_at_turn, source_file_id, vectorized,
@@ -837,29 +828,28 @@ class SQLiteCaseRepository(CaseRepository):
             for row in rows:
                 # Bulk row order is offset by one column (case_id at index 1).
                 # _row_to_evidence expects the per-case shape; remap by skipping
-                # case_id when calling.
+                # case_id when calling. Post-010: form column dropped.
                 ev_row = (
                     row[0],  # evidence_id
                     row[2],  # category
                     row[3],  # source_type
-                    row[4],  # form
-                    row[5],  # summary
-                    row[6],  # extract
-                    row[7],  # is_primary
-                    row[8],  # reliability_score
-                    row[9],  # tags
-                    row[10],  # collected_at_turn
-                    row[11],  # source_file_id
-                    row[12],  # vectorized
-                    row[13],  # coverage_start_ts
-                    row[14],  # coverage_end_ts
-                    row[15],  # metadata
-                    row[16],  # created_at
-                    row[17],  # primary_purpose
-                    row[18],  # analysis
-                    row[19],  # processing_mode
-                    row[20],  # advances_milestones
-                    row[21],  # collected_by
+                    row[4],  # summary
+                    row[5],  # extract
+                    row[6],  # is_primary
+                    row[7],  # reliability_score
+                    row[8],  # tags
+                    row[9],  # collected_at_turn
+                    row[10],  # source_file_id
+                    row[11],  # vectorized
+                    row[12],  # coverage_start_ts
+                    row[13],  # coverage_end_ts
+                    row[14],  # metadata
+                    row[15],  # created_at
+                    row[16],  # primary_purpose
+                    row[17],  # analysis
+                    row[18],  # processing_mode
+                    row[19],  # advances_milestones
+                    row[20],  # collected_by
                 )
                 ev = self._row_to_evidence(ev_row)
                 if ev is not None:
@@ -1017,7 +1007,7 @@ class SQLiteCaseRepository(CaseRepository):
         try:
             query = text("""
                 SELECT
-                    e.evidence_id, e.category, e.source_type, e.form,
+                    e.evidence_id, e.category, e.source_type,
                     e.summary, e.extract,
                     e.is_primary, e.reliability_score, e.tags,
                     e.collected_at_turn, e.source_file_id, e.vectorized,
@@ -1074,7 +1064,7 @@ class SQLiteCaseRepository(CaseRepository):
 
             query = text(f"""
                 SELECT
-                    evidence_id, category, source_type, form,
+                    evidence_id, category, source_type,
                     summary, extract,
                     is_primary, reliability_score, tags,
                     collected_at_turn, source_file_id, vectorized,
@@ -2022,7 +2012,7 @@ class SQLiteCaseRepository(CaseRepository):
             query = text("""
                 INSERT INTO evidence (
                     evidence_id, case_id, organization_id, source_file_id,
-                    category, source_type, form,
+                    category, source_type,
                     summary, extract,
                     primary_purpose, analysis, processing_mode, advances_milestones,
                     is_primary, reliability_score, tags,
@@ -2031,7 +2021,7 @@ class SQLiteCaseRepository(CaseRepository):
                     metadata, created_at, updated_at
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :source_file_id,
-                    :category, :source_type, :form,
+                    :category, :source_type,
                     :summary, :extract,
                     :primary_purpose, :analysis, :processing_mode, :advances_milestones,
                     :is_primary, :reliability_score, :tags,
@@ -2043,7 +2033,6 @@ class SQLiteCaseRepository(CaseRepository):
                     source_file_id = EXCLUDED.source_file_id,
                     category = EXCLUDED.category,
                     source_type = EXCLUDED.source_type,
-                    form = EXCLUDED.form,
                     summary = EXCLUDED.summary,
                     extract = EXCLUDED.extract,
                     primary_purpose = EXCLUDED.primary_purpose,
@@ -2072,10 +2061,6 @@ class SQLiteCaseRepository(CaseRepository):
                     "source_file_id": evidence.source_file_id,
                     "category": evidence.category.value,
                     "source_type": evidence.source_type.value,
-                    # The domain ``EvidenceForm`` enum (entry mechanism:
-                    # DOCUMENT|USER_TEXT|SUBMITTED_DATA) is the canonical
-                    # value for the persistence column post-redesign.
-                    "form": evidence.form.value,
                     "summary": evidence.summary,
                     "extract": evidence.extract,
                     "primary_purpose": evidence.primary_purpose,

@@ -1184,25 +1184,25 @@ class EvidenceCategory(str, Enum):
     """
     Evidence classification by investigation purpose.
 
-    Post-redesign (2026-02-11):
-    - UNCLASSIFIED removed (single-phase evidence creation)
-    - OTHER renamed to CONTEXTUAL_EVIDENCE (clearer purpose)
-    - REJECTED added (track rejected submissions for deduplication)
+    Post-010 redesign: 4 claim-attached categories. Each row is the LLM's
+    deliberate decision to record a specific extract as evidence for a
+    specific claim, created only during INVESTIGATING. The dropped
+    categories (CONTEXTUAL_EVIDENCE, REJECTED) had no claim attachment
+    and were structurally incompatible with the strict model:
 
-    Evidence is created AFTER LLM evaluation with complete classification.
+    - Contextual data now lives on ``uploaded_files`` (the file itself is
+      the data; no evidence row is needed until the agent extracts a
+      claim-relevant slice).
+    - Rejected submissions are expressed as the absence of an evidence
+      row (the agent simply doesn't promote them); hypothesis-level
+      refutation lives on ``hypothesis_evidence.stance``.
     """
-
-    # ===== RELEVANT EVIDENCE (4 categories) =====
 
     SYMPTOM_EVIDENCE = "symptom_evidence"
     """
     Shows problem manifestation.
 
     Purpose: Prove the problem exists and establish scope/timeline.
-
-    IMPORTANT: This category describes what the data CONTAINS, not whether the user
-    has committed to investigating. A log file with errors is SYMPTOM_EVIDENCE even
-    during INQUIRY phase (exploratory upload before problem confirmed).
 
     Examples:
     - Error logs showing failures
@@ -1211,8 +1211,6 @@ class EvidenceCategory(str, Enum):
     - Deployment logs showing recent changes
 
     Advances Milestones: symptom_verified
-    (Note: Milestone validation only runs during INVESTIGATING status. Evidence
-    created during INQUIRY sits inert until investigation begins.)
     """
 
     CAUSAL_EVIDENCE = "causal_evidence"
@@ -1241,10 +1239,6 @@ class EvidenceCategory(str, Enum):
     - Error rates dropping after temporary fix
     - User confirmation that bleeding stopped
     - Logs showing stabilization after workaround
-
-    Used during MITIGATION stage to verify temporary fix effectiveness.
-    Does not advance progress indicator milestones (mitigation_verified
-    is a stage-gate milestone set by compliance detection).
     """
 
     SOLUTION_EVIDENCE = "solution_evidence"
@@ -1259,71 +1253,6 @@ class EvidenceCategory(str, Enum):
     - Resource usage after scaling
     - Success rate after config change
     - User confirmation that fix resolved the problem
-
-    Used during TREATMENT stage. solution_verified is a stage-gate
-    milestone set via User-Agent Handshake, not by evidence validation.
-    """
-
-    # Backward compatibility alias
-    RESOLUTION_EVIDENCE = "solution_evidence"
-
-    CONTEXTUAL_EVIDENCE = "contextual_evidence"
-    """
-    Provides baseline, environmental, or background context.
-
-    Purpose: Help understand system or problem context without directly
-    showing symptoms, proving causes, or validating resolutions.
-
-    Characteristics:
-    - Describes "what is already there" (baseline, normal state)
-    - Neither problematic nor a fix
-    - System configuration, architecture, or operational context
-    - Historical baseline or reference data
-
-    Examples:
-    - System architecture diagrams
-    - Current/baseline configuration files
-    - "Normal" resource usage patterns (for comparison)
-    - System inventory (versions, dependencies, infrastructure)
-    - SLA requirements or business context
-    - Historical incident reports (for reference)
-
-    INQUIRY Phase Usage:
-    - If uploaded data truly shows NO problems (clean logs, normal metrics),
-      classify as CONTEXTUAL_EVIDENCE
-    - If data shows problems (errors, anomalies), classify as SYMPTOM_EVIDENCE
-      even during INQUIRY phase (classify based on content, not user's commitment)
-
-    Does NOT directly advance milestones, but helps LLM understand environment.
-    """
-
-    # ===== REJECTED SUBMISSIONS =====
-
-    REJECTED = "rejected"
-    """
-    Submission analyzed but rejected as not useful for investigation.
-
-    IMPORTANT: This is NOT evidence. It exists in the evidence table for
-    practical reasons (deduplication, audit trail, cost avoidance), not
-    because it's evidence.
-
-    Purpose: Track rejected submissions for:
-    - Deduplication: Prevent re-upload via content_hash
-    - Audit trail: Record what was submitted and evaluated
-    - Cost avoidance: Don't re-analyze same file
-    - User feedback: Explain why rejected
-
-    Can be "un-rejected" if investigation context changes.
-
-    Examples:
-    - Screenshots unrelated to issue
-    - Logs from unrelated services
-    - Accidental uploads
-    - Files determined not useful after analysis
-
-    Reasoning captured in `primary_purpose` field.
-
-    Note: Duplicate files are also marked as REJECTED with reference to original.
     """
 
 
@@ -1426,24 +1355,24 @@ class EvidenceSourceType(str, Enum):
     Characteristics: Requires visual interpretation
     """
 
-
-class EvidenceForm(str, Enum):
-    """How evidence entered the system.
-
-    Form is determined by payload context:
-    - DOCUMENT: Turn had attachments (file upload or pasted data)
-    - USER_TEXT: Query-only turn, no attachments
-    - SUBMITTED_DATA: Evidence created by agent tools (search_file, deep_analysis)
+    USER_DESCRIPTION = "user_description"
     """
+    Verbatim system-output quote the user typed inline in a short chat
+    message (below the 10K-char threshold that triggers paste-to-file
+    intake). The extract is system output (an error message, a log line,
+    a metric reading) that the user quoted in their own message rather
+    than uploading as a file.
 
-    DOCUMENT = "document"
-    """Data submitted as attachment via /turns endpoint — file uploads AND pasted data."""
+    This is the ONE case where ``evidence.source_file_id`` legitimately
+    is NULL — the source is the user's chat message at the same turn
+    (recoverable via ``collected_at_turn`` and the case_messages join).
 
-    USER_TEXT = "user_text"
-    """Query-only turn with no attachments (questions, descriptions, observations)."""
-
-    SUBMITTED_DATA = "submitted_data"
-    """Evidence derived from agent tool use (search_file, deep_analysis results)."""
+    The user's own descriptions, opinions, or paraphrases are NOT
+    evidence (per the strict "extract must be system output" rule); the
+    agent should request actual output rather than promoting a
+    paraphrase. This category is exclusively for cases where the user
+    pasted/typed a verbatim system slice into chat.
+    """
 
 
 class EvidenceStance(str, Enum):
@@ -1566,6 +1495,63 @@ class UploadedFile(BaseModel):
         max_length=5000,
     )
 
+    # ------------------------------------------------------------------
+    # Preprocessing artifacts (migration 010)
+    #
+    # These describe the FILE, not any claim about it. Populated by the
+    # Tier 0+1 preprocessor at upload time. Under the strict evidence
+    # model, files are not evidence — evidence is a claim-anchored
+    # extract from a file. The preprocessor's file-level outputs
+    # (summary, structural index, data-type classification, coverage
+    # timestamps) belong here rather than on a synthetic Evidence row.
+    # ------------------------------------------------------------------
+    summary: Optional[str] = Field(
+        default=None,
+        description=(
+            "Preprocessing-generated short summary of the file. Used by "
+            "the investigation agent to orient on file content without "
+            "loading the whole file. May be None when preprocessing was "
+            "skipped (e.g., KB-conversion source uploads)."
+        ),
+    )
+
+    structural_index: Optional[str] = Field(
+        default=None,
+        description=(
+            "Preprocessing-generated structural index of the file content "
+            "(file_extract + search_map + file_meta). Read by the LLM "
+            "in <evidence_collected> when the agent inspects the file. "
+            "May be None when preprocessing was skipped."
+        ),
+    )
+
+    data_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "Preprocessor's data-type classification of the file's "
+            "content (e.g., 'logs', 'metrics', 'configuration'). "
+            "Distinct from evidence.source_type, which classifies an "
+            "individual extract's source type."
+        ),
+        max_length=50,
+    )
+
+    coverage_start_ts: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Earliest timestamp parsed from the file's content. None "
+            "when the file has no parseable timestamps."
+        ),
+    )
+
+    coverage_end_ts: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Latest timestamp parsed from the file's content. None when "
+            "the file has no parseable timestamps."
+        ),
+    )
+
 
 # =============================================================================
 # Evidence (Investigation Data Linked to Hypotheses)
@@ -1679,18 +1665,16 @@ class Evidence(BaseModel):
     # ============================================================
     source_type: EvidenceSourceType = Field(description="Type of evidence source")
 
-    form: EvidenceForm = Field(
-        description="How evidence was provided: DOCUMENT, USER_TEXT, or SUBMITTED_DATA"
-    )
-
     source_file_id: Optional[str] = Field(
         default=None,
         description=(
-            "ID of the UploadedFile this evidence was derived from. NULL for "
-            "inline-only evidence (user-typed or agent-generated). When set, "
-            "uploaded_files holds the file's metadata (filename, size, MIME, "
-            "content_hash, storage_ref). search_file tool retrieves the "
-            "filename via this link rather than duplicating it on the row."
+            "FK to the UploadedFile this extract came from. Required unless "
+            "``source_type=USER_DESCRIPTION`` (the narrow case where the LLM "
+            "extracted a verbatim system-output quote from the user's short "
+            "chat message — no file involved). Enforced by the "
+            "``evidence_source_invariant`` CHECK constraint at the DB level "
+            "and by the ``_source_requires_file_unless_user_description`` "
+            "validator at the Pydantic level."
         ),
     )
 
@@ -1802,6 +1786,29 @@ class Evidence(BaseModel):
             "None when the content has no parseable timestamps."
         ),
     )
+
+    @model_validator(mode="after")
+    def _source_requires_file_unless_user_description(self) -> "Evidence":
+        """Mirror of the DB ``evidence_source_invariant`` CHECK (migration
+        010): every Evidence row has a source.
+
+        - source_file_id IS NOT NULL  → the extract came from a file
+        - source_file_id IS NULL      → only legal when source_type is
+          ``USER_DESCRIPTION`` (the LLM extracted a verbatim system-output
+          quote from the user's short chat message; the source is the
+          user message at ``collected_at_turn``)
+
+        Cross-layer defense: same rule in Pydantic and the DB, neither
+        bypassable independently."""
+        if (
+            self.source_file_id is None
+            and self.source_type != EvidenceSourceType.USER_DESCRIPTION
+        ):
+            raise ValueError(
+                "evidence.source_file_id is required unless "
+                "source_type=USER_DESCRIPTION (the chat-quote case)"
+            )
+        return self
 
 
 # ============================================================
@@ -3651,43 +3658,28 @@ class Case(BaseModel):
     @property
     def valid_evidence(self) -> List[Evidence]:
         """
-        Evidence with actionable categories (excludes REJECTED).
+        All evidence rows.
 
-        Returns the 4 valid categories: SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE,
-        RESOLUTION_EVIDENCE, CONTEXTUAL_EVIDENCE.
-
-        Design Reference:
-            evidence-classification-design.md Section 3.3
+        Post-010 redesign: every evidence row is claim-anchored and
+        deliberately created. There is no longer a REJECTED category —
+        rejected submissions are expressed as the absence of an evidence
+        row (the agent doesn't promote them), and hypothesis-level
+        refutation lives on ``hypothesis_evidence.stance``. This property
+        is retained for call-site stability but is now equivalent to
+        ``self.evidence``.
         """
-        return [ev for ev in self.evidence if ev.category != EvidenceCategory.REJECTED]
-
-    @property
-    def rejected_submissions(self) -> List[Evidence]:
-        """
-        Submissions analyzed but rejected as not useful.
-
-        These exist for deduplication, audit trail, and cost avoidance.
-        They are NOT evidence in the investigative sense.
-
-        Design Reference:
-            evidence-classification-design.md Section 3.3
-        """
-        return [ev for ev in self.evidence if ev.category == EvidenceCategory.REJECTED]
+        return list(self.evidence)
 
     @property
     def acceptance_rate(self) -> float:
         """
-        Percentage of submissions that became valid evidence.
-
-        Returns 1.0 if no evidence exists (avoid division by zero).
-
-        Design Reference:
-            evidence-classification-design.md Section 3.3
+        Always 1.0 under the post-010 model — every evidence row is a
+        deliberate, claim-anchored promotion. Retained for call-site
+        stability; analytics that want submission-vs-evidence ratios
+        should compare ``len(self.uploaded_files)`` against
+        ``len(self.evidence)`` instead.
         """
-        total = len(self.evidence)
-        if total == 0:
-            return 1.0
-        return len(self.valid_evidence) / total
+        return 1.0
 
     @property
     def evidence_count_by_category(self) -> Dict[str, int]:

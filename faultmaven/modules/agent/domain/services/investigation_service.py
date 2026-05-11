@@ -47,7 +47,6 @@ from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
 from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     UploadedFile,
 )
@@ -860,10 +859,30 @@ class InvestigationService:
                     e,
                 )
 
+        # Post-010: write preprocessing artifacts to the UploadedFile
+        # row where they semantically belong (the artifacts describe the
+        # FILE, not any claim about it). The Pydantic UploadedFile model
+        # carries these as first-class fields per migration 010.
+        uploaded_file.summary = preprocessing_result.summary
+        uploaded_file.structural_index = preprocessing_result.structural_index
+        uploaded_file.data_type = _infer_source_type(
+            preprocessing_result.data_type
+        ).value
+        uploaded_file.coverage_start_ts = preprocessing_result.coverage_start_ts
+        uploaded_file.coverage_end_ts = preprocessing_result.coverage_end_ts
+
+        # TODO(010-cleanup): the auto-DOCUMENT Evidence creation below
+        # is a transitional placeholder. Under the strict post-010
+        # design, file uploads should NOT create an Evidence row at
+        # intake — Evidence is born when the LLM extracts a
+        # claim-anchored slice via evidence_to_add during INVESTIGATING.
+        # Removing this requires updating downstream consumers
+        # (process_turn, evidence_created accumulator, etc.) that today
+        # rely on getting an Evidence back per attachment. Scheduled
+        # for a follow-up batch.
         evidence = Evidence(
             evidence_id=f"ev_{uuid4().hex[:12]}",
-            form=EvidenceForm.DOCUMENT,
-            category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
+            category=EvidenceCategory.SYMPTOM_EVIDENCE,
             source_type=_infer_source_type(preprocessing_result.data_type),
             primary_purpose="user_submitted_data",
             summary=preprocessing_result.summary,
@@ -873,10 +892,6 @@ class InvestigationService:
             collected_by=user_id,
             collected_at_turn=turn_number,
             metadata=evidence_metadata,
-            # Phase 3 — coverage timestamps when the preprocessor parsed them
-            # out of the raw content. NULL for timeless evidence (configs,
-            # code, short pastes); the Phase 3b query filters these out
-            # of time-window queries naturally.
             coverage_start_ts=preprocessing_result.coverage_start_ts,
             coverage_end_ts=preprocessing_result.coverage_end_ts,
         )

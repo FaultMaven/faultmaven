@@ -41,7 +41,6 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
-    Enum,
     Float,
     ForeignKey,
     Index,
@@ -86,14 +85,6 @@ class SolutionStatus(str, enum.Enum):
     REJECTED = "rejected"
     IMPLEMENTED = "implemented"
     VERIFIED = "verified"
-
-
-class EvidenceForm(str, enum.Enum):
-    """How the evidence entered the system (entry mechanism)."""
-
-    DOCUMENT = "document"
-    USER_TEXT = "user_text"
-    SUBMITTED_DATA = "submitted_data"
 
 
 class KnowledgeScope(str, enum.Enum):
@@ -766,6 +757,18 @@ class UploadedFileModel(Base):
     uploaded_at_turn = Column(Integer, nullable=False, server_default="0")
     file_metadata = Column("metadata", JsonBlob, nullable=False, server_default="{}")
 
+    # Preprocessing artifacts — landed here after migration 010 collapsed
+    # the dual evidence-creation paths. Previously these lived on an
+    # auto-DOCUMENT Evidence row that was created at upload time. They
+    # describe the FILE, not any claim about it, so they belong with the
+    # file. All nullable: preprocessing may not run (e.g., on KB-conversion
+    # source uploads), and small/short files may have no temporal coverage.
+    summary = Column(Text, nullable=True)
+    structural_index = Column(Text, nullable=True)
+    data_type = Column(String(50), nullable=True)
+    coverage_start_ts = Column(DateTime(timezone=True), nullable=True)
+    coverage_end_ts = Column(DateTime(timezone=True), nullable=True)
+
     uploaded_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -784,11 +787,21 @@ class UploadedFileModel(Base):
 
 
 class EvidenceModel(Base):
-    """Evidence collected during a case. One row per atomic fact. Two content
-    fields per the three-path design (see column-level comment): `summary` is
-    the always-present short label; `extract` is the bulk content backing it
-    (structural index, LLM quote, or tool excerpts depending on form). File
-    metadata lives on `uploaded_files` (linked via `source_file_id`)."""
+    """Evidence collected during a case. One row per claim-anchored extract
+    that the LLM produced via ``evidence_to_add`` during INVESTIGATING.
+
+    Post-010 semantics (single creation path):
+    - ``summary``: always-present short label for the extract
+    - ``extract``: optional verbatim quote (the focused slice supporting
+      the claim); may be NULL when the summary is self-contained
+    - ``source_file_id``: links to the source file in ``uploaded_files``;
+      NULL only when the extract was a verbatim system-output quote from
+      the user's short chat message (``source_type='user_description'``).
+      The ``evidence_source_invariant`` CHECK enforces this.
+
+    Preprocessing artifacts (file summary, structural index, file-level
+    data type, coverage timestamps) live on ``uploaded_files`` — they
+    describe the file, not any claim about it."""
 
     __tablename__ = "evidence"
 
@@ -815,16 +828,6 @@ class EvidenceModel(Base):
     # Classification
     category = Column(String(50), nullable=False, index=True)
     source_type = Column(String(50), nullable=True)
-    form = Column(
-        Enum(
-            EvidenceForm,
-            name="evidence_form",
-            native_enum=False,
-            length=20,
-            values_callable=lambda enum_cls: [m.value for m in enum_cls],
-        ),
-        nullable=False,
-    )
 
     # What this evidence validates (milestone name or hypothesis ID).
     # Server default 'legacy' allows pre-009 rows to satisfy NOT NULL;
@@ -894,13 +897,20 @@ class EvidenceModel(Base):
 
     __table_args__ = (
         CheckConstraint("LENGTH(TRIM(summary)) > 0", name="evidence_summary_not_empty"),
-        # extract is nullable for Path 2 (LLM evidence_to_add without a
-        # verbatim quote). When set, must not be whitespace-only — mirrored
-        # in Pydantic Evidence._extract_not_empty_when_set for cross-layer
-        # defense in depth.
+        # extract is nullable when the summary is self-contained. When
+        # set, must not be whitespace-only — mirrored in Pydantic
+        # Evidence._extract_not_empty_when_set for cross-layer defense.
         CheckConstraint(
             "extract IS NULL OR LENGTH(TRIM(extract)) > 0",
             name="evidence_extract_not_empty",
+        ),
+        # Source-tracking invariant (migration 010): every evidence row
+        # has a source. A NULL source_file_id is permitted only when the
+        # extract was a verbatim system-output quote from the user's
+        # chat message — recognized via source_type='user_description'.
+        CheckConstraint(
+            "source_file_id IS NOT NULL OR source_type = 'user_description'",
+            name="evidence_source_invariant",
         ),
         CheckConstraint(
             "reliability_score IS NULL OR (reliability_score >= 0 AND reliability_score <= 1)",

@@ -67,7 +67,6 @@ from faultmaven.modules.case.contracts import (
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
-    EvidenceForm,
     EvidenceSourceType,
     EvidenceStance,
     HypothesisStatus,
@@ -128,10 +127,9 @@ CATEGORY_MILESTONE_MAP = {
         # Solution evidence verifies permanent fix effectiveness
         # solution_verified is a stage-gate milestone (set via User-Agent Handshake)
     ],
-    EvidenceCategory.CONTEXTUAL_EVIDENCE: [
-        # Contextual evidence provides baseline/environmental info
-        # It informs investigation but doesn't directly advance milestones
-    ],
+    # Post-010: CONTEXTUAL_EVIDENCE was dropped. Baseline/environmental
+    # data lives on ``uploaded_files`` (not promoted to Evidence until
+    # the agent extracts a claim-relevant slice).
 }
 
 
@@ -296,9 +294,12 @@ def _infer_milestones(
         that turn get attributed to it. No guessing needed.
 
     Note:
-        - CONTEXTUAL_EVIDENCE returns [] (doesn't directly advance milestones)
-        - If category not in map, returns [] (safe fallback)
-        - LLM can override by explicitly setting advances_milestones in EvidenceToAdd
+        - Post-010: 4 categories (SYMPTOM/CAUSAL/MITIGATION/SOLUTION).
+          MITIGATION_EVIDENCE and SOLUTION_EVIDENCE map to [] —
+          mitigation_verified / solution_verified are gate milestones
+          set by compliance detection, not by evidence category.
+        - If category not in map, returns [] (safe fallback).
+        - LLM can override by explicitly setting advances_milestones in EvidenceToAdd.
     """
     # Get eligible milestones for this category
     eligible_milestones = CATEGORY_MILESTONE_MAP.get(category, [])
@@ -437,22 +438,14 @@ def validate_reasoning_first(
     evidence_being_added = (
         getattr(response_obj.state_updates, "evidence_to_add", []) or []
     )
-    non_contextual_evidence = [
-        e for e in case.evidence if e.category != EvidenceCategory.CONTEXTUAL_EVIDENCE
-    ]
-    non_contextual_being_added = [
-        e
-        for e in evidence_being_added
-        if e.category != EvidenceCategory.CONTEXTUAL_EVIDENCE
-    ]
-    has_actionable_evidence = bool(non_contextual_evidence) or bool(
-        non_contextual_being_added
-    )
+    # Post-010: every evidence row is claim-anchored and actionable
+    # (CONTEXTUAL_EVIDENCE was dropped). Any existing or to-add row
+    # counts as actionable.
+    has_actionable_evidence = bool(case.evidence) or bool(evidence_being_added)
 
     if internal_reasoning.milestone_justifications and not has_actionable_evidence:
         errors.append(
             "Cannot complete milestones when no actionable evidence has been collected. "
-            "Contextual evidence alone cannot justify milestones. "
             "You must first analyze and classify evidence before completing milestones."
         )
 
@@ -4378,7 +4371,6 @@ class MilestoneEngine:
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
-                    form=EvidenceForm.SUBMITTED_DATA,
                     advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",
                 )
@@ -4628,7 +4620,6 @@ class MilestoneEngine:
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
-                    form=EvidenceForm.SUBMITTED_DATA,
                     advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",
                 )
@@ -5424,7 +5415,6 @@ class MilestoneEngine:
             extract=None,  # populated by preprocessing pipeline
             category=category,
             source_type=EvidenceSourceType.LOGS,  # Default (simplified from LOG_FILE)
-            form=EvidenceForm.DOCUMENT,
             source_file_id=attachment.get("file_id"),
             advances_milestones=[],  # Calculated later
             collected_at=datetime.now(UTC),
