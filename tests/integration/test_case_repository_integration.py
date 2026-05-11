@@ -46,6 +46,7 @@ from faultmaven.modules.case.domain.models import (
     InvestigationStrategy,
     Solution,
     SolutionType,
+    UploadedFile,
 )
 from faultmaven.modules.case.infrastructure.case_repository import (
     CaseRepository,
@@ -151,7 +152,12 @@ def inmemory_repository() -> InMemoryCaseRepository:
 
 @pytest.fixture
 def sample_case_with_evidence() -> Case:
-    """Create a case with evidence for testing."""
+    """Create a case with evidence for testing.
+
+    Post-010: file-backed evidence requires a matching UploadedFile
+    row so the source_file_id FK resolves. We synthesize both the
+    file row and the evidence row pointing at it.
+    """
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="integration-test-user",
@@ -166,21 +172,40 @@ def sample_case_with_evidence() -> Case:
         ),
     )
 
-    # Add evidence
-    evidence = Evidence(
-        evidence_id=f"ev_{uuid4().hex[:12]}",
-        category=EvidenceCategory.SYMPTOM_EVIDENCE,
-        primary_purpose="symptom_verified",
-        summary="Error logs showing connection timeouts",
-        preprocessed_content="2024-01-01 12:00:00 ERROR: Connection timeout after 30s",
-        source_type=EvidenceSourceType.LOGS,
-        source_file_id="file_aabb12345678",
-        content_size_bytes=1024,
-        preprocessing_method="crime_scene_extraction",
-        collected_by="test-user",
-        collected_at_turn=1,
+    # Add the source file the evidence references. uploaded_by must
+    # match a seeded user_id (the test_engine fixture seeds the
+    # TEST_USER_IDS list); use ``integration-test-user`` to align with
+    # the case's user_id.
+    file_id = f"file_{uuid4().hex[:12]}"
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=file_id,
+            filename="app.log",
+            size_bytes=1024,
+            content_type="text/plain",
+            uploaded_at_turn=1,
+            uploaded_by="integration-test-user",
+            upload_source="file_upload",
+            summary="Application log with connection timeouts",
+            structural_index="2024-01-01 12:00:00 ERROR: Connection timeout after 30s",
+            data_type="logs",
+        )
     )
-    case.evidence.append(evidence)
+
+    # Add the claim-anchored extract that points at it
+    case.evidence.append(
+        Evidence(
+            evidence_id=f"ev_{uuid4().hex[:12]}",
+            category=EvidenceCategory.SYMPTOM_EVIDENCE,
+            primary_purpose="symptom_verified",
+            summary="Error logs showing connection timeouts",
+            extract="2024-01-01 12:00:00 ERROR: Connection timeout after 30s",
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=file_id,
+            collected_by="integration-test-user",
+            collected_at_turn=1,
+        )
+    )
 
     return case
 
@@ -296,13 +321,31 @@ async def test_case_with_evidence(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_add_evidence_to_existing_case(db_repository: SQLiteCaseRepository):
-    """Test adding evidence to an existing case."""
-    # Create initial case
+    """Test adding evidence to an existing case.
+
+    Post-010: evidence references its source file via source_file_id;
+    the file must exist (FK constraint).
+    """
+    # Create initial case with a backing file
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="evidence-test-user",
         organization_id="evidence-test-org",
         title="Evidence Addition Test",
+    )
+    file_id = f"file_{uuid4().hex[:12]}"
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=file_id,
+            filename="metrics.json",
+            size_bytes=512,
+            content_type="application/json",
+            uploaded_at_turn=3,
+            uploaded_by="evidence-test-user",
+            upload_source="file_upload",
+            data_type="metrics",
+            structural_index="Memory stats: used 7.6GB / 8GB",
+        )
     )
     await db_repository.save(case)
 
@@ -313,12 +356,10 @@ async def test_add_evidence_to_existing_case(db_repository: SQLiteCaseRepository
             category=EvidenceCategory.CAUSAL_EVIDENCE,
             primary_purpose="root_cause_identified",
             summary="Memory usage at 95%",
-            preprocessed_content="Memory stats: used 7.6GB / 8GB",
+            extract="Memory stats: used 7.6GB / 8GB",
             source_type=EvidenceSourceType.METRICS,
-            source_file_id="file_aabb12345678",
-            content_size_bytes=512,
-            preprocessing_method="anomaly_detection",
-            collected_by="test-user",
+            source_file_id=file_id,
+            collected_by="evidence-test-user",
             collected_at_turn=3,
         )
     )
@@ -789,6 +830,21 @@ async def test_evidence_full_audit_round_trip(
         ),
     )
 
+    # Post-010: evidence FKs require a matching UploadedFile row
+    file_id = f"file_{uuid4().hex[:12]}"
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=file_id,
+            filename="pool.log",
+            size_bytes=2048,
+            content_type="text/plain",
+            uploaded_at_turn=3,
+            uploaded_by="evidence-test-user",
+            upload_source="file_upload",
+            data_type="logs",
+        )
+    )
+
     evidence = Evidence(
         evidence_id=f"ev_{uuid4().hex[:12]}",
         category=EvidenceCategory.CAUSAL_EVIDENCE,
@@ -801,7 +857,7 @@ async def test_evidence_full_audit_round_trip(
         ),
         processing_mode="directed_analysis",
         source_type=EvidenceSourceType.LOGS,
-        source_file_id="file_aabb12345678",
+        source_file_id=file_id,
         is_primary=True,
         tags=["pool", "saturation", "deploy-correlation"],
         advances_milestones=["root_cause_identified"],

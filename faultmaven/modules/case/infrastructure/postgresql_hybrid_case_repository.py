@@ -197,14 +197,17 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             organization_id = case.organization_id
 
             await self._upsert_case_record(case)
+            # Post-010: evidence.source_file_id is a real FK to
+            # uploaded_files.file_id, so files must exist before any
+            # evidence row that references them gets inserted.
+            await self._upsert_uploaded_files(
+                case.case_id, case.uploaded_files, organization_id
+            )
             await self._upsert_evidence(case.case_id, case.evidence, organization_id)
             await self._upsert_hypotheses(
                 case.case_id, case.hypotheses, organization_id
             )
             await self._upsert_solutions(case.case_id, case.solutions, organization_id)
-            await self._upsert_uploaded_files(
-                case.case_id, case.uploaded_files, organization_id
-            )
             await self._upsert_messages(case.case_id, case.messages, organization_id)
             if case.action_history:
                 await self._append_case_actions(
