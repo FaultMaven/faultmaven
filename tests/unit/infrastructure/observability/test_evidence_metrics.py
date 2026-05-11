@@ -26,6 +26,7 @@ from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    UploadedFile,
 )
 
 # Import test fixtures from the agent-module conftest
@@ -99,11 +100,9 @@ def _make_preprocessing_result(content_hash: str = "hash_xyz"):
     return result
 
 
-def _make_existing_uploaded_file(content_hash: str) -> "UploadedFile":
+def _make_existing_uploaded_file(content_hash: str) -> UploadedFile:
     """Post-010: dedup is file-level. The dedup target is an
     UploadedFile, not an Evidence row."""
-    from faultmaven.modules.case.domain.models import UploadedFile
-
     return UploadedFile(
         file_id="file_aabb12345678",
         filename="app.log",
