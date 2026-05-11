@@ -212,7 +212,9 @@ def mock_data_service():
     async def ingest_data_mock(content, session_id, file_name, file_size, context):
         data_id = f"data_{uuid4().hex[:12]}"
 
-        # Determine data type from file name
+        # Determine data type from file name. Post-010, evidence categories
+        # are claim-anchored (SYMPTOM/CAUSAL/MITIGATION/SOLUTION); files
+        # themselves are classified by source_type, not evidence category.
         data_type = "logs"
         category = "SYMPTOM_EVIDENCE"
 
@@ -222,10 +224,8 @@ def mock_data_service():
             or "config" in file_name.lower()
         ):
             data_type = "configuration"
-            category = "CONTEXTUAL_EVIDENCE"
         elif "metrics" in file_name.lower():
             data_type = "metrics"
-            category = "SYMPTOM_EVIDENCE"
 
         return {
             "data_id": data_id,
@@ -309,16 +309,20 @@ def mock_investigation_service(mock_case_service):
                     )
                     is_irrelevant = "random" in filename.lower()
 
+                    # Post-010: duplicates and irrelevance are no longer
+                    # signalled by an EvidenceCategory.REJECTED value (that
+                    # enum member was dropped). Duplicates are skipped at the
+                    # uploaded-file layer in production; irrelevance is left
+                    # for the LLM to ignore. Here we just annotate the
+                    # summary/primary_purpose for legacy test surface.
                     category = EvidenceCategory.SYMPTOM_EVIDENCE
                     summary = "Log analysis: connection timeout error found"
                     primary_purpose = "symptom_verified"
 
                     if is_duplicate:
-                        category = EvidenceCategory.REJECTED
                         summary = "Duplicate file: already processed this content"
                         primary_purpose = "duplicate_ignored"
                     elif is_irrelevant:
-                        category = EvidenceCategory.REJECTED
                         summary = (
                             "Irrelevant file: content not related to investigation"
                         )

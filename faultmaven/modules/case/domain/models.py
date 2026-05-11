@@ -3653,32 +3653,6 @@ class Case(BaseModel):
         return None
 
     @property
-    def valid_evidence(self) -> List[Evidence]:
-        """
-        All evidence rows.
-
-        Post-010 redesign: every evidence row is claim-anchored and
-        deliberately created. There is no longer a REJECTED category —
-        rejected submissions are expressed as the absence of an evidence
-        row (the agent doesn't promote them), and hypothesis-level
-        refutation lives on ``hypothesis_evidence.stance``. This property
-        is retained for call-site stability but is now equivalent to
-        ``self.evidence``.
-        """
-        return list(self.evidence)
-
-    @property
-    def acceptance_rate(self) -> float:
-        """
-        Always 1.0 under the post-010 model — every evidence row is a
-        deliberate, claim-anchored promotion. Retained for call-site
-        stability; analytics that want submission-vs-evidence ratios
-        should compare ``len(self.uploaded_files)`` against
-        ``len(self.evidence)`` instead.
-        """
-        return 1.0
-
-    @property
     def evidence_count_by_category(self) -> Dict[str, int]:
         """Count evidence by category for analytics"""
         counts: Dict[str, int] = {}

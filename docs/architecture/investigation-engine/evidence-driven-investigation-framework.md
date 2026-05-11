@@ -399,7 +399,7 @@ The old milestones (symptom_verified, scope_assessed, timeline_established, chan
 In the current model:
 
 - **symptom_verified**: Retained as a progress indicator — confirms the problem exists before any hypothesis work begins.
-- **scope_assessed, timeline_established, changes_identified**: **Removed.** These failed both design tests: (a) their absence does not block progress (investigation continues without them), and (b) they don't require independent evidence searches — scope and timeline are extracted facts from symptom evidence, and change events are contextual triggers already captured as `contextual_evidence`. The agent captures this context opportunistically; it never stalls waiting for it.
+- **scope_assessed, timeline_established, changes_identified**: **Removed.** These failed both design tests: (a) their absence does not block progress (investigation continues without them), and (b) they don't require independent evidence searches — scope and timeline are extracted facts from symptom evidence, and change events are contextual triggers that, post-010, live in `uploaded_files` (as file-level metadata) rather than as a synthetic evidence category. The agent captures this context opportunistically; it never stalls waiting for it.
 - **root_cause_identified**: Retained as a progress indicator. Also reflected in hypothesis status (VALIDATED with high confidence ≥ 70%).
 - **solution_proposed**: Retained as a progress indicator, set programmatically (not by LLM) when a `ProposedAction` with `action_type=SOLUTION` is created. Tells the LLM "you already proposed a solution" without scanning conversation history.
 - **solution_applied**: Tracked as part of TREATMENT workflow. Not a milestone.

@@ -2,7 +2,7 @@
 
 **Version:** 2.7
 **Date:** 2026-04-26
-**Status:** Design Specification
+**Status:** **Partially superseded by migration 010** (2026-05-11). The overall two-step pipeline (preprocess attachments → LLM inference) and the system architecture diagram remain accurate. The "Key Design Decisions" subsection is stale: post-010 evidence is created only during INVESTIGATING via LLM `evidence_to_add`, has 4 claim-anchored categories, no `EvidenceForm` discriminator, no `CONTEXTUAL_EVIDENCE` fallback, and no retroactive INQUIRY→INVESTIGATING attribution. File-level metadata lives on `uploaded_files`. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) for the current model.
 
 ---
 

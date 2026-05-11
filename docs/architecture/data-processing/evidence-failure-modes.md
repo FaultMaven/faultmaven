@@ -2,7 +2,7 @@
 
 **Version:** 1.5
 **Date:** 2026-05-04
-**Status:** Design Specification — implemented (dedup, orphan cleanup, monitoring); Scenario 2 async retry deferred pending telemetry signal; placeholder `evidence_retry.py` removed 2026-05-04
+**Status:** **Partially superseded by migration 010** (2026-05-11). Scenarios 1, 2, and 4 (storage, LLM timeout, DB insert) remain accurate; scenario 3 (invalid LLM category) no longer falls back — it now raises a validation error (no `CONTEXTUAL_EVIDENCE` category exists). Dedup is now file-level (`find_uploaded_file_by_content_hash`) rather than evidence-level. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) for the current evidence model.
 **Context:** Failure analysis and recovery strategies for single-phase evidence creation
 
 ---

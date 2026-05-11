@@ -1,6 +1,6 @@
 # Data Preprocessing Design Specification v5.7
 
-**Status**: FINAL
+**Status**: FINAL (sections referencing `EvidenceForm` are **superseded by migration 010**, 2026-05-11 — the `form` column was dropped; preprocessing artifacts now write directly to `uploaded_files`. The extraction/classification pipeline itself is unchanged.)
 **Date**: 2026-04-26
 **Supersedes**: v5.6
 
