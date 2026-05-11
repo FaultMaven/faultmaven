@@ -55,28 +55,33 @@ def _make_evidence(
     evidence_id: str | None = None,
     summary: str = "Test evidence summary",
     extract: str | None = "Structural index content",
+    verbatim_quote: str | None = None,
     source_type: EvidenceSourceType = EvidenceSourceType.LOGS,
     source_file_id: str | None = "file_aabb12345678",
     **overrides,
 ) -> Evidence:
     """Create an Evidence instance for context builder tests.
 
-    Post-010 NOTE on the ``extract`` parameter: the test helper treats
-    ``extract`` as the structural-index content that production routes
-    to ``uploaded_files.structural_index``. ``_make_case_with_evidence``
-    walks the synthesized fixture and mirrors the value onto the
-    backing UploadedFile row. ``Evidence.extract`` itself is left as
-    None — most context-builder tests exercise the structural-index
-    render path, not the verbatim-quote slot.
+    Post-010 NOTE on the parameter split:
+    - ``extract`` is the structural-index content that production routes
+      to ``uploaded_files.structural_index``. ``_make_case_with_evidence``
+      walks the synthesized fixture and mirrors the value onto the
+      backing UploadedFile row.
+    - ``verbatim_quote`` is the LLM's claim-supporting snippet and lands
+      on the Evidence row's own ``extract`` field (which is what
+      ``<verbatim_quote>`` renders from).
+    Most context-builder tests exercise the structural-index render
+    path; tests that exercise the verbatim-quote slot pass
+    ``verbatim_quote=`` explicitly.
     """
     # The structural-index content gets routed to uploaded_file by the
-    # case-fixture helper; the Evidence row's own ``extract`` slot stays
-    # empty (= "no verbatim quote") for the common test case.
+    # case-fixture helper; the Evidence row's own ``extract`` slot
+    # carries the LLM's verbatim quote (or None when the test omits it).
     defaults = {
         "evidence_id": evidence_id or _next_ev_id(),
         "source_file_id": source_file_id,
         "summary": summary,
-        "extract": None,
+        "extract": verbatim_quote,
         "category": EvidenceCategory.SYMPTOM_EVIDENCE,
         "source_type": source_type,
         "collected_at": datetime.now(UTC),
@@ -584,6 +589,92 @@ class TestFilenameAttribution:
 
         assert 'filename="nginx-access.log"' in result
         assert 'filename="app-server.log"' in result
+
+
+# ============================================================
+# Verbatim Quote Rendering (Post-010)
+# ============================================================
+
+
+class TestVerbatimQuoteRendering:
+    """Post-010: ``Evidence.extract`` is an optional verbatim quote that
+    supports the claim, separate from the file's structural index (which
+    lives on ``uploaded_files.structural_index``).
+
+    Pins the rendering contract introduced by the third-pass review so
+    future refactors can't silently regress either path."""
+
+    def test_tier_a_renders_both_file_extract_and_verbatim_quote(self):
+        """File-backed evidence with both a structural index and an LLM
+        quote → both blocks appear, structural index first."""
+        ev = _make_evidence(
+            summary="OOM kills in service-A",
+            extract="Structural index content for service-A.log",
+            verbatim_quote="[14:02:15] OOM killer fired, pid=4321 service-a",
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case)
+
+        assert "<file_extract>" in result
+        assert "Structural index content for service-A.log" in result
+        assert (
+            "<verbatim_quote>[14:02:15] OOM killer fired, pid=4321 service-a"
+            "</verbatim_quote>" in result
+        )
+        # Ordering: file_extract precedes verbatim_quote so the LLM reads
+        # the orientation content first and the claim-grounding quote second.
+        assert result.find("<file_extract>") < result.find("<verbatim_quote>")
+
+    def test_tier_a_omits_verbatim_quote_when_extract_is_none(self):
+        """File-backed evidence with no LLM quote → no <verbatim_quote>
+        tag rendered (avoid empty elements that clutter the prompt)."""
+        ev = _make_evidence(
+            summary="Plain file-backed evidence",
+            extract="Structural index content",
+            verbatim_quote=None,
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case)
+        assert "<file_extract>" in result
+        assert "<verbatim_quote>" not in result
+
+    def test_tier_c_renders_verbatim_quote_for_chat_extracted(self):
+        """Chat-extracted evidence (USER_DESCRIPTION, no source file)
+        with an LLM quote → ``<verbatim_quote>`` carries the actual
+        system-output slice the user typed in. Suppressing it would
+        lose the only content this row has."""
+        ev = _make_evidence(
+            summary="User reported HTTP 503 from checkout API",
+            extract=None,  # no structural index — chat-extracted has no file
+            verbatim_quote="HTTP/1.1 503 Service Unavailable - upstream connect error",
+            source_file_id=None,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case)
+
+        assert "HTTP/1.1 503 Service Unavailable" in result
+        assert (
+            "<verbatim_quote>HTTP/1.1 503 Service Unavailable - "
+            "upstream connect error</verbatim_quote>" in result
+        )
+        # Tier C is never searchable — no file behind it.
+        assert 'searchable="true"' not in result
+
+    def test_tier_c_omits_verbatim_quote_when_extract_is_none(self):
+        """Chat-extracted evidence with only a summary → summary
+        appears, no empty verbatim_quote tag."""
+        ev = _make_evidence(
+            summary="User described a vague slowness with no specifics",
+            extract=None,
+            verbatim_quote=None,
+            source_file_id=None,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case)
+        assert "User described a vague slowness with no specifics" in result
+        assert "<verbatim_quote>" not in result
 
 
 # ============================================================
