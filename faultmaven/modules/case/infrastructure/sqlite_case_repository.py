@@ -2025,8 +2025,9 @@ class SQLiteCaseRepository(CaseRepository):
 
         File-level metadata (filename, content_type, content_hash, size,
         storage_ref) lives on ``uploaded_files`` and is reached via
-        ``source_file_id``. Inline-only Path 2 evidence has
-        ``source_file_id IS NULL`` and persists no file metadata.
+        ``source_file_id``. Chat-extracted evidence
+        (``source_type=USER_DESCRIPTION``) has ``source_file_id IS NULL``
+        and persists no file metadata.
         """
         for evidence in evidence_list:
             query = text("""

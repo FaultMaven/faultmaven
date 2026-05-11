@@ -79,7 +79,7 @@ All data submitted to the API is processed through privacy-first pipelines with:
 
 **Version:** 1.0.0  
 **Base URL:** `/`  
-**Generated:** 2026-05-11T05:58:00.431732Z
+**Generated:** 2026-05-11T06:20:11.371335Z
 
 ## Authentication
 
@@ -5782,26 +5782,29 @@ Reason for escalation
 
 ### Evidence
 
-Evidence collected during investigation.
-Categorized by purpose to drive milestone advancement.
+A claim-anchored extract recorded during INVESTIGATING.
 
-NOTE: Evidence.category is SYSTEM-INFERRED, not LLM-specified!
-System categorizes based on:
-- Which milestones are incomplete (if symptom not verified -> SYMPTOM_EVIDENCE)
-- Hypothesis evaluation results (if creates hypothesis_evidence links -> CAUSAL_EVIDENCE)
-- Solution state (if solution proposed -> RESOLUTION_EVIDENCE)
+Post-010 single creation path: every Evidence row originates as an
+``EvidenceToAdd`` entry the LLM declared on a specific turn. The LLM
+chooses the ``category`` from the four claim-anchored values and the
+``source_type`` from ``EvidenceSourceType``. The system only infers
+``advances_milestones`` (Tier 2 inference via ``CATEGORY_MILESTONE_MAP``),
+and only when the LLM has not already overridden it (Tier 3).
 
-LLM provides: summary, analysis
+LLM declares: summary, extract (optional), category, source_type,
+    source_file_id (required unless source_type=USER_DESCRIPTION),
+    likelihood, optionally advances_milestones
 LLM evaluates: stance per hypothesis (creates hypothesis_evidence links)
-System infers: category, advances_milestones
+System fills: evidence_id, collected_at_turn, collected_by,
+    coverage timestamps (parsed from extract), advances_milestones (Tier 2)
 
 **Properties:**
 
 - `evidence_id` (string) ❌ - Unique evidence identifier
-- `category` (unknown) ✅ - System-inferred category: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER
+- `category` (unknown) ✅ - Claim-anchored category declared by the LLM: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | MITIGATION_EVIDENCE | SOLUTION_EVIDENCE
 - `primary_purpose` (string) ✅ - What this evidence validates (milestone name or hypothesis ID)
-- `summary` (string) ✅ - Short label for this evidence row. ALWAYS present, regardless of how the evidence was created. ~500 chars max. Path 1 (DOCUMENT): auto-generated file summary. Path 2 (LLM evidence_to_add): LLM's brief description. Path 3 (search_file / deep_analysis tools): agent's description of the finding. Use this for UI list views, headers, and quick scanning.
-- `extract` (unknown) ❌ - Bulk content backing the summary. Distinct from summary (short label) and from uploaded_files.storage_ref (file pointer). Path 1 (DOCUMENT): structural index from the Tier 0+1 preprocessor (file_extract + search_map + file_meta) — what the LLM reads in <evidence_collected>. Path 2 (LLM evidence_to_add): optional verbatim quote when the LLM wants to ground the finding in a specific snippet. Path 3 (tools): the search excerpts or analysis answer the tool returned. Required for Paths 1 and 3 (application-enforced); nullable for Path 2.
+- `summary` (string) ✅ - Short label (≤500 chars) the LLM wrote when declaring this evidence via ``evidence_to_add``. ALWAYS present — use it for UI list views, headers, and quick scanning. The optional ``extract`` field carries the verbatim slice that supports the summary.
+- `extract` (unknown) ❌ - Optional verbatim quote that supports the ``summary``. The LLM populates this when grounding the finding in a specific system-output slice (a log line, a metric reading, a config snippet). Distinct from ``summary`` (short label) and from ``uploaded_files.storage_ref`` (file pointer). May be NULL when the summary is self-contained. File-level preprocessing artifacts (structural index, file summary) live on ``uploaded_files``, never here — this field is for claim-relevant quotes only.
 - `analysis` (unknown) ❌ - Agent analysis of this evidence and its significance to the investigation
 - `processing_mode` (unknown) ❌ - Processing mode: triage | directed_analysis | semantic_search
 - `source_type` (unknown) ✅ - Type of evidence source
@@ -5853,9 +5856,9 @@ Detailed evidence information with source and hypothesis linkage.
 - `collected_at_turn` (integer) ✅ - No description
 - `collected_at` (string) ✅ - No description
 - `collected_by` (string) ✅ - No description
-- `source_file` (unknown) ❌ - Source file this evidence was derived from (null if from user input)
+- `source_file` (unknown) ❌ - Source file this evidence was derived from. NULL only when the evidence is a verbatim quote extracted from the user's chat message (source_type=USER_DESCRIPTION).
 - `related_hypotheses` (array) ❌ - No description
-- `extract` (unknown) ❌ - Bulk content backing the summary. NULL for inline-only evidence (Path 2 LLM finding without a verbatim quote).
+- `extract` (unknown) ❌ - Optional verbatim quote backing the summary. NULL when the LLM omitted it (the summary is self-contained).
 - `analysis` (unknown) ❌ - No description
 
 ---
@@ -7443,7 +7446,7 @@ Detailed information about an uploaded file with evidence linkage.
 - `uploaded_at_turn` (integer) ✅ - No description
 - `uploaded_at` (string) ✅ - No description
 - `upload_source` (string) ✅ - Provenance: file_upload | paste | screenshot | page_capture | agent_generated | conversion_source
-- `summary` (unknown) ❌ - Case-scoped summary from the linked Evidence row, when present
+- `summary` (unknown) ❌ - File-level preprocessing summary, set by the ingestion pipeline.
 - `derived_evidence` (array) ❌ - No description
 - `evidence_count` (integer) ✅ - No description
 
@@ -7666,28 +7669,21 @@ Agent's current understanding during INVESTIGATING phase.
 
 ---
 
-### faultmaven__api__models__SessionResponse
+### faultmaven__models__api__SessionResponse
 
-Response model for investigation session.
+Response payload for auth session operations - API spec compliance.
 
 **Properties:**
 
+- `schema_version` (string) ❌ - No description
 - `session_id` (string) ✅ - No description
-- `case_id` (string) ✅ - No description
-- `user_id` (string) ✅ - No description
-- `organization_id` (string) ✅ - No description
-- `status` (unknown) ✅ - No description
-- `started_at` (string) ✅ - No description
-- `ended_at` (unknown) ❌ - No description
-- `last_activity_at` (string) ✅ - No description
-- `total_duration_ms` (unknown) ❌ - No description
-- `session_goal` (unknown) ❌ - No description
-- `findings_summary` (unknown) ❌ - No description
-- `total_token_usage` (integer) ✅ - No description
-- `total_agent_executions` (integer) ✅ - No description
-- `token_budget_limit` (unknown) ❌ - No description
+- `user_id` (unknown) ❌ - No description
+- `client_id` (unknown) ❌ - No description
+- `status` (unknown) ❌ - No description
 - `created_at` (string) ✅ - No description
-- `updated_at` (string) ✅ - No description
+- `expires_at` (unknown) ❌ - No description
+- `metadata` (unknown) ❌ - No description
+- `session_resumed` (unknown) ❌ - No description
 
 ---
 

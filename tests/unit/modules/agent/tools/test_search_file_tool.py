@@ -51,15 +51,13 @@ def _make_evidence(
     evidence_id="ev_abc",
     content_ref="evidence/case_123/app.log",
     filename="app.log",
-    form=None,
 ):
     """Build a minimal Evidence-shaped object for case-embedded lookup.
 
-    Post-010: the helper's previous ``form`` kwarg is ignored;
-    file-backed vs chat-extracted is now decided by ``source_file_id``
-    (set when ``content_ref`` is provided, None otherwise). Pass
-    ``content_ref=None`` to model a chat-extracted evidence record
-    (no backing storage).
+    Post-010: file-backed vs chat-extracted is decided by
+    ``source_file_id`` (set when ``content_ref`` is provided, ``None``
+    otherwise). Pass ``content_ref=None`` to model a chat-extracted
+    evidence record with no backing file.
     """
     ev = MagicMock()
     ev.evidence_id = evidence_id
@@ -871,9 +869,9 @@ class TestToolProperties:
 class TestNonFileBackedEvidenceGuard:
     """ISS-025 regression tests.
 
-    The agent creates symptom_evidence records (form=submitted_data) with
-    synthetic content_ref values like 'file:HealthApp_2k.log' that do NOT
-    resolve to stored bytes. When the LLM passes one of those evidence_ids
+    The agent creates symptom_evidence records whose extracts are
+    derived from chat content rather than a stored file (no
+    ``source_file_id``). When the LLM passes one of those evidence_ids
     to search_file, the tool must:
       1. Reject the call with a non-cryptic error.
       2. Enumerate file-backed evidence_ids the LLM should retry with.

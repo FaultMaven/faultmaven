@@ -1557,18 +1557,21 @@ class UploadedFile(BaseModel):
 
 class Evidence(BaseModel):
     """
-    Evidence collected during investigation.
-    Categorized by purpose to drive milestone advancement.
+    A claim-anchored extract recorded during INVESTIGATING.
 
-    NOTE: Evidence.category is SYSTEM-INFERRED, not LLM-specified!
-    System categorizes based on:
-    - Which milestones are incomplete (if symptom not verified -> SYMPTOM_EVIDENCE)
-    - Hypothesis evaluation results (if creates hypothesis_evidence links -> CAUSAL_EVIDENCE)
-    - Solution state (if solution proposed -> RESOLUTION_EVIDENCE)
+    Post-010 single creation path: every Evidence row originates as an
+    ``EvidenceToAdd`` entry the LLM declared on a specific turn. The LLM
+    chooses the ``category`` from the four claim-anchored values and the
+    ``source_type`` from ``EvidenceSourceType``. The system only infers
+    ``advances_milestones`` (Tier 2 inference via ``CATEGORY_MILESTONE_MAP``),
+    and only when the LLM has not already overridden it (Tier 3).
 
-    LLM provides: summary, analysis
+    LLM declares: summary, extract (optional), category, source_type,
+        source_file_id (required unless source_type=USER_DESCRIPTION),
+        likelihood, optionally advances_milestones
     LLM evaluates: stance per hypothesis (creates hypothesis_evidence links)
-    System infers: category, advances_milestones
+    System fills: evidence_id, collected_at_turn, collected_by,
+        coverage timestamps (parsed from extract), advances_milestones (Tier 2)
     """
 
     evidence_id: str = Field(
@@ -1578,10 +1581,14 @@ class Evidence(BaseModel):
     )
 
     # ============================================================
-    # Purpose Classification (SYSTEM-INFERRED)
+    # Purpose Classification (LLM-declared via EvidenceToAdd)
     # ============================================================
     category: EvidenceCategory = Field(
-        description="System-inferred category: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER"
+        description=(
+            "Claim-anchored category declared by the LLM: "
+            "SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | "
+            "MITIGATION_EVIDENCE | SOLUTION_EVIDENCE"
+        )
     )
 
     primary_purpose: str = Field(
@@ -1594,13 +1601,11 @@ class Evidence(BaseModel):
     # ============================================================
     summary: str = Field(
         description=(
-            "Short label for this evidence row. ALWAYS present, regardless "
-            "of how the evidence was created. ~500 chars max. "
-            "Path 1 (DOCUMENT): auto-generated file summary. "
-            "Path 2 (LLM evidence_to_add): LLM's brief description. "
-            "Path 3 (search_file / deep_analysis tools): agent's description "
-            "of the finding. Use this for UI list views, headers, and quick "
-            "scanning."
+            "Short label (≤500 chars) the LLM wrote when declaring this "
+            "evidence via ``evidence_to_add``. ALWAYS present — use it for "
+            "UI list views, headers, and quick scanning. The optional "
+            "``extract`` field carries the verbatim slice that supports "
+            "the summary."
         ),
         min_length=1,
         max_length=500,
@@ -1620,15 +1625,15 @@ class Evidence(BaseModel):
     extract: Optional[str] = Field(
         default=None,
         description=(
-            "Bulk content backing the summary. Distinct from summary "
-            "(short label) and from uploaded_files.storage_ref (file pointer). "
-            "Path 1 (DOCUMENT): structural index from the Tier 0+1 "
-            "preprocessor (file_extract + search_map + file_meta) — what the "
-            "LLM reads in <evidence_collected>. Path 2 (LLM evidence_to_add): "
-            "optional verbatim quote when the LLM wants to ground the finding "
-            "in a specific snippet. Path 3 (tools): the search excerpts or "
-            "analysis answer the tool returned. Required for Paths 1 and 3 "
-            "(application-enforced); nullable for Path 2."
+            "Optional verbatim quote that supports the ``summary``. The "
+            "LLM populates this when grounding the finding in a specific "
+            "system-output slice (a log line, a metric reading, a config "
+            "snippet). Distinct from ``summary`` (short label) and from "
+            "``uploaded_files.storage_ref`` (file pointer). May be NULL "
+            "when the summary is self-contained. File-level preprocessing "
+            "artifacts (structural index, file summary) live on "
+            "``uploaded_files``, never here — this field is for "
+            "claim-relevant quotes only."
         ),
     )
 
@@ -3592,9 +3597,9 @@ class Case(BaseModel):
         fields — those were copies of upload data; this method walks the
         FK instead.
 
-        None-safe at the source_file_id end: Path 2 inline-only evidence
-        has source_file_id IS NULL, so callers can pass it through
-        without a guard:
+        None-safe at the source_file_id end: chat-extracted evidence
+        (source_type=USER_DESCRIPTION) has source_file_id IS NULL, so
+        callers can pass it through without a guard:
 
             file_meta = case.find_uploaded_file(ev.source_file_id)
             filename = file_meta.filename if file_meta else None

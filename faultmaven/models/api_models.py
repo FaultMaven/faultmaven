@@ -808,7 +808,7 @@ class UploadedFileDetailsResponse(BaseModel):
     )
     summary: Optional[str] = Field(
         default=None,
-        description="Case-scoped summary from the linked Evidence row, when present",
+        description="File-level preprocessing summary, set by the ingestion pipeline.",
     )
 
     # Evidence linkage
@@ -856,7 +856,11 @@ class EvidenceDetailsResponse(BaseModel):
     # Source file linkage
     source_file: Optional[SourceFileReference] = Field(
         None,
-        description="Source file this evidence was derived from (null if from user input)",
+        description=(
+            "Source file this evidence was derived from. NULL only when "
+            "the evidence is a verbatim quote extracted from the user's "
+            "chat message (source_type=USER_DESCRIPTION)."
+        ),
     )
 
     # Hypothesis linkage
@@ -866,8 +870,8 @@ class EvidenceDetailsResponse(BaseModel):
     extract: Optional[str] = Field(
         default=None,
         description=(
-            "Bulk content backing the summary. NULL for inline-only evidence "
-            "(Path 2 LLM finding without a verbatim quote)."
+            "Optional verbatim quote backing the summary. NULL when the "
+            "LLM omitted it (the summary is self-contained)."
         ),
     )
     analysis: Optional[str] = None

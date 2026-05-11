@@ -271,7 +271,8 @@ def _infer_milestones(
     - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md
 
     Args:
-        category: The evidence category (SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL)
+        category: The evidence category (one of SYMPTOM / CAUSAL /
+            MITIGATION / SOLUTION — the four post-010 values)
         milestones_completed_this_turn: Milestones completed this turn from MilestoneUpdates
 
     Returns:
@@ -4519,9 +4520,11 @@ class MilestoneEngine:
                 )
 
         # 2. Add Evidence
-        # Preprocessing now happens in Step 1 of process_turn() (before LLM).
-        # Evidence from evidence_to_add is agent-derived findings → always SUBMITTED_DATA form.
-        # Evidence from attachments was already created in Step 1 with form=DOCUMENT.
+        # Post-010: every Evidence row comes from the LLM declaring an
+        # `evidence_to_add` entry on this turn. Files uploaded earlier in
+        # the turn live on `uploaded_files` only — they become Evidence
+        # only when the LLM extracts a claim-relevant slice and records
+        # it here.
         has_attr = hasattr(updates, "evidence_to_add")
         evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
         evidence_count = len(evidence_list) if evidence_list else 0
@@ -4858,29 +4861,9 @@ class MilestoneEngine:
             f"Selected investigation path: {case.path_selection.path} (reason: {case.path_selection.rationale})"
         )
 
-        # Gap #4: Retroactively attribute milestones to INQUIRY-phase evidence.
-        # During INQUIRY, evidence was created with advances_milestones=[] because
-        # milestone tracking wasn't active yet. Now that we've initialized progress,
-        # we can infer milestone attribution based on evidence categories.
-        # Contextual evidence naturally gets [] from _infer_milestones() because
-        # CATEGORY_MILESTONE_MAP[CONTEXTUAL_EVIDENCE] = [].
-        if case.evidence:
-            # Check which milestones are already satisfied from the transition itself
-            initial_milestones = []
-            if case.progress.verification_complete:
-                initial_milestones.append("symptom_verified")
-
-            for ev in case.evidence:
-                if not ev.advances_milestones:
-                    inferred = _infer_milestones(ev.category, initial_milestones)
-                    if inferred:
-                        ev.advances_milestones = inferred
-                        logger.info(
-                            f"Gap #4: Retroactively attributed milestones {inferred} "
-                            f"to INQUIRY evidence {ev.evidence_id} "
-                            f"(category={ev.category.value})"
-                        )
-
+        # Post-010: no retroactive milestone attribution at INQUIRY→
+        # INVESTIGATING. INQUIRY no longer creates Evidence rows, so
+        # there is no INQUIRY-phase evidence to back-fill milestones for.
         # KB pre-fetch: search for runbooks matching the confirmed problem.
         # Deterministic, code-level — not an LLM tool call decision.
         # Results are stored on the case and injected into context by

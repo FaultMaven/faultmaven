@@ -845,19 +845,14 @@ class EvidenceModel(Base):
     # (TEXT[] on PG, comma-encoded TEXT on SQLite); empty when none.
     advances_milestones = Column(TagsArray, nullable=True)
 
-    # Two-field shape per the three-path evidence design (see case-schema.md
-    # §4.3 "Role of summary vs extract"):
-    #
-    # - summary: short label, ALWAYS present. Auto-generated from the file
-    #   summary on Path 1 (DOCUMENT); LLM-written on Path 2 (evidence_to_add);
-    #   agent-written on Path 3 (search/deep_analysis tools).
-    # - extract: bulk content backing the summary. Required-by-application
-    #   for Paths 1 and 3 (structural index / tool excerpts); optional on
-    #   Path 2 (verbatim quote when the LLM has one). Nullable at the DB
-    #   level to accommodate Path 2.
-    #
-    # If file-backed, source_file_id links to the upload; the file's storage
-    # location lives on uploaded_files.storage_ref.
+    # Two-field shape (see case-schema.md §4.3):
+    # - summary: short label, ALWAYS present. The LLM writes this when it
+    #   declares the evidence via evidence_to_add.
+    # - extract: optional verbatim quote that supports the summary. NULL
+    #   when the summary is self-contained.
+    # File-level preprocessing artifacts (structural index, file summary)
+    # live on uploaded_files, not here. source_file_id links to the source
+    # file; storage_ref lives on uploaded_files.
     summary = Column(String(500), nullable=False)
     extract = Column(Text, nullable=True)
 
