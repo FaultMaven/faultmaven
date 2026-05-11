@@ -233,11 +233,18 @@ class TestAuthAndLookup:
 
 class TestHappyPath:
     @pytest.mark.asyncio
-    async def test_reclassification_updates_evidence(
+    async def test_reclassification_updates_file_and_evidence_source_type(
         self, service, repo_with_case, preprocessing_service
     ):
+        """Post-010: structural_index / summary / data_type land on the
+        backing UploadedFile (file-level metadata). Evidence.source_type
+        is re-aligned so the agent sees a consistent picture. The LLM's
+        own summary/extract fields on Evidence are not touched —
+        reclassifying a file doesn't rewrite the claim built on it."""
         _, case = repo_with_case
         previous_source_type = case.evidence[0].source_type.value
+        previous_summary = case.evidence[0].summary
+        previous_extract = case.evidence[0].extract
 
         updated = await service.reclassify_evidence(
             case_id=case.case_id,
@@ -246,14 +253,19 @@ class TestHappyPath:
             data_type=DataType.LOGS_AND_ERRORS,
         )
 
-        # Returned Evidence reflects a re-mapped source_type.
-        # Reclassify routes preprocessing_result.data_type (UnifiedDataType)
-        # through _infer_source_type, which is keyed on the detailed
-        # DataType enum and falls through to TEXT for UnifiedDataType inputs.
-        # The contract under test here is that the row was updated and
-        # source_type changed, not the specific mapping value.
-        assert updated.extract == "new index content"
+        # Evidence.source_type re-aligned with new data_type
         assert previous_source_type != updated.source_type.value
+
+        # LLM-authored claim fields untouched on Evidence
+        assert updated.summary == previous_summary
+        assert updated.extract == previous_extract
+
+        # File-level preprocessing artifacts landed on UploadedFile
+        saved = await service.repository.get(case.case_id)
+        uf = next(f for f in saved.uploaded_files if f.file_id == "file_aaaaaaaaaaaa")
+        assert uf.structural_index == "new index content"
+        assert uf.summary == "new summary"
+        assert uf.data_type == updated.source_type.value
 
         # Preprocessing was called with user_override + previous metadata.
         kwargs = preprocessing_service.reclassify_evidence.call_args.kwargs
@@ -328,3 +340,9 @@ class TestHappyPath:
         )
         assert untouched.source_type.value == EvidenceSourceType.CONFIGURATION.value
         assert untouched.extract == "old index"
+        # The unrelated UploadedFile must also be untouched.
+        untouched_file = next(
+            f for f in saved.uploaded_files if f.file_id == "file_bbbbbbbbbbbb"
+        )
+        assert untouched_file.structural_index is None
+        assert untouched_file.summary is None

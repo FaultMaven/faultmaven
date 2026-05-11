@@ -1353,14 +1353,19 @@ class TestVectorizedFlagPersistence:
         """Proactive task should not be created for evidence that is
         already marked vectorized (the persistent-flag gate)."""
 
+        # Post-010: vectorization size lives on uploaded_files.size_bytes.
+        # Wire each evidence row to a backing UploadedFile of the right size
+        # so the engine's FK traversal returns a real file_meta.
         class _Ev:
-            def __init__(self, ev_id, size, vectorized):
+            def __init__(self, ev_id, vectorized, file_id):
                 self.evidence_id = ev_id
-                # Post-redesign: size is read via the extract length when no
-                # uploaded_files row backs the evidence (inline path).
-                self.extract = "x" * size
-                self.source_file_id = None
+                self.source_file_id = file_id
                 self.vectorized = vectorized
+
+        class _File:
+            def __init__(self, file_id, sz):
+                self.file_id = file_id
+                self.size_bytes = sz
 
         engine, _ = await self._make_engine_with_tool(tool_success=True)
         # _vectorize_evidence shouldn't be called at all when the flag is True
@@ -1369,14 +1374,16 @@ class TestVectorizedFlagPersistence:
         # Size well above the default min threshold so the size gate
         # isn't what's suppressing the task.
         big = 1_000_000
+        files = {
+            "file_already": _File("file_already", big),
+            "file_new": _File("file_new", big),
+        }
         case = MagicMock()
         case.evidence = [
-            _Ev("ev_already", big, vectorized=True),
-            _Ev("ev_new", big, vectorized=False),
+            _Ev("ev_already", vectorized=True, file_id="file_already"),
+            _Ev("ev_new", vectorized=False, file_id="file_new"),
         ]
-        # Skip the FK-traversal branch so the inline size fallback runs
-        # against the stub's extract length.
-        case.find_uploaded_file = MagicMock(return_value=None)
+        case.find_uploaded_file = MagicMock(side_effect=lambda fid: files.get(fid))
 
         tasks = await engine._start_proactive_vectorization(case, MagicMock())
 
@@ -1420,19 +1427,29 @@ class TestInflightVectorizeDedup:
 
     @staticmethod
     def _case_with(evidence_id: str, vectorized: bool, size: int = 1_000_000):
+        """Build a case with one evidence row backed by an uploaded file of
+        the requested ``size``. Post-010: vectorization size lives on
+        ``uploaded_files.size_bytes`` (Evidence carries no size field), so
+        the test gives the engine a real file_meta to read from."""
+
         class _Ev:
-            def __init__(self, ev_id, sz, vec):
+            def __init__(self, ev_id, vec, file_id):
                 self.evidence_id = ev_id
-                # Post-redesign: size flows from extract length on the inline
-                # path (no source_file_id), or from uploaded_files.size_bytes
-                # via FK traversal otherwise.
-                self.extract = "x" * sz
-                self.source_file_id = None
+                self.source_file_id = file_id
                 self.vectorized = vec
 
+        class _File:
+            def __init__(self, file_id, sz):
+                self.file_id = file_id
+                self.size_bytes = sz
+
+        file_id = "file_for_" + evidence_id.replace("-", "_")
+        file_meta = _File(file_id, size)
         case = MagicMock()
-        case.evidence = [_Ev(evidence_id, size, vectorized)]
-        case.find_uploaded_file = MagicMock(return_value=None)
+        case.evidence = [_Ev(evidence_id, vectorized, file_id)]
+        case.find_uploaded_file = MagicMock(
+            side_effect=lambda fid: file_meta if fid == file_id else None
+        )
         return case
 
     async def test_second_call_reuses_inflight_task(self):

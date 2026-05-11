@@ -1019,23 +1019,31 @@ class AgentOrchestrationService:
         """Compare query entities against evidence coverage metadata.
 
         Checks whether user-referenced timestamps, services, and error codes
-        are covered by the evidence artifacts attached to the case.
+        are covered by the data behind the case's evidence rows.
+
+        Post-010: the structural-index JSON (file_meta with time_range etc.)
+        lives on ``uploaded_files.structural_index``, not on
+        ``Evidence.extract`` which is now an optional verbatim quote. We
+        walk ``case.uploaded_files`` directly so coverage gaps are still
+        detected after the redesign.
         """
         gaps: list[str] = []
 
         if not hasattr(case, "evidence") or not case.evidence:
             return gaps
 
-        # Collect coverage metadata from evidence file_meta
+        # Collect coverage metadata from uploaded_files.structural_index
         import json as _json
 
         all_time_ranges: list[str] = []
         all_services: list[str] = []
 
-        for ev in case.evidence:
-            preprocessed = ev.extract or ""
+        for uf in getattr(case, "uploaded_files", None) or []:
+            structural = getattr(uf, "structural_index", None) or ""
+            if not structural:
+                continue
             try:
-                d = _json.loads(preprocessed)
+                d = _json.loads(structural)
                 if isinstance(d, dict) and d.get("v") == 1:
                     meta = d.get("file_meta") or {}
                     tr = meta.get("time_range")
@@ -1044,9 +1052,9 @@ class AgentOrchestrationService:
                     continue
             except (ValueError, TypeError):
                 pass
-            # Legacy: parse old COVERAGE_SEPARATOR format
-            if COVERAGE_SEPARATOR in preprocessed:
-                coverage_section = preprocessed.split(COVERAGE_SEPARATOR)[1]
+            # Legacy: parse old COVERAGE_SEPARATOR format on plaintext records
+            if COVERAGE_SEPARATOR in structural:
+                coverage_section = structural.split(COVERAGE_SEPARATOR)[1]
                 for line in coverage_section.split("\n"):
                     if line.startswith("First timestamp:") or line.startswith(
                         "Last timestamp:"

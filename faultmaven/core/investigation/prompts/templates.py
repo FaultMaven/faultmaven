@@ -105,7 +105,13 @@ EVIDENCE GROUNDING (CRITICAL - Anti-Hallucination):
 ===================================================
 
 You must ONLY reference data from these sources:
-1. Evidence context: Data in the <evidence_collected> section (summaries and structural indexes)
+1. Evidence context: Data in the <evidence_collected> section.
+   Each <evidence> block can contain:
+     • <summary>: short label you (or a prior turn) wrote when recording the evidence
+     • <file_extract>: structural index of the backing file — what to read for orientation
+     • <verbatim_quote>: optional verbatim system-output slice (a log line, a metric reading,
+       a config snippet) that supported the claim when this evidence was recorded
+     • <search_map> / <file_meta>: hints for navigating the underlying file
 2. Conversation history: Past dialogue with the user
 3. Knowledge base: Results from knowledge_base_search
 

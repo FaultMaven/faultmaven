@@ -2903,15 +2903,14 @@ class MilestoneEngine:
         tasks: dict[str, asyncio.Task] = {}
 
         for ev in getattr(case, "evidence", []):
-            # Post-redesign: content_size_bytes was dropped. For file-backed
-            # evidence, size lives on uploaded_files.size_bytes; for inline
-            # evidence, fall back to the length of the in-memory extract
-            # (which won't typically clear the vectorization threshold).
+            # Vectorization size gate. Post-010: file-backed evidence has
+            # its size on uploaded_files.size_bytes; chat-extracted evidence
+            # (USER_DESCRIPTION, source_file_id IS NULL) has no backing file
+            # and is never large enough to vectorize — treat size=0 so it
+            # falls below the min-size threshold.
             file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
             size = (
-                int(file_meta.size_bytes)
-                if file_meta and file_meta.size_bytes
-                else len(getattr(ev, "extract", "") or "")
+                int(file_meta.size_bytes) if file_meta and file_meta.size_bytes else 0
             )
             if not (
                 size >= min_size
@@ -3199,15 +3198,18 @@ class MilestoneEngine:
             if case is not None:
                 for ev in getattr(case, "evidence", []) or []:
                     if getattr(ev, "evidence_id", None) == evidence_id:
-                        # Post-redesign: content_size_bytes dropped from
-                        # Evidence; size lives on uploaded_files via FK.
+                        # Post-010: size lives on uploaded_files via the
+                        # source_file_id FK. Chat-extracted evidence has no
+                        # backing file → size=0 (which falls below the
+                        # vectorization min-size gate below).
                         file_meta = case.find_uploaded_file(
                             getattr(ev, "source_file_id", None)
                         )
-                        if file_meta and file_meta.size_bytes:
-                            ev_size = int(file_meta.size_bytes)
-                        else:
-                            ev_size = len(getattr(ev, "extract", "") or "")
+                        ev_size = (
+                            int(file_meta.size_bytes)
+                            if file_meta and file_meta.size_bytes
+                            else 0
+                        )
                         break
         except Exception:
             return result_text

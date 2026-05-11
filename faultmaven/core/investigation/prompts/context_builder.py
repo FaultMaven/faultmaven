@@ -1159,14 +1159,21 @@ def _build_evidence_context(
         result += entry
         total_chars += len(entry)
 
-    # Tier C: chat-extracted evidence (summary only, never searchable —
-    # has no source file). source_file_id IS NULL here per the new
-    # source-invariant.
+    # Tier C: chat-extracted evidence (never searchable — has no source
+    # file). source_file_id IS NULL here per the new source-invariant.
+    # Include the verbatim_quote when present: for chat-extracted
+    # evidence it carries the actual system-output slice the user typed
+    # in (the summary alone would lose that detail).
     for ev in text_evidence[-5:]:  # Cap at 5 most recent items
         label = _evidence_label(ev, file_lookup)
         label_attr = f' label="{label}"'
-        entry = f'  <evidence id="{ev.evidence_id}"{label_attr}>'
-        entry += f"<summary>{ev.summary}</summary></evidence>\n"
+        quote_block = ""
+        if ev.extract and ev.extract.strip():
+            quote_block = f"<verbatim_quote>{ev.extract.strip()}</verbatim_quote>"
+        entry = (
+            f'  <evidence id="{ev.evidence_id}"{label_attr}>'
+            f"<summary>{ev.summary}</summary>{quote_block}</evidence>\n"
+        )
         if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
             break
         result += entry

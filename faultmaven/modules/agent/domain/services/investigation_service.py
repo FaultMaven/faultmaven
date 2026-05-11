@@ -1181,16 +1181,21 @@ class InvestigationService:
         data_type: DataType,
         trigger: str = "api",
     ) -> Evidence:
-        """Re-run preprocessing on an existing evidence row under a
-        user-specified data type.
+        """Re-run preprocessing on the file behind an existing evidence row
+        under a user-specified data type.
 
         Phase 1.5 — implements the "escape hatch" for confident
         misclassification. The caller (PATCH endpoint or
         ``reclassify_evidence`` agent tool) provides the new data type;
         this method fetches the stored raw bytes, re-runs extraction
-        under ``user_override=data_type``, and overwrites the
-        ``preprocessed_content`` / ``data_type`` / ``metadata`` fields
-        on the same evidence row.
+        under ``user_override=data_type``, and updates the **backing
+        UploadedFile**'s preprocessing artifacts (``data_type``,
+        ``summary``, ``structural_index``) — post-010 these live with
+        the file, not on Evidence. The Evidence row's ``source_type`` is
+        re-aligned so it stays consistent with the file's new
+        classification, but the LLM-authored ``summary`` and ``extract``
+        fields on Evidence are left untouched (they are claim content,
+        not preprocessing output).
 
         Args:
             case_id: Case owning the evidence.
@@ -1202,13 +1207,14 @@ class InvestigationService:
                 Labels the observability counter.
 
         Returns:
-            The updated Evidence row with new preprocessed_content and
-            metadata.
+            The updated Evidence row with the re-aligned
+            ``source_type``. The structural_index / summary / data_type
+            updates land on the backing UploadedFile in the same case.
 
         Raises:
             NotFoundError: case or evidence not found.
             PermissionDeniedException: user does not own the case.
-            ValidationException: evidence has no ``content_ref`` —
+            ValidationException: evidence has no backing file —
                 reclassification requires stored raw bytes to re-extract.
             ServiceException: any other failure (storage fetch,
                 preprocessing).
@@ -1283,13 +1289,36 @@ class InvestigationService:
         previous_type = evidence.source_type.value
         new_type = preprocessing_result.data_type.value
 
-        # Update the row in place via model_copy to bypass cross-field
-        # validators, then write back the list so Case's own validators
-        # see a consistent state.
+        # Post-010 routing: preprocessing artifacts (data_type, summary,
+        # structural_index) describe the FILE and land on
+        # ``uploaded_files``. Evidence carries the LLM's claim — we only
+        # re-align ``source_type`` so the agent sees consistent data on
+        # the next turn. The LLM-authored ``summary`` and ``extract``
+        # fields on Evidence are left untouched: they are claim content,
+        # not preprocessing output.
+        file_index = next(
+            (
+                i
+                for i, uf in enumerate(case.uploaded_files or [])
+                if uf.file_id == evidence.source_file_id
+            ),
+            None,
+        )
+        new_files_list = list(case.uploaded_files or [])
+        if file_index is not None:
+            new_files_list[file_index] = file_meta.model_copy(
+                update={
+                    "data_type": _infer_source_type(
+                        preprocessing_result.data_type
+                    ).value,
+                    "summary": preprocessing_result.summary,
+                    "structural_index": preprocessing_result.structural_index,
+                },
+                deep=True,
+            )
+
         updated_evidence = evidence.model_copy(
             update={
-                "extract": preprocessing_result.structural_index,
-                "summary": preprocessing_result.summary,
                 "source_type": _infer_source_type(preprocessing_result.data_type),
                 "metadata": new_evidence_metadata,
             },
@@ -1298,7 +1327,11 @@ class InvestigationService:
         new_evidence_list = list(case.evidence)
         new_evidence_list[evidence_index] = updated_evidence
         updated_case = case.model_copy(
-            update={"evidence": new_evidence_list}, deep=True
+            update={
+                "evidence": new_evidence_list,
+                "uploaded_files": new_files_list,
+            },
+            deep=True,
         )
 
         await self.repository.save(updated_case)
