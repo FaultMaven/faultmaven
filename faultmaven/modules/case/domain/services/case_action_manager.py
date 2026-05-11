@@ -19,16 +19,18 @@ Case Actions:
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from faultmaven.modules.case.domain.models import CaseStatus, KnowledgeResolution
+from faultmaven.modules.case.domain.models import CaseStatus
 from faultmaven.utils.serialization import to_json_compatible
 
 # Allowed user-initiated case actions (via UI)
-# Note: INQUIRY → RESOLVED is handled automatically by agent (fast-track), not user-selectable
+# v3: INQUIRY → RESOLVED removed. KB-driven cases route through INVESTIGATING
+# via the same-turn milestone collapse path (see
+# docs/architecture/investigation-engine/investigation-lifecycle-logic.md
+# §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path).
 ALLOWED_ACTIONS = {
     CaseStatus.INQUIRY: [
         CaseStatus.INVESTIGATING,  # Phase transition: "Start investigation"
         CaseStatus.CLOSED,  # Disposition: "Close without investigating"
-        # RESOLVED excluded - fast-track is agent-controlled only
     ],
     CaseStatus.INVESTIGATING: [
         CaseStatus.RESOLVED,  # Disposition: "Mark as resolved"
@@ -51,11 +53,6 @@ CASE_ACTION_MESSAGES = {
         CaseStatus.INQUIRY,
         CaseStatus.INVESTIGATING,
     ): "I want to start a formal investigation to find the root cause.",
-    # Disposition: INQUIRY → RESOLVED (Fast-Track)
-    (
-        CaseStatus.INQUIRY,
-        CaseStatus.RESOLVED,
-    ): "The issue was resolved using a known solution from the knowledge base.",
     # Disposition: INQUIRY → CLOSED
     (
         CaseStatus.INQUIRY,
@@ -202,23 +199,6 @@ class CaseActionManager:
 
     # Backward compatibility alias
     get_allowed_transitions = get_allowed_actions
-
-    @staticmethod
-    def build_fast_track_record(
-        knowledge_resolution: KnowledgeResolution,
-        user_id: str,
-    ) -> Dict[str, Any]:
-        """Build audit record for Fast-Track resolution (disposition from INQUIRY)."""
-        now = datetime.now(timezone.utc)
-        return {
-            "from_status": CaseStatus.INQUIRY.value,
-            "to_status": CaseStatus.RESOLVED.value,
-            "changed_at": to_json_compatible(now),
-            "changed_by": user_id,
-            "auto": True,
-            "reason": f"Knowledge Base Resolution: {knowledge_resolution.match_type} ({knowledge_resolution.match_id})",
-            "resolution_details": knowledge_resolution.model_dump(),
-        }
 
 
 # Backward compatibility alias

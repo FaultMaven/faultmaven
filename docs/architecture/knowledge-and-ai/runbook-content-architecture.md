@@ -1,8 +1,8 @@
 # Runbook Content Architecture: Structuring Knowledge for AI-Driven Troubleshooting
 
 **Document Type:** Component Specification
-**Version:** 2.1
-**Status:** Partial Implementation (see [Implementation Status](#implementation-status))
+**Version:** 3.0
+**Status:** Design — v3 redesign (see [Implementation Status](#implementation-status))
 
 ## Purpose
 
@@ -92,7 +92,7 @@ severity: high
 scope: global
 tags: [pgbouncer, aws-rds]
 difficulty: intermediate
-version: "1.2"
+version: "1.0.0"
 last_updated: 2026-03-21
 verified_by: sre_team
 status: verified
@@ -121,9 +121,9 @@ Atomic runbooks produce better retrieval because the entire document is relevant
 
 ### Why Structure Matters for RAG
 
-FaultMaven's ingestion pipeline uses **structure-aware chunking** — it splits runbooks at markdown header boundaries (`##`, `###`), not at fixed character counts. Each `##` section becomes its own chunk, embedded independently. During retrieval, the AI sees individual chunks, not the full document.
+FaultMaven's ingestion pipeline uses **structure-aware chunking** — it splits runbooks at markdown header boundaries (`##`, `###`), not at fixed character counts. Each `##` section becomes its own chunk; each `### Cause N` subsection within `## Causes` becomes its own chunk. During retrieval, the agent sees individual chunks, not the full document.
 
-Chunking parameters (implemented in `core/knowledge/ingestion.py`):
+Chunking parameters (implemented in `kb_toolkit/core/chunker.py`):
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
@@ -132,34 +132,35 @@ Chunking parameters (implemented in `core/knowledge/ingestion.py`):
 | Min chunk size | 100 characters | Tiny sections merged with adjacent section |
 | Fallback | Sentence-boundary splitting | For structureless text without headers |
 | Frontmatter | Stripped before chunking | Metadata stored separately in ChromaDB, not embedded |
+| HTML comments | Stripped before chunking | Predicate hints lifted to ChromaDB metadata (see [indicator-resolution.md §6](../investigation-engine/indicator-resolution.md#6-chromadb-metadata-schema)) |
 
 This means:
 
-- **Each `##` section = one chunk.** Symptoms in Problem Definition and commands in Diagnostic Steps naturally land in separate chunks because they are separate sections. This is by design — the retrieval pipeline handles multi-chunk synthesis.
-- **Section size matters.** Aim for 400-900 characters per section (CONVERSION_SYSTEM_PROMPT Rule 4). A section under 100 chars gets merged with the next section, losing its header context. A section over 3000 chars gets split at sentence boundaries, which can break the co-location of a command and its interpretation.
-- **Each section must be self-contained enough to be useful in isolation** — a chunk that says "as described above" provides no value. The retrieved chunk may be the only chunk the agent sees for a given query.
-- **Headers establish chunk boundaries** — the chunker uses markdown headers to identify natural split points. Well-structured headers mean better chunk boundaries. Avoid deeply nested sub-headers within a section; `###` steps within a `##` section create additional split points.
-- **Only actionable content should be in the runbook body** — authoring guidelines, rationale, and commentary belong in this architecture doc, not in the runbook itself. Every sentence in the runbook gets embedded; non-actionable text dilutes the embedding and wastes retrieval signal.
+- **Each Cause subsection is one chunk.** Every `### Cause N` becomes a single chunk containing the cause statement, mechanism, indicator, mitigation, resolution, and verification together. Retrieval surfaces the complete cause-fix tuple — not a fragment, not a multi-chunk reconstruction.
+- **Section size matters.** Aim for 400-900 characters per Cause subsection. Subsections over 3000 chars get split at sentence boundaries, breaking field co-location. Subsections under 100 chars get merged with neighbors, losing their header context.
+- **Each Cause subsection is self-contained** — a chunk that says "as described in Cause A" provides no value. The retrieved chunk may be the only chunk the agent sees for a given query.
+- **Only actionable content in the runbook body** — authoring guidelines, rationale, and commentary belong in this architecture doc, not in the runbook itself. Every sentence in the runbook gets embedded; non-actionable text dilutes the embedding and wastes retrieval signal.
 
 ### The Template
 
-This template mirrors FaultMaven's investigation stages (DIAGNOSIS → TREATMENT), allowing the AI to align runbook steps with the current case progress.
+This template structures each runbook around **per-Cause sections**. Each `### Cause N` subsection is a self-contained chunk carrying the cause statement, mechanism, indicator, and inline mitigation/resolution/verification. This design lets retrieval surface complete cause-fix tuples in a single chunk and lets case completion populate `RootCauseConclusion` + `Solution` by direct field copy without an LLM extraction call.
 
-**Design rule:** The template below contains ONLY what should appear in the final runbook. Authoring guidance (the "Why" explanations) is in the [Authoring Rationale](#authoring-rationale) section below the template — it is for the author's reference, not for the runbook content.
+**Design rule:** The template below contains ONLY what should appear in the final runbook. Authoring guidance is in the [Authoring Rationale](#authoring-rationale) section below the template.
 
-```markdown
+````markdown
 ---
 # [YAML taxonomy frontmatter — see Section 2]
 ---
 
 # Runbook: [Title — include the failure mode, not just the technology]
 
-## Problem Definition
-PostgreSQL 14+ (applies to AWS RDS, Aurora, self-hosted). Requires `pg_monitor` role or superuser access. Tools: `psql`, `pgbouncer` admin console.
-
+## Symptom Recognition
 - Exact alert names: "Datadog Alert: PostgreSQL Connection Pool > 90%"
 - Error messages as they appear in logs: "FATAL: too many connections for role"
 - Metric patterns: "pg_stat_activity active connections > pool_size for >5min"
+
+## Applicability
+PostgreSQL 14+ (applies to AWS RDS, Aurora, self-hosted). Requires `pg_monitor` role or superuser access. Tools: `psql`, `pgbouncer` admin console.
 
 ## Diagnostic Steps
 
@@ -167,44 +168,72 @@ PostgreSQL 14+ (applies to AWS RDS, Aurora, self-hosted). Requires `pg_monitor` 
 ```sql
 SELECT count(*), state FROM pg_stat_activity GROUP BY state;
 ```
-If active > 80% of max_connections, proceed to step 2.
+Expected output: count per connection state.
 
-### Step 2: Identify long-running queries
+### Step 2: Identify idle-in-transaction sessions
 ```sql
-SELECT pid, now() - pg_stat_activity.query_start AS duration, query
-FROM pg_stat_activity WHERE state = 'active' ORDER BY duration DESC;
+SELECT pid, now() - query_start AS duration, query
+FROM pg_stat_activity WHERE state = 'idle in transaction'
+ORDER BY duration DESC;
 ```
-Queries running >30s are candidates for termination.
+Expected output: list of idle-in-transaction sessions with age.
 
-## Mitigation
-**Risk**: Forcibly terminating connections may kill active transactions.
-```bash
-SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-WHERE state = 'idle in transaction' AND query_start < now() - interval '30 minutes';
-```
-**Verify**: Re-run Step 1. Active connections should drop below 80%.
-**Duration**: Safe for up to 24 hours while root cause is addressed.
+## Causes
 
-## Root Cause Resolution
-**If** active connections dominated by idle transactions:
-```bash
+### Cause A: Idle transactions exhausting the pool
+**Statement:** Sessions in `idle in transaction` hold connection slots indefinitely, exhausting `max_connections` under steady churn.
+**Mechanism:** Each idle-in-transaction session retains a connection slot until it commits, rolls back, or is forcibly terminated. With pooled clients that fail to release on application errors, slots accumulate faster than they are released, eventually reaching `max_connections` and blocking new connections.
+**Indicator:**
+- [Step 1] active connections > 80% of max_connections
+- [Step 2] sessions with state = 'idle in transaction' older than 30 minutes present
+<!-- match: {"step": 2, "predicate": "contains", "target": "idle in transaction"} -->
+**Mitigation:**
+- **Risk:** Forcibly terminating connections may roll back in-flight transactions on application clients.
+- **Command:**
+  ```sql
+  SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+  WHERE state = 'idle in transaction' AND query_start < now() - interval '30 minutes';
+  ```
+- **Duration:** Safe for up to 24 hours while root cause is addressed.
+**Resolution:**
+```sql
 ALTER SYSTEM SET idle_in_transaction_session_timeout = '30s';
 SELECT pg_reload_conf();
 ```
+**Verification:** Re-run Step 2; sessions older than the new timeout should not accumulate.
 
-**If** connection pool undersized for current load:
-```ini
-# pgbouncer.ini
-max_pool_size = 50  # increase from default 20
-```
-```bash
-pgbouncer -R  # reload config
-```
+### Cause B: Connection pool undersized for current load
+**Statement:** Allocated pool size is below the steady-state working set of concurrent connections.
+**Mechanism:** Application connection demand exceeds the pool's `max_pool_size`, causing new requests to wait or fail. Unlike Cause A, no idle-in-transaction sessions accumulate; the pool is genuinely saturated by active work.
+**Indicator:**
+- [Step 1] active connections > 80% of max_connections
+- [Step 2] no sessions in idle-in-transaction state
+<!-- match: {"step": 1, "predicate": "threshold", "target": "active_pct", "op": ">", "value": 0.8} -->
+**Mitigation:**
+- **Risk:** Increasing pool size raises memory consumption on the database.
+- **Command:**
+  ```ini
+  # pgbouncer.ini
+  max_pool_size = 50  # increase from default 20
+  ```
+  ```bash
+  pgbouncer -R  # reload config
+  ```
+- **Duration:** Permanent once memory headroom confirmed.
+**Resolution:** Same as Mitigation.
+**Verification:** Re-run Step 1; active connections should stabilize below 70% of the new pool size under normal load.
 
-## Verification
-- `pg_stat_activity` active connections stay below 70% of max_connections for 1 hour
-- Application error rate returns to baseline (< 0.1%)
-- No new "too many connections" errors in PostgreSQL logs
+### Cause Z: Unidentified
+**Statement:** None of the documented causes match the observed evidence.
+**Mechanism:** The runbook's known failure patterns do not cover this case; root cause requires investigation outside the runbook's scope.
+**Indicator:**
+- [Default]
+**Mitigation:**
+- **Risk:** Generic mitigation may not address the underlying cause; collect more evidence before applying.
+- **Command:** Capture full `pg_stat_activity` snapshot and PostgreSQL log tail; consult database SME.
+- **Duration:** Diagnostic only.
+**Resolution:** Out of runbook scope. Escalate.
+**Verification:** N/A.
 
 ## Prevention
 - Set `idle_in_transaction_session_timeout` in postgresql.conf (prevents idle connection buildup)
@@ -214,27 +243,39 @@ pgbouncer -R  # reload config
 ## Sources
 - [PostgreSQL: Connection Handling](https://www.postgresql.org/docs/current/runtime-config-connection.html) — official docs on connection limits and timeouts
 - [PgBouncer Configuration](https://www.pgbouncer.org/config.html) — pool sizing parameters
-```
+````
 
 ### Authoring Rationale
 
-This section explains WHY each template section is structured the way it is. This is guidance for runbook authors — it does NOT appear in the runbook itself.
+This section explains WHY each template section is structured the way it is. This is guidance for runbook authors and the generation pipeline — it does NOT appear in the runbook itself.
 
 | Section | RAG Purpose | What makes it effective |
 |---------|------------|------------------------|
-| **Problem Definition** | The AI matches user-reported symptoms against this section via vector similarity. This section also establishes scope (system, version, access requirements) so that every retrieved chunk carries its context. | **Co-location rule:** Keep all symptom indicators (alerts, error messages, metric patterns) AND the scope context (system, version, access) within a single tight block. Do not separate them with explanatory prose. If they split across chunks, retrieved symptoms lose their scoping context and vice versa. Generic descriptions ("database is slow") match too many runbooks. |
-| **Diagnostic Steps** | Used during DIAGNOSIS stage. The AI proposes these commands to the user. | **Self-contained step rule:** Each diagnostic step must be usable in isolation — if it lands in a chunk alone, the LLM must know what it's checking, the command to run, what to look for in the output, and what the finding means. Do not write "as described in Step 1" — the chunk may not include Step 1. Vague steps ("check the database") force the AI to guess. |
-| **Mitigation** | FaultMaven supports MITIGATION_FIRST investigation. The AI can propose a quick fix early. | Must include risk assessment, the command, verification, and safe duration. Without risk, the AI can't warn the user about side effects. |
-| **Root Cause Resolution** | Linked to diagnostic findings. Structure as "If X, then Y" so the AI matches findings to fixes. | Each resolution must be tied to a specific diagnostic outcome. Unlinked resolutions force the AI to guess which one applies. For mitigated cases (external dependency, deprecated system, known intractable condition), the diagnostic finding is the identified constraint and the resolution is the mitigation implementation — same "If X then Y" structure, same code block with the configuration or commands. |
-| **Verification** | Lets the AI confirm whether the fix worked. | Specific metrics, commands, and observation periods. Without this, the investigation can't reach RESOLVED status. |
-| **Prevention** | Used in post-resolution recommendations and report generation. **By design, Prevention chunks are rarely retrieved during active investigation** — they don't match symptom queries. They become relevant only after the problem is resolved, when the agent generates recommendations. This is intentional, not a retrieval gap. | Configuration changes, monitoring alerts, capacity thresholds — concrete actions, not general advice. |
-| **Sources** | Provides provenance for the knowledge. Enables verification and updates. | URL + brief description of what was used from each source. The AI can cite these when presenting the answer. |
+| **Symptom Recognition** | First retrieval signal. The agent matches user-reported symptoms against this section via vector similarity. | **Symptom-only co-location.** Keep alerts, error messages, and metric patterns together as a tight block. Do not mix with applicability or mechanism. Generic descriptions ("database is slow") match too many runbooks; specificity wins retrieval. |
+| **Applicability** | Confirms whether the runbook applies to the user's environment. Scope context — system version, required tools, access requirements. | Concrete versions and tool names. The agent surfaces applicability when proposing the runbook to the user; vague scope ("works on Postgres") leads to misapplication. |
+| **Diagnostic Steps** | The agent proposes these commands to the user during DIAGNOSIS. Each step's finding feeds Indicator evaluation in the active Cause. | **Procedure only — no interpretation.** Command, expected output shape, nothing else. The interpretation of what each finding *means* lives in each Cause's `Indicator` field, not here. Splitting them prevents the same interpretation from appearing in two chunks (Diagnostic Step chunk AND Cause chunk), which would dilute retrieval signal. |
+| **Causes → `### Cause N`** | Each Cause subsection is one chunk. Retrieval surfaces a complete cause-fix tuple. Engine reads `Statement` + `Mechanism` for `RootCauseConclusion`; reads `Mitigation` / `Resolution` for `Solution`. | Per-Cause inlining of all relevant fields (statement, mechanism, indicator, mitigation, resolution, verification) keeps the chunk self-contained. Hard char limits on `Statement` (≤300) and `Mechanism` (≤800) enforce conciseness — these fields are copied verbatim into engine state, not summarized. |
+| **Causes → `Statement`** | Direct copy → `RootCauseConclusion.root_cause` at case completion. | Single declarative sentence stating the cause. Not a fix, not a symptom — the cause. ≤300 characters. |
+| **Causes → `Mechanism`** | Direct copy → `RootCauseConclusion.mechanism`. | How the cause produces the symptom — the causal chain. ≤800 characters. |
+| **Causes → `Indicator`** | Engine evaluates against case evidence to attribute the active Cause. | Bullet list referencing `[Step N]` findings or `[Symptom]` patterns. Each entry must contain at least one reference token. Use `[Default]` for the `Cause Z: Unidentified` fallback. Optional `<!-- match: ... -->` HTML comment provides a machine-readable predicate; see [indicator-resolution.md §3](../investigation-engine/indicator-resolution.md#3-predicate-vocabulary) for vocabulary. |
+| **Causes → `Mitigation` / `Resolution`** | `Mitigation` = quick risk-tagged fix (supports mitigation-first investigation). `Resolution` = durable fix. | Each block contains command + risk + duration (Mitigation) or command + durable change (Resolution). When the two are identical, use `**Resolution:** Same as Mitigation.` in the generation prompt; the generator expands the duplication at render time so the on-disk runbook always carries both fields populated. |
+| **Causes → `Verification`** | Cause-specific check that confirms THIS fix worked. Feeds the `solution_verified` confirmation prompt. | Specific to the Cause's fix, not generic. Per-Cause verification because "did the fix work?" is per-Cause; "is the symptom gone?" is the engine's terminal gate, not a runbook concern. |
+| **`### Cause Z: Unidentified`** | Fallback when no other Cause's Indicator matches. Engine selects this Cause when Indicator evaluation returns zero matches. | Mandatory in every runbook. Indicator is `[Default]`. Mitigation describes a safe diagnostic/escalation path; Resolution is typically "Out of scope". |
+| **Prevention** | Used in post-resolution recommendations and report generation. **Rarely retrieved during active investigation** — Prevention chunks don't match symptom queries. They become relevant after the problem is resolved, when the agent generates recommendations. | Configuration changes, monitoring alerts, capacity thresholds — concrete actions. |
+| **Sources** | Provenance for the knowledge. Enables verification and updates. | URL + brief description of what was used from each source. |
 
 ### Template Compliance Rules
 
-1. **Every section is required.** A runbook without diagnostic steps is a description, not a procedure. A runbook without verification is an unconfirmed guess. All 7 section headers must be present with non-empty content — enforced by `RunbookValidator` as a hard error.
-2. **Code blocks are expected in Diagnostic Steps, Mitigation, and Root Cause Resolution.** A troubleshooting runbook without executable commands is rarely actionable. The validator issues a **quality warning** (not a hard error) when code blocks are absent, because some resolutions are procedural rather than command-based (e.g., "contact vendor support", "failover to secondary region").
-3. **Section titles must match exactly.** The quality gate linter checks for these headers. Variant names (e.g., "Troubleshooting" instead of "Diagnostic Steps") will fail validation.
+1. **All 6 H2 sections required.** `Symptom Recognition`, `Applicability`, `Diagnostic Steps`, `Causes`, `Prevention`, `Sources`. Missing or renamed sections fail ingestion as a hard error.
+2. **`## Causes` must contain ≥1 real `### Cause <X>` subsection plus exactly one fallback Cause** whose Indicator includes the `[Default]` token. The fallback Cause is conventionally named `### Cause Z: Unidentified` (validator enforces this heading for consistency); engine-side fallback detection reads only the `[Default]` Indicator token, not the heading text. Validator hard error if the real Cause count is zero or if no Cause carries `[Default]`.
+3. **Cause heading convention.** Real Causes use `### Cause <X>: <name>` where `<X>` is a single uppercase letter `A` through `Y`. `Z` is reserved for the fallback. Validator hard error on heading format violation.
+4. **Each `### Cause <X>` must contain all 6 sub-fields:** `**Statement:**`, `**Mechanism:**`, `**Indicator:**`, `**Mitigation:**`, `**Resolution:**`, `**Verification:**`. Validator hard error on missing field.
+5. **Hard character limits.** `Statement` ≤300 chars, `Mechanism` ≤800 chars. Validator hard error on overflow. Generation pipeline re-prompts the LLM on overflow.
+6. **Indicator format.** Each `**Indicator:**` entry must contain at least one of `[Step N]` (N must resolve to an existing numbered Diagnostic Step), `[Symptom]` (free-form reference back to Symptom Recognition), or `[Default]` (reserved for the fallback Cause). Validator hard error on missing token.
+7. **Match-hint comments are optional but must be strict JSON when present.** The body of any `<!-- match: ... -->` block must be `json.loads()`-parseable (quoted keys, double quotes, no trailing commas, no JSON5/YAML-flow syntax) and must use a predicate from the controlled vocabulary (see [indicator-resolution.md §3](../investigation-engine/indicator-resolution.md#3-predicate-vocabulary)). Validator hard error on malformed JSON or unregistered predicate.
+8. **Section titles must match exactly.** The quality gate linter checks for these headers. Variant names (e.g., "Troubleshooting" instead of "Diagnostic Steps") will fail validation.
+9. **Indicator overlap warning.** Validator soft warning if two Causes within the same runbook share identical Indicator sets — Indicators should typically be mutually exclusive within a runbook (multi-match policy in [indicator-resolution.md §4](../investigation-engine/indicator-resolution.md#4-multi-match-policy)).
+10. **Code blocks expected in Mitigation/Resolution.** Validator issues a quality warning (not a hard error) when code blocks are absent from a Cause's Mitigation or Resolution, because some fixes are procedural rather than command-based (e.g., "escalate to vendor", "failover to secondary region").
 
 ---
 
@@ -258,20 +299,28 @@ Validates YAML frontmatter completeness and correctness.
 
 ### Gate 2: Structural Linting
 
-Validates the markdown document contains required sections with actionable content.
+Validates the markdown document contains required sections, subsections, and fields with actionable content.
 
 **Hard errors (block ingestion):**
 
-- All 7 required H2 headers must be present: `Problem Definition`, `Diagnostic Steps`, `Mitigation`, `Root Cause Resolution`, `Verification`, `Prevention`, `Sources`
-- No section is empty (header with no content before the next header)
+- All 6 required H2 headers must be present: `Symptom Recognition`, `Applicability`, `Diagnostic Steps`, `Causes`, `Prevention`, `Sources`
+- `## Causes` must contain ≥1 real `### Cause <X>` subsection where `<X>` is `A`–`Y`
+- `## Causes` must contain exactly one fallback Cause subsection whose Indicator includes `[Default]` (conventionally named `### Cause Z: Unidentified`)
+- Each `### Cause <X>` must contain all 6 sub-fields: `**Statement:**`, `**Mechanism:**`, `**Indicator:**`, `**Mitigation:**`, `**Resolution:**`, `**Verification:**`
+- `Statement` ≤300 chars, `Mechanism` ≤800 chars
+- Each `**Indicator:**` entry must contain at least one of `[Step N]`, `[Symptom]`, or `[Default]`
+- `[Step N]` references must resolve to existing numbered Diagnostic Steps
+- Any `<!-- match: ... -->` HTML comment must parse as **strict JSON** (`json.loads()`-parseable; no JSON5/YAML-flow) and must use a predicate from the controlled vocabulary (see [indicator-resolution.md §3](../investigation-engine/indicator-resolution.md#3-predicate-vocabulary))
+- No section or sub-field is empty
 
 **Quality warnings (do not block, flagged for author review):**
 
-- No fenced code blocks found in the document
+- No fenced code blocks found in any Cause's Mitigation or Resolution (some fixes are procedural, e.g., "escalate to vendor")
+- Two Causes within the runbook share identical Indicator sets (Indicator overlap — see [indicator-resolution.md §4](../investigation-engine/indicator-resolution.md#4-multi-match-policy))
 - Content length below 500 characters
 - No external references or links
 
-**Implementation:** `RunbookValidator` in `modules/knowledge/domain/services/runbook_validator.py`. Section presence is checked via regex pattern matching on H2 headers. Code block checks are global (not per-section) and issue warnings, not errors.
+**Implementation:** `RunbookValidator` rewritten for v3 schema in `kb_toolkit/core/validator.py`. Section and subsection presence checked via header regex; sub-field presence checked per-Cause via labelled-field regex; Indicator tokens validated against the Diagnostic Steps inventory; match-hint JSON parsed and predicate name checked against the registered vocabulary.
 
 ### Gate 3: Semantic Density Check (Planned)
 
@@ -334,22 +383,28 @@ The first three sources are sufficient for common infrastructure failure modes. 
 | Generic advice ("check the logs") | The AI already knows this. Adds no value over the base model. | Specify which logs, what to look for, and what the findings mean |
 | Architecture-only content | Describes how a system works but not what to do when it breaks. Fails the semantic density check. | Add concrete diagnostic steps and resolution procedures |
 | Stale commands | Outdated CLI flags or deprecated dashboards erode trust. User follows the step, it fails, trust in FaultMaven drops. | Version the runbook, review on schedule |
-| Mega-runbooks | "Everything about Service X" — only a small section matches any given query, but the whole document competes in retrieval. | Split into one runbook per failure mode |
+| Mega-runbooks across symptoms | "Everything about Service X" — covers multiple unrelated symptom classes; only a small section matches any given query, but the whole document competes in retrieval. | Split into one runbook per symptom class. Multiple `### Cause N` subsections within a runbook are expected and correct; multiple symptom classes are not. |
 | Copy-pasted vendor docs | Low signal density. Chunks contain boilerplate that dilutes the embedding. | Summarize the relevant parts, add your operational context |
-| Missing verification | A fix without a verification step is an unconfirmed guess. The AI can't tell the user whether the problem is actually resolved. | Always include "how to confirm the fix worked" |
+| Missing per-Cause verification | A Cause without its own `**Verification:**` field gives the engine no fix-specific check; `solution_verified` falls back to generic prompts and the agent cannot confirm the right fix worked. | Every `### Cause N` must carry `**Verification:**` for its specific Mitigation/Resolution |
+| Overlapping Indicators | Two Causes within one runbook whose Indicator sets cannot be distinguished from case evidence force the engine into the multi-match branch every time. | Author Indicators as mutually exclusive sets; lean on Diagnostic Steps whose findings differ between Causes |
+| Indicator without step or symptom reference | An `**Indicator:**` entry that lacks `[Step N]` / `[Symptom]` / `[Default]` cannot be matched deterministically and offers no anchor for `case_evidence_qa` either. | Every Indicator entry must carry at least one reference token |
 
 ---
 
 ## Implementation Status
 
-This section tracks what is implemented versus planned.
+This section tracks what is implemented versus planned. v3 redesign requires regeneration of all existing runbooks via the KB toolkit — no migration shim, no backward-compatibility for v2-shaped runbooks.
 
 | Feature | Status | Location |
-|---------|--------|----------|
+| --- | --- | --- |
 | YAML frontmatter parsing | Implemented | `conversion_service.py` scan workflow |
-| Structural linting (required sections) | Implemented | `RunbookValidator` in `runbook_validator.py` — all 11 required fields + 7 required H2 sections enforced |
-| Taxonomy fields stored in ChromaDB | Implemented | `domain`, `service`, `symptom_class`, `severity`, `scope`, `status`, `last_updated`, `tags`, `document_type` propagated per chunk in `ingestion.py:320-365` |
-| Domain/service hard pre-filter | Implemented | `filter_mode="hard"` injects `domain`/`service` into ChromaDB `where` clause — see [vector-retrieval-architecture.md §3](./vector-retrieval-architecture.md#3-two-stage-retrieval-and-reranking-pipeline) |
+| v3 structural linting (6 H2s + Cause subsections + sub-fields) | **Pending** — to land alongside v3 template rollout | `RunbookValidator` v3 rewrite in `kb_toolkit/core/validator.py` |
+| Char-limit enforcement (Statement ≤300, Mechanism ≤800) | **Pending** | `kb_toolkit/core/validator.py` |
+| Indicator token validation (`[Step N]`, `[Symptom]`, `[Default]`) | **Pending** | `kb_toolkit/core/validator.py` |
+| Match-hint comment parsing + metadata lift | **Pending** | `kb_toolkit/core/chunker.py` |
+| Per-Cause metadata fields (`cause_statement`, `cause_mechanism`, `cause_indicators`, `match_predicates`, `cause_mitigation`, `cause_resolution`, `cause_verification`, `is_fallback_cause`) | **Pending** | `kb_toolkit/core/ingester.py` — see [indicator-resolution.md §6](../investigation-engine/indicator-resolution.md#6-chromadb-metadata-schema) |
+| Taxonomy fields stored in ChromaDB | Implemented | `domain`, `service`, `symptom_class`, `severity`, `scope`, `status`, `last_updated`, `tags`, `document_type` propagated per chunk |
+| Domain/service hard pre-filter | Implemented | `filter_mode="hard"` injects `domain`/`service` into ChromaDB `where` clause |
 | Verification-weighted retrieval | Implemented | Status bonuses in four-signal reranker: `verified` +0.40, `draft` -0.10, `deprecated` -0.30 |
 | Staleness warning in retrieval context | Implemented | `UnifiedKBConfig.format_chunk_metadata()` injects age-based warnings; reranker freshness signal applies half-life decay |
 | Staleness detection (6-month auto-transition) | **Implemented (toolkit only)** | `kb-stale-check` CLI scans `last_updated`. FaultMaven API has no background job for state transitions yet. |
@@ -359,5 +414,6 @@ This section tracks what is implemented versus planned.
 
 ### Implementation Priority
 
-1. **Semantic density check (Gate 3)** — Reject runbooks containing only architectural descriptions. Requires classifier-tier LLM integration.
-2. **Staleness background job** — Compare `last_updated` against current date and auto-transition `verified` → `stale` at the 6-month threshold. Requires job scheduler integration.
+1. **v3 template rollout** — runbook regeneration + validator v3 + chunker comment-stripping + per-Cause metadata schema. Single PR. Required before engine-side `AnswerFromKB.cause` field and the unified KB-resolution path (`investigation-lifecycle-logic.md`) can land.
+2. **Semantic density check (Gate 3)** — Reject runbooks containing only architectural descriptions. Requires classifier-tier LLM integration.
+3. **Staleness background job** — Compare `last_updated` against current date and auto-transition `verified` → `stale` at the 6-month threshold. Requires job scheduler integration.
