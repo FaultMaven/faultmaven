@@ -874,10 +874,10 @@ class KnowledgeService:
 
     async def delete_document(self, document_id: str) -> Dict[str, Any]:
         """
-        Archive (soft-delete) a document.
+        Soft-delete a document by setting its status to 'deprecated'.
 
-        Sets archived_at on the document and removes it from vector search.
-        The document data is retained for referential integrity — past case
+        Marks the document as deprecated and removes its chunks from vector search.
+        The document row is retained for referential integrity — past case
         transcripts that cite this document remain valid.
 
         Args:
@@ -891,7 +891,7 @@ class KnowledgeService:
             FileNotFoundError: If document not found
         """
         with self._tracer.trace("knowledge_service_delete_document"):
-            logger.info(f"Removing document {document_id} (reverting to draft)")
+            logger.info(f"Deprecating document {document_id}")
 
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
@@ -920,7 +920,7 @@ class KnowledgeService:
                                 "error": f"Document {document_id} not found",
                             }
 
-                        dm.status = "draft"
+                        dm.status = "deprecated"
                         dm.knowledge_item_id = None
                         await session.commit()
 
@@ -928,9 +928,7 @@ class KnowledgeService:
                 if self._vector_store:
                     await self._remove_from_vector_store(document_id)
 
-                logger.info(
-                    f"Successfully removed document {document_id} (reverted to draft)"
-                )
+                logger.info(f"Successfully deprecated document {document_id}")
                 return {"success": True, "document_id": document_id}
 
             except ValidationException:
@@ -1777,12 +1775,118 @@ class KnowledgeService:
         similarity_threshold: Optional[float] = None,
         rank_by: Optional[str] = None,
         user: Optional[Any] = None,
+        team_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Search documents from ChromaDB with text scoring and RBAC filtering."""
+        """Semantic search using vector embeddings with RBAC scope filtering.
+
+        Builds a scope filter from the requesting user's accessible scopes
+        (personal + team memberships + global) and issues a vector search
+        against the KB collection. Falls back to fulltext_search_documents()
+        when no vector store is available.
+        """
+        from faultmaven.api.v1.utils.parsing import normalize_tags_field
+
+        if not self._vector_store:
+            return await self.fulltext_search_documents(
+                query=query,
+                document_type=document_type,
+                tags=tags,
+                limit=limit,
+                similarity_threshold=similarity_threshold,
+                rank_by=rank_by,
+                user=user,
+            )
+
+        try:
+            user_id = getattr(user, "user_id", None) if user else None
+            user_team_ids = set(team_ids or [])
+
+            # Build a ChromaDB $or scope filter covering all accessible tiers
+            scope_conditions: List[Dict] = [{"scope": "global"}]
+            if user_id:
+                scope_conditions.append({"scope": "personal", "owner_id": user_id})
+            for tid in user_team_ids:
+                scope_conditions.append({"scope": "team", "team_id": tid})
+
+            scope_filter: Dict[str, Any] = (
+                {"$or": scope_conditions}
+                if len(scope_conditions) > 1
+                else scope_conditions[0]
+            )
+
+            if document_type:
+                scope_filter = {
+                    "$and": [scope_filter, {"document_type": document_type}]
+                }
+
+            vector_results = await self._vector_store.search(
+                query, k=limit * 3, filters=scope_filter
+            )
+
+            if similarity_threshold is not None:
+                vector_results = [
+                    r
+                    for r in vector_results
+                    if r.get("score", 0.0) >= similarity_threshold
+                ]
+
+            limited = vector_results[:limit]
+
+            logger.info(f"Semantic search '{query}' returned {len(limited)} results")
+
+            return {
+                "query": query,
+                "total_results": len(limited),
+                "results": [
+                    {
+                        "document_id": (
+                            r.get("metadata", {}).get("parent_document_id")
+                            or r.get("id", "").rsplit("_chunk_", 1)[0]
+                        ),
+                        "content": r.get("content", "")[:200] + "...",
+                        "metadata": {
+                            "title": r.get("metadata", {}).get("title", "Untitled"),
+                            "document_type": r.get("metadata", {}).get(
+                                "document_type", "runbook"
+                            ),
+                            "category": r.get("metadata", {}).get(
+                                "document_type", "general"
+                            ),
+                            "tags": normalize_tags_field(
+                                r.get("metadata", {}).get("tags", [])
+                            ),
+                            "priority": "normal",
+                        },
+                        "similarity_score": r.get("score", 0.0),
+                    }
+                    for r in limited
+                ],
+            }
+
+        except Exception as e:
+            logger.error(f"Semantic search failed: {e}")
+            return {"query": query, "total_results": 0, "results": [], "error": str(e)}
+
+    async def fulltext_search_documents(
+        self,
+        query: str,
+        document_type: Optional[str] = None,
+        category: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        limit: int = 10,
+        similarity_threshold: Optional[float] = None,
+        rank_by: Optional[str] = None,
+        user: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Full-text keyword search across document titles with RBAC filtering.
+
+        Scores results by substring/word matches in title. Used by the
+        /documents/search endpoint. Prefer search_documents() for
+        intent-based queries — this method matches exact tokens, not meaning.
+        """
         from faultmaven.api.v1.utils.parsing import normalize_tags_field
 
         try:
-            # Get all documents from ChromaDB via list_documents (already RBAC-filtered)
             result = await self.list_documents(
                 document_type=document_type,
                 tags=tags,
@@ -1792,39 +1896,26 @@ class KnowledgeService:
             )
             filtered_docs = result.get("documents", [])
 
-            # Simple text search within filtered documents
             scored_results = []
             query_lower = query.lower()
 
             for doc in filtered_docs:
-                # Simple scoring based on query matches in title and content
                 score = 0.0
                 title = doc.get("title", "").lower()
-                content = doc.get("content", "").lower()
 
-                # Score based on query matches
                 if query_lower in title:
                     score += 0.8
-                if query_lower in content:
-                    score += 0.6
 
-                # Split query into words and check for partial matches
-                query_words = query_lower.split()
-                for word in query_words:
+                for word in query_lower.split():
                     if word in title:
                         score += 0.3
-                    if word in content:
-                        score += 0.2
 
-                # Apply similarity threshold filter
                 if similarity_threshold is not None and score < similarity_threshold:
                     continue
 
                 scored_results.append((doc, score))
 
-            # Sort by score (or by rank_by field if specified)
             if rank_by and rank_by in ["priority"]:
-                # Sort by priority field, then by score
                 scored_results.sort(
                     key=lambda x: (
                         (
@@ -1836,14 +1927,12 @@ class KnowledgeService:
                     )
                 )
             else:
-                # Sort by score
                 scored_results.sort(key=lambda x: x[1], reverse=True)
 
-            # Limit results
             limited_results = scored_results[:limit]
 
             logger.info(
-                f"Search query '{query}' returned {len(limited_results)} results"
+                f"Full-text search '{query}' returned {len(limited_results)} results"
             )
 
             return {
@@ -1852,7 +1941,7 @@ class KnowledgeService:
                 "results": [
                     {
                         "document_id": doc.get("document_id", "unknown"),
-                        "content": doc.get("content", "")[:200] + "...",
+                        "content": "",
                         "metadata": {
                             "title": doc.get("title", "Untitled"),
                             "document_type": doc.get("document_type", "general"),
@@ -1869,7 +1958,7 @@ class KnowledgeService:
             }
 
         except Exception as e:
-            logger.error(f"Search failed: {e}")
+            logger.error(f"Full-text search failed: {e}")
             return {"query": query, "total_results": 0, "results": [], "error": str(e)}
 
     async def update_document_metadata(
@@ -1877,8 +1966,8 @@ class KnowledgeService:
     ) -> Dict[str, Any]:
         """Update document metadata and/or content.
 
-        Loads from ChromaDB (source of truth), applies updates, re-indexes
-        if content changed, and updates Redis cache.
+        Loads from SQLite (source of truth via get_document), applies updates,
+        then re-indexes in ChromaDB if content changed.
         """
         try:
             # Load current document from ChromaDB (source of truth)

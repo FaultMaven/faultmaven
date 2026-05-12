@@ -31,7 +31,7 @@ class ConversionStatus(str, Enum):
 class DraftStatus(str, Enum):
     DRAFT = "draft"
     VERIFIED = "verified"
-    DELETED = "deleted"
+    DISCARDED = "discarded"
 
 
 class SourceType(str, Enum):

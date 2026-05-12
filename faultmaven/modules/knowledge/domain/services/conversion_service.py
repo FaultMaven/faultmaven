@@ -233,7 +233,7 @@ class ConversionService:
         elif scope == "team" and team_id:
             return self._data_dir / f"team_{team_id}"
         elif scope == "personal" and user_id:
-            return self._data_dir / f"personal_{user_id}"
+            return self._data_dir / f"user_{user_id}"
         return self._data_dir / "global"
 
     # =========================================================================
@@ -858,7 +858,7 @@ class ConversionService:
             draft_result = await session.execute(
                 select(ConversionDraftModel).where(
                     ConversionDraftModel.conversion_id == conversion_id,
-                    ConversionDraftModel.status != DraftStatus.DELETED.value,
+                    ConversionDraftModel.status != DraftStatus.DISCARDED.value,
                 )
             )
             draft_models = draft_result.scalars().all()
@@ -1038,7 +1038,7 @@ class ConversionService:
                         ConversionJobModel.user_id == user_id,
                         ConversionJobModel.scope == "global",
                     ),
-                    ConversionDraftModel.status != DraftStatus.DELETED.value,
+                    ConversionDraftModel.status != DraftStatus.DISCARDED.value,
                 )
                 .order_by(ConversionDraftModel.created_at.desc())
             )
@@ -1102,7 +1102,7 @@ class ConversionService:
                 )
             )
             dm = draft_result.scalar_one_or_none()
-            if not dm or dm.status == DraftStatus.DELETED.value:
+            if not dm or dm.status == DraftStatus.DISCARDED.value:
                 return None
 
             # Write updated content to disk
@@ -1256,8 +1256,8 @@ class ConversionService:
                 raise ValueError("Draft not found")
             if dm.status == DraftStatus.VERIFIED.value:
                 raise ValueError("This runbook has already been verified and ingested")
-            if dm.status == DraftStatus.DELETED.value:
-                raise ValueError("This draft has been deleted")
+            if dm.status == DraftStatus.DISCARDED.value:
+                raise ValueError("This draft has been discarded")
             if dm.status != DraftStatus.DRAFT.value:
                 raise ValueError(f"Draft is in unexpected state: {dm.status}")
 
@@ -1562,11 +1562,11 @@ status: draft
                 for draft_model in all_draft_models:
                     file_exists = Path(draft_model.file_path).exists()
 
-                    if draft_model.status == "deleted":
+                    if draft_model.status == DraftStatus.DISCARDED.value:
                         continue
 
                     if not file_exists:
-                        draft_model.status = "deleted"
+                        draft_model.status = DraftStatus.DISCARDED.value
                         continue
 
                     # If this draft has already been activated (has a
@@ -1578,7 +1578,7 @@ status: draft
                     if draft_model.status == "draft" and getattr(
                         draft_model, "knowledge_item_id", None
                     ):
-                        draft_model.status = "deleted"
+                        draft_model.status = DraftStatus.DISCARDED.value
                         logger.info(
                             f"Removed duplicate draft {draft_model.id} "
                             f"(already has knowledge_item_id)"
@@ -1809,7 +1809,7 @@ status: draft
                 file_path.unlink()
 
             # Soft delete in database
-            dm.status = DraftStatus.DELETED.value
+            dm.status = DraftStatus.DISCARDED.value
             await session.commit()
 
             return True

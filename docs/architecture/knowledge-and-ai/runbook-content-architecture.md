@@ -70,10 +70,10 @@ Every runbook declares its classification in YAML frontmatter. These fields are 
 | `domain` | string | Yes | Engineering vertical: `database`, `networking`, `compute`, `application`, `security`, `storage`, `messaging` |
 | `service` | string | Yes | Specific technology: `postgresql`, `kubernetes`, `redis`, `nginx`, `kafka` |
 | `symptom_class` | list of strings | Yes | Failure modes addressed: `latency`, `oom`, `connection_refused`, `timeout`, `disk_full`, `crash_loop`, `auth_failure` |
-| `severity` | enum | Yes | Impact level: `critical`, `high`, `medium`, `low` |
+| `severity` | enum | Yes | Impact level: `critical`, `high`, `medium`, `low`, `info` |
 | `scope` | enum | Yes | KB tier: `global`, `team`, `personal` |
 | `tags` | list of strings | No | Additional search terms (e.g., `aws`, `gcp`, `linux`) |
-| `difficulty` | enum | No | `beginner`, `intermediate`, `advanced` |
+| `difficulty` | enum | No | `beginner`, `intermediate`, `advanced`, `expert` |
 | `version` | string | Yes | Semantic version of the runbook content |
 | `last_updated` | date | Yes | ISO 8601 date — drives staleness detection |
 | `verified_by` | string | Yes | SME who authored or approved the content |
@@ -394,6 +394,8 @@ The first three sources are sufficient for common infrastructure failure modes. 
 ## Implementation Status
 
 This section tracks what is implemented versus planned. v3 redesign requires regeneration of all existing runbooks via the KB toolkit — no migration shim, no backward-compatibility for v2-shaped runbooks.
+
+**Current template in use (v2):** The 59 built-in runbooks, the document-to-runbook conversion pipeline (`conversion_service.py`), and `runbook_validator.py` all use the **v2 section schema**: `Problem Definition`, `Diagnostic Steps`, `Mitigation`, `Root Cause Resolution`, `Verification`, `Prevention`, `Sources`. The v3 template above (per-Cause sections with `Symptom Recognition`, `Applicability`, `Causes`) is the target design; it is not yet in production. `runbook_validator.py`'s `REQUIRED_SECTIONS` enforces v2 headers until the v3 rollout PR lands.
 
 | Feature | Status | Location |
 | --- | --- | --- |

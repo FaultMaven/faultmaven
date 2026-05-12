@@ -593,8 +593,8 @@ async def fulltext_search_documents(
         if request.filters and not document_type:
             document_type = request.filters.get("document_type")
 
-        # Use the search_documents method which implements full-text search
-        result = await knowledge_service.search_documents(
+        # Use full-text (title substring) search, distinct from semantic /search endpoint
+        result = await knowledge_service.fulltext_search_documents(
             query=request.query.strip(),
             document_type=document_type,
             category=category,

@@ -100,7 +100,7 @@ class TestConversionStatus:
     def test_draft_status_values(self):
         assert DraftStatus.DRAFT.value == "draft"
         assert DraftStatus.VERIFIED.value == "verified"
-        assert DraftStatus.DELETED.value == "deleted"
+        assert DraftStatus.DISCARDED.value == "discarded"
 
 
 @pytest.mark.unit

@@ -417,12 +417,13 @@ In the local (single-user) deployment, this is the only KB tier available. The u
 
 Managed through the Knowledge module (`/api/v1/knowledge/`):
 
-- `POST /documents` — Upload document (SQLite record + chunked vector indexing)
-- `GET /documents` — List with filtering (type, tags, scope, domain, service, severity) — reads from SQLite
+- `POST /documents` — Upload document (SQLite record + chunked vector indexing). Accepts `text/markdown` and `text/plain` only; other content types are rejected with 415.
+- `GET /documents` — List documents — reads from SQLite. **Note:** `domain=`, `service=`, and `severity=` filter query params are specified but not yet implemented; all documents in scope are returned.
 - `GET /documents/{id}` — Get specific document (SQLite + file from disk)
-- `PUT /documents/{id}` — Update document
+- `PUT /documents/{id}` — Update document metadata in-place. **Not yet implemented.**
 - `DELETE /documents/{id}` — Delete document and remove from ChromaDB
-- `POST /search` — Semantic search across user's KB
+- `POST /search` — Semantic search (vector embeddings + hybrid reranker) across user's authorized scopes
+- `POST /documents/search` — Full-text search on document title (substring match). Distinct from `/search` — no vector retrieval.
 
 ### Personal KB Files
 
@@ -452,6 +453,8 @@ Personal KB shares the same unified infrastructure as Global and Team — scope 
 ---
 
 ## Runbook Catalog API
+
+**Implementation status: Not yet implemented.** The catalog endpoint and its Dashboard UI are designed but not currently registered. The design below is the target.
 
 The Dashboard displays a catalog of all ingested runbooks — coverage overview, quality scores, staleness, and gap identification. This is served by a dedicated API endpoint.
 
@@ -510,6 +513,24 @@ During investigation, the agent has two retrieval tools — one for knowledge, o
 | Case-specific evidence | `answer_from_case_evidence` | "What errors are on line 1045 of the uploaded server.log?" |
 
 The agent does not decide which KB tier to search — the federated search layer handles that automatically based on the user's authorization context. The agent focuses on *what to ask*, not *where to look*.
+
+---
+
+## Implementation Notes
+
+### Runbook Similarity Collection (`faultmaven_runbooks`)
+
+A second ChromaDB collection — `faultmaven_runbooks` — exists alongside `faultmaven_kb` for **runbook similarity and deduplication** at report-generation time, not for investigative Q&A. It is managed by `RunbookKnowledgeBase` in `infrastructure/knowledge/runbook_kb.py` and exposes `index_runbook()`, `index_document_derived_runbook()`, and `search_runbooks()` (pure vector, no hybrid search).
+
+This is a deliberate exception to the single-collection design: `faultmaven_runbooks` serves a different consumer (the report generator's deduplication logic), uses a different query pattern (pure vector similarity, no metadata scope filter needed), and would otherwise compete with knowledge-retrieval chunks in `faultmaven_kb`.
+
+### `KnowledgeScope.ORGANIZATION`
+
+The code defines four scope values (`PERSONAL`, `TEAM`, `ORGANIZATION`, `GLOBAL`) while this document specifies three tiers. `ORGANIZATION` is intended for enterprise multi-tenant deployments where content should be visible across all teams within an organization but not platform-wide. Its access semantics (which users can read/write, how it maps to `enterprise_id`, how it interacts with the scope safety invariant) are not yet specified. Treat it as a reserved value — do not ingest or query against `scope=organization` without a design spec.
+
+### `VerificationLevel` (trust/authority system)
+
+`KnowledgeItem` carries a `VerificationLevel` integer enum (`EXPERIMENTAL=0`, `COMMUNITY=1`, `ADMIN_VERIFIED=2`) that tracks the authority of the knowledge's source. This is separate from the frontmatter `status` field (lifecycle: `draft` → `verified` → `stale` → `deprecated`). The two systems model different things: `status` tracks a document's editorial lifecycle; `VerificationLevel` tracks who validated the underlying knowledge. They are not yet reconciled — the four-signal reranker reads frontmatter `status` values, not `VerificationLevel`.
 
 ---
 

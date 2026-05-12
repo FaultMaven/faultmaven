@@ -17,7 +17,7 @@ Hybrid search: Two-stage retrieval + reranking pipeline:
   Stage 2 — Rerank: Scores candidates using multiple signals:
     - Term overlap (how many query terms appear in the chunk)
     - Metadata match (domain/service alignment with query context)
-    - Verification level (verified > community > experimental)
+    - Status signal (lifecycle: verified > in-review > draft > stale > deprecated)
     - Staleness penalty (older content scores lower)
     - Scope preference (personal > team > global tiebreaking)
 """
@@ -695,13 +695,14 @@ class KnowledgeVectorStore(BaseExternalClient):
         chunk_metadata: Dict[str, Any],
         context_metadata: Dict[str, str],
     ) -> float:
-        """Score based on metadata alignment and verification level.
+        """Score based on metadata alignment and runbook lifecycle status.
 
         Components:
           - Domain match: +0.3 if chunk domain matches case context domain
           - Service match: +0.3 if chunk service matches case context service
-          - Verification: +0.0 (experimental) / +0.2 (community) / +0.4 (verified)
-          - Status penalty: -0.3 if deprecated, -0.1 if draft
+          - Status boost/penalty (frontmatter lifecycle values):
+              verified → +0.4, in-review → +0.1
+              stale → -0.2, draft → -0.1, deprecated → -0.3
         """
         score = 0.0
 
@@ -715,19 +716,19 @@ class KnowledgeVectorStore(BaseExternalClient):
             if ctx_service and chunk_metadata.get("service") == ctx_service:
                 score += 0.3
 
-        # Verification level boost
+        # Runbook lifecycle status → trust signal.
+        # Frontmatter status values: verified | in-review | draft | stale | deprecated
         status = chunk_metadata.get("status", "")
         if status == "verified":
             score += 0.4
-        elif status == "community":
-            score += 0.2
-        # experimental/draft/no status = 0.0
-
-        # Status penalty
-        if status == "deprecated":
-            score -= 0.3
+        elif status == "in-review":
+            score += 0.1
+        elif status == "stale":
+            score -= 0.2
         elif status == "draft":
             score -= 0.1
+        elif status == "deprecated":
+            score -= 0.3
 
         return max(0.0, min(1.0, score))
 
