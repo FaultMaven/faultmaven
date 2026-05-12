@@ -17,11 +17,11 @@ This guide is a navigation pointer. The previous content (template, taxonomy, th
 
 ## Ingestion in one paragraph
 
-Place runbook `.md` files under `data/knowledge/{global|team_<id>|personal_<id>}/`, then trigger a scan from the Dashboard KB page (or `POST /api/v1/knowledge/scan`). Scanned files appear as drafts in the Drafts tab. Verifying a draft chunks the file (structure-aware, 100–3000 chars), generates BGE-M3 embeddings (1024 dims), and stores chunks in the single `faultmaven_kb` ChromaDB collection with metadata-based scope filtering. There is no auto-on-PR-merge ingestion.
+Place runbook `.md` files under `data/knowledge/{global|team_<id>|user_<id>}/`, then trigger a scan from the Dashboard KB page (or `POST /api/v1/knowledge/scan`). Scanned files appear as drafts in the Drafts tab. Verifying a draft chunks the file (structure-aware, 100–3000 chars), generates BGE-M3 embeddings (1024 dims), and stores chunks in the single `faultmaven_kb` ChromaDB collection with metadata-based scope filtering. There is no auto-on-PR-merge ingestion.
 
 ## Auto-seeded built-in runbooks
 
-On first startup, FaultMaven copies 59 runbooks from `resources/knowledge/builtin/` to `data/knowledge/global/`. The Dashboard scans on KB-page mount and you can activate them from the Drafts tab (single or batch via `POST /knowledge/drafts/verify-batch`).
+On first startup, FaultMaven copies 59 runbooks from `resources/knowledge/builtin/` to `data/knowledge/global/`. The Dashboard scans on KB-page mount and you can verify them from the Drafts tab (single or batch via `POST /knowledge/drafts/verify-batch`).
 
 ## Tools the agent uses during investigation
 

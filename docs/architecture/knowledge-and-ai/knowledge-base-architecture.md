@@ -186,19 +186,11 @@ Live (during investigation):
 | Ingestion pipeline | `KnowledgeIngester` in `core/knowledge/ingestion.py` |
 | Ingestion workflow | Dashboard scan → verify (via `conversion_service.py`) |
 
-#### KB vs Evidence Chunking — Why They Differ
+#### KB vs Evidence Chunking
 
-Knowledge and evidence use different chunking strategies because they serve different retrieval needs:
+KB and evidence use different chunking strategies. KB uses structure-aware splitting on markdown headers (each `##` section becomes one chunk; variable size 100–3000 chars). Evidence uses token-based section-aware chunking with smaller embedding units and context expansion at retrieval time. Parameters, rationale, and current-vs-target status for both strategies are canonical in [vector-retrieval-architecture.md §5](./vector-retrieval-architecture.md#5-evidence-retrieval).
 
-| Aspect | Knowledge (Runbooks) | Evidence (Logs, Configs, Metrics) |
-|--------|---------------------|----------------------------------|
-| **Strategy** | Structure-aware splitting on markdown headers | Token-based with section-aware splitting |
-| **Chunk size** | Variable per section (100-char min, 3000-char max); sentence-boundary fallback for structureless text | 4000 tokens (~16KB), section-aware |
-| **Implementation** | `core/knowledge/ingestion.py:390` | `modules/preprocessing/chunking_service.py:33` |
-| **Rationale** | Runbooks are well-structured markdown with predictable `##` sections. Each section becomes one chunk (a diagnostic step doesn't share a chunk with an unrelated prevention tip). Variable chunk sizes are intentional — a 200-char config description is one chunk, a 2500-char procedure section is one chunk. | Evidence files are heterogeneous (logs, CSVs, JSON configs) with no predictable structure. Larger chunks preserve context — a log entry only makes sense with surrounding entries. Section-aware splitting respects structural boundaries within files (e.g., config file sections, log timestamp groups). |
-| **Impact on retrieval** | Focused, section-aligned chunks → high precision per chunk, multiple chunks needed for full answer | Large, context-rich chunks → each chunk provides enough context for forensic analysis |
-
-This difference is intentional and affects how content is authored. Each `##` section in a runbook becomes its own chunk. Authors should aim for 400-900 characters per section — sections under 100 chars get merged (losing header context), sections over 3000 chars get split at sentence boundaries (potentially breaking co-location). See [Runbook Content Architecture §3](./runbook-content-architecture.md#why-structure-matters-for-rag) for detailed guidance.
+This difference affects how runbook content is authored — each `##` section becomes one chunk, so authors should aim for 400–900 characters per section. See [Runbook Content Architecture §3](./runbook-content-architecture.md#why-structure-matters-for-rag) for authoring guidance.
 
 ### Metadata Stored Per Chunk
 
@@ -236,7 +228,6 @@ For the canonical implementation status of the retrieval pipeline (hybrid search
 | Federated search across tiers | Implemented | Single `answer_from_kb` tool searches all scopes (global + personal + team) via `$or` filter |
 | Single-collection storage | Implemented | One `faultmaven_kb` collection with metadata-based scope filtering |
 | Scope safety invariant | Implemented | `_enforce_scope_invariant()` raises `ValueError` on unscoped queries |
-| Fast-track confidence | Implemented | `KB_FAST_TRACK_THRESHOLD = 0.7` in `milestone_engine.py` |
 
 #### Current Tool Architecture
 
@@ -249,39 +240,29 @@ The old per-scope KB tools (`global_kb_qa`, `user_kb_qa`) and the alternate `ans
 
 ### Design Principles
 
-Three principles govern the retrieval design — all implemented (see [vector-retrieval-architecture.md](./vector-retrieval-architecture.md) for the pipeline):
+Three principles govern KB retrieval. The retrieval-pipeline mechanics are canonical in [vector-retrieval-architecture.md](./vector-retrieval-architecture.md); KB-arch describes the storage-layer surface only.
 
-1. **Federated Search** — The agent calls one knowledge tool, not three. The backend searches all authorized tiers and merges results. `AnswerFromKB` with `UnifiedKBConfig` and `$or` scope filter.
-2. **Hybrid Search** — Two-stage pipeline: parallel vector + keyword-constrained recall, then four-signal reranking (vector similarity, term overlap, metadata match, freshness). Optional `filter_mode="hard"` injects domain/service into the ChromaDB `where` clause for high-confidence pre-filtering.
-3. **Staleness-Aware Synthesis** — `UnifiedKBConfig.format_chunk_metadata()` injects age-based warnings into chunk context; the reranker's freshness signal applies a half-life decay on `last_updated`.
+1. **Federated Search** — One knowledge tool, not three. The backend resolves user scope (global + personal + team) and merges results via the `$or` filter built by `AnswerFromKB`. See [Federated Search: Implementation](#federated-search-implementation) below for the scope-filter construction.
+2. **Hybrid Search** — Two-stage retrieval (vector + keyword recall → four-signal reranker). See [vector-retrieval-architecture.md §3](./vector-retrieval-architecture.md#3-two-stage-retrieval-and-reranking-pipeline) for signal weights, dynamic reweighting, and the optional `filter_mode="hard"` pre-filter.
+3. **Staleness-Aware Synthesis** — Per-chunk age/status warnings injected into LLM context; freshness signal in the reranker. See [vector-retrieval-architecture.md §4](./vector-retrieval-architecture.md#staleness-aware-synthesis) for the formatter.
 
 ### Federated Search: Implementation
 
+KB-arch owns the scope-filter construction. The full tool path (adapter → filter → query → synthesis → return) is canonical in [vector-retrieval-architecture.md §4](./vector-retrieval-architecture.md#4-knowledge-base-retrieval) under Tool Path.
+
+`AnswerFromKB` builds an `$or` scope filter from user context (resolved by `KBToolAdapter` from `ToolContext`):
+
 ```text
-Agent calls: answer_from_kb(question)
-  │
-  ├── KBToolAdapter resolves user context (user_id, team_ids) from ToolContext
-  │
-  ├── AnswerFromKB builds $or scope filter:
-  │   ├── {"scope": "global"}                              (all users)
-  │   ├── {"scope": "personal", "owner_id": user_id}      (user's own)
-  │   └── {"scope": "team", "team_id": {"$in": team_ids}} (user's teams)
-  │
-  ├── Single query to unified `faultmaven_kb` collection with metadata filter
-  │
-  ├── Synthesis LLM produces answer with source citations
-  │
-  └── Return answer to agent
+{"$or": [
+    {"scope": "global"},                              # all users
+    {"scope": "personal", "owner_id": user_id},      # user's own
+    {"scope": "team", "team_id": {"$in": team_ids}}  # user's teams
+]}
 ```
 
-**Case evidence remains a separate tool.** `answer_from_case_evidence` is not part of the federated search. Evidence uses a forensic synthesis prompt and serves a fundamentally different role (diagnose) than knowledge (remediate). This boundary is the evidence-vs-knowledge distinction established in the Purpose section.
+This filter is passed to the unified `faultmaven_kb` collection in the metadata-`where` argument. The scope safety invariant (`_enforce_scope_invariant()`) rejects any KB query that arrives without a scope clause — see [Storage Architecture](#single-collection-with-metadata-filtering-current).
 
-**Tool interface (2 tools):**
-
-| Tool | Parameters | Purpose |
-| ---- | ---------- | ------- |
-| `answer_from_kb` | `question` | Remediation knowledge from all authorized KB scopes |
-| `answer_from_case_evidence` | `case_id`, `question` | Forensic analysis of uploaded case evidence |
+**Case evidence is not federated.** `answer_from_case_evidence` queries per-case `case_{case_id}` collections with a forensic synthesis prompt — fundamentally different role (diagnose vs. remediate). The evidence-vs-knowledge boundary is established in the Purpose section.
 
 ### Strategy Pattern with KBConfig
 
@@ -319,28 +300,6 @@ The full hybrid pipeline (parallel vector + keyword recall, four-signal reranker
 
 `UnifiedKBConfig.format_chunk_metadata()` inspects `last_updated` and `status` per chunk and injects warnings directly into the context the synthesis LLM sees, so the warning propagates to the user without agent-side conditional handling. Chunks with `status: deprecated` are penalised by the reranker (-0.30); deprecated runbooks should also be purged from ChromaDB per lifecycle rules. See [vector-retrieval-architecture.md §4](./vector-retrieval-architecture.md#staleness-aware-synthesis) for the formatter behaviour.
 
-### Fast-Track Confidence Threshold (CURRENT)
-
-The investigation lifecycle defines a fast-track path: INQUIRY → RESOLVED when a KB search finds a high-confidence match. This is **already implemented** in the milestone engine.
-
-**Threshold:** `KB_FAST_TRACK_THRESHOLD = 0.7` (70% cosine similarity)
-**Location:** `milestone_engine.py:3788`
-
-**Signal path:**
-
-```text
-1. Agent calls KB tool during INQUIRY phase
-2. DocumentQATool returns chunks with cosine similarity scores
-3. Milestone engine stores the best match in case.inquiry.knowledge_matches
-4. _check_fast_track_resolution() validates:
-   - knowledge_resolution exists (agent proposed a KB-based answer)
-   - best_match.relevance_score >= 0.7 (threshold met)
-5. If both: INQUIRY → RESOLVED (fast-track)
-6. If score < 0.7: fast-track blocked, continues to INVESTIGATING
-```
-
-**Why 0.7?** Cosine similarity of 0.7 with BGE-M3 embeddings indicates strong semantic alignment — the query and the runbook are addressing the same failure mode. Below 0.7, the match is likely tangential (e.g., same technology but different failure mode). This threshold was tuned against real incident queries and may need adjustment as the KB grows.
-
 ### Scope Tiebreaking
 
 When merged chunks have equal weighted scores, scope priority breaks the tie: **Personal > Team > Global**. Rationale: a personal runbook ("our payment service fails when Redis is down due to misconfigured retry") is more specific to the user's environment than a generic global runbook, even at similar relevance scores. Implemented in `_rerank()` via `SCOPE_PRIORITY = {"personal": 0, "team": 1, "global": 2}`.
@@ -372,18 +331,9 @@ Adding a new KB tier requires:
 
 ### Ingestion Pipeline
 
-```bash
-# Step 1: Place runbooks in data/knowledge/global/
-cp runbooks/*.md data/knowledge/global/
+Global-tier ingestion uses the same scan → verify workflow as the other tiers — drop runbooks in `data/knowledge/global/`, scan, then verify from the Dashboard Drafts tab. End-user steps are canonical in [docs/guides/knowledge-base.md](../../guides/knowledge-base.md#ingestion-in-one-paragraph).
 
-# Step 2: Scan for untracked files (Dashboard or API)
-curl -X POST http://localhost:8090/api/v1/knowledge/scan -H "Authorization: Bearer $TOKEN"
-
-# Step 3: Verify each draft from the Dashboard Drafts tab
-# Verification triggers validation, chunking, embedding, and ChromaDB ingestion
-```
-
-The scan → verify workflow includes YAML frontmatter parsing, structural validation, and quality scoring. For content standards, see [runbook-content-architecture.md](./runbook-content-architecture.md).
+Tier-1-specific notes: Global runbooks are written by the platform admin and apply across all organizations. On first startup, `seed_builtin_runbooks()` copies 59 built-in runbooks from `resources/knowledge/builtin/` into this directory, after which they follow the same scan → verify path. The verify step triggers YAML frontmatter parsing, structural validation (per [runbook-content-architecture.md §4 Quality Gates](./runbook-content-architecture.md#4-quality-gates)), chunking, embedding, and ChromaDB write.
 
 ### Files
 
@@ -391,7 +341,7 @@ The scan → verify workflow includes YAML frontmatter parsing, structural valid
 |-----------|----------|
 | Scan + verify workflow | `modules/knowledge/domain/services/conversion_service.py` |
 | Knowledge ingester | `core/knowledge/ingestion.py` |
-| KBConfig | `modules/agent/tools/kb_configs/global_kb_config.py` |
+| KBConfig (all tiers) | `modules/agent/tools/kb_configs/unified_kb_config.py` |
 
 ---
 
@@ -435,7 +385,6 @@ Team KB scope filtering is **implemented end-to-end**:
 
 1. Team KB management API endpoints (upload, list, delete restricted to team admin role)
 2. Promotion workflow (personal → team: submit, review, approve/reject with team admin approval gate)
-3. `KBConfig` Strategy Pattern: add `TeamKBConfig(KBConfig)` for the federated search layer (optional — unified `answer_from_kb` already handles team scope via metadata filter)
 
 ---
 
@@ -460,7 +409,7 @@ In the local (single-user) deployment, this is the only KB tier available. The u
 
 **Read path**: `list_documents()` and `get_document()` read from **SQLite** (`conversion_drafts` joined with `conversion_jobs`). Full content read from markdown file on disk. ChromaDB is not queried for listing or retrieval.
 
-**Delete path**: `delete_document()` sets SQLite status to `deactivated`, removes chunks from ChromaDB via `delete_documents_by_parent_id()`.
+**Delete path**: `delete_document()` sets SQLite status to `deprecated` (the lifecycle terminal state per [runbook-content-architecture.md §5](./runbook-content-architecture.md#lifecycle-states) — "Replaced by a newer runbook or no longer applicable" extends to owner-initiated removal), then removes chunks from ChromaDB via `delete_documents_by_parent_id()`.
 
 **Search path**: `hybrid_search()` queries ChromaDB with explicit BGE-M3 embeddings (1024 dims). Two-stage: vector + keyword recall, then 4-signal reranker.
 

@@ -60,7 +60,15 @@ ChromaDB Instance
 
 BGE-M3 is the canonical embedding model for both KB ingestion and evidence vectorization. The model is loaded once and cached for the process lifetime. The 1024-dimensional space provides strong semantic resolution for technical text including error messages, log fragments, and procedure descriptions across multiple languages.
 
-> **Note:** The legacy `KnowledgeSearchService` references `text-embedding-3-small` (1536 dimensions) via `EmbeddingService`, and the `KnowledgeItem` model defines `EMBEDDING_DIMENSIONS = 1536`. These are from a deprecated code path (see §7 notes on `KnowledgeSearchService`). BGE-M3 at 1024 dimensions is the active implementation.
+**Embedding dimensions reference:**
+
+| Dimensions | Source | Status |
+| ---------- | ------ | ------ |
+| **1024** | BGE-M3 via `model_cache.get_bge_m3_model()` | **Active** — canonical for both KB and evidence retrieval |
+| 1536 | `text-embedding-3-small` via legacy `KnowledgeSearchService` / `EmbeddingService`; `KnowledgeItem.EMBEDDING_DIMENSIONS = 1536` | **Deprecated** — see §7 notes on `KnowledgeSearchService` |
+| 384 | ChromaDB default embedding | **Fallback only** — when `sentence-transformers` is unavailable; in-progress evidence cases with 384-dim vectors self-clean on close (no migration needed; see §7) |
+
+The 1024-dim BGE-M3 path is the only one new code should target. The 1536 and 384 values appear in legacy or fallback paths and are not part of the active design.
 
 ---
 
@@ -132,23 +140,13 @@ Planned approach: detect identifier-like tokens in the query (error codes matchi
 
 ### Collection and Scope
 
-All KB tiers share a single ChromaDB collection: `faultmaven_kb`. Scope isolation is enforced at query time via metadata filtering, not by separate collections.
+The KB pipeline queries a single ChromaDB collection (`faultmaven_kb`) with a metadata-`where` clause that filters by scope. The clause shape and the scope-safety invariant that guards it are canonical in [knowledge-base-architecture.md](./knowledge-base-architecture.md) — see "Single Collection with Metadata Filtering" and "Federated Search: Implementation". This section covers what the *retrieval pipeline* does with that input; the storage rules live in KB-arch.
 
-A typical federated query for a user who belongs to one team:
-
-```python
-where = {"$or": [
-    {"scope": "global"},
-    {"$and": [{"scope": "personal"}, {"owner_id": user_id}]},
-    {"$and": [{"scope": "team"}, {"team_id": {"$in": team_ids}}]},
-]}
-```
-
-**Scope safety invariant:** `KnowledgeVectorStore.search()` and `hybrid_search()` reject any query against `faultmaven_kb` that does not include `scope`, `owner_id`, or `team_id` in the `where` clause. Unscoped queries raise `ValueError`. This converts a fail-open cross-tenant data leak risk into a fail-closed guarantee. Case evidence collections (`case_*`) are exempt.
+`KnowledgeVectorStore.search()` and `hybrid_search()` accept the scope-`where` from the caller and reject any KB query that doesn't carry one (`ValueError`). Case evidence collections (`case_*`) are exempt from this check.
 
 ### Chunking Strategy
 
-KB documents use structure-aware chunking distinct from the character-based chunking described in older versions of knowledge-base-architecture.md. The current ingestion pipeline splits on markdown structural boundaries:
+KB documents use structure-aware chunking. The ingestion pipeline splits on markdown structural boundaries:
 
 - Primary split points: `##` and `###` headers, horizontal rules (`---`)
 - Chunk size bounds: 100–3000 characters (variable, not fixed)
@@ -159,25 +157,17 @@ YAML frontmatter is stripped before chunking — a runbook with 300 chars of fro
 
 This approach preserves the semantic coherence of runbook sections. A diagnostic step does not share a chunk with an unrelated prevention note because the markdown structure itself draws the boundary.
 
-### Metadata Per Chunk
+### Metadata Per Chunk — Retrieval Use
 
-| Field | Stored | Purpose |
-|-------|--------|---------|
-| `document_id` | Yes | Unique runbook identifier |
-| `title` | Yes | Runbook title |
-| `domain` | Yes | Engineering vertical (database, networking, compute, etc.) |
-| `service` | Yes | Specific technology (postgresql, kubernetes, redis, etc.) |
-| `status` | Yes | Lifecycle state: draft, in-review, verified, stale, deprecated |
-| `last_updated` | Yes | ISO date — used for staleness scoring in reranker and synthesis |
-| `chunk_index` | Yes | Position within the chunked document |
-| `total_chunks` | Yes | Total chunks for this document |
-| `scope` | Yes | Tier: global, team, or personal |
-| `owner_id` | Yes | Set for personal-scope chunks |
-| `team_id` | Yes | Set for team-scope chunks |
-| `document_type` | Yes | Content classification (e.g., troubleshooting_guide) |
-| `tags` | Yes | Comma-separated tags from frontmatter |
-| `symptom_class` | Yes | Comma-joined failure modes — propagated from frontmatter at ingestion (`ingestion.py:363`) |
-| `severity` | Yes | Severity level — propagated from frontmatter at ingestion (`ingestion.py:361`) |
+The full list of fields stored on each chunk is canonical in [knowledge-base-architecture.md "Metadata Stored Per Chunk"](./knowledge-base-architecture.md#metadata-stored-per-chunk). The retrieval pipeline consumes a subset of those fields:
+
+| Field | Used by | Purpose |
+| ----- | ------- | ------- |
+| `scope`, `owner_id`, `team_id` | `where` clause | Scope filter (built by `AnswerFromKB`) |
+| `domain`, `service` | Hard pre-filter (`filter_mode="hard"`) + reranker metadata-match signal | Inject into `where` when case context supplies them |
+| `symptom_class`, `severity` | Reranker metadata-match signal | Boost chunks whose taxonomy aligns with the query's failure-mode classification |
+| `status` | Reranker status weighting | `verified` +0.40, `draft` -0.10, `deprecated` -0.30 |
+| `last_updated` | Reranker freshness signal + synthesis prompt | Half-life decay; `format_chunk_metadata()` injects age warnings into LLM context |
 
 ### Staleness-Aware Synthesis
 
@@ -392,10 +382,6 @@ Both paths fall back gracefully to ChromaDB's default embedding if BGE-M3 is una
 **`ChromaDBVectorStore.list_documents()` / `get_document()`** — removed. These methods fetched chunks and deduplicated in Python. Replaced by SQLite queries in `KnowledgeService`.
 
 **Redis KB key patterns** — removed. `upload_document()`, `get_document()`, `list_documents()`, `delete_document()` no longer read or write Redis. The `get_job_status()` method and `GET /knowledge/jobs/{job_id}` endpoint were also removed.
-
-### Deployment Note
-
-On first startup, `seed_builtin_runbooks()` copies 59 runbooks from `resources/knowledge/builtin/` to `data/knowledge/global/`. The Dashboard triggers `POST /api/v1/knowledge/scan` on mount, which discovers new files and creates draft records. Users activate runbooks via "Activate" (single or batch) from the Dashboard, which chunks + embeds + stores in ChromaDB.
 
 ---
 

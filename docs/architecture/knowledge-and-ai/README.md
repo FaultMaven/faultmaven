@@ -2,12 +2,41 @@
 
 Documentation for FaultMaven's knowledge management, vector search, and AI agent intelligence systems.
 
-## Architecture Documents
+## What to read first
 
-- **[Vector Retrieval Architecture](./vector-retrieval-architecture.md)** — Shared vector infrastructure: BGE-M3 embeddings, two-stage hybrid search pipeline, four-signal reranker, KB vs. evidence collection strategies, implementation status
-- **[Knowledge Base Architecture](./knowledge-base-architecture.md)** — KB storage design: single-collection (faultmaven_kb), 3-tier scope model, scope safety invariant, access control, ingestion workflow
-- **[Runbook Content Architecture](./runbook-content-architecture.md)** — What goes INTO the KB: taxonomy, templates, quality gates, lifecycle governance, RAG-optimized authoring rules
-- **[Document-to-Runbook Conversion](./document-to-runbook-conversion.md)** — Converting uploaded documents into template-compliant runbooks: preprocessing pipeline, KNOWLEDGE_PROVIDER LLM, draft management
+| If you are… | Start with |
+| ----------- | ---------- |
+| Storing, scoping, or managing access to runbooks | [Knowledge Base Architecture](./knowledge-base-architecture.md) |
+| Tuning retrieval — embeddings, hybrid search, reranker | [Vector Retrieval Architecture](./vector-retrieval-architecture.md) |
+| Writing runbook content (template, taxonomy, validation) | [Runbook Content Architecture](./runbook-content-architecture.md) |
+| Implementing the document-to-runbook conversion feature | [Document-to-Runbook Conversion](./document-to-runbook-conversion.md) |
+| Looking for end-user how-to | [`docs/guides/knowledge-base.md`](../../guides/knowledge-base.md) |
+
+## Canonical authority by topic
+
+Each cross-cutting topic has one canonical document. Other documents reference it rather than duplicating coverage. When two documents disagree, the canonical one wins.
+
+| Topic | Canonical |
+| ----- | --------- |
+| 3-tier scope model (Global / Team / Personal) + scope safety invariant | [knowledge-base-architecture.md](./knowledge-base-architecture.md) |
+| Single-collection design (`faultmaven_kb`) + ingestion workflow | [knowledge-base-architecture.md](./knowledge-base-architecture.md) |
+| Federated search — access control, team-membership resolution | [knowledge-base-architecture.md](./knowledge-base-architecture.md) |
+| Embedding model (BGE-M3) + dimensions reference | [vector-retrieval-architecture.md](./vector-retrieval-architecture.md) |
+| Two-stage hybrid search + four-signal reranker mechanics | [vector-retrieval-architecture.md](./vector-retrieval-architecture.md) |
+| Chunking parameters (KB structure-aware; evidence target-vs-current) | [vector-retrieval-architecture.md](./vector-retrieval-architecture.md) |
+| Staleness-aware synthesis (`format_chunk_metadata`, freshness signal) | [vector-retrieval-architecture.md](./vector-retrieval-architecture.md) |
+| Federated-search tool implementation (`answer_from_kb` path) | [vector-retrieval-architecture.md](./vector-retrieval-architecture.md) |
+| Runbook template (per-Cause structure, sub-fields, frontmatter) | [runbook-content-architecture.md](./runbook-content-architecture.md) |
+| Taxonomy (domain / service / symptom_class vocabulary) | [runbook-content-architecture.md](./runbook-content-architecture.md) |
+| Quality gates + validation rules + lifecycle states | [runbook-content-architecture.md](./runbook-content-architecture.md) |
+| Conversion pipeline + draft API + Verify workflow | [document-to-runbook-conversion.md](./document-to-runbook-conversion.md) |
+
+## Documents in this directory
+
+- **[Knowledge Base Architecture](./knowledge-base-architecture.md)** — KB storage design: single-collection (`faultmaven_kb`), 3-tier scope model, scope safety invariant, access control, ingestion workflow.
+- **[Vector Retrieval Architecture](./vector-retrieval-architecture.md)** — Shared vector infrastructure: BGE-M3 embeddings, two-stage hybrid search, four-signal reranker, KB vs. evidence chunking strategies, implementation status.
+- **[Runbook Content Architecture](./runbook-content-architecture.md)** — What goes INTO the KB: v3 template (per-Cause subsections), taxonomy, quality gates, lifecycle governance, RAG-optimized authoring rules.
+- **[Document-to-Runbook Conversion](./document-to-runbook-conversion.md)** — Converting uploaded documents into template-compliant runbooks: preprocessing pipeline, `KNOWLEDGE_PROVIDER` LLM, draft management API, Verify workflow.
 
 ## Key Technologies
 

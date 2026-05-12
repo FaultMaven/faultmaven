@@ -461,7 +461,7 @@ scope: {scope}
 tags: [{tags}]
 difficulty: {difficulty}
 severity: {severity}
-version: "1.0.0"
+version: "1.2"
 last_updated: {today_iso}
 verified_by: ""
 status: draft
@@ -736,7 +736,7 @@ Response: Updated draft object with re-run validation and quality score.
   "knowledge_item_id": "ki_abc123",
   "ingested": true,
   "ingested_at": "2026-03-22T15:00:00Z",
-  "collection": "global_kb",
+  "collection": "faultmaven_kb",
   "chunks_created": 8
 }
 ```
@@ -797,9 +797,18 @@ class ConversionStatus(str, Enum):
 
 
 class DraftStatus(str, Enum):
+    """Conversion-workflow state for a draft runbook.
+
+    Distinct from the runbook lifecycle in `runbook-content-architecture.md §5`
+    (`draft | in-review | verified | stale | deprecated`). DraftStatus tracks
+    a draft inside the conversion job; once `VERIFIED`, the draft is ingested
+    as a runbook and adopts the runbook lifecycle (verified → stale → deprecated).
+    `DISCARDED` is a conversion-only state — drafts that never become runbooks.
+    """
+
     DRAFT = "draft"
     VERIFIED = "verified"
-    DELETED = "deleted"
+    DISCARDED = "discarded"
 
 
 class SourceType(str, Enum):
@@ -973,11 +982,11 @@ Note: The conversion is synchronous from the user's perspective (single API call
 |  +----------------------------------------------+ |
 |  | pg-connection-pool-exhaustion    Score: 73/C  | |
 |  | Validation: PASSED (2 warnings)               | |
-|  | [Edit] [Activate] [Delete]             | |
+|  | [Edit] [Verify] [Discard]              | |
 |  +----------------------------------------------+ |
 |  | pg-replication-lag               Score: 68/D  | |
 |  | Validation: PASSED (1 warning)                | |
-|  | [Edit] [Activate] [Delete]             | |
+|  | [Edit] [Verify] [Discard]              | |
 |  +----------------------------------------------+ |
 |  | pg-wal-disk-full                 Score: 45/F  | |
 |  | ! Quality below 50 -- source may lack detail  | |
@@ -1000,7 +1009,7 @@ Verify button is disabled when validation fails. User must edit to fix validatio
 |  Validation: PASSED                                |
 |  Quality: 73/C                                     |
 |                                                   |
-|  [Save Draft]  [Activate]  [Cancel]         |
+|  [Save Draft]  [Verify]  [Cancel]           |
 +--------------------------------------------------+
 ```
 
@@ -1010,12 +1019,12 @@ On save, the API re-runs validation and quality scoring. The results update in r
 
 ```
 +--------------------------------------------------+
-|  Activate Runbook?                          |
+|  Verify Runbook?                                  |
 |                                                   |
 |  This will:                                        |
 |  - Set status to "verified"                        |
 |  - Set verified_by to your username                |
-|  - Ingest into ChromaDB (global_kb collection)     |
+|  - Ingest into ChromaDB (faultmaven_kb collection) |
 |  - Make the runbook searchable by the AI           |
 |                                                   |
 |  [Confirm]  [Cancel]                               |
