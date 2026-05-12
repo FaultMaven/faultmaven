@@ -532,6 +532,16 @@ The code defines four scope values (`PERSONAL`, `TEAM`, `ORGANIZATION`, `GLOBAL`
 
 `KnowledgeItem` carries a `VerificationLevel` integer enum (`EXPERIMENTAL=0`, `COMMUNITY=1`, `ADMIN_VERIFIED=2`) that tracks the authority of the knowledge's source. This is separate from the frontmatter `status` field (lifecycle: `draft` → `verified` → `stale` → `deprecated`). The two systems model different things: `status` tracks a document's editorial lifecycle; `VerificationLevel` tracks who validated the underlying knowledge. They are not yet reconciled — the four-signal reranker reads frontmatter `status` values, not `VerificationLevel`.
 
+### Reasoning-Context Retrieval APIs
+
+Two higher-level retrieval methods on `KnowledgeService` support LLM reasoning workflows. Neither is surfaced via an API endpoint; they are called internally by services that need pre-curated knowledge before starting a reasoning chain.
+
+**`search_with_reasoning_context(query, session_id, reasoning_type)`** — adjusts retrieval parameters and result framing based on `reasoning_type` (`diagnostic` | `analytical` | `strategic` | `creative`). Falls back to `search_knowledge()` when `AdvancedKnowledgeRetrieval` is unavailable. Returns an enriched result dict that includes `retrieval_strategy`, `confidence_score`, `reasoning_insights`, `knowledge_gaps`, and `search_expansion_paths` alongside the matched documents.
+
+**`curate_knowledge_for_reasoning(reasoning_type, session_id)`** — runs multiple searches using type-specific search terms (e.g. `diagnostic` → "error", "problem", "solution", "troubleshoot") and assembles curated knowledge by category. Returns a dict keyed by `knowledge_type`. Used to pre-populate an agent's context before starting a reasoning chain.
+
+Both methods delegate to `AdvancedKnowledgeRetrieval` (multi-level caching: L1 in-memory LRU, L2 result store) when it is available. Neither enforces the scope safety invariant — they call `_vector_store.search()` directly without a user-scoped `where` clause, which means they currently read across all scopes. Scoped equivalents are a planned improvement.
+
 ---
 
 ## Related Documents

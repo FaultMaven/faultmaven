@@ -855,9 +855,11 @@ def register_services(container: BaseDIContainer) -> None:
     )
     container._register_service("data_service", data_service)
 
-    # Knowledge Service
+    # Knowledge Service — prefer KnowledgeVectorStore (scope-enforcing) over the
+    # generic ChromaDBVectorStore. Fall back to vector_store if not registered.
+    knowledge_vector_store = getattr(container, "knowledge_vector_store", None)
     knowledge_service = create_knowledge_service(
-        vector_store,
+        knowledge_vector_store or vector_store,
         knowledge_ingester,
         container.get_service("sanitizer", required=True),
         container.get_service("tracer", required=True),

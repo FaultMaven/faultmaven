@@ -34,11 +34,10 @@ REQUIRED_METADATA = [
 ]
 
 REQUIRED_SECTIONS = [
-    "Problem Definition",
+    "Symptom Recognition",
+    "Applicability",
     "Diagnostic Steps",
-    "Mitigation",
-    "Root Cause Resolution",
-    "Verification",
+    "Causes",
     "Prevention",
     "Sources",
 ]
@@ -217,6 +216,20 @@ class RunbookValidator:
             if not re.search(pattern, content, re.MULTILINE):
                 errors.append(f"Missing required section: {section}")
 
+        # ## Causes must have at least one ### Cause subsection
+        if re.search(r"^##+ Causes", content, re.MULTILINE):
+            cause_subsections = re.findall(r"^###+ Cause\s+\w", content, re.MULTILINE)
+            if not cause_subsections:
+                errors.append(
+                    "## Causes section must contain at least one ### Cause subsection"
+                )
+            # Fallback cause (Cause Z with [Default] indicator) is a quality warning
+            if not re.search(r"\[Default\]", content):
+                warnings.append(
+                    "No fallback Cause with [Default] indicator found — "
+                    "add a '### Cause Z: Unidentified' with [Default] indicator"
+                )
+
     def _validate_quality(self, content: str, warnings: List[str]) -> None:
         content_body = re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, flags=re.DOTALL)
 
@@ -378,18 +391,15 @@ class QualityScorer:
         elif len(diagnostic_keywords) >= 5:
             score += 5
 
-        mitigation = re.search(
-            r"(?i)(?:^#{1,4}\s*Mitigation|^#{1,4}\s*Root Cause Resolution)",
-            content,
-            re.MULTILINE,
-        )
-        if mitigation:
+        # v3: resolution/verification are per-Cause sub-fields, not top-level sections
+        causes_section = re.search(r"(?i)^#{1,4}\s*Causes", content, re.MULTILINE)
+        if causes_section:
             score += 10
 
-        verification = re.search(
-            r"(?i)(?:^#{1,4}\s*Verification)", content, re.MULTILINE
+        has_resolution = re.search(
+            r"(?i)\*\*Resolution:\*\*|\*\*Mitigation:\*\*", content
         )
-        if verification:
+        if has_resolution:
             score += 5
 
         command_explanations = re.findall(r"```.*?```\s*\n\s*[A-Z]", content, re.DOTALL)
@@ -412,7 +422,8 @@ class QualityScorer:
             score += 5
 
         root_cause = re.findall(
-            r"(?i)(?:root cause|why this happens|underlying issue|permanent fix)",
+            r"(?i)(?:root cause|why this happens|underlying issue|permanent fix"
+            r"|\*\*Statement:\*\*|\*\*Mechanism:\*\*)",
             content,
         )
         if len(root_cause) >= 1:
@@ -430,10 +441,10 @@ class QualityScorer:
         if has_sources:
             score += 10
 
+        # v3: Verification is a per-Cause sub-field
         verification = re.search(
-            r"(?i)(?:^#{1,4}\s*Verification|how to confirm)",
+            r"(?i)(?:\*\*Verification:\*\*|how to confirm)",
             content,
-            re.MULTILINE,
         )
         if verification:
             score += 10

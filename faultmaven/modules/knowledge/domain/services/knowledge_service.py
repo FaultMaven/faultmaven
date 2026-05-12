@@ -246,8 +246,11 @@ class KnowledgeService:
                 # Search via vector store interface if available
                 if self._vector_store:
                     with self._tracer.trace("knowledge_vector_search"):
+                        # Default to global scope when caller provides no filter —
+                        # prevents unintentional cross-tenant reads.
+                        effective_filters = filters if filters else {"scope": "global"}
                         results = await self._vector_store.search(
-                            sanitized_query, k=limit, filters=filters
+                            sanitized_query, k=limit, filters=effective_filters
                         )
 
                     # Convert to SearchResult models
@@ -516,7 +519,9 @@ class KnowledgeService:
 
             for concept in key_concepts[:5]:  # Top 5 concepts
                 # Search for related documents
-                search_results = await self._vector_store.search(concept, k=3)
+                search_results = await self._vector_store.search(
+                    concept, k=3, filters={"scope": "global"}
+                )
 
                 for result in search_results:
                     if result.get("id") != document_id:  # Exclude source document
@@ -703,7 +708,9 @@ class KnowledgeService:
                     )
 
                     try:
-                        results = await self._vector_store.search(search_query, k=3)
+                        results = await self._vector_store.search(
+                            search_query, k=3, filters={"scope": "global"}
+                        )
                         for result in results:
                             curated_item = {
                                 "document_id": result.get("id"),
@@ -2216,7 +2223,12 @@ class KnowledgeService:
         )
 
         if self._vector_store:
-            search_results = await self._vector_store.search(query, k=limit)
+            # Scope to global only — this fallback path has no user context.
+            # User-scoped searches go through search_documents() which builds a
+            # full scope filter from the caller's user/team ids.
+            search_results = await self._vector_store.search(
+                query, k=limit, filters={"scope": "global"}
+            )
 
             # Convert to retrieval result format
             return type(

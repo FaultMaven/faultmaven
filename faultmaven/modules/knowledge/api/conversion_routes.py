@@ -403,11 +403,18 @@ class RunbookCreateRequest(BaseModel):
     scope: str
     tags: list[str] = Field(default_factory=list)
     difficulty: str = "intermediate"
-    problem_definition: str = Field(min_length=10)
+    symptom_recognition: str = Field(min_length=10)
+    applicability: str = Field(min_length=10)
     diagnostic_steps: str = Field(min_length=10)
-    mitigation: str = Field(min_length=10)
-    root_cause_resolution: str = Field(min_length=10)
-    verification: str = Field(min_length=10)
+    causes: str = Field(
+        min_length=10,
+        description=(
+            "Pre-formatted markdown with ### Cause N subsections. "
+            "Each cause needs Statement, Mechanism, Indicator, Mitigation, "
+            "Resolution, Verification sub-fields. Include ### Cause Z: Unidentified "
+            "with [Default] indicator as fallback."
+        ),
+    )
     prevention: str = Field(min_length=10)
     team_id: Optional[str] = None
 
@@ -440,11 +447,10 @@ async def create_runbook_manually(
             scope=body.scope,
             tags=body.tags,
             difficulty=body.difficulty,
-            problem_definition=body.problem_definition,
+            symptom_recognition=body.symptom_recognition,
+            applicability=body.applicability,
             diagnostic_steps=body.diagnostic_steps,
-            mitigation=body.mitigation,
-            root_cause_resolution=body.root_cause_resolution,
-            verification=body.verification,
+            causes=body.causes,
             prevention=body.prevention,
             user_id=current_user.user_id,
             organization_id=getattr(current_user, "organization_id", None),

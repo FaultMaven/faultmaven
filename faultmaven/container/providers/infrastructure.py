@@ -687,6 +687,14 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         logger.warning(f"Vector store initialization failed: {e}")
         container._register_failed("vector_store", str(e))
 
+    # Knowledge vector store — scope-enforcing wrapper around faultmaven_kb collection
+    knowledge_vector_store = create_knowledge_vector_store(settings, kb_chromadb_client)
+    if knowledge_vector_store:
+        container._register_service("knowledge_vector_store", knowledge_vector_store)
+        container.knowledge_vector_store = knowledge_vector_store
+    else:
+        container.knowledge_vector_store = None
+
     # Case vector store (dynamic per-case collections) — uses evidence client
     case_vector_store = create_case_vector_store(settings, evidence_chromadb_client)
     if case_vector_store:

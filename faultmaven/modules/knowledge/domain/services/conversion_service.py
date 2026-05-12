@@ -110,9 +110,9 @@ Respond with JSON matching this schema:
   }
 }"""
 
-CONVERSION_SYSTEM_PROMPT = """You are a technical writer converting source material into a FaultMaven
+CONVERSION_SYSTEM_PROMPT = """You are a technical writer converting source material into a FaultMaven v3
 runbook. You MUST produce output that exactly matches the template below.
-Every section is required. Do not add sections. Do not rename sections.
+Every section and sub-field is required. Do not add sections. Do not rename sections.
 Do not include commentary, explanations, or meta-text -- only the runbook.
 
 TEMPLATE:
@@ -136,9 +136,14 @@ status: draft
 
 # Runbook: {{title}}
 
-## Problem Definition
-- Exact alert names, error messages as they appear in logs, metric patterns.
-- Be specific: include the actual strings a user would grep for.
+## Symptom Recognition
+- Exact alert names as they appear: "Alert: ..."
+- Error messages as they appear in logs: "ERROR: ..."
+- Metric patterns: "metric > threshold for duration"
+
+## Applicability
+State the software version range, required access level, and tools needed
+(e.g. "PostgreSQL 14+, AWS RDS or self-hosted. Requires pg_monitor role. Tools: psql.").
 
 ## Diagnostic Steps
 
@@ -146,37 +151,46 @@ status: draft
 ```{{language}}
 {{command}}
 ```
-{{interpretation guidance: what to look for, what findings mean}}
+{{what to look for in the output — be specific}}
 
 ### Step 2: {{description}}
 ...
 
-## Mitigation
-**Risk**: {{what could go wrong}}
+## Causes
+
+### Cause A: {{name}}
+**Statement:** Single declarative sentence stating the root cause (≤300 chars).
+**Mechanism:** How the cause produces the observed symptom — the causal chain (≤800 chars).
+**Indicator:**
+- [Step 1] {{finding from Step 1 that confirms this cause}}
+**Mitigation:**
+- **Risk:** {{what could go wrong}}
+- **Command:**
+  ```{{language}}
+  {{mitigation command}}
+  ```
+- **Duration:** {{how long this mitigation is safe}}
+**Resolution:**
 ```{{language}}
-{{mitigation command}}
+{{permanent fix command}}
 ```
-**Verify**: {{how to confirm mitigation worked}}
-**Duration**: {{how long the mitigation is safe}}
+**Verification:** Re-run Step N; {{what confirms the fix worked}}.
 
-## Root Cause Resolution
-**If** {{diagnostic finding from Step N}}:
-```{{language}}
-{{fix command}}
-```
-
-**If** {{alternative diagnostic finding}}:
-...
-
-## Verification
-- {{specific metric or command to confirm the fix}}
-- {{observation period}}
-- {{what "back to normal" looks like}}
+### Cause Z: Unidentified
+**Statement:** None of the documented causes match the observed evidence.
+**Mechanism:** The runbook's known failure patterns do not cover this case.
+**Indicator:**
+- [Default]
+**Mitigation:**
+- **Risk:** Generic approach; collect more evidence before applying.
+- **Command:** Capture full diagnostic output and consult an SME.
+- **Duration:** Diagnostic only.
+**Resolution:** Out of runbook scope. Escalate.
+**Verification:** N/A.
 
 ## Prevention
 - {{configuration change to prevent recurrence}}
 - {{monitoring alert to add}}
-- {{process change}}
 
 ## Sources
 - {{source_filename}} -- primary source document for this runbook
@@ -184,19 +198,14 @@ status: draft
 =========
 
 RULES:
-1. Every section MUST contain content. No empty sections.
-2. Diagnostic Steps and Root Cause Resolution MUST contain fenced code blocks.
-3. Root Cause Resolution MUST use "If X then Y" structure linking to findings
-   from Diagnostic Steps.
-4. Section sizes: aim for 400-900 characters per section so each fits within
-   1-2 retrieval chunks.
-5. If the source material does not provide enough information for a section,
-   write "[INSUFFICIENT SOURCE DATA -- manual completion required]" and
-   continue. Do not fabricate commands or procedures.
-6. The Sources section MUST reference the uploaded filename as the primary
-   source.
-7. Use the taxonomy values provided in the failure mode analysis. Do not
-   change domain, service, or symptom_class."""
+1. Every section and sub-field MUST contain content. No empty fields.
+2. ## Diagnostic Steps MUST contain fenced code blocks with numbered ### Step N headers.
+3. ## Causes MUST have at least one real ### Cause A subsection AND the fallback ### Cause Z: Unidentified.
+4. Each ### Cause (except Z) needs all 6 sub-fields: Statement, Mechanism, Indicator, Mitigation, Resolution, Verification.
+5. Statement ≤300 characters. Mechanism ≤800 characters. Hard limits.
+6. Each Indicator entry must reference at least one [Step N] where N matches an existing Diagnostic Step number.
+7. If source material lacks enough information for a field, write "[INSUFFICIENT SOURCE DATA -- manual completion required]".
+8. Use the taxonomy values provided. Do not change domain, service, or symptom_class."""
 
 
 # =============================================================================
@@ -1381,17 +1390,22 @@ class ConversionService:
         scope: str,
         tags: List[str],
         difficulty: str,
-        problem_definition: str,
+        symptom_recognition: str,
+        applicability: str,
         diagnostic_steps: str,
-        mitigation: str,
-        root_cause_resolution: str,
-        verification: str,
+        causes: str,
         prevention: str,
         user_id: str,
         organization_id: str = None,
         team_id: str = None,
     ) -> ConversionDraft:
-        """Create a runbook from user-provided template fields (no LLM)."""
+        """Create a v3 runbook from user-provided template fields (no LLM).
+
+        causes should be pre-formatted markdown containing one or more
+        ### Cause N: <name> subsections each with the six required sub-fields
+        (Statement, Mechanism, Indicator, Mitigation, Resolution, Verification),
+        plus a ### Cause Z: Unidentified fallback with [Default] indicator.
+        """
         import re as _re
 
         today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -1429,20 +1443,17 @@ status: draft
 
 # Runbook: {title}
 
-## Problem Definition
-{problem_definition}
+## Symptom Recognition
+{symptom_recognition}
+
+## Applicability
+{applicability}
 
 ## Diagnostic Steps
 {diagnostic_steps}
 
-## Mitigation
-{mitigation}
-
-## Root Cause Resolution
-{root_cause_resolution}
-
-## Verification
-{verification}
+## Causes
+{causes}
 
 ## Prevention
 {prevention}
