@@ -256,10 +256,13 @@ async def scan_for_runbooks(
     Discovers runbooks created by the KB Toolkit or placed on disk manually.
     Creates draft records so they appear in the Drafts tab for review.
     """
-    return await service.scan_for_runbooks(
-        user_id=current_user.user_id,
-        organization_id=getattr(current_user, "organization_id", None),
-    )
+    try:
+        return await service.scan_for_runbooks(
+            user_id=current_user.user_id,
+            organization_id=getattr(current_user, "organization_id", None),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # =============================================================================

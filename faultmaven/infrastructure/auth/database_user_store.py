@@ -19,13 +19,21 @@ logger = logging.getLogger(__name__)
 
 
 class DatabaseUserStore:
-    """Database-backed user storage system
+    """Database-backed user storage system.
 
     Manages user accounts using UserRepository (SQLite/PostgreSQL).
-    Provides persistence across restarts for local deployment.
     Adapts between DevUser (auth model) and User (repository model).
 
-    Storage: Uses UserRepository which supports:
+    Role persistence strategy (by deployment mode):
+    - Local mode (AUTH_MODE=local): roles stored in the ``dev_roles`` TEXT
+      column (JSON array) on the users table. This is the canonical role
+      source for local deployments. RBAC join tables are NOT populated in
+      local mode and must not be relied on.
+    - Cloud mode (AUTH_MODE=oauth): roles derived from RBAC tables
+      (organization_members → roles). The ``dev_roles`` column exists but
+      is ignored in this path.
+
+    Storage backends:
     - SQLite (local deployment via DATABASE_URL)
     - PostgreSQL (cloud deployment)
     """

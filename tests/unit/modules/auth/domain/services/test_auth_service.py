@@ -145,7 +145,7 @@ class TestTokenGeneration:
         assert "jti" in claims  # Unique token ID
         assert "iat" in claims  # Issued at
         assert "exp" in claims  # Expiration
-        assert claims["token_type"] == "access"
+        assert claims["type"] == "access"
 
     def test_access_token_permissions_auto_derived_from_roles(
         self, auth_service, sample_user_data
@@ -226,7 +226,7 @@ class TestTokenGeneration:
         assert claims["sub"] == sample_user_data["user_id"]
         assert claims["organization_id"] == sample_user_data["organization_id"]
         assert "jti" in claims
-        assert claims["token_type"] == "refresh"
+        assert claims["type"] == "refresh"
         # Refresh tokens don't have email, roles, permissions
         assert "email" not in claims
         assert "roles" not in claims

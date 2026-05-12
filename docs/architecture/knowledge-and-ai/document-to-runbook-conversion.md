@@ -1126,7 +1126,7 @@ New table: `conversion_drafts`
 | `runbook_id` | `VARCHAR(100)` | Generated runbook ID (kebab-case) |
 | `title` | `VARCHAR(255)` | Runbook title |
 | `file_path` | `VARCHAR(500)` | Path to draft markdown file |
-| `status` | `VARCHAR(20)` | draft, verified, deleted |
+| `status` | `VARCHAR(20)` | draft, verified, discarded |
 | `validation_passed` | `BOOLEAN` | Whether kb-validate passed |
 | `validation_errors` | `JSON` | Validation error list |
 | `validation_warnings` | `JSON` | Validation warning list |
@@ -1144,16 +1144,29 @@ stateDiagram-v2
     [*] --> Draft: Conversion generates runbook
     Draft --> Draft: User edits content
     Draft --> Verified: User verifies (triggers ingestion)
-    Draft --> Deleted: User deletes draft
-    Verified --> [*]: Runbook is now in ChromaDB
-    Deleted --> [*]: File removed from disk
+    Draft --> Discarded: User deletes draft
+    Verified --> Discarded: KB document deleted (via KnowledgeService)
+    Verified --> [*]: Runbook is live in ChromaDB
+    Discarded --> [*]: Soft-deleted (row kept, file removed)
 ```
 
 Key rules:
 - **Draft**: File exists on disk. NOT in ChromaDB. NOT searchable by the AI.
 - **Verified**: File updated with `status: verified` and `verified_by`. Ingested into ChromaDB. Searchable.
-- **Deleted**: File removed from disk. Database record marked as deleted (soft delete).
-- **No reverse transition**: Once verified, the runbook follows the standard KB lifecycle (verified -> stale -> deprecated) managed by the existing governance system. It is no longer a "conversion draft."
+- **Discarded**: Soft-delete. Database row retained (audit trail), `knowledge_item_id` cleared, file removed from disk on next cleanup.
+- **No reverse transition**: Once verified, the runbook follows the standard KB lifecycle. It is no longer a "conversion draft."
+
+### 9.4 Single-Owner Principle for Draft Mutations
+
+**`ConversionService` is the sole owner of `conversion_drafts` mutations.** No other service writes directly to the `conversion_drafts` table.
+
+When `KnowledgeService.delete_document()` is called on a verified runbook, it delegates to `ConversionService.discard_by_knowledge_item_id()`, which sets `status=discarded` and clears `knowledge_item_id` before `KnowledgeService` removes the ChromaDB entry. This ordering ensures that a ChromaDB failure leaves the database in a consistent state (document hidden from queries).
+
+Post-construction wiring in `main.py` gives `KnowledgeService` a reference to `ConversionService` after both are initialised, avoiding circular DI.
+
+### 9.5 Scan Guard
+
+`ConversionService.scan_for_runbooks()` includes a bulk-discard guard: if the reconcile step would mark **every** active draft as discarded (because files are missing from disk), the session is rolled back and a `RuntimeError` is raised. The API surfaces this as `HTTP 409 Conflict` with the affected draft IDs and a recovery instruction. This prevents a storage-layer failure (wiped `data/knowledge/` directory) from silently destroying the entire KB draft state.
 
 ### 9.4 Source File Retention
 

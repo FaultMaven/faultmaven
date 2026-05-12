@@ -468,6 +468,13 @@ async def lifespan(app: FastAPI):
                     db_session_factory=get_db_session,
                     knowledge_service=app.state.knowledge_service,
                 )
+                # Give KnowledgeService a reference to ConversionService so that
+                # draft lifecycle mutations (discard on delete) are owned by a
+                # single service rather than duplicated in both.
+                if app.state.knowledge_service:
+                    app.state.knowledge_service._conversion_service = (
+                        app.state.conversion_service
+                    )
                 logger.info("✅ Document conversion service initialized")
             except Exception as conv_err:
                 logger.warning(

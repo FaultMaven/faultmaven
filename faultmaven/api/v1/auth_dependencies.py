@@ -483,6 +483,18 @@ async def get_optional_user_context(
 
 
 # Development Utilities (remove in production)
+async def require_admin(user: DevUser = Depends(require_authentication)) -> DevUser:
+    """Require admin role.
+
+    Raises:
+        HTTPException: 403 if user does not have the admin role
+    """
+    if "admin" not in (user.roles or []):
+        logger.warning(f"Admin access denied for user: {user.user_id}")
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    return user
+
+
 async def require_dev_user(user: DevUser = Depends(require_authentication)) -> DevUser:
     """Require authenticated development user
 

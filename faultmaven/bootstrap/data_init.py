@@ -223,79 +223,103 @@ def run_alembic_migrations() -> bool:
         raise RuntimeError(f"Alembic migration failed: {e}") from e
 
 
-async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
-    """Create default admin user if no users exist.
+async def _create_admin_user(user_store: Any) -> Any:
+    """Create the default admin user if it doesn't already exist.
 
-    For local development, creates a default admin account so users
-    can log in immediately without running setup scripts.
+    Checks by username first, then by email, to avoid duplicates.
+
+    Args:
+        user_store: Initialised user store instance
+
+    Returns:
+        Existing or newly-created user
+
+    Raises:
+        Exception: If user creation fails unexpectedly
+    """
+    existing = await user_store.get_user_by_username(DEFAULT_ADMIN_USERNAME)
+    if existing:
+        return existing
+
+    existing_by_email = await user_store.get_user_by_email(DEFAULT_ADMIN_EMAIL)
+    if existing_by_email:
+        return existing_by_email
+
+    logger.info("Creating default local admin account...")
+    user = await user_store.create_user(
+        username=DEFAULT_ADMIN_USERNAME,
+        email=DEFAULT_ADMIN_EMAIL,
+        display_name=DEFAULT_ADMIN_DISPLAY_NAME,
+    )
+    logger.info(
+        f"Default admin account created: {user.username} ({user.email})\n"
+        f"  Login via: POST /api/v1/auth/login "
+        f'with {{"username": "{user.username}"}}'
+    )
+    return user
+
+
+async def _assign_admin_role(user_store: Any, user: Any) -> Any:
+    """Ensure the given user has the admin role; grants it if missing.
+
+    Args:
+        user_store: Initialised user store instance
+        user: DevUser to check and update
+
+    Returns:
+        User (updated if role was granted, unchanged otherwise)
+    """
+    if "admin" in (user.roles or []):
+        return user
+
+    logger.info(f"User '{user.username}' missing admin role — granting")
+    user.roles = list(user.roles or []) + ["admin"]
+    if "user" not in user.roles:
+        user.roles = ["user"] + user.roles
+    user = await user_store.update_user(user)
+    logger.info(f"Admin role granted to '{user.username}': {user.roles}")
+    return user
+
+
+async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
+    """Ensure the default local admin account exists and has the admin role.
+
+    Orchestrates _create_admin_user() + _assign_admin_role() so each
+    step is independently testable.
 
     Args:
         container: DI container with initialized services
 
     Returns:
-        Created user if new, None if user already exists or on error.
-
-    Default Credentials:
-        - Username: admin
-        - Email: admin@local.faultmaven
-        - Roles: ['user', 'admin']
+        Newly-created user if this was a first-run, None otherwise.
 
     Notes:
-        - Only creates user if database is empty (no users exist)
-        - Uses dev-login mode (no password required for local auth)
-        - Safe to call multiple times (idempotent)
+        - Idempotent: safe to call on every startup
+        - Only creates the user in local/dev mode (no password required)
     """
     try:
         logger.info("Checking for default admin user...")
 
-        # Get user store from container
         user_store = container.get_user_store()
         if not user_store:
-            logger.warning("User store not available - skipping admin creation")
+            logger.warning("User store not available — skipping admin creation")
             return None
 
         logger.info(f"User store type: {type(user_store).__name__}")
 
-        # Check if any users exist
-        existing_user = await user_store.get_user_by_username(DEFAULT_ADMIN_USERNAME)
-        if existing_user:
-            if "admin" not in (existing_user.roles or []):
-                logger.info(
-                    f"Admin user '{DEFAULT_ADMIN_USERNAME}' exists but lacks admin role — fixing"
-                )
-                existing_user.roles = list(existing_user.roles or []) + ["admin"]
-                await user_store.update_user(existing_user)
-                logger.info(f"Admin role added to '{DEFAULT_ADMIN_USERNAME}'")
-            else:
-                logger.info(f"Admin user '{DEFAULT_ADMIN_USERNAME}' already exists")
-            return None
-
-        # Also check by email
-        existing_by_email = await user_store.get_user_by_email(DEFAULT_ADMIN_EMAIL)
-        if existing_by_email:
-            logger.info(f"User with email '{DEFAULT_ADMIN_EMAIL}' already exists")
-            return None
-
-        # Create default admin user
-        logger.info("Creating default local admin account...")
-        user = await user_store.create_user(
-            username=DEFAULT_ADMIN_USERNAME,
-            email=DEFAULT_ADMIN_EMAIL,
-            display_name=DEFAULT_ADMIN_DISPLAY_NAME,
+        was_new = not bool(
+            await user_store.get_user_by_username(DEFAULT_ADMIN_USERNAME)
+            or await user_store.get_user_by_email(DEFAULT_ADMIN_EMAIL)
         )
-        logger.info(f"User created with ID: {user.user_id}")
 
-        # Set admin roles
-        user.roles = ["user", "admin"]
-        user = await user_store.update_user(user)
-        logger.info(f"Admin roles assigned: {user.roles}")
+        user = await _create_admin_user(user_store)
+        await _assign_admin_role(user_store, user)
 
-        logger.info(f"Default admin account created: {user.username} ({user.email})")
-        logger.info(
-            "  Login via: POST /api/v1/auth/dev-login "
-            f'with {{"username": "{user.username}"}}'
-        )
-        return user
+        if was_new:
+            return user
+
+        logger.info(f"Default admin user check complete: '{DEFAULT_ADMIN_USERNAME}'")
+        return None
 
     except Exception as e:
         logger.warning(f"Could not create default admin: {e}", exc_info=True)

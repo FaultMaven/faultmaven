@@ -1118,3 +1118,135 @@ class TestSourceFileRetention:
         assert result.source_file.filename == "test_document.md"
         assert result.source_file.content_type == "text/markdown"
         assert result.source_file.size_bytes > 0
+
+
+# =============================================================================
+# Test: Scan bulk-discard guard
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestScanBulkDiscardGuard:
+    """scan_for_runbooks must abort when it would discard every active draft."""
+
+    def _make_draft_model(
+        self, draft_id: str, file_path: str, status: str = "verified"
+    ):
+        dm = MagicMock()
+        dm.id = draft_id
+        dm.file_path = file_path
+        dm.status = status
+        dm.knowledge_item_id = f"kb_{draft_id}"
+        return dm
+
+    def _make_db_session(self, draft_models):
+        """Return an async context manager that yields a session with the given drafts."""
+        session = AsyncMock()
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = draft_models
+        session.execute = AsyncMock(return_value=result)
+
+        class _CM:
+            async def __aenter__(self_):
+                return session
+
+            async def __aexit__(self_, *args):
+                pass
+
+        return _CM
+
+    @pytest.mark.asyncio
+    async def test_raises_when_all_files_missing(self, tmp_path):
+        """If every active draft file is absent, scan must raise RuntimeError."""
+        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+            ConversionService,
+        )
+
+        # Three drafts whose files do not exist
+        drafts = [
+            self._make_draft_model("d1", "/nonexistent/a.md"),
+            self._make_draft_model("d2", "/nonexistent/b.md"),
+            self._make_draft_model("d3", "/nonexistent/c.md"),
+        ]
+        db_cm = self._make_db_session(drafts)
+
+        svc = ConversionService(
+            llm_router=AsyncMock(),
+            settings=MagicMock(),
+            db_session_factory=db_cm,
+            knowledge_service=None,
+        )
+        # Point data_dir to tmp_path so the directory-walk doesn't fail
+        with patch.object(
+            type(svc), "_data_dir", new_callable=lambda: property(lambda s: tmp_path)
+        ):
+            with pytest.raises(RuntimeError, match="Scan aborted"):
+                await svc.scan_for_runbooks(user_id="u1")
+
+    @pytest.mark.asyncio
+    async def test_allows_partial_discard_when_some_files_survive(self, tmp_path):
+        """If at least one file exists, scan should proceed normally."""
+        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+            ConversionService,
+        )
+
+        surviving = tmp_path / "good.md"
+        surviving.write_text(
+            "---\ntitle: Good Runbook\nstatus: verified\n---\n\n" + "x" * 200,
+            encoding="utf-8",
+        )
+
+        drafts = [
+            self._make_draft_model("d1", "/nonexistent/a.md"),
+            self._make_draft_model("d2", str(surviving), status="verified"),
+        ]
+        # d2 has knowledge_item_id set AND status=verified → kept (tracked)
+        drafts[1].knowledge_item_id = "kb_abc"
+
+        db_cm = self._make_db_session(drafts)
+
+        svc = ConversionService(
+            llm_router=AsyncMock(),
+            settings=MagicMock(),
+            db_session_factory=db_cm,
+            knowledge_service=None,
+        )
+        with patch.object(
+            type(svc), "_data_dir", new_callable=lambda: property(lambda s: tmp_path)
+        ):
+            # Should not raise; surviving file prevents the guard from firing
+            result = await svc.scan_for_runbooks(user_id="u1")
+        assert isinstance(result, dict)
+
+    @pytest.mark.asyncio
+    async def test_already_discarded_drafts_not_counted(self, tmp_path):
+        """Pre-discarded rows don't count toward the guard threshold."""
+        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+            ConversionService,
+        )
+
+        already_gone = self._make_draft_model(
+            "d_old", "/nonexistent/old.md", status="discarded"
+        )
+        surviving = tmp_path / "live.md"
+        surviving.write_text(
+            "---\ntitle: Live Runbook\nstatus: verified\n---\n\n" + "x" * 200,
+            encoding="utf-8",
+        )
+        live = self._make_draft_model("d_live", str(surviving), status="verified")
+        live.knowledge_item_id = "kb_live"
+
+        drafts = [already_gone, live]
+        db_cm = self._make_db_session(drafts)
+
+        svc = ConversionService(
+            llm_router=AsyncMock(),
+            settings=MagicMock(),
+            db_session_factory=db_cm,
+            knowledge_service=None,
+        )
+        with patch.object(
+            type(svc), "_data_dir", new_callable=lambda: property(lambda s: tmp_path)
+        ):
+            result = await svc.scan_for_runbooks(user_id="u1")
+        assert isinstance(result, dict)

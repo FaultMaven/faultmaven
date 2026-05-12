@@ -42,6 +42,7 @@ from faultmaven.models.interfaces import (
     IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
+from faultmaven.modules.knowledge.domain.models.conversion import DraftStatus
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,9 @@ class KnowledgeService:
         self._redis = redis_client
         self._settings = settings
         self._db_session_factory = db_session_factory
+        # Set by main.py after ConversionService is created (avoids circular DI).
+        # When present, all ConversionDraftModel mutations are delegated to it.
+        self._conversion_service: Optional[Any] = None
 
         # Enhanced capabilities
         self._llm = llm_provider
@@ -881,7 +885,7 @@ class KnowledgeService:
 
     async def delete_document(self, document_id: str) -> Dict[str, Any]:
         """
-        Soft-delete a document by setting its status to 'deprecated'.
+        Soft-delete a document by setting its status to 'discarded'.
 
         Marks the document as deprecated and removes its chunks from vector search.
         The document row is retained for referential integrity — past case
@@ -904,8 +908,17 @@ class KnowledgeService:
                 raise ValueError("Document ID cannot be empty")
 
             try:
-                # Look up in SQLite (authoritative)
-                if self._db_session_factory:
+                # Delegate SQLite mutation to ConversionService (single owner).
+                # ConversionService commits status=DISCARDED before we touch
+                # ChromaDB so a ChromaDB failure leaves the DB in a consistent
+                # state (document is already hidden from queries).
+                if self._conversion_service is not None:
+                    found = await self._conversion_service.discard_by_knowledge_item_id(
+                        document_id
+                    )
+                elif self._db_session_factory:
+                    # Fallback when ConversionService has not been wired yet
+                    # (e.g. tests or early-startup edge cases).
                     from sqlalchemy.future import select
 
                     from faultmaven.infrastructure.persistence.models import (
@@ -920,18 +933,25 @@ class KnowledgeService:
                             )
                         )
                         dm = result.scalar_one_or_none()
-
-                        if not dm:
+                        if dm is None:
                             return {
                                 "success": False,
                                 "error": f"Document {document_id} not found",
                             }
-
-                        dm.status = "discarded"
+                        dm.status = DraftStatus.DISCARDED.value
                         dm.knowledge_item_id = None
                         await session.commit()
+                        found = True
+                else:
+                    found = False
 
-                # Remove chunks from ChromaDB (best-effort)
+                if not found:
+                    return {
+                        "success": False,
+                        "error": f"Document {document_id} not found",
+                    }
+
+                # Remove chunks from ChromaDB (best-effort, after DB commit).
                 if self._vector_store:
                     await self._remove_from_vector_store(document_id)
 

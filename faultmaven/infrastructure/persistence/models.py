@@ -1938,7 +1938,7 @@ class ConversionDraftModel(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('draft', 'verified', 'rejected', 'archived')",
+            "status IN ('draft', 'verified', 'discarded')",
             name="conversion_drafts_status_check",
         ),
         CheckConstraint(

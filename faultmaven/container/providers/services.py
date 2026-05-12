@@ -613,6 +613,8 @@ def create_jwt_token_generator(
         public_key=public_key,
         revocation_store=revocation_store,
         settings=settings.security,  # Pass security settings, not auth settings
+        issuer=settings.security.jwt_issuer,
+        audience=settings.security.jwt_audience,
     )
 
 

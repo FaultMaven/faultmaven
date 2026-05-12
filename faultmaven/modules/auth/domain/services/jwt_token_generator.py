@@ -11,6 +11,7 @@ Design:
 """
 
 import logging
+import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
@@ -100,12 +101,13 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
     """JWT token generator using RS256 (RSA + SHA256).
 
     Uses asymmetric signing for stateless token validation:
-    - Private key for signing (Dashboard only)
-    - Public key for validation (All services can validate)
+    - Private key for signing (server-side only)
+    - Public key for validation (any service can validate without the private key)
 
-    Token Structure:
-    - Access Token: {sub: user_id, username, exp, iat, jti, type: access}
-    - Refresh Token: {sub: user_id, exp, iat, jti, type: refresh}
+    Token Structure (identical to HS256):
+    - Access Token: {sub, username, email, roles, scopes, organization_id,
+                     exp, iat, iss, aud, jti, type: "access", auth_mode: "oauth"}
+    - Refresh Token: {sub, exp, iat, iss, aud, jti, type: "refresh"}
     """
 
     def __init__(
@@ -114,6 +116,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         public_key: str,
         revocation_store,  # ITokenRevocationStore
         settings,  # AuthSettings from config
+        issuer: str = "faultmaven",
+        audience: str = "faultmaven-api",
     ):
         """Initialize JWT token generator.
 
@@ -122,22 +126,33 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             public_key: RSA public key (PEM format) for validation
             revocation_store: Token revocation tracking storage
             settings: Authentication configuration
+            issuer: JWT issuer (iss claim)
+            audience: JWT audience (aud claim)
         """
         self.private_key = private_key
         self.public_key = public_key
         self.revocation_store = revocation_store
         self.settings = settings
+        self.issuer = issuer
+        self.audience = audience
 
     async def generate_access_token(self, user: User) -> str:
         """Generate RS256-signed access token.
 
-        Token Claims:
+        Token Claims (per iam-design.md):
         - sub: user_id (subject)
         - username: user's username
+        - email: user's email
+        - roles: user roles list
+        - scopes: OAuth scopes
+        - organization_id: organization the user belongs to
         - exp: expiration timestamp
         - iat: issued at timestamp
+        - iss: issuer ("faultmaven")
+        - aud: audience ("faultmaven-api")
         - jti: JWT ID (for revocation tracking)
         - type: "access" (token type discriminator)
+        - auth_mode: "oauth" (authentication mode)
 
         Args:
             user: User to generate token for
@@ -150,18 +165,29 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             minutes=self.settings.jwt_access_token_expire_minutes
         )
 
-        # Generate unique JWT ID for revocation tracking
-        import uuid
-
         jti = str(uuid.uuid4())
 
         payload = {
-            "sub": user.user_id,  # Subject (user ID)
+            "sub": user.user_id,
             "username": user.username,
-            "exp": expires_at,  # Expiration time
-            "iat": now,  # Issued at
-            "jti": jti,  # JWT ID (unique identifier)
-            "type": "access",  # Token type
+            "email": user.email if hasattr(user, "email") else "",
+            "organization_id": getattr(user, "organization_id", ""),
+            "roles": user.roles if hasattr(user, "roles") else ["user"],
+            "scopes": [
+                "openid",
+                "profile",
+                "email",
+                "cases:read",
+                "cases:write",
+                "knowledge:read",
+            ],
+            "exp": expires_at,
+            "iat": now,
+            "iss": self.issuer,
+            "aud": self.audience,
+            "jti": jti,
+            "type": "access",
+            "auth_mode": "oauth",
         }
 
         token = jwt.encode(
@@ -200,17 +226,16 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(days=self.settings.jwt_refresh_token_expire_days)
 
-        # Generate unique JWT ID for revocation tracking
-        import uuid
-
         jti = str(uuid.uuid4())
 
         payload = {
-            "sub": user.user_id,  # Subject (user ID)
-            "exp": expires_at,  # Expiration time
-            "iat": now,  # Issued at
-            "jti": jti,  # JWT ID (unique identifier)
-            "type": "refresh",  # Token type
+            "sub": user.user_id,
+            "exp": expires_at,
+            "iat": now,
+            "iss": self.issuer,
+            "aud": self.audience,
+            "jti": jti,
+            "type": "refresh",
         }
 
         token = jwt.encode(
@@ -250,6 +275,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 token,
                 self.public_key,
                 algorithms=["RS256"],
+                audience=self.audience,
+                issuer=self.issuer,
                 options={"verify_exp": True},
             )
 
@@ -322,6 +349,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 token,
                 self.public_key,
                 algorithms=["RS256"],
+                audience=self.audience,
+                issuer=self.issuer,
                 options={"verify_exp": True},
             )
 
@@ -551,9 +580,6 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             minutes=self.settings.jwt_access_token_expire_minutes
         )
 
-        # Generate unique JWT ID for revocation tracking
-        import uuid
-
         jti = str(uuid.uuid4())
 
         # Build payload matching iam-design.md spec
@@ -633,9 +659,6 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         """
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(days=self.settings.jwt_refresh_token_expire_days)
-
-        # Generate unique JWT ID for revocation tracking
-        import uuid
 
         jti = str(uuid.uuid4())
 

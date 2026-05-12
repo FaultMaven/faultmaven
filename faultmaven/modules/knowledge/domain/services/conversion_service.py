@@ -1570,6 +1570,13 @@ status: draft
                 all_drafts_result = await session.execute(select(ConversionDraftModel))
                 all_draft_models = all_drafts_result.scalars().all()
 
+                non_discarded_count = sum(
+                    1
+                    for d in all_draft_models
+                    if d.status != DraftStatus.DISCARDED.value
+                )
+                pending_discard_ids: list[str] = []
+
                 for draft_model in all_draft_models:
                     file_exists = Path(draft_model.file_path).exists()
 
@@ -1578,6 +1585,7 @@ status: draft
 
                     if not file_exists:
                         draft_model.status = DraftStatus.DISCARDED.value
+                        pending_discard_ids.append(draft_model.id)
                         continue
 
                     # If this draft has already been activated (has a
@@ -1590,6 +1598,7 @@ status: draft
                         draft_model, "knowledge_item_id", None
                     ):
                         draft_model.status = DraftStatus.DISCARDED.value
+                        pending_discard_ids.append(draft_model.id)
                         logger.info(
                             f"Removed duplicate draft {draft_model.id} "
                             f"(already has knowledge_item_id)"
@@ -1610,6 +1619,24 @@ status: draft
                             )
 
                     tracked_paths.add(draft_model.file_path)
+
+                # Guard: abort if the scan would discard every active draft.
+                # This signals a storage-layer failure (data directory missing/
+                # wiped), not legitimate cleanup. Raising here skips the commit
+                # so DB state is fully preserved for manual recovery.
+                if (
+                    non_discarded_count > 0
+                    and len(pending_discard_ids) >= non_discarded_count
+                ):
+                    preview = pending_discard_ids[:20]
+                    suffix = "..." if len(pending_discard_ids) > 20 else ""
+                    raise RuntimeError(
+                        f"Scan aborted: would discard all {non_discarded_count} active runbook "
+                        f"draft(s). Runbook files appear to be missing from the knowledge "
+                        f"data directory. DB state is unchanged. "
+                        f"Affected draft IDs: {preview}{suffix}. "
+                        "Restore data/knowledge/ from backup, then retry the scan."
+                    )
 
                 await session.commit()
 
@@ -1779,6 +1806,39 @@ status: draft
             "errors": errors,
             "drafts": discovered,
         }
+
+    async def discard_by_knowledge_item_id(self, knowledge_item_id: str) -> bool:
+        """Discard the draft that was activated into the given knowledge item.
+
+        Called by KnowledgeService when a verified runbook is deleted from
+        the KB. Clears knowledge_item_id and sets status to DISCARDED so
+        the draft no longer appears in the pending or verified list.
+
+        Args:
+            knowledge_item_id: The knowledge_item_id (or runbook_id) stored
+                               on the ConversionDraftModel row.
+
+        Returns:
+            True if a matching draft was found and discarded, False otherwise.
+        """
+        if not self._db_session_factory:
+            return False
+
+        async with self._db_session_factory() as session:
+            result = await session.execute(
+                select(ConversionDraftModel).where(
+                    (ConversionDraftModel.knowledge_item_id == knowledge_item_id)
+                    | (ConversionDraftModel.runbook_id == knowledge_item_id)
+                )
+            )
+            dm = result.scalar_one_or_none()
+            if not dm:
+                return False
+
+            dm.status = DraftStatus.DISCARDED.value
+            dm.knowledge_item_id = None
+            await session.commit()
+            return True
 
     async def delete_draft(
         self,

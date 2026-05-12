@@ -151,14 +151,19 @@ This pattern ensures:
   "username": "alice",
   "email": "alice@example.com",
   "roles": ["user", "admin"],
-  "scopes": ["openid", "profile", "cases:read", "cases:write"],
+  "scopes": ["openid", "profile", "email", "cases:read", "cases:write", "knowledge:read"],
+  "organization_id": "org_default",
   "iat": 1706140800,
   "exp": 1706144400,
   "iss": "faultmaven",
   "aud": "faultmaven-api",
+  "jti": "550e8400-e29b-41d4-a716-446655440000",
+  "type": "access",
   "auth_mode": "local"
 }
 ```
+
+Both `HS256JWTTokenGenerator` (local mode) and `RS256JWTTokenGenerator` (cloud/OAuth mode) produce identical claim sets. The only difference is the signing algorithm and the `auth_mode` value (`"local"` vs `"oauth"`).
 
 **Token Types:**
 
@@ -300,18 +305,18 @@ FaultMaven JWT tokens include an `organization_id` claim that determines the use
 Certain endpoints are only available in specific environments:
 
 ```python
-# Endpoint visibility by environment
+# Endpoint visibility by auth mode
 ENDPOINT_VISIBILITY = {
-    "/api/v1/auth/login": ["local"],           # Local mode only
-    "/api/v1/auth/register": ["local"],        # Local mode only
-    "/auth/oauth/authorize": ["oauth"],        # Cloud mode only
-    "/auth/oauth/token": ["oauth"],            # Cloud mode only
-    "/api/v1/auth/config": ["local", "oauth"], # Always available
-    "/api/v1/auth/me": ["local", "oauth"],     # Always available
-    "/api/v1/auth/logout": ["local", "oauth"], # Always available
+    "/api/v1/auth/login":    ["local"],           # Local mode only
+    "/api/v1/auth/register": ["local"],           # Local mode only
+    "/auth/oauth/authorize": ["oauth"],           # Cloud mode only
+    "/auth/oauth/token":     ["oauth"],           # Cloud mode only
+    "/api/v1/auth/config":   ["local", "oauth"],  # Always available
+    "/api/v1/auth/me":       ["local", "oauth"],  # Always available
+    "/api/v1/auth/logout":   ["local", "oauth"],  # Always available
 }
 
-# Debug endpoints - development only
+# Debug endpoints — development only (no auth, internal topology exposed)
 DEVELOPMENT_ONLY_ENDPOINTS = [
     "/debug/routes",
     "/debug/health",
@@ -319,16 +324,18 @@ DEVELOPMENT_ONLY_ENDPOINTS = [
     "/debug/llm-providers",
 ]
 
-# Production admin endpoints - always registered, auth-gated via require_admin / get_current_user
+# Admin-only endpoints — always registered, gated by require_admin
 ADMIN_ENDPOINTS = [
-    "/api/v1/admin/users",                    # GET: list users (admin only)
-    "/api/v1/admin/users/{user_id}",          # GET: user details (admin only)
-    "/api/v1/admin/users/{user_id}/activate",  # POST: activate user (admin only)
-    "/api/v1/admin/users/{user_id}/deactivate", # POST: deactivate user (admin only)
-    "/api/v1/admin/users/{user_id}/roles",     # POST: assign role (admin only)
-    "/api/v1/admin/llm/config",               # GET: LLM provider status (authenticated)
-    "/api/v1/admin/llm/config/test",          # POST: test provider connection (authenticated)
-    "/api/v1/admin/config/status",            # GET: env config status (authenticated)
+    # User management (auth module)
+    "/api/v1/auth/users",                        # GET: list all users
+    "/api/v1/auth/users/{username}",             # DELETE: remove user
+    "/api/v1/auth/users/{user_id}/revoke-tokens", # POST: revoke all tokens for user
+    # Platform admin (admin module)
+    "/api/v1/admin/users",                       # GET: user details
+    "/api/v1/admin/users/{user_id}/roles",       # POST: assign role
+    "/api/v1/admin/llm/config",                  # GET: LLM provider status
+    "/api/v1/admin/llm/config/test",             # POST: test provider connection
+    "/api/v1/admin/config/status",               # GET: env configuration status
 ]
 ```
 
@@ -347,7 +354,7 @@ def create_app(config: AppConfig) -> FastAPI:
     # Always register common endpoints
     app.include_router(common_auth_router)
 
-    # Admin endpoints - always registered, protected by require_admin / get_current_user
+    # User management and admin routes — always registered, gated by require_admin
     app.include_router(admin_users_router)   # User management (admin only)
     app.include_router(admin_config_router)  # LLM config + env status (authenticated)
 
@@ -775,7 +782,7 @@ OAuth endpoints are rate-limited to prevent abuse:
 | `/auth/oauth/authorize` | 10 requests | 1 minute | Per IP |
 | `/auth/oauth/token` | 5 requests | 1 minute | Per IP |
 | `/auth/oauth/revoke` | 20 requests | 1 minute | Per IP |
-| `/api/v1/auth/login` | 10 requests | 1 minute | Per IP |
+| `/api/v1/auth/login` | 10 requests | 1 minute | Per IP (via global rate limiter — no dedicated per-endpoint limit yet) |
 
 **Response on limit exceeded:** `429 Too Many Requests` with `Retry-After` header.
 
@@ -1652,11 +1659,6 @@ auth:
     enabled: true
     login_attempts_per_minute: 10
     token_requests_per_minute: 5
-
-  # Environment-based endpoint exposure
-  endpoints:
-    admin:
-      enabled_environments: [development]
 ```
 
 ## Architectural Compliance

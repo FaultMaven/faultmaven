@@ -101,6 +101,9 @@ def mock_user():
     user = Mock()
     user.user_id = "user_123"
     user.username = "testuser"
+    user.email = "testuser@example.com"
+    user.roles = ["user"]
+    user.organization_id = "org_123"
     return user
 
 
@@ -117,7 +120,9 @@ class TestAccessTokenGeneration:
         assert len(token) > 0
 
         # Decode and verify token payload
-        payload = jwt.decode(token, TEST_PUBLIC_KEY, algorithms=["RS256"])
+        payload = jwt.decode(
+            token, TEST_PUBLIC_KEY, algorithms=["RS256"], options={"verify_aud": False}
+        )
 
         assert payload["sub"] == "user_123"
         assert payload["username"] == "testuser"
@@ -138,8 +143,12 @@ class TestAccessTokenGeneration:
         token1 = await token_generator.generate_access_token(mock_user)
         token2 = await token_generator.generate_access_token(mock_user)
 
-        payload1 = jwt.decode(token1, TEST_PUBLIC_KEY, algorithms=["RS256"])
-        payload2 = jwt.decode(token2, TEST_PUBLIC_KEY, algorithms=["RS256"])
+        payload1 = jwt.decode(
+            token1, TEST_PUBLIC_KEY, algorithms=["RS256"], options={"verify_aud": False}
+        )
+        payload2 = jwt.decode(
+            token2, TEST_PUBLIC_KEY, algorithms=["RS256"], options={"verify_aud": False}
+        )
 
         # JTIs should be different
         assert payload1["jti"] != payload2["jti"]
@@ -152,7 +161,9 @@ class TestAccessTokenGeneration:
         token = await token_generator.generate_access_token(mock_user)
 
         # This should not raise exception if signature is valid
-        jwt.decode(token, TEST_PUBLIC_KEY, algorithms=["RS256"])
+        jwt.decode(
+            token, TEST_PUBLIC_KEY, algorithms=["RS256"], options={"verify_aud": False}
+        )
 
 
 class TestRefreshTokenGeneration:
@@ -168,7 +179,9 @@ class TestRefreshTokenGeneration:
         assert len(token) > 0
 
         # Decode and verify token payload
-        payload = jwt.decode(token, TEST_PUBLIC_KEY, algorithms=["RS256"])
+        payload = jwt.decode(
+            token, TEST_PUBLIC_KEY, algorithms=["RS256"], options={"verify_aud": False}
+        )
 
         assert payload["sub"] == "user_123"
         assert payload["type"] == "refresh"
@@ -189,8 +202,12 @@ class TestRefreshTokenGeneration:
         token1 = await token_generator.generate_refresh_token(mock_user)
         token2 = await token_generator.generate_refresh_token(mock_user)
 
-        payload1 = jwt.decode(token1, TEST_PUBLIC_KEY, algorithms=["RS256"])
-        payload2 = jwt.decode(token2, TEST_PUBLIC_KEY, algorithms=["RS256"])
+        payload1 = jwt.decode(
+            token1, TEST_PUBLIC_KEY, algorithms=["RS256"], options={"verify_aud": False}
+        )
+        payload2 = jwt.decode(
+            token2, TEST_PUBLIC_KEY, algorithms=["RS256"], options={"verify_aud": False}
+        )
 
         # JTIs should be different
         assert payload1["jti"] != payload2["jti"]
@@ -360,7 +377,9 @@ class TestTokenRevocation:
         ttl = call_args[1]
 
         # Verify JTI matches token
-        payload = jwt.decode(token, TEST_PUBLIC_KEY, algorithms=["RS256"])
+        payload = jwt.decode(
+            token, TEST_PUBLIC_KEY, algorithms=["RS256"], options={"verify_aud": False}
+        )
         assert jti == payload["jti"]
 
         # Verify TTL is approximately 1 hour
@@ -382,7 +401,9 @@ class TestTokenRevocation:
         ttl = call_args[1]
 
         # Verify JTI matches token
-        payload = jwt.decode(token, TEST_PUBLIC_KEY, algorithms=["RS256"])
+        payload = jwt.decode(
+            token, TEST_PUBLIC_KEY, algorithms=["RS256"], options={"verify_aud": False}
+        )
         assert jti == payload["jti"]
 
         # Verify TTL is approximately 7 days

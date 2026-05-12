@@ -298,7 +298,7 @@ class AuthService:
             "iat": int(now.timestamp()),
             "exp": int(expire.timestamp()),
             "jti": str(uuid.uuid4()),
-            "token_type": "refresh",
+            "type": "refresh",
         }
 
         return self._encode_token(claims)
@@ -393,7 +393,7 @@ class AuthService:
             )
 
             # Verify token type
-            actual_type = claims.get("token_type", "access")
+            actual_type = claims.get("type", "access")
             if actual_type != token_type:
                 raise AuthenticationError(
                     f"Invalid token type. Expected {token_type}, got {actual_type}",

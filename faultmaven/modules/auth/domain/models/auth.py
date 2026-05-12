@@ -352,7 +352,8 @@ class TokenClaims:
         email: User email
         roles: User roles in organization
         permissions: Granular permissions
-        token_type: "access" or "refresh"
+        token_type: Python field name — serialised as "type" in the JWT payload
+                    (to_dict translates the field name to the claim key).
     """
 
     sub: str  # user_id
@@ -368,7 +369,7 @@ class TokenClaims:
     token_type: str = "access"
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for JWT encoding."""
+        """Serialize to a JWT payload dict. Field ``token_type`` maps to claim ``"type"``."""
         return {
             "sub": self.sub,
             "organization_id": self.organization_id,
@@ -380,5 +381,5 @@ class TokenClaims:
             "iat": self.iat,
             "exp": self.exp,
             "jti": self.jti,
-            "token_type": self.token_type,
+            "type": self.token_type,
         }

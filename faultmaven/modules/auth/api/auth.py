@@ -36,6 +36,7 @@ from faultmaven.api.v1.auth_dependencies import (
     extract_bearer_token,
     get_token_manager,
     get_user_store,
+    require_admin,
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import get_session_service
@@ -92,29 +93,6 @@ async def require_local_mode() -> None:
                 "error": "endpoint_not_available",
                 "message": "This endpoint is only available in local auth mode",
                 "hint": "Use OAuth endpoints for cloud deployments",
-            },
-        )
-
-
-async def require_development_environment() -> None:
-    """Dependency that ensures we're in development environment.
-
-    Per iam-design.md, admin/debug endpoints should only be available
-    in development environments, not in production.
-
-    Raises:
-        HTTPException: 404 if not in development
-    """
-    settings = get_settings()
-    # Check if we're in development mode
-    # The environment is typically set via ENVIRONMENT env var
-    environment = getattr(settings, "environment", None)
-    if environment and str(environment).lower() not in ("development", "dev", "local"):
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "endpoint_not_available",
-                "message": "This endpoint is only available in development environment",
             },
         )
 
@@ -354,7 +332,7 @@ async def local_login(
         token_response = AuthTokenResponse(
             access_token=access_token,
             token_type="bearer",
-            expires_in=24 * 60 * 60,  # 24 hours in seconds
+            expires_in=settings.auth.jwt_access_token_expire_minutes * 60,
             session_id=session_id,
             user=user_profile,
         )
@@ -522,7 +500,7 @@ async def local_register(
         token_response = AuthTokenResponse(
             access_token=access_token,
             token_type="bearer",
-            expires_in=24 * 60 * 60,  # 24 hours in seconds
+            expires_in=settings.auth.jwt_access_token_expire_minutes * 60,
             session_id=session_id,
             user=user_profile,
         )
@@ -566,84 +544,56 @@ async def local_register(
         )
 
 
-@router.get(
-    "/dev-list-users",
-    status_code=200,
-    dependencies=[Depends(require_development_environment)],
-)
-@trace("auth_dev_list_users")
-async def dev_list_users(
+@router.get("/users", status_code=200)
+@trace("auth_list_users")
+async def list_users(
     request: Request,
+    _: DevUser = Depends(require_admin),
 ) -> dict:
-    """Development endpoint to list all users.
-
-    Returns a list of all users in the system for development/debugging.
-    This endpoint is only available in development environments.
-
-    **Security**: Gated by require_development_environment dependency.
-    """
+    """List all users. Admin only."""
     try:
         user_store = await get_user_store(request)
-
-        # Get all users (up to 1000)
         users = await user_store.list_users(limit=1000)
         total_count = await user_store.count_users()
 
-        # Convert to simple dict format
-        users_list = []
-        for user in users:
-            users_list.append(
-                {
-                    "user_id": user.user_id,
-                    "username": user.username,
-                    "email": user.email,
-                    "display_name": user.display_name,
-                    "roles": user.roles if user.roles else [],
-                    "is_active": user.is_active,
-                    "created_at": (
-                        user.created_at.isoformat()
-                        if hasattr(user.created_at, "isoformat")
-                        else str(user.created_at)
-                    ),
-                }
-            )
+        users_list = [
+            {
+                "user_id": user.user_id,
+                "username": user.username,
+                "email": user.email,
+                "display_name": user.display_name,
+                "roles": user.roles if user.roles else [],
+                "is_active": user.is_active,
+                "created_at": (
+                    user.created_at.isoformat()
+                    if hasattr(user.created_at, "isoformat")
+                    else str(user.created_at)
+                ),
+            }
+            for user in users
+        ]
 
-        return {
-            "users": users_list,
-            "total": total_count,
-        }
+        return {"users": users_list, "total": total_count}
 
     except Exception as e:
-        logger.error(
-            f"Dev list users failed: {type(e).__name__}: {str(e)}", exc_info=True
-        )
+        logger.error(f"List users failed: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": str(e)},
         )
 
 
-@router.delete(
-    "/dev-delete-user/{username}",
-    status_code=200,
-    dependencies=[Depends(require_development_environment)],
-)
-@trace("auth_dev_delete_user")
-async def dev_delete_user(
+@router.delete("/users/{username}", status_code=200)
+@trace("auth_delete_user")
+async def delete_user(
     username: str,
     request: Request,
+    _: DevUser = Depends(require_admin),
 ) -> dict:
-    """Development endpoint to delete a user by username.
-
-    Deletes (soft delete) a user by username for development/debugging.
-    This endpoint is only available in development environments.
-
-    **Security**: Gated by require_development_environment dependency.
-    """
+    """Delete a user by username. Admin only."""
     try:
         user_store = await get_user_store(request)
 
-        # Find user by username
         user = await user_store.get_user_by_username(username)
         if not user:
             raise HTTPException(
@@ -654,30 +604,27 @@ async def dev_delete_user(
                 },
             )
 
-        # Delete the user
         success = await user_store.delete_user(user.user_id)
 
         if success:
-            logger.info(f"Dev deleted user: {username} ({user.user_id})")
+            logger.info(f"Deleted user: {username} ({user.user_id})")
             return {
                 "message": f"User '{username}' deleted successfully",
                 "user_id": user.user_id,
             }
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error": "delete_failed",
-                    "message": f"Failed to delete user '{username}'",
-                },
-            )
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "delete_failed",
+                "message": f"Failed to delete user '{username}'",
+            },
+        )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Dev delete user failed: {type(e).__name__}: {str(e)}", exc_info=True
-        )
+        logger.error(f"Delete user failed: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": str(e)},
@@ -852,44 +799,26 @@ async def auth_health_check():
         }
 
 
-# Debug endpoint for development only
-@router.post(
-    "/dev/revoke-all-tokens",
-    response_model=LogoutResponse,
-    dependencies=[Depends(require_development_environment)],
-)
-@trace("auth_dev_revoke_all")
-async def dev_revoke_all_user_tokens(
+@router.post("/users/{user_id}/revoke-tokens", response_model=LogoutResponse)
+@trace("auth_revoke_user_tokens")
+async def revoke_user_tokens(
+    user_id: str,
     request: Request,
-    current_user: DevUser = Depends(require_authentication),
+    _: DevUser = Depends(require_admin),
 ) -> LogoutResponse:
-    """Development endpoint: Revoke all tokens for current user.
-
-    This endpoint is only available in development environments.
-
-    **Security**: Gated by require_development_environment dependency.
-    """
-    correlation_id = str(uuid.uuid4())
-
+    """Revoke all tokens for a user. Admin only."""
     try:
         token_manager = await get_token_manager(request)
+        revoked_count = await token_manager.revoke_user_tokens(user_id)
 
-        # Revoke all user tokens
-        revoked_count = await token_manager.revoke_user_tokens(current_user.user_id)
-
-        logger.info(
-            f"Dev: Revoked all tokens for user {current_user.user_id}, count: {revoked_count} (correlation: {correlation_id})"
-        )
-
+        logger.info(f"Revoked all tokens for user {user_id}, count: {revoked_count}")
         return LogoutResponse(
             message=f"Revoked all {revoked_count} tokens for user",
             revoked_tokens=revoked_count,
         )
 
     except Exception as e:
-        logger.error(
-            f"Dev token revocation failed: {e} (correlation: {correlation_id})"
-        )
+        logger.error(f"Token revocation failed: {e}")
         raise HTTPException(
             status_code=500, detail=f"Token revocation failed: {str(e)}"
         )
