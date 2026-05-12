@@ -792,7 +792,9 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_hypothesis_evidence_organization_id'), table_name='hypothesis_evidence')
     op.drop_index('ix_hypothesis_evidence_evidence', table_name='hypothesis_evidence')
     op.drop_table('hypothesis_evidence')
-    op.drop_index('ix_conversion_drafts_tags', table_name='conversion_drafts', postgresql_using='gin')
+    # ix_conversion_drafts_tags may have already been consumed by migration 011
+    # (SQLite table-recreate path) — guard against double-drop.
+    op.execute(sa.text("DROP INDEX IF EXISTS ix_conversion_drafts_tags"))
     op.drop_index(op.f('ix_conversion_drafts_organization_id'), table_name='conversion_drafts')
     op.drop_index(op.f('ix_conversion_drafts_conversion_id'), table_name='conversion_drafts')
     op.drop_table('conversion_drafts')
