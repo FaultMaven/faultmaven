@@ -528,20 +528,20 @@ Each section of this playbook maps to a concrete injection point in `templates.p
 
 There is no single complete prompt. Each turn assembles a prompt from a fixed outer shell plus injected components. The table below shows the full assembly for every stage and mode.
 
-| Stage / Mode | Outer shell | Behavioral blocks embedded | Stage instruction block | Evidence grounding |
-| --- | --- | --- | --- | --- |
-| INQUIRY | `INQUIRY_TEMPLATE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | (built into shell) | ✗ |
-| DIAGNOSIS | `INVESTIGATION_BASE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | `focus_emphasis()` + `DIAGNOSIS_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` |
-| DIAGNOSIS (mitigation-first path) | `INVESTIGATION_BASE` | same | `MITIGATION_FIRST prefix` + `focus_emphasis()` + `DIAGNOSIS_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` |
-| MITIGATION | `INVESTIGATION_BASE` | same | `MITIGATION_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` |
-| TREATMENT | `INVESTIGATION_BASE` | same | `TREATMENT_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` |
-| Knowledge query (mode bypass) | `INVESTIGATION_BASE` | same | `KNOWLEDGE_QUERY_INSTRUCTIONS` | ✗ (suppressed) |
-| TERMINAL | `TERMINAL_TEMPLATE` | `_ADVISOR_ROLE` only | (built into shell) | ✗ |
-| Fallback INQUIRY | `FALLBACK_INQUIRY_TEMPLATE` | none | none | ✗ |
-| Fallback INVESTIGATING | `FALLBACK_INVESTIGATION_TEMPLATE` | none | none | ✗ |
-| Fallback TERMINAL | `FALLBACK_TERMINAL_TEMPLATE` | none | none | ✗ |
+| Stage / Mode | Outer shell | Behavioral blocks embedded | Stage instruction block | Evidence grounding | Diagnostic reasoning |
+| --- | --- | --- | --- | --- | --- |
+| INQUIRY | `INQUIRY_TEMPLATE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | (built into shell) | ✗ | ✗ |
+| DIAGNOSIS | `INVESTIGATION_BASE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | `focus_emphasis()` + `DIAGNOSIS_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| DIAGNOSIS (mitigation-first path) | `INVESTIGATION_BASE` | same | `MITIGATION_FIRST prefix` + `focus_emphasis()` + `DIAGNOSIS_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| MITIGATION | `INVESTIGATION_BASE` | same | `MITIGATION_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| TREATMENT | `INVESTIGATION_BASE` | same | `TREATMENT_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| Knowledge query (mode bypass) | `INVESTIGATION_BASE` | same | `KNOWLEDGE_QUERY_INSTRUCTIONS` | ✗ (suppressed) | ✗ (suppressed) |
+| TERMINAL | `TERMINAL_TEMPLATE` | `_ADVISOR_ROLE` only | (built into shell) | ✗ | ✗ |
+| Fallback INQUIRY | `FALLBACK_INQUIRY_TEMPLATE` | none | none | ✗ | ✗ |
+| Fallback INVESTIGATING | `FALLBACK_INVESTIGATION_TEMPLATE` | none | none | ✗ | ✗ |
+| Fallback TERMINAL | `FALLBACK_TERMINAL_TEMPLATE` | none | none | ✗ | ✗ |
 
-`INVESTIGATION_BASE` is the only shell that accepts injected components at runtime (`{adaptive_instructions}` and `{evidence_grounding}`). All other shells are self-contained. Fallback templates are minimal and used only when the primary assembly fails (token limit, provider error).
+`INVESTIGATION_BASE` is the only shell that accepts injected components at runtime — three placeholders: `{adaptive_instructions}`, `{evidence_grounding}`, and `{diagnostic_reasoning}`. All other shells are self-contained. Fallback templates are minimal and used only when the primary assembly fails (token limit, provider error).
 
 `SCHEMA_INSTRUCTIONS` is appended to the final prompt by `milestone_engine.py` at call time — not part of any template. It is conditional: only injected when the LLM provider requires the JSON schema embedded in the prompt (providers using `json_object` or `prompt_only` structured output mode). Providers with native structured output support skip it.
 
@@ -569,4 +569,4 @@ Stage instructions are injected as `{adaptive_instructions}` in `INVESTIGATION_B
 | Zone 3 | `root_cause_identified = True`, `solution_proposed = False` | "Solution needed — propose a concrete, executable fix" |
 | Pending | `solution_proposed = True` | "Solution proposal issued — awaiting execution. Do not request further evidence or introduce alternative proposals." |
 
-**`knowledge_query` mode bypass:** When `processing_mode == "knowledge_query"`, stage dispatch is skipped entirely. `KNOWLEDGE_QUERY_INSTRUCTIONS` replaces `adaptive_instructions` and `_EVIDENCE_GROUNDING_BLOCK` is set to `""`. This handles pure KB questions without investigation context.
+**`knowledge_query` mode bypass:** When `processing_mode == "knowledge_query"`, stage dispatch is skipped entirely. `KNOWLEDGE_QUERY_INSTRUCTIONS` replaces `adaptive_instructions`, and both `_EVIDENCE_GROUNDING_BLOCK` and `_DIAGNOSTIC_REASONING_BLOCK` are passed as `""`. The two waived rule blocks are absent from the rendered prompt entirely (rather than sandwiching an exemption clause between active rules). This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver: "The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply."

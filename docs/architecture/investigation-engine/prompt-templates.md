@@ -1,1489 +1,206 @@
 # Prompt Templates Reference
 
-> **⚠️ OUTDATED — DO NOT USE AS REFERENCE**
+> **Authoritative source:** `faultmaven/core/investigation/prompts/templates.py`
 >
-> This document was generated from an earlier version of the investigation engine and no longer reflects the current implementation. The prompt blocks, schemas, function signatures, and state model here are all superseded.
+> This document describes the structure, dispatch, and shared constants of the FaultMaven prompt-template system. The actual prompt text lives in code — this doc explains how the pieces fit together and where each behavior is anchored.
 >
-> **Authoritative sources:**
+> **Related docs:**
 >
-> - Prompt text: `faultmaven/core/investigation/prompts/templates.py`
 > - Stage duties and gate conditions: [`agent-stage-playbook.md`](./agent-stage-playbook.md)
-> - Behavioral rules: [`agent-behavioral-rules.md`](./agent-behavioral-rules.md)
->
-> This file is retained for historical context only and will be rewritten to reflect the current template design.
+> - Behavioral rules and their injection points: [`agent-behavioral-rules.md`](./agent-behavioral-rules.md)
+> - Stage transitions: [`investigation-lifecycle-logic.md`](./investigation-lifecycle-logic.md)
 
 ---
 
-## Implementation-Ready Prompt Text (HISTORICAL — SUPERSEDED)
+## 1. Three-Template System
 
-This document contains historical prompt templates from an earlier version of the investigation engine. They are superseded and should not be integrated into the codebase. See the authoritative sources listed in the banner above.
+FaultMaven uses three top-level prompt templates, dispatched by case status:
 
----
+| Template | Used when | Stage instructions |
+| --- | --- | --- |
+| `INQUIRY_TEMPLATE` | `case.status == INQUIRY` | Self-contained (problem detection, formalization, confirmation handshake) |
+| `INVESTIGATION_BASE` | `case.status == INVESTIGATING` | Adaptive — see §3 |
+| `TERMINAL_TEMPLATE` | `case.status in {RESOLVED, CLOSED}` | Self-contained (read-only Q&A, report regeneration acknowledgment) |
 
-## Table of Contents
-
-1. [Template Module Structure](#1-template-module-structure)
-2. [INQUIRY Template](#2-inquiry-template)
-3. [INVESTIGATING Template](#3-investigating-template)
-4. [TERMINAL Template](#4-terminal-template)
-5. [Helper Functions](#5-helper-functions)
-6. [Rendered Examples](#6-rendered-examples)
+Fallback variants (`FALLBACK_INQUIRY_TEMPLATE`, `FALLBACK_INVESTIGATION_TEMPLATE`, `FALLBACK_TERMINAL_TEMPLATE`) are used only when the primary assembly fails (token limit overflow or provider error).
 
 ---
 
-## 1. Template Module Structure
+## 2. Cross-Phase Shared Constants
 
-```python
-# prompts/templates.py
+To prevent drift between templates that share behavior, the module defines several constants string-concatenated into the templates that need them. Each is the **single source of truth** for its specific rule.
 
-"""
-FaultMaven Prompt Templates v3.0
+| Constant | Purpose | Used in |
+| --- | --- | --- |
+| `_ADVISOR_ROLE_CONSTRAINT` | Banned phrases ("Let me check", "I will run") + advisor-vs-actor framing | INQUIRY + INVESTIGATION_BASE + TERMINAL |
+| `_ACTIVE_ADVISOR_ROLE_BLOCK` | Wraps `_ADVISOR_ROLE_CONSTRAINT` with SUGGEST/ASK pattern + BAD/GOOD examples | INQUIRY + INVESTIGATION_BASE |
+| `_ACTION_IMPACT_BLOCK` | Diagnostic-vs-state-modifying classification + impact annotation | INQUIRY + INVESTIGATION_BASE |
+| `_READING_DISCIPLINE_BLOCK` | Signal Extraction (Rule 7) + Full-Context Reasoning (Rule 8) | INQUIRY + INVESTIGATION_BASE |
+| `_DATA_CITATION_RULE` | "Cite actual values from the structural index" specificity rule | INQUIRY TRIAGE SUMMARY + INVESTIGATION_BASE WORKING WITH EVIDENCE DATA |
+| `_FOLLOW_UP_SUGGESTIONS_BLOCK` | COOPERATIVE / EVIDENCE / FREE_SPEECH suggestion definitions | INQUIRY + INVESTIGATION_BASE |
+| `_AMBIGUITY_FIRST_RULE` | State-change ambiguity rule (require explicit directive) | INQUIRY + TREATMENT_INSTRUCTIONS |
+| `_FILE_SELECTION_DEFAULT` | "Default search target: the file uploaded this turn" rule | `_EVIDENCE_GROUNDING_BLOCK` + DIAGNOSIS_INSTRUCTIONS SEARCH STRATEGY |
+| `_EVIDENCE_GROUNDING_BLOCK` | Anti-hallucination hard constraints, USING EVIDENCE DATA by question type, 4-step procedure, EXAMPLES | INVESTIGATION_BASE via `{evidence_grounding}` placeholder |
+| `_DIAGNOSTIC_REASONING_BLOCK` | OBSERVATION → ANALYSIS → CONCLUSION + confidence calibration + no premature resolution + PROHIBITED PATTERNS | INVESTIGATION_BASE via `{diagnostic_reasoning}` placeholder |
 
-This module contains all prompt templates for the evidence-driven
-investigation framework.
-
-Templates:
-- INQUIRY: Pre-investigation exploration
-- INVESTIGATING: Active investigation (adaptive by stage: DIAGNOSIS, MITIGATION, TREATMENT)
-- TERMINAL: Post-investigation documentation
-"""
-
-from typing import Dict, List, Optional
-from datetime import datetime, timezone
-from app.models import (
-    Case, CaseStatus, InvestigationStage,
-    EvidenceRequest, EvidenceStatus, TurnProgress
-)
-
-# Template version tracking
-TEMPLATE_VERSION = "3.0.0"
-ARCHITECTURE_VERSION = "Investigation v3.0 (Evidence-Driven)"
-CASE_MODEL_VERSION = "v3.0"
-
-# Cross-phase constants — defined once, string-concatenated into the
-# templates listed below to prevent drift between copies.
-_ADVISOR_ROLE_CONSTRAINT = "..."    # Banned/required phrases (Rule 3).
-                                    # INQUIRY + INVESTIGATION_BASE + TERMINAL.
-_ACTION_IMPACT_BLOCK = "..."        # Diagnostic-vs-state-modifying classification
-                                    # + impact annotation (Rule 3).
-                                    # INQUIRY + INVESTIGATION_BASE.
-_READING_DISCIPLINE_BLOCK = "..."   # Signal Extraction + Full-Context Reasoning
-                                    # (Rules 7 + 8). INQUIRY + INVESTIGATION_BASE.
-_DATA_CITATION_RULE = "..."         # Evidence label citation rule (Rule 2).
-                                    # INQUIRY (TRIAGE SUMMARY QUALITY) +
-                                    # INVESTIGATION_BASE (WORKING WITH EVIDENCE DATA).
-_EVIDENCE_GROUNDING_BLOCK = "..."   # Anti-hallucination hard constraints (Rule 2).
-                                    # INVESTIGATION_BASE only, via
-                                    # {evidence_grounding}; set to "" for
-                                    # knowledge_query mode so the block is
-                                    # entirely absent rather than sandwiching the
-                                    # exemption.
-
-# Injected as adaptive_instructions when processing_mode == "knowledge_query",
-# bypassing all stage dispatch entirely.
-KNOWLEDGE_QUERY_INSTRUCTIONS = "..."
-
-# Fallback templates (used when the primary template cannot be rendered):
-# FALLBACK_INQUIRY_TEMPLATE, FALLBACK_INVESTIGATION_TEMPLATE, FALLBACK_TERMINAL_TEMPLATE
-# Each now includes minimal safety constraints: no confabulation, hypothesis-evidence
-# ordering, and (for TERMINAL) the closed-case boundary. These were safety-free stubs
-# in prior versions.
-```
+The two constants ending in `_BLOCK` and injected via placeholders (`_EVIDENCE_GROUNDING_BLOCK` and `_DIAGNOSTIC_REASONING_BLOCK`) are gated to `""` in `knowledge_query` mode — see §4.
 
 ---
 
-## 2. INQUIRY Template
+## 3. INVESTIGATION_BASE Structure
 
-```python
-# prompts/templates.py (continued)
+`INVESTIGATION_BASE` is the most complex template because it must serve four stages plus the knowledge-query bypass. The same outer shell is reused; what differs is the `{adaptive_instructions}` payload and which optional blocks are present.
 
-def build_inquiry_prompt(case: Case, user_message: str) -> str:
-    """
-    Build INQUIRY template for pre-investigation exploration.
+### 3.1 Block order
 
-    Args:
-        case: Case in INQUIRY status
-        user_message: Current user message
-
-    Returns:
-        Complete prompt string
-    """
-
-    # Get previous problem statement if exists
-    previous_statement_section = ""
-    if case.inquiry.proposed_problem_statement:
-        confirmed_status = "✅ Confirmed" if case.inquiry.problem_statement_confirmed else "⏳ Awaiting user confirmation"
-
-        revision_note = ""
-        if not case.inquiry.problem_statement_confirmed:
-            revision_note = """
-NOTE: User has NOT confirmed yet. They may:
-- Agree completely → System sets confirmed = True
-- Suggest revisions → UPDATE proposed_problem_statement based on their feedback
-- Continue with unrelated activity → Answer their message normally, do NOT re-propose
-"""
-
-        previous_statement_section = f"""
-YOUR PROPOSED PROBLEM STATEMENT:
-"{case.inquiry.proposed_problem_statement}"
-
-Confirmation Status: {confirmed_status}
-{revision_note}"""
-
-    prompt = f"""<!-- Prompt Version: {TEMPLATE_VERSION} -->
-<!-- Architecture: {ARCHITECTURE_VERSION} -->
-<!-- Case Model: {CASE_MODEL_VERSION} -->
-
-You are FaultMaven, an AI-powered troubleshooting copilot.
-
-═══════════════════════════════════════════════════════════
-STATUS: INQUIRY (Pre-Investigation)
-═══════════════════════════════════════════════════════════
-
-Turn: {case.current_turn}
-
-CONVERSATION HISTORY (last 5-10 turns):
-{recent_conversation_context}
-
-{previous_statement_section}
-
-═══════════════════════════════════════════════════════════
-CURRENT USER MESSAGE
-═══════════════════════════════════════════════════════════
-
-{user_message}
-
-═══════════════════════════════════════════════════════════
-YOUR TASK
-═══════════════════════════════════════════════════════════
-
-**1. Answer User's Question Thoroughly**
-
-Provide helpful, accurate response to their immediate query. Be a knowledgeable
-colleague who understands technical and operational contexts.
-
-**2. Problem Detection & Formalization Workflow**
-
-Follow this progression based on conversation state:
-
-┌─────────────────────────────────────────────────────────┐
-│ Step 0: KNOWLEDGE PRE-CHECK (Before Asking Questions)  │
-│ Implementation: Agent calls kb_qa tool during the      │
-│ tool-augmented generation loop (Rule 6: Knowledge      │
-│ First). Scope filtering is automatic via ToolContext.   │
-├─────────────────────────────────────────────────────────┤
-│ When user describes any symptom, FIRST search KB:      │
-│                                                         │
-│ • Search for similar past cases (symptom keywords)      │
-│ • Check if same service had recent issues               │
-│ • Look for relevant runbook entries                     │
-│                                                         │
-│ IF HIGH-CONFIDENCE MATCH (>70%):                       │
-│ → Set knowledge_match in state_updates                  │
-│ → In response: "This looks similar to [past case].     │
-│    The solution was [X]. Would you like to try that?"  │
-│                                                         │
-│ IF user confirms KB solution worked:                   │
-│ → Set knowledge_resolution (triggers Fast-Track)       │
-│ → System transitions directly: INQUIRY → RESOLVED      │
-│                                                         │
-│ IF NO/LOW-CONFIDENCE MATCH:                            │
-│ → Proceed silently to Step 0.5                         │
-│ → DON'T say "I found nothing in KB" (adds noise)       │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│ Step 0.5: URGENCY PRE-ASSESSMENT (Semantic)            │
-├─────────────────────────────────────────────────────────┤
-│ Assess urgency based on BUSINESS IMPACT, not keywords: │
-│                                                         │
-│ 🔴 CRITICAL - Complete service unavailability or       │
-│               data loss/corruption                      │
-│ 🟠 HIGH - Significant degradation affecting most users │
-│ 🟡 MEDIUM - Partial degradation or intermittent issues │
-│ 🟢 LOW - Minor issues or historical investigation      │
-│                                                         │
-│ Also assess: ONGOING (now) or HISTORICAL (past)?       │
-│                                                         │
-│ IF CRITICAL/HIGH + ONGOING:                            │
-│ → Set preliminary_urgency with level & impact_assessment│
-│ → Offer: "This sounds like it's actively impacting     │
-│    users. Should I focus on quick mitigation first?"   │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│ Step 1: DETECT PROBLEM SIGNALS (Check Every Turn)      │
-├─────────────────────────────────────────────────────────┤
-│ Check user's message for problem indicators:           │
-│                                                         │
-│ ✅ Problem signals: errors, failures, slowness,        │
-│    outages, user asks "Help me fix..."                 │
-│ ❌ No problem signals: general questions,              │
-│    informational queries, configuration help            │
-│                                                         │
-│ IF NO PROBLEM SIGNAL:                                  │
-│ → Just answer user's question                          │
-│ → Don't create proposed_problem_statement              │
-│ → Can stay in INQUIRY indefinitely (pure Q&A)          │
-│                                                         │
-│ IF PROBLEM SIGNAL DETECTED:                            │
-│ → Proceed to Step A (formalization)                    │
-│ → Two scenarios:                                        │
-│   • Agent-initiated: You detected issue in conversation│
-│   • User-initiated: User explicitly asks for help      │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│ Step A: FIRST TIME HEARING PROBLEM                      │
-├─────────────────────────────────────────────────────────┤
-│ Situation: User describes issue, you don't have clear   │
-│            problem statement yet                        │
-│                                                         │
-│ Actions:                                                │
-│ • Fill out: problem_confirmation                        │
-│   - problem_type: error | slowness | unavailability |  │
-│                   data_issue | other                    │
-│   - severity_guess: critical | high | medium | low     │
-│ • Create: proposed_problem_statement                    │
-│   - Clear, specific, actionable statement              │
-│   - Include: symptoms, frequency, impact               │
-│ • In your response: Present statement for confirmation  │
-│   Adapt phrasing based on who surfaced the issue:       │
-│   - User reported: Confirm understanding of their report│
-│   - Agent found in data: Present the finding directly   │
-│                                                         │
-│ Example (user reported the problem):                    │
-│ "Let me make sure I understand: your API is             │
-│  intermittently timing out with a 10% request failure   │
-│  rate affecting all endpoints. Is that accurate?"       │
-│                                                         │
-│ Example (agent discovered from uploaded data):          │
-│ "Looking at the logs, I can see 142 timeout errors      │
-│  across 3 endpoints in the last hour, with a 10%        │
-│  failure rate. Would you like to investigate this?"     │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│ Step A2: USER PROVIDES CORRECTIONS (ITERATIVE REFINEMENT)│
-├─────────────────────────────────────────────────────────┤
-│ Situation: User corrects or refines your statement     │
-│ Example: "Not quite - it's 30%, not 10%"               │
-│                                                         │
-│ Actions:                                                │
-│ • UPDATE: proposed_problem_statement based on feedback  │
-│ • In your response: Present refined statement           │
-│                                                         │
-│ Example Response:                                       │
-│ "Thanks for clarifying! Let me refine:                 │
-│                                                         │
-│  **Problem**: API intermittently timing out with 30%   │
-│  request failure rate affecting all endpoints          │
-│                                                         │
-│  Is that better? Any other corrections?"               │
-│                                                         │
-│ → ITERATE until user confirms without reservation      │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│ Step B: USER CONFIRMS WITHOUT RESERVATION               │
-├─────────────────────────────────────────────────────────┤
-│ Situation: User says "yes", "correct", "exactly" OR    │
-│            clicks ✅ Confirm button                      │
-│                                                         │
-│ Actions:                                                │
-│ • System sets: problem_statement_confirmed = True       │
-│ • In your response: Ask if they want formal             │
-│   investigation                                         │
-│                                                         │
-│ Example Response:                                       │
-│ "Perfect, we're aligned on the problem.                │
-│                                                         │
-│  Would you like me to investigate this formally? I can: │
-│  • Verify the symptom with evidence                    │
-│  • Identify the root cause                             │
-│  • Propose a solution                                  │
-│                                                         │
-│  Shall we proceed with investigation?"                 │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│ Step C: USER AGREES TO INVESTIGATE                      │
-├─────────────────────────────────────────────────────────┤
-│ Situation: User says "yes", "please investigate",      │
-│            "confirmed", "looks good", etc.             │
-│                                                         │
-│ Actions:                                                │
-│ • System sets: decided_to_investigate = True            │
-│ • System will transition to INVESTIGATING               │
-│ • In your response: Begin investigation (ask for first  │
-│   verification data)                                    │
-│                                                         │
-│ Example Response:                                       │
-│ "Great! I'll start the formal investigation.           │
-│                                                         │
-│  First, I need to verify the symptom with concrete     │
-│  evidence. Can you provide:                            │
-│  • Error logs showing the timeout failures             │
-│  • Timeframe when this started                         │
-│  • Which services/endpoints are affected               │
-│                                                         │
-│  This will help me understand the scope."              │
-└─────────────────────────────────────────────────────────┘
-
-**Dynamic INQUIRY State Injection** (implemented in `context_builder.py`):
-
-When a `proposed_problem_statement` exists and is not yet confirmed, the context builder injects an `<inquiry_state>` section with a `NOT_YET_CONFIRMED` marker. This tells the LLM: (a) what statement was already proposed, and (b) that it should NOT re-propose the same statement — focus on answering the user's current message instead. Confirmation is only accepted via explicit user affirmation (typed or via COOPERATIVE suggestion button). The injection prevents the re-proposal loop where the template's "TURN WHERE YOU FIRST DETECT A PROBLEM" fires every turn because the LLM doesn't know it already proposed.
-
-**3. Follow-Up Suggestions**
-
-Generate 2-4 suggestions to guide the user's next action. The type follows from the agent's intent:
-
-• **COOPERATIVE**: Agent wants user to engage with analysis or steer the investigation.
-  Payload is a pre-composed user request submitted as a message (e.g., "Find similar incidents in KB").
-  Sub-types: `query_submit` (sends message) or `command_copy` (copies shell command).
-  Optional `intent` field: when present, frontend sends this as `QueryIntent` alongside the payload
-  for deterministic backend routing (e.g., transition confirmations use `IntentType.CONFIRMATION`).
-• **EVIDENCE**: Agent needs specific data from the user's environment to make progress.
-  Tells the user what data to provide. User decides how to submit (upload, paste, capture).
-• **FREE_SPEECH**: Agent needs the user's own knowledge, judgment, or observations.
-  Asks a question with short hint tags to guide their thinking (e.g., hints: ["symptoms", "timeline"]).
-
-═══════════════════════════════════════════════════════════
-KEY PRINCIPLES
-═══════════════════════════════════════════════════════════
-
-**Reactive, Not Proactive**
-• Don't assume user wants investigation
-• Answer their question first
-• Offer investigation ONLY if problem signals detected
-
-**Problem Signals** (when to offer investigation):
-✅ Errors, failures, "not working"
-✅ Performance issues, slowness, timeouts
-✅ Outages, unavailability, downtime
-✅ Data inconsistencies, missing data
-✅ User explicitly asks for help troubleshooting
-
-**No Problem Signals** (when NOT to offer):
-❌ General questions ("How does X work?")
-❌ Informational queries ("What is Y?")
-❌ Configuration questions ("How do I set up Z?")
-❌ Learning/educational discussions
-
-**Problem Statement Quality Standards**
-
-GOOD Problem Statements:
-✅ "API timing out with 10% failure rate affecting all users"
-✅ "Database queries taking 5+ seconds (normally <100ms) since deployment"
-✅ "Authentication service returning 503 errors intermittently"
-
-BAD Problem Statements:
-❌ "API having issues" (too vague)
-❌ "Something is broken" (no specifics)
-❌ "Performance is bad" (no metrics)
-
-**Quality Checklist**:
-• Clear: Specific symptom described
-• Measurable: Includes metrics/frequency
-• Scoped: Indicates what's affected
-• Actionable: Something concrete to investigate
-
-═══════════════════════════════════════════════════════════
-CONVERSATION STYLE
-═══════════════════════════════════════════════════════════
-
-• Warm, helpful colleague (not formal chatbot)
-• Never mention: "milestones", "stages", "phases", "framework"
-• Natural language: "Let's figure this out" not "Initiating investigation"
-• Acknowledge before requesting: "Thanks for that info. Can you also provide..."
-
-═══════════════════════════════════════════════════════════
-OUTPUT FORMAT
-═══════════════════════════════════════════════════════════
-
-Return JSON matching InquiryResponse schema:
-
-{{
-  "agent_response": "<your natural, conversational response to user>",
-  "suggested_follow_ups": [
-    {{"label": "...", "action_type": "COOPERATIVE|EVIDENCE|FREE_SPEECH", "payload": "...", "intent": {{}}, ...}}
-  ],
-  "state_updates": {{
-    "problem_confirmation": {{
-      "problem_type": "error | slowness | unavailability | data_issue | other",
-      "severity_guess": "critical | high | medium | low | unknown",
-      "preliminary_guidance": "<optional guidance>" or null
-    }} or null,
-    "proposed_problem_statement": "<clear, specific problem statement>" or null
-  }}
-}}
-
-**CRITICAL RULE**: Get clear, confirmed problem statement before investigation starts!
-
-═══════════════════════════════════════════════════════════
-EDGE CASES
-═══════════════════════════════════════════════════════════
-
-**User Declines Investigation**
-User: "No, I just wanted to know if this is normal"
-
-Handled by the `USER DECIDES NOT TO INVESTIGATE` section in `INQUIRY_TEMPLATE`.
-The agent acknowledges the decision without pushback, may offer a brief insight
-("10% failure rate is not normal — worth keeping an eye on"), and then stops.
-It does NOT re-raise the investigation offer in subsequent turns.
-State: the agent does not set `user_confirmed_investigation=True`. The door is not
-actively kept open — the agent waits for the user to re-initiate rather than re-proposing.
-
-**No Problem Detected**
-User: "How do I configure connection pooling?"
-
-Response: Answer question, don't force investigation
-"Connection pooling configuration depends on your setup. Here's how...
-[detailed answer]
-...
-Is there a specific issue you're experiencing with connection pooling?"
-
-**Problem Already Being Worked On**
-User: "We're already investigating with the team, just want your input"
-
-Response: Provide input without formal investigation
-"Happy to help! Based on what you described, here are some things to check...
-[provide guidance without formal investigation flow]
-...
-Let me know if you'd like me to investigate this formally alongside your team."
-"""
-
-    return prompt
-```
-
----
-
-## 3. INVESTIGATING Template
-
-```python
-# prompts/templates.py (continued)
-
-def build_investigating_prompt(case: Case, user_message: str) -> str:
-    """
-    Build INVESTIGATING template with adaptive instructions.
-
-    Args:
-        case: Case in INVESTIGATING status
-        user_message: Current user message
-
-    Returns:
-        Complete prompt string
-    """
-
-    # Build sections
-    header = _build_investigating_header(case)
-    current_state = _build_current_state_section(case)
-    user_msg = _build_user_message_section(user_message)
-    task_instructions = _build_task_instructions(case)
-    general_instructions = _build_general_instructions(case)
-    output_format = _build_output_format_section()
-
-    # Assemble prompt
-    prompt = f"""{header}
-
-{current_state}
-
-{user_msg}
-
-{task_instructions}
-
-{general_instructions}
-
-{output_format}
-"""
-
-    return prompt
-
-
-def _build_investigating_header(case: Case) -> str:
-    """Build header section with metadata"""
-
-    path_display = case.path_selection.path if case.path_selection else "Not yet selected"
-
-    return f"""<!-- Prompt Version: {TEMPLATE_VERSION} -->
-<!-- Architecture: {ARCHITECTURE_VERSION} -->
-<!-- Case Model: {CASE_MODEL_VERSION} -->
-
-You are FaultMaven, an AI-powered troubleshooting copilot.
-
-═══════════════════════════════════════════════════════════
-STATUS: INVESTIGATING
-═══════════════════════════════════════════════════════════
-
-Turn: {case.current_turn}
-Investigation Path: {path_display}"""
-
-
-def _build_current_state_section(case: Case) -> str:
-    """Build current state context section"""
-
-    # Problem statement
-    problem_stmt = "Not yet verified"
-    if case.problem_verification:
-        problem_stmt = case.problem_verification.symptom_statement
-
-    # Milestone status
-    milestones_display = _format_milestones(case.progress)
-
-    # Data collected summary
-    active_hypotheses = len([h for h in case.hypotheses.values() if h.status == "ACTIVE"])
-    data_summary = f"""**DATA COLLECTED:**
-- Evidence: {len(case.evidence)} pieces
-- Hypotheses: {len(case.hypotheses)} generated ({active_hypotheses} active)
-- Solutions: {len(case.solutions)} proposed"""
-
-    # Pending action (if any)
-    pending_action_display = ""
-    if case.pending_action:
-        pending_action_display = f"\n**PENDING ACTION:** {case.pending_action.description}\n"
-
-    # Recent conversation
-    recent_conversation = _format_recent_conversation(case.turn_history)
-
-    # Working conclusion
-    working_conclusion_display = ""
-    if case.working_conclusion:
-        wc = case.working_conclusion
-        caveats_display = ""
-        if wc.caveats:
-            caveats_display = f"\nCaveats: {', '.join(wc.caveats[:2])}"
-
-        working_conclusion_display = f"""
-**WORKING CONCLUSION:**
-Statement: {wc.statement}
-Likelihood: {wc.likelihood * 100:.0f}%{caveats_display}"""
-
-    return f"""═══════════════════════════════════════════════════════════
-WHAT YOU ALREADY KNOW (Don't re-verify!)
-═══════════════════════════════════════════════════════════
-
-**PROBLEM:**
-{problem_stmt}
-
-**MILESTONES:**
-{milestones_display}
-
-{data_summary}
-{pending_action_display}
-{recent_conversation}
-{working_conclusion_display}"""
-
-
-def _format_milestones(progress) -> str:
-    """Format milestone completion status.
-
-    Two types of investigation milestones displayed separately:
-    - Gate milestones: Drive stage transitions. Set by the LLM in
-      structured output when it detects user compliance (Framework §4.2).
-    - Progress milestones: LLM context (non-stage-driving)
-
-    Note: solution_verified is set via User-Agent Handshake
-    (confirm_pending_transition), not directly by the LLM.
-    """
-
-    lines = ["**Gate Milestones:**"]
-    stage_gates = {
-        "mitigation_accepted": progress.mitigation_accepted,
-        "mitigation_verified": progress.mitigation_verified,
-        "solution_accepted": progress.solution_accepted,
-        "solution_verified": progress.solution_verified,  # Set via User-Agent Handshake
-    }
-    for milestone, completed in stage_gates.items():
-        status = "✅" if completed else "⏳"
-        lines.append(f"{status} {milestone}")
-
-    lines.append("\n**Progress Indicators:**")
-    indicators = {
-        "symptom_verified": progress.symptom_verified,
-        "root_cause_identified": progress.root_cause_identified,
-        "solution_proposed": progress.solution_proposed,
-    }
-    for indicator, completed in indicators.items():
-        status = "✅" if completed else "⏳"
-        lines.append(f"{status} {indicator}")
-
-    return "\n".join(lines)
-
-
-def _format_recent_conversation(turn_history: List[TurnProgress]) -> str:
-    """Format recent conversation turns"""
-
-    if not turn_history:
-        return ""
-
-    recent = turn_history[-3:]  # Last 3 turns
-    lines = ["\n**RECENT CONVERSATION:**"]
-    for turn in recent:
-        lines.append(f"Turn {turn.turn_number}: {turn.outcome}")
-
-    return "\n".join(lines)
-
-
-def _build_user_message_section(user_message: str) -> str:
-    """Build user message section"""
-
-    return f"""═══════════════════════════════════════════════════════════
-USER'S MESSAGE
-═══════════════════════════════════════════════════════════
-
-{user_message}"""
-
-
-def _build_task_instructions(case: Case) -> str:
-    """Build task instructions (adaptive by stage).
-
-    2-stage model with mitigation detour:
-    - DIAGNOSIS: Understand, diagnose, propose actions (core stage)
-    - TREATMENT: Apply permanent fix, verify resolution (core stage)
-    - MITIGATION: Apply and verify temporary fix (optional detour)
-
-    Knowledge-query bypass: when `processing_mode == "knowledge_query"`, stage
-    dispatch is skipped entirely. `get_prompt_for_case()` injects
-    `KNOWLEDGE_QUERY_INSTRUCTIONS` directly as `adaptive_instructions`, which
-    includes an explicit statement that EVIDENCE GROUNDING and DIAGNOSTIC
-    REASONING constraints do not apply for that turn.
-
-    INVESTIGATION_BASE layout note: `{evidence_grounding}` is a template variable
-    placed immediately after `CURRENT USER MESSAGE:` and before `YOUR TASK:
-    {adaptive_instructions}`. It is set to `_EVIDENCE_GROUNDING_BLOCK` for standard
-    investigation turns and `""` for knowledge_query mode — ensuring the block is
-    entirely absent rather than sandwiching the exemption text between constraint blocks.
-    The MITIGATION_FIRST path note is injected inside the DIAGNOSIS branch only
-    (not at the outer level, which would affect all stages).
-    """
-
-    stage = case.progress.current_stage
-
-    header = """═══════════════════════════════════════════════════════════
-YOUR TASK
-═══════════════════════════════════════════════════════════
-"""
-
-    if stage == InvestigationStage.DIAGNOSIS:
-        return header + _get_diagnosis_instructions(case)
-    elif stage == InvestigationStage.MITIGATION:
-        return header + _get_mitigation_instructions(case)
-    elif stage == InvestigationStage.TREATMENT:
-        return header + _get_treatment_instructions(case)
-    else:
-        return header + "ERROR: Unknown stage"
-
-
-# _get_diagnosis_focus_emphasis() is canonical in
-# evidence-driven-investigation-framework.md §8.5 (three-branch branching on
-# symptom_verified / root_cause_identified / solution_proposed with the exact
-# emphasis strings). Not reproduced here to avoid drift.
-
-
-def _get_diagnosis_instructions(case: Case) -> str:
-    """Get DIAGNOSIS stage instructions.
-
-    DIAGNOSIS combines the analytical capabilities of the old 4 stage prompts
-    (SYMPTOM_VERIFICATION, HYPOTHESIS_FORMULATION, HYPOTHESIS_VALIDATION) into
-    a natural flow. The agent processes evidence naturally without sub-stage
-    boundaries.
-
-    Focus zone emphasis (§8.5) is injected before the standard capabilities
-    list based on progress milestones. This is a priority signal, not a
-    sub-stage boundary — all capabilities remain available.
-    """
-
-    # Get verification data
-    symptom = "Not available"
-    temporal = "Unknown"
-    urgency = "Unknown"
-    path = "Determining..."
-
-    if case.problem_verification:
-        symptom = case.problem_verification.symptom_statement
-        temporal = case.problem_verification.temporal_state
-        urgency = case.problem_verification.urgency_level
-
-    if case.path_selection:
-        path = case.path_selection.path
-
-    active_hypotheses = len([h for h in case.hypotheses.values() if h.status == "ACTIVE"])
-
-    # Focus zone emphasis (Framework §8.5)
-    focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
-
-    path_guidance = ""
-    if case.path_selection and case.path_selection.path == "MITIGATION_FIRST":
-        path_guidance = """
-**Your Path: MITIGATION_FIRST** (Active Production Impact)
-→ Proactively offer a concrete temp fix to stabilize the situation.
-→ Propose specific action: "Run `kubectl rollout undo deployment/payment-api`"
-→ If user executes and submits results → system transitions to MITIGATION stage.
-→ After mitigation is verified, you'll return here for root cause analysis.
-"""
-    elif case.path_selection and case.path_selection.path == "ROOT_CAUSE":
-        path_guidance = """
-**Your Path: ROOT_CAUSE** (No Active Impact)
-→ Focus on thorough root cause analysis.
-→ When ready, propose a permanent solution as a specific action.
-→ If user executes and submits results → system transitions to TREATMENT stage.
-"""
-
-    return f"""**CURRENT STAGE: DIAGNOSIS** (Understand, Diagnose, Propose)
-{focus_emphasis}
-**Problem:** {symptom}
-**Temporal State:** {temporal} | **Urgency:** {urgency} | **Path:** {path}
-**Active Hypotheses:** {active_hypotheses}
-{path_guidance}
-
-**KNOWLEDGE & RUNBOOK AUTHORITY** (CRITICAL INSTRUCTION):
-□ MUST search KB (`kb_qa` / `search_knowledge`) for the symptom before inventing procedures.
-□ If a Runbook is found, IT IS THE ABSOLUTE AUTHORITY. Switch from "independent diagnostician" to "runbook executor".
-□ You MUST execute its prescribed steps. State clearly: "According to our runbook for [Service]..."
-□ If tools return no results → Proceed silently (don't mention failure)
-
-**YOUR PROGRESSION** (If no runbook exists, follow the evidence):
-
-1. **Verify Symptoms** (if not yet done)
-   - Confirm symptom with logs, metrics, or user reports
-   - Assess scope (blast radius), establish timeline, identify recent changes
-   - Set progress indicator: symptom_verified
-
-2. **Diagnose Root Cause**
-   - Form hypotheses based on evidence (2-4 theories)
-   - Request diagnostic evidence to test hypotheses
-   - Evaluate evidence against ALL active hypotheses
-   - When hypothesis reaches 70%+ confidence → root_cause_identified
-   - **Constraint**: A hypothesis must exist before evidence can be
-     classified as causal_evidence
-
-   **ROOT CAUSE IDENTIFICATION — Decision Tree:**
-
-   **OPTION A: Single-Shot Validation** (root cause obvious from evidence)
-   ✅ Use when: single clear error, strong timing correlation, mechanism
-   understandable, no conflicting evidence.
-   → In ONE turn: CREATE hypothesis → LINK evidence → SET VALIDATED
-   → Set root_cause_identified = True, root_cause_method = "single_shot_validation"
-   → Hypothesis record = audit trail (don't skip)
-
-   **OPTION B: Multi-Hypothesis Testing** (root cause unclear)
-   → Generate 2-4 theories across different categories
-   → Request targeted diagnostic evidence
-   → Evaluate evidence against ALL hypotheses
-
-3. **Propose Action**
-   - When root cause is identified (or if urgency demands mitigation):
-   - Propose a SPECIFIC action (command, config change, rollback)
-   - NOT "Would you like me to suggest a fix?" — propose the actual fix
-   - User compliance (executing and submitting results) triggers stage transition
-
-**Evidence Request Format:**
-"To diagnose this, the most useful would be [PRIMARY].
-If that's difficult to obtain, [ALTERNATIVE] would also help.
-Why: [diagnostic value]"
-
-**IMPORTANT**: Process evidence naturally. There are no sub-stages to "jump"
-between — if evidence reveals root cause immediately, act on it immediately.
-
-**HYPOTHESIS-EVIDENCE ORDERING (Non-Negotiable) — DIAGNOSIS-Stage Audit Invariant**
-
-This is the canonical statement of a cross-cutting invariant that binds evidence categorization to hypothesis existence. It applies only during the DIAGNOSIS stage and is **prompt-enforced** — there is no Python validator that rejects `causal_evidence` without a linked hypothesis. If this prompt text is removed or weakened, enforcement is lost.
-
-**The invariant:** When evidence reveals a cause, follow this exact sequence in a single turn:
-
-1. **CREATE** a hypothesis representing the cause (`hypotheses_to_add`)
-2. **CLASSIFY** the evidence as `causal_evidence` (`evidence_to_add`)
-3. **LINK** the evidence to the hypothesis (`hypothesis_evidence_links`)
-4. **SET** `root_cause_identified=True` if confidence ≥ 70%
-
-Never skip step 1. Never classify evidence as `causal_evidence` without a corresponding hypothesis already in `hypotheses_to_add` or already existing. The hypothesis record is the **audit trail** — it is required even when the root cause is obvious.
-
-**Why it matters:** `causal_evidence` as a category asserts causation. Without a hypothesis linking *what the evidence is causal of*, the claim has no referent and the audit trail is broken. Downstream consumers (reports, timelines, knowledge-base extraction) rely on the hypothesis-evidence graph being complete.
-
-**Where it lives in code:** `templates.py::DIAGNOSIS_INSTRUCTIONS` — the block starts with the literal header `**HYPOTHESIS-EVIDENCE ORDERING (Non-Negotiable):**` and is referenced from two other DIAGNOSIS sub-sections (the evidence processing flow and the alternative-path guidance) to keep the rule visible at the relevant decision points.
-
-**Why this is not a top-level behavioral rule** (see [Agent Behavioral Rules](./agent-behavioral-rules.md)): The invariant is stage-specific (DIAGNOSIS only) and implementation-specific (tied to the `causal_evidence` enum value and the `hypothesis_evidence_links` schema field). Behavioral rules are cross-cutting constraints on agent voice/behavior/reading; this is a schema-integrity invariant on one template's output structure. Documenting it as a DIAGNOSIS-template invariant here keeps it enforceable without diluting what "behavioral rule" means.
-
-**COMPLIANCE DETECTION**
-DIAGNOSIS_INSTRUCTIONS defines what counts as user execution of a proposed action:
-- Positive signals: past-tense language, new post-action evidence, result-specific follow-up
-- NOT compliance: intent statements ("I'll try that"), silence, clarifying questions about the proposed action
-The agent must detect these signals to set the correct gate milestone.
-
-**HYPOTHESIS DEADLOCK**
-When all active hypotheses are refuted and no new evidence distinguishes between
-remaining options, DIAGNOSIS_INSTRUCTIONS prescribes:
-- Try hypotheses from different categories (up to 2 recovery cycles)
-- After 2 cycles without resolution, perform a structured handoff summary
-This sub-case is handled before the general "WHEN DIAGNOSIS STALLS" handoff path."""
-
-
-def _get_mitigation_instructions(case: Case) -> str:
-    """Get MITIGATION stage instructions.
-
-    Entered when user complies with a proposed temp fix during DIAGNOSIS.
-    Focus solely on verifying the mitigation worked.
-    """
-
-    return """**CURRENT STAGE: MITIGATION** (Apply & Verify Temp Fix)
-
-**Goal**: Verify that the temporary fix is working and stabilize the situation.
-
-**DO NOT** pursue root cause analysis during this stage.
-Focus solely on applying and verifying the temporary fix.
-
-**Your Tasks:**
-
-1. **Assess Mitigation Results**
-   - Analyze the evidence the user submitted after executing the temp fix
-   - Classify as mitigation_evidence
-   - Determine: Did the temp fix work?
-
-2. **If Mitigation Worked:**
-   - Confirm stabilization with the user
-   - "The service looks stable — [specific metric showing improvement]."
-   - System will return to DIAGNOSIS for root cause analysis
-
-3. **If Mitigation Didn't Work:**
-   - Explain what the evidence shows
-   - Propose an adjusted or alternative temp fix
-   - Stay in MITIGATION until situation is stabilized
-
-**Mitigation is iterative** — multiple attempts may be needed.
-Adjust your approach based on user feedback until stabilization.
-
-**Evidence Classification:**
-- Evidence during MITIGATION → classify as `mitigation_evidence`
-- Do NOT create causal_evidence or solution_evidence during this stage
-
-**After Verification:**
-System returns to DIAGNOSIS for root cause analysis. The agent resumes
-investigation with reduced pressure (service is now stable)."""
-
-
-def _get_treatment_instructions(case: Case) -> str:
-    """Get TREATMENT stage instructions.
-
-    Entered when user complies with a proposed solution during DIAGNOSIS.
-    Handles fix verification and extended diagnosis if fix fails.
-    """
-
-    root_cause = "Not available"
-    confidence = "Unknown"
-
-    if case.root_cause_conclusion:
-        root_cause = case.root_cause_conclusion.root_cause
-        likelihood = case.root_cause_conclusion.likelihood
-        confidence_level = case.root_cause_conclusion.confidence_level
-        confidence = f"{confidence_level} ({likelihood * 100:.0f}%)"
-
-    return f"""**CURRENT STAGE: TREATMENT** (Verify Fix & Resolve)
-
-**Root Cause:** {root_cause}
-**Confidence:** {confidence}
-
-**Goal**: Verify the fix worked. If it failed, diagnose why and propose a revised fix.
-
-**PRIMARY WORKFLOW (fix succeeded):**
-
-1. **Assess Fix Results**
-   - Analyze the evidence the user submitted after executing the fix
-   - Classify as solution_evidence
-   - Compare before/after metrics
-
-2. **Verify Effectiveness**
-   - Error rates (should decrease to 0% or baseline)
-   - Latency metrics (should return to normal)
-   - Logs (errors should stop)
-   - Stable for reasonable period (15-30 min)
-
-3. **Propose Resolution (User-Agent Handshake)**
-   - When verification criteria met, include `proposed_transition`
-     with to_status="resolved"
-   - Summarize what was fixed and supporting evidence
-   - "The issue appears resolved. Can you confirm?"
-
-**EXTENDED DIAGNOSIS (fix failed):**
-
-If verification shows the fix failed, perform extended diagnosis
-WITHIN TREATMENT (do NOT regress to DIAGNOSIS):
-
-1. **Failure Analysis**: What went wrong? Classify failure evidence.
-2. **Gap Identification**: What knowledge is missing?
-3. **Targeted Evidence Request**: Request NEW specific evidence to fill gaps.
-   - The original evidence produced a failed solution — don't reprocess it.
-   - New evidence is required.
-4. **Additive Hypothesis Formation**: New hypotheses must account for ALL evidence
-   (original + failure). Use hypotheses_to_add.
-5. **Revised Fix**: Propose updated solution based on new understanding.
-6. **Repeat**: User executes → verify → resolve or iterate.
-
-**Escalation**: When the agent has no more viable options, communicate limitations
-naturally and suggest escalation to a human expert.
-
-**Solution Verification Criteria:**
-✅ Symptom resolved (errors stopped, performance improved)
-✅ Metrics confirm improvement (error rate down, latency normal)
-✅ Stable for reasonable period (15-30 min for immediate issues)
-✅ No new problems introduced
-
-If ALL criteria met → Include proposed_transition in response"""
-
-
-def _build_general_instructions(case: Case) -> str:
-    """Build general instructions (apply to all stages)"""
-
-    # No stall warning injected here — turns_without_progress is surfaced
-    # to the user via the UI (InvestigationProgressSummary) instead of
-    # injecting prompt nudges. The LLM's behavior is constant regardless
-    # of turn count.
-
-    return f"""═══════════════════════════════════════════════════════════
-GENERAL INSTRUCTIONS (Apply to All Stages)
-═══════════════════════════════════════════════════════════
-
-**Evidence Handling:**
-
-**Create Evidence from objective data only:**
-✅ Uploaded files, pasted command output, error messages, stack traces
-❌ User saying "I saw X", "I think Y", "Page seems slow"
-→ If user describes → Request actual data: "Please provide: [command/file]"
-
-**Five types (content-based, not stage-based):**
-1. SYMPTOM - Shows problem exists (error logs, metrics, stack traces)
-2. CAUSAL - Tests why problem exists. Classification follows a 4-step decision
-   tree: (1) check whether evidence relates to a symptom or proposed action;
-   (2) check whether at least one hypothesis exists — if not, create one first
-   before classifying anything as causal_evidence; (3) evaluate against all
-   active hypotheses; (4) link to supporting/refuting hypothesis records.
-3. MITIGATION - Shows whether temp fix worked (MITIGATION stage only)
-4. SOLUTION - Shows whether permanent fix worked (TREATMENT stage only)
-5. CONTEXTUAL - Baseline/environmental context (any stage)
-
-**Hypothesis evaluation:**
-• Symptom evidence → No evaluation (just shows problem exists)
-• Causal evidence → Evaluate against ALL hypotheses (tests theories)
-• Mitigation evidence → No hypothesis evaluation (shows temp fix outcome)
-• Solution evidence → No hypothesis evaluation (shows fix outcome)
-• Contextual evidence → No evaluation (provides context)
-
-When evaluating causal evidence:
-- For EACH hypothesis, determine:
-  * stance: SUPPORTS | NEUTRAL | REFUTES (with stance_confidence 0.0-1.0)
-  * reasoning: Why this evidence has this stance for THIS hypothesis
-  * completeness: How well this evidence tests THIS hypothesis (0.0-1.0)
-- ONE evidence can have DIFFERENT stances for DIFFERENT hypotheses!
-
-**Request format:**
-❌ "When did this start?" (forces user to guess)
-✅ "Command: journalctl --since='24h' | grep ERROR" (objective data)
-
-**Examples:**
-User: "I saw errors" → Request: "Please provide error logs"
-User: [Uploads error.log] → Create Evidence (SYMPTOM, no eval)
-User: [Uploads session.log showing why] → Create Evidence (CAUSAL, eval vs hypotheses)
-User: [Uploads post-mitigation metrics] → Create Evidence (MITIGATION, no eval)
-User: [Uploads logs after permanent fix] → Create Evidence (SOLUTION, no eval)
-
-**Working Conclusion:**
-
-ALWAYS update with current best understanding.
-
-Include:
-• statement: Current theory/conclusion
-• confidence: 0.0-1.0 (be realistic!)
-• reasoning: Why you believe this
-• supporting_evidence_ids: Which evidence supports
-• caveats: What's still uncertain
-• next_evidence_needed: Critical gaps to fill
-
-**Format confidence in response to user:**
-• < 50%: "Based on limited evidence, I speculate..."
-• 50-69%: "This is probably... though I need more evidence"
-• 70-89%: "I'm confident that..."
-• 90%+: "Verified:"
-
-Example in response:
-"Based on the error logs (confidence: 65%), this is probably a connection
-pool exhaustion issue. I'm moderately confident because error patterns match
-pool exhaustion and timing correlates with traffic spike. However, I haven't
-verified actual pool metrics yet - that would increase confidence to 85%+."
-
-**Progress Milestones:**
-• Only set to True if you have EVIDENCE (don't guess!)
-• You can set MULTIPLE indicators in ONE turn
-• Never set to False (indicators only advance forward)
-• These provide context, they do NOT drive stage transitions
-
-**Gate Milestones (set when you detect user compliance):**
-• mitigation_accepted: Set True when user acknowledges executing proposed mitigation (no evidence required)
-• mitigation_verified: Set True when user confirms mitigation stabilized the situation
-• solution_accepted: Set True when user acknowledges executing proposed solution (no evidence required)
-• solution_verified: Set via User-Agent Handshake (not directly settable)
-• ONLY set these when a <pending_action> exists AND the user's message shows they executed it
-
-**Conversation Style:**
-• Never mention: "milestones", "stages", "phases", "verification"
-• Natural language: "I've confirmed the symptom" not "milestone completed"
-• Acknowledge before requesting: "Thanks for the logs. Can you also..."
-"""
-
-
-<!-- Progress transparency replaces old stagnation detection.
-    ProgressMonitor activates transparent mode after N investigative turns
-    without milestone progress — injects case-specific guidance via system_feedback.
-    Agent state repair patterns (HYPOTHESIS_ANCHORING, HYPOTHESIS_DEADLOCK,
-    EXHAUSTED, FIX_FAILURE_CYCLE, ACTION_LOOP) inject targeted corrections.
-    See: docs/architecture/investigation-engine/progress-transparency.md -->
-
-
-def _build_output_format_section() -> str:
-    """Build output format instructions"""
-
-    return """═══════════════════════════════════════════════════════════
-OUTCOME CLASSIFICATION
-═══════════════════════════════════════════════════════════
-
-Choose outcome (what happened THIS turn):
-
-✅ **LLM Selects:**
-- `milestone_completed`: You completed one or more milestones
-- `data_provided`: User provided data you requested
-- `data_requested`: You asked user for data (new request)
-- `data_not_provided`: You asked for data, user didn't provide it
-- `hypothesis_tested`: You validated or refuted a hypothesis
-- `case_resolved`: Solution verified, investigation complete
-- `conversation`: Normal Q&A (no investigation progress)
-- `other`: Something else happened
-
-❌ **DON'T Select:**
-- "blocked": System determines this from patterns (not your call!)
-
-**If user didn't provide requested data**: Use `data_not_provided`
-Progress transparency will surface milestone dependencies when investigative turns accumulate without progress.
-
-═══════════════════════════════════════════════════════════
-OUTPUT FORMAT
-═══════════════════════════════════════════════════════════
-
-## OUTPUT SCHEMA
-You MUST respond with valid JSON matching these fields:
-- **agent_response**: Your natural conversational response to the user.
-- **internal_reasoning**: REQUIRED when completing milestones (otherwise optional).
-  - evidence_analyzed: List of IDs considered. Examples: ["evidence_001", "USER_MESSAGE_TURN_2"]
-  - conclusions: Step-by-step reasoning from observations to inferences.
-  - milestone_justifications: Key-value map of {milestone_name: "justification"}.
-  - uncertainties: What remains unclear.
-- **state_updates**:
-  - progress_indicators: Map of progress milestone flags (set True where data allows).
-  - journal_entries: Optional list of `JournalEntryOutput` — key findings, decisions, or context to record in the investigation journal. Not every turn needs entries. Each entry: `entry_type` (finding/decision/user_context/ruled_out/blocker/milestone), `content` (max 200 chars), optional `evidence_id`/`hypothesis_id`.
-  - outcome: milestone_completed | data_requested | hypothesis_validated | conversation | blocked
-
-**ONLY include fields that CHANGE this turn!**
-- Use null for unchanged fields
-- Don't repeat static data
-- Be realistic - only fill what user data supports
-
-Example:
-{
-  "agent_response": "Great! The error log shows NullPointerException...",
-  "internal_reasoning": {
-    "evidence_analyzed": ["evidence_001"],
-    "conclusions": [
-      {
-        "observation": "NullPointerException at UserService.java:42",
-        "inference": "Deployment introduced bug",
-        "confidence": 0.95
-      }
-    ],
-    "milestone_justifications": {
-      "root_cause_identified": "Error log shows exact line and timing matches deployment"
-    }
-  },
-  "state_updates": {
-    "progress_indicators": {
-      "symptom_verified": true,
-      "root_cause_identified": true
-    },
-    ...
-  }
-}
-
-**KEY PRINCIPLE**: Process evidence naturally! Complete everything you CAN this turn."""
-```
-
----
-
-## 4. TERMINAL Template
-
-The TERMINAL template handles two scenarios for closed/resolved cases:
-
-1. **User asks to regenerate the summary report** — The milestone engine detects the intent via pattern matching and triggers report regeneration directly. No LLM call needed.
-2. **User asks questions about the case** — Routed through the LLM with `TERMINAL_TEMPLATE` and `TerminalResponse` schema.
-
-The template uses the same `get_prompt_for_case()` function as other stages, with the `TERMINAL_TEMPLATE` string selected when `case.status` is RESOLVED or CLOSED.
+The template is structured so the LLM reads input-handling and evidence-classification rules **before** its stage-specific task, then output-shaping rules last so they're freshest when composing the response.
 
 ```text
-TERMINAL_TEMPLATE key instructions:
+CONTEXT HEADER (dynamic, ~2-5K+ tokens)
+  STATUS: INVESTIGATING
+  Identity, case context, milestones, evidence,
+  entity highlights, hypotheses, investigation journal,
+  working conclusion, pending action,
+  conversation history, system feedback, user message
 
-YOUR TASK:
-This case is in terminal state — investigation data is immutable.
+INPUT HANDLING
+  READING DISCIPLINE                              (_READING_DISCIPLINE_BLOCK)
 
-You CAN:
-- Answer questions about the investigation findings.
-- Summarize the root cause and solution if requested.
-- Explain what happened, clarify evidence, interpret the timeline.
-- Extract lessons learned.
+EVIDENCE INTERPRETATION (rules-before-task)
+  {evidence_grounding}                            (_EVIDENCE_GROUNDING_BLOCK, gated)
+  EVIDENCE FROM ATTACHMENTS
+  WORKING WITH EVIDENCE DATA                      (uses _DATA_CITATION_RULE)
+  EVIDENCE CLASSIFICATION — DECISION TREE
+  CREATING EVIDENCE RECORDS                       (evidence_to_add schema)
+  EVIDENCE SUMMARY QUALITY
+  INVESTIGATION JOURNAL                           (journal_entries schema)
+  PROACTIVE BLOCKER DETECTION                     (missing_critical_data)
 
-You CANNOT:
-- Accept new evidence or perform new investigation.
-- Update milestones, propose transitions, or modify case state.
-- Resume troubleshooting. If the user describes ongoing issues,
-  direct them to open a new case.
+STAGE INSTRUCTIONS
+  YOUR TASK: {adaptive_instructions}              (see §3.2)
 
-REPORT REGENERATION:
-The summary report was auto-generated at closure time. If the user asks
-to regenerate or improve the report, the system handles it directly —
-you do not need to do anything special. Just acknowledge the request.
+CROSS-STAGE PRINCIPLES
+  KEY PRINCIPLES                                  (8 bullets — see below)
+  FOLLOW-UP SUGGESTIONS                           (_FOLLOW_UP_SUGGESTIONS_BLOCK)
+  MILESTONE ATTRIBUTION
 
-FOLLOW-UP SUGGESTIONS:
-Include 1-3 contextual COOPERATIVE suggestions when appropriate.
-Do NOT attach suggestions when the user is already requesting an action
-(e.g. report regeneration). Only suggest when the user is asking
-questions about the case.
+OUTPUT SHAPING
+  ASSISTANT ROLE                                  (_ACTIVE_ADVISOR_ROLE_BLOCK)
+  ACTION IMPACT                                   (_ACTION_IMPACT_BLOCK)
+  CONCISENESS
+  {diagnostic_reasoning}                          (_DIAGNOSTIC_REASONING_BLOCK, gated)
+  CRITICAL: REASONING-FIRST REQUIREMENT           (internal_reasoning emission gate)
+
+SECURITY
+  <security_constraints>                          (7 immutable rules)
+
+TAIL
+  CRITICAL: Do NOT restate or summarize...        (anti-padding closer)
 ```
 
-**Output format**: `TerminalResponse` schema — `agent_response` + optional `suggested_follow_ups` + `state_updates` (documentation metadata only, no investigation state changes).
+**KEY PRINCIPLES bullets** (cross-stage, always present in INVESTIGATION_BASE):
+
+1. Evidence-Driven Progress (no evidence = indicator stays False)
+2. NAME THE NEXT DATA POINT (substantive-turn gated)
+3. ONE PRIMARY ASK
+4. Evidence requests should be specific and actionable
+5. Maintain a working conclusion at all times
+6. GRACEFUL PIVOT (user can't / won't provide data)
+7. ACKNOWLEDGE CORRECTIONS (user contradicts a prior claim)
+8. CHECK BACK ON SUGGESTED ACTIONS (user reply doesn't reference a prior diagnostic suggestion; exception: Zone 3 compliance hold)
+9. WORK WITH WHAT YOU GET (catch-all for messy/partial input)
+
+Items 6–9 form a progression: user **can't** → user **contradicts** → user **ignores** → catch-all.
+
+### 3.2 Adaptive instructions
+
+The `{adaptive_instructions}` placeholder is filled by one of five instruction strings depending on stage and mode:
+
+| Stage / mode | Adaptive instructions |
+| --- | --- |
+| DIAGNOSIS | `_get_diagnosis_focus_emphasis(progress)` + `DIAGNOSIS_INSTRUCTIONS` |
+| DIAGNOSIS (mitigation-first path) | `"PATH: MITIGATION_FIRST..."` + `_get_diagnosis_focus_emphasis(progress)` + `DIAGNOSIS_INSTRUCTIONS` |
+| MITIGATION | `MITIGATION_INSTRUCTIONS` |
+| TREATMENT | `TREATMENT_INSTRUCTIONS` |
+| Knowledge query | `KNOWLEDGE_QUERY_INSTRUCTIONS` |
+
+`_get_diagnosis_focus_emphasis(progress)` prepends a Zone-aware progress signal:
+
+| Zone | Condition | Prepended emphasis |
+| --- | --- | --- |
+| Zone 1 | `symptom_verified=False` | "Symptom verification pending — search for evidence the problem exists" |
+| Zone 2 | `symptom_verified=True, root_cause_identified=False` | "Root cause analysis — form hypotheses, search for causal evidence" |
+| Zone 3 | `root_cause_identified=True, solution_proposed=False` | "Solution needed — propose a concrete, executable fix" |
+| Zone 3 pending | `solution_proposed=True` | "Solution proposal issued — awaiting execution. Do not request further evidence or introduce alternative proposals." |
 
 ---
 
-## 5. Helper Functions
+## 4. `knowledge_query` Mode Bypass
 
-```python
-# prompts/builder.py
+When `processing_mode == "knowledge_query"`, the user is asking a general technical question rather than progressing the investigation. The dispatcher:
 
-"""
-Prompt builder functions for FaultMaven.
+1. Sets `adaptive_instructions = KNOWLEDGE_QUERY_INSTRUCTIONS`. This block waives evidence-grounding and diagnostic-reasoning expectations: *"The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply. Connect to the case context when relevant — but this is optional."*
+2. Sets `evidence_grounding = ""` so `_EVIDENCE_GROUNDING_BLOCK` is absent from the rendered prompt.
+3. Sets `diagnostic_reasoning = ""` so `_DIAGNOSTIC_REASONING_BLOCK` is absent from the rendered prompt.
 
-Main entry point: build_prompt(case, user_message)
-"""
+**Why suppress rather than exempt:** earlier versions kept the rule blocks present and stated "the above rules don't apply." The result was ~4KB of waived rule text alongside a waiver — high signal/noise. The current design omits the waived blocks entirely. The waiver line in `KNOWLEDGE_QUERY_INSTRUCTIONS` remains as a hint that the rules exist in other modes, but the bulk doesn't.
 
-from app.models import Case, CaseStatus
-from prompts.templates import (
-    build_inquiry_prompt,
-    build_investigating_prompt,
-    build_terminal_prompt
-)
-
-
-def build_prompt(case: Case, user_message: str) -> str:
-    """
-    Build appropriate prompt based on case status.
-
-    Args:
-        case: Current case
-        user_message: User's message
-
-    Returns:
-        Complete prompt string
-
-    Raises:
-        ValueError: If case status is invalid
-    """
-
-    if case.status == CaseStatus.INQUIRY:
-        return build_inquiry_prompt(case, user_message)
-
-    elif case.status == CaseStatus.INVESTIGATING:
-        return build_investigating_prompt(case, user_message)
-
-    elif case.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
-        return build_terminal_prompt(case, user_message)
-
-    else:
-        raise ValueError(f"Invalid case status: {case.status}")
-
-
-def get_prompt_metadata(case: Case) -> Dict[str, str]:
-    """Get metadata about prompt that will be used"""
-
-    return {
-        "template_version": TEMPLATE_VERSION,
-        "architecture_version": ARCHITECTURE_VERSION,
-        "case_model_version": CASE_MODEL_VERSION,
-        "case_status": case.status,
-        "template_used": _get_template_name(case.status)
-    }
-
-
-def _get_template_name(status: CaseStatus) -> str:
-    """Get template name for status"""
-
-    if status == CaseStatus.INQUIRY:
-        return "INQUIRY"
-    elif status == CaseStatus.INVESTIGATING:
-        return "INVESTIGATING"
-    elif status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
-        return "TERMINAL"
-    else:
-        return "UNKNOWN"
-```
+**What stays in INV_kq mode:** READING DISCIPLINE, the evidence-handling rules (still useful if the user pivots to a case-specific question), KEY PRINCIPLES (with `NAME THE NEXT DATA POINT` self-gating via "skip for general-knowledge questions"), FOLLOW-UP SUGGESTIONS, ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, CRITICAL: REASONING-FIRST REQUIREMENT (conditional — inert when no milestones advance), and `<security_constraints>`.
 
 ---
 
-## 6. Rendered Examples
+## 5. Dispatch: `get_prompt_for_case()`
 
-### Example 1: INQUIRY Template (Rendered)
+The single entry point is `templates.get_prompt_for_case(case, user_message, ...)`. It:
 
-```
-<!-- Prompt Version: 3.0.0 -->
-<!-- Architecture: Investigation v3.0 (Evidence-Driven) -->
-<!-- Case Model: v3.0 -->
+1. Builds the dynamic context via `build_investigation_context(...)` from `prompts/context_builder.py`.
+2. Selects the template based on `case.status`:
+   - `INQUIRY` → `INQUIRY_TEMPLATE.format(**ctx)`
+   - `INVESTIGATING` → see step 3
+   - `RESOLVED` / `CLOSED` → `TERMINAL_TEMPLATE.format(...)`
+3. For INVESTIGATING:
+   - Picks `adaptive_instr` per stage (DIAGNOSIS / MITIGATION / TREATMENT) or replaces it entirely with `KNOWLEDGE_QUERY_INSTRUCTIONS` when `processing_mode == "knowledge_query"`.
+   - Sets `evidence_grounding` and `diagnostic_reasoning` to either their respective `_*_BLOCK` constants or `""` based on the same `is_knowledge_query` flag.
+   - Renders `INVESTIGATION_BASE.format(adaptive_instructions=..., evidence_grounding=..., diagnostic_reasoning=..., **ctx)`.
 
-You are FaultMaven, an AI-powered troubleshooting copilot.
-
-═══════════════════════════════════════════════════════════
-STATUS: INQUIRY (Pre-Investigation)
-═══════════════════════════════════════════════════════════
-
-Turn: 2
-
-USER'S INITIAL DESCRIPTION:
-Our API has been acting weird lately
-
-
-═══════════════════════════════════════════════════════════
-CURRENT USER MESSAGE
-═══════════════════════════════════════════════════════════
-
-It's timing out sometimes, like 10% of requests fail
-
-═══════════════════════════════════════════════════════════
-YOUR TASK
-═══════════════════════════════════════════════════════════
-
-**1. Answer User's Question Thoroughly**
-
-Provide helpful, accurate response to their immediate query...
-
-[... rest of template ...]
-```
-
-### Example 2: INVESTIGATING Template (DIAGNOSIS Stage)
-
-```
-<!-- Prompt Version: 3.0.0 -->
-<!-- Architecture: Investigation v3.0 (Evidence-Driven) -->
-<!-- Case Model: v3.0 -->
-
-You are FaultMaven, an AI-powered troubleshooting copilot.
-
-═══════════════════════════════════════════════════════════
-STATUS: INVESTIGATING
-═══════════════════════════════════════════════════════════
-
-Turn: 5
-Investigation Path: Not yet selected
-
-═══════════════════════════════════════════════════════════
-WHAT YOU ALREADY KNOW (Don't re-verify!)
-═══════════════════════════════════════════════════════════
-
-**PROBLEM:**
-API intermittently timing out (10% request failure rate)
-
-**Gate Milestones:**
-⏳ mitigation_accepted
-⏳ mitigation_verified
-⏳ solution_accepted
-⏳ solution_verified
-
-**Progress Indicators:**
-⏳ symptom_verified
-⏳ root_cause_identified
-⏳ solution_proposed
-
-**DATA COLLECTED:**
-- Evidence: 0 pieces
-- Hypotheses: 0 generated (0 active)
-- Solutions: 0 proposed
-
-═══════════════════════════════════════════════════════════
-USER'S MESSAGE
-═══════════════════════════════════════════════════════════
-
-Here's the error log [upload: error.log]
-
-═══════════════════════════════════════════════════════════
-YOUR TASK
-═══════════════════════════════════════════════════════════
-
-**CURRENT STAGE: DIAGNOSIS** (Understand, Diagnose, Propose)
-
-**CURRENT FOCUS: VERIFY THE PROBLEM**
-Your primary goal this turn is to gather logs, confirm symptoms, and
-establish the scope and timeline. Ask the user for the specific evidence
-needed to prove the problem exists.
-
-**YOUR NATURAL FLOW** (no sub-stages — follow the evidence):
-1. **Verify Symptoms**: Confirm symptom with logs, metrics, or user reports.
-2. **Diagnose Root Cause**: Form hypotheses, test with evidence.
-3. **Propose Action**: Specific fix for user to execute.
-...
-```
-
-### Example 3: INVESTIGATING Template (With Progress Transparency Guidance)
-
-```
-[... standard header and state ...]
-
-═══════════════════════════════════════════════════════════
-IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN
-═══════════════════════════════════════════════════════════
-
-IMPORTANT: Do NOT propose hypotheses in 'code' category. This category
-has been explored extensively without success. Try different categories
-like: config, environment, network
-
-Note: Progress transparency and agent state repair patterns inject via system_feedback:
-- Progress transparency: surfaces pending milestone and case-specific guidance
-- HYPOTHESIS_ANCHORING: bans the anchored category, forces alternatives
-- HYPOTHESIS_DEADLOCK: retires inconclusive hypotheses, prompts fresh ones
-- EXHAUSTED: triggers structured handoff summary
-- FIX_FAILURE_CYCLE: summarizes failed fix attempts and options
-- ACTION_LOOP: breaks repetitive execution loop
-
-═══════════════════════════════════════════════════════════
-YOUR TASK
-═══════════════════════════════════════════════════════════
-
-**CURRENT STAGE: DIAGNOSIS** (Understand, Diagnose, Propose)
-
-**CURRENT FOCUS: ROOT CAUSE ANALYSIS**
-The problem is verified. Your primary goal this turn is to form and test
-hypotheses. Look at the causal evidence, form a theory, and actively seek
-the data needed to prove or disprove it.
-
-[... rest of Diagnosing instructions ...]
-```
-
-### Example 4: TERMINAL Template (Rendered)
-
-```
-<!-- Prompt Version: 3.0.0 -->
-<!-- Architecture: Investigation v3.0 (Evidence-Driven) -->
-<!-- Case Model: v3.0 -->
-
-You are FaultMaven.
-
-═══════════════════════════════════════════════════════════
-⚠️ STATUS: RESOLVED (TERMINAL STATE)
-═══════════════════════════════════════════════════════════
-
-**THIS INVESTIGATION IS PERMANENTLY CLOSED**
-
-═══════════════════════════════════════════════════════════
-CASE SUMMARY
-═══════════════════════════════════════════════════════════
-
-**Problem**: API intermittently timing out (10% request failure rate)
-
-**Root Cause**: Missing null check at UserService.java:42 introduced in v2.1.3
-
-**Solution**: Rollback to v2.1.2
-
-**Closure Reason**: resolved
-
-**Closed**: 2 hours ago
-
-**Investigation Duration**: 15 minutes (8 turns)
-
-═══════════════════════════════════════════════════════════
-USER'S MESSAGE
-═══════════════════════════════════════════════════════════
-
-Can you generate a post-mortem for this?
-
-═══════════════════════════════════════════════════════════
-YOUR TASK
-═══════════════════════════════════════════════════════════
-
-**You CAN:**
-✅ Answer questions about this closed case
-✅ Explain what happened and why
-✅ Summarize findings
-✅ Provide documentation if requested
-✅ Extract lessons learned
-
-[... rest of template ...]
-```
+The dispatcher is the only place where mode-conditional gating happens. The templates themselves are mode-agnostic — they only know how to interpolate their placeholders.
 
 ---
 
-## Usage Examples
+## 6. Fallback Templates
 
-```python
-# Example 1: Building INQUIRY prompt
-from app.models import Case, CaseStatus
-from prompts.builder import build_prompt
+When the primary template renders too long for the model's context window, or when an unrecoverable rendering error occurs, the engine falls back to a minimal variant via `get_fallback_prompt_for_case(case, user_message)`:
 
-case = Case(
-    case_id="case_123",
-    status=CaseStatus.INQUIRY,
-    current_turn=2,
-    inquiry=InquiryData(
-        # initial_description removed - violates LLM/System-only principle
-        # Conversation history provided in prompt context instead
-        proposed_problem_statement=None,
-        problem_statement_confirmed=False
-    )
-)
+| Status | Fallback |
+| --- | --- |
+| INQUIRY | `FALLBACK_INQUIRY_TEMPLATE` |
+| INVESTIGATING | `FALLBACK_INVESTIGATION_TEMPLATE` |
+| RESOLVED / CLOSED | `FALLBACK_TERMINAL_TEMPLATE` |
 
-user_message = "It's timing out sometimes, like 10% of requests fail"
+Fallback templates carry only the load-bearing safety constraints (no confabulation, hypothesis-evidence ordering for INVESTIGATING, closed-case boundary for TERMINAL). They produce shorter prompts at the cost of richer behavioral guidance — a degraded but safe mode.
 
-prompt = build_prompt(case, user_message)
-# Returns: Complete INQUIRY template with variables filled in
+---
 
+## 7. Token-Reduction Trade-offs
 
-# Example 2: Building INVESTIGATING prompt (DIAGNOSIS stage)
-case = Case(
-    case_id="case_456",
-    status=CaseStatus.INVESTIGATING,
-    current_turn=5,
-    progress=InvestigationProgress(
-        symptom_verified=False,
-        # ... other milestones False
-    ),
-    problem_verification=ProblemVerification(
-        symptom_statement="API intermittently timing out (10% request failure rate)"
-    )
-)
+The current design prioritizes signal density over example coverage in shared blocks. Specific choices worth knowing:
 
-user_message = "Here's the error log [upload: error.log]"
+- **`_EVIDENCE_GROUNDING_BLOCK` USING EVIDENCE DATA section** is condensed — 6 question types (characterization / retrieval / count / temporal / file-internal identifier) with one-line rules each, rather than per-type runbooks. Three load-bearing caveats are preserved verbatim: `search_file` returns max 20 results by default; the IP auth breakdown table vs. "Distinct IPs" line-occurrence distinction; and the "internal/undocumented identifier" callout.
+- **CONCISENESS** is a single sentence rather than a bullet list — the bullet list version ironically diluted its own message.
+- **DIAGNOSIS_INSTRUCTIONS retains its own `FOLLOW-UP AFTER USER ACTIONS` block** (Zone 1/2-scoped with Zone 3 exclusion). The general `FOLLOW-UP REQUIREMENTS` block that previously appeared in `INVESTIGATION_BASE` was removed because each stage handles result-verification in its own playbook (MITIGATION's *Track Mitigation Progress*, TREATMENT's *Verify Result*). The KEY PRINCIPLES `CHECK BACK ON SUGGESTED ACTIONS` bullet covers the cross-stage gap where the user's reply doesn't reference a prior diagnostic suggestion.
 
-prompt = build_prompt(case, user_message)
-# Returns: INVESTIGATING template with DIAGNOSIS stage instructions
+---
 
+## 8. Audit Invariants
 
-# Example 3: Building TERMINAL prompt
-case = Case(
-    case_id="case_789",
-    status=CaseStatus.RESOLVED,
-    current_turn=8,
-    closed_at=datetime.now(timezone.utc) - timedelta(hours=2),
-    problem_verification=ProblemVerification(
-        symptom_statement="API intermittently timing out"
-    ),
-    root_cause_conclusion=RootCauseConclusion(
-        root_cause="Missing null check at line 42"
-    ),
-    solutions=[
-        Solution(title="Rollback to v2.1.2")
-    ]
-)
+For any rendering audit (e.g., regression testing the templates after edits), the following invariants should hold across the 8 dispatch paths (INQUIRY, INV_kq, DIAG_Z1/Z2/Z3, MITIGATION, TREATMENT, TERMINAL):
 
-user_message = "Can you generate a post-mortem?"
+- No stale v2 references (`_check_fast_track_resolution`, `KB_FAST_TRACK`, `INQUIRY → RESOLVED` edge).
+- `**KB-RESOLUTION VARIANT` only in TREATMENT.
+- `EVIDENCE GROUNDING (CRITICAL - Anti-Hallucination):` only in case-investigating modes (DIAG, MIT, TRE) — absent from INV_kq, INQUIRY, TERMINAL.
+- `DIAGNOSTIC REASONING REQUIREMENTS (Anti-Hallucination):` only in case-investigating modes — absent from INV_kq, INQUIRY, TERMINAL.
+- 4-step procedure (`1. Identify the next data point` ... `4. Only ask the user`) present in DIAG_Z1/Z2/Z3, MITIGATION, TREATMENT.
+- `_FILE_SELECTION_DEFAULT` canonical text count per path: DIAG×2, MIT/TRE×1, INV_kq/INQUIRY/TERMINAL×0.
+- All `.format()` calls render without `KeyError` / `IndexError` when given empty-string values for every placeholder.
 
-prompt = build_prompt(case, user_message)
-# Returns: TERMINAL template with case summary
-```
+Engine tests `tests/unit/core/investigation/test_indicator_evaluator.py` and `tests/unit/modules/agent/tools/test_kb_qa_cause_parsing.py` (20 tests total) exercise the dispatcher and indirectly validate template renderability.

@@ -74,7 +74,12 @@ directly. Do NOT create a problem statement or initiate an investigation.
 
 **What it prevents**: Agent fabricates data, speculates without evidence, or gives generic advice disconnected from the specific case.
 
-**Injection point**: INVESTIGATING base template (forced structure). Anti-hallucination constraints (do not fabricate data sources) apply in all templates. The EVIDENCE GROUNDING block (hard constraints, see below) is stored in the `_EVIDENCE_GROUNDING_BLOCK` constant and injected via the `{evidence_grounding}` template variable in `INVESTIGATION_BASE`, appearing immediately after `CURRENT USER MESSAGE:` and before `YOUR TASK: {adaptive_instructions}`. For `knowledge_query` mode, `evidence_grounding=""` so the block is entirely absent rather than sandwiching the exemption text between constraint blocks.
+**Injection point**: INVESTIGATING base template (forced structure). Anti-hallucination constraints (do not fabricate data sources) apply in all templates. Rule 2 lives in two structurally-distinct constants, each injected via its own placeholder:
+
+- **EVIDENCE GROUNDING** (hard constraints + 4-step procedure + USING EVIDENCE DATA): stored in `_EVIDENCE_GROUNDING_BLOCK` and injected via `{evidence_grounding}`. Appears after `READING DISCIPLINE` and before the evidence-handling rules (EVIDENCE FROM ATTACHMENTS, WORKING WITH EVIDENCE DATA, CLASSIFICATION, etc.).
+- **DIAGNOSTIC REASONING REQUIREMENTS** (OBSERVATION → ANALYSIS → CONCLUSION structure + confidence calibration + no premature resolution + EXAMPLES + PROHIBITED PATTERNS): stored in `_DIAGNOSTIC_REASONING_BLOCK` and injected via `{diagnostic_reasoning}`. Appears after `CONCISENESS` and before `CRITICAL: REASONING-FIRST REQUIREMENT`.
+
+For `knowledge_query` mode, **both** placeholders gate to `""` so neither block appears in the rendered prompt. This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver ("The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply") — rather than sandwiching the exemption text between constraint blocks.
 
 **Prompt injection**:
 
@@ -262,6 +267,7 @@ and state what specific data or input would unblock you.
 | **Doesn't answer, provides something else** | Analyze what was provided. If relevant, incorporate and adjust. If not, acknowledge, proceed without the original ask or offer a simpler alternative. |
 | **Goes off-topic** | Answer the question. If it connects to the investigation, draw that connection. If not, answer and move on — the investigation context remains available. |
 | **Corrects the agent** (contradicts a prior claim, states a step was already tried, corrects a fact) | Acknowledge the correction explicitly in this turn. Update your working model before proceeding. Do not reintroduce the refuted claim or repeat the ruled-out step in subsequent turns. |
+| **Reply doesn't reference a prior diagnostic suggestion** (terse pivot — user may have skipped, errored, or moved on) | Ask explicitly what happened with the suggestion before proposing the next step. Don't assume execution. *Exception*: when a solution has been proposed and you are awaiting compliance, hold per the COMPLIANCE DETECTION rule — silence on a Zone 3 solution proposal is not the same as silence on a Zone 1/2 diagnostic command. |
 | **Disengages** (short responses over multiple turns) | Summarize progress in 1–2 sentences. Make re-engagement low-effort via `suggested_follow_ups`. |
 | **Unrequested data dump** | Scan for relevance, extract what's useful, ask one clarifying question if needed. |
 | **Nothing new to add this turn** | A brief acknowledgement beats manufactured content. Never pad to seem productive. If stuck, state the limitation directly and name what would unblock progress. |
@@ -388,10 +394,10 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | Rule | Template | Section in Template | Position |
 | ---- | -------- | ------------------- | -------- |
 | 1 (Answer First) | INQUIRY only | YOUR TASK instructions | Early (after context header) |
-| 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING + hard constraints (includes confidence calibration + no premature resolution) | EVIDENCE GROUNDING before YOUR TASK; DIAGNOSTIC REASONING after ASSISTANT ROLE |
+| 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING + hard constraints (includes confidence calibration + no premature resolution) | EVIDENCE GROUNDING via `{evidence_grounding}` before evidence-handling rules; DIAGNOSTIC REASONING via `{diagnostic_reasoning}` placeholder after CONCISENESS. Both placeholders gate to `""` in `knowledge_query` mode so the blocks are absent rather than exempted. |
 | 3 (Advisor Role) | All three templates | ASSISTANT ROLE via `_ADVISOR_ROLE_CONSTRAINT` (voice) + `_ACTION_IMPACT_BLOCK` (action impact annotation) | `_ADVISOR_ROLE_CONSTRAINT` shared across INQUIRY_TEMPLATE, INVESTIGATION_BASE, and TERMINAL_TEMPLATE (voice must be preserved in terminal Q&A too). `_ACTION_IMPACT_BLOCK` shared across INQUIRY_TEMPLATE and INVESTIGATION_BASE only (TERMINAL has no action proposals). |
 | 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
-| 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES (behavior table + one-ask-per-turn principle) | After YOUR TASK |
+| 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES (behavior table + one-ask-per-turn principle + CHECK BACK ON SUGGESTED ACTIONS for terse user replies that don't reference a prior diagnostic suggestion) | After YOUR TASK |
 | 6 (Knowledge First) | INQUIRY + INVESTIGATION_BASE + DA system instruction | YOUR TASK (INQUIRY), DIAGNOSIS (INVESTIGATING), TYPE B routing (DA instruction); `KNOWLEDGE_QUERY_INSTRUCTIONS` constant used for knowledge_query bypass | Early in each |
 | 7 (Signal Extraction) | INQUIRY + INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` constant | After CURRENT USER MESSAGE, before YOUR TASK (INQUIRY) / before EVIDENCE GROUNDING (INVESTIGATION_BASE) — near top of each template |
 | 8 (Full-Context Reasoning) | INVESTIGATION_BASE | READING DISCIPLINE via `_READING_DISCIPLINE_BLOCK` (paired with Rule 7) | Same block as Rule 7. In INQUIRY the Full-Context portion is a no-op because its scope-gating opener ("When drawing diagnostic conclusions...") does not engage on pre-investigation turns. |
@@ -443,34 +449,47 @@ These clauses are prompt-layer operational guidance rather than behavioral rules
 
 ```text
 CONTEXT HEADER
-  Identity, case context, hypotheses, pending action,
-  conversation history, user message, output format
+  Identity, case context, milestones, evidence, entity highlights,
+  hypotheses, investigation journal, working conclusion, pending action,
+  conversation history, system feedback, user message
                                                         (~2000-5000+ tokens of dynamic context)
 
 READING DISCIPLINE (Rules 7, 8)                         _READING_DISCIPLINE_BLOCK constant
                                                         Signal Extraction + Full-Context Reasoning
 {evidence_grounding} (Rule 2 extension)                 _EVIDENCE_GROUNDING_BLOCK constant; set to "" for
                                                         knowledge_query (block entirely absent, not exempted)
-YOUR TASK: {adaptive_instructions}                      Focus Zone prepended here for DIAGNOSIS only
-                                                        MITIGATION_FIRST path note scoped to DIAGNOSIS branch
-KEY PRINCIPLES (Rules 4, 5)                             Graceful Pivot + Work With What You Get +
-                                                        one-ask-per-turn principle
-FOLLOW-UP SUGGESTIONS
-EVIDENCE FROM ATTACHMENTS / CLASSIFICATION DECISION TREE / RECORDS
+EVIDENCE FROM ATTACHMENTS                               Orientation: prior files remain searchable;
+                                                        attachments arrive pre-processed in structural indexes
 WORKING WITH EVIDENCE DATA                              _DATA_CITATION_RULE constant (also used in
                                                         INQUIRY_TEMPLATE TRIAGE SUMMARY QUALITY)
+EVIDENCE CLASSIFICATION DECISION TREE                   4-category decision tree (post-010)
+CREATING EVIDENCE RECORDS                               evidence_to_add schema + examples
 EVIDENCE SUMMARY QUALITY                                Long-term memory for evidence artifacts
-INVESTIGATION JOURNAL
+INVESTIGATION JOURNAL                                   journal_entries schema + entry types
+PROACTIVE BLOCKER DETECTION                             missing_critical_data emission
+YOUR TASK: {adaptive_instructions}                      Focus Zone prepended here for DIAGNOSIS only
+                                                        MITIGATION_FIRST path note scoped to DIAGNOSIS branch
+KEY PRINCIPLES (Rules 4, 5)                             Evidence-Driven Progress, NAME THE NEXT DATA POINT,
+                                                        Graceful Pivot, Acknowledge Corrections, Check Back
+                                                        on Suggested Actions, Work With What You Get
+FOLLOW-UP SUGGESTIONS
 MILESTONE ATTRIBUTION
-ASSISTANT ROLE (Rule 3)                                 _ADVISOR_ROLE_CONSTRAINT (voice) +
-                                                        _ACTION_IMPACT_BLOCK (action annotation)
+ASSISTANT ROLE (Rule 3)                                 _ACTIVE_ADVISOR_ROLE_BLOCK
+                                                        (wraps _ADVISOR_ROLE_CONSTRAINT)
+ACTION IMPACT                                           _ACTION_IMPACT_BLOCK
+                                                        (diagnostic vs state-modifying classification)
 CONCISENESS
-DIAGNOSTIC REASONING (Rule 2)                           OBSERVATION -> ANALYSIS -> CONCLUSION +
+{diagnostic_reasoning} (Rule 2)                         _DIAGNOSTIC_REASONING_BLOCK constant; set to "" for
+                                                        knowledge_query (block entirely absent, not exempted)
+                                                        OBSERVATION -> ANALYSIS -> CONCLUSION +
                                                         confidence calibration + no premature resolution
+CRITICAL: REASONING-FIRST REQUIREMENT                   internal_reasoning emission gate for milestones
 <security_constraints>
 ```
 
-**`processing_mode == "knowledge_query"` bypass**: When this mode is set, `get_prompt_for_case()` skips stage dispatch entirely and passes `evidence_grounding=""`. `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions`, and the EVIDENCE GROUNDING block is absent from the rendered prompt entirely — rather than inserting an exemption clause sandwiched between other constraint blocks. DIAGNOSTIC REASONING constraints also do not apply for that turn.
+**Why this order**: evidence-handling rules precede `YOUR TASK` so the LLM internalizes the input-quality and classification framework *before* reading its stage-specific playbook. The dynamic context block above READING DISCIPLINE is where actual evidence appears; the rules section below READING DISCIPLINE tells the LLM how to interpret it. The instruction layer (`adaptive_instructions` + KEY PRINCIPLES + FOLLOW-UP SUGGESTIONS) follows. Output-shaping rules (ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, DIAGNOSTIC REASONING, REASONING-FIRST) come last so they're freshest in the LLM's working context when it composes its response.
+
+**`processing_mode == "knowledge_query"` bypass**: When this mode is set, `get_prompt_for_case()` skips stage dispatch entirely and passes `evidence_grounding=""` AND `diagnostic_reasoning=""`. `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions`. Both the EVIDENCE GROUNDING and DIAGNOSTIC REASONING blocks are absent from the rendered prompt entirely — rather than inserting exemption clauses sandwiched between other constraint blocks. This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver text ("The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply").
 
 ### Design Rationale
 
