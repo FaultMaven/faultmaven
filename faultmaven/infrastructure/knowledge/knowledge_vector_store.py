@@ -765,13 +765,15 @@ class KnowledgeVectorStore(BaseExternalClient):
 
     async def add_documents(
         self,
-        collection_name: str,
         documents: List[Dict[str, Any]],
         embeddings: Optional[List[List[float]]] = None,
+        collection_name: str = KB_COLLECTION,
     ) -> None:
         """Add documents to a KB collection.
 
         Args:
+            documents: List of dicts with 'id', 'content', and optional 'metadata'.
+            embeddings: Pre-computed embedding vectors, one per document.
             collection_name: Exact ChromaDB collection name.
             documents: List of dicts with 'id', 'content', and optional 'metadata'.
             embeddings: Pre-computed embedding vectors, one per document.
