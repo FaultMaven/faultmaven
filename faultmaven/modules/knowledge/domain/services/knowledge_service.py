@@ -927,7 +927,7 @@ class KnowledgeService:
                                 "error": f"Document {document_id} not found",
                             }
 
-                        dm.status = "deprecated"
+                        dm.status = "discarded"
                         dm.knowledge_item_id = None
                         await session.commit()
 

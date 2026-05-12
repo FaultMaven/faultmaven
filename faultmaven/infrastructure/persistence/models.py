@@ -311,6 +311,9 @@ class UserModel(Base):
         onupdate=func.now(),
     )
     deleted_at = Column(DateTime(timezone=True), nullable=True)
+    # Local/dev-mode role storage. Cloud mode derives roles from RBAC tables
+    # (organization_members → roles). Stores a JSON array, e.g. '["user","admin"]'.
+    dev_roles = Column(Text, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("sso_provider", "sso_provider_id", name="users_sso_unique"),

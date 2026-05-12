@@ -259,7 +259,15 @@ async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
         # Check if any users exist
         existing_user = await user_store.get_user_by_username(DEFAULT_ADMIN_USERNAME)
         if existing_user:
-            logger.info(f"Admin user '{DEFAULT_ADMIN_USERNAME}' already exists")
+            if "admin" not in (existing_user.roles or []):
+                logger.info(
+                    f"Admin user '{DEFAULT_ADMIN_USERNAME}' exists but lacks admin role — fixing"
+                )
+                existing_user.roles = list(existing_user.roles or []) + ["admin"]
+                await user_store.update_user(existing_user)
+                logger.info(f"Admin role added to '{DEFAULT_ADMIN_USERNAME}'")
+            else:
+                logger.info(f"Admin user '{DEFAULT_ADMIN_USERNAME}' already exists")
             return None
 
         # Also check by email
