@@ -12,15 +12,15 @@ from typing import Optional
 
 import pytest
 
-from faultmaven.core.investigation.indicator_evaluator import IndicatorEvaluator
 from faultmaven.core.investigation.cause_schemas import CauseChunk
+from faultmaven.core.investigation.indicator_evaluator import IndicatorEvaluator
 
 
 def _cause(
     letter: str,
     name: str,
     indicators: list[str],
-    predicates: Optional[list[dict]] = None,
+    predicates: list[dict] | None = None,
     *,
     is_fallback: bool = False,
 ) -> CauseChunk:
