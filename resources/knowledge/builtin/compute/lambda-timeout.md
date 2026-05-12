@@ -1,383 +1,485 @@
 ---
-id: lambda-timeout
+id: "lambda-timeout"
 title: "AWS Lambda Function Timeout"
 domain: compute
 service: aws-lambda
-symptom_class:
-  - timeout
-  - latency
+symptom_class: [timeout, latency]
 severity: high
 scope: global
-version: "2.1.0"
-last_updated: "2026-03-26"
-verified_by: kb-researcher
+version: "1.0.0"
+last_updated: "2026-05-12"
+verified_by: "kb-researcher"
 status: draft
-tags:
-  - aws
-  - lambda
-  - timeout
-  - serverless
-  - cold-start
-  - latency
-  - memory
-  - provisioned-concurrency
+tags: [aws, lambda, serverless, cold-start, vpc, provisioned-concurrency]
 difficulty: intermediate
 ---
 
-# AWS Lambda Function Timeout
+## Symptom Recognition
 
-## Problem Definition
+- CloudWatch Logs show `Task timed out after X.XX seconds` in the function's log group
+- REPORT line shows `Duration` equal to the configured `Timeout` value (e.g., `Duration: 15000.00 ms` when timeout is 15 s)
+- Lambda `Errors` CloudWatch metric spikes; corresponding `Throttles` metric may also increase if retries pile up
+- API Gateway, ALB, or EventBridge callers receive 5xx errors at the same rate as timeouts
+- `INIT_START` present in logs before `Task timed out` — indicates cold-start overhead consumed the timeout budget
+- X-Ray traces show a subsegment (HTTP call, DB query, SDK call) that does not return before the trace terminates
 
-This runbook applies to AWS Lambda functions in any supported runtime and any AWS region. You need the AWS CLI v2 with `lambda:GetFunction`, `lambda:InvokeFunction`, `logs:StartQuery`, and `cloudwatch:GetMetricStatistics` permissions. For VPC-connected functions, you also need `ec2:Describe*` permissions. The function's timeout can be configured from 1 second to 15 minutes (default 3 seconds).
+## Applicability
 
-A Lambda function exceeds its configured execution time limit and is forcibly terminated by the Lambda service. The invocation returns `Task timed out after X.XX seconds`. The function produces no return value, any work in progress is lost, and downstream callers (API Gateway, EventBridge, S3 triggers) receive a 5xx error or retry the invocation. The timeout includes both the Init phase (loading code, initializing SDK clients) and the Invoke phase (executing the handler).
-
-The most frequent causes are: cold start overhead consuming most of the timeout budget (especially with large deployment packages or heavy initialization), downstream service latency (external APIs, databases, or AWS services responding slowly or being unreachable), insufficient memory allocation (Lambda allocates CPU proportional to memory, so low memory means slow computation), VPC connectivity issues (missing NAT Gateway or exhausted subnet IPs), synchronous blocking on sequential network calls without parallelism, and recursive invocation loops where the function inadvertently triggers itself.
-
-**Typical error presentation:**
-
-```text
-REPORT RequestId: abc-123 Duration: 15000.00 ms Billed Duration: 15000 ms Memory Size: 128 MB Max Memory Used: 95 MB
-Task timed out after 15.00 seconds
-```
+- Applies to all Lambda runtimes (Python, Node.js, Java, Go, .NET, Ruby, custom runtimes) in any AWS region
+- Required IAM permissions: `lambda:GetFunctionConfiguration`, `lambda:UpdateFunctionConfiguration`, `lambda:InvokeFunction`, `logs:StartQuery`, `logs:GetLogEvents`, `logs:DescribeLogStreams`, `cloudwatch:GetMetricStatistics`
+- For VPC-connected functions: add `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`, `ec2:DescribeNatGateways`
+- AWS CLI v2 required for the CloudWatch Logs Insights queries in Steps 3–4
+- Configurable timeout range: 1 second to 900 seconds (15 minutes); default is 3 seconds
 
 ## Diagnostic Steps
 
-### Step 1: Check the Current Timeout and Memory Configuration
-
-**What this checks:** The function's configured limits, which establish the maximum execution time and available CPU.
+### Step 1: Retrieve current timeout and memory configuration
 
 ```bash
-aws lambda get-function-configuration --function-name my-function \
+aws lambda get-function-configuration \
+  --function-name my-function \
   --query '{Timeout:Timeout,MemorySize:MemorySize,Runtime:Runtime,VpcConfig:VpcConfig}'
 ```
 
-**Expected output:** JSON with `Timeout` (seconds), `MemorySize` (MB), runtime, and VPC configuration.
+Expected output: JSON with `Timeout` (seconds), `MemorySize` (MB), runtime identifier, and `VpcConfig` (empty object if not VPC-attached).
 
-**What the finding means:** A 128 MB function gets minimal CPU. A 3-second timeout leaves almost no room for cold starts. If the function is in a VPC, ENI attachment adds latency.
-
-### Step 2: Analyze CloudWatch Logs for Duration Breakdown
-
-**What this checks:** How the function spends its execution time, including Init phase duration and application-level timing.
+### Step 2: Fetch the most recent log stream and inspect REPORT lines
 
 ```bash
-# Get recent log events from the latest stream
-STREAM=$(aws logs describe-log-streams --log-group-name /aws/lambda/my-function \
+STREAM=$(aws logs describe-log-streams \
+  --log-group-name /aws/lambda/my-function \
   --order-by LastEventTime --descending --limit 1 \
   --query 'logStreams[0].logStreamName' --output text)
 
-aws logs get-log-events --log-group-name /aws/lambda/my-function \
-  --log-stream-name "$STREAM" --limit 50
+aws logs get-log-events \
+  --log-group-name /aws/lambda/my-function \
+  --log-stream-name "$STREAM" \
+  --limit 100 \
+  --query 'events[*].message' --output text
 ```
 
-**Expected output:** Log events including `INIT_START` (cold start indicator), `REPORT` lines with `Duration` and `Init Duration`, and application-level logs before the timeout.
+Expected output: Log lines including `INIT_START`, `START`, `REPORT`, and any `Task timed out after` message. The `REPORT` line shows `Duration`, `Billed Duration`, `Memory Size`, `Max Memory Used`, and optionally `Init Duration`.
 
-**What the finding means:** If `INIT_START` appears and `Init Duration` is a large fraction of the timeout, cold start overhead is the bottleneck. If application logs show the function reaching a specific downstream call before timing out, that call is the bottleneck.
-
-### Step 3: Check for Cold Start Impact
-
-**What this checks:** How frequently cold starts occur and how much time they add to invocations.
+### Step 3: Quantify cold-start frequency and init duration over the last hour
 
 ```bash
-aws logs start-query --log-group-name /aws/lambda/my-function \
-  --start-time $(date -d '1 hour ago' +%s) --end-time $(date +%s) \
-  --query-string 'filter @type = "REPORT" | stats count() as invocations, sum(@initDuration > 0) as coldStarts by bin(5m)'
+aws logs start-query \
+  --log-group-name /aws/lambda/my-function \
+  --start-time $(date -d '1 hour ago' +%s) \
+  --end-time $(date +%s) \
+  --query-string 'filter @type = "REPORT" | stats count() as invocations, count(@initDuration) as coldStarts, max(@initDuration) as maxInitMs, avg(@duration) as avgDurationMs by bin(5m)'
 ```
 
-**Expected output:** Invocation counts and cold start counts per 5-minute window.
+Expected output: Per-5-minute rows with `invocations`, `coldStarts`, `maxInitMs`, and `avgDurationMs`. A non-zero `coldStarts` column confirms cold-start overhead is present.
 
-**What the finding means:** If a significant percentage of invocations are cold starts and `@initDuration` approaches the timeout, cold start overhead is the primary issue. Functions with infrequent invocations have the highest cold start rates.
-
-### Step 4: Check Memory Usage vs Limit
-
-**What this checks:** Whether the function is memory-constrained or CPU-constrained due to low memory allocation.
+### Step 4: Check memory usage versus allocation
 
 ```bash
-aws logs start-query --log-group-name /aws/lambda/my-function \
-  --start-time $(date -d '1 hour ago' +%s) --end-time $(date +%s) \
-  --query-string 'filter @type = "REPORT" | stats max(@maxMemoryUsed / 1000000) as maxMemMB, avg(@duration) as avgDurationMs'
+aws logs start-query \
+  --log-group-name /aws/lambda/my-function \
+  --start-time $(date -d '1 hour ago' +%s) \
+  --end-time $(date +%s) \
+  --query-string 'filter @type = "REPORT" | stats max(@maxMemoryUsed) as peakMemBytes, avg(@duration) as avgMs, max(@duration) as maxMs'
 ```
 
-**Expected output:** Peak memory usage and average duration.
+Expected output: `peakMemBytes` (raw bytes), `avgMs`, `maxMs`. Divide `peakMemBytes` by 1048576 to convert to MB and compare to the `MemorySize` from Step 1.
 
-**What the finding means:** If the function uses well below its memory limit but is slow, it is likely CPU-bound. Increasing memory (which increases CPU) will speed it up. If memory usage is near the limit, the garbage collector may run aggressively, adding latency.
-
-### Step 5: Check for VPC Connectivity Issues
-
-**What this checks:** Whether a VPC-connected function has proper network routing to downstream services.
+### Step 5: Check VPC subnet IP availability (VPC-attached functions only)
 
 ```bash
-# Check if function is in a VPC
-aws lambda get-function-configuration --function-name my-function \
-  --query 'VpcConfig.{SubnetIds:SubnetIds,SecurityGroupIds:SecurityGroupIds}'
+SUBNET_IDS=$(aws lambda get-function-configuration \
+  --function-name my-function \
+  --query 'VpcConfig.SubnetIds[]' \
+  --output text)
 
-# Check subnet IP availability
-for subnet in $(aws lambda get-function-configuration --function-name my-function \
-  --query 'VpcConfig.SubnetIds[]' --output text 2>/dev/null); do
-  aws ec2 describe-subnets --subnet-ids $subnet \
-    --query 'Subnets[0].{SubnetId:SubnetId,AvailableIps:AvailableIpAddressCount,CidrBlock:CidrBlock}'
+for subnet in $SUBNET_IDS; do
+  aws ec2 describe-subnets --subnet-ids "$subnet" \
+    --query 'Subnets[0].{SubnetId:SubnetId,AvailableIPs:AvailableIpAddressCount,CidrBlock:CidrBlock}'
 done
 ```
 
-**Expected output:** Subnet details with available IP counts.
+Expected output: One JSON object per subnet showing `AvailableIPs`. Values near 0 indicate IP exhaustion that prevents Hyperplane ENI creation.
 
-**What the finding means:** VPC functions need a NAT Gateway to reach public endpoints. Low available IPs in subnets can cause ENI creation failures during scaling. Verify the subnet route table has a `0.0.0.0/0` route to a NAT Gateway.
-
-### Step 6: Check Downstream Service Health
-
-**What this checks:** Whether the services the function depends on are responsive.
+### Step 6: Verify internet routing for VPC-attached functions
 
 ```bash
-# For DynamoDB
-aws dynamodb describe-table --table-name my-table --query 'Table.TableStatus'
+SUBNET_ID=$(aws lambda get-function-configuration \
+  --function-name my-function \
+  --query 'VpcConfig.SubnetIds[0]' --output text)
 
-# For RDS
-aws rds describe-db-instances --db-instance-identifier my-db \
-  --query 'DBInstances[0].DBInstanceStatus'
+RTB_ID=$(aws ec2 describe-route-tables \
+  --filters "Name=association.subnet-id,Values=$SUBNET_ID" \
+  --query 'RouteTables[0].RouteTableId' --output text)
+
+aws ec2 describe-route-tables --route-table-ids "$RTB_ID" \
+  --query 'RouteTables[0].Routes[*].{Dest:DestinationCidrBlock,GatewayId:GatewayId,NatGatewayId:NatGatewayId}'
 ```
 
-**Expected output:** `ACTIVE` or `available` status for downstream services.
+Expected output: Route table entries. A `0.0.0.0/0` route with a `NatGatewayId` confirms internet access for VPC functions. Absence of this route means the function cannot reach public endpoints.
 
-**What the finding means:** If a downstream service is degraded, the function blocks waiting for a response until the Lambda timeout expires. Enable X-Ray tracing (Step 7) to identify which specific call is slow.
-
-### Step 7: Enable X-Ray Tracing for Request Breakdown
-
-**What this checks:** A waterfall view of each downstream call with individual durations, identifying the specific bottleneck.
+### Step 7: Enable X-Ray active tracing and inspect subsegment durations
 
 ```bash
-# Enable active tracing
-aws lambda update-function-configuration --function-name my-function \
+aws lambda update-function-configuration \
+  --function-name my-function \
   --tracing-config Mode=Active
 
-# Invoke the function
-aws lambda invoke --function-name my-function --payload '{}' output.json
+aws lambda invoke \
+  --function-name my-function \
+  --payload '{}' /tmp/lambda-out.json
 
-# View traces
-aws xray get-trace-summaries --start-time $(date -d '5 minutes ago' +%s) \
-  --end-time $(date +%s)
+aws xray get-trace-summaries \
+  --start-time $(date -d '5 minutes ago' +%s) \
+  --end-time $(date +%s) \
+  --query 'TraceSummaries[*].{Id:Id,Duration:Duration,HasError:HasError}'
 ```
 
-**Expected output:** Trace summaries showing each subsegment (DynamoDB, S3, HTTP calls) with individual durations.
+Expected output: Trace summaries. Retrieve the longest trace ID, then run `aws xray batch-get-traces --trace-ids <id>` to see per-subsegment durations identifying the specific bottleneck call.
 
-**What the finding means:** The subsegment with the longest duration is the bottleneck. X-Ray shows whether latency comes from connection establishment, data transfer, or response processing.
-
-## Mitigation
-
-### Option 1: Increase the Timeout
-
-The simplest immediate fix when the function's workload is legitimate but the timeout is too short.
-
-- **Risk:** Low. Increases maximum execution time and therefore maximum cost per invocation. Does not fix the root cause if the function is stuck waiting on a dead service.
-- **Command:**
-
-  ```bash
-  aws lambda update-function-configuration --function-name my-function --timeout 60
-  ```
-
-- **Verify:**
-
-  ```bash
-  aws lambda invoke --function-name my-function --payload '{}' output.json
-  cat output.json
-  ```
-
-  The function should complete without timeout errors.
-- **Duration:** Immediate. Configuration update takes effect within seconds.
-
-### Option 2: Increase Memory (and CPU)
-
-Use when the function is compute-bound or memory-constrained.
-
-- **Risk:** Low-Medium. Increases cost per invocation proportionally. A function at 256 MB costs twice as much per ms as 128 MB, but may complete in less than half the time, reducing total cost.
-- **Command:**
-
-  ```bash
-  aws lambda update-function-configuration --function-name my-function --memory-size 256
-  ```
-
-- **Verify:**
-
-  ```bash
-  aws lambda invoke --function-name my-function --payload '{}' output.json
-  ```
-
-  Duration should decrease. Use AWS Lambda Power Tuning to find the optimal memory setting.
-- **Duration:** Immediate.
-
-### Option 3: Enable Provisioned Concurrency
-
-Eliminates cold start overhead by keeping pre-initialized execution environments warm.
-
-- **Risk:** Medium. Incurs continuous cost for provisioned environments regardless of invocation volume. Only cost-effective for consistent traffic patterns.
-- **Command:**
-
-  ```bash
-  # Publish a version (provisioned concurrency works on versions/aliases, not $LATEST)
-  VERSION=$(aws lambda publish-version --function-name my-function \
-    --query 'Version' --output text)
-
-  # Set provisioned concurrency
-  aws lambda put-provisioned-concurrency-config \
-    --function-name my-function --qualifier $VERSION \
-    --provisioned-concurrent-executions 10
-  ```
-
-- **Verify:**
-
-  ```bash
-  aws lambda get-provisioned-concurrency-config \
-    --function-name my-function --qualifier $VERSION
-  ```
-
-  `Status` should be `READY`. Subsequent invocations should show no `INIT_START` in logs.
-- **Duration:** Provisioned concurrency takes 1-5 minutes to allocate.
-
-### Option 4: Add Timeouts to Downstream Calls
-
-Prevents the function from waiting indefinitely for a slow downstream service.
-
-- **Risk:** Low. Causes the function to fail fast with a specific error instead of timing out silently. Requires code changes.
-- **Command:** Apply in application code:
-
-  ```python
-  # Python: set HTTP client timeout
-  import requests
-  response = requests.get("https://api.example.com/data", timeout=5)
-
-  # AWS SDK (boto3): set client timeout
-  import boto3
-  from botocore.config import Config
-  config = Config(connect_timeout=5, read_timeout=10)
-  dynamodb = boto3.client('dynamodb', config=config)
-  ```
-
-- **Verify:** Deploy updated code and invoke. The function should return a specific timeout error from the downstream call rather than a Lambda-level timeout.
-- **Duration:** Requires code deployment (minutes).
-
-## Root Cause Resolution
-
-**If** Step 3 shows high cold start frequency and `@initDuration` is a significant portion of the timeout **then** reduce initialization time:
+### Step 8: Check for recursive invocation loops
 
 ```bash
-# For Java functions: enable SnapStart to snapshot the initialized state
-aws lambda update-function-configuration --function-name my-function \
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/Lambda \
+  --metric-name ConcurrentExecutions \
+  --dimensions Name=FunctionName,Value=my-function \
+  --start-time $(date -d '30 minutes ago' -u +%Y-%m-%dT%H:%M:%SZ) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  --period 60 --statistics Maximum
+```
+
+Expected output: `Maximum` concurrency per minute. Sustained high concurrency approaching the account limit while the function is not handling external traffic indicates a recursive loop.
+
+## Causes
+
+### Cause A: Cold start exhausts the timeout budget
+
+**Statement:** The Init phase (loading code and initializing global state) consumes a large fraction of the configured timeout, leaving insufficient time for the Invoke phase to complete.
+
+**Mechanism:** Lambda creates a new execution environment when no warm environment is available. The Init phase runs the full module/package import, SDK client construction, and any global initialization code before the handler is called. For short timeouts (≤3 s), a slow Init phase causes `Sandbox.Timedout`, and subsequent suppressed-init attempts also fail because the suppressed init must complete within the same timeout budget.
+
+**Indicator:**
+
+- [Step 2] `INIT_START` appears in the log stream and `Task timed out after` follows in the same invocation
+- [Step 3] `coldStarts` count is high relative to `invocations` (e.g., >20% cold-start rate)
+- [Step 3] `maxInitMs` is close to or exceeds the configured timeout in milliseconds
+
+<!-- match: {"step": 3, "predicate": "threshold", "target": "maxInitMs", "op": ">", "value": 2500} -->
+
+**Mitigation:**
+
+- **Risk:** Increasing timeout raises maximum cost per invocation; does not fix the root cause.
+- **Command:**
+
+  ```bash
+  aws lambda update-function-configuration \
+    --function-name my-function \
+    --timeout 30
+  ```
+
+- **Duration:** Immediate; buys time to optimize initialization code.
+
+**Resolution:**
+
+```bash
+# Enable SnapStart (Java only) to snapshot initialized state
+aws lambda update-function-configuration \
+  --function-name my-function \
   --snap-start ApplyOn=PublishedVersions
 aws lambda publish-version --function-name my-function
+
+# For all runtimes: enable provisioned concurrency on a published version
+VERSION=$(aws lambda publish-version --function-name my-function \
+  --query 'Version' --output text)
+aws lambda put-provisioned-concurrency-config \
+  --function-name my-function \
+  --qualifier "$VERSION" \
+  --provisioned-concurrent-executions 5
 ```
 
-Additional cold start reduction strategies: minimize deployment package size (remove dev dependencies, use Lambda Layers for shared code), use lazy initialization for SDK clients, avoid heavy imports at module level in Python, and for Java/JVM consider GraalVM native images.
+- **Impact:** Provisioned concurrency incurs continuous cost regardless of invocation volume; right-size to observed peak concurrency.
+- **Rollback:** `aws lambda delete-provisioned-concurrency-config --function-name my-function --qualifier "$VERSION"`
 
-**If** X-Ray traces (Step 7) show a specific downstream call consuming most of the duration **then** address the bottleneck: add indexes to slow database queries, implement caching (ElastiCache, DAX for DynamoDB), add circuit breakers for external APIs, or offload slow operations to SQS for asynchronous processing.
+**Verification:** Invoke 10 times and confirm `INIT_START` is absent from logs and `Duration` is consistently below 80% of the configured timeout.
 
-**If** Step 4 shows the function is not memory-constrained but execution is slow **then** the function is CPU-bound with insufficient CPU. Use the AWS Lambda Power Tuning tool:
+---
+
+### Cause B: Downstream service latency blocks the handler
+
+**Statement:** A downstream dependency (database, external API, or AWS service) responds slowly or not at all, causing the handler to block until the Lambda timeout fires.
+
+**Mechanism:** Lambda functions frequently make synchronous network calls to databases, caches, or third-party APIs. When the downstream service is degraded — due to high load, cold connection pools, or misconfigured DNS — the SDK or HTTP client waits indefinitely (or up to its own timeout, which may exceed the Lambda timeout). The function continues consuming execution time while blocked, then terminates with `Task timed out after X seconds` without producing output.
+
+**Indicator:**
+
+- [Step 7] X-Ray subsegment for a specific downstream call (DynamoDB, RDS, HTTP) shows duration equal to total trace duration
+- [Step 2] Application logs show the function reaching the downstream call but no response log after it
+- [Symptom] Duration in REPORT line equals the configured timeout consistently across invocations
+
+<!-- match: {"step": 7, "predicate": "contains", "target": "HasError"} -->
+
+**Mitigation:**
+
+- **Risk:** Adding client-side timeouts causes the function to fail fast with a specific error instead of a silent Lambda timeout; callers may need to handle a new error type.
+- **Command:**
+
+  ```bash
+  # No CLI command — add SDK timeout in application code:
+  # Python boto3 example:
+  # from botocore.config import Config
+  # config = Config(connect_timeout=3, read_timeout=8, retries={'max_attempts': 2})
+  # client = boto3.client('dynamodb', config=config)
+  echo "Deploy updated function code with explicit client timeouts"
+  ```
+
+- **Duration:** Requires a code deployment (minutes); effective immediately after deploy.
+
+**Resolution:**
 
 ```bash
-# Deploy the Power Tuning Step Function (one-time setup)
-# https://github.com/alexcasalboni/aws-lambda-power-tuning
+# After identifying the bottleneck via X-Ray, address root cause per service:
+# DynamoDB — add a GSI or enable DAX caching
+# RDS — add a read replica or connection pool (RDS Proxy)
+# External API — add circuit breaker or async offload via SQS
 
+# Example: enable RDS Proxy for a MySQL database
+aws rds create-db-proxy \
+  --db-proxy-name my-proxy \
+  --engine-family MYSQL \
+  --auth '[{"AuthScheme":"SECRETS","SecretArn":"arn:aws:secretsmanager:...","IAMAuth":"DISABLED"}]' \
+  --role-arn arn:aws:iam::123456789012:role/rds-proxy-role \
+  --vpc-subnet-ids subnet-abc subnet-def
+```
+
+**Verification:** After deployment, run `aws xray get-trace-summaries` following 5–10 invocations and confirm no subsegment duration exceeds 50% of the Lambda timeout.
+
+---
+
+### Cause C: Insufficient memory causing CPU starvation
+
+**Statement:** The function is allocated insufficient memory, resulting in proportionally low CPU that makes computation-heavy operations too slow to complete within the timeout.
+
+**Mechanism:** Lambda allocates CPU power linearly with memory: a 128 MB function receives approximately 1/16th of a vCPU, while a 1769 MB function receives one full vCPU. Functions performing JSON parsing, compression, image processing, or cryptographic operations on 128–256 MB are CPU-starved and may take 10–100x longer than on 1024 MB+. Additionally, garbage collectors in Python, Java, and Node.js run more frequently under memory pressure, adding latency spikes.
+
+**Indicator:**
+
+- [Step 4] `peakMemBytes` is well below the `MemorySize` allocation (function is not memory-bound), yet `avgMs` is high
+- [Step 1] `MemorySize` is 128 or 256 MB
+- [Step 2] No downstream service call in logs immediately before timeout — function appears to time out inside CPU-bound code
+
+<!-- match: {"step": 1, "predicate": "threshold", "target": "MemorySize", "op": "<", "value": 512} -->
+
+**Mitigation:**
+
+- **Risk:** Increasing memory increases per-ms cost but typically reduces total invocation duration; net cost often decreases.
+- **Command:**
+
+  ```bash
+  aws lambda update-function-configuration \
+    --function-name my-function \
+    --memory-size 1024
+  ```
+
+- **Duration:** Immediate.
+
+**Resolution:**
+
+```bash
+# Use AWS Lambda Power Tuning to find the optimal memory/cost/performance trade-off
 aws stepfunctions start-execution \
   --state-machine-arn arn:aws:states:us-east-1:123456789012:stateMachine:powerTuningStateMachine \
-  --input '{"lambdaARN":"arn:aws:lambda:us-east-1:123456789012:function:my-function","powerValues":[128,256,512,1024,2048],"num":20,"payload":"{}"}'
+  --input '{
+    "lambdaARN": "arn:aws:lambda:us-east-1:123456789012:function:my-function",
+    "powerValues": [128, 256, 512, 1024, 1769, 3008],
+    "num": 20,
+    "payload": "{}"
+  }'
 ```
 
-**If** Step 5 shows the function is in a VPC with no NAT Gateway route **then** add VPC endpoints for AWS services (free for gateway endpoints) or a NAT Gateway:
+- **Impact:** Memory change applies to all future invocations; no restart needed.
+- **Rollback:** `aws lambda update-function-configuration --function-name my-function --memory-size 128`
+
+**Verification:** After the memory increase, confirm `avgDurationMs` from Step 4 drops by at least 40% and no longer approaches the timeout.
+
+---
+
+### Cause D: VPC subnet IP exhaustion or missing NAT Gateway
+
+**Statement:** A VPC-attached Lambda function cannot establish a Hyperplane ENI due to subnet IP exhaustion, or it cannot reach public endpoints because no NAT Gateway route exists in the subnet route table.
+
+**Mechanism:** When a Lambda function is attached to a VPC, the Lambda service creates Hyperplane ENIs in the specified subnets. If a subnet has fewer available IPs than needed to create ENIs at the required concurrency, new execution environments cannot be created and invocations time out. Additionally, Lambda functions in a VPC do not have internet access by default — a NAT Gateway (for private subnets) or VPC endpoint (for AWS services) is required. Without these, SDK calls to AWS services or external APIs block until the Lambda timeout fires.
+
+**Indicator:**
+
+- [Step 5] `AvailableIPs` for one or more subnets is below 10
+- [Step 6] No route with `NatGatewayId` exists for `0.0.0.0/0` in the subnet route table
+- [Step 1] `VpcConfig.SubnetIds` is non-empty (function is VPC-attached)
+
+<!-- match: {"step": 5, "predicate": "threshold", "target": "AvailableIPs", "op": "<", "value": 10} -->
+<!-- match: {"step": 6, "predicate": "absent", "target": "NatGatewayId"} -->
+
+**Mitigation:**
+
+- **Risk:** Adding VPC endpoints or a NAT Gateway incurs hourly charges; verify the function genuinely needs internet access before adding a NAT Gateway.
+- **Command:**
+
+  ```bash
+  # Add gateway endpoints for DynamoDB and S3 (no hourly charge)
+  VPC_ID=$(aws lambda get-function-configuration \
+    --function-name my-function \
+    --query 'VpcConfig.VpcId' --output text)
+
+  RTB_ID=$(aws ec2 describe-route-tables \
+    --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query 'RouteTables[0].RouteTableId' --output text)
+
+  aws ec2 create-vpc-endpoint \
+    --vpc-id "$VPC_ID" \
+    --service-name com.amazonaws.us-east-1.dynamodb \
+    --route-table-ids "$RTB_ID"
+
+  aws ec2 create-vpc-endpoint \
+    --vpc-id "$VPC_ID" \
+    --service-name com.amazonaws.us-east-1.s3 \
+    --route-table-ids "$RTB_ID"
+  ```
+
+- **Duration:** VPC endpoints become active within 2 minutes.
+
+**Resolution:**
 
 ```bash
-# Gateway endpoints for DynamoDB and S3 (no cost)
-aws ec2 create-vpc-endpoint --vpc-id vpc-123 \
-  --service-name com.amazonaws.us-east-1.dynamodb --route-table-ids rtb-123
-aws ec2 create-vpc-endpoint --vpc-id vpc-123 \
-  --service-name com.amazonaws.us-east-1.s3 --route-table-ids rtb-123
+# If function needs general internet access, attach a NAT Gateway
+# (replace with your actual subnet/EIP values)
+EIP=$(aws ec2 allocate-address --domain vpc --query 'AllocationId' --output text)
+NAT_GW=$(aws ec2 create-nat-gateway \
+  --subnet-id subnet-public-123 \
+  --allocation-id "$EIP" \
+  --query 'NatGateway.NatGatewayId' --output text)
+
+# Wait for NAT Gateway to become available (~1 min), then add route
+aws ec2 create-route \
+  --route-table-id "$RTB_ID" \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id "$NAT_GW"
 ```
 
-**If** CloudWatch shows the function invoking at maximum concurrency continuously **then** the function is triggering itself in a recursive loop. Immediately set concurrency to zero to stop the cascade:
+**Verification:** Invoke the function and confirm it completes without timeout. Check Step 6 again and verify the `0.0.0.0/0` route now shows a `NatGatewayId`.
+
+---
+
+### Cause E: Recursive invocation loop
+
+**Statement:** The function triggers itself recursively (e.g., by writing to the same S3 bucket or SQS queue that invokes it), causing concurrency to spike to the account limit and all invocations to time out.
+
+**Mechanism:** Lambda automatically detects recursive loops for some services, but not all trigger patterns. When a function writes an object to the S3 bucket configured as its own trigger, or sends a message to the SQS queue that invokes it, each invocation spawns new invocations exponentially. Concurrency reaches the account limit within seconds. Each execution waits for downstream invocations that are themselves throttled, producing cascading timeouts. Cost accumulates rapidly.
+
+**Indicator:**
+
+- [Step 8] `Maximum` concurrent executions is at or near the account concurrency limit (default 1000)
+- [Symptom] Lambda `Throttles` metric is also elevated simultaneously with `Errors`
+- [Step 2] Function logs show the same event payload pattern repeating across multiple log streams
+
+<!-- match: {"step": 8, "predicate": "threshold", "target": "Maximum", "op": ">", "value": 800} -->
+
+**Mitigation:**
+
+- **Risk:** Setting concurrency to 0 stops all invocations including legitimate traffic; apply only when a recursive loop is confirmed.
+- **Command:**
+
+  ```bash
+  # Stop the cascade immediately
+  aws lambda put-function-concurrency \
+    --function-name my-function \
+    --reserved-concurrent-executions 0
+  ```
+
+- **Duration:** Apply until the root trigger configuration is corrected; restore within 30 minutes.
+
+**Resolution:**
 
 ```bash
-aws lambda put-function-concurrency --function-name my-function \
-  --reserved-concurrent-executions 0
+# Fix the trigger (example: separate S3 input and output buckets)
+# Remove the self-referential trigger
+aws lambda remove-permission \
+  --function-name my-function \
+  --statement-id s3-trigger-self
 
-# Fix the trigger configuration (e.g., use separate input/output S3 buckets)
-# Then restore concurrency:
+# Restore concurrency after fixing the trigger
 aws lambda delete-function-concurrency --function-name my-function
 ```
 
-## Verification
+**Verification:** After restoring concurrency, confirm `ConcurrentExecutions` stays at expected levels and no recursive invocations appear in CloudWatch Logs Insights.
 
-After applying a fix, confirm the timeout is resolved:
+---
 
-```bash
-# Invoke and check for successful completion
-aws lambda invoke --function-name my-function --payload '{}' output.json
-cat output.json
-```
+### Cause Z: Unidentified timeout cause
 
-The invocation should return successfully with `StatusCode` 200. No `FunctionError` field should be present.
+**Statement:** The timeout root cause cannot be determined from available logs, metrics, or traces.
 
-```bash
-# Check duration is well below timeout
-aws cloudwatch get-metric-statistics --namespace AWS/Lambda \
-  --metric-name Duration --dimensions Name=FunctionName,Value=my-function \
-  --start-time $(date -d '10 minutes ago' -u +%Y-%m-%dT%H:%M:%SZ) \
-  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  --period 60 --statistics Average,Maximum
-```
+**Mechanism:** The timeout may result from an uncommon trigger (EFS mount latency, infrequent SDK credential refresh, or a runtime-specific bug) not covered by the above causes. Additional instrumentation is required.
 
-Average duration should be well below the configured timeout. Maximum duration should not equal the timeout.
+**Indicator:**
 
-```bash
-# Verify error rate is zero
-aws cloudwatch get-metric-statistics --namespace AWS/Lambda \
-  --metric-name Errors --dimensions Name=FunctionName,Value=my-function \
-  --start-time $(date -d '10 minutes ago' -u +%Y-%m-%dT%H:%M:%SZ) \
-  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  --period 60 --statistics Sum
-```
+- [Default] Steps 1–8 did not conclusively match any cause above
 
-`Sum` should be 0 for all recent data points.
+**Mitigation:**
+
+- **Risk:** Adding X-Ray and structured logging has minimal performance overhead (<1 ms per invocation) but may expose sensitive data in traces.
+- **Command:**
+
+  ```bash
+  # Enable active tracing and add structured timing logs to the function
+  aws lambda update-function-configuration \
+    --function-name my-function \
+    --tracing-config Mode=Active \
+    --environment Variables={LOG_LEVEL=DEBUG}
+  ```
+
+- **Duration:** Collect data for at least 1 hour before escalating.
+
+**Resolution:** Out of runbook scope — escalate to AWS Support with the X-Ray trace ID, CloudWatch Logs Insights query results, and function configuration export (`aws lambda get-function --function-name my-function`).
+
+**Verification:** Timeout is no longer occurring after AWS Support resolution.
 
 ## Prevention
 
-### Set Timeouts Based on Measured P99 Duration
-
-Set the function timeout to 2-3x the observed P99 duration, not an arbitrary value:
+Set the function timeout to 2–3x the observed P99 duration, not an arbitrary value:
 
 ```bash
-aws logs start-query --log-group-name /aws/lambda/my-function \
-  --start-time $(date -d '7 days ago' +%s) --end-time $(date +%s) \
-  --query-string 'filter @type = "REPORT" | stats pct(@duration, 99) as p99ms'
+aws logs start-query \
+  --log-group-name /aws/lambda/my-function \
+  --start-time $(date -d '7 days ago' +%s) \
+  --end-time $(date +%s) \
+  --query-string 'filter @type = "REPORT" | stats pct(@duration, 99) as p99Ms, pct(@duration, 999) as p999Ms'
 ```
 
-### Add Client-Side Timeouts to All Downstream Calls
+Add explicit client-side timeouts to every SDK and HTTP call shorter than the function timeout. This ensures the function fails fast with a meaningful error rather than silently timing out.
 
-Every HTTP request, database query, and AWS SDK call should have an explicit timeout shorter than the function timeout. This ensures the function fails fast with a meaningful error rather than silently timing out.
-
-### Use Power Tuning to Optimize Memory
-
-Run the AWS Lambda Power Tuning tool periodically (especially after code changes) to find the memory setting that minimizes cost or latency. Over-provisioning memory often reduces total cost because the function completes faster.
-
-### Monitor Duration Trends with Alarms
+Set a CloudWatch alarm on p99 Duration to catch latency regression before it causes timeouts:
 
 ```bash
-aws cloudwatch put-metric-alarm --alarm-name "lambda-duration-high-my-function" \
-  --metric-name Duration --namespace AWS/Lambda \
+aws cloudwatch put-metric-alarm \
+  --alarm-name "lambda-duration-p99-high-my-function" \
+  --metric-name Duration \
+  --namespace AWS/Lambda \
   --dimensions Name=FunctionName,Value=my-function \
-  --statistic p99 --period 300 --evaluation-periods 3 \
-  --threshold 10000 --comparison-operator GreaterThanThreshold \
+  --extended-statistic p99 \
+  --period 300 \
+  --evaluation-periods 3 \
+  --threshold 10000 \
+  --comparison-operator GreaterThanThreshold \
   --alarm-actions arn:aws:sns:us-east-1:123456789012:ops-alerts
 ```
 
-### Keep Deployment Packages Small
+Keep deployment packages small (remove dev dependencies, use Lambda Layers for shared libraries) to reduce Init phase duration for cold starts.
 
-Remove test dependencies, documentation, and unused libraries. Use Lambda Layers for shared code. Smaller packages reduce cold start time.
+Use provisioned concurrency for latency-sensitive functions with predictable traffic patterns to eliminate cold start overhead entirely.
 
-### Use Async Patterns for Long Operations
-
-For workloads that may exceed 15 minutes or have unpredictable duration, offload to Step Functions, SQS + worker Lambda, or ECS Fargate tasks instead of synchronous Lambda invocations.
+For workloads that may exceed 15 minutes, redesign to use AWS Step Functions, SQS + worker Lambda, or ECS Fargate instead of increasing the Lambda timeout.
 
 ## Sources
 
-- [AWS Lambda: Troubleshooting Invocation Issues](https://docs.aws.amazon.com/lambda/latest/dg/troubleshooting-invocation.html) - Official troubleshooting guide for Lambda timeout, concurrency, VPC, and runtime errors.
-- [AWS Lambda: Troubleshooting Cold Starts](https://repost.aws/knowledge-center/lambda-cold-start) - Cold start diagnosis and reduction strategies including provisioned concurrency and SnapStart.
-- [AWS Lambda: Configuring Function Timeout](https://docs.aws.amazon.com/lambda/latest/dg/configuration-function-common.html) - Timeout and memory configuration reference.
-- [AWS Lambda: Using Lambda with VPC](https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc.html) - VPC networking for Lambda, including ENI management and NAT Gateway requirements.
-- [AWS Lambda Power Tuning](https://github.com/alexcasalboni/aws-lambda-power-tuning) - Open-source tool for optimizing Lambda memory and cost.
+- [AWS Lambda: Troubleshoot invocation issues](https://docs.aws.amazon.com/lambda/latest/dg/troubleshooting-invocation.html) — Priority 1. Official troubleshooting guide covering `Sandbox.Timedout`, recursive loop detection, provisioned concurrency spillover, and VPC Pending states.
+- [AWS Lambda: Configuring functions](https://docs.aws.amazon.com/lambda/latest/dg/configuration-function-common.html) — Priority 1. Timeout configuration reference including 1–900 s range, memory-to-CPU allocation, and runtime options.
+- [AWS Lambda: VPC access configuration](https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc.html) — Priority 1. Hyperplane ENI lifecycle, subnet IP requirements, internet access via NAT Gateway, and VPC endpoint configuration for AWS services.

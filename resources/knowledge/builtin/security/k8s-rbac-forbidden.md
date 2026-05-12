@@ -1,152 +1,112 @@
 ---
-id: k8s-rbac-forbidden
+id: "k8s-rbac-forbidden"
 title: "Kubernetes RBAC 403 Forbidden"
 domain: security
 service: kubernetes
-symptom_class:
-  - auth_failure
+symptom_class: [auth_failure]
 severity: high
 scope: global
 version: "1.0.0"
-last_updated: "2026-03-26"
-verified_by: kb-researcher
+last_updated: "2026-05-12"
+verified_by: "kb-researcher"
 status: draft
-tags:
-  - kubernetes
-  - rbac
-  - forbidden
-  - clusterrole
-  - rolebinding
-  - serviceaccount
-  - authorization
+tags: [rbac, forbidden, clusterrole, rolebinding, serviceaccount, authorization, impersonation]
 difficulty: intermediate
 ---
 
-# Kubernetes RBAC 403 Forbidden
+## Symptom Recognition
 
-## Problem Definition
+The API server returns HTTP 403 with a message of the form:
 
-Applies to Kubernetes clusters v1.6+ with RBAC enabled (default since v1.6). Requires `cluster-admin` or equivalent read permissions on RBAC resources (`roles`, `rolebindings`, `clusterroles`, `clusterrolebindings`) for diagnosis. Affects both human users (via kubeconfig) and ServiceAccounts (pods making API calls).
-
-Kubernetes RBAC 403 Forbidden errors occur when the API server rejects a request because the authenticated identity lacks the required permissions. The caller sees:
-
-```
+```text
 Error from server (Forbidden): pods is forbidden: User "system:serviceaccount:default:my-app"
 cannot list resource "pods" in API group "" in the namespace "production"
 ```
 
-```
+```text
 Error from server (Forbidden): clusterroles.rbac.authorization.k8s.io is forbidden:
 User "developer@example.com" cannot create resource "clusterroles" in API group
 "rbac.authorization.k8s.io" at the cluster scope
 ```
 
-The error message always contains four key pieces of information:
+The message always encodes four diagnostically relevant fields: the authenticated identity (`User`), the denied verb, the resource (and subresource), and the namespace or cluster scope. Pods that call the Kubernetes API internally surface the same error in container logs or as a non-zero exit code from `curl`/`kubectl` inside the container. Kubernetes audit logs record the event with `responseStatus.code = 403`.
 
-- **Who** — the authenticated user or ServiceAccount (`User` field).
-- **What** — the verb and resource (`cannot list resource "pods"`).
-- **Where** — the namespace or cluster scope (`in the namespace "production"` or `at the cluster scope`).
-- **API group** — the resource's API group (`in API group ""` for core resources, or `"rbac.authorization.k8s.io"` for RBAC resources).
+## Applicability
 
-Common failure scenarios:
-
-- **Missing RoleBinding or ClusterRoleBinding** — a Role/ClusterRole exists but is not bound to the subject.
-- **Namespace scoping mismatch** — a RoleBinding grants access in namespace A, but the request targets namespace B.
-- **ServiceAccount not assigned to pod** — the pod uses the `default` ServiceAccount which has no additional permissions.
-- **Aggregated ClusterRole missing labels** — an aggregation rule does not match the expected child ClusterRoles.
-- **Impersonation without permission** — a user impersonates another identity without `impersonate` verb permissions.
+Applies to Kubernetes v1.6+ with RBAC enabled (default since v1.6). Diagnosis requires read access to RBAC resources (`roles`, `rolebindings`, `clusterroles`, `clusterrolebindings`) in the target namespace, plus permission to use `kubectl auth can-i --as`. Resolution requires `cluster-admin` or equivalent write access to RBAC resources. Covers both human users (via kubeconfig) and ServiceAccounts (pods making Kubernetes API calls).
 
 ## Diagnostic Steps
 
-### Step 1. Identify the subject and the denied action
+### Step 1: Identify the subject, verb, resource, and namespace from the error message
 
-Extracts the user/ServiceAccount, verb, resource, API group, and namespace from the error message. This information is needed for all subsequent diagnostic steps.
+Run the failing command and capture the exact error text. If the error originates from inside a pod, retrieve the pod's ServiceAccount before proceeding.
 
 ```bash
-# Parse the error message for the key fields
-# User: system:serviceaccount:default:my-app
-# Verb: list
-# Resource: pods
-# API group: "" (core)
-# Namespace: production
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.serviceAccountName}'
 ```
 
-If the error comes from a pod, identify the ServiceAccount:
+Expected output: the ServiceAccount name (e.g., `my-app`). Output of `default` or empty means the pod uses the default ServiceAccount, which has no additional RBAC permissions.
+
+### Step 2: Confirm the denial with auth can-i
 
 ```bash
-kubectl get pod my-app-pod -n default -o jsonpath='{.spec.serviceAccountName}'
+kubectl auth can-i <verb> <resource> -n <namespace> \
+  --as=system:serviceaccount:<sa-namespace>:<sa-name>
 ```
 
-Expected output is the ServiceAccount name (e.g., `my-app`). If the output is empty or `default`, the pod is using the default ServiceAccount which typically has no additional RBAC permissions.
-
-### Step 2. Check if the subject can perform the action
-
-Uses the `auth can-i` subcommand to verify whether the RBAC configuration permits the action. This queries the API server's authorization module directly.
+Expected output: `no` when the permission is missing, `yes` when it is granted.
 
 ```bash
-# Check from the subject's perspective
-kubectl auth can-i list pods -n production --as=system:serviceaccount:default:my-app
+kubectl auth can-i --list \
+  --as=system:serviceaccount:<sa-namespace>:<sa-name> \
+  -n <namespace>
 ```
 
-Expected output is `yes` or `no`. If `no`, the RBAC configuration does not permit this action. Use `--list` to see all permissions the subject has:
+Expected output: a table listing all permitted verb/resource/API-group combinations for the subject in that namespace.
+
+### Step 3: Find all RoleBindings and ClusterRoleBindings for the subject
 
 ```bash
-kubectl auth can-i --list --as=system:serviceaccount:default:my-app -n production
-```
-
-This returns a table of all permitted resources, verbs, and API groups in the specified namespace.
-
-### Step 3. List all RoleBindings and ClusterRoleBindings for the subject
-
-Enumerates every binding that references the subject to understand what permissions are currently granted and in which namespaces.
-
-```bash
-# Namespace-scoped bindings in the target namespace
-kubectl get rolebindings -n production -o json | \
+kubectl get rolebindings -n <namespace> -o json | \
   python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 for rb in data['items']:
     for s in rb.get('subjects', []):
-        if s.get('name') == 'my-app' or s.get('name') == 'system:serviceaccount:default:my-app':
-            print(f\"RoleBinding: {rb['metadata']['name']} -> Role: {rb['roleRef']['name']}\")
+        if s.get('name') in ('<sa-name>', 'system:serviceaccount:<sa-namespace>:<sa-name>'):
+            print(rb['metadata']['name'], '->', rb['roleRef']['name'])
 "
 ```
 
+Expected output: one line per binding that references the subject. No output means the subject has no namespace-scoped bindings.
+
 ```bash
-# Cluster-scoped bindings
 kubectl get clusterrolebindings -o json | \
   python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 for crb in data['items']:
     for s in crb.get('subjects', []):
-        if s.get('name') == 'my-app' or s.get('name') == 'system:serviceaccount:default:my-app':
-            print(f\"ClusterRoleBinding: {crb['metadata']['name']} -> ClusterRole: {crb['roleRef']['name']}\")
+        if s.get('name') in ('<sa-name>', 'system:serviceaccount:<sa-namespace>:<sa-name>'):
+            print(crb['metadata']['name'], '->', crb['roleRef']['name'])
 "
 ```
 
-If no bindings are found, the subject has no RBAC permissions beyond the default (which is typically none for custom ServiceAccounts). This is the most common root cause.
+Expected output: one line per cluster-scoped binding. No output means the subject has no cluster-wide bindings.
 
-### Step 4. Inspect the referenced Role or ClusterRole
-
-Reads the rules in the Role/ClusterRole to verify it includes the required verb, resource, and API group.
+### Step 4: Inspect the referenced Role or ClusterRole for the missing permission
 
 ```bash
-kubectl get role my-app-role -n production -o yaml
+kubectl get role <role-name> -n <namespace> -o yaml
 ```
-
-Or for a ClusterRole:
 
 ```bash
-kubectl get clusterrole my-app-clusterrole -o yaml
+kubectl get clusterrole <clusterrole-name> -o yaml
 ```
 
-Check the `rules` section for an entry that matches all three: the API group, the resource name, and the verb. A missing verb (e.g., `list` is present but `watch` is not) or a missing resource (e.g., `pods` but not `pods/log`) causes the 403.
+Expected output: a `rules` list. Confirm the relevant API group, resource, and verb are all present in the same rule entry. A missing verb, a missing resource, or a wrong API group each independently causes the 403.
 
-### Step 5. Verify namespace scoping
-
-Confirms that the RoleBinding is in the same namespace as the request. A RoleBinding in namespace `staging` does not grant access to namespace `production`.
+### Step 5: Verify the RoleBinding namespace matches the request namespace
 
 ```bash
 kubectl get rolebindings -A -o json | \
@@ -155,220 +115,346 @@ import json, sys
 data = json.load(sys.stdin)
 for rb in data['items']:
     for s in rb.get('subjects', []):
-        if s.get('name') == 'my-app':
-            print(f\"Namespace: {rb['metadata']['namespace']} -> Role: {rb['roleRef']['name']}\")
+        if s.get('name') == '<sa-name>':
+            print('ns:', rb['metadata']['namespace'], '-> role:', rb['roleRef']['name'])
 "
 ```
 
-If the binding exists in the wrong namespace, you need either a new RoleBinding in the correct namespace or a ClusterRoleBinding for cluster-wide access.
+Expected output: the namespace column should match the namespace in the 403 error. A mismatch means the binding exists in the wrong namespace.
 
-### Step 6. Check for aggregated ClusterRole issues
-
-If the ClusterRole uses aggregation rules, verifies that the label selectors match the child ClusterRoles.
+### Step 6: Check for broken aggregated ClusterRole
 
 ```bash
-kubectl get clusterrole my-aggregated-role -o jsonpath='{.aggregationRule}'
+kubectl get clusterrole <role-name> -o jsonpath='{.aggregationRule}'
 ```
 
-If an aggregation rule is present, list the child ClusterRoles that match:
+Expected output: empty when no aggregation is used. Non-empty output means the ClusterRole inherits rules from child ClusterRoles selected by a label selector.
 
 ```bash
-kubectl get clusterroles -l rbac.example.com/aggregate-to-my-role=true
+kubectl get clusterroles -l <aggregation-label-key>=<aggregation-label-value>
 ```
 
-If no child ClusterRoles match the label selector, the aggregated ClusterRole has no rules and all requests are denied.
+Expected output: the list of child ClusterRoles whose rules are merged into the parent. Empty output means no children match the selector, so the parent has no rules.
 
-### Step 7. Check API server audit logs
-
-Retrieves the audit log entry for the denied request, providing the full authorization decision including which authorizer rejected it.
+### Step 7: Check API server audit logs for the authorization decision
 
 ```bash
-# Location varies by cluster setup. Common paths:
-# Managed (EKS/GKE/AKS): CloudWatch Logs, Cloud Logging, or Azure Monitor
-# Self-managed: /var/log/kubernetes/audit.log on control plane nodes
+# Self-managed cluster (control-plane node):
+grep '"code":403' /var/log/kubernetes/audit.log | tail -20 | python3 -m json.tool | grep -E 'user|verb|resource|namespace'
+```
 
-# For EKS:
+```bash
+# EKS:
 aws logs filter-log-events \
-  --log-group-name /aws/eks/my-cluster/cluster \
+  --log-group-name /aws/eks/<cluster-name>/cluster \
   --start-time "$(date -u -d '30 minutes ago' +%s)000" \
   --filter-pattern '{ $.responseStatus.code = 403 }'
 ```
 
-The audit log shows the full request context and the authorization decision, confirming whether RBAC, webhook, or another authorizer rejected the request.
+Expected output: audit records containing the full user identity, impersonated user (if any), verb, resource, and namespace, confirming whether RBAC or another authorizer (e.g., webhook) rejected the request.
 
-## Mitigation
+## Causes
 
-### Option 1: Bind the subject to an existing permissive ClusterRole
+### Cause A: Missing RoleBinding or ClusterRoleBinding
 
-**Risk**: The `view` ClusterRole grants read access to most resources cluster-wide (when used with ClusterRoleBinding) or namespace-wide (when used with RoleBinding). This is broader than a targeted Role but safe for read-only diagnostics.
+**Statement:** The subject has no binding that connects it to a Role or ClusterRole granting the required permission.
 
-**Command**:
+**Mechanism:** Kubernetes RBAC denies all access by default. A permission is granted only when a RoleBinding (namespace-scoped) or ClusterRoleBinding (cluster-wide) links the subject to a Role or ClusterRole whose rules cover the requested verb, resource, and API group. Without any such binding the API server returns 403 regardless of whether a suitable Role exists.
+
+**Indicator:**
+
+- [Step 3] No output from both the namespace-scoped and cluster-scoped binding queries
+- [Step 2] `kubectl auth can-i` returns `no`
+
+<!-- match: {"step": 2, "predicate": "contains", "target": "no"} -->
+
+**Mitigation:**
+
+- **Risk:** Granting the built-in `view` ClusterRole via a RoleBinding provides broader read access than a purpose-built Role but is safe for read-only diagnostics.
+- **Command:**
+
+  ```bash
+  kubectl create rolebinding <binding-name> \
+    --clusterrole=view \
+    --serviceaccount=<sa-namespace>:<sa-name> \
+    -n <namespace>
+  ```
+
+- **Duration:** Remove within 24 hours and replace with a purpose-built Role.
+
+**Resolution:**
 
 ```bash
-kubectl create rolebinding my-app-view \
-  --clusterrole=view \
-  --serviceaccount=default:my-app \
-  -n production
+kubectl create role <role-name> -n <namespace> \
+  --verb=<verb1>,<verb2> \
+  --resource=<resource>
+
+kubectl create rolebinding <binding-name> -n <namespace> \
+  --role=<role-name> \
+  --serviceaccount=<sa-namespace>:<sa-name>
 ```
 
-**Verify**:
+- **Impact:** Namespace-scoped; affects only the specified namespace.
+- **Rollback:** `kubectl delete rolebinding <binding-name> -n <namespace>`
+
+**Verification:**
 
 ```bash
-kubectl auth can-i list pods -n production --as=system:serviceaccount:default:my-app
-```
-
-Expected output: `yes`.
-
-**Duration**: Remove within 24 hours and replace with a purpose-built Role.
-
-### Option 2: Temporarily grant cluster-admin (emergency only)
-
-**Risk**: `cluster-admin` grants unrestricted access to the entire cluster. Use only for break-glass scenarios when the exact missing permission is unknown and the service is down.
-
-**Command**:
-
-```bash
-kubectl create clusterrolebinding my-app-emergency \
-  --clusterrole=cluster-admin \
-  --serviceaccount=default:my-app
-```
-
-**Verify**:
-
-```bash
-kubectl auth can-i '*' '*' --as=system:serviceaccount:default:my-app
-```
-
-Expected output: `yes`.
-
-**Duration**: Remove within 1 hour. Document the temporary grant in your incident channel.
-
-## Root Cause Resolution
-
-**If** no RoleBinding or ClusterRoleBinding exists for the subject → create the appropriate binding:
-
-```bash
-# Create a Role with the minimum required permissions
-kubectl create role my-app-role -n production \
-  --verb=get,list,watch \
-  --resource=pods
-
-# Bind it to the ServiceAccount
-kubectl create rolebinding my-app-binding -n production \
-  --role=my-app-role \
-  --serviceaccount=default:my-app
-```
-
-**If** the Role exists but is missing the required verb or resource → patch the Role:
-
-```bash
-kubectl patch role my-app-role -n production --type=json \
-  -p='[{"op": "add", "path": "/rules/-", "value": {"apiGroups": [""], "resources": ["pods/log"], "verbs": ["get"]}}]'
-```
-
-**If** the binding references the wrong namespace for the ServiceAccount → fix the subject namespace in the binding:
-
-```bash
-kubectl edit rolebinding my-app-binding -n production
-# Ensure subjects[].namespace matches the ServiceAccount's namespace
-```
-
-**If** the pod is using the default ServiceAccount → assign the correct ServiceAccount to the pod:
-
-```bash
-kubectl patch deployment my-app -n default \
-  -p '{"spec": {"template": {"spec": {"serviceAccountName": "my-app"}}}}'
-```
-
-**If** a ClusterRole aggregation is broken → add the correct label to the child ClusterRole:
-
-```bash
-kubectl label clusterrole my-child-role rbac.example.com/aggregate-to-my-role=true
-```
-
-**If** a user needs cross-namespace access → use a ClusterRoleBinding instead of per-namespace RoleBindings:
-
-```bash
-kubectl create clusterrolebinding my-app-cluster-binding \
-  --clusterrole=my-app-clusterrole \
-  --serviceaccount=default:my-app
-```
-
-**If** impersonation is failing → grant the impersonate verb on the target user/group/serviceaccount:
-
-```bash
-kubectl create clusterrole impersonator \
-  --verb=impersonate \
-  --resource=users,groups,serviceaccounts
-
-kubectl create clusterrolebinding allow-impersonation \
-  --clusterrole=impersonator \
-  --user=admin@example.com
-```
-
-## Verification
-
-1. Re-run the original kubectl command or trigger the pod's API call and confirm it succeeds:
-
-```bash
-kubectl auth can-i list pods -n production --as=system:serviceaccount:default:my-app
+kubectl auth can-i <verb> <resource> -n <namespace> \
+  --as=system:serviceaccount:<sa-namespace>:<sa-name>
 ```
 
 Expected output: `yes`.
 
-2. List the subject's effective permissions to confirm the full set:
+### Cause B: Role missing required verb or subresource
+
+**Statement:** A binding exists but the referenced Role or ClusterRole does not include the specific verb or subresource needed by the request.
+
+**Mechanism:** Kubernetes matches permissions per rule entry; every element of the triple (API group, resource/subresource, verb) must appear together in the same rule for the permission to be granted. A Role that lists `pods` with `get` and `list` does not automatically grant `pods/log` or `watch`; each omission produces a separate 403 for that exact combination.
+
+**Indicator:**
+
+- [Step 2] `kubectl auth can-i` returns `no` for the specific verb/subresource
+- [Step 4] The `rules` section of the Role or ClusterRole does not contain the required verb or lists the resource without the required subresource
+
+<!-- match: {"step": 2, "predicate": "contains", "target": "no"} -->
+
+**Mitigation:**
+
+- **Risk:** Patching the existing Role immediately affects all subjects bound to it.
+- **Command:**
+
+  ```bash
+  kubectl patch role <role-name> -n <namespace> --type=json \
+    -p='[{"op":"add","path":"/rules/-","value":{"apiGroups":[""],"resources":["<resource>"],"verbs":["<verb>"]}}]'
+  ```
+
+- **Duration:** Permanent; re-validate in staging before applying to production.
+
+**Resolution:**
 
 ```bash
-kubectl auth can-i --list --as=system:serviceaccount:default:my-app -n production
+kubectl edit role <role-name> -n <namespace>
+# Add the missing verb to the appropriate rule entry or add a new rule stanza.
 ```
 
-3. If the issue was with a pod, restart the pod and verify it operates without 403 errors in its logs:
+**Verification:**
 
 ```bash
-kubectl rollout restart deployment my-app -n default
-kubectl logs -l app=my-app -n default --tail=50 | grep -i "forbidden\|403"
+kubectl auth can-i <verb> <resource> -n <namespace> \
+  --as=system:serviceaccount:<sa-namespace>:<sa-name>
 ```
 
-Expected output: no forbidden/403 lines.
+Expected output: `yes`.
 
-4. Remove any temporary emergency bindings:
+### Cause C: RoleBinding exists in the wrong namespace
+
+**Statement:** The subject has a RoleBinding granting the required permission, but that binding is in a different namespace from the one targeted by the request.
+
+**Mechanism:** A RoleBinding is namespace-scoped: it grants access only to resources in the namespace where the binding itself resides. A binding in `staging` does not propagate to `production`. This causes an asymmetric 403 where `kubectl auth can-i` returns `yes` in the source namespace and `no` in the target namespace.
+
+**Indicator:**
+
+- [Step 5] Binding found, but its namespace does not match the namespace in the 403 error
+- [Step 2] `kubectl auth can-i` returns `yes` in one namespace and `no` in another
+
+<!-- match: {"step": 5, "predicate": "contains", "target": "ns:"} -->
+
+**Mitigation:**
+
+- **Risk:** Creating a new RoleBinding in the target namespace grants access in that namespace only.
+- **Command:**
+
+  ```bash
+  kubectl create rolebinding <binding-name> \
+    --clusterrole=<clusterrole-name> \
+    --serviceaccount=<sa-namespace>:<sa-name> \
+    -n <target-namespace>
+  ```
+
+- **Duration:** Permanent.
+
+**Resolution:** Same as Mitigation.
+
+**Verification:**
 
 ```bash
-kubectl delete clusterrolebinding my-app-emergency 2>/dev/null
-kubectl delete rolebinding my-app-view -n production 2>/dev/null
+kubectl auth can-i <verb> <resource> -n <target-namespace> \
+  --as=system:serviceaccount:<sa-namespace>:<sa-name>
 ```
+
+Expected output: `yes`.
+
+### Cause D: Pod is using the default ServiceAccount
+
+**Statement:** The pod was deployed without an explicit `serviceAccountName` and is using the `default` ServiceAccount, which has no RBAC permissions beyond the cluster baseline.
+
+**Mechanism:** When `spec.serviceAccountName` is omitted from a Pod spec, Kubernetes assigns the `default` ServiceAccount for that namespace. Unless an administrator has explicitly granted permissions to the `default` ServiceAccount (which violates least-privilege), API calls from the pod are rejected because the `default` SA has no bindings.
+
+**Indicator:**
+
+- [Step 1] `kubectl get pod ... -o jsonpath='{.spec.serviceAccountName}'` returns `default` or empty
+- [Step 3] No bindings found for `default` ServiceAccount that cover the required permission
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "default"} -->
+
+**Mitigation:**
+
+- **Risk:** Creating and assigning a purpose-built ServiceAccount requires a pod rollout.
+- **Command:**
+
+  ```bash
+  kubectl create serviceaccount <sa-name> -n <namespace>
+  kubectl create role <role-name> -n <namespace> --verb=<verbs> --resource=<resources>
+  kubectl create rolebinding <binding-name> -n <namespace> \
+    --role=<role-name> --serviceaccount=<namespace>:<sa-name>
+  kubectl patch deployment <deployment-name> -n <namespace> \
+    -p '{"spec":{"template":{"spec":{"serviceAccountName":"<sa-name>"}}}}'
+  ```
+
+- **Duration:** Permanent; rolling restart required.
+
+**Resolution:** Same as Mitigation.
+
+**Verification:**
+
+```bash
+kubectl rollout status deployment/<deployment-name> -n <namespace>
+kubectl logs -l app=<app-label> -n <namespace> --tail=50 | grep -i "forbidden\|403"
+```
+
+Expected output: rollout complete and no `forbidden`/`403` lines in logs.
+
+### Cause E: Aggregated ClusterRole has no matching child ClusterRoles
+
+**Statement:** The ClusterRole uses an `aggregationRule` label selector that does not match any child ClusterRoles, leaving the parent with an empty rule set.
+
+**Mechanism:** Kubernetes aggregated ClusterRoles dynamically merge rules from all ClusterRoles whose labels match the parent's `aggregationRule.clusterRoleSelectors`. If no child ClusterRole carries the required label, the aggregated ClusterRole has zero rules and denies every request, regardless of whether the label was once present or has since been removed.
+
+**Indicator:**
+
+- [Step 6] `kubectl get clusterrole ... -o jsonpath='{.aggregationRule}'` returns a non-empty value
+- [Step 6] `kubectl get clusterroles -l <selector>` returns no resources
+
+<!-- match: {"step": 6, "predicate": "absent", "target": "items"} -->
+
+**Mitigation:**
+
+- **Risk:** Adding a label to a child ClusterRole immediately merges its rules into the aggregated parent, affecting all subjects bound to it.
+- **Command:**
+
+  ```bash
+  kubectl label clusterrole <child-clusterrole-name> <aggregation-label-key>=<aggregation-label-value>
+  ```
+
+- **Duration:** Permanent; verify the merged rules are not broader than intended.
+
+**Resolution:** Same as Mitigation.
+
+**Verification:**
+
+```bash
+kubectl get clusterrole <parent-clusterrole-name> -o yaml | grep -A20 rules
+kubectl auth can-i <verb> <resource> --as=system:serviceaccount:<sa-namespace>:<sa-name>
+```
+
+Expected output: the `rules` section shows merged rules from child ClusterRoles and `auth can-i` returns `yes`.
+
+### Cause F: Impersonation denied
+
+**Statement:** The caller is attempting to impersonate another user, group, or ServiceAccount but does not have the `impersonate` verb on the target resource type.
+
+**Mechanism:** Kubernetes impersonation (`--as` flag or `Impersonate-User` HTTP header) requires an explicit `impersonate` permission in a Role or ClusterRole on the `users`, `groups`, or `serviceaccounts` resource. Without it the API server rejects the impersonation attempt with 403 before evaluating what permissions the impersonated identity would have had.
+
+**Indicator:**
+
+- [Symptom] Error message references impersonation: `cannot impersonate resource "users"`
+- [Step 7] Audit log shows `verb: impersonate` in the denied record
+
+**Mitigation:**
+
+- **Risk:** Granting `impersonate` is high-privilege; restrict to specific identities and resource names where possible.
+- **Command:**
+
+  ```bash
+  kubectl create clusterrole impersonator \
+    --verb=impersonate \
+    --resource=users,groups,serviceaccounts
+
+  kubectl create clusterrolebinding allow-impersonation \
+    --clusterrole=impersonator \
+    --user=<admin-user>
+  ```
+
+- **Duration:** Permanent; review scope before applying.
+
+**Resolution:** Same as Mitigation.
+
+**Verification:**
+
+```bash
+kubectl auth can-i impersonate users --as=<admin-user>
+kubectl get pods --as=<target-user>
+```
+
+Expected output: first command returns `yes`; second command succeeds without 403.
+
+### Cause Z: Unidentified authorization failure
+
+**Statement:** The 403 error cannot be attributed to a missing binding, wrong namespace, incomplete role, default ServiceAccount, broken aggregation, or impersonation gap.
+
+**Mechanism:** A non-RBAC authorizer (Node, Webhook) may be rejecting the request, or the RBAC configuration involves a complex chain of aggregated roles, group memberships, or admission webhook interactions that require deeper cluster-level investigation beyond standard RBAC queries.
+
+**Indicator:**
+
+- [Default] All standard RBAC checks pass (`auth can-i` returns `yes`) but the request still fails with 403
+- [Step 7] Audit log shows a non-RBAC authorizer decision or a webhook deny
+
+**Mitigation:**
+
+- **Risk:** Temporarily enabling verbose API server logging increases log volume.
+- **Command:**
+
+  ```bash
+  kubectl cluster-info dump | grep authorization-mode
+  kubectl logs -n kube-system kube-apiserver-<node-name> | grep -i "denied\|forbidden" | tail -30
+  ```
+
+- **Duration:** Log inspection only; no cluster state change.
+
+**Resolution:** Out of runbook scope — escalate to cluster administrator with the full audit log entry and the output of `kubectl auth can-i --list --as=<subject>`.
+
+**Verification:** Confirmed resolution after cluster administrator identifies and addresses the non-RBAC authorizer rule.
 
 ## Prevention
 
-1. **Define RBAC manifests in version control** alongside application deployments. Include Role, RoleBinding, and ServiceAccount in the same Helm chart or Kustomize overlay.
+1. Define RBAC manifests (Role, RoleBinding, ServiceAccount) in version control alongside the application's Deployment or Helm chart. Apply them together so RBAC permissions are never missing at pod startup.
 
-2. **Use the principle of least privilege** — grant only the specific verbs, resources, and namespaces the application needs. Avoid `cluster-admin` for workloads.
+2. Use `kubectl auth can-i --list --as=<sa>` in CI pipelines after deploying RBAC changes to validate that all required permissions are present before the workload starts.
 
-3. **Audit RBAC permissions regularly** with `kubectl auth can-i --list` or tools like `rbac-lookup`:
+3. Apply the principle of least privilege: grant only the specific verbs and resources the workload needs. Avoid wildcard verbs (`"*"`) and wildcard resources.
 
-```bash
-# Using rbac-lookup (https://github.com/FairwindsOps/rbac-lookup)
-kubectl rbac-lookup my-app --kind serviceaccount
-```
+4. Prefer namespace-scoped `Role` and `RoleBinding` over cluster-scoped `ClusterRole` and `ClusterRoleBinding` unless the workload genuinely needs cross-namespace access.
 
-4. **Set up alerts for 403 errors in audit logs** to detect permission issues before users report them:
+5. Set `automountServiceAccountToken: false` on ServiceAccounts and individual Pods that do not need to call the Kubernetes API. This eliminates the attack surface for token misuse.
 
-```bash
-# For clusters with Prometheus + kube-apiserver metrics
-# Alert rule: rate(apiserver_request_total{code="403"}[5m]) > 0.1
-```
+6. Alert on sustained 403 rates in API server metrics:
 
-5. **Use namespace-scoped Roles and RoleBindings** by default. Only use ClusterRoles and ClusterRoleBindings when the workload genuinely needs cross-namespace or cluster-wide access.
+   ```yaml
+   # Prometheus alert rule
+   - alert: KubernetesRBACForbiddenSpike
+     expr: rate(apiserver_request_total{code="403"}[5m]) > 0.5
+     for: 2m
+     labels:
+       severity: warning
+     annotations:
+       summary: "Kubernetes API 403 rate elevated — possible RBAC misconfiguration"
+   ```
 
-6. **Test RBAC changes in staging** before production. Use `kubectl auth can-i --dry-run=server` to validate without modifying cluster state.
-
-7. **Document each ServiceAccount's required permissions** in application documentation or Helm chart values so that RBAC configuration is part of the deployment checklist.
+7. Run periodic RBAC audits using `rbac-lookup` or `kubectl-who-can` to detect overly permissive bindings and stale ServiceAccount permissions.
 
 ## Sources
 
-- [Using RBAC Authorization - Kubernetes Documentation](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)
-- [Checking API Access - Kubernetes Documentation](https://kubernetes.io/docs/reference/access-authn-authz/authorization/#checking-api-access)
-- [Configure Service Accounts for Pods - Kubernetes Documentation](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/)
-- [Auditing - Kubernetes Documentation](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/)
-- [Role and ClusterRole - Kubernetes API Reference](https://kubernetes.io/docs/reference/kubernetes-api/authorization-resources/role-v1/)
-- [RBAC Good Practices - Kubernetes Documentation](https://kubernetes.io/docs/concepts/security/rbac-good-practices/)
+- [Using RBAC Authorization — Kubernetes Documentation](https://kubernetes.io/docs/reference/access-authn-authz/rbac/) — primary reference for Role, ClusterRole, RoleBinding, ClusterRoleBinding structure and aggregation rules (Priority 1)
+- [Authorization Overview — Kubernetes Documentation](https://kubernetes.io/docs/reference/access-authn-authz/authorization/) — authorization modes, request attributes, `kubectl auth can-i` usage, and audit integration (Priority 1)
+- [RBAC Good Practices — Kubernetes Documentation](https://kubernetes.io/docs/concepts/security/rbac-good-practices/) — least-privilege guidance, impersonation design, high-risk permissions, and prevention recommendations (Priority 1)

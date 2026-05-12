@@ -1,38 +1,36 @@
 ---
-id: nodejs-event-loop-blocked
+id: "nodejs-event-loop-blocked"
 title: "Node.js Event Loop Blocked"
 domain: application
 service: nodejs
-symptom_class:
-  - latency
+symptom_class: [latency]
 severity: high
 scope: global
-version: "2.1.0"
-last_updated: "2026-03-26"
-verified_by: kb-researcher
+version: "1.0.0"
+last_updated: "2026-05-12"
+verified_by: "kb-researcher"
 status: draft
-tags:
-  - nodejs
-  - event-loop
-  - latency
-  - performance
-  - cpu
+tags: [nodejs, event-loop, latency, performance, cpu, worker-threads, clinic]
 difficulty: intermediate
 ---
 
-# Node.js Event Loop Blocked
+## Symptom Recognition
 
-## Problem Definition
+- HTTP response times spike from single-digit milliseconds to seconds under normal load.
+- Event loop lag metric (`nodejs_event_loop_lag_seconds` p99) exceeds 100 ms.
+- Health check endpoints stop responding, triggering Kubernetes liveness probe failures or load balancer health-check timeouts.
+- WebSocket connections drop due to missed heartbeats.
+- Monitoring shows CPU usage pinned at 100% on a single thread while other threads are idle.
+- Application logs show no errors; throughput simply drops.
+- Periodic lag spikes occurring at a fixed interval (e.g., every 30 s) suggest a scheduled task or GC cycle as the trigger.
 
-Applies to Node.js 18+ (LTS) running on Linux. Requires process-level access for profiling (`--inspect`, `SIGUSR1`), access to application logs, and optionally Prometheus metrics. Chrome DevTools or Clinic.js is needed for CPU profile analysis.
+## Applicability
 
-A blocked event loop occurs when a synchronous CPU-bound operation runs on the main thread, preventing the event loop from advancing through its phases (timers, pending callbacks, poll, check, close). Because Node.js uses a single thread for JavaScript execution, any operation monopolizing the main thread causes all incoming HTTP requests to queue, timer callbacks to fire late, health check endpoints to stop responding (triggering load balancer or Kubernetes liveness probe failures), and WebSocket connections to drop due to missed heartbeats. HTTP response times spike from single-digit milliseconds to seconds. Monitoring shows event loop lag exceeding 100ms (healthy is under 10ms). Application logs typically show no errors -- throughput simply drops. Common blocking operations include: `JSON.parse()`/`JSON.stringify()` on multi-megabyte payloads (O(n), 1.3 seconds for 50MB), synchronous `fs.*Sync()` methods, synchronous `crypto.pbkdf2Sync()`/`crypto.randomFillSync()`, regular expressions with catastrophic backtracking (ReDoS), tight loops iterating over large datasets (especially O(n^2) patterns), synchronous `child_process.execSync()`, and V8 garbage collection pauses on large heaps (50-500ms).
+Applies to Node.js 18 LTS and later running on Linux. Requires process-level access for profiling (`--inspect` flag or `SIGUSR1` signal). Chrome DevTools or the Clinic.js suite (`npx clinic`) must be available on the host or a developer machine with network access to the process inspector port. Access to application logs and, optionally, Prometheus metrics is required.
 
 ## Diagnostic Steps
 
-### 1. Measure event loop lag with perf_hooks
-
-Quantifies how long the event loop is blocked, confirming the problem and establishing a baseline for measuring improvement.
+### Step 1: Measure event loop lag with perf_hooks
 
 ```bash
 node -e "
@@ -40,286 +38,450 @@ const { monitorEventLoopDelay } = require('perf_hooks');
 const h = monitorEventLoopDelay({ resolution: 20 });
 h.enable();
 setInterval(() => {
-  console.log('p50:', (h.percentile(50)/1e6).toFixed(2), 'ms',
-              'p99:', (h.percentile(99)/1e6).toFixed(2), 'ms',
-              'max:', (h.max/1e6).toFixed(2), 'ms');
+  console.log(
+    'p50:', (h.percentile(50)/1e6).toFixed(2), 'ms',
+    'p99:', (h.percentile(99)/1e6).toFixed(2), 'ms',
+    'max:', (h.max/1e6).toFixed(2), 'ms'
+  );
   h.reset();
 }, 5000);
 "
 ```
 
-If the application exposes Prometheus metrics:
+Expected output: p50 below 5 ms and p99 below 20 ms for a healthy event loop. p99 above 100 ms confirms blocking. If Prometheus metrics are exposed:
 
 ```bash
 curl -s http://localhost:9090/metrics | grep -i "event_loop\|loop_lag"
 ```
 
-**Expected output:** p50 under 5ms and p99 under 20ms for a healthy event loop. Max should stay below 50ms.
-
-**What this means:** p99 above 100ms confirms event loop blocking. If lag is intermittent (spikes every N seconds), the cause is likely periodic (GC, cron-like task, cache rebuild). If lag is constant under load, a request handler contains blocking code.
-
-### 2. Profile CPU usage of the Node.js process
-
-Determines whether the main thread is CPU-bound and for how long.
+### Step 2: Profile CPU usage on the main thread
 
 ```bash
 top -p $(pgrep -f "node") -H
-# Or with pidstat for per-thread breakdown
+```
+
+Or for a per-thread breakdown:
+
+```bash
 pidstat -p $(pgrep -f "node") -t 1 10
 ```
 
-**Expected output:** For a healthy Node.js process, CPU usage is low between requests and spikes briefly during processing. A single thread pinned at 100% for sustained periods indicates blocking work on the main thread.
+Expected output: One thread pinned near 100% CPU for sustained periods indicates the main thread is CPU-bound. Low CPU with high lag suggests synchronous I/O waiting (e.g., `fs.readFileSync` on a slow filesystem).
 
-**What this means:** If one thread shows 100% CPU continuously, the event loop is blocked by computation. If multiple threads show high CPU, the libuv worker pool is saturated (DNS, file I/O, crypto). Low CPU with high lag points to synchronous I/O waiting (e.g., `fs.readFileSync` on a network filesystem).
-
-### 3. Capture a CPU profile with V8 inspector
-
-Produces a flame graph showing exactly which functions consume the most CPU time on the main thread.
-
-For a running process (no restart required):
-
-```bash
-kill -USR1 $(pgrep -f "node")
-# Then connect Chrome DevTools to the inspector URL shown in stderr
-# Navigate to Performance tab > Record > Reproduce the issue > Stop
-```
-
-Or start with inspector enabled:
-
-```bash
-node --inspect app.js
-# Connect Chrome DevTools to chrome://inspect
-```
-
-For command-line profiling:
-
-```bash
-node --prof app.js
-# Reproduce load, then stop
-node --prof-process isolate-*.log > profile.txt
-```
-
-**Expected output:** The flame graph shows a tall, wide column for the blocking function. The `profile.txt` output ranks functions by "ticks" (CPU time samples).
-
-**What this means:** The widest bar in the flame graph is the blocking operation. Common findings: `JSON.parse` (large payload), `RegExp.exec` (catastrophic backtracking), application-specific compute functions, or `v8::internal::MarkCompactCollector` (GC pause).
-
-### 4. Run Clinic.js for automated diagnosis
-
-Provides an automated analysis that explicitly flags event loop blocking, I/O issues, and GC problems.
-
-```bash
-npx clinic doctor -- node app.js
-# Generate load against the application, then Ctrl+C
-npx clinic flame -- node app.js
-# Generate load, then Ctrl+C for CPU flame graph
-```
-
-**Expected output:** Clinic Doctor opens an HTML report with a clear diagnosis: "Event loop is blocked" (red), "I/O issue" (orange), or "Healthy" (green). Clinic Flame shows the hot path in the flame graph.
-
-**What this means:** Doctor correlates event loop delay, CPU, memory, and active handles to diagnose the category of problem. Flame pinpoints the exact function. This is the fastest path to root cause for most event loop blocking issues.
-
-### 5. Search codebase for known blocking patterns
-
-Identifies synchronous APIs and dangerous patterns that are the most common sources of event loop blocking.
+### Step 3: Search codebase for known blocking patterns
 
 ```bash
 grep -rn "Sync(" --include="*.js" --include="*.ts" src/
 grep -rn "JSON\.parse\|JSON\.stringify" --include="*.js" --include="*.ts" src/
 grep -rn "crypto\.\(pbkdf2Sync\|randomFillSync\|scryptSync\)" --include="*.js" --include="*.ts" src/
-grep -rn "execSync\|spawnSync" --include="*.js" --include="*.ts" src/
+grep -rn "execSync\|spawnSync\|inflateSync\|deflateSync" --include="*.js" --include="*.ts" src/
 ```
 
-**Expected output:** List of files and line numbers containing synchronous operations. Any `*Sync` call in a request handler path is a blocking risk.
+Expected output: List of files and line numbers containing synchronous operations. Any `*Sync` call in a request handler path is a blocking risk.
 
-**What this means:** `fs.*Sync` calls are safe during startup (module loading) but dangerous in request handlers. `JSON.parse` is safe for small payloads (under 1MB) but blocks at larger sizes. Synchronous crypto operations should always use their async counterparts under load.
+### Step 4: Capture a CPU flame graph with V8 inspector
 
-### 6. Check V8 garbage collection pauses
+For a running process without restart:
 
-Determines whether GC is contributing to event loop lag, especially on large heaps.
+```bash
+kill -USR1 $(pgrep -f "node")
+```
+
+Then connect Chrome DevTools to the inspector URL printed to stderr. Navigate to Performance > Record, reproduce the load spike, then stop. Alternatively, start with inspector enabled:
+
+```bash
+node --inspect app.js
+```
+
+For command-line profiling without DevTools:
+
+```bash
+node --prof app.js
+node --prof-process isolate-*.log > profile.txt
+grep -A5 "Bottom up (heavy) profile" profile.txt | head -40
+```
+
+Expected output: The widest flame bar or highest tick-count entry in `profile.txt` identifies the blocking function.
+
+### Step 5: Check V8 garbage collection pause durations
 
 ```bash
 node --trace-gc app.js 2>&1 | grep -E "Mark-Compact|Scavenge" | head -20
 ```
 
-**Expected output:** Scavenge (young generation GC) pauses under 5ms. Mark-Compact (full GC) pauses under 50ms. Frequency: Scavenge every few seconds, Mark-Compact every few minutes.
+Expected output: Scavenge (young generation) pauses under 5 ms; Mark-Compact (full GC) pauses under 50 ms. Mark-Compact pauses above 100 ms indicate heap pressure contributing to event loop lag.
 
-**What this means:** Mark-Compact pauses above 100ms indicate heap pressure. The heap may be too large (increasing GC scan time) or the application may be creating too many long-lived objects. Frequent Scavenge indicates high allocation rate.
-
-### 7. Check libuv thread pool saturation
-
-Determines whether the default 4-thread worker pool is a bottleneck for async operations that use it (DNS lookup, file I/O, crypto).
-
-```bash
-node -e "console.log('UV_THREADPOOL_SIZE:', process.env.UV_THREADPOOL_SIZE || '4 (default)')"
-```
-
-Monitor active handles and requests:
+### Step 6: Check libuv thread pool saturation
 
 ```bash
 node -e "
 setInterval(() => {
   console.log('handles:', process._getActiveHandles().length,
-              'requests:', process._getActiveRequests().length);
+              'requests:', process._getActiveRequests().length,
+              'UV_THREADPOOL_SIZE:', process.env.UV_THREADPOOL_SIZE || '4');
 }, 2000);
 "
 ```
 
-**Expected output:** Active requests should stay below `UV_THREADPOOL_SIZE`. If requests consistently exceed the pool size, operations are queuing.
+Expected output: Active requests consistently at or above `UV_THREADPOOL_SIZE` (default 4) means async operations that use the thread pool — including `dns.lookup()`, `fs.*`, and `crypto` — are queuing behind each other, which manifests as event loop lag despite a non-CPU-bound main thread.
 
-**What this means:** When the thread pool is full, async operations that use it (particularly `dns.lookup()`) queue behind each other. This manifests as event loop lag even though the main thread is not CPU-bound. Increasing `UV_THREADPOOL_SIZE` or switching to `dns.resolve()` (uses c-ares, not the thread pool) resolves this.
-
-## Mitigation
-
-### Option 1: Restart the process
-
-**Risk:** Low. If running behind a load balancer with multiple instances, impact is limited to in-flight requests on this instance.
-
-**Command:**
+### Step 7: Audit regular expressions for catastrophic backtracking
 
 ```bash
-pm2 restart app
-# Or for Kubernetes:
-kubectl delete pod <pod-name> -n <namespace>
+npx safe-regex-cli --pattern "$(grep -roh "'[^']*'" src/ | head -50)"
 ```
 
-**Verify:** `curl -w "\ntime_total: %{time_total}s\n" http://localhost:3000/health` responds in under 100ms.
-
-**Duration:** Seconds to 1 minute.
-
-### Option 2: Scale horizontally to absorb load
-
-**Risk:** Low. Does not fix the root cause but distributes the impact across more instances.
-
-**Command:**
+Or install the audit tool and scan:
 
 ```bash
-pm2 scale app +2
-# Or for Kubernetes:
-kubectl scale deployment <name> -n <namespace> --replicas=4
+npm install -g safe-regex
+node -e "
+const safe = require('safe-regex');
+const patterns = [/(\/.+)+$/, /(a+)+/, /(a|a)*/];
+patterns.forEach(p => console.log(p, safe(p) ? 'SAFE' : 'VULNERABLE'));
+"
 ```
 
-**Verify:** `kubectl get pods` shows all replicas Running. Response times improve across the fleet.
+Expected output: Any pattern printed as `VULNERABLE` is a ReDoS risk when applied to untrusted user input.
 
-**Duration:** 30 seconds to 2 minutes.
+## Causes
 
-### Option 3: Increase libuv thread pool size
+### Cause A: Synchronous blocking API in a request handler
 
-**Risk:** Low. Each additional thread consumes approximately 1MB of stack memory. Default of 4 is insufficient for I/O-heavy workloads.
+**Statement:** A `*Sync` method (`fs.readFileSync`, `crypto.pbkdf2Sync`, `zlib.deflateSync`, `child_process.execSync`) is called inside a request handler, monopolizing the main thread for the duration of each call.
 
-**Command:**
+**Mechanism:** Node.js executes JavaScript on a single thread. Synchronous APIs block the event loop phases until they return, preventing all other callbacks — including timers, health checks, and other request handlers — from running. A single call to `fs.readFileSync` on a network-mounted filesystem can block for hundreds of milliseconds to seconds.
 
-```bash
-export UV_THREADPOOL_SIZE=16
-node app.js
-```
+**Indicator:**
 
-For Kubernetes, add to the deployment env:
+- [Step 3] `grep` output lists one or more `*Sync(` calls inside `src/` handler files
+- [Step 4] Flame graph shows a wide bar for a `fs`, `crypto`, or `zlib` synchronous call originating from a route handler
 
-```yaml
-env:
-  - name: UV_THREADPOOL_SIZE
-    value: "16"
-```
+<!-- match: {"step": 3, "predicate": "contains", "target": "Sync("} -->
 
-**Verify:** Restart the application. DNS and file I/O operations complete faster. Event loop lag decreases if thread pool was the bottleneck.
+**Mitigation:**
 
-**Duration:** Requires application restart.
+- **Risk:** None for replacing `*Sync` with async equivalents during a deployment; request handlers will continue processing.
+- **Command:**
 
-### Option 4: Enable cluster mode for multi-core utilization
+  ```bash
+  # Identify all Sync call sites with file + line for targeted replacement
+  grep -rn "Sync(" --include="*.js" --include="*.ts" src/ > /tmp/sync-calls.txt
+  cat /tmp/sync-calls.txt
+  ```
 
-**Risk:** Low. Each worker is an independent process with its own event loop. One blocked worker does not block others.
+- **Duration:** Permanent code change; no temporary mitigation available without a restart.
 
-**Command:**
-
-```bash
-pm2 start app.js -i max --name myapp
-```
-
-**Verify:** `pm2 list` shows all instances online. Load is distributed across workers.
-
-**Duration:** Restart time (seconds).
-
-## Root Cause Resolution
-
-**If** CPU profile shows a long-running synchronous function (data transformation, sorting, encryption) → offload to a Worker Thread using `worker_threads` or a managed pool like `piscina`:
+**Resolution:**
 
 ```javascript
+// Replace synchronous file reads with async equivalents
+// BEFORE
+const data = fs.readFileSync('/path/to/file', 'utf8');
+
+// AFTER (promise-based)
+const data = await fs.promises.readFile('/path/to/file', 'utf8');
+
+// AFTER (streams for large files)
+const stream = fs.createReadStream('/path/to/file');
+stream.pipe(res);
+```
+
+**Verification:** Re-run Step 1 after deploying the fix. p99 event loop lag should drop below 20 ms. Confirm Step 3 grep returns no `*Sync` calls in request handler paths.
+
+---
+
+### Cause B: Large JSON serialization or deserialization on the main thread
+
+**Statement:** Calling `JSON.parse()` or `JSON.stringify()` on payloads larger than approximately 10 MB blocks the main thread for hundreds of milliseconds to over a second.
+
+**Mechanism:** The V8 JSON parser and serializer are synchronous and run on the main thread. Benchmarks show `JSON.stringify()` on a 50 MB object takes approximately 0.7 seconds and `JSON.parse()` takes approximately 1.3 seconds, blocking all other callbacks for the duration. Large request bodies passed without a size limit allow any client to trigger this block on demand.
+
+**Indicator:**
+
+- [Step 3] `grep` finds `JSON.parse` or `JSON.stringify` inside a request handler
+- [Step 4] Flame graph shows a wide `JSON.parse` or `JSON.stringify` bar
+- [Symptom] Lag spikes correlate with large-payload requests visible in access logs
+
+<!-- match: {"step": 3, "predicate": "contains", "target": "JSON.parse"} -->
+
+**Mitigation:**
+
+- **Risk:** Low; adding a payload size limit rejects oversized requests with a 413 error before parsing occurs.
+- **Command:**
+
+  ```bash
+  # For Express: set body size limit immediately to prevent further blocking
+  # Add or update in app entry point:
+  # app.use(express.json({ limit: '1mb' }));
+  grep -rn "express.json\|bodyParser.json" --include="*.js" --include="*.ts" src/
+  ```
+
+- **Duration:** Permanent — apply the limit and deploy.
+
+**Resolution:**
+
+```javascript
+// Set a payload size limit in Express
+app.use(express.json({ limit: '1mb' }));
+
+// For payloads that must exceed 1 MB, use streaming JSON parsers:
+const { createStream } = require('stream-json');
+const { streamArray } = require('stream-json/streamers/StreamArray');
+
+const pipeline = fs.createReadStream('large.json')
+  .pipe(createStream())
+  .pipe(streamArray());
+
+pipeline.on('data', ({ value }) => processItem(value));
+```
+
+**Verification:** Re-run Step 1 under load with a payload at or below the new limit. Lag should remain below 20 ms p99. Confirm 413 responses for oversized payloads.
+
+---
+
+### Cause C: CPU-bound computation in a request handler (O(n²) or heavy transform)
+
+**Statement:** A request handler performs a CPU-intensive synchronous computation — sorting, encryption, hashing, data transformation, or nested iteration — that takes more than 5 ms per call and monopolizes the main thread.
+
+**Mechanism:** Any synchronous JavaScript that runs for more than a few milliseconds on the main thread prevents the event loop from advancing. Unlike `*Sync` I/O calls, these are pure-JavaScript algorithms where the only fix is to offload the work to a Worker Thread or restructure the algorithm. Common patterns are O(n²) nested loops over arrays received from user input and synchronous crypto operations on large data.
+
+**Indicator:**
+
+- [Step 1] p99 lag spikes correlate with request volume, not a fixed interval
+- [Step 2] Main thread CPU stays near 100% during lag spikes
+- [Step 4] Flame graph shows a wide bar for an application function (not a Node core function)
+
+<!-- match: {"step": 2, "predicate": "threshold", "target": "cpu_pct", "op": ">", "value": 90} -->
+
+**Mitigation:**
+
+- **Risk:** Low; adding Worker Thread offloading is non-breaking and isolates the computation.
+- **Command:**
+
+  ```bash
+  # Identify the blocking function name from Step 4 profile output
+  grep -A20 "Bottom up" profile.txt | head -30
+  # Scale horizontally to absorb immediate load while fix is prepared
+  pm2 scale app +2
+  # Or for Kubernetes:
+  kubectl scale deployment <name> -n <namespace> --replicas=4
+  ```
+
+- **Duration:** Horizontal scale is a temporary measure; the Worker Thread fix is the permanent resolution.
+
+**Resolution:**
+
+```javascript
+// Offload CPU-intensive work to a worker thread pool using piscina
 const Piscina = require('piscina');
 const pool = new Piscina({ filename: './worker.js', maxThreads: 4 });
-app.get('/compute', async (req, res) => {
+
+// In request handler — now non-blocking
+app.post('/compute', async (req, res) => {
   const result = await pool.run(req.body);
   res.json(result);
 });
+
+// worker.js — runs in separate thread
+module.exports = ({ data }) => {
+  // CPU-intensive work here — does NOT block the event loop
+  return expensiveTransform(data);
+};
 ```
 
-Any operation expected to take more than 5ms of CPU time should be offloaded.
+**Verification:** Re-run Step 1 and Step 2 under load after deploying the worker pool. Main thread CPU should drop below 20%, and p99 lag should fall below 20 ms.
 
-**If** code uses `fs.readFileSync` or other `*Sync` methods in request handlers → replace with async equivalents (`fs.promises.readFile`) or streams (`fs.createReadStream`) for large files. `*Sync` methods are only acceptable during application startup.
+---
 
-**If** `JSON.parse()`/`JSON.stringify()` on large payloads causes lag → use streaming JSON parsers (`stream-json`, `JSONStream`, `bfj`) for payloads over 1MB. Set request body size limits to prevent unbounded parsing: `express.json({ limit: '1mb' })`.
+### Cause D: ReDoS — catastrophic regular expression backtracking
 
-**If** a regular expression causes exponential backtracking → rewrite the regex to avoid nested quantifiers (`(a+)+`), overlapping alternations (`(a|a)*`), and backreferences on untrusted input. Use `safe-regex` to audit patterns or replace with `re2` (Google's linear-time regex engine). For simple matching, use `String.indexOf()` instead of regex.
+**Statement:** A regular expression with nested quantifiers or overlapping alternations is applied to untrusted user input, causing exponential backtracking that blocks the main thread indefinitely.
 
-**If** GC pauses exceed 100ms → reduce heap pressure by reusing objects, reducing allocation rate, and avoiding patterns that create many short-lived large objects. Increase `--max-old-space-size` if the heap is undersized. Consider using `--max-semi-space-size=64` to reduce young-generation GC frequency for high-allocation workloads.
+**Mechanism:** Patterns such as `/(a+)+/`, `/(\/.+)+$/`, or `/(a|a)*/` exhibit super-linear worst-case complexity. A carefully crafted input string (e.g., 100 forward slashes followed by a newline) can cause the V8 regex engine to spend seconds or minutes exploring exponentially many match paths, pinning the main thread. This is a denial-of-service vector exploitable by any client.
 
-**If** DNS lookups saturate the libuv thread pool → switch from `dns.lookup()` (uses thread pool) to `dns.resolve()` (uses c-ares, independent of thread pool). Increase `UV_THREADPOOL_SIZE` to 16-128 for workloads with heavy file I/O.
+**Indicator:**
 
-**If** an O(n^2) algorithm processes large datasets → restructure to O(n) using Maps for lookups instead of nested iteration. For unavoidable long computations, partition into chunks yielding to the event loop with `setImmediate()`:
+- [Step 7] `safe-regex` reports `VULNERABLE` for a pattern present in the codebase
+- [Step 4] Flame graph shows a wide `RegExp.exec` or `String.match` bar
+- [Symptom] Lag spikes occur only on specific input shapes, not uniformly under load
+
+<!-- match: {"step": 7, "predicate": "contains", "target": "VULNERABLE"} -->
+
+**Mitigation:**
+
+- **Risk:** Low; replacing vulnerable patterns with `String.indexOf` or `re2` does not change externally observable behavior for valid inputs.
+- **Command:**
+
+  ```bash
+  # Replace simple path checks with indexOf to eliminate regex exposure immediately
+  # VULNERABLE: if (input.match(/(\/.+)+$/)) { ... }
+  # SAFE:       if (input.indexOf('/') !== -1) { ... }
+  npm install re2
+  # Use re2 as a drop-in replacement for untrusted-input patterns
+  ```
+
+- **Duration:** Permanent code change.
+
+**Resolution:**
 
 ```javascript
-async function processInChunks(items, chunkSize = 100) {
-  for (let i = 0; i < items.length; i += chunkSize) {
-    processChunk(items.slice(i, i + chunkSize));
-    await new Promise(resolve => setImmediate(resolve));
-  }
-}
+// Option 1: Replace with simple string methods
+if (filePath.indexOf('/') !== -1) { /* safe */ }
+
+// Option 2: Use Google RE2 (linear-time engine) as drop-in replacement
+const RE2 = require('re2');
+const safePattern = new RE2(/complex-but-valid-pattern/);
+if (safePattern.test(userInput)) { /* safe */ }
 ```
 
-## Verification
+**Verification:** Re-run Step 7 — `safe-regex` should report no `VULNERABLE` patterns. Apply input from Step 7 that triggered the vulnerability; response time should remain under 100 ms.
 
-1. **Measure event loop lag under load:**
+---
 
-```bash
-npx autocannon -c 100 -d 30 http://localhost:3000/api/endpoint
+### Cause E: libuv thread pool saturation blocking async I/O
+
+**Statement:** The default libuv thread pool size of 4 is insufficient for the workload, causing async operations (DNS lookups via `dns.lookup`, file I/O, crypto) to queue and appear as event loop lag even though the main thread is not CPU-bound.
+
+**Mechanism:** Node.js delegates certain "async" operations — `dns.lookup()`, `fs.*` callbacks, and `crypto.randomBytes()` — to a pool of libuv worker threads. With the default pool size of 4, only 4 such operations can execute in parallel. Additional operations queue on the event loop until a thread is free, creating measurable lag without main-thread CPU saturation.
+
+**Indicator:**
+
+- [Step 6] Active requests consistently at or above `UV_THREADPOOL_SIZE` value
+- [Step 2] Main thread CPU is low (below 30%) during lag spikes
+- [Step 1] Lag is present but no blocking patterns found in Step 3 or Step 4
+
+<!-- match: {"step": 6, "predicate": "threshold", "target": "active_requests", "op": ">=", "value": 4} -->
+
+**Mitigation:**
+
+- **Risk:** Low; each additional thread uses approximately 1 MB of stack memory.
+- **Command:**
+
+  ```bash
+  export UV_THREADPOOL_SIZE=16
+  node app.js
+  ```
+
+  For Kubernetes, patch the deployment environment:
+
+  ```bash
+  kubectl set env deployment/<name> UV_THREADPOOL_SIZE=16 -n <namespace>
+  ```
+
+- **Duration:** Requires application restart; effective immediately after restart.
+
+**Resolution:**
+
+```javascript
+// For DNS-heavy workloads, switch from dns.lookup() (thread pool)
+// to dns.resolve() (c-ares, bypasses thread pool entirely)
+const dns = require('dns');
+
+// BEFORE (uses thread pool)
+dns.lookup('example.com', (err, address) => { /* ... */ });
+
+// AFTER (bypasses thread pool)
+dns.resolve4('example.com', (err, addresses) => { /* ... */ });
 ```
 
-p99 response time should be under 100ms. Event loop lag (from `monitorEventLoopDelay`) should stay below 20ms.
+- **Impact:** `UV_THREADPOOL_SIZE` increase is process-wide; applies to all async I/O and crypto in the same process. Requires restart.
+- **Rollback:** Set `UV_THREADPOOL_SIZE=4` and restart.
 
-2. **Run Clinic Doctor and confirm healthy diagnosis:**
+**Verification:** Re-run Step 6 after restart. Active requests should stay consistently below `UV_THREADPOOL_SIZE`. Re-run Step 1; p99 lag should fall below 20 ms.
 
-```bash
-npx clinic doctor -- node app.js
-# Generate load, then Ctrl+C
+---
+
+### Cause F: V8 garbage collection pauses on oversized heap
+
+**Statement:** V8 Mark-Compact (full GC) pauses exceed 100 ms because the application heap has grown too large or the allocation rate is too high, causing periodic event loop stalls.
+
+**Mechanism:** V8's GC must pause the JavaScript thread during Mark-Compact collection to compact and free old-generation memory. As heap size grows, scan time increases proportionally. Applications with high object allocation rates or large caches held in memory produce frequent, long GC pauses that appear as periodic event loop lag spikes even when no application code is blocking.
+
+**Indicator:**
+
+- [Step 5] `--trace-gc` output shows `Mark-Compact` lines with pause times above 100 ms
+- [Step 1] Lag spikes occur at a regular interval (every 30–120 s) rather than correlating with request volume
+- [Step 2] Main thread CPU spikes briefly (5–15 s) and returns to baseline between spikes
+
+<!-- match: {"step": 5, "predicate": "contains", "target": "Mark-Compact"} -->
+
+**Mitigation:**
+
+- **Risk:** Low; `--max-old-space-size` increase allows V8 to defer GC, which reduces pause frequency at the cost of higher memory usage.
+- **Command:**
+
+  ```bash
+  # Increase old-space limit to reduce GC frequency (restart required)
+  node --max-old-space-size=4096 app.js
+  # Confirm current heap limit
+  node -e "const v8=require('v8'); console.log(v8.getHeapStatistics())"
+  ```
+
+- **Duration:** Requires restart; effective immediately.
+
+**Resolution:**
+
+```javascript
+// Reduce allocation rate by reusing objects and capping in-memory caches
+const LRU = require('lru-cache');
+const cache = new LRU({ max: 500, ttl: 1000 * 60 * 5 });  // 500-item LRU, 5-min TTL
+
+// Avoid patterns that create many short-lived large objects in hot paths
+// BEFORE (new array each request)
+const sorted = [...largeArray].sort(compareFn);
+
+// AFTER (reuse a pre-allocated buffer when possible)
+largeArray.sort(compareFn);  // in-place if mutation is acceptable
 ```
 
-Report should show green "Healthy" status with no event loop blocking detected.
+**Verification:** Re-run Step 5 after applying changes. Mark-Compact pause durations should drop below 50 ms. Re-run Step 1; periodic lag spikes should disappear.
 
-3. **Check Prometheus event loop metrics (if available):**
+---
 
-```bash
-curl -s http://localhost:9090/metrics | grep event_loop
-```
+### Cause Z: Unidentified event loop blocking
 
-The event loop lag histogram should show the majority of samples below 10ms.
+**Statement:** Event loop lag is confirmed but the root cause cannot be identified from the diagnostic steps above.
 
-4. **Monitor in production for 24 hours:** Response times should remain consistent without periodic spikes. Alert on `nodejs_event_loop_lag_seconds` p99 exceeding 50ms for 5 minutes.
+**Mechanism:** [Default]
+
+**Indicator:**
+
+- [Default] Steps 1–7 show elevated lag but no specific pattern, blocking call, or GC cause is identified
+
+**Mitigation:**
+
+- **Risk:** Low; Clinic.js Doctor performs non-invasive profiling and produces an HTML report without requiring code changes.
+- **Command:**
+
+  ```bash
+  npx clinic doctor -- node app.js
+  # Generate representative load, then Ctrl+C
+  npx clinic flame -- node app.js
+  # Generate load, then Ctrl+C
+  ```
+
+- **Duration:** Profile session (typically 60–120 s of load); no application changes required.
+
+**Resolution:** Out of runbook scope. Escalate with the Clinic Doctor HTML report and flame graph to the Node.js maintainer or application team for deeper investigation.
+
+**Verification:** The Clinic Doctor report diagnoses one of: "Event loop is blocked" (red), "I/O issue" (orange), "Memory issue" (orange), or "Healthy" (green). Use the identified category to return to the appropriate Cause subsection above.
 
 ## Prevention
 
-- **Enforce no synchronous I/O in request paths** with the ESLint `no-sync` rule (`eslint-plugin-node`). Allow `*Sync` calls only in startup/initialization code paths via inline disable comments.
-- **Monitor event loop lag in every Node.js service** using `monitorEventLoopDelay` from `perf_hooks`, exported as a Prometheus histogram. Alert when p99 exceeds 50ms for 5 minutes.
-- **Set request payload size limits** to prevent large JSON from blocking during parsing: `express.json({ limit: '1mb' })` or equivalent. For payloads that must be larger, use streaming parsers.
-- **Audit regular expressions with `safe-regex` or `recheck`** in CI. Reject patterns with super-linear worst-case complexity. Consider `re2` as a drop-in replacement for untrusted input matching.
-- **Run in cluster mode in production** (`pm2 start -i max` or Kubernetes with multiple replicas) so a single blocked worker does not take down all request handling.
-- **Use Worker Threads for CPU-intensive operations.** Establish a convention that any synchronous operation expected to exceed 5ms must be offloaded to a worker pool (`piscina` or `workerpool`).
-- **Set `UV_THREADPOOL_SIZE=16`** (or higher) for services with heavy file I/O or DNS lookups. The default of 4 is insufficient for most production workloads.
-- **Bound all data processing.** Never iterate over unbounded datasets on the main thread. Implement pagination at the database query level and chunk-processing with `setImmediate()` yields for in-memory operations.
+- Enforce `no-sync` ESLint rule (`eslint-plugin-n`) across all source files; allow `*Sync` calls only in startup/initialization paths via inline `// eslint-disable-next-line` comments with a justification comment.
+- Export event loop lag as a Prometheus histogram using `monitorEventLoopDelay` from `perf_hooks`. Alert when p99 exceeds 50 ms for 5 consecutive minutes.
+- Set request body size limits to 1 MB (`express.json({ limit: '1mb' })`) as a default; require explicit justification for larger limits documented in code review.
+- Run `npx safe-regex` or `recheck` in CI against all regular expression literals touching untrusted input; reject patterns that fail the linearity check.
+- Set `UV_THREADPOOL_SIZE=16` (or higher) for services with heavy DNS, file I/O, or crypto usage; the default of 4 is insufficient for most production workloads.
+- Establish a convention that any synchronous operation expected to exceed 5 ms must be offloaded to a worker pool (`piscina` or `workerpool`); enforce via code-review checklist.
+- Run all Node.js services in cluster mode or with multiple replicas (`pm2 start -i max` or Kubernetes with at least 2 pods) so a single blocked worker does not take down all request handling.
+- Cap all in-memory caches with LRU eviction and TTLs to control heap growth and reduce GC pause frequency.
 
 ## Sources
 
-- [Node.js — Don't Block the Event Loop](https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop) — Official guide covering dangerous APIs (JSON, regex, crypto, fs Sync), partitioning, offloading, and ReDoS prevention
-- [Node.js — Worker Threads API](https://nodejs.org/api/worker_threads.html) — Official documentation for offloading CPU-intensive work to separate threads
-- [Node.js — Performance Hooks (monitorEventLoopDelay)](https://nodejs.org/api/perf_hooks.html) — Built-in API for measuring event loop lag with histogram percentiles
-- [Trigger.dev — How We Tamed Node.js Event Loop Lag](https://trigger.dev/blog/event-loop-lag) — Production case study diagnosing O(n^2) algorithms, payload size limits, and monitoring with OpenTelemetry
-- [Clinic.js](https://clinicjs.org/) — Open-source Node.js performance profiling suite: Doctor (diagnosis), Flame (CPU profiling), Bubbleprof (async visualization)
-- [NodeSource — Debugging the Event Loop](https://nodesource.com/blog/node-js-performance-monitoring-part-3-debugging-the-event-loop) — CPU profiling techniques and flame graph interpretation for event loop issues
+- [Node.js — Don't Block the Event Loop](https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop) — Official guide covering dangerous APIs, JSON thresholds (0.7 s / 1.3 s at 50 MB), ReDoS patterns, partitioning, and Worker Pool task-time bounding; Priority 1
+- [Node.js — Performance Hooks: monitorEventLoopDelay](https://nodejs.org/api/perf_hooks.html) — Official API reference for `IntervalHistogram`, resolution parameter, percentile access, and nanosecond-to-millisecond conversion; Priority 1
+- [Clinic.js](https://clinicjs.org/) — Open-source performance profiling suite for Node.js: Doctor (automated event loop / I/O / memory diagnosis), Flame (CPU flame graphs), Bubbleprof (async flow visualization); Priority 2
+- [NodeSource — Debugging the Event Loop](https://nodesource.com/blog/node-js-performance-monitoring-part-3-debugging-the-event-loop) — CPU profiling techniques, `--prof` flag workflow, and flame graph interpretation for event loop issues; Priority 3
+- [Trigger.dev — How We Tamed Node.js Event Loop Lag](https://trigger.dev/blog/event-loop-lag) — Production case study: O(n²) algorithm discovery, `monitorEventLoopDelay` instrumentation, payload size limits, and OpenTelemetry integration; Priority 3

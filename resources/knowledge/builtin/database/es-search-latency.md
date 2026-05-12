@@ -1,419 +1,459 @@
 ---
-id: es-search-latency
-title: "Elasticsearch Search Latency Spikes: Slow Queries, Heap Pressure, and Circuit Breakers"
+id: "es-search-latency"
+title: "Elasticsearch Search Latency Spikes"
 domain: database
 service: elasticsearch
-symptom_class:
-  - latency
-  - oom
+symptom_class: [latency, oom]
 severity: high
 scope: global
-version: "2.1.0"
-last_updated: "2026-03-26"
-verified_by: kb-researcher
+version: "1.0.0"
+last_updated: "2026-05-12"
+verified_by: "kb-researcher"
 status: draft
-tags:
-  - elasticsearch
-  - latency
-  - gc-pressure
-  - circuit-breaker
-  - slow-queries
+tags: [elasticsearch, latency, gc-pressure, circuit-breaker, slow-queries, heap, thread-pool]
 difficulty: intermediate
 ---
 
-# Elasticsearch Search Latency Spikes: Slow Queries, Heap Pressure, and Circuit Breakers
+## Symptom Recognition
 
-## Problem Definition
+- Search API response times increase from milliseconds to seconds or time out
+- Application-side query errors with HTTP `429` and message containing `circuit_breaking_exception`
+- `_cat/nodes` shows `heap.percent` above 75% on one or more data nodes
+- `_cat/thread_pool/search` shows non-zero and growing `rejected` count
+- GC logs contain stop-the-world old-generation pauses exceeding 200 ms
+- `_nodes/stats` shows elevated `search.query_time_in_millis` growth rate
+- Kibana dashboards load slowly or time out on aggregation-heavy panels
+- Queries that were previously fast now slow across all indices simultaneously (systemic resource pressure)
 
-This runbook covers Elasticsearch clusters (versions 7.x and 8.x) experiencing elevated search latency. It applies to self-managed deployments, Elastic Cloud, and cloud-provider managed services (Amazon OpenSearch, GCP Elasticsearch). You need access to the Elasticsearch REST API (port 9200), the search slow log files on each data node, the JVM/GC logs, and optionally the application-side query logs. Kibana access is helpful for visualizing profiling output but not required.
+## Applicability
 
-Elasticsearch search latency spikes occur when query response times increase significantly from their baseline, impacting application performance and user experience. Latency can originate from query complexity, resource pressure (heap, CPU, I/O), or cluster-level issues such as degraded health or thread pool exhaustion.
-
-**Common symptoms:**
-
-- Search API response times increase from milliseconds to seconds or longer
-- Application timeouts on Elasticsearch queries
-- `_nodes/stats` shows elevated `search.query_time_in_millis`
-- Kibana dashboards and visualizations load slowly or time out
-- Circuit breaker exceptions in logs: `CircuitBreakingException` with a `429` response code
-- Frequent garbage collection (GC) pauses visible in GC logs (pauses > 200ms)
-- Thread pool rejections in `search` and `get` pools
-- Queries that were previously fast now run slow across all indices (ripple-effect slowness from systemic resource pressure)
-
-**Common root causes:**
-
-- Expensive queries: deep aggregations, leading wildcards, scripts, regex on large text fields
-- JVM heap pressure triggering long GC pauses (stop-the-world old generation collections)
-- Circuit breaker trips preventing memory-intensive operations from completing
-- Too many concurrent searches exhausting the search thread pool
-- Large result sets or deep pagination (`from` + `size` > 10000)
-- Segment merging consuming I/O bandwidth during heavy indexing
-- Field data or global ordinals loading on high-cardinality fields
-- Excessive shards per node (above 20 non-frozen shards per GB of heap)
-- Cold or frozen tier nodes serving queries with high I/O latency
-- Cross-cluster search adding network round-trip latency
-- Cluster yellow/red status causing queries to hit fewer shards
+Applies to self-managed Elasticsearch 7.x and 8.x clusters, Elastic Cloud, and cloud-provider managed services (Amazon OpenSearch Service, GCP Elasticsearch). Requires access to the Elasticsearch REST API on port 9200 (or 9243 for TLS), read access to search slow log files on data nodes, and JVM/GC log access. Kibana Search Profiler (6.4+) is optional but aids profile visualization.
 
 ## Diagnostic Steps
 
-### Step 1: Check cluster health and node resource metrics
-
-**What this checks:** The overall cluster state and per-node resource metrics to rule out cluster-level issues as the latency cause.
+### Step 1: Check cluster health and per-node resource utilization
 
 ```bash
-curl -s "localhost:9200/_cluster/health?pretty"
-curl -s "localhost:9200/_cat/nodes?v&h=name,heap.percent,ram.percent,cpu,load_1m,disk.used_percent,node.role"
+curl -s "http://localhost:9200/_cluster/health?pretty"
+curl -s "http://localhost:9200/_cat/nodes?v&h=name,heap.percent,ram.percent,cpu,load_1m,disk.used_percent,node.role"
 ```
 
-**Expected output:** Cluster health JSON showing `status`, and a node table with resource utilization per node.
+Expected output: cluster health JSON with `status` field; node table with heap, CPU, disk, and load columns per node.
 
-**What the finding means:** A yellow or red cluster reduces the number of shards available for queries, directly increasing latency on remaining shards. Nodes with `heap.percent` above 75% are under GC pressure. Nodes with `cpu` above 90% are compute-bound. If `number_of_nodes` is lower than expected, a node has departed.
-
-### Step 2: Identify slow queries with the slow log
-
-**What this checks:** Which specific queries are exceeding latency thresholds, including the full query body and per-shard timing breakdown.
+### Step 2: Check search thread pool rejections
 
 ```bash
-# Enable slow log on target index (adjust thresholds to match your SLA)
-curl -X PUT "localhost:9200/<INDEX_NAME>/_settings?pretty" -H 'Content-Type: application/json' -d '{
-  "index.search.slowlog.threshold.query.warn": "5s",
-  "index.search.slowlog.threshold.query.info": "2s",
-  "index.search.slowlog.threshold.fetch.warn": "1s",
-  "index.search.slowlog.threshold.fetch.info": "500ms"
-}'
+curl -s "http://localhost:9200/_cat/thread_pool/search?v&h=node_name,active,queue,rejected,completed"
 ```
 
-Then review the slow log:
+Expected output: one row per node; `rejected` column shows cumulative rejections since node start.
+
+### Step 3: Check JVM heap usage and GC activity
 
 ```bash
-tail -100 /var/log/elasticsearch/<CLUSTER_NAME>_index_search_slowlog.json
+curl -s "http://localhost:9200/_nodes/stats/jvm?pretty" | grep -E "heap_used_percent|collection_count|collection_time_in_millis"
 ```
 
-**Expected output:** JSON log entries containing the slow query body, index name, shard ID, `took_millis`, total shards searched, and source query text.
-
-**What the finding means:** Repeated entries for the same query pattern indicate an application-level issue (bad query design). If many basic search queries appear in the slow log simultaneously, this indicates systemic resource contention rather than a query-specific problem -- all queries slow down when the cluster is under pressure.
-
-### Step 3: Check JVM heap and GC activity
-
-**What this checks:** Whether the JVM heap is under pressure and whether GC pauses are contributing to query latency.
-
-```bash
-curl -s "localhost:9200/_nodes/stats/jvm?pretty" | grep -E "heap_used_percent|heap_max|collection_count|collection_time"
-```
-
-**Expected output:** `heap_used_percent` for each node, and GC collection counts and cumulative time for young and old generation collectors.
-
-**What the finding means:** If `heap_used_percent` is consistently above 75%, the JVM is under memory pressure. Old generation GC collection times exceeding 200ms are stop-the-world pauses that directly add to query latency. A heap flatlined near 85-95% indicates GC thrashing -- the collector runs continuously but cannot reclaim enough memory.
-
-Check GC logs directly for individual pause details:
-
-```bash
-tail -50 /var/log/elasticsearch/gc.log
-```
+Expected output: per-node `heap_used_percent` and old-generation GC `collection_count` with cumulative `collection_time_in_millis`.
 
 ### Step 4: Check circuit breaker status
 
-**What this checks:** Whether memory-protection circuit breakers have tripped, rejecting queries to prevent out-of-memory crashes.
-
 ```bash
-curl -s "localhost:9200/_nodes/stats/breaker?pretty"
+curl -s "http://localhost:9200/_nodes/stats/breaker?pretty"
 ```
 
-**Expected output:** Per-node breaker stats showing `limit_size`, `estimated_size`, and `tripped` count for each breaker type.
+Expected output: per-node breaker objects each with `limit_size`, `estimated_size`, and `tripped` counter for `request`, `fielddata`, `in_flight_requests`, and `parent` breakers.
 
-**What the finding means:** Key breakers and their default limits: `request` (60% of heap -- covers aggregations, sorting, and in-memory data structures), `fielddata` (40% of heap -- covers field data cache), `in_flight_requests` (100% of heap -- covers all in-flight request payloads), `parent` (95% of real heap -- combined limit, enabled by default in 7.0+). If `tripped > 0`, the breaker has rejected requests to prevent OOM. In ES 7.0+, the parent breaker uses real heap measurement (`indices.breaker.total.use_real_memory: true`), improving accuracy.
-
-### Step 5: Check search thread pool rejections
-
-**What this checks:** Whether the search thread pool is saturated and rejecting incoming queries.
+### Step 5: Enable and review the search slow log
 
 ```bash
-curl -s "localhost:9200/_cat/thread_pool/search?v&h=node_name,active,queue,rejected,completed"
+curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
+  -H 'Content-Type: application/json' -d '{
+    "index.search.slowlog.threshold.query.warn": "5s",
+    "index.search.slowlog.threshold.query.info": "2s",
+    "index.search.slowlog.threshold.fetch.warn": "1s",
+    "index.search.slowlog.threshold.fetch.info": "500ms"
+  }'
+tail -50 /var/log/elasticsearch/<CLUSTER_NAME>_index_search_slowlog.json
 ```
 
-**Expected output:** A table with one row per node showing active threads, queued requests, and cumulative rejected count.
+Expected output: JSON log entries with `took_millis`, shard ID, index name, and `source` containing the full query body.
 
-**What the finding means:** If `rejected` is non-zero and increasing, the node cannot keep up with search demand. The search thread pool size defaults to `(number_of_CPUs * 3 / 2) + 1` with a queue of 1000. Rising rejections indicate queries exceed available compute capacity. Each search hitting N shards consumes N thread pool slots, so indices with many primary shards amplify contention.
-
-### Step 6: Profile a slow query
-
-**What this checks:** The internal time breakdown of a specific query to identify which phase (rewrite, scoring, collection) is the bottleneck.
+### Step 6: Profile a specific slow query
 
 ```bash
-curl -X GET "localhost:9200/<INDEX_NAME>/_search?pretty" -H 'Content-Type: application/json' -d '{
-  "profile": true,
-  "query": {
-    "match": { "field": "value" }
-  }
-}'
+curl -s -X GET "http://localhost:9200/<INDEX_NAME>/_search?pretty" \
+  -H 'Content-Type: application/json' -d '{
+    "profile": true,
+    "query": { "match": { "<FIELD>": "<VALUE>" } }
+  }'
 ```
 
-**Expected output:** A `profile` section in the response with per-shard timing for each query phase: `rewrite`, `build_scorer`, `next_doc`, `score`, `advance`, `match`.
+Expected output: a `profile` block per shard with `time_in_nanos` and `breakdown` for each query component (`create_weight`, `build_scorer`, `next_doc`, `score`, `advance`, `match`).
 
-**What the finding means:** A high `next_doc` time indicates the query is scanning many documents (missing index or overly broad filter). A high `score` time indicates expensive scoring (scripts, `function_score`). A high `build_scorer` time can indicate complex boolean queries or high segment counts. Use the Kibana Search Profiler (v6.4+) to visualize these results.
-
-### Step 7: Check segment counts and merge activity
-
-**What this checks:** Whether excessive segment counts on indices are degrading search performance.
+### Step 7: Check field data memory usage
 
 ```bash
-curl -s "localhost:9200/_cat/indices?v&h=index,docs.count,store.size,seg.count&s=seg.count:desc" | head -20
+curl -s "http://localhost:9200/_nodes/stats/indices/fielddata?pretty" | grep -E "memory_size|evictions"
+curl -s "http://localhost:9200/_cat/fielddata?v&format=json" | head -30
 ```
 
-**Expected output:** A table of indices sorted by segment count, highest first.
+Expected output: per-node field data heap consumption broken down by field name; `evictions` counter shows cache pressure.
 
-**What the finding means:** High segment counts (hundreds per shard) indicate insufficient merging. Each segment requires its own file handles and search context, and queries must union results across all segments. Actively indexed data naturally has more segments; read-only indices should be force-merged to 1 segment.
-
-### Step 8: Check field data and global ordinals memory
-
-**What this checks:** Whether field data loading or global ordinals construction is consuming excessive heap and adding latency.
+### Step 8: Check segment counts on top indices
 
 ```bash
-curl -s "localhost:9200/_cat/fielddata?v&format=json" | head -50
-curl -s "localhost:9200/_nodes/stats/indices/fielddata?pretty"
+curl -s "http://localhost:9200/_cat/indices?v&h=index,docs.count,store.size,segments.count&s=segments.count:desc" | head -20
 ```
 
-**Expected output:** Per-node field data memory usage broken down by field name.
+Expected output: index table sorted by segment count descending; read-only historical indices with hundreds of segments per shard indicate missing force-merge.
 
-**What the finding means:** High field data memory on `text` or high-cardinality `keyword` fields causes heap pressure and slow queries. Field data for text fields is loaded on-demand and can consume gigabytes of heap. Global ordinals for keyword fields are rebuilt on each segment refresh. High-cardinality fields (IDs, emails, usernames) used in aggregations are a common source of heap exhaustion.
+## Causes
 
-## Mitigation
+### Cause A: Expensive query pattern
 
-### Option 1: Optimize expensive queries
+**Statement:** A query using leading wildcards, regex, unbounded terms aggregations, or Painless scripts causes full index scans, consuming disproportionate CPU and heap on every execution.
 
-Use when the slow log identifies specific query patterns causing latency.
+**Mechanism:** Leading-wildcard and regex queries rewrite into a union of every matching term in the inverted index before scoring, scaling with index cardinality rather than result set size. Deep unbounded `terms` aggregations load all bucket values into the request circuit breaker scope. Each execution amplifies resource consumption across all shards touched by the scatter-gather.
 
-- **Risk:** Low. Query changes may affect result relevance; test in staging before deploying to production.
+**Indicator:**
+
+- [Step 5] slow log entries repeat the same query `source` pattern across multiple shards
+- [Step 6] `build_scorer` or `next_doc` `time_in_nanos` dominates the profile breakdown for the slow query
+
+<!-- match: {"step": 5, "predicate": "contains", "target": "wildcard"} -->
+<!-- match: {"step": 5, "predicate": "contains", "target": "script"} -->
+
+**Mitigation:**
+
+- **Risk:** Query changes may alter result relevance; test in staging before deploying.
 - **Command:**
 
+  ```bash
+  # Replace leading-wildcard with match on an analyzed field
+  curl -s -X GET "http://localhost:9200/<INDEX>/_search?pretty" \
+    -H 'Content-Type: application/json' -d '{
+      "query": { "match": { "message": "error" } }
+    }'
+  # Cap terms aggregation cardinality
+  curl -s -X GET "http://localhost:9200/<INDEX>/_search?pretty" \
+    -H 'Content-Type: application/json' -d '{
+      "size": 0,
+      "aggs": { "top_terms": { "terms": { "field": "status.keyword", "size": 100 } } }
+    }'
+  ```
+
+- **Duration:** Immediate once the new query is deployed.
+
+**Resolution:**
+
 ```bash
-# Example: Replace leading-wildcard queries with more efficient alternatives
-# Before (expensive — scans every term in the inverted index):
-# { "query": { "wildcard": { "message": "*error*" } } }
-
-# After (efficient — uses the analyzer to match tokens):
-# { "query": { "match": { "message": "error" } } }
-
-# Limit aggregation cardinality with explicit size
-curl -X GET "localhost:9200/<INDEX>/_search?pretty" -H 'Content-Type: application/json' -d '{
-  "size": 0,
-  "aggs": {
-    "top_terms": {
-      "terms": { "field": "status.keyword", "size": 100 }
+# Set cluster-wide max_buckets safety net (ES 7.0+)
+curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
+  -H 'Content-Type: application/json' -d '{
+    "persistent": {
+      "search.max_buckets": 10000
     }
-  }
-}'
+  }'
 ```
 
-- **Verify:**
+- **Impact:** Cluster-wide; any aggregation exceeding 10 000 buckets returns a `too_many_buckets_exception`. No restart required.
+- **Rollback:** Set `search.max_buckets` to `null` to restore the default.
 
-```bash
-curl -s "localhost:9200/_nodes/stats/indices/search?pretty" | grep "query_time"
-# Expected: query_time_in_millis growth rate decreases
-```
+**Verification:** Run `curl -s "http://localhost:9200/_nodes/stats/indices/search?pretty" | grep query_time` before and after; confirm `query_time_in_millis` growth rate is lower after query change is deployed.
 
-- **Duration:** Immediate after query change is deployed.
+---
 
-### Option 2: Increase JVM heap (if under-allocated)
+### Cause B: JVM heap pressure and GC pauses
 
-Use when `heap_used_percent` is consistently above 75% and the node has available physical RAM.
+**Statement:** Sustained JVM heap utilization above 75% triggers frequent stop-the-world old-generation garbage collection pauses that directly add to query response time.
 
-- **Risk:** Moderate. Heap above 31 GB loses compressed ordinary object pointers (OOPs), which can reduce effective memory. Never exceed 50% of physical RAM -- the other half is needed for the OS file system cache which Elasticsearch relies on for segment reads. Requires a node restart.
+**Mechanism:** Elasticsearch holds segment metadata, field data caches, query results, and request buffers in heap. When the old generation fills, the G1GC collector stops all JVM threads (stop-the-world) for tens to hundreds of milliseconds to reclaim space. Queries in flight during a pause accumulate wall-clock latency equal to the GC pause duration. A heap flatlined above 85–90% indicates GC thrashing where the collector runs continuously but cannot free enough memory to reduce pressure.
+
+**Indicator:**
+
+- [Step 3] `heap_used_percent` above 75 on any data node
+- [Step 3] old-generation `collection_time_in_millis` increasing rapidly (more than 5 collections per minute)
+
+<!-- match: {"step": 3, "predicate": "threshold", "target": "heap_used_percent", "op": ">", "value": 75} -->
+
+**Mitigation:**
+
+- **Risk:** Heap above 31 GB loses compressed ordinary object pointers (OOPs), reducing effective addressable memory per byte. Never exceed 50% of physical RAM; the other half is required for the OS file system cache used for segment reads.
 - **Command:**
 
+  ```bash
+  # Edit /etc/elasticsearch/jvm.options — set both to the same value
+  # -Xms16g
+  # -Xmx16g
+  # Rolling restart one node at a time:
+  sudo systemctl restart elasticsearch
+  ```
+
+- **Duration:** Takes effect after node restart; complete rolling restart before declaring resolved.
+
+**Resolution:**
+
 ```bash
-# Edit jvm.options (e.g., /etc/elasticsearch/jvm.options)
-# Set both to the same value:
-# -Xms16g
-# -Xmx16g
-# Then restart the node:
-sudo systemctl restart elasticsearch
+# Add coordinating-only nodes to absorb scatter-gather heap cost
+# Then rebalance shards to reduce per-node shard density:
+curl -s "http://localhost:9200/_cat/allocation?v&h=node,shards,disk.used_percent"
 ```
 
-- **Verify:**
+- **Impact:** Adding nodes requires cluster topology change. Reducing heap per-node shard count requires shard rebalancing (automatic after node addition).
+- **Rollback:** Remove added nodes via shrink API or decommission procedure.
 
-```bash
-curl -s "localhost:9200/_nodes/stats/jvm?pretty" | grep "heap_max_in_bytes"
-# Expected: reflects the new heap size
-```
+**Verification:** `curl -s "http://localhost:9200/_nodes/stats/jvm?pretty" | grep heap_used_percent` — confirm all nodes below 75% and sustained over 30 minutes of peak traffic.
 
-- **Duration:** Minutes (one node restart per rolling upgrade cycle).
+---
 
-### Option 3: Clear field data cache
+### Cause C: Circuit breaker tripped
 
-Use when field data memory is consuming excessive heap.
+**Statement:** A circuit breaker (`request`, `fielddata`, or `parent`) has tripped, rejecting memory-intensive operations to prevent OOM, causing `429` errors and apparent latency.
 
-- **Risk:** Low. Queries will temporarily slow down while field data is reloaded on demand for subsequent queries.
+**Mechanism:** The parent circuit breaker (default 95% of real heap) acts as a combined limit across all child breakers. When the `request` breaker (60% of heap) trips on a large aggregation, or the `fielddata` breaker (40% of heap) trips on field data loading, Elasticsearch rejects those operations with `CircuitBreakingException`. The remaining non-rejected queries complete normally, but applications without proper retry logic surface these as high-latency or timeout errors.
+
+**Indicator:**
+
+- [Step 4] `tripped` counter is non-zero on any breaker for any node
+- [Symptom] HTTP 429 responses with body containing `circuit_breaking_exception`
+
+<!-- match: {"step": 4, "predicate": "contains", "target": "\"tripped\" : 1"} -->
+
+**Mitigation:**
+
+- **Risk:** Lowering the request breaker limit causes more queries to be rejected with 429 but protects the remaining queries from OOM. Application must handle `CircuitBreakingException` gracefully with backoff.
 - **Command:**
 
+  ```bash
+  # Temporarily lower request breaker to fail fast expensive queries
+  curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
+    -H 'Content-Type: application/json' -d '{
+      "transient": {
+        "indices.breaker.request.limit": "40%"
+      }
+    }'
+  # Clear field data cache if fielddata breaker tripped
+  curl -X POST "http://localhost:9200/_cache/clear?fielddata=true&pretty"
+  ```
+
+- **Duration:** Immediate; transient settings persist until node restart or explicit reset.
+
+**Resolution:**
+
 ```bash
-curl -X POST "localhost:9200/_cache/clear?fielddata=true&pretty"
+# Convert text fields used in aggregations to keyword to eliminate field data loading
+curl -X PUT "http://localhost:9200/<INDEX>/_mapping?pretty" \
+  -H 'Content-Type: application/json' -d '{
+    "properties": {
+      "<FIELD>": {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword" } }
+      }
+    }
+  }'
 ```
 
-- **Verify:**
+- **Impact:** Mapping changes do not backfill existing documents; reindex required for existing data. New documents immediately benefit.
+- **Rollback:** Reindex to original mapping if keyword sub-field is not desired.
 
-```bash
-curl -s "localhost:9200/_nodes/stats/indices/fielddata?pretty" | grep "memory_size"
-# Expected: memory_size_in_bytes significantly reduced
-```
+**Verification:** `curl -s "http://localhost:9200/_nodes/stats/breaker?pretty" | grep tripped` — confirm `tripped` counters stop increasing and 429 error rate drops to zero.
 
-- **Duration:** Immediate.
+---
 
-### Option 4: Reduce concurrent search load
+### Cause D: Search thread pool saturation
 
-Use when search thread pool rejections are high and queries are being dropped.
+**Statement:** The search thread pool is exhausted, causing incoming queries to queue and eventually be rejected, producing rising latency and 429 errors.
 
-- **Risk:** Moderate. Increasing the queue size delays timeout detection; queries wait longer before failing. Coordinate with application teams on timeout settings.
+**Mechanism:** The search thread pool defaults to `(vCPU * 3 / 2) + 1` threads with a queue of 1000. Each search request touching N primary shards consumes N thread slots on the coordinating node's thread pool during the scatter-gather phase. Indices with excessive primary shards amplify thread consumption per query. When the queue fills, Elasticsearch rejects new search requests immediately with a `rejected` error rather than queuing indefinitely.
+
+**Indicator:**
+
+- [Step 2] `rejected` column non-zero and increasing across polling intervals
+- [Step 2] `queue` column consistently above 500 during peak traffic
+
+<!-- match: {"step": 2, "predicate": "threshold", "target": "rejected", "op": ">", "value": 0} -->
+
+**Mitigation:**
+
+- **Risk:** Increasing queue size delays timeout detection; clients wait longer before failing. Coordinate with application teams on timeout settings before increasing.
 - **Command:**
 
+  ```bash
+  # Increase search queue size (dynamic in ES 7.x+)
+  curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
+    -H 'Content-Type: application/json' -d '{
+      "transient": {
+        "thread_pool.search.queue_size": 2000
+      }
+    }'
+  ```
+
+- **Duration:** Immediate; buys time to investigate root cause without dropping requests.
+
+**Resolution:**
+
 ```bash
-# Increase search queue size temporarily (requires ES restart on some versions)
-# For dynamic update (ES 7.x+):
-curl -X PUT "localhost:9200/_cluster/settings?pretty" -H 'Content-Type: application/json' -d '{
-  "transient": {
-    "thread_pool.search.queue_size": 2000
-  }
-}'
+# Add coordinating-only nodes to handle scatter-gather and free data node threads
+# Reduce primary shard count on over-sharded indices using shrink API:
+curl -X POST "http://localhost:9200/<INDEX>/_shrink/<SHRUNK_INDEX>?pretty" \
+  -H 'Content-Type: application/json' -d '{
+    "settings": { "index.number_of_shards": 1 }
+  }'
 ```
 
-- **Verify:**
+- **Impact:** Shrink API requires the index to be read-only and all shards relocated to one node first; plan a maintenance window.
+- **Rollback:** Shrink cannot be undone; retain original index until verified.
 
-```bash
-curl -s "localhost:9200/_cat/thread_pool/search?v&h=node_name,active,queue,rejected"
-# Expected: rejected count stops increasing
-```
+**Verification:** `curl -s "http://localhost:9200/_cat/thread_pool/search?v&h=node_name,active,queue,rejected"` — confirm `rejected` count stops increasing and `queue` stays below 200 during peak.
 
-- **Duration:** Immediate.
+---
 
-### Option 5: Force merge segments (off-peak only)
+### Cause E: Excessive segment count
 
-Use when segment counts are very high on indices that are no longer being written to (e.g., time-based indices from previous periods).
+**Statement:** An index accumulates hundreds of segments per shard due to insufficient background merging, forcing queries to union results across all segments and increasing per-query overhead.
 
-- **Risk:** High I/O impact. Run during off-peak hours only. Do not force merge indices that are actively receiving writes, as it interferes with the normal merge process and can cause larger segments than intended.
+**Mechanism:** Elasticsearch writes new data in small Lucene segments. Background merge policies consolidate segments, but high write throughput can outpace merging. Each query must open and search every segment independently then merge results. Segment metadata (bloom filters, field stats) consumes heap proportional to count. Read-only historical indices that were never force-merged retain the high segment count from their active indexing period indefinitely.
+
+**Indicator:**
+
+- [Step 8] `segments.count` above 200 per shard on indices that are no longer receiving writes
+- [Step 8] read-only time-based indices (e.g., Logstash `logstash-YYYY.MM.DD`) with high segment counts
+
+<!-- match: {"step": 8, "predicate": "threshold", "target": "segments.count", "op": ">", "value": 200} -->
+
+**Mitigation:**
+
+- **Risk:** Force merge triggers intensive I/O. Run only during off-peak hours. Never force merge actively written indices — it interferes with normal merge policy and can create segments larger than intended.
 - **Command:**
 
+  ```bash
+  # Force merge a closed/read-only index to 1 segment (off-peak only)
+  curl -X POST "http://localhost:9200/<INDEX_NAME>/_forcemerge?max_num_segments=1&pretty"
+  ```
+
+- **Duration:** Minutes to hours depending on index size and disk throughput; monitor `_cat/tasks` to track progress.
+
+**Resolution:**
+
 ```bash
-curl -X POST "localhost:9200/<INDEX_NAME>/_forcemerge?max_num_segments=1&pretty"
+# Increase refresh interval during active indexing to reduce segment creation rate
+curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
+  -H 'Content-Type: application/json' -d '{
+    "index.refresh_interval": "30s"
+  }'
+# Tune merge policy for actively indexed indices
+curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
+  -H 'Content-Type: application/json' -d '{
+    "index.merge.policy.segments_per_tier": 5,
+    "index.merge.policy.max_merge_at_once": 5
+  }'
 ```
 
-- **Verify:**
+**Verification:** `curl -s "http://localhost:9200/_cat/indices/<INDEX_NAME>?v&h=index,segments.count"` — confirm `segments.count` at or near 1 after force merge completes.
 
-```bash
-curl -s "localhost:9200/_cat/indices/<INDEX_NAME>?v&h=index,seg.count"
-# Expected: seg.count reduced to 1
-```
+---
 
-- **Duration:** Minutes to hours depending on index size and I/O throughput.
+### Cause F: Deep pagination via from+size
 
-### Option 6: Lower circuit breaker limits to fail fast
+**Statement:** Queries using `from` + `size` exceeding 10 000 force Elasticsearch to load and discard large result windows from every shard, causing memory pressure and latency proportional to the pagination depth.
 
-Use when expensive queries consume heap and cause cascading slowdowns for all other queries on the node.
+**Mechanism:** Each shard must retrieve and sort all `from + size` documents before the coordinating node can select the final page. For a query with `from=9000, size=100`, every shard sends 9 100 hits to the coordinating node. With many shards, this results in gigabytes of heap allocation per query and triggers the request circuit breaker when `index.max_result_window` is set above the default 10 000.
 
-- **Risk:** Moderate. More queries will be rejected with `429` errors, but the remaining queries will complete faster. Application must handle `CircuitBreakingException` gracefully.
+**Indicator:**
+
+- [Step 5] slow log entries showing `from` values above 5 000 in the query `source`
+- [Step 4] `request` breaker `estimated_size` spikes correlated with pagination-heavy traffic
+
+<!-- match: {"step": 5, "predicate": "contains", "target": "\"from\""} -->
+
+**Mitigation:**
+
+- **Risk:** Requires application-side change; interim mitigation is to cap `index.max_result_window` to prevent heap exhaustion.
 - **Command:**
 
-```bash
-curl -X PUT "localhost:9200/_cluster/settings?pretty" -H 'Content-Type: application/json' -d '{
-  "transient": {
-    "indices.breaker.request.limit": "40%",
-    "indices.breaker.request.overhead": 2
-  }
-}'
-```
+  ```bash
+  # Enforce hard cap on deep pagination (returns 400 for requests exceeding limit)
+  curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
+    -H 'Content-Type: application/json' -d '{
+      "index.max_result_window": 10000
+    }'
+  ```
 
-- **Verify:**
+- **Duration:** Immediate; blocks new deep-pagination requests.
 
-```bash
-curl -s "localhost:9200/_nodes/stats/breaker?pretty" | grep -E "request.*tripped|request.*limit"
-# Expected: expensive queries fail fast; overall latency for other queries improves
-```
-
-- **Duration:** Immediate.
-
-## Root Cause Resolution
-
-**If** slow queries involve leading-wildcard or regex patterns on large text fields --> replace with `match` queries on analyzed fields, or use `keyword` sub-fields with `term` queries. For substring search, consider using an `ngram` tokenizer at index time.
-
-**If** deep aggregations on high-cardinality fields cause heap pressure --> pre-compute aggregations using transform jobs, or use composite aggregations with pagination instead of single unbounded terms aggregations. Set `search.max_buckets` (default 10,000 in 7.0+) to prevent runaway aggregations.
-
-**If** JVM heap is consistently above 75% --> scale out by adding data nodes to distribute the shard load, or increase heap on existing nodes (up to 31 GB to retain compressed OOPs). Maintain fewer than 20 non-frozen shards per GB of configured heap.
-
-**If** circuit breaker trips on `fielddata` --> convert text fields used for sorting/aggregation to `keyword` type. Use `doc_values` (enabled by default for keyword fields) instead of field data. Set `indices.fielddata.cache.size` to limit heap consumption.
-
-**If** GC pauses exceed 200ms --> tune GC settings. For Elasticsearch 7.x+, G1GC is the default; ensure `-XX:MaxGCPauseMillis=200` is set. Reduce heap pressure by limiting field data, reducing concurrent operations, and scaling out. Switch from CMS to G1GC if still on older JVM settings.
-
-**If** search thread pool is saturated --> add coordinating-only nodes to handle search scatter-gather overhead, freeing data nodes for shard-level operations. Reduce the number of primary shards per index to limit per-query thread consumption. Implement request queuing and timeout limits at the application layer.
-
-**If** deep pagination (`from` + `size` > 10000) --> replace with `search_after` for efficient cursor-based pagination, or use the Point-in-Time (PIT) API with `search_after` for consistent pagination across refreshes.
-
-**If** segment counts are high on actively indexed indices --> tune the merge policy via `index.merge.policy.segments_per_tier` and `index.merge.policy.max_merge_at_once`. Ensure sufficient I/O bandwidth for background merging. Increase `index.refresh_interval` to 30s during heavy indexing to reduce segment creation rate.
-
-## Verification
-
-After applying fixes, confirm latency has improved:
+**Resolution:**
 
 ```bash
-# 1. Check search latency metrics
-curl -s "localhost:9200/_nodes/stats/indices/search?pretty" | grep -E "query_total|query_time"
-# Expected: query_time_in_millis growth rate is lower than before
-
-# 2. Verify heap is healthy
-curl -s "localhost:9200/_nodes/stats/jvm?pretty" | grep "heap_used_percent"
-# Expected: below 75%
-
-# 3. Check circuit breakers have not tripped recently
-curl -s "localhost:9200/_nodes/stats/breaker?pretty" | grep "tripped"
-# Expected: 0 or not increasing
-
-# 4. Verify no thread pool rejections
-curl -s "localhost:9200/_cat/thread_pool/search?v&h=node_name,rejected"
-# Expected: rejected count stable (not increasing)
-
-# 5. Run a representative search query and measure timing
-time curl -s "localhost:9200/<INDEX>/_search?pretty" -H 'Content-Type: application/json' -d '{
-  "query": { "match_all": {} },
-  "size": 10
-}'
-# Expected: response within expected SLA (typically < 200ms for simple queries)
-
-# 6. Check slow log for new entries
-tail -10 /var/log/elasticsearch/<CLUSTER_NAME>_index_search_slowlog.json
-# Expected: no new entries above warning threshold
+# Migrate to search_after with Point-in-Time for stateless cursor pagination
+# Step 1: Open a PIT
+curl -X POST "http://localhost:9200/<INDEX_NAME>/_pit?keep_alive=1m&pretty"
+# Step 2: Use search_after with sort and pit.id from Step 1
+curl -s -X GET "http://localhost:9200/_search?pretty" \
+  -H 'Content-Type: application/json' -d '{
+    "size": 100,
+    "query": { "match_all": {} },
+    "sort": [{ "@timestamp": "desc" }, { "_shard_doc": "desc" }],
+    "pit": { "id": "<PIT_ID>", "keep_alive": "1m" }
+  }'
 ```
 
-Monitor for at least 24 hours across peak traffic periods to confirm the improvement is sustained.
+**Verification:** Confirm no slow log entries contain `"from"` values above 1 000 and that request circuit breaker `estimated_size` stops spiking during pagination-heavy traffic windows.
+
+---
+
+### Cause Z: Unidentified cause [Default]
+
+**Statement:** Search latency is elevated but the diagnostic steps do not clearly point to a single known cause.
+
+**Mechanism:** Latency can arise from combinations of causes (e.g., moderate heap pressure plus moderate thread pool saturation), from transient cluster events (network partition, shard relocation storm), or from application-side issues (connection pool exhaustion upstream of Elasticsearch). The interaction of multiple moderate stressors may not surface as a clear single indicator.
+
+**Indicator:**
+
+- [Default] All Steps 1–8 completed and no single threshold or pattern from Causes A–F matched
+
+**Mitigation:**
+
+- **Risk:** Escalation path; no cluster changes until cause is identified.
+- **Command:**
+
+  ```bash
+  # Capture a full diagnostic snapshot for escalation
+  curl -s "http://localhost:9200/_cluster/stats?pretty" > /tmp/es-cluster-stats.json
+  curl -s "http://localhost:9200/_nodes/stats?pretty" > /tmp/es-nodes-stats.json
+  curl -s "http://localhost:9200/_tasks?detailed=true&actions=*search*&pretty" > /tmp/es-search-tasks.json
+  ```
+
+- **Duration:** Safe indefinitely; no cluster changes made.
+
+**Resolution:** Out of runbook scope — escalate to Elasticsearch support or a platform engineer with the diagnostic snapshot files and GC log excerpts.
+
+**Verification:** Latency returns to baseline within SLA after escalation team applies targeted fix and 24-hour monitoring period elapses.
 
 ## Prevention
 
-1. **Profile queries before production** -- Use the Profile API and slow log in staging to identify expensive queries before they impact production workloads.
+1. **Profile queries before production.** Use the Profile API and slow log in staging. Set `index.search.slowlog.threshold.query.warn: 5s` via index templates so all new indices capture slow queries automatically.
 
-2. **Set search slow log thresholds on all indices** -- Configure slow log thresholds via index templates to automatically apply to all new indices. Start with `query.warn: 5s` and `query.info: 2s`, then tighten as baselines are established.
+2. **Size JVM heap correctly.** Allocate 50% of physical RAM to heap, maximum 31 GB to retain compressed OOPs. Set `-Xms` and `-Xmx` to the same value in `jvm.options` to prevent heap resizing pauses.
 
-3. **Size JVM heap correctly** -- Allocate 50% of physical RAM to heap (max 31 GB for compressed OOPs), leave the other 50% for the OS file system cache which Elasticsearch relies on heavily for segment reads.
+3. **Monitor GC pauses.** Alert when old-generation GC pause time exceeds 200 ms or `heap_used_percent` is sustained above 75%. Use `elasticsearch_exporter` with Prometheus for continuous GC metrics.
 
-4. **Monitor GC metrics** -- Alert when GC pause time exceeds 200ms or old generation collections exceed 5 per minute. Use Prometheus with `elasticsearch_exporter` for continuous monitoring.
+4. **Use keyword fields for aggregations and sorting.** Never aggregate or sort on `text` fields. Map aggregation targets as `keyword` with `doc_values` enabled (the default). Set `indices.fielddata.cache.size: 20%` to cap field data heap consumption.
 
-5. **Use keyword fields for aggregations and sorting** -- Never aggregate or sort on `text` fields. Use `keyword` sub-fields with `doc_values` enabled (the default for keyword mappings).
+5. **Keep shards per GB of heap below 20.** Excessive shard count wastes heap on segment metadata and search contexts. Use Index Lifecycle Management (ILM) to roll over, shrink, and force-merge time-series indices automatically.
 
-6. **Implement pagination with search_after** -- Avoid deep pagination. Use `search_after` with Point-in-Time for user-facing pagination and the Scroll API for batch export processing.
+6. **Alert on circuit breaker trips.** Any `tripped > 0` is an early warning of imminent OOM and correlates directly with latency spikes. Alert immediately and investigate before the breaker trips repeatedly.
 
-7. **Scale with coordinating nodes** -- Add dedicated coordinating nodes to handle search scatter-gather overhead, freeing data nodes for shard-level search and indexing.
+7. **Use search_after for pagination.** Prohibit `from + size` above 1 000 in application code. Migrate user-facing pagination to `search_after` with PIT. Use the Scroll API only for batch reindex operations, not real-time access.
 
-8. **Implement circuit breaker alerts** -- Alert when any circuit breaker trips. This is an early warning of imminent OOM risk and correlates with latency spikes.
+8. **Force-merge closed time-series indices.** Apply a force-merge to `max_num_segments=1` as the final ILM step before moving an index to the cold tier. This permanently eliminates per-query segment union overhead for historical data.
 
-9. **Use Index Lifecycle Management** -- Automatically move old indices to warm/cold tiers with fewer replicas and force-merged segments to reduce active resource consumption.
-
-10. **Avoid unbounded aggregations** -- Always set explicit `size` limits on terms aggregations. Use composite aggregations for paginated results over high-cardinality fields. Configure `search.max_buckets` as a safety net.
-
-11. **Right-size shards per node** -- Maintain fewer than 20 non-frozen shards per GB of configured heap. Excessive shards waste heap on segment metadata and search contexts.
+9. **Add dedicated coordinating nodes for heavy search workloads.** Coordinating-only nodes (no `data`, `master`, or `ingest` roles) absorb scatter-gather overhead and merge overhead, freeing data node thread pools for shard-level work.
 
 ## Sources
 
-- [Elastic Blog — Advanced Tuning: Finding and Fixing Slow Elasticsearch Queries](https://www.elastic.co/blog/advanced-tuning-finding-and-fixing-slow-elasticsearch-queries)
-- [Elastic Blog — A Heap of Trouble: Managing Elasticsearch's Managed Heap](https://www.elastic.co/blog/a-heap-of-trouble)
-- [Elasticsearch Reference — Fix Common Cluster Issues](https://www.elastic.co/guide/en/elasticsearch/reference/current/fix-common-cluster-issues.html)
-- [Elasticsearch Reference — Search Slow Log](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-modules-slowlog.html)
-- [Elasticsearch Reference — Circuit Breaker Settings](https://www.elastic.co/guide/en/elasticsearch/reference/current/circuit-breaker.html)
-- [Elasticsearch Reference — Profile API](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-profile.html)
-- [Elasticsearch Reference — Paginate Search Results](https://www.elastic.co/guide/en/elasticsearch/reference/current/paginate-search-results.html)
-- [Opster — Elasticsearch Search Latency Guide](https://opster.com/guides/elasticsearch/how-tos/search-latency-guide/)
+- [Elasticsearch Reference — Fix Common Cluster Issues](https://www.elastic.co/guide/en/elasticsearch/reference/current/fix-common-cluster-issues.html) — Priority 1; circuit breaker overview and cluster health triage
+- [Elasticsearch Reference — Circuit Breaker Settings](https://www.elastic.co/guide/en/elasticsearch/reference/current/circuit-breaker.html) — Priority 1; all breaker types, default limits (parent 95%, request 60%, fielddata 40%), and configuration API
+- [Elasticsearch Reference — Search Slow Log](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-modules-slowlog.html) — Priority 1; threshold configuration for query and fetch phases, log format
+- [Elasticsearch Reference — Profile API](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-profile.html) — Priority 1; query timing breakdown phases (create_weight, build_scorer, next_doc, score), aggregation profiling
+- [Elasticsearch Reference — Paginate Search Results](https://www.elastic.co/guide/en/elasticsearch/reference/current/paginate-search-results.html) — Priority 1; from+size 10 000 limit, search_after cursor, Point-in-Time API

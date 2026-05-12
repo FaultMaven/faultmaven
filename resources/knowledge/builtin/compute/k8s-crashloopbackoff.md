@@ -1,417 +1,570 @@
 ---
 id: k8s-crashloopbackoff
-title: "Kubernetes CrashLoopBackOff"
+title: "Kubernetes Pod CrashLoopBackOff"
 domain: compute
 service: kubernetes
 symptom_class:
   - crash_loop
 severity: high
 scope: global
-version: "2.1.0"
-last_updated: "2026-03-26"
+version: "1.0.0"
+last_updated: "2026-05-12"
 verified_by: kb-researcher
 status: draft
 tags:
   - kubernetes
   - pods
   - crashloop
-  - containers
-  - restart
+  - liveness-probe
+  - configmap
 difficulty: intermediate
 ---
 
-# Kubernetes CrashLoopBackOff
+# Kubernetes Pod CrashLoopBackOff
 
-## Problem Definition
+## Symptom Recognition
 
-Applies to Kubernetes 1.24+ clusters on any managed or self-hosted distribution. Requires `kubectl` access with permissions to get, describe, and log pods in the target namespace. The `metrics-server` add-on is needed for `kubectl top` commands. Node-level debugging requires SSH access or `kubectl debug node`.
+- `kubectl get pods` reports `STATUS: CrashLoopBackOff` for the affected pod and a steadily climbing `RESTARTS` column (e.g. `0/1   CrashLoopBackOff   14 (2m ago)   10m`).
+- `kubectl describe pod` shows a container `State: Waiting` with `Reason: CrashLoopBackOff` and a `Last State: Terminated` block carrying a non-zero `Exit Code` and a `Reason` such as `Error`, `OOMKilled`, `ContainerCannotRun`, or `StartError`.
+- Kubelet emits `Back-off restarting failed container` warning events on the pod, with backoff delays doubling between attempts (10s → 20s → 40s → 80s → 160s, capped at 300s) until the container runs successfully for at least 10 minutes.
+- For probe-induced restarts the event log shows `Liveness probe failed: ...` followed by `Killing container ... Container failed liveness probe, will be restarted`.
+- For missing references the pod status shows `Reason: CreateContainerConfigError` or `CreateContainerError` instead of CrashLoopBackOff, but the symptom (container never starts, pod cycles through Waiting) is operator-equivalent.
+- For init-container failures the pod status reports `Init:CrashLoopBackOff` with `Init Containers` block showing the failing init step.
 
-CrashLoopBackOff is a pod status indicating that a container is repeatedly crashing and being restarted by the kubelet. After each crash the kubelet applies an exponential backoff delay between restart attempts: 10s, 20s, 40s, 80s, 160s, capped at 300s. The backoff timer resets after the container runs successfully for 10 minutes. The pod alternates between `CrashLoopBackOff` (waiting for backoff timer) and `Error` (crash just occurred).
+## Applicability
 
-This occurs when all of the following are true:
-
-1. A container terminates with a non-zero exit code or is killed by the kernel.
-2. The pod's `restartPolicy` is `Always` (default for Deployments) or `OnFailure` (default for Jobs).
-3. The kubelet continuously restarts the container but it keeps failing.
-
-Common root causes include application errors (unhandled exceptions, missing entrypoint), missing configuration dependencies (environment variables, ConfigMaps, Secrets), resource limit violations (OOMKilled with exit code 137), aggressive liveness probes killing the container before startup completes, image issues (wrong tag, architecture mismatch), volume mount failures that overlay required directories, and permission errors on the entrypoint binary.
-
-Typical presentation:
-
-```
-NAME          READY   STATUS             RESTARTS      AGE
-my-app-pod    0/1     CrashLoopBackOff   14 (2m ago)   10m
-```
-
-The restart count climbs steadily and the `RESTARTS` column includes the time since the last restart attempt in parentheses.
+- Kubernetes 1.24 or newer on any distribution (vanilla, EKS, GKE, AKS, OpenShift, k3s).
+- Pods with `restartPolicy: Always` (default for Deployments, StatefulSets, DaemonSets, ReplicaSets) or `restartPolicy: OnFailure` (default for Jobs). `restartPolicy: Never` pods enter `Failed` instead and are out of scope.
+- Requires `kubectl` access with `get`, `list`, `describe`, and `logs` verbs on `pods` in the target namespace, plus `get` on `configmaps` and `secrets` referenced by the pod.
+- `kubectl debug` (ephemeral containers / node debug) requires Kubernetes 1.25+ and cluster permission to create debug pods.
+- `kubectl top pod` requires the `metrics-server` add-on to be installed and healthy in `kube-system`.
+- Inspection of node-level kernel logs requires either SSH/SSM access to the node or `kubectl debug node/<node>` privilege.
 
 ## Diagnostic Steps
 
-### Step 1: Get Pod Status and Events
-
-**What this checks:** The current pod state, restart count, node assignment, and recent Kubernetes events that indicate why the container is failing.
+### Step 1: Confirm CrashLoopBackOff status and capture restart count
 
 ```bash
 kubectl get pod <pod-name> -n <namespace> -o wide
+```
+
+Expected output: a row showing `STATUS: CrashLoopBackOff` (or `Init:CrashLoopBackOff` for init-container failures) and a non-zero, increasing `RESTARTS` count. Record the count for comparison after remediation.
+
+### Step 2: Read pod description for last termination reason, exit code, and events
+
+```bash
 kubectl describe pod <pod-name> -n <namespace>
 ```
 
-**Expected output:** The `describe` output contains a `State` / `Last State` section showing the container termination reason (e.g., `Error`, `OOMKilled`, `Completed`) and exit code. The `Events` section at the bottom shows scheduling, image pull, mount, and restart events.
+Expected output: a `Containers` section with `State: Waiting / Reason: CrashLoopBackOff`, a `Last State: Terminated` block containing `Reason`, `Exit Code`, `Started`, and `Finished` fields, the pod `Restart Count`, `Liveness` / `Readiness` / `Startup` probe definitions, and an `Events` table at the bottom citing `Back-off restarting failed container`, `Liveness probe failed`, `Failed to pull image`, or `Error: configmap "<name>" not found`.
 
-**What the finding means:** If `Last State` shows `Reason: OOMKilled`, proceed to Step 5 (resource limits). If events show `Liveness probe failed`, proceed to Step 7. If events show `Failed to pull image`, this is an ImagePullBackOff issue rather than CrashLoopBackOff. If events show `Back-off restarting failed container`, the pod is in the backoff cycle.
-
-### Step 2: Read Container Logs
-
-**What this checks:** The application's stdout/stderr output from the previous crashed container instance, which typically contains the error that caused the crash.
+### Step 3: Read the previous container's stdout/stderr
 
 ```bash
-# Previous crashed container (critical for CrashLoopBackOff)
-kubectl logs <pod-name> -n <namespace> --previous
-
-# Current container attempt (may be empty if crash is instant)
-kubectl logs <pod-name> -n <namespace>
-
-# For multi-container pods, specify the crashing container
-kubectl logs <pod-name> -n <namespace> -c <container-name> --previous
+kubectl logs <pod-name> -n <namespace> --previous --tail=200
+kubectl logs <pod-name> -n <namespace> --previous -c <container-name> --tail=200
 ```
 
-**Expected output:** Application-level error messages, stack traces, or configuration errors. If logs are empty, the crash occurs before the application writes any output (binary not found, permission denied, segfault).
+Expected output: application output from the last (terminated) container instance. Look for stack traces, unhandled exceptions, "address already in use", "permission denied", "no such file or directory", "missing required environment variable", or framework startup messages cut off before "ready to accept connections".
 
-**What the finding means:** Stack traces or error messages point directly to the application-level root cause. Empty logs suggest a container-level issue (missing binary, permission error, exec format error) rather than an application logic error. Proceed to Step 3 to check the exit code.
-
-### Step 3: Check Exit Code
-
-**What this checks:** The numeric exit code returned by the crashed container, which categorizes the failure.
+### Step 4: Capture the structured exit code and reason
 
 ```bash
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.status.containerStatuses[0].lastState.terminated.exitCode}'
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .status.containerStatuses[*]}{.name}{"  exitCode="}{.lastState.terminated.exitCode}{"  reason="}{.lastState.terminated.reason}{"  signal="}{.lastState.terminated.signal}{"  message="}{.lastState.terminated.message}{"\n"}{end}'
 ```
 
-**Expected output:** A numeric exit code.
+Expected output: one line per container with the exit code, machine-readable reason, signal (if killed), and any termination message written to `/dev/termination-log`. Common combinations: `exitCode=137 reason=OOMKilled` (cgroup OOM), `exitCode=1 reason=Error` (application failure), `exitCode=127 reason=ContainerCannotRun` (missing entrypoint binary), `exitCode=0 reason=Completed` (process exited cleanly — usually a misconfigured daemon).
 
-| Exit Code | Meaning |
-|-----------|---------|
-| 0 | Success (unexpected for a long-running service -- process exited cleanly) |
-| 1 | Generic application error |
-| 2 | Shell misuse or missing command argument |
-| 126 | Command not executable (permission denied on binary) |
-| 127 | Command not found (missing binary in image) |
-| 137 | SIGKILL (OOMKilled by kernel or forced pod deletion) |
-| 139 | SIGSEGV (segmentation fault in application) |
-| 143 | SIGTERM (graceful shutdown requested but process still exited) |
-
-**What the finding means:** Exit code 137 strongly indicates OOMKilled -- confirm with the `describe` output showing `Reason: OOMKilled`. Exit code 127 means the container entrypoint binary does not exist in the image. Exit code 126 means the binary exists but is not executable. Exit code 1 means the application encountered a runtime error visible in logs.
-
-### Step 4: Check Termination Message
-
-**What this checks:** An optional termination message written by the application to `/dev/termination-log`, providing application-specific failure context.
+### Step 5: Verify referenced ConfigMaps and Secrets exist with expected keys
 
 ```bash
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.status.containerStatuses[0].lastState.terminated.message}'
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .spec.containers[*].envFrom[*]}{.configMapRef.name}{"\n"}{.secretRef.name}{"\n"}{end}{range .spec.containers[*].env[*]}{.valueFrom.configMapKeyRef.name}{"/"}{.valueFrom.configMapKeyRef.key}{"\n"}{.valueFrom.secretKeyRef.name}{"/"}{.valueFrom.secretKeyRef.key}{"\n"}{end}{range .spec.volumes[*]}{.configMap.name}{"\n"}{.secret.secretName}{"\n"}{end}'
+kubectl get configmap,secret -n <namespace>
 ```
 
-**Expected output:** An application-defined error string, or empty if the application does not write to the termination log.
+Expected output: list of every ConfigMap / Secret (and specific keys) the pod depends on, followed by what exists in the namespace. Any name in the first command absent from the second is a missing reference.
 
-**What the finding means:** A non-empty message provides the application's own explanation for the crash. If empty, rely on container logs (Step 2) and exit code (Step 3). Setting `terminationMessagePolicy: FallbackToLogsOnError` in the pod spec will automatically populate this with the last few log lines when the container exits with a non-zero code.
-
-### Step 5: Check Resource Usage and Limits
-
-**What this checks:** Whether the container has memory/CPU limits configured and whether actual usage is approaching or exceeding those limits.
+### Step 6: Confirm liveness, readiness, and startup probe configuration
 
 ```bash
-# Check configured limits
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .spec.containers[*]}{.name}{"\t requests.memory="}{.resources.requests.memory}{"\t limits.memory="}{.resources.limits.memory}{"\n"}{end}'
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .spec.containers[*]}{.name}{"  liveness="}{.livenessProbe}{"  startup="}{.startupProbe}{"\n"}{end}'
+```
 
-# Check actual usage (requires metrics-server)
+Expected output: per-container JSON dump of probe definitions. Inspect `initialDelaySeconds`, `periodSeconds`, `timeoutSeconds`, `failureThreshold`, and whether a `startupProbe` is present. Compare `initialDelaySeconds * failureThreshold` against the application's known cold-start time.
+
+### Step 7: Measure memory and CPU usage versus configured limits
+
+```bash
 kubectl top pod <pod-name> -n <namespace> --containers
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .spec.containers[*]}{.name}{"  cpu_lim="}{.resources.limits.cpu}{"  mem_lim="}{.resources.limits.memory}{"\n"}{end}'
 ```
 
-**Expected output:** The first command shows configured requests and limits. The second shows actual CPU and memory consumption per container.
+Expected output: live `MEMORY(bytes)` and `CPU(cores)` per container with the configured limits on the next lines. A `kubectl top` row at or above the limit, combined with `exitCode=137` from Step 4, indicates OOMKilled.
 
-**What the finding means:** If exit code is 137 and `describe` shows `Reason: OOMKilled`, the container exceeded its memory limit. If actual usage is near the limit, the limit is too low for the workload. If no limits are set and the node is under memory pressure, the pod may be killed by the node-level OOM killer.
-
-### Step 6: Verify Configuration Dependencies
-
-**What this checks:** Whether required environment variables, Secrets, and ConfigMaps exist and are accessible to the pod.
+### Step 8: Inspect init-container chain (only if Step 1 showed `Init:CrashLoopBackOff`)
 
 ```bash
-# Check environment variables injected into the pod
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}'
-
-# Check environment variables from ConfigMap/Secret refs
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .spec.containers[0].envFrom[*]}{.configMapRef.name}{.secretRef.name}{"\n"}{end}'
-
-# Verify referenced secret exists
-kubectl get secret <secret-name> -n <namespace>
-
-# Verify referenced configmap exists
-kubectl get configmap <configmap-name> -n <namespace>
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .status.initContainerStatuses[*]}{.name}{"  exitCode="}{.lastState.terminated.exitCode}{"  reason="}{.lastState.terminated.reason}{"\n"}{end}'
+kubectl logs <pod-name> -n <namespace> -c <init-container-name> --previous --tail=200
 ```
 
-**Expected output:** Environment variable names and values, and confirmation that referenced Secrets and ConfigMaps exist in the namespace.
+Expected output: per-init-container exit codes (Step 4 only covers app containers) and the stdout/stderr of the failed init step.
 
-**What the finding means:** If a Secret or ConfigMap does not exist, the pod fails to start with an event like `Error: configmap "my-config" not found`. If environment variables have wrong values (empty database URL, invalid API key), the application crashes at startup with an error visible in logs.
-
-### Step 7: Check Liveness and Startup Probes
-
-**What this checks:** Whether liveness or startup probes are misconfigured and killing the container before the application finishes initialization.
+### Step 9: Confirm the image matches the node CPU architecture
 
 ```bash
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[0].livenessProbe}'
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[0].startupProbe}'
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[*].image}{"\n"}'
+kubectl get node <node-name> -o jsonpath='{.status.nodeInfo.architecture}{"\n"}'
+# Inspect image manifest:
+crane manifest <image>:<tag> | jq '.manifests[]?.platform // .architecture'
 ```
 
-**Expected output:** JSON objects describing the probe configuration, including `initialDelaySeconds`, `periodSeconds`, `failureThreshold`, and the check mechanism (httpGet, exec, tcpSocket).
+Expected output: image reference, node CPU architecture (`amd64` or `arm64`), and the architectures published in the image manifest. Mismatch is a frequent CrashLoopBackOff cause on heterogeneous (Graviton + x86) clusters.
 
-**What the finding means:** If `describe` events show `Liveness probe failed` or `Startup probe failed`, the probe is killing the container. A low `initialDelaySeconds` with no startup probe is a common cause for slow-starting applications (JVM warmup, database migrations at startup, large cache preloading).
-
-### Step 8: Validate the Container Image
-
-**What this checks:** Whether the container image tag is correct, the image exists, and the entrypoint is valid.
+### Step 10: Pull node-level kernel log for the killed process
 
 ```bash
-# Check which image is configured
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[0].image}'
-
-# Check image pull status in events
-kubectl describe pod <pod-name> -n <namespace> | grep -A 5 "Events:"
-
-# Test the entrypoint locally (if Docker is available)
-docker run --rm -it <image> sh
+kubectl debug node/<node-name> -it --image=busybox -- chroot /host sh -c "dmesg -T | grep -iE 'oom|killed process|segfault|traps:' | tail -40"
 ```
 
-**Expected output:** The image reference (registry/name:tag) and confirmation that the image was pulled successfully.
+Expected output: kernel lines such as `Memory cgroup out of memory: Killed process ...` (cgroup OOM kill) or `segfault at ...` / `traps: ...` (native crash). Empty output means the kill was application-level, not kernel-level.
 
-**What the finding means:** If the image pulls successfully but the container exits with code 127, the entrypoint binary is missing from the image (common with multi-stage builds that forget to copy the binary). Architecture mismatch (amd64 image on arm64 node) produces `exec format error` in logs.
+## Causes
 
-## Mitigation
+### Cause A: Application throws an unhandled error during startup
 
-### Option 1: Restart the Pod
+**Statement:** The application process exits with a non-zero status during initialization because it hits an unhandled exception, a configuration parse error, or a failed downstream connection during boot.
 
-Useful when the crash is caused by a transient condition such as a temporarily unavailable dependency.
+**Mechanism:** When the container's PID 1 returns a non-zero exit status, the container runtime records `reason=Error` with the captured exit code on the pod's container status. The kubelet's restart manager sees a terminated container under `restartPolicy: Always`, schedules a restart after the current backoff window, and increments the restart count. Because the startup error is deterministic (same image, same config), each restart hits the same code path and exits the same way, producing an indefinite loop until either the configuration is fixed or a different image is deployed.
 
-- **Risk:** Low. Deleting the pod triggers a new scheduling cycle; the controller creates a replacement. Running workloads on other pods are not affected.
+**Indicator:**
+
+- [Step 4] container status reports `exitCode=1` (or any non-zero, non-137 code) with `reason=Error`
+<!-- match: {"step": 4, "predicate": "contains", "target": "reason=Error"} -->
+- [Step 3] previous-container logs show a stack trace, parse error, or "fatal" log line just before termination
+- [Symptom] restart count climbs in lockstep with backoff intervals; container never reaches its normal "ready" log line
+
+**Mitigation:**
+
+- **Risk:** Forcing the deployment back to a known-good image rolls back any new feature work since that release; verify the rollback target is acceptable before issuing.
 - **Command:**
-  ```bash
-  kubectl delete pod <pod-name> -n <namespace>
-  ```
-- **Verify:**
-  ```bash
-  kubectl get pod -n <namespace> -l app=<app-label> -w
-  ```
-  The new pod should reach `Running` 1/1 status without restarting.
-- **Duration:** 30 seconds to 2 minutes depending on image pull and startup time.
 
-### Option 2: Roll Back to Last Known Good Deployment
-
-Useful when the crash started after a deployment or configuration change.
-
-- **Risk:** Medium. Reverts to the previous ReplicaSet, which may have its own issues or lack recent features. Verify the previous revision was healthy before rolling back.
-- **Command:**
   ```bash
-  kubectl rollout history deployment/<deployment-name> -n <namespace>
   kubectl rollout undo deployment/<deployment-name> -n <namespace>
   ```
-- **Verify:**
-  ```bash
-  kubectl rollout status deployment/<deployment-name> -n <namespace>
-  kubectl get pods -n <namespace> -l app=<app-label>
-  ```
-  All pods should reach `Running` 1/1 status with zero recent restarts.
-- **Duration:** 1 to 5 minutes depending on rolling update strategy and readiness probes.
 
-### Option 3: Temporarily Increase Resource Limits
+- **Duration:** Permanent until the failing change is corrected and re-rolled out.
 
-Useful when the crash is caused by OOMKilled and you need to restore service while investigating memory usage.
-
-- **Risk:** Medium. Over-provisioning reduces cluster capacity for other workloads and may mask a memory leak that should be fixed.
-- **Command:**
-  ```bash
-  kubectl patch deployment <deployment-name> -n <namespace> --type='json' \
-    -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"1Gi"}]'
-  ```
-- **Verify:**
-  ```bash
-  kubectl get pods -n <namespace> -l app=<app-label> -w
-  kubectl top pod -n <namespace> -l app=<app-label>
-  ```
-  The new pod should start without OOMKilled and memory usage should stabilize below the new limit.
-- **Duration:** 1 to 3 minutes after rolling update completes.
-
-### Option 4: Override the Container Command for Debugging
-
-Useful when you need to keep the container alive to inspect its filesystem, environment, and configuration.
-
-- **Risk:** Low in non-production. The debug pod does not run the application and cannot serve traffic.
-- **Command:**
-  ```bash
-  kubectl debug <pod-name> -n <namespace> --copy-to=debug-pod --container=<container-name> -- sleep 3600
-  kubectl exec -it debug-pod -n <namespace> -- sh
-  ```
-- **Verify:**
-  ```bash
-  kubectl get pod debug-pod -n <namespace>
-  ```
-  The debug pod should be in `Running` state.
-- **Duration:** Debug pod stays alive for 1 hour (or the configured sleep duration).
-
-## Root Cause Resolution
-
-**If** logs show an unhandled exception or stack trace at startup **then** fix the application code and deploy a corrected image:
+**Resolution:**
 
 ```bash
-docker build -t <registry>/<image>:<new-tag> .
-docker push <registry>/<image>:<new-tag>
-kubectl set image deployment/<deployment-name> <container-name>=<registry>/<image>:<new-tag> -n <namespace>
+# 1. Pull the failing log line locally for analysis
+kubectl logs <pod-name> -n <namespace> --previous --tail=500 > /tmp/<pod>.log
+# 2. Fix the application bug or configuration issue in source, build a new image, and roll out
+kubectl set image deployment/<deployment-name> -n <namespace> <container-name>=<image>:<fixed-tag>
+kubectl rollout status deployment/<deployment-name> -n <namespace>
 ```
 
-**If** exit code is 127 (command not found) **then** the entrypoint binary is missing from the image. Verify the Dockerfile `CMD` or `ENTRYPOINT` instruction, ensure the binary is included in the final build stage (common issue with multi-stage builds), and rebuild the image.
+**Impact:** Single deployment rolled forward in place; rolling-update strategy keeps prior replicas serving until new pods become ready.
+**Rollback:** `kubectl rollout undo deployment/<deployment-name> -n <namespace>` reverts to the previous ReplicaSet.
 
-**If** exit code is 126 (permission denied) **then** the entrypoint binary is not executable. Add `RUN chmod +x /app/entrypoint.sh` to the Dockerfile and rebuild.
+**Verification:** After rollout, `kubectl get pod -l <selector> -n <namespace>` should show `STATUS: Running` and `RESTARTS: 0` for at least 10 minutes (the kubelet's reset threshold for the backoff timer).
 
-**If** logs show "environment variable not set" or "config file not found" **then** the required ConfigMap or Secret is missing or misconfigured:
+### Cause B: Container OOMKilled because memory usage exceeds the configured limit
+
+**Statement:** The container's working set exceeds `resources.limits.memory`, so the cgroup OOM killer sends SIGKILL to the main process every time it reaches the limit.
+
+**Mechanism:** The kubelet writes `limits.memory` into the container's cgroup `memory.max` (cgroup v2) or `memory.limit_in_bytes` (cgroup v1). When the cgroup's anonymous RSS plus accounted page-cache crosses the limit, the kernel selects the highest-`oom_score` process in the cgroup — typically the application — and delivers SIGKILL. The container exits with code `137` (`128 + 9`) and `reason=OOMKilled`. Because the memory ceiling is structural, every restart re-enters the same allocation pattern and is killed again, surfacing as CrashLoopBackOff. See `k8s-oomkilled.md` for full OOM-specific diagnosis and tuning.
+
+**Indicator:**
+
+- [Step 4] container status reports `exitCode=137` and `reason=OOMKilled`
+<!-- match: {"step": 4, "predicate": "exit_code", "target": 137} -->
+- [Step 7] `kubectl top` shows the container's memory at or above its configured `limits.memory`
+- [Step 10] node `dmesg` contains `Memory cgroup out of memory: Killed process ...` naming the container's main process
+
+**Mitigation:**
+
+- **Risk:** Raising `limits.memory` consumes more node capacity and can starve other pods on the node; if the underlying cause is a leak, this only delays the next kill.
+- **Command:**
+
+  ```bash
+  kubectl set resources deployment/<deployment-name> -n <namespace> \
+    --limits=memory=<new-limit> --requests=memory=<new-request>
+  ```
+
+- **Duration:** Safe to leave permanently if sized from observed peak working-set; revisit if traffic patterns change.
+
+**Resolution:**
 
 ```bash
-kubectl get configmap <configmap-name> -n <namespace> -o yaml
-kubectl get secret <secret-name> -n <namespace> -o jsonpath='{.data}' | jq 'keys'
-kubectl create configmap <configmap-name> --from-file=config.yaml=./config.yaml -n <namespace>
-kubectl rollout restart deployment/<deployment-name> -n <namespace>
+# Right-size from observed peak over 7 days plus 25-30% headroom; for managed runtimes (JVM/V8) also set container-aware heap flags. See runbook k8s-oomkilled for memory-leak vs sidecar vs tmpfs differentiation.
+kubectl set resources deployment/<deployment-name> -n <namespace> \
+  --limits=memory=<peak_bytes_times_1.25> --requests=memory=<peak_bytes>
 ```
 
-**If** a volume mount path overlays a directory the application expects to exist **then** adjust the `mountPath` or use `subPath` to mount a single file instead of replacing the entire directory:
+**Impact:** Cluster-wide capacity impact proportional to replica count; the scheduler reschedules pods with the new request, which can disturb bin-packing.
+**Rollback:** `kubectl set resources deployment/<deployment-name> -n <namespace> --limits=memory=<previous-limit> --requests=memory=<previous-request>` restores the prior sizing.
+
+**Verification:** After rollout, `kubectl top pod -l <selector> -n <namespace>` working-set should stabilize at least 20% below the new limit for 30 minutes and `RESTARTS` should remain 0.
+
+### Cause C: Liveness probe kills the container before it finishes starting
+
+**Statement:** The liveness probe's `initialDelaySeconds` plus `failureThreshold * periodSeconds` is shorter than the application's cold-start time, so the kubelet kills the container before it can serve its first healthy response.
+
+**Mechanism:** The kubelet starts probing the container after `initialDelaySeconds`. Each failed probe increments a failure counter; on reaching `failureThreshold` the kubelet sends SIGTERM to the container, waits `terminationGracePeriodSeconds`, then sends SIGKILL. The kubelet records a `Liveness probe failed` event followed by `Container failed liveness probe, will be restarted`. The container restarts and hits the same probe window again, producing CrashLoopBackOff that is indistinguishable in logs from a healthy startup — the application is mid-init when killed.
+
+**Indicator:**
+
+- [Step 2] events table contains `Liveness probe failed` immediately followed by `Killing container` and `Container failed liveness probe, will be restarted`
+<!-- match: {"step": 2, "predicate": "contains", "target": "Liveness probe failed"} -->
+- [Step 6] `livenessProbe.initialDelaySeconds * livenessProbe.failureThreshold` is less than the application's documented startup time and no `startupProbe` is configured
+- [Step 3] previous-container logs show the application mid-initialization (loading config, opening DB pool) with no fatal error before termination
+
+**Mitigation:**
+
+- **Risk:** Temporarily removing the liveness probe means a genuinely deadlocked process will not be restarted; only safe while triaging.
+- **Command:**
+
+  ```bash
+  kubectl patch deployment <deployment-name> -n <namespace> --type=json \
+    -p='[{"op":"remove","path":"/spec/template/spec/containers/0/livenessProbe"}]'
+  ```
+
+- **Duration:** Hours, not days. Replace with a correctly sized startup probe as soon as possible.
+
+**Resolution:**
 
 ```yaml
-volumeMounts:
-  - name: config-volume
-    mountPath: /app/config/app.yaml
-    subPath: app.yaml
-```
-
-**If** `describe` shows `Reason: OOMKilled` with exit code 137 **then** the container exceeded its memory limit. Right-size the limit based on observed usage plus 20-30% headroom:
-
-```bash
-kubectl top pod <pod-name> -n <namespace> --containers
-kubectl patch deployment <deployment-name> -n <namespace> --type='json' \
-  -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"768Mi"},
-       {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"512Mi"}]'
-```
-
-**If** events show `Liveness probe failed` before the application finishes starting **then** add a startup probe to protect slow-starting applications:
-
-```yaml
+# Add a startupProbe that gates liveness/readiness while the application boots.
+# failureThreshold * periodSeconds must exceed observed worst-case cold start.
 startupProbe:
   httpGet:
     path: /healthz
     port: 8080
   failureThreshold: 30
-  periodSeconds: 10
+  periodSeconds: 10           # 30 * 10s = 300s max startup window
 livenessProbe:
   httpGet:
     path: /healthz
     port: 8080
-  initialDelaySeconds: 0
   periodSeconds: 10
   failureThreshold: 3
 ```
 
-**If** the pod runs on a different CPU architecture than the image was built for **then** build a multi-architecture image:
+**Impact:** Single deployment; rolling update brings the new probe configuration in pod-by-pod.
+**Rollback:** `kubectl rollout undo deployment/<deployment-name> -n <namespace>` restores the previous probe configuration.
+
+**Verification:** After rollout, `kubectl describe pod -l <selector> -n <namespace>` events must show `Started container` without any subsequent `Liveness probe failed`, and `RESTARTS=0` after 30 minutes.
+
+### Cause D: Container image is missing or its tag/digest does not exist
+
+**Statement:** The image reference in the pod spec is misspelled, points to a deleted tag, or is on a registry the node cannot reach, so the kubelet repeatedly fails to start the container.
+
+**Mechanism:** When the kubelet cannot pull the image, the pod enters `ImagePullBackOff` or `ErrImagePull` (not strictly CrashLoopBackOff, but the operator-visible loop is the same). When the image is pulled successfully but the container's entrypoint is missing inside the image (e.g. a `CMD` referencing a binary that was not copied in the final stage of a multi-stage build), the runtime exits immediately with code `127` and `reason=ContainerCannotRun` or `StartError`, and the kubelet enters the CrashLoopBackOff restart cycle. See `k8s-imagepullbackoff.md` for image-pull-specific diagnosis.
+
+**Indicator:**
+
+- [Step 2] events table contains `Failed to pull image` or `ErrImagePull` or `manifest unknown` or `not found`
+<!-- match: {"step": 2, "predicate": "contains", "target": "Failed to pull image"} -->
+- [Step 4] container status reports `exitCode=127` with `reason=ContainerCannotRun` or `StartError`
+- [Step 3] previous-container logs are empty or show `exec: "<binary>": executable file not found in $PATH`
+
+**Mitigation:**
+
+- **Risk:** Pinning to `:latest` masks the underlying issue and breaks reproducibility; only acceptable as a stopgap.
+- **Command:**
+
+  ```bash
+  kubectl set image deployment/<deployment-name> -n <namespace> \
+    <container-name>=<image>:<known-good-tag>
+  ```
+
+- **Duration:** Until the correct image / entrypoint is rebuilt.
+
+**Resolution:**
 
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t <registry>/<image>:<tag> --push .
+# 1. Confirm the tag exists in the registry
+crane ls <image-repo> | grep <expected-tag>
+# 2. Fix the Dockerfile entrypoint / push the missing tag / correct the spec
+kubectl set image deployment/<deployment-name> -n <namespace> \
+  <container-name>=<image>:<correct-tag>
+kubectl rollout status deployment/<deployment-name> -n <namespace>
 ```
 
-**If** init containers are in CrashLoopBackOff **then** the main container never starts. Debug the init container separately:
+**Verification:** `kubectl get pod -l <selector> -n <namespace> -o jsonpath='{.items[*].status.containerStatuses[*].image}'` shows the corrected image and `RESTARTS=0` after the new rollout completes.
+
+### Cause E: Referenced ConfigMap, Secret, or volume does not exist or is missing a key
+
+**Statement:** The pod spec references a ConfigMap, Secret, or volume that has not been created in the namespace, or a key inside it that is missing, so the kubelet cannot configure the container.
+
+**Mechanism:** Before launching the container, the kubelet resolves every `envFrom`, `valueFrom.configMapKeyRef`, `valueFrom.secretKeyRef`, and volume-mounted ConfigMap/Secret listed in the pod spec. Missing names or keys produce `CreateContainerConfigError` (kubelet-level) and the pod cycles without ever entering `Running`. If a volume mount silently overlays an expected directory (e.g. mounting a ConfigMap over `/etc/myapp` masks the image's default config), the container starts but the application exits because the file it expected is missing or empty — surfacing as application-level CrashLoopBackOff with `exitCode=1`.
+
+**Indicator:**
+
+- [Step 2] events table contains `configmap "<name>" not found`, `secret "<name>" not found`, or `couldn't find key "<key>" in ConfigMap`
+<!-- match: {"step": 2, "predicate": "contains", "target": "not found"} -->
+- [Step 5] one or more referenced ConfigMap/Secret names from the pod spec are absent from the `kubectl get configmap,secret` output
+- [Step 3] previous-container logs (if any) show "config file not found", "missing required environment variable", or empty config values
+
+**Mitigation:**
+
+- **Risk:** Creating a stub ConfigMap/Secret with placeholder values can satisfy the kubelet but will fail at runtime if the application validates the values; flag the stub clearly.
+- **Command:**
+
+  ```bash
+  kubectl create configmap <name> -n <namespace> --from-literal=<key>=<placeholder>
+  # OR for secrets:
+  kubectl create secret generic <name> -n <namespace> --from-literal=<key>=<placeholder>
+  ```
+
+- **Duration:** Hours, only while the correct config is being prepared.
+
+**Resolution:**
 
 ```bash
-kubectl logs <pod-name> -n <namespace> -c <init-container-name>
-kubectl describe pod <pod-name> -n <namespace> | grep -A 20 "Init Containers:"
+# 1. Apply the correct ConfigMap/Secret manifest
+kubectl apply -f <configmap-or-secret>.yaml
+# 2. Trigger a rollout so pods pick up the new resource (ConfigMap changes do not auto-reload existing pods)
+kubectl rollout restart deployment/<deployment-name> -n <namespace>
 ```
 
-## Verification
+**Impact:** Namespace-scoped; rolling restart cycles all pods of the deployment, briefly halving available replicas during the roll.
+**Rollback:** `kubectl delete configmap/<name> -n <namespace>` (or `kubectl rollout undo deployment/<deployment-name>`) reverts to the pre-fix state.
 
-After applying a fix, confirm the pod is stable:
+**Verification:** After rollout, `kubectl describe pod -l <selector> -n <namespace>` must contain no `CreateContainerConfigError` event, and `RESTARTS=0` after 10 minutes.
+
+### Cause F: Init container exits non-zero, blocking the main container
+
+**Statement:** An init container exits with a non-zero status — typically because a dependency it waits for is unavailable or a migration step fails — so the kubelet never starts the main container and the pod cycles with `Init:CrashLoopBackOff`.
+
+**Mechanism:** Init containers run sequentially before any main container; the kubelet requires each to exit zero before progressing. When an init container exits non-zero, the kubelet records the failure on `initContainerStatuses`, applies the standard restart backoff, and retries the same init step. The pod status reports `Init:CrashLoopBackOff` (the prefix distinguishes it from a main-container CrashLoopBackOff). Common init-step failures: DB migration tool times out against an unreachable database, a wait-for-service script never sees its dependency become ready, or a chown step fails on a read-only volume.
+
+**Indicator:**
+
+- [Step 1] pod status string is `Init:CrashLoopBackOff` or `Init:Error`
+<!-- match: {"step": 1, "predicate": "contains", "target": "Init:CrashLoopBackOff"} -->
+- [Step 8] one or more entries in `initContainerStatuses` show `exitCode!=0`
+- [Step 8] init-container previous-instance logs show the specific failure (connection refused, migration error, permission denied)
+
+**Mitigation:**
+
+- **Risk:** Temporarily disabling an init container can mask data-integrity steps (migrations, schema checks); only safe for wait-for-dependency probes, never for state-mutating init steps.
+- **Command:**
+
+  ```bash
+  kubectl patch deployment <deployment-name> -n <namespace> --type=json \
+    -p='[{"op":"remove","path":"/spec/template/spec/initContainers"}]'
+  ```
+
+- **Duration:** Minutes-to-hours while triaging the dependency.
+
+**Resolution:**
 
 ```bash
-# 1. Confirm pod reaches Running state
-kubectl get pod -n <namespace> -l app=<app-label> -w
-# Pod should show Running with READY 1/1 and RESTARTS at 0 or stable
+# Fix the dependency the init container is waiting on (start the DB, fix the migration, correct the wait script),
+# then trigger a rollout to retry the init chain.
+kubectl rollout restart deployment/<deployment-name> -n <namespace>
+kubectl get pod -l <selector> -n <namespace> -w
 ```
 
-```bash
-# 2. Verify restart count is not increasing (wait 5-10 minutes)
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.status.containerStatuses[0].restartCount}'
-```
+**Verification:** `kubectl get pod -l <selector> -n <namespace> -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.status.phase}{"  init="}{range .status.initContainerStatuses[*]}{.ready}{","}{end}{"\n"}{end}'` shows all init containers `ready=true` and pod phase `Running` for at least 10 minutes.
+
+### Cause G: Application binds to a port already in use inside the pod
+
+**Statement:** Two containers in the same pod (or the same container restarted before the kernel released its socket) attempt to listen on the same TCP port, so the bind syscall returns `EADDRINUSE` and the application exits.
+
+**Mechanism:** Containers in a pod share the same network namespace, which means they share the same TCP/UDP port space. If a sidecar (proxy, metrics exporter) and the application both try to bind `:8080`, the second to start fails with `address already in use`. The application logs the bind error and exits non-zero; the kubelet restarts it; the same race recurs. The variant is a single container whose previous instance held the port in `TIME_WAIT` — `SO_REUSEADDR` is not set, so the new instance fails until the kernel reaps the socket (60-120s), producing intermittent CrashLoopBackOff that resolves after a few backoff cycles.
+
+**Indicator:**
+
+- [Step 3] previous-container logs contain `bind: address already in use`, `EADDRINUSE`, or `listen tcp :<port>: bind: address already in use`
+<!-- match: {"step": 3, "predicate": "contains", "target": "address already in use"} -->
+- [Step 2] pod has two or more containers in `spec.containers` whose declared `containerPort` values overlap
+- [Symptom] restart loop sometimes resolves on its own after 1-2 minutes (kernel TIME_WAIT expiry) but recurs on every redeploy
+
+**Mitigation:**
+
+- **Risk:** Scaling the deployment to zero and back to one releases all sockets but interrupts service; do only during a maintenance window or for non-tier-1 workloads.
+- **Command:**
+
+  ```bash
+  kubectl scale deployment/<deployment-name> -n <namespace> --replicas=0
+  kubectl scale deployment/<deployment-name> -n <namespace> --replicas=<original>
+  ```
+
+- **Duration:** Single-cycle hold (seconds to minutes).
+
+**Resolution:**
 
 ```bash
-# 3. Check for warning events
-kubectl events --for pod/<pod-name> -n <namespace> --watch
-# No new Warning events should appear
+# Either change the sidecar's listen port or enable SO_REUSEADDR in the application,
+# then redeploy. Confirm the resulting port plan has no overlaps.
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .spec.containers[*]}{.name}{"  ports="}{.ports}{"\n"}{end}'
+kubectl set image deployment/<deployment-name> -n <namespace> <container>=<image>:<fixed-tag>
 ```
 
+**Verification:** After rollout, `kubectl logs <pod-name> -n <namespace> -c <container>` shows the application's "listening on :<port>" log line without errors and `RESTARTS=0` after 15 minutes.
+
+### Cause H: Volume mount obscures or has wrong permissions on a path the app needs
+
+**Statement:** A volume mount overlays a directory the application expects to contain image content, or the volume's filesystem permissions block the container's user from reading/writing required files, so the application exits at startup.
+
+**Mechanism:** Volume mounts cover any path inside the container with the volume's contents. Mounting an `emptyDir`, ConfigMap, or PV at `/var/lib/myapp` replaces whatever the image baked there; if the application expects schema files, default configs, or executable plugins from the image at that path, it cannot find them. Separately, when `securityContext.runAsNonRoot: true` or `runAsUser` is set, the container process may lack permission on the mounted volume (especially `hostPath` or NFS-backed PVs) and fails with `permission denied` on its data directory. Both manifest as application-level CrashLoopBackOff with `exitCode=1`.
+
+**Indicator:**
+
+- [Step 3] previous-container logs contain `permission denied`, `read-only file system`, `no such file or directory` referencing a path declared in `volumeMounts`
+<!-- match: {"step": 3, "predicate": "contains", "target": "permission denied"} -->
+- [Step 2] `Mounts` block lists a volume at a path that overlaps the image's expected runtime data directory
+- [Step 3] previous-container logs show the application starting but exiting immediately after touching its data path
+
+**Mitigation:**
+
+- **Risk:** Setting `fsGroup` or making the volume world-writable widens the security boundary; only acceptable for workloads with non-sensitive data.
+- **Command:**
+
+  ```bash
+  kubectl patch deployment <deployment-name> -n <namespace> --type=strategic \
+    -p='{"spec":{"template":{"spec":{"securityContext":{"fsGroup":1000}}}}}'
+  ```
+
+- **Duration:** Permanent once verified, but revisit if the workload's threat model changes.
+
+**Resolution:**
+
 ```bash
-# 4. Validate application health via service endpoints
-kubectl get endpoints <service-name> -n <namespace>
-kubectl exec -it <test-pod> -n <namespace> -- curl -s http://<service-name>:<port>/healthz
-# The pod IP should appear in endpoints and the health check should succeed
+# Option 1: mount the volume at a non-overlapping subPath so image content at the parent is preserved
+# Option 2: set securityContext.fsGroup so the kubelet chowns the volume on first mount
+# Option 3: switch to an initContainer that pre-populates the volume from the image, then mount in the main container
+kubectl edit deployment <deployment-name> -n <namespace>
+kubectl rollout status deployment/<deployment-name> -n <namespace>
 ```
+
+**Verification:** `kubectl exec <pod-name> -n <namespace> -- ls -la <mount-path>` returns the expected content with appropriate ownership, and `RESTARTS=0` after 15 minutes.
+
+### Cause I: Container image architecture does not match the node's CPU architecture
+
+**Statement:** The image was built for `amd64` (or `arm64`) and the pod was scheduled onto a node of the opposite architecture, so the container runtime cannot execute the entrypoint binary.
+
+**Mechanism:** Container runtimes verify image-manifest architecture against the host before running. When a single-arch image is scheduled to an incompatible node, runtime behavior differs: containerd reports `no match for platform in manifest` at pull time; Docker/Moby may pull a stale cached layer and surface `exec format error` at exec time, exiting `exitCode=1` immediately. On heterogeneous clusters (mixed Graviton/x86 nodes, mixed Apple Silicon dev machines pushing to x86 clusters), pods scheduled to the wrong-arch node CrashLoopBackOff while pods on the matching-arch node run normally — making this a hard-to-spot, partial-fleet issue.
+
+**Indicator:**
+
+- [Step 3] previous-container logs contain `exec format error` or `exec /<binary>: exec format error`
+<!-- match: {"step": 3, "predicate": "contains", "target": "exec format error"} -->
+- [Step 9] image manifest architectures do not include the node's `nodeInfo.architecture`
+- [Symptom] same pod template runs on some nodes but CrashLoopBackOffs on others
+
+**Mitigation:**
+
+- **Risk:** Pinning to one architecture via `nodeSelector` reduces scheduling flexibility and may push pressure onto a smaller node pool.
+- **Command:**
+
+  ```bash
+  kubectl patch deployment <deployment-name> -n <namespace> --type=strategic \
+    -p='{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/arch":"amd64"}}}}}'
+  ```
+
+- **Duration:** Permanent until a multi-arch image is published.
+
+**Resolution:**
+
+```bash
+# Build and push a multi-arch manifest list so the right variant runs on each node.
+docker buildx build --platform=linux/amd64,linux/arm64 -t <image>:<tag> --push .
+kubectl set image deployment/<deployment-name> -n <namespace> <container>=<image>:<tag>
+kubectl rollout status deployment/<deployment-name> -n <namespace>
+```
+
+**Impact:** Cluster-wide for the deployment; existing pods on matching-arch nodes also restart during the rollout.
+**Rollback:** `kubectl rollout undo deployment/<deployment-name> -n <namespace>` restores the prior (single-arch) image.
+
+**Verification:** `kubectl get pod -l <selector> -n <namespace> -o wide` shows pods running on nodes of both architectures with `RESTARTS=0` after 15 minutes.
+
+### Cause J: Pod exits cleanly with code 0 but `restartPolicy: Always` keeps restarting it
+
+**Statement:** The container's entrypoint completes normally and returns exit code 0, but the controller's `restartPolicy: Always` (Deployments, StatefulSets, DaemonSets) treats any termination — even successful — as a failure and restarts the container.
+
+**Mechanism:** `restartPolicy: Always` is the default for long-running workloads and instructs the kubelet to restart a container regardless of exit status. When the container's PID 1 is a short-lived process (a one-shot script, a CLI tool, a wrapper that forks a daemon then exits), it returns 0 within seconds; the kubelet restarts it; the pattern repeats. The pod shows `STATUS: CrashLoopBackOff` because the kubelet's view is "container terminated and is being restarted with backoff," even though the application reports success. Common shapes: shell entrypoint that `exec`s in the background, a binary that prints a help message and exits, a `kubectl apply` job template re-used as a Deployment.
+
+**Indicator:**
+
+- [Step 4] container status reports `exitCode=0` with `reason=Completed`
+<!-- match: {"step": 4, "predicate": "contains", "target": "exitCode=0  reason=Completed"} -->
+- [Step 3] previous-container logs show the process completing successfully (no errors, no stack traces)
+- [Step 2] workload kind is `Deployment`, `StatefulSet`, or `DaemonSet` (which force `restartPolicy: Always`) but the entrypoint is short-lived
+
+**Mitigation:**
+
+- **Risk:** Converting a Deployment to a Job changes its lifecycle semantics (no rolling update, no replica autoscaling); only correct if the workload is genuinely batch.
+- **Command:**
+
+  ```bash
+  kubectl get deployment <deployment-name> -n <namespace> -o yaml > /tmp/<name>.yaml
+  # Edit to kind: Job and apply the new manifest; delete the old Deployment.
+  ```
+
+- **Duration:** Permanent — the workload kind should match its lifecycle.
+
+**Resolution:**
+
+```bash
+# Option A: Fix the entrypoint so it stays in the foreground (`exec <daemon>` without `&`).
+kubectl set image deployment/<deployment-name> -n <namespace> <container>=<image>:<fixed-tag>
+# Option B: Convert to a Job if the workload is meant to run once.
+kubectl delete deployment <deployment-name> -n <namespace>
+kubectl apply -f <job-manifest>.yaml
+```
+
+**Verification:** For a corrected Deployment, `kubectl get pod -l <selector> -n <namespace>` shows `STATUS: Running` with `RESTARTS=0` for at least 30 minutes; for a converted Job, `kubectl get job` shows `COMPLETIONS: 1/1`.
+
+### Cause Z: Unidentified
+
+**Statement:** The container is repeatedly terminating and restarting but no indicator from Causes A through J matches the gathered evidence.
+
+**Mechanism:** The kubelet records repeated terminations and applies backoff, producing `STATUS: CrashLoopBackOff`. The captured exit code, reason, events, logs, and resource metrics do not isolate the failure path — typically because the application is silently exiting before producing usable logs, the failure is intermittent across restarts, or the symptom involves a less common cause (CNI initialization failure, admission webhook side-effect, kernel module mismatch, kube-proxy iptables corruption). Further isolation requires richer signals: live container tracing, audit logs around pod creation, node kubelet logs, or comparing against a known-good baseline pod on the same node.
+
+**Indicator:**
+
+- [Default] CrashLoopBackOff confirmed (Step 1, Step 2) but Causes A–J indicators do not match the gathered evidence
+
+**Mitigation:**
+
+- **Risk:** Rolling back to a previous known-good revision can mask data-integrity changes if the new revision included migrations; verify the diff before reverting.
+- **Command:**
+
+  ```bash
+  kubectl rollout undo deployment/<deployment-name> -n <namespace>
+  kubectl get events -n <namespace> --sort-by='.lastTimestamp' --field-selector involvedObject.name=<pod-name>
+  ```
+
+- **Duration:** Use only as a holding action while engaging the application owner with the gathered diagnostic artefacts.
+
+**Resolution:** Out of runbook scope. Capture the artefacts from Steps 1–10 (pod description, previous-container logs, structured exit code/reason, ConfigMap/Secret inventory, probe config, resource usage, init-container output, image architecture, kernel dmesg) and escalate to the application owner or platform on-call with the failure-mode summary.
+
+**Verification:** Hand-off acknowledged by the receiving engineer; an incident ticket is opened with the captured artefacts attached and a follow-up owner assigned.
 
 ## Prevention
 
-**Set resource requests and limits for all containers.** Use LimitRange to enforce namespace-level defaults so that no pod runs without resource boundaries:
-
-```yaml
-apiVersion: v1
-kind: LimitRange
-metadata:
-  name: default-limits
-  namespace: <namespace>
-spec:
-  limits:
-  - default:
-      memory: "512Mi"
-      cpu: "500m"
-    defaultRequest:
-      memory: "256Mi"
-      cpu: "250m"
-    type: Container
-```
-
-**Use startup probes for slow-starting applications.** Separate startup probes from liveness probes to avoid killing containers that are still initializing. This is especially important for JVM-based applications, services that run database migrations on startup, or applications with large caches to warm.
-
-**Implement graceful shutdown.** Handle `SIGTERM` in your application to shut down cleanly within `terminationGracePeriodSeconds` (default 30s). This prevents data corruption and allows in-flight requests to complete.
-
-**Pin image tags.** Avoid `:latest` tags in production. Use immutable image digests or semantic version tags to prevent unexpected image changes from causing crashes:
-
-```yaml
-image: myregistry/myapp:v1.2.3@sha256:abc123...
-```
-
-**Write termination messages.** Set `terminationMessagePolicy: FallbackToLogsOnError` so that `kubectl describe` shows the last log lines as the termination message when the application crashes without writing to `/dev/termination-log`.
-
-**Monitor restart counts with alerts.** Create a Prometheus alert that fires when a pod restarts too frequently:
-
-```yaml
-- alert: PodCrashLooping
-  expr: rate(kube_pod_container_status_restarts_total[10m]) * 60 * 10 > 3
-  for: 5m
-  labels:
-    severity: warning
-  annotations:
-    summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
-```
-
-**Validate configurations before deployment.** Use `kubectl diff` and dry-run to catch manifest errors before they reach the cluster:
-
-```bash
-kubectl diff -f deployment.yaml
-kubectl apply --dry-run=server -f deployment.yaml
-```
+- Configure a `startupProbe` for every workload with cold-start time longer than 30 seconds. Set `failureThreshold * periodSeconds` to at least 1.5× the observed p99 startup time so liveness/readiness probes do not engage before the application is ready.
+- Set both `requests` and `limits` for memory and CPU on every container. Enforce defaults cluster-wide via a `LimitRange` per namespace so workloads cannot be deployed without limits.
+- Validate ConfigMap and Secret references before deploying. CI-level kustomize/helm rendering should fail the pipeline when a referenced name is not in the manifest set.
+- Publish multi-arch image manifests (`docker buildx build --platform=linux/amd64,linux/arm64`) for any cluster that includes Graviton, Apple Silicon, or mixed-arch node pools.
+- Adopt structured termination messages: have the application write a one-line summary to `/dev/termination-log` on fatal exit, and set `terminationMessagePolicy: FallbackToLogsOnError` so the message is captured even when the file is empty.
+- Alert on `RESTARTS` increases. A Prometheus rule like `increase(kube_pod_container_status_restarts_total{namespace="<ns>"}[10m]) > 2` catches CrashLoopBackOff before the backoff fully expands.
+- Forbid `:latest` and untagged image references via an admission policy (OPA Gatekeeper / Kyverno) so a deleted upstream tag cannot break new pod schedules.
+- Run image-architecture validation in CI: compare the published manifest's platform list against the cluster's node-pool architecture mix.
+- Use `kubectl rollout status` with `--timeout` in CI/CD so a CrashLoopBackOff is caught at deploy time, not after replicas have already cycled out the healthy ReplicaSet.
 
 ## Sources
 
-- [Kubernetes: Debug Pods](https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/) -- Official pod debugging guide covering Pending, Waiting, and Crashing pods
-- [Kubernetes: Pod Lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/) -- Container states, restart policies, backoff behavior, and CrashLoopBackOff mechanics
-- [Kubernetes: Determine Reason for Pod Failure](https://kubernetes.io/docs/tasks/debug/debug-application/determine-reason-pod-failure/) -- Exit codes and termination messages
-- [Kubernetes: Manage Resources for Containers](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/) -- Resource requests, limits, QoS classes, and OOMKilled behavior
-- [Kubernetes: Debug Running Pods](https://kubernetes.io/docs/tasks/debug/debug-application/debug-running-pod/) -- kubectl debug, ephemeral containers, and node-level debugging
-- [Kubernetes: Debug Init Containers](https://kubernetes.io/docs/tasks/debug/debug-application/debug-init-containers/) -- Diagnosing init container failures that block main container startup
+- [Kubernetes — Pod Lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/) — Priority 1. Container states (Waiting, Running, Terminated), terminated reasons (Error, OOMKilled, ContainerCannotRun), restartPolicy semantics, CrashLoopBackOff display.
+- [Kubernetes — Debug Pods](https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/) — Priority 1. `kubectl describe pod`, restart count interpretation, event log fields, debugging procedure for crashing pods.
+- [Kubernetes — Debug Running Pods](https://kubernetes.io/docs/tasks/debug/debug-application/debug-running-pod/) — Priority 1. `kubectl logs --previous`, ephemeral debug containers, `kubectl debug node`, and copying files in/out of failed containers.
+- [Kubernetes — Debug Pods (general)](https://kubernetes.io/docs/tasks/debug/debug-application/) — Priority 1. Overall diagnostic flow for unhealthy pods, where CrashLoopBackOff documentation is rooted.
+- [Kubernetes — Configure Liveness, Readiness and Startup Probes](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/) — Priority 1. Probe configuration parameters (initialDelaySeconds, periodSeconds, failureThreshold), startup-probe pattern for slow-starting apps, examples of aggressive probes causing restart loops.
+- [Kubernetes — Determine the Reason for Pod Failure](https://kubernetes.io/docs/tasks/debug/debug-application/determine-reason-pod-failure/) — Priority 1. `terminationMessagePath`, `terminationMessagePolicy: FallbackToLogsOnError`, `lastState.terminated` fields (exitCode, reason, signal, message).
+- [Kubernetes — ConfigMaps](https://kubernetes.io/docs/concepts/configuration/configmap/) — Priority 1. envFrom / valueFrom.configMapKeyRef / volume references, `CreateContainerConfigError` failure mode, namespace and key-name constraints.
+- [AWS — Amazon EKS Troubleshooting](https://docs.aws.amazon.com/eks/latest/userguide/troubleshooting.html) — Priority 1 (vendor). EKS-specific CrashLoopBackOff contributors (aws-auth ConfigMap, IRSA token expiry, CNI not ready), exit-code interpretation on EKS optimized AMIs.

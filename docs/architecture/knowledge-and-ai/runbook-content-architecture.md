@@ -395,16 +395,17 @@ The first three sources are sufficient for common infrastructure failure modes. 
 
 This section tracks what is implemented versus planned. v3 redesign requires regeneration of all existing runbooks via the KB toolkit — no migration shim, no backward-compatibility for v2-shaped runbooks.
 
-**Current template in use (v2):** The 59 built-in runbooks, the document-to-runbook conversion pipeline (`conversion_service.py`), and `runbook_validator.py` all use the **v2 section schema**: `Problem Definition`, `Diagnostic Steps`, `Mitigation`, `Root Cause Resolution`, `Verification`, `Prevention`, `Sources`. The v3 template above (per-Cause sections with `Symptom Recognition`, `Applicability`, `Causes`) is the target design; it is not yet in production. `runbook_validator.py`'s `REQUIRED_SECTIONS` enforces v2 headers until the v3 rollout PR lands.
+**Current template in use (v3):** All 59 built-in runbooks have been regenerated to the v3 schema (`Symptom Recognition`, `Applicability`, `Diagnostic Steps`, `Causes`, `Prevention`, `Sources`). `kb_toolkit/core/validator.py` has been fully rewritten for v3: it enforces the 6 required H2 sections, per-Cause sub-fields with char limits, Indicator token validation with step-number resolution, and match-hint JSON parsing with predicate vocabulary checks. The FaultMaven API's `runbook_validator.py` (used by the document-to-runbook conversion pipeline) still enforces v2 section headers — updating it to v3 is the remaining gap.
 
 | Feature | Status | Location |
 | --- | --- | --- |
 | YAML frontmatter parsing | Implemented | `conversion_service.py` scan workflow |
-| v3 structural linting (6 H2s + Cause subsections + sub-fields) | **Pending** — to land alongside v3 template rollout | `RunbookValidator` v3 rewrite in `kb_toolkit/core/validator.py` |
-| Char-limit enforcement (Statement ≤300, Mechanism ≤800) | **Pending** | `kb_toolkit/core/validator.py` |
-| Indicator token validation (`[Step N]`, `[Symptom]`, `[Default]`) | **Pending** | `kb_toolkit/core/validator.py` |
-| Match-hint comment parsing + metadata lift | **Pending** | `kb_toolkit/core/chunker.py` |
+| v3 structural linting (6 H2s + Cause subsections + sub-fields) | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_structure()`, `_validate_causes()`, `_validate_cause_subfields()` |
+| Char-limit enforcement (Statement ≤300, Mechanism ≤800) | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_cause_subfields()` |
+| Indicator token validation (`[Step N]`, `[Symptom]`, `[Default]`) | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_indicator_field()` with step-number cross-reference |
+| Match-hint JSON parsing + predicate vocabulary check | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_match_hints()`; chunker metadata lift still pending |
 | Per-Cause metadata fields (`cause_statement`, `cause_mechanism`, `cause_indicators`, `match_predicates`, `cause_mitigation`, `cause_resolution`, `cause_verification`, `is_fallback_cause`) | **Pending** | `kb_toolkit/core/ingester.py` — see [indicator-resolution.md §6](../investigation-engine/indicator-resolution.md#6-chromadb-metadata-schema) |
+| FaultMaven API `runbook_validator.py` v3 update | **Pending** | `modules/knowledge/domain/services/runbook_validator.py` — still enforces v2 `REQUIRED_SECTIONS` |
 | Taxonomy fields stored in ChromaDB | Implemented | `domain`, `service`, `symptom_class`, `severity`, `scope`, `status`, `last_updated`, `tags`, `document_type` propagated per chunk |
 | Domain/service hard pre-filter | Implemented | `filter_mode="hard"` injects `domain`/`service` into ChromaDB `where` clause |
 | Verification-weighted retrieval | Implemented | Status bonuses in four-signal reranker: `verified` +0.40, `draft` -0.10, `deprecated` -0.30 |
@@ -416,6 +417,8 @@ This section tracks what is implemented versus planned. v3 redesign requires reg
 
 ### Implementation Priority
 
-1. **v3 template rollout** — runbook regeneration + validator v3 + chunker comment-stripping + per-Cause metadata schema. Single PR. Required before engine-side `AnswerFromKB.cause` field and the unified KB-resolution path (`investigation-lifecycle-logic.md`) can land.
-2. **Semantic density check (Gate 3)** — Reject runbooks containing only architectural descriptions. Requires classifier-tier LLM integration.
-3. **Staleness background job** — Compare `last_updated` against current date and auto-transition `verified` → `stale` at the 6-month threshold. Requires job scheduler integration.
+1. **Per-Cause metadata in ingester** — lift `cause_statement`, `cause_mechanism`, `cause_indicators`, `match_predicates` into ChromaDB chunk metadata at ingest time. Required before engine-side `AnswerFromKB.cause` field and the indicator-resolution path can land.
+2. **FaultMaven API `runbook_validator.py` v3 update** — align `REQUIRED_SECTIONS` and sub-field checks with the v3 schema so the document-to-runbook conversion pipeline produces v3-compliant runbooks.
+3. **Chunker match-hint stripping** — strip `<!-- match: ... -->` HTML comments before chunking and lift predicates to ChromaDB metadata.
+4. **Semantic density check (Gate 3)** — Reject runbooks containing only architectural descriptions. Requires classifier-tier LLM integration.
+5. **Staleness background job** — Compare `last_updated` against current date and auto-transition `verified` → `stale` at the 6-month threshold. Requires job scheduler integration.

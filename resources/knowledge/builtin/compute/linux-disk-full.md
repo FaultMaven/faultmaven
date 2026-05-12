@@ -1,86 +1,68 @@
 ---
 id: "linux-disk-full"
-title: "Linux Disk Full - Filesystem at 100% Capacity"
+title: "Linux Disk Full"
 domain: compute
 service: linux
 symptom_class: [disk_full]
 severity: high
 scope: global
 version: "1.0.0"
-last_updated: "2026-03-26"
+last_updated: "2026-05-12"
 verified_by: "kb-researcher"
 status: draft
 tags: [disk-space, inode, ext4, xfs, lsof, du, df, no-space-left, enospc, logrotate]
 difficulty: intermediate
 ---
 
-## Problem Definition
+## Symptom Recognition
 
-Applies to any Linux system (kernel 3.x+) running ext4, XFS, or tmpfs filesystems. Requires root or sudo access to run diagnostic and remediation commands. Relevant to bare-metal servers, virtual machines, and container hosts. All commands are distribution-agnostic unless noted otherwise.
+- `No space left on device` (errno ENOSPC) returned on any write operation
+- Services fail to start or crash with write errors referencing ENOSPC
+- Log rotation silently fails; logs stop rotating and grow unbounded
+- Databases refuse writes: PostgreSQL logs `could not write to file`, MySQL logs `Errcode: 28`
+- `df -h` shows `Use%` at 100% on one or more mount points
+- `df -i` shows `IUse%` at 100% with block space still available (inode exhaustion variant)
+- Kernel messages in `dmesg`: `EXT4-fs warning: ... has reached maxsize` or `XFS: ... No space left on device`
+- Prometheus alert: `node_filesystem_avail_bytes / node_filesystem_size_bytes < 0.05`
+- Application health checks fail due to inability to write temp files or PID files
 
-The filesystem has reached 100% utilization, causing writes to fail with `No space left on device` (errno ENOSPC). Services fail to start, log rotation breaks, databases refuse writes, and temporary file creation fails. Common alert patterns include disk usage threshold exceeded (>90%), inode usage threshold exceeded, and application write errors referencing ENOSPC. Kernel messages appear in dmesg: `EXT4-fs warning: ... has reached maxsize` or `XFS: ... No space left on device`.
+## Applicability
 
-Three distinct failure modes produce this symptom:
-
-- **Block space exhaustion** (most common): the filesystem has no free data blocks.
-- **Inode exhaustion**: many small files consume all inodes while free block space remains. `df -h` shows available space but `df -i` shows 100% inode usage.
-- **Deleted-but-open file handles**: `df` reports the disk as full but `du` shows less total usage because deleted files are still held open by running processes. The kernel cannot reclaim the blocks until the file descriptor is closed.
+Applies to any Linux host (kernel 3.x+) running ext4, XFS, or tmpfs filesystems. Covers bare-metal servers, virtual machines, and container hosts. Requires root or sudo access for all diagnostic and remediation commands. Tools required: `df`, `du`, `lsof`, `find`, `tune2fs` (ext4), `xfs_info` (XFS), `journalctl`. Distribution-agnostic unless noted.
 
 ## Diagnostic Steps
 
-### Step 1: Assess Overall Disk and Inode Usage
-
-**What this checks**: Identifies which filesystem is full and whether the exhaustion is block-based or inode-based.
+### Step 1: Identify the Full Filesystem and Exhaustion Type
 
 ```bash
-df -h
+df -h && echo "---" && df -i
 ```
 
-**Expected output**: One or more filesystems showing `Use%` at 100% (or above 95% for non-root users due to reserved blocks). Note the mount point for subsequent commands.
+Expected output: `Use%` at 100% for block space or `IUse%` at 100% for inodes on one or more mount points. Note the mount point and device. If inode usage is 100% but block usage is not, skip to Step 4. If both are high, address block space first.
 
-```bash
-df -i
-```
-
-**Expected output**: The `IUse%` column shows inode utilization. If inode usage is at 100% but block usage is not, the problem is inode exhaustion — skip to Step 4. If both are high, address block space first.
-
-**What the finding means**: Block exhaustion at 100% prevents all writes. Inode exhaustion at 100% prevents new file creation even with free block space. Both require different remediation paths.
-
-### Step 2: Identify Large Files and Directories
-
-**What this checks**: Locates the largest consumers of disk space on the affected filesystem by drilling down from the mount point.
+### Step 2: Locate Large Files and Directories
 
 ```bash
 du -xh --max-depth=1 / 2>/dev/null | sort -rh | head -20
 ```
 
-**Expected output**: A sorted list of top-level directories by size. Common offenders are `/var/log`, `/var/lib/docker`, `/var/lib/mysql`, `/tmp`, and `/home`. The `-x` flag prevents crossing filesystem boundaries.
-
-Drill into the largest directory by repeating with that path (e.g., `du -xh --max-depth=1 /var/log 2>/dev/null | sort -rh | head -20`).
+Expected output: Sorted list of top-level directories by size. Common offenders: `/var/log`, `/var/lib/docker`, `/var/lib/mysql`, `/tmp`, `/home`. Repeat drilling into the largest directory (e.g., `du -xh --max-depth=1 /var/log 2>/dev/null | sort -rh | head -20`).
 
 ```bash
 find / -xdev -type f -size +100M -exec ls -lh {} \; 2>/dev/null | sort -k5 -rh | head -20
 ```
 
-**Expected output**: Individual files larger than 100MB on the root filesystem. Large log files, core dumps, heap dumps, and database WAL segments are frequent offenders.
-
-**What the finding means**: If a single directory or file dominates usage, the root cause is likely unbounded logging, failed log rotation, or an application writing large temporary files. Proceed to Mitigation Option A or Root Cause Resolution.
+Expected output: Individual files larger than 100 MB on the affected filesystem. Large log files, core dumps, heap dumps, and database WAL segments are frequent offenders.
 
 ### Step 3: Check for Deleted-but-Open Files
-
-**What this checks**: Identifies files that have been deleted from the directory tree (link count = 0) but are still held open by a running process. The kernel cannot reclaim the disk space until the process releases the file descriptor.
 
 ```bash
 lsof +L1 2>/dev/null | awk '{print $1, $2, $7, $9}' | sort -k3 -rn | head -20
 ```
 
-**Expected output**: Columns show process name, PID, file size (bytes), and file path marked `(deleted)`. Common causes: log files deleted while the application still writes to them, or logrotate running without a `copytruncate` or service reload directive.
+Expected output: Columns show process name, PID, file size in bytes, and path marked `(deleted)`. Large values in the size column (hundreds of MB or more) indicate the kernel cannot reclaim those blocks until the holding process closes or restarts.
 
-**What the finding means**: If large deleted-but-open files appear (hundreds of MB or more), this explains why `df` shows more usage than `du`. Proceed to Mitigation Option B. If no significant deleted-but-open files appear, the problem is standard block or inode exhaustion.
-
-### Step 4: Check Inode-Heavy Directories (If Inode Exhaustion)
-
-**What this checks**: Identifies directories containing the most files, which is the direct cause of inode exhaustion. Only needed when Step 1 shows `IUse%` at or near 100%.
+### Step 4: Count Files Per Directory for Inode Exhaustion
 
 ```bash
 for d in /tmp /var/spool /var/cache /var/lib /var/log; do
@@ -88,166 +70,63 @@ for d in /tmp /var/spool /var/cache /var/lib /var/log; do
 done | sort -rn
 ```
 
-**Expected output**: A count of files per directory, sorted descending. Directories with hundreds of thousands or millions of files are the inode consumers. Common culprits: PHP session files (`/var/lib/php/sessions`), mail queue (`/var/spool/postfix`), package manager metadata, and container overlay layers.
+Expected output: File count per directory, sorted descending. Directories with hundreds of thousands or millions of files are consuming inodes. Common culprits: PHP session files (`/var/lib/php/sessions`), mail queue (`/var/spool/postfix`), container overlay layers.
 
-For a more thorough scan across the entire filesystem:
-
-```bash
-find / -xdev -type d -exec sh -c 'echo "$(find "$1" -maxdepth 1 -type f | wc -l) $1"' _ {} \; 2>/dev/null | sort -rn | head -20
-```
-
-**What the finding means**: The directory with the highest file count is consuming the most inodes. Removing stale files from that directory will restore inode availability. Proceed to Root Cause Resolution for inode-specific fixes.
-
-### Step 5: Check Reserved Blocks (ext4 Only)
-
-**What this checks**: On ext4 filesystems, 5% of blocks are reserved for root by default. Non-root processes receive ENOSPC at ~95% usage while root can still write. This is expected behavior, not a bug.
+### Step 5: Check Reserved Blocks (ext4) or Metadata Reservation (XFS)
 
 ```bash
-tune2fs -l /dev/sdX1 2>/dev/null | grep -i "reserved block"
+tune2fs -l "$(df --output=source / | tail -1)" 2>/dev/null | grep -i "reserved block"
 ```
 
-Replace `/dev/sdX1` with the actual device from `df -h` output.
-
-**Expected output**: Lines showing `Reserved block count` and `Reserved blocks uid`. The default reserved percentage is 5%.
-
-For XFS filesystems, check metadata reservation instead:
+Expected output: `Reserved block count` showing how many blocks are held for root. Default is 5% of total blocks. Non-root processes receive ENOSPC when usage reaches ~95%.
 
 ```bash
-xfs_info /mountpoint
+xfs_info / 2>/dev/null | head -5
 ```
 
-**What the finding means**: If non-root processes fail at 95% while root still works, the reserved block mechanism is functioning normally. Reducing reserved blocks (Mitigation Option D) can provide temporary relief for data partitions.
+Expected output: XFS geometry including `agcount`, `agsize`, and internal log size. XFS does not have the same root-reservation model as ext4.
 
-### Step 6: Identify Recent Large Growth
-
-**What this checks**: Finds files modified in the last 24 hours that are large enough to be the active cause of disk filling. Helps identify which process is filling the disk right now.
+### Step 6: Identify Active Growth Source
 
 ```bash
 find / -xdev -type f -mtime -1 -size +10M -exec ls -lh {} \; 2>/dev/null | sort -k5 -rh | head -20
 ```
 
-**Expected output**: Recently modified large files, sorted by size. Application debug logs, crash dumps, and database transaction logs are common hits.
+Expected output: Files modified in the last 24 hours that are large. Correlate file path with owning service to find what is actively filling the disk.
 
 ```bash
 journalctl --disk-usage
 ```
 
-**Expected output**: Total disk usage of the systemd journal. Values above 500MB indicate journald needs size limits configured.
+Expected output: Total disk usage of the systemd journal. Values above 500 MB indicate journald needs size limits configured.
 
-**What the finding means**: If a specific file is both recently modified and very large, the associated process is the active cause. Correlate the file path with the owning service to determine the root cause fix.
+## Causes
 
-## Mitigation
+### Cause A: Unbounded Application Log Growth
 
-### Option A: Truncate Identified Large Log Files
+**Statement:** An application writes to a log file without enforced size limits and logrotate is absent or misconfigured, allowing the log to fill the filesystem.
 
-**Risk**: Application loses recent log data in the truncated file. Most applications handle in-place truncation gracefully, but some may crash or continue writing at the previous file offset, creating a sparse file with a hole.
+**Mechanism:** When no log rotation policy exists or the logrotate configuration lacks a `maxsize` directive, log files grow continuously with each request, error, or debug event. At 100% filesystem utilization all write syscalls return ENOSPC, causing cascading failures in any service writing to that partition.
 
-**Command**:
+**Indicator:**
 
-```bash
-truncate -s 0 /var/log/large-application.log
-```
+- [Step 2] A single file under `/var/log/` or an application log directory dominates `du` output
+- [Step 6] The same file appears in recently modified large files
 
-**Verify**:
+<!-- match: {"step": 2, "predicate": "contains", "target": "/var/log/"} -->
 
-```bash
-df -h /var/log
-```
+**Mitigation:**
 
-Confirm free space increased on the target filesystem.
+- **Risk:** Truncating a log while the process holds it open creates a sparse file starting from offset 0 on next write by some applications; most modern apps handle this correctly.
+- **Command:**
 
-**Duration**: Immediate relief. Configure log rotation within 24 hours to prevent recurrence.
+  ```bash
+  truncate -s 0 /var/log/large-application.log
+  ```
 
-### Option B: Reclaim Space from Deleted-but-Open Files
+- **Duration:** Immediate relief. Configure log rotation within 24 hours to prevent recurrence.
 
-**Risk**: Using the `/proc` truncation method has no service impact. Restarting the service causes brief downtime; coordinate with load balancers or use rolling restarts in production.
-
-**Command**:
-
-```bash
-# Identify the process holding the largest deleted file
-lsof +L1 2>/dev/null | sort -k7 -rn | head -5
-
-# Method 1: Truncate the deleted file via /proc (no restart needed)
-# Replace <PID> and <FD> with values from lsof output columns 2 and 4
-cat /dev/null > /proc/<PID>/fd/<FD>
-
-# Method 2: Restart the service to release all deleted file handles
-systemctl restart <service-name>
-```
-
-**Verify**:
-
-```bash
-df -h /
-lsof +L1 2>/dev/null | wc -l
-```
-
-Confirm free space increased and the count of deleted-but-open files decreased.
-
-**Duration**: Immediate relief. The `/proc` truncation is safe indefinitely. Service restart impact depends on the specific service.
-
-### Option C: Emergency Cleanup of Known Safe Targets
-
-**Risk**: Removing package caches requires re-download if packages are needed later. Removing tmp files may break running processes that depend on them. Old journal logs and kernels are safe to remove.
-
-**Command**:
-
-```bash
-# Clear package manager caches
-apt-get clean 2>/dev/null           # Debian/Ubuntu
-yum clean all 2>/dev/null           # RHEL/CentOS 7
-dnf clean all 2>/dev/null           # RHEL/CentOS 8+/Fedora
-
-# Remove old journal logs (keep last 2 days)
-journalctl --vacuum-time=2d
-
-# Remove old kernels (keep current + one previous)
-# Debian/Ubuntu:
-apt-get autoremove --purge -y
-
-# Clear /tmp files older than 7 days
-find /tmp -type f -atime +7 -delete 2>/dev/null
-find /var/tmp -type f -atime +7 -delete 2>/dev/null
-```
-
-**Verify**:
-
-```bash
-df -h /
-df -h /boot
-df -h /tmp
-```
-
-Check all relevant mount points to confirm space was reclaimed.
-
-**Duration**: Immediate relief. Package cache rebuilds over time. Schedule proper capacity management within 48 hours.
-
-### Option D: Temporarily Reduce Reserved Blocks (ext4 Only)
-
-**Risk**: Reduces the safety margin for root operations. If the filesystem fills completely with 0% reserved, even root cannot write, potentially making the system unrecoverable without booting from external media. Use only on data partitions, not on `/` or `/boot`.
-
-**Command**:
-
-```bash
-# Reduce reserved blocks from 5% to 1% (can be done on a mounted filesystem)
-tune2fs -m 1 /dev/sdX1
-```
-
-**Verify**:
-
-```bash
-df -h /
-tune2fs -l /dev/sdX1 | grep -i "reserved block"
-```
-
-Confirm available space increased and the reserved percentage is now 1%.
-
-**Duration**: Safe for hours to days. Restore to 5% once the root cause is resolved: `tune2fs -m 5 /dev/sdX1`.
-
-## Root Cause Resolution
-
-**If** Step 2 shows a single large log file growing unbounded (e.g., `/var/log/application.log` at tens of GB) --> Configure logrotate for the application:
+**Resolution:**
 
 ```bash
 cat > /etc/logrotate.d/application << 'LOGROTATE'
@@ -263,47 +142,141 @@ cat > /etc/logrotate.d/application << 'LOGROTATE'
 }
 LOGROTATE
 
-# Test the configuration (dry-run, no changes made)
 logrotate -d /etc/logrotate.d/application
 ```
 
-**If** Step 3 shows deleted-but-open files consuming space --> Fix the log rotation configuration to use `copytruncate` (for applications that do not reopen log files on SIGHUP) or add a `postrotate` script to signal the application to reopen its log file:
+**Verification:** Run `df -h` on the affected partition to confirm usage below 85%. Run `watch -n 60 'df -h / | tail -1'` for 30 minutes and verify usage is stable or declining.
+
+---
+
+### Cause B: Deleted-but-Open File Handles
+
+**Statement:** Files deleted from the directory tree are still held open by running processes, preventing the kernel from reclaiming their disk blocks until the process closes or restarts.
+
+**Mechanism:** When logrotate or a script deletes a log file that an application holds open, the kernel marks the inode for deletion but cannot free the data blocks until the file descriptor count reaches zero. `df` reports full utilization because the blocks are allocated; `du` shows lower usage because the directory entry is gone. The discrepancy between `df` and `du` output is the diagnostic fingerprint.
+
+**Indicator:**
+
+- [Step 3] `lsof +L1` shows one or more entries with `(deleted)` path and size column above 100 MB
+
+<!-- match: {"step": 3, "predicate": "contains", "target": "(deleted)"} -->
+
+**Mitigation:**
+
+- **Risk:** Truncating via `/proc/PID/fd/FD` is zero-downtime. Service restart causes brief outage; coordinate with load balancers for stateful services.
+- **Command:**
+
+  ```bash
+  # Identify PID and FD from lsof output columns 2 and 4
+  lsof +L1 2>/dev/null | sort -k7 -rn | head -5
+
+  # Method 1: truncate in-place (no restart needed)
+  cat /dev/null > /proc/<PID>/fd/<FD>
+
+  # Method 2: restart the process (releases all deleted handles)
+  systemctl restart <service-name>
+  ```
+
+- **Duration:** Immediate relief. `/proc` truncation is safe indefinitely.
+
+**Resolution:**
 
 ```bash
-cat > /etc/logrotate.d/nginx << 'LOGROTATE'
-/var/log/nginx/*.log {
+# Fix logrotate to signal the app to reopen log files after rotation
+cat > /etc/logrotate.d/app << 'LOGROTATE'
+/var/log/app/*.log {
     daily
     rotate 14
     compress
     delaycompress
     missingok
     notifempty
-    create 0640 www-data adm
+    create 0640 appuser appgroup
     sharedscripts
     postrotate
-        [ -f /var/run/nginx.pid ] && kill -USR1 $(cat /var/run/nginx.pid)
+        kill -USR1 $(cat /var/run/app.pid) 2>/dev/null || true
     endscript
 }
 LOGROTATE
 ```
 
-**If** Step 4 shows inode exhaustion from millions of small files (e.g., PHP session files, mail queue) --> Clean stale files and configure automatic cleanup:
+**Verification:** Re-run `lsof +L1 2>/dev/null | awk '$7 > 104857600 {print $1, $2, $7, $9}'`. Output should be empty. Confirm `df -h` shows reclaimed space.
+
+---
+
+### Cause C: Inode Exhaustion from Small File Accumulation
+
+**Statement:** Millions of small files have consumed all inodes on the filesystem, preventing new file creation even though significant block space remains free.
+
+**Mechanism:** Each file on ext4/XFS requires one inode. The inode table is sized at filesystem creation time (ext4: one inode per 16 KB by default). Applications that create many small files — PHP sessions, mail queue entries, package manager metadata — can exhaust inodes while leaving blocks largely empty. `df -h` shows available space but `df -i` shows `IUse%` at 100%; any attempt to create a file returns ENOSPC.
+
+**Indicator:**
+
+- [Step 1] `df -i` shows `IUse%` at 100% while `df -h` shows block space available
+- [Step 4] One directory contains hundreds of thousands or millions of files
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "100%"} -->
+
+**Mitigation:**
+
+- **Risk:** Deleting session or spool files may drop active user sessions or queued messages. Validate the target directory before bulk deletion.
+- **Command:**
+
+  ```bash
+  # PHP sessions older than 24 hours
+  find /var/lib/php/sessions -type f -mmin +1440 -delete
+
+  # Postfix deferred mail queue
+  postsuper -d ALL deferred
+
+  # Generic: remove files not accessed in 7 days from a temp directory
+  find /var/spool/target -type f -atime +7 -delete
+  ```
+
+- **Duration:** Immediate relief after deletion completes.
+
+**Resolution:**
 
 ```bash
-# Remove PHP session files older than 24 hours
-find /var/lib/php/sessions -type f -mmin +1440 -delete
+# Configure PHP session cleanup via cron
+echo '0 * * * * root find /var/lib/php/sessions -type f -mmin +1440 -delete' \
+  > /etc/cron.d/php-session-cleanup
 
-# For Postfix mail queue buildup
-postsuper -d ALL deferred
+# For mail queue: fix the upstream relay and flush the queue
+postfix check && postqueue -f
 ```
 
-**If** Step 2 shows `/var/lib/docker` consuming excessive space --> Prune unused Docker resources and configure container log limits:
+**Verification:** Run `df -i` and confirm `IUse%` has dropped below 90%. Run `df -h` to confirm block usage is also acceptable.
+
+---
+
+### Cause D: Docker or Container Runtime Storage Accumulation
+
+**Statement:** Docker or another container runtime has accumulated stopped containers, unused images, anonymous volumes, and build cache that is not automatically garbage-collected.
+
+**Mechanism:** Each `docker pull`, `docker build`, or stopped container leaves layers, writable container filesystems, and volumes on the host filesystem under `/var/lib/docker`. Without periodic pruning, these overlay layers accumulate indefinitely. On hosts running CI/CD pipelines or frequent image rebuilds, `/var/lib/docker` can grow to tens or hundreds of GB within weeks.
+
+**Indicator:**
+
+- [Step 2] `du` output shows `/var/lib/docker` as the dominant consumer
+
+<!-- match: {"step": 2, "predicate": "contains", "target": "/var/lib/docker"} -->
+
+**Mitigation:**
+
+- **Risk:** `docker system prune -af --volumes` removes ALL unused images (including base images needed for future builds) and ALL anonymous volumes. Named volumes used by running services are not touched, but confirm no unnamed volumes contain data before running.
+- **Command:**
+
+  ```bash
+  docker system prune -af --volumes
+  ```
+
+- **Duration:** Immediate relief. Base images will be re-pulled on next deploy.
+
+**Resolution:**
 
 ```bash
-# Remove unused images, containers, volumes, and build cache
-docker system prune -af --volumes
-
-# Configure log limits in /etc/docker/daemon.json to prevent recurrence
+# Configure container log limits in /etc/docker/daemon.json
 cat > /etc/docker/daemon.json << 'EOF'
 {
   "log-driver": "json-file",
@@ -314,81 +287,160 @@ cat > /etc/docker/daemon.json << 'EOF'
 }
 EOF
 systemctl restart docker
+
+# Schedule weekly prune via systemd timer or cron
+echo '0 3 * * 0 root docker system prune -af --volumes >> /var/log/docker-prune.log 2>&1' \
+  > /etc/cron.d/docker-prune
 ```
 
-**If** Step 6 shows journald consuming excessive space --> Set persistent size limits:
+**Verification:** Run `du -xh --max-depth=1 /var/lib/docker 2>/dev/null | sort -rh | head -10`. Confirm total is substantially reduced. Run `df -h` and verify the host filesystem is below 80% usage.
+
+---
+
+### Cause E: systemd Journal Consuming Excessive Space
+
+**Statement:** The systemd journal has no size cap configured and has grown to consume a significant fraction of the filesystem, particularly on hosts with verbose logging or long retention.
+
+**Mechanism:** `systemd-journald` by default limits storage to 10% of the filesystem or 4 GB, whichever is smaller. However, if `SystemMaxUse` or `RuntimeMaxUse` is not explicitly set and the filesystem is large, the journal can grow several GB before self-capping. On embedded or small-disk systems the defaults are insufficient. Each application writing to the journal (including kernel messages) contributes.
+
+**Indicator:**
+
+- [Step 6] `journalctl --disk-usage` reports a value above 1 GB
+
+<!-- match: {"step": 6, "predicate": "threshold", "target": "journal_gb", "op": ">", "value": 1} -->
+
+**Mitigation:**
+
+- **Risk:** Vacuum operations permanently delete journal entries older than the cutoff. Ensure log retention requirements are met before setting aggressive limits.
+- **Command:**
+
+  ```bash
+  journalctl --vacuum-time=2d
+  ```
+
+- **Duration:** Immediate relief. Set permanent limits within 1 hour.
+
+**Resolution:**
 
 ```bash
 sed -i 's/^#SystemMaxUse=.*/SystemMaxUse=500M/' /etc/systemd/journald.conf
 sed -i 's/^#SystemKeepFree=.*/SystemKeepFree=1G/' /etc/systemd/journald.conf
+# If the lines are absent rather than commented:
+grep -q '^SystemMaxUse=' /etc/systemd/journald.conf \
+  || echo 'SystemMaxUse=500M' >> /etc/systemd/journald.conf
+grep -q '^SystemKeepFree=' /etc/systemd/journald.conf \
+  || echo 'SystemKeepFree=1G' >> /etc/systemd/journald.conf
 systemctl restart systemd-journald
 ```
 
-**If** the filesystem is genuinely too small for the workload --> Extend the volume:
+**Verification:** Run `journalctl --disk-usage` and confirm reported size is below 500 MB. Run `df -h` to confirm filesystem usage is below threshold.
+
+---
+
+### Cause F: ext4 Reserved Block Percentage Causing False ENOSPC
+
+**Statement:** Non-root processes receive ENOSPC when filesystem usage reaches approximately 95% because ext4 reserves 5% of blocks for root by default, even on data-only partitions.
+
+**Mechanism:** ext4 reserves a percentage of data blocks exclusively for root-owned processes, intended to allow root to log in and remediate even when the filesystem is full. The default reservation is 5% of total blocks. Non-root application processes see `df -h` showing 95% usage and start failing writes with ENOSPC while root processes still succeed. This is expected behavior on root partitions but is counterproductive on dedicated data partitions.
+
+**Indicator:**
+
+- [Step 1] `df -h` shows `Use%` at 95–96% but application writes fail with ENOSPC
+- [Step 5] `tune2fs -l` shows `Reserved block count` at 5% of total blocks
+
+<!-- match: {"step": 5, "predicate": "contains", "target": "Reserved block count"} -->
+
+**Mitigation:**
+
+- **Risk:** Reducing reserved blocks on `/` or `/boot` removes the safety margin that allows root login during disk-full emergencies. Use only on data partitions (`/data`, `/var/lib`, `/mnt/data`).
+- **Command:**
+
+  ```bash
+  # Identify device (replace /dev/sdX1 with actual device from df -h)
+  tune2fs -m 1 /dev/sdX1
+  ```
+
+- **Duration:** Temporary. Restore to 2–5% after root cause is addressed.
+
+**Resolution:** Same as Mitigation. Restore after root cause is resolved:
 
 ```bash
-# LVM: extend logical volume and resize filesystem
-lvextend -L +10G /dev/mapper/vg-lv
-resize2fs /dev/mapper/vg-lv         # ext4
-xfs_growfs /mountpoint               # XFS (cannot shrink, only grow)
+tune2fs -m 5 /dev/sdX1
 ```
 
-## Verification
+**Verification:** Run `df -h` and confirm `Use%` is now below 100% with available space visible. Run `tune2fs -l /dev/sdX1 | grep -i "reserved block"` to confirm the new percentage.
 
-After applying the root cause fix, confirm the issue is resolved:
+---
 
-```bash
-# Check current disk usage is below threshold
-df -h
-df -i
-```
+### Cause Z: Unidentified Disk Exhaustion
 
-Verify block usage is below 85% and inode usage is well below 100%.
+**Statement:** [Default] The filesystem is full but the cause cannot be determined from the standard diagnostic steps.
 
-```bash
-# Confirm no deleted-but-open files are consuming significant space (>100MB)
-lsof +L1 2>/dev/null | awk '$7 > 104857600 {print $1, $2, $7, $9}'
-```
+**Mechanism:** Less common causes include NFS stale mounts reporting incorrect usage, LVM snapshot overflow consuming pool space, container runtime storage drivers (overlay2, devicemapper) with metadata bloat, or bind mounts obscuring actual consumers. `du` vs `df` discrepancy without deleted-but-open files may indicate a stale NFS mount or bind mount masking large consumers.
 
-Output should be empty. Any remaining entries indicate processes still holding large deleted files.
+**Indicator:**
 
-```bash
-# Monitor disk growth over the next hour to confirm the leak is stopped
-watch -n 60 'df -h / | tail -1'
-```
+- [Default] None of Steps 1–6 identify a clear dominant consumer
 
-Observe for 30-60 minutes. Usage should remain stable or decrease. If it continues to climb, the root cause was not fully addressed — return to Diagnostic Steps.
+**Mitigation:**
 
-```bash
-# Verify logrotate configuration is valid (dry-run)
-logrotate -d /etc/logrotate.conf
-```
+- **Risk:** Emergency cleanup of `/tmp` or package caches is low-risk on most systems. Verify no active workloads depend on temp files before deletion.
+- **Command:**
 
-Dry-run should show no errors for the affected log files.
+  ```bash
+  # Clear package manager caches
+  apt-get clean 2>/dev/null || yum clean all 2>/dev/null || dnf clean all 2>/dev/null
+
+  # Remove old journal logs
+  journalctl --vacuum-time=2d
+
+  # Clear old temp files
+  find /tmp -type f -atime +7 -delete 2>/dev/null
+  find /var/tmp -type f -atime +7 -delete 2>/dev/null
+  ```
+
+- **Duration:** Immediate partial relief. Escalate for deeper investigation.
+
+**Resolution:** Out of runbook scope. Escalate to infrastructure team with output of `df -h`, `df -i`, `du -xh --max-depth=2 / 2>/dev/null | sort -rh | head -30`, and `lsof +L1 2>/dev/null | sort -k7 -rn | head -20`.
+
+**Verification:** After emergency cleanup, run `df -h` to confirm usage decreased. If usage remains at 100% after all emergency cleanup commands, escalate immediately — a live process may be filling the disk faster than space can be reclaimed.
 
 ## Prevention
 
-Configure disk usage monitoring alerts at multiple thresholds to catch issues before they become critical:
+Configure disk usage and inode monitoring alerts at multiple thresholds:
 
-```bash
-# Prometheus node_exporter alert rules (example)
-# Warning at 80% usage:
-#   node_filesystem_avail_bytes / node_filesystem_size_bytes < 0.2
-# Critical at 90% usage:
-#   node_filesystem_avail_bytes / node_filesystem_size_bytes < 0.1
-# Inode warning at 90% usage:
-#   node_filesystem_files_free / node_filesystem_files < 0.1
+```yaml
+# Prometheus alerting rules (prometheus/rules/disk.yml)
+groups:
+  - name: disk
+    rules:
+      - alert: DiskUsageWarning
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.20
+        for: 5m
+        labels:
+          severity: warning
+      - alert: DiskUsageCritical
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.10
+        for: 2m
+        labels:
+          severity: critical
+      - alert: InodeUsageWarning
+        expr: node_filesystem_files_free / node_filesystem_files < 0.10
+        for: 5m
+        labels:
+          severity: warning
 ```
 
-Ensure logrotate is configured for every application that writes logs:
+Ensure logrotate covers every application log directory:
 
 ```bash
-logrotate -d /etc/logrotate.conf 2>&1 | grep "error"
+# Audit for log files not covered by logrotate
+logrotate -d /etc/logrotate.conf 2>&1 | grep error
 ```
 
 Set systemd journal size limits in `/etc/systemd/journald.conf`:
 
-```bash
+```ini
 SystemMaxUse=500M
 SystemKeepFree=1G
 ```
@@ -405,7 +457,7 @@ For Docker hosts, configure container log limits in `/etc/docker/daemon.json`:
 }
 ```
 
-Schedule regular cleanup jobs for known temporary file accumulation points using systemd-tmpfiles:
+Schedule automatic temp file cleanup via systemd-tmpfiles:
 
 ```bash
 cat > /etc/tmpfiles.d/cleanup.conf << 'EOF'
@@ -414,24 +466,22 @@ d /var/tmp 1777 root root 30d
 EOF
 ```
 
-For ext4 filesystems, set reserved blocks appropriately per partition role:
+Set reserved block percentages appropriate to partition role:
 
 ```bash
 tune2fs -m 5 /dev/sdX1    # system partitions (/, /boot) — keep default 5%
-tune2fs -m 1 /dev/sdX1    # data-only partitions (/data, /var/lib) — reduce to 1%
+tune2fs -m 1 /dev/sdX2    # data-only partitions (/data, /var/lib) — reduce to 1%
 ```
 
-Implement capacity planning: track disk usage trends weekly and provision additional storage when usage exceeds 70% with a growth trajectory that would reach 90% within 30 days.
+Implement capacity planning: track weekly disk usage trends and provision additional storage when usage exceeds 70% with a growth trajectory reaching 90% within 30 days.
 
 ## Sources
 
-- [Brendan Gregg - Linux Performance](https://www.brendangregg.com/linuxperf.html) - Industry reference for Linux performance diagnostics tooling including disk I/O and storage analysis.
-- [Brendan Gregg - USE Method](https://www.brendangregg.com/usemethod.html) - Utilization-Saturation-Errors methodology applied to storage capacity resources.
-- [Linux man pages: df(1)](https://man7.org/linux/man-pages/man1/df.1.html) - Authoritative reference for filesystem disk space reporting.
-- [Linux man pages: du(1)](https://man7.org/linux/man-pages/man1/du.1.html) - Authoritative reference for disk usage estimation per directory and file.
-- [Linux man pages: lsof(8)](https://man7.org/linux/man-pages/man8/lsof.8.html) - Authoritative reference for listing open files, including deleted-but-open file detection.
-- [Linux man pages: tune2fs(8)](https://man7.org/linux/man-pages/man8/tune2fs.8.html) - ext4 reserved blocks configuration and filesystem parameter adjustment.
-- [logrotate(8) manual](https://man7.org/linux/man-pages/man8/logrotate.8.html) - Log rotation configuration including copytruncate and postrotate directives.
-- [systemd-journald.conf(5)](https://www.freedesktop.org/software/systemd/man/journald.conf.html) - Journal size limits and vacuum configuration.
-- [TheLinuxCode - Fix No Space Left on Device](https://thelinuxcode.com/how-i-fix-no-space-left-on-device-on-linux-disk-inodes-logs-containers-and-partitions/) - Practical guide covering block, inode, log, container, and partition-level disk full remediation.
-- [OneUptime - Fix No Space Left on Device (2026)](https://oneuptime.com/blog/post/2026-01-24-fix-no-space-left-on-device/view) - Contemporary troubleshooting guide with Docker cleanup and automated monitoring strategies.
+- [Linux man pages: df(1)](https://man7.org/linux/man-pages/man1/df.1.html) — Priority 1. Authoritative reference for filesystem disk space reporting, `-h` and `-i` flags.
+- [Linux man pages: du(1)](https://man7.org/linux/man-pages/man1/du.1.html) — Priority 1. Authoritative reference for disk usage estimation, `-x` (single filesystem) flag.
+- [Linux man pages: lsof(8)](https://man7.org/linux/man-pages/man8/lsof.8.html) — Priority 1. Authoritative reference for `+L1` deleted-but-open file detection and `/proc/PID/fd` method.
+- [Linux man pages: tune2fs(8)](https://man7.org/linux/man-pages/man8/tune2fs.8.html) — Priority 1. ext4 reserved block configuration and `-m` percentage parameter.
+- [logrotate(8) manual](https://man7.org/linux/man-pages/man8/logrotate.8.html) — Priority 1. `copytruncate`, `postrotate`, `maxsize` directives for log rotation.
+- [systemd-journald.conf(5)](https://www.freedesktop.org/software/systemd/man/journald.conf.html) — Priority 1. `SystemMaxUse`, `SystemKeepFree`, and vacuum configuration.
+- [Brendan Gregg - Linux Performance](https://www.brendangregg.com/linuxperf.html) — Priority 2. USE method applied to storage utilization, saturation, and error diagnosis.
+- [Brendan Gregg - USE Method](https://www.brendangregg.com/usemethod.html) — Priority 2. Utilization-Saturation-Errors methodology for storage capacity resources.

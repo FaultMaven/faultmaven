@@ -1,44 +1,25 @@
 ---
-id: lambda-invocation-errors
-title: "AWS Lambda Invocation Errors"
+id: "lambda-invocation-errors"
+title: "AWS Lambda Runtime Invocation Errors"
 domain: compute
 service: aws-lambda
-symptom_class:
-  - oom
-  - auth_failure
-  - connection_refused
+symptom_class: [oom, auth_failure, connection_refused]
 severity: high
 scope: global
-version: "2.1.0"
-last_updated: "2026-03-26"
-verified_by: kb-researcher
+version: "1.0.0"
+last_updated: "2026-05-12"
+verified_by: "kb-researcher"
 status: draft
-tags:
-  - aws
-  - lambda
-  - invocation
-  - runtime-error
-  - out-of-memory
-  - handler
-  - permissions
-  - vpc
+tags: [aws, lambda, serverless, runtime-error, oom, vpc, iam, handler, concurrency, throttling]
 difficulty: intermediate
 ---
 
-# AWS Lambda Invocation Errors
+## Symptom Recognition
 
-## Problem Definition
-
-This runbook applies to AWS Lambda functions using any supported runtime (Python, Node.js, Java, .NET, Go, Ruby, or custom runtimes via `provided.al2023`) in any AWS region. You need the AWS CLI v2 with `lambda:GetFunction`, `lambda:InvokeFunction`, `logs:StartQuery`, and `iam:SimulatePrincipalPolicy` permissions. For VPC-connected functions, you also need `ec2:Describe*` permissions to inspect subnet and security group configurations.
-
-A Lambda function invocation fails with a runtime error before completing normally. The function crashes, throws an unhandled exception, exhausts its memory, cannot find the handler, lacks permissions to access a downstream AWS resource, or cannot reach a downstream service due to VPC connectivity issues. These errors increment the `Errors` CloudWatch metric and return a `FunctionError` field in synchronous invocation responses.
-
-The most frequent causes are: out of memory (function exceeds configured memory limit, runtime killed with signal 9), handler not found (`Runtime.ImportModuleError` or `Runtime.HandlerNotFound` from mismatched handler configuration), unhandled application exceptions, missing IAM permissions on the execution role (`AccessDeniedException` from downstream AWS services), VPC connectivity failure (missing NAT Gateway or VPC endpoints), concurrency throttling (`TooManyRequestsException`), and dependency initialization failure during the Init phase.
-
-**Typical error presentation:**
+Lambda function invocations return a non-200 HTTP status code, or a 200 response with a `FunctionError` header and JSON error body. CloudWatch `Errors` metric is non-zero. Common presentations:
 
 ```text
-REPORT RequestId: abc-123 Duration: 2500.00 ms Billed Duration: 2500 ms Memory Size: 128 MB Max Memory Used: 129 MB
+REPORT RequestId: abc-123 Duration: 3000.00 ms Billed Duration: 3000 ms Memory Size: 128 MB Max Memory Used: 129 MB
 RequestId: abc-123 Error: Runtime exited with error: signal: killed
 Runtime.ExitError
 ```
@@ -48,383 +29,524 @@ Runtime.ExitError
 ```
 
 ```text
-[ERROR] ClientError: An error occurred (AccessDeniedException) when calling the PutItem operation
+[ERROR] Runtime.HandlerNotFound: handler is undefined or not exported
 ```
+
+```text
+[ERROR] ClientError: An error occurred (AccessDeniedException) when calling the PutItem operation: User: arn:aws:iam::123456789012:role/my-function-role is not authorized to perform: dynamodb:PutItem
+```
+
+```text
+[ERROR] EndpointConnectionError: Could not connect to the endpoint URL: "https://dynamodb.us-east-1.amazonaws.com/"
+```
+
+```text
+TooManyRequestsException: Rate exceeded
+```
+
+```text
+Couldn't find valid bootstrap(s): [/var/task/bootstrap /opt/bootstrap]
+Runtime.InvalidEntrypoint
+```
+
+## Applicability
+
+Applies to all AWS Lambda runtimes (Python 3.x, Node.js 18+, Java 11/17/21, .NET 8, Go 1.x, Ruby 3.x, custom `provided.al2023`) deployed as .zip archives or container images in any AWS region. Requires AWS CLI v2 with permissions: `lambda:GetFunction`, `lambda:GetFunctionConfiguration`, `lambda:InvokeFunction`, `logs:StartQuery`, `logs:GetQueryResults`, `iam:SimulatePrincipalPolicy`, and `cloudwatch:GetMetricStatistics`. For VPC-connected functions also requires `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`, `ec2:DescribeVpcs`.
 
 ## Diagnostic Steps
 
-### Step 1: Identify the Error Type from CloudWatch Logs
-
-**What this checks:** Which category of error the function is experiencing, directing you to the correct resolution path.
+### Step 1: Retrieve the most recent error logs
 
 ```bash
-# Get recent error logs
-aws logs start-query --log-group-name /aws/lambda/my-function \
-  --start-time $(date -d '1 hour ago' +%s) --end-time $(date +%s) \
-  --query-string 'filter @message like /ERROR|Error|Exception|killed/ | sort @timestamp desc | limit 20'
+QUERY_ID=$(aws logs start-query \
+  --log-group-name /aws/lambda/my-function \
+  --start-time $(date -d '1 hour ago' +%s) \
+  --end-time $(date +%s) \
+  --query-string 'filter @message like /ERROR|Error|Exception|killed|ImportModule|HandlerNotFound|InvalidEntrypoint/ | sort @timestamp desc | limit 30' \
+  --query 'queryId' --output text)
+sleep 5
+aws logs get-query-results --query-id "$QUERY_ID" \
+  --query 'results[*][?field==`@message`].value' --output text
 ```
 
-Wait a few seconds then fetch results:
+Expected output: Error strings identifying the failure class — `Runtime.ImportModuleError`, `Runtime.HandlerNotFound`, `Runtime.ExitError signal: killed`, `AccessDeniedException`, `EndpointConnectionError`, `TooManyRequestsException`, or `Runtime.InvalidEntrypoint`.
+
+### Step 2: Check memory utilisation against the configured limit
 
 ```bash
-aws logs get-query-results --query-id <query-id-from-above>
+QUERY_ID=$(aws logs start-query \
+  --log-group-name /aws/lambda/my-function \
+  --start-time $(date -d '1 hour ago' +%s) \
+  --end-time $(date +%s) \
+  --query-string 'filter @type="REPORT" | stats max(@maxMemoryUsed/1000000) as maxMemMB, max(@memorySize/1000000) as limitMB by bin(5m)' \
+  --query 'queryId' --output text)
+sleep 5
+aws logs get-query-results --query-id "$QUERY_ID"
 ```
 
-**Expected output:** Error messages from recent invocations.
+Expected output: `maxMemMB` and `limitMB` columns per 5-minute bucket. If `maxMemMB` equals `limitMB`, the function is OOM-killing.
 
-**What the finding means:** `Runtime.ExitError` with `signal: killed` indicates OOM. `Runtime.ImportModuleError` or `Runtime.HandlerNotFound` indicates handler misconfiguration. `AccessDeniedException` indicates missing IAM permissions. `ConnectionError` or `EndpointConnectionError` indicates network/VPC issues.
-
-### Step 2: Check for Out of Memory
-
-**What this checks:** Whether the function's peak memory usage reached or exceeded the configured limit.
-
-```bash
-aws logs start-query --log-group-name /aws/lambda/my-function \
-  --start-time $(date -d '1 hour ago' +%s) --end-time $(date +%s) \
-  --query-string 'filter @type = "REPORT" | stats max(@maxMemoryUsed / 1000000) as maxMemMB, max(@memorySize / 1000000) as limitMB'
-```
-
-**Expected output:** `maxMemMB` and `limitMB` values.
-
-**What the finding means:** If `maxMemMB` equals or exceeds `limitMB`, the function hit the memory limit. The `signal: killed` message in logs confirms an OOM kill by the Lambda runtime.
-
-### Step 3: Check Handler Configuration
-
-**What this checks:** Whether the handler path in the function configuration matches the actual module and function in the deployment package.
+### Step 3: Inspect the function handler configuration
 
 ```bash
 aws lambda get-function-configuration --function-name my-function \
-  --query '{Handler:Handler,Runtime:Runtime,PackageType:PackageType}'
+  --query '{Handler:Handler,Runtime:Runtime,PackageType:PackageType,MemorySize:MemorySize}'
 ```
 
-**Expected output:** Handler in the format `module.function` (e.g., `handler.lambda_handler` for Python, `index.handler` for Node.js).
+Expected output: `Handler` in the form `module.function` (Python: `handler.lambda_handler`, Node.js: `index.handler`, Java: `com.example.MyHandler::handleRequest`). For `provided.al2023` custom runtimes the handler field is used by the bootstrap; verify the bootstrap file exists at the ZIP root.
 
-**What the finding means:** If the handler does not match the deployment package structure, the runtime cannot find the entry point. Verify by listing files in the deployment package:
+### Step 4: Verify the deployment package structure
 
 ```bash
-aws lambda get-function --function-name my-function --query 'Code.Location' --output text \
-  | xargs curl -s -o /tmp/lambda.zip
-unzip -l /tmp/lambda.zip | head -30
+LOC=$(aws lambda get-function --function-name my-function \
+  --query 'Code.Location' --output text)
+curl -sL "$LOC" -o /tmp/lambda.zip
+unzip -l /tmp/lambda.zip | head -40
 ```
 
-### Step 4: Check Execution Role Permissions
+Expected output: The file named in the `Handler` field (e.g., `handler.py` for `handler.lambda_handler`, or `bootstrap` for `provided.al2023`) must appear at the ZIP root — not inside a subdirectory.
 
-**What this checks:** Whether the function's IAM execution role has the permissions required to access downstream AWS services.
+### Step 5: Simulate the execution role permissions
 
 ```bash
-# Get the execution role ARN
 ROLE_ARN=$(aws lambda get-function-configuration --function-name my-function \
   --query 'Role' --output text)
 
-# List attached policies
-ROLE_NAME=$(echo $ROLE_ARN | awk -F/ '{print $NF}')
-aws iam list-attached-role-policies --role-name $ROLE_NAME
-
-# Simulate a specific action to test permissions
-aws iam simulate-principal-policy --policy-source-arn $ROLE_ARN \
+# Replace action/resource with what the AccessDeniedException cited
+aws iam simulate-principal-policy \
+  --policy-source-arn "$ROLE_ARN" \
   --action-names dynamodb:PutItem \
-  --resource-arns arn:aws:dynamodb:us-east-1:123456789012:table/my-table
+  --resource-arns arn:aws:dynamodb:us-east-1:123456789012:table/my-table \
+  --query 'EvaluationResults[*].{Action:EvalActionName,Decision:EvalDecision}'
 ```
 
-**Expected output:** The simulation `EvalDecision` should be `allowed`.
+Expected output: `EvalDecision` is `allowed`. Any `implicitDeny` or `explicitDeny` confirms the execution role lacks the required permission.
 
-**What the finding means:** `implicitDeny` or `explicitDeny` means the role lacks the required permission. The `AccessDeniedException` in logs will specify exactly which action and resource were denied.
-
-### Step 5: Check VPC Configuration and Connectivity
-
-**What this checks:** Whether a VPC-connected function can reach AWS services and the internet.
+### Step 6: Inspect VPC routing for NAT Gateway or VPC endpoint
 
 ```bash
-# Get VPC config
 aws lambda get-function-configuration --function-name my-function \
   --query 'VpcConfig.{SubnetIds:SubnetIds,SecurityGroupIds:SecurityGroupIds}'
 
-# If in a VPC, check that subnets have NAT Gateway routes
-for subnet in $(aws lambda get-function-configuration --function-name my-function \
-  --query 'VpcConfig.SubnetIds[]' --output text); do
+for SUBNET in $(aws lambda get-function-configuration --function-name my-function \
+    --query 'VpcConfig.SubnetIds[]' --output text); do
   RTB=$(aws ec2 describe-route-tables \
-    --filters "Name=association.subnet-id,Values=$subnet" \
+    --filters "Name=association.subnet-id,Values=$SUBNET" \
     --query 'RouteTables[0].RouteTableId' --output text)
-  echo "Subnet: $subnet  RouteTable: $RTB"
-  aws ec2 describe-route-tables --route-table-ids $RTB \
+  echo "Subnet: $SUBNET  RouteTable: $RTB"
+  aws ec2 describe-route-tables --route-table-ids "$RTB" \
     --query 'RouteTables[0].Routes[?DestinationCidrBlock==`0.0.0.0/0`]'
 done
 ```
 
-**Expected output:** A route to a NAT Gateway (`nat-xxxx`) for each subnet, or VPC endpoints for the required AWS services.
+Expected output: Each subnet's default route (`0.0.0.0/0`) targets a NAT Gateway ID (`nat-xxxx`). If `VpcConfig.SubnetIds` is empty the function is not VPC-attached. If no NAT Gateway route exists, the function cannot reach public AWS endpoints.
 
-**What the finding means:** VPC-connected functions need either a NAT Gateway route or VPC endpoints to reach AWS services. Without either, SDK calls time out with `EndpointConnectionError` or `ConnectTimeoutError`.
-
-### Step 6: Check Concurrency and Throttling
-
-**What this checks:** Whether the function is being throttled due to concurrency limits.
+### Step 7: Check concurrency limits and throttle count
 
 ```bash
-# Check reserved concurrency
 aws lambda get-function-concurrency --function-name my-function
 
-# Check account-level concurrency limits
 aws lambda get-account-settings \
-  --query '{ConcurrentExecutions:AccountLimit.ConcurrentExecutions,UnreservedConcurrency:AccountLimit.UnreservedConcurrentExecutions}'
+  --query '{TotalConcurrency:AccountLimit.ConcurrentExecutions,Unreserved:AccountLimit.UnreservedConcurrentExecutions}'
 
-# Check throttle metrics
 aws cloudwatch get-metric-statistics --namespace AWS/Lambda \
-  --metric-name Throttles --dimensions Name=FunctionName,Value=my-function \
+  --metric-name Throttles \
+  --dimensions Name=FunctionName,Value=my-function \
   --start-time $(date -d '1 hour ago' -u +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  --period 60 --statistics Sum
+  --period 300 --statistics Sum
 ```
 
-**Expected output:** Concurrency settings and throttle counts.
+Expected output: `ReservedConcurrentExecutions` shows 0 only if the function is disabled. Non-zero `Throttles` sum confirms the function is being throttled.
 
-**What the finding means:** Non-zero `Throttles` means invocations are being rejected. If reserved concurrency is set to 0, the function is effectively disabled. If the account limit is reached, all functions compete for capacity.
-
-### Step 7: Test Invocation with Diagnostic Payload
-
-**What this checks:** The exact error response and log output from a synchronous invocation.
+### Step 8: Run a synchronous test invocation
 
 ```bash
-aws lambda invoke --function-name my-function \
-  --payload '{"test": true}' \
-  --log-type Tail output.json \
-  --query 'LogResult' --output text | base64 -d
+aws lambda invoke \
+  --function-name my-function \
+  --payload '{"_test":true}' \
+  --log-type Tail \
+  --query 'LogResult' --output text output.json | base64 -d
+cat output.json
 ```
 
-**Expected output:** The last 4 KB of CloudWatch Logs output from the invocation, including any error details and the REPORT line.
+Expected output: Decoded log tail shows the last 4 KB of execution output including REPORT line and any error. `FunctionError` key present in `output.json` confirms an execution-level failure. `StatusCode` 429 confirms throttling.
 
-**What the finding means:** The decoded log tail shows the exact error, stack trace, and memory usage. If `FunctionError` is present in the response, the invocation failed at the application level.
+## Causes
 
-## Mitigation
+### Cause A: Out of memory — function exceeds configured memory limit
 
-### Option 1: Increase Memory for OOM Errors
+**Statement:** The function exhausts its configured memory allocation and the Lambda runtime sends SIGKILL (signal 9), terminating the execution environment before the handler returns.
+**Mechanism:** Lambda enforces a hard memory ceiling on each execution environment. When RSS memory reaches the limit the runtime kills the process immediately without invoking any cleanup handlers, producing `Runtime.ExitError` with `signal: killed`. Because CPU allocation scales proportionally with memory, memory-constrained functions are also CPU-constrained, which can increase execution time and worsen the OOM rate under load.
+**Indicator:**
 
-- **Risk:** Low. Increases cost per invocation proportionally. Lambda allocates CPU proportional to memory, so this also speeds up compute-bound functions.
+- [Step 2] `maxMemMB` equals `limitMB` in the REPORT query output
+- [Step 1] log contains `signal: killed` in `Runtime.ExitError` line
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "signal: killed"} -->
+<!-- match: {"step": 2, "predicate": "threshold", "target": "maxMemMB_pct_of_limitMB", "op": ">=", "value": 0.98} -->
+
+**Mitigation:**
+
+- **Risk:** Doubling memory doubles cost-per-invocation proportionally; also increases CPU, which may reduce duration and partly offset the cost increase.
 - **Command:**
 
   ```bash
-  CURRENT_MEM=$(aws lambda get-function-configuration --function-name my-function \
+  CURRENT=$(aws lambda get-function-configuration --function-name my-function \
     --query 'MemorySize' --output text)
-  NEW_MEM=$((CURRENT_MEM * 2))
-  aws lambda update-function-configuration --function-name my-function --memory-size $NEW_MEM
+  NEW=$((CURRENT * 2))
+  aws lambda update-function-configuration --function-name my-function --memory-size $NEW
   ```
 
-- **Verify:**
+- **Duration:** Immediate; applies to the next cold start.
 
-  ```bash
-  aws lambda invoke --function-name my-function --payload '{}' output.json
-  cat output.json
-  ```
+**Resolution:**
 
-  The invocation should succeed. Check the REPORT log line: `Max Memory Used` should be well below the new `Memory Size`.
-- **Duration:** Immediate.
+```bash
+# Profile peak usage over 24 hours, then set memory to 1.5× peak
+QUERY_ID=$(aws logs start-query \
+  --log-group-name /aws/lambda/my-function \
+  --start-time $(date -d '24 hours ago' +%s) \
+  --end-time $(date +%s) \
+  --query-string 'filter @type="REPORT" | stats max(@maxMemoryUsed/1000000) as peakMB' \
+  --query 'queryId' --output text)
+sleep 5
+aws logs get-query-results --query-id "$QUERY_ID"
+# Then set memory to ceil(peakMB * 1.5), rounded to nearest 64
+aws lambda update-function-configuration --function-name my-function --memory-size <calculated-value>
+```
 
-### Option 2: Fix Handler Configuration
+**Verification:** Re-run Step 2 after 15 minutes of production traffic. `maxMemMB` should be ≤ 75% of new `limitMB`.
 
-- **Risk:** Low. Only updates the function configuration to point to the correct handler.
+---
+
+### Cause B: Handler not found — module path or export name mismatch
+
+**Statement:** The Lambda runtime cannot locate the handler entry point because the `Handler` configuration field does not match the actual module file path or exported function name in the deployment package.
+**Mechanism:** On cold start, the runtime loads the module named before the dot separator in `Handler` (e.g., `handler` in `handler.lambda_handler`) and then resolves the attribute after the dot. If the ZIP does not contain that module at its root, or the module does not export that attribute, the runtime emits `Runtime.ImportModuleError` or `Runtime.HandlerNotFound` before the Invoke phase begins, causing every invocation to fail.
+**Indicator:**
+
+- [Step 1] log contains `Runtime.ImportModuleError` or `Runtime.HandlerNotFound`
+- [Step 3] `Handler` value does not correspond to a file visible in Step 4's ZIP listing
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.ImportModuleError"} -->
+<!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.HandlerNotFound"} -->
+
+**Mitigation:**
+
+- **Risk:** Low — only changes the handler configuration field; no code is modified.
 - **Command:**
 
   ```bash
-  # For Python: module_name.function_name
+  # Python example: file handler.py at ZIP root, function named lambda_handler
   aws lambda update-function-configuration --function-name my-function \
-    --handler app.lambda_handler
+    --handler handler.lambda_handler
 
-  # For Node.js: file_name.export_name
+  # Node.js example: file index.js at ZIP root, export named handler
   aws lambda update-function-configuration --function-name my-function \
     --handler index.handler
+
+  # Java example: fully qualified class with method
+  aws lambda update-function-configuration --function-name my-function \
+    --handler com.example.MyHandler::handleRequest
   ```
 
-- **Verify:**
-
-  ```bash
-  aws lambda invoke --function-name my-function --payload '{}' output.json
-  cat output.json
-  ```
-
-  The `Runtime.ImportModuleError` or `Runtime.HandlerNotFound` error should no longer appear.
 - **Duration:** Immediate.
 
-### Option 3: Add Missing IAM Permissions
+**Resolution:** Rebuild the deployment package ensuring the handler module is at the ZIP root (not inside a subdirectory), redeploy, and correct the `Handler` field to match.
 
-- **Risk:** Medium. Granting overly broad permissions creates security risk. Use the least-privilege principle and scope to specific resources.
+```bash
+# Verify and redeploy (Python example)
+cd /path/to/project
+zip -r function.zip handler.py requirements/ site-packages/
+aws lambda update-function-code --function-name my-function --zip-file fileb://function.zip
+aws lambda update-function-configuration --function-name my-function --handler handler.lambda_handler
+```
+
+**Verification:** Run Step 8. The response must not contain `FunctionError` and the log tail must not contain `ImportModuleError` or `HandlerNotFound`.
+
+---
+
+### Cause C: Missing bootstrap — invalid entrypoint for custom runtime
+
+**Statement:** A `provided.al2023` custom-runtime function fails to start because the `bootstrap` executable is absent from or not at the root of the deployment package ZIP.
+**Mechanism:** Lambda's custom runtime contract requires an executable file named `bootstrap` at `/var/task/bootstrap` (the ZIP root). If the file is missing, inside a subdirectory, or is a symlink rather than a real binary, the runtime emits `Runtime.InvalidEntrypoint` before any handler code can run, and every invocation fails immediately.
+**Indicator:**
+
+- [Step 1] log contains `Runtime.InvalidEntrypoint` or `Couldn't find valid bootstrap`
+- [Step 4] `bootstrap` is absent from the root of the ZIP listing or listed under a subdirectory path
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.InvalidEntrypoint"} -->
+<!-- match: {"step": 1, "predicate": "contains", "target": "Couldn't find valid bootstrap"} -->
+
+**Mitigation:**
+
+- **Risk:** Low — redeploy only; no configuration changes.
+- **Command:**
+
+  ```bash
+  # Verify bootstrap is executable and at ZIP root
+  unzip -l /tmp/lambda.zip | grep bootstrap
+  # Must show: <size> bootstrap  (no leading path)
+
+  # Rebuild: bootstrap must be at root, mode 755
+  chmod 755 bootstrap
+  zip -j function.zip bootstrap   # -j strips directory paths
+  aws lambda update-function-code --function-name my-function --zip-file fileb://function.zip
+  ```
+
+- **Duration:** Immediate after redeployment.
+
+**Resolution:** Same as Mitigation.
+
+**Verification:** Run Step 8. The log tail must not contain `InvalidEntrypoint` or `Couldn't find valid bootstrap`.
+
+---
+
+### Cause D: Missing IAM permission — execution role denied access to downstream AWS service
+
+**Statement:** The function's IAM execution role lacks a required permission for a downstream AWS service, causing the SDK call to fail with `AccessDeniedException`.
+**Mechanism:** Lambda executes function code under the identity of the execution role. When the function calls an AWS service (DynamoDB, S3, SQS, etc.) without the required IAM action on that resource, the service returns an `AccessDeniedException`. The function receives this as an exception from the SDK and typically propagates it as an unhandled error, incrementing the `Errors` metric. IAM policy changes propagate within 10–60 seconds; calls made immediately after an update may still fail.
+**Indicator:**
+
+- [Step 1] log contains `AccessDeniedException` with the denied action name
+- [Step 5] `EvalDecision` is `implicitDeny` or `explicitDeny` for that action
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "AccessDeniedException"} -->
+<!-- match: {"step": 5, "predicate": "contains", "target": "implicitDeny"} -->
+
+**Mitigation:**
+
+- **Risk:** Medium — adding overly broad permissions widens the blast radius; scope to the specific resource ARN and action.
 - **Command:**
 
   ```bash
   ROLE_NAME=$(aws lambda get-function-configuration --function-name my-function \
     --query 'Role' --output text | awk -F/ '{print $NF}')
 
-  aws iam put-role-policy --role-name $ROLE_NAME \
+  # Substitute the actual service, actions, and resource ARN
+  aws iam put-role-policy --role-name "$ROLE_NAME" \
     --policy-name lambda-resource-access \
     --policy-document '{
       "Version": "2012-10-17",
       "Statement": [{
         "Effect": "Allow",
-        "Action": ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query"],
+        "Action": ["dynamodb:PutItem","dynamodb:GetItem","dynamodb:Query"],
         "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/my-table"
       }]
     }'
   ```
 
-- **Verify:**
+- **Duration:** Allow 60 seconds for IAM propagation, then re-test.
 
-  ```bash
-  # Wait ~10 seconds for IAM propagation, then invoke
-  aws lambda invoke --function-name my-function --payload '{}' output.json
-  cat output.json
-  ```
-
-  The `AccessDeniedException` should no longer appear.
-- **Duration:** IAM policy changes propagate within 10-60 seconds.
-
-### Option 4: Add VPC Endpoint or NAT Gateway
-
-- **Risk:** Medium. NAT Gateway incurs hourly cost (~$0.045/hr per AZ) plus data transfer charges. Gateway VPC endpoints for S3 and DynamoDB are free.
-- **Command:**
-
-  ```bash
-  # Add free VPC endpoints for S3 and DynamoDB
-  aws ec2 create-vpc-endpoint --vpc-id vpc-123 \
-    --service-name com.amazonaws.us-east-1.dynamodb \
-    --route-table-ids rtb-123
-
-  aws ec2 create-vpc-endpoint --vpc-id vpc-123 \
-    --service-name com.amazonaws.us-east-1.s3 \
-    --route-table-ids rtb-123
-  ```
-
-- **Verify:**
-
-  ```bash
-  aws lambda invoke --function-name my-function --payload '{}' output.json
-  cat output.json
-  ```
-
-  `EndpointConnectionError` or `ConnectTimeoutError` should no longer appear.
-- **Duration:** VPC endpoints activate within 1-2 minutes.
-
-## Root Cause Resolution
-
-**If** Step 2 confirms OOM (max memory equals limit, `signal: killed` in logs) **then** investigate memory usage within the function. Add memory profiling to identify growth:
-
-```python
-# Python: add to handler for diagnostics
-import tracemalloc
-tracemalloc.start()
-
-def lambda_handler(event, context):
-    # ... function logic ...
-    current, peak = tracemalloc.get_traced_memory()
-    print(f"Current memory: {current / 1024 / 1024:.1f} MB, Peak: {peak / 1024 / 1024:.1f} MB")
-    tracemalloc.stop()
-```
-
-Common fixes: stream large files instead of loading entirely into memory, process records in smaller batches (reduce SQS batch size), reuse SDK clients across invocations (declare outside the handler), and for Node.js check for unresolved promises that accumulate closures.
-
-**If** memory grows with each invocation on the same execution environment **then** there is a memory leak in global/module-scope objects that persist across warm invocations. Identify objects that grow and reset them between invocations.
-
-**If** Step 3 shows a handler mismatch **then** fix the configuration to match the deployment package structure. Common mistakes: Python handler file nested in a subdirectory instead of at ZIP root, Node.js file not exporting the handler function, Java missing fully qualified class name (`com.example.MyHandler::handleRequest`).
-
-**If** Step 4 shows `implicitDeny` for a required action **then** use IAM Access Analyzer to generate a least-privilege policy from actual CloudTrail activity:
+**Resolution:** Use IAM Access Analyzer to generate a least-privilege policy from CloudTrail activity, then replace the inline policy with the generated managed policy.
 
 ```bash
 aws accessanalyzer start-policy-generation \
   --policy-generation-details '{
-    "principalArn": "arn:aws:iam::123456789012:role/my-lambda-role",
+    "principalArn": "arn:aws:iam::123456789012:role/my-function-role",
     "cloudTrailDetails": {
       "trailArn": "arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail",
-      "startTime": "2026-03-17T00:00:00Z",
-      "endTime": "2026-03-26T00:00:00Z",
+      "startTime": "2026-05-05T00:00:00Z",
+      "endTime": "2026-05-12T00:00:00Z",
       "accessRole": "arn:aws:iam::123456789012:role/AccessAnalyzerRole"
     }
   }'
 ```
 
-**If** Step 5 shows no NAT Gateway route and the function needs to reach public endpoints **then** evaluate three options: remove VPC configuration if the function does not need VPC resources (`aws lambda update-function-configuration --function-name my-function --vpc-config SubnetIds=[],SecurityGroupIds=[]`), add free gateway VPC endpoints for AWS services, or add a NAT Gateway in a public subnet.
+- **Impact:** Policy change is role-wide; all functions sharing the execution role are affected.
+- **Rollback:** `aws iam delete-role-policy --role-name $ROLE_NAME --policy-name lambda-resource-access`
 
-**If** Step 6 shows throttles **then** request a concurrency limit increase or optimize the function to reduce concurrent execution count:
+**Verification:**
+
+Run Step 5 again. `EvalDecision` must be `allowed`. Then run Step 8 — `AccessDeniedException` must not appear in log tail.
+
+---
+
+### Cause E: VPC-connected function lacks NAT Gateway or VPC endpoint for AWS services
+
+**Statement:** A Lambda function attached to a VPC subnet with no NAT Gateway route and no VPC endpoint cannot reach public AWS service endpoints, causing all outbound SDK calls to time out.
+**Mechanism:** When a function is attached to a VPC, Lambda routes all outbound traffic through the VPC's Hyperplane ENI. Public subnets do not grant internet access to Lambda (Lambda instances do not receive public IPs). Without a NAT Gateway on the subnet's route table, packets destined for `dynamodb.us-east-1.amazonaws.com` (or any other public AWS endpoint) have no valid route, so the SDK connection times out producing `EndpointConnectionError` or `ConnectTimeoutError` after the SDK's default timeout.
+**Indicator:**
+
+- [Step 1] log contains `EndpointConnectionError` or `ConnectTimeoutError` or `Could not connect to the endpoint URL`
+- [Step 6] subnet route table has no `0.0.0.0/0` route targeting a NAT Gateway
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "EndpointConnectionError"} -->
+<!-- match: {"step": 6, "predicate": "absent", "target": "nat-"} -->
+
+**Mitigation:**
+
+- **Risk:** Low for free Gateway VPC endpoints (S3/DynamoDB); NAT Gateway incurs ~$0.045/hr per AZ plus data transfer charges.
+- **Command:**
+
+  ```bash
+  VPC_ID=$(aws lambda get-function-configuration --function-name my-function \
+    --query 'VpcConfig.VpcId' --output text)
+  RTB_ID=rtb-xxxxxxxx   # Route table associated with the Lambda subnets
+
+  # Free Gateway endpoints for DynamoDB and S3
+  aws ec2 create-vpc-endpoint --vpc-id "$VPC_ID" \
+    --service-name com.amazonaws.us-east-1.dynamodb \
+    --route-table-ids "$RTB_ID"
+
+  aws ec2 create-vpc-endpoint --vpc-id "$VPC_ID" \
+    --service-name com.amazonaws.us-east-1.s3 \
+    --route-table-ids "$RTB_ID"
+  ```
+
+- **Duration:** VPC endpoints become active within 1–2 minutes.
+
+**Resolution:** For services requiring internet access (third-party APIs, other AWS services without Gateway endpoints), add a NAT Gateway in a public subnet and add a route in the Lambda subnets' route table pointing `0.0.0.0/0` to the NAT Gateway. If the function does not need VPC resources at all, remove the VPC configuration:
+
+```bash
+aws lambda update-function-configuration --function-name my-function \
+  --vpc-config SubnetIds=[],SecurityGroupIds=[]
+```
+
+- **Impact:** VPC endpoint addition is VPC-wide for all resources using that route table. NAT Gateway addition requires a public subnet and Elastic IP.
+- **Rollback:** `aws ec2 delete-vpc-endpoints --vpc-endpoint-ids <endpoint-id>`
+
+**Verification:**
+
+Run Step 8. `EndpointConnectionError` or `ConnectTimeoutError` must not appear. Confirm via Step 6 that the route table now contains a `0.0.0.0/0` route or a service-specific prefix-list entry.
+
+---
+
+### Cause F: Concurrency throttling — reserved concurrency set to zero or account limit reached
+
+**Statement:** Lambda rejects invocations with `TooManyRequestsException` because either the function's reserved concurrency is set to 0 (function disabled) or the account-level concurrent execution limit is exhausted.
+**Mechanism:** Lambda enforces two concurrency ceilings: a per-function reserved concurrency cap and an account-level unreserved concurrency pool (default 1000 per region). When reserved concurrency is 0, every invocation is throttled immediately. When account-level unreserved concurrency is exhausted by other functions, additional invocations to non-reserved functions are throttled. Throttled invocations return HTTP 429 and are retried by asynchronous callers (up to 2 times), which can cause DLQ backlog or event loss.
+**Indicator:**
+
+- [Step 7] `ReservedConcurrentExecutions` is 0, or CloudWatch `Throttles` metric sum is non-zero
+- [Step 8] `StatusCode` is 429 in the invoke response
+
+<!-- match: {"step": 7, "predicate": "contains", "target": "TooManyRequestsException"} -->
+<!-- match: {"step": 8, "predicate": "contains", "target": "TooManyRequestsException"} -->
+
+**Mitigation:**
+
+- **Risk:** Removing the reserved concurrency cap may allow the function to consume all account concurrency, starving other functions.
+- **Command:**
+
+  ```bash
+  # If reserved concurrency is 0, raise it to a safe value
+  aws lambda put-function-concurrency --function-name my-function \
+    --reserved-concurrent-executions 50
+
+  # Or delete the reserved concurrency (use account pool)
+  aws lambda delete-function-concurrency --function-name my-function
+  ```
+
+- **Duration:** Immediate.
+
+**Resolution:** Request a concurrency quota increase if the account limit is the constraint:
 
 ```bash
 aws service-quotas request-service-quota-increase \
-  --service-code lambda --quota-code L-B99A9384 --desired-value 3000
+  --service-code lambda \
+  --quota-code L-B99A9384 \
+  --desired-value 3000
 ```
 
-## Verification
+- **Impact:** Concurrency changes are function-scoped for reserved concurrency; account-wide for quota increases.
+- **Rollback:** `aws lambda put-function-concurrency --function-name my-function --reserved-concurrent-executions <original-value>`
 
-After applying fixes, confirm the function invokes successfully:
+**Verification:**
+
+Run Step 7. `Throttles` metric sum must drop to 0. Re-run Step 8 — `StatusCode` must be 200.
+
+---
+
+### Cause Z: Unidentified Lambda invocation failure
+
+**Statement:** The invocation error does not match any of the identified patterns and requires deeper investigation or escalation. [Default]
+**Mechanism:** Lambda invocation failures that do not produce one of the recognisable error strings (signal: killed, ImportModuleError, HandlerNotFound, InvalidEntrypoint, AccessDeniedException, EndpointConnectionError, TooManyRequestsException) may be caused by unhandled application exceptions, Init-phase timeouts (Sandbox.Timedout), KMS key issues, EFS/S3 mount failures, unexpected Node.js process exit (Runtime.NodejsExit), or transient AWS service disruptions.
+**Indicator:**
+
+- [Default] None of Causes A–F match the error strings observed in Steps 1 and 8
+
+**Mitigation:**
+
+- **Risk:** None — diagnostic only.
+- **Command:**
+
+  ```bash
+  # Check function state and last update status
+  aws lambda get-function-configuration --function-name my-function \
+    --query '{State:State,StateReason:StateReason,LastUpdateStatus:LastUpdateStatus,LastUpdateStatusReason:LastUpdateStatusReason}'
+
+  # Look for X-Ray traces for deeper error context
+  aws xray get-service-graph \
+    --start-time $(date -d '1 hour ago' -u +%s) \
+    --end-time $(date -u +%s)
+
+  # Check for Init-phase timeouts (Sandbox.Timedout)
+  QUERY_ID=$(aws logs start-query \
+    --log-group-name /aws/lambda/my-function \
+    --start-time $(date -d '1 hour ago' +%s) \
+    --end-time $(date +%s) \
+    --query-string 'filter @message like /Sandbox|KMS|EFS|NodejsExit|Init/ | sort @timestamp desc | limit 20' \
+    --query 'queryId' --output text)
+  sleep 5
+  aws logs get-query-results --query-id "$QUERY_ID"
+  ```
+
+- **Duration:** Diagnostic only; no change applied.
+
+**Resolution:** Out of runbook scope. Escalate to AWS Support with the function ARN, request IDs from failing invocations, and the full CloudWatch Logs output from Steps 1 and 8. Enable AWS X-Ray active tracing on the function to capture per-segment timing.
 
 ```bash
-# Test invocation
-aws lambda invoke --function-name my-function --payload '{"test": true}' output.json
-cat output.json
+aws lambda update-function-configuration --function-name my-function \
+  --tracing-config Mode=Active
 ```
 
-The response should contain the expected output without a `FunctionError` field.
-
-```bash
-# Check error metrics are zero
-aws cloudwatch get-metric-statistics --namespace AWS/Lambda \
-  --metric-name Errors --dimensions Name=FunctionName,Value=my-function \
-  --start-time $(date -d '10 minutes ago' -u +%Y-%m-%dT%H:%M:%SZ) \
-  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  --period 60 --statistics Sum
-```
-
-Error count should be 0 for recent periods.
-
-```bash
-# Verify memory headroom
-aws logs start-query --log-group-name /aws/lambda/my-function \
-  --start-time $(date -d '10 minutes ago' +%s) --end-time $(date +%s) \
-  --query-string 'filter @type = "REPORT" | stats max(@maxMemoryUsed / 1000000) as usedMB, max(@memorySize / 1000000) as limitMB'
-```
-
-`usedMB` should be at most 80% of `limitMB` for adequate headroom.
+**Verification:** Resolution requires identifying the root cause through escalation. Confirm the error rate returns to zero via the CloudWatch `Errors` metric after the fix is applied.
 
 ## Prevention
 
-### Right-Size Memory Allocation
-
-Use the AWS Lambda Power Tuning tool to find the optimal memory setting. Set memory to at least 1.5x the observed peak usage to accommodate load spikes and garbage collection overhead.
-
-### Use IAM Access Analyzer for Least-Privilege Policies
-
-Generate execution role policies from actual CloudTrail activity rather than guessing required permissions. Review policies quarterly to remove unused permissions.
-
-### Test Locally Before Deploying
-
-Use AWS SAM CLI or the Lambda runtime interface emulator to test functions locally with realistic payloads:
+Configure a CloudWatch alarm on the `Errors` metric to detect failures within 5 minutes:
 
 ```bash
-sam local invoke MyFunction -e events/test-event.json
-```
-
-### Monitor Error Rate with Alarms
-
-```bash
-aws cloudwatch put-metric-alarm --alarm-name "lambda-errors-my-function" \
+aws cloudwatch put-metric-alarm \
+  --alarm-name "lambda-errors-my-function" \
   --metric-name Errors --namespace AWS/Lambda \
   --dimensions Name=FunctionName,Value=my-function \
-  --statistic Sum --period 300 --evaluation-periods 2 \
-  --threshold 5 --comparison-operator GreaterThanThreshold \
+  --statistic Sum --period 300 --evaluation-periods 1 \
+  --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold \
   --alarm-actions arn:aws:sns:us-east-1:123456789012:ops-alerts
 ```
 
-### Validate Handler Configuration in CI/CD
+Set memory to at least 1.5× the observed 24-hour peak from Step 2's REPORT query. Use the AWS Lambda Power Tuning tool (`github.com/alexcasalboni/aws-lambda-power-tuning`) to find the cost-optimal memory configuration.
 
-Add a pre-deployment check that verifies the handler path matches a file in the deployment package. For container images, verify the ENTRYPOINT is correct with a local test.
+Validate handler path in CI/CD before every deployment:
 
-### Use Dead Letter Queues for Async Functions
+```bash
+# Python: assert the handler module exists at ZIP root
+unzip -l function.zip | grep -q "^.*handler\.py$" || { echo "handler.py missing at ZIP root"; exit 1; }
+```
 
-Configure a DLQ (SQS or SNS) for asynchronous invocations so failed events are preserved for analysis rather than silently dropped after retry exhaustion:
+Generate execution role policies from real CloudTrail activity using IAM Access Analyzer rather than hand-crafting them. Review policies quarterly to remove unused permissions.
+
+Configure a Dead Letter Queue (SQS) for async-invoked functions so failures are preserved for analysis:
 
 ```bash
 aws lambda update-function-configuration --function-name my-function \
   --dead-letter-config TargetArn=arn:aws:sqs:us-east-1:123456789012:my-function-dlq
 ```
 
+Enable AWS X-Ray active tracing to capture per-segment timing for Init and Invoke phases:
+
+```bash
+aws lambda update-function-configuration --function-name my-function \
+  --tracing-config Mode=Active
+```
+
+For VPC-connected functions, prefer private subnets with a NAT Gateway over public subnets. Use free Gateway VPC endpoints for DynamoDB and S3 to eliminate NAT data-transfer costs on those services.
+
 ## Sources
 
-- [AWS Lambda: Troubleshooting Invocation Issues](https://docs.aws.amazon.com/lambda/latest/dg/troubleshooting-invocation.html) - Official guide covering runtime errors, IAM issues, VPC connectivity, concurrency throttling, and EFS mount failures.
-- [AWS Lambda: Troubleshooting Execution Issues](https://docs.aws.amazon.com/lambda/latest/dg/troubleshooting-execution.html) - Runtime exit errors, Node.js async handler issues, and memory exhaustion troubleshooting.
-- [AWS Lambda: Execution Role](https://docs.aws.amazon.com/lambda/latest/dg/lambda-intro-execution-role.html) - IAM execution role configuration and required permissions.
-- [AWS Lambda: Using Lambda with VPC](https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc.html) - VPC networking, ENI management, and connectivity requirements.
-- [AWS IAM Access Analyzer: Policy Generation](https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-policy-generation.html) - Generate least-privilege policies from CloudTrail activity.
+- [AWS Lambda — Troubleshoot invocation issues](https://docs.aws.amazon.com/lambda/latest/dg/troubleshooting-invocation.html) (Priority 1) — Runtime error type catalog: `Runtime.ExitError`, `Runtime.InvalidEntrypoint`, `Sandbox.Timedout`, `Runtime.NodejsExit`, `ResourceConflictException`, EFS/S3 mount errors, throttle handling, invocation loop detection.
+- [AWS Lambda — Troubleshoot execution issues](https://docs.aws.amazon.com/lambda/latest/dg/troubleshooting-execution.html) (Priority 1) — Memory and CPU constraints, downstream service unavailability, async handler pitfalls, JSON payload errors, X-Ray trace gaps.
+- [AWS Lambda — Giving Lambda functions access to resources in an Amazon VPC](https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc.html) (Priority 1) — Hyperplane ENI lifecycle, NAT Gateway requirement, VPC endpoint options, required IAM permissions (`ec2:CreateNetworkInterface`, `AWSLambdaVPCAccessExecutionRole`), internet access routing rules.

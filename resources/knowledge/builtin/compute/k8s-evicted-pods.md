@@ -1,400 +1,461 @@
 ---
-id: k8s-evicted-pods
-title: "Kubernetes Pod Eviction"
+id: "k8s-evicted-pods"
+title: "Kubernetes Pod Eviction Due to Node Resource Pressure"
 domain: compute
 service: kubernetes
-symptom_class:
-  - oom
-  - disk_full
+symptom_class: [oom, disk_full]
 severity: high
 scope: global
-version: "2.1.0"
-last_updated: "2026-03-26"
-verified_by: kb-researcher
+version: "1.0.0"
+last_updated: "2026-05-12"
+verified_by: "kb-researcher"
 status: draft
-tags:
-  - kubernetes
-  - pods
-  - eviction
-  - resource-pressure
-  - disk
-  - memory
-  - priority-class
+tags: [eviction, resource-pressure, disk, memory, ephemeral-storage, qos, priority-class]
 difficulty: intermediate
 ---
 
-# Kubernetes Pod Eviction
+## Symptom Recognition
 
-## Problem Definition
+- Pods show `STATUS: Evicted` with `READY: 0/1` when running `kubectl get pods`.
+- `kubectl describe pod <name>` shows `Status: Failed`, `Reason: Evicted`, and a `Message` field naming the triggering resource: `The node was low on resource: memory. Threshold quantity: 100Mi, available: 56Mi.`
+- Node conditions report `True` for `MemoryPressure`, `DiskPressure`, or `PIDPressure` in `kubectl describe node`.
+- Kubelet logs contain lines such as `eviction_manager: attempting to reclaim memory` or `Evicting pod <name>`.
+- Prometheus alert `kube_pod_status_reason{reason="Evicted"} > 0` fires.
+- Multiple pods from the same Deployment or StatefulSet fail simultaneously and reschedule on other nodes or remain Pending.
 
-Applies to Kubernetes 1.24+ clusters on any distribution. Requires `kubectl` access with permissions to get, describe, and delete pods. Node-level diagnostics require SSH access or `kubectl debug node`. The `metrics-server` add-on is needed for `kubectl top` commands.
+## Applicability
 
-Pod eviction occurs when the kubelet proactively terminates pods to reclaim resources on a node under pressure. Evicted pods show a `Failed` phase with reason `Evicted` and a message indicating which resource threshold was exceeded. Unlike voluntary disruptions (drains, rolling updates), node-pressure eviction does not respect PodDisruptionBudgets or the pod's full `terminationGracePeriodSeconds`.
-
-The kubelet continuously monitors node resource usage against configured eviction thresholds. When a resource signal crosses a threshold, the kubelet begins evicting pods to bring usage below the threshold. The following signals and default hard eviction thresholds apply:
-
-| Signal | Default Hard Threshold | Description |
-| ------ | ---------------------- | ----------- |
-| `memory.available` | < 100Mi | Available memory on the node |
-| `nodefs.available` | < 5% | Available space on the node root filesystem |
-| `nodefs.inodesFree` | < 4% | Available inodes on the node root filesystem |
-| `imagefs.available` | < 5% | Available space on the image filesystem |
-| `pid.available` | < 4% | Available process IDs on the node |
-
-Pods are selected for eviction by QoS class: BestEffort pods (no resource requests or limits) are evicted first, then Burstable pods exceeding their requests, then Guaranteed pods (requests equal limits). Within each QoS tier, pods consuming the most resources relative to their requests are evicted first. PriorityClass further influences order: lower-priority pods are evicted before higher-priority ones regardless of QoS.
-
-Common root causes include memory pressure from workloads consuming more than nodes can provide, disk pressure from container logs or ephemeral storage filling the filesystem, inode exhaustion from many small files, pods exceeding their `ephemeral-storage` limit, PID exhaustion from leaked processes, pods without resource requests running as BestEffort, and insufficient overall cluster capacity.
-
-Typical presentation:
-
-```text
-$ kubectl get pods -n <namespace>
-NAME                  READY   STATUS    RESTARTS   AGE
-my-app-abc123-xyz    0/1     Evicted   0          2h
-my-app-abc123-def    0/1     Evicted   0          2h
-my-app-abc123-ghi    1/1     Running   0          5m
-```
-
-Describing an evicted pod shows:
-
-```text
-Status:   Failed
-Reason:   Evicted
-Message:  The node was low on resource: memory. Threshold quantity: 100Mi,
-          available: 56Mi.
-```
+Applies to Kubernetes 1.24+ on any distribution (self-managed, EKS, GKE, AKS). Requires `kubectl` access with `get` and `describe` permissions on pods and nodes. Step 4 requires SSH access to the node or `kubectl debug node`. Step 3 requires `metrics-server` to be installed for `kubectl top`. Step 6 requires SSH or `kubectl debug node` to read kubelet config.
 
 ## Diagnostic Steps
 
-### Step 1: Identify Evicted Pods and Read the Eviction Message
-
-**What this checks:** Which pods were evicted and which resource signal triggered the eviction.
+### Step 1: Identify evicted pods and read the eviction message
 
 ```bash
-# Find all evicted pods across the cluster
-kubectl get pods --all-namespaces --field-selector status.phase=Failed | grep Evicted
-
-# Get details on a specific evicted pod
+kubectl get pods --all-namespaces --field-selector=status.phase=Failed | grep Evicted
 kubectl describe pod <evicted-pod-name> -n <namespace>
 ```
 
-**Expected output:** The `Message` field in the describe output states which resource triggered eviction (e.g., `memory`, `ephemeral-storage`, `nodefs`).
+Expected output: The `Message:` line names the triggering resource signal — `memory`, `ephemeral-storage`, `nodefs`, or `imagefs` — and states the threshold and actual available quantity.
 
-**What the finding means:** The message directly identifies the resource under pressure. Memory eviction means the node's available memory dropped below the threshold. Ephemeral-storage eviction means the pod itself exceeded its ephemeral storage limit. DiskPressure eviction means the node filesystem is nearly full.
-
-### Step 2: Check Node Conditions
-
-**What this checks:** Whether the node that hosted the evicted pod is currently reporting resource pressure conditions.
+### Step 2: Check node pressure conditions
 
 ```bash
-# Find which node the pod was running on
 kubectl get pod <evicted-pod-name> -n <namespace> -o jsonpath='{.spec.nodeName}'
-
-# Check node conditions
-kubectl describe node <node-name> | grep -A 10 "Conditions:"
+kubectl describe node <node-name> | grep -A 15 "Conditions:"
 ```
 
-**Expected output:** Condition flags showing `True` or `False` for each pressure type.
+Expected output: `MemoryPressure`, `DiskPressure`, and `PIDPressure` entries each showing `True` or `False` with the last transition time.
 
-**What the finding means:** `MemoryPressure: True` means the node is actively low on memory. `DiskPressure: True` means the node filesystem is nearly full. `PIDPressure: True` means the node is running out of process IDs. If all conditions show `False`, the pressure was transient and has since resolved.
-
-### Step 3: Check Node Resource Usage
-
-**What this checks:** Current resource allocation versus capacity on the affected node, and actual usage.
+### Step 3: Check node resource allocation and actual usage
 
 ```bash
-# Check node resource allocation vs capacity
-kubectl describe node <node-name> | grep -A 15 "Allocated resources:"
-
-# Check actual usage (requires metrics-server)
+kubectl describe node <node-name> | grep -A 20 "Allocated resources:"
 kubectl top node <node-name>
-
-# Check pod-level resource usage on the node
 kubectl top pods --all-namespaces --sort-by=memory | head -20
 ```
 
-**Expected output:** Allocation percentages for CPU and memory, and actual usage figures.
+Expected output: Allocation percentages for CPU and memory versus capacity, and per-pod memory usage ranked highest first.
 
-**What the finding means:** If allocated resources approach 100% of capacity, the node is overcommitted. If actual usage significantly exceeds requests, Burstable pods are consuming more than they reserved, leaving insufficient headroom.
-
-### Step 4: Check Disk Usage on the Node
-
-**What this checks:** Filesystem space and inode consumption on the node to identify what is consuming disk.
+### Step 4: Check disk usage on the node
 
 ```bash
-# SSH to the node or use kubectl debug node
-df -h                    # Filesystem space
-df -hi                   # Inode usage
-du -sh /var/log/* | sort -rh | head -10        # Log directory sizes
-du -sh /var/lib/containerd/* | sort -rh | head -10  # Container runtime storage
-du -sh /var/lib/kubelet/pods/* | sort -rh | head -10  # Pod volumes
+df -h
+df -hi
+du -sh /var/log/pods/* 2>/dev/null | sort -rh | head -10
+du -sh /var/lib/containerd/* 2>/dev/null | sort -rh | head -10
+du -sh /var/lib/kubelet/pods/* 2>/dev/null | sort -rh | head -10
 ```
 
-**Expected output:** Filesystem usage percentages and sizes of the largest directories.
+Expected output: Filesystem usage percentages per mount point and the top directories by size. Any filesystem above 90% is a candidate for disk-pressure eviction.
 
-**What the finding means:** If `/var/log` is large, container or system logs are unbounded. If `/var/lib/containerd` is large, unused container images or layers need cleanup. If specific pod volumes are large, those pods are writing excessive ephemeral data.
-
-### Step 5: Check Pod Resource Configuration and QoS Class
-
-**What this checks:** The QoS class and resource configuration of the evicted pod, which determines eviction priority.
+### Step 5: Check pod QoS class and ephemeral storage limits
 
 ```bash
-# Check QoS class of the evicted pod
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.status.qosClass}'
-
-# Check resource requests and limits
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[*].resources}' | jq .
-
-# Check ephemeral storage limits
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[*].resources.limits.ephemeral-storage}'
+kubectl get pod <evicted-pod-name> -n <namespace> -o jsonpath='{.status.qosClass}'
+kubectl get pod <evicted-pod-name> -n <namespace> -o jsonpath='{.spec.containers[*].resources}' | jq .
+kubectl get pod <evicted-pod-name> -n <namespace> \
+  -o jsonpath='{.spec.containers[*].resources.limits.ephemeral-storage}'
 ```
 
-**Expected output:** QoS class (BestEffort, Burstable, or Guaranteed) and resource specifications.
+Expected output: QoS class of `BestEffort`, `Burstable`, or `Guaranteed`, plus memory/CPU/ephemeral-storage request and limit values or empty strings if unset.
 
-**What the finding means:** BestEffort pods (no requests or limits) are always evicted first. Burstable pods exceeding their requests are evicted next. Guaranteed pods are evicted last. If the pod has no resource requests, adding them will reduce eviction risk.
-
-### Step 6: Check Kubelet Eviction Configuration
-
-**What this checks:** The kubelet's configured eviction thresholds, which may differ from defaults.
+### Step 6: Check kubelet eviction thresholds and eviction log
 
 ```bash
-# On the node, check kubelet configuration
-sudo cat /var/lib/kubelet/config.yaml | grep -A 5 eviction
-
-# Check kubelet logs for eviction events
-sudo journalctl -u kubelet -n 200 --no-pager | grep -i evict
+sudo cat /var/lib/kubelet/config.yaml | grep -A 10 eviction
+sudo journalctl -u kubelet --since "1 hour ago" --no-pager | grep -i evict | tail -40
 ```
 
-**Expected output:** Configured `evictionHard` and `evictionSoft` thresholds, and log entries showing which pods were evicted and why.
+Expected output: `evictionHard` and `evictionSoft` keys with their threshold values, plus log lines listing pod names and the resource signal that triggered each eviction.
 
-**What the finding means:** Custom thresholds may be more aggressive than defaults. Soft eviction thresholds include a grace period before eviction occurs. Hard thresholds trigger immediate eviction with 0s grace period.
-
-### Step 7: Check Pod Priority Classes
-
-**What this checks:** Whether the evicted pod has a low PriorityClass that made it a preferential eviction target.
+### Step 7: Check pod priority class
 
 ```bash
-# List priority classes in the cluster
 kubectl get priorityclass
-
-# Check which priority class the evicted pod uses
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.priorityClassName}'
+kubectl get pod <evicted-pod-name> -n <namespace> \
+  -o jsonpath='{.spec.priorityClassName}'
 ```
 
-**Expected output:** The PriorityClass name and its numeric value.
+Expected output: A list of PriorityClass objects with their numeric values, and the priority class name assigned to the evicted pod (empty string if none).
 
-**What the finding means:** Lower-priority pods are evicted before higher-priority ones regardless of QoS class. If the pod has no PriorityClass or a low-value one, it is an early eviction candidate.
+## Causes
 
-## Mitigation
+### Cause A: Node memory exhausted by Burstable or BestEffort pods
 
-### Option 1: Clean Up Evicted Pod Objects
+**Statement:** Pods without a memory limit or with a limit far above their request consume node memory until the kubelet's `memory.available` hard threshold is crossed, triggering eviction starting with BestEffort then Burstable pods.
 
-Evicted pods remain in `Failed` state and consume API server resources. Clean them up first.
+**Mechanism:** The kubelet computes `memory.available` as node capacity minus working set. When this falls below the threshold (default 100Mi), it evicts pods by QoS class: BestEffort first, then Burstable pods exceeding their requests, then Guaranteed. Pods without memory requests run as BestEffort and are always first in line regardless of how little memory they actually use.
 
-- **Risk:** None. Evicted pods are not running and cannot be restarted. This only removes stale pod objects.
+**Indicator:**
+
+- [Step 1] `Message` contains `low on resource: memory`
+- [Step 2] `MemoryPressure` condition is `True`
+- [Step 5] `qosClass` is `BestEffort` or `Burstable` and memory limit is absent or much larger than request
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "low on resource: memory"} -->
+<!-- match: {"step": 2, "predicate": "contains", "target": "MemoryPressure  True"} -->
+
+**Mitigation:**
+
+- **Risk:** Setting limits too low can cause OOMKill restarts; setting requests too high can block scheduling on already-pressured nodes.
 - **Command:**
+
   ```bash
-  kubectl get pods --all-namespaces --field-selector status.phase=Failed -o json | \
-    jq -r '.items[] | select(.status.reason=="Evicted") | "\(.metadata.namespace) \(.metadata.name)"' | \
-    while read ns name; do kubectl delete pod "$name" -n "$ns"; done
+  kubectl patch deployment <deployment-name> -n <namespace> --type='json' \
+    -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"256Mi"},
+         {"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"512Mi"}]'
   ```
-- **Verify:**
-  ```bash
-  kubectl get pods --all-namespaces --field-selector status.phase=Failed | grep Evicted
-  ```
-  No evicted pods should remain.
-- **Duration:** Seconds.
 
-### Option 2: Free Disk Space on the Node
+- **Duration:** Takes effect on next pod restart; nodes may continue evicting until memory headroom improves.
 
-Use when eviction is caused by DiskPressure.
+**Resolution:**
 
-- **Risk:** Low to Medium. Cleaning unused images is safe; truncating logs may lose diagnostic data.
+```bash
+# Right-size memory requests and limits for all containers in the affected deployment
+# Use observed peak usage from Step 3 as the baseline for requests
+kubectl set resources deployment <deployment-name> -n <namespace> \
+  --requests=memory=256Mi --limits=memory=512Mi
+# Verify QoS class after rollout
+kubectl get pods -n <namespace> -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.qosClass}{"\n"}{end}'
+```
+
+- **Impact:** Cluster-wide improvement in scheduler bin-packing; requires rolling restart of the deployment.
+- **Rollback:** Revert the resource patch by setting values back to previous or removing limits.
+
+**Verification:** Watch `kubectl top nodes` for 15 minutes after rollout. `MemoryPressure` condition must return to `False` on affected nodes. No new `Evicted` pods appear in `kubectl get pods --all-namespaces --field-selector=status.phase=Failed`.
+
+---
+
+### Cause B: Pod exceeds its ephemeral-storage limit
+
+**Statement:** A container writing to its filesystem, emptyDir volumes, or container logs exceeds the `ephemeral-storage` limit set in its resource spec, causing the kubelet to immediately evict the pod.
+
+**Mechanism:** The kubelet tracks each pod's ephemeral storage consumption including writable container layers, emptyDir volumes, and log files. When a container's usage exceeds its declared `limits.ephemeral-storage`, the kubelet evicts the entire pod with a message referencing `ephemeral-storage`. Unlike memory OOMKill which kills a single container, ephemeral storage violation removes all containers in the pod.
+
+**Indicator:**
+
+- [Step 1] `Message` contains `ephemeral-storage`
+- [Step 5] `limits.ephemeral-storage` is set and actual disk usage in Step 4 shows the pod's volume directory is near that size
+- [Step 2] `DiskPressure` may be `False` (this is a per-pod limit, not a node-level signal)
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "ephemeral-storage"} -->
+
+**Mitigation:**
+
+- **Risk:** Increasing the ephemeral-storage limit may allow the pod to consume more disk, worsening node-level disk pressure if many pods do this simultaneously.
 - **Command:**
+
   ```bash
-  # Clean unused container images
+  kubectl patch deployment <deployment-name> -n <namespace> --type='json' \
+    -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/ephemeral-storage","value":"4Gi"}]'
+  ```
+
+- **Duration:** Takes effect on next pod restart; immediate relief for the evicted pod.
+
+**Resolution:**
+
+```bash
+# Identify what is consuming ephemeral storage — add to the running pod before restart
+kubectl exec -n <namespace> <running-pod-name> -- du -sh /tmp /var/log /data 2>/dev/null | sort -rh
+
+# For emptyDir volumes that grow unbounded, add sizeLimit via a Deployment patch:
+# Edit spec.template.spec.volumes[].emptyDir.sizeLimit in the deployment manifest
+kubectl edit deployment <deployment-name> -n <namespace>
+```
+
+- **Impact:** Single deployment; requires rolling restart.
+- **Rollback:** Revert the `sizeLimit` or `limits.ephemeral-storage` value if the application cannot tolerate the cap.
+
+**Verification:** After rollout, `kubectl describe pod <new-pod-name> -n <namespace>` should show no eviction. Monitor with `kubectl exec` to confirm the pod's ephemeral usage stays below the new limit over a 30-minute window.
+
+---
+
+### Cause C: Node filesystem full (DiskPressure from container logs or images)
+
+**Statement:** Accumulated container logs, dangling image layers, or exited container writable layers fill the node filesystem beyond the kubelet's `nodefs.available` hard eviction threshold (default 5%), triggering DiskPressure and mass pod eviction.
+
+**Mechanism:** The kubelet monitors `nodefs.available` (the filesystem hosting pod volumes, logs, and kubelet data) and `imagefs.available` (the container runtime's image store). When either drops below the hard threshold, the kubelet first attempts to garbage-collect unused images and stopped containers. If that does not reclaim enough space, it evicts pods in QoS order. Container logs that are not size-limited grow continuously and are one of the most common causes of unexpected DiskPressure.
+
+**Indicator:**
+
+- [Step 2] `DiskPressure` condition is `True`
+- [Step 4] Filesystem at `/var/lib/containerd` or `/var/log/pods` is above 90% full
+- [Step 1] `Message` contains `nodefs` or `imagefs`
+
+<!-- match: {"step": 2, "predicate": "contains", "target": "DiskPressure  True"} -->
+<!-- match: {"step": 4, "predicate": "threshold", "target": "disk_pct", "op": ">", "value": 0.90} -->
+
+**Mitigation:**
+
+- **Risk:** Deleting logs removes diagnostic evidence; pruning images is safe but cannot be reversed for layers not in a registry.
+- **Command:**
+
+  ```bash
+  # Prune unused container images
   sudo crictl rmi --prune
 
-  # Clean stopped containers
-  sudo crictl rm $(sudo crictl ps -a -q --state exited)
+  # Remove exited containers
+  sudo crictl rm $(sudo crictl ps -aq --state exited) 2>/dev/null || true
 
-  # Truncate large journal logs
+  # Vacuum systemd journal
   sudo journalctl --vacuum-size=500M
 
-  # Remove old container logs
+  # Remove container log files older than 7 days
   sudo find /var/log/containers -name "*.log" -mtime +7 -delete
   ```
-- **Verify:**
-  ```bash
-  df -h
-  kubectl describe node <node-name> | grep DiskPressure
-  ```
-  DiskPressure should return to `False`.
-- **Duration:** 2 to 10 minutes.
 
-### Option 3: Increase Node Capacity
+- **Duration:** 2–10 minutes; DiskPressure condition clears once available space rises above threshold.
 
-Use when the cluster has insufficient resources for the current workload.
+**Resolution:**
 
-- **Risk:** Low. Adding nodes does not disrupt existing workloads. Cost increases proportionally.
+```yaml
+# Set kubelet log rotation limits in /var/lib/kubelet/config.yaml
+# containerLogMaxSize: "50Mi"
+# containerLogMaxFiles: 3
+# Then restart kubelet: sudo systemctl restart kubelet
+```
+
+```bash
+# Verify log rotation took effect
+sudo cat /var/lib/kubelet/config.yaml | grep -i log
+sudo journalctl -u kubelet --since "5 min ago" | grep -i "log"
+```
+
+- **Impact:** Node-wide; kubelet restart causes a brief disruption to pod status reporting but does not terminate running pods.
+- **Rollback:** Increase `containerLogMaxSize` or `containerLogMaxFiles` if applications depend on longer log retention.
+
+**Verification:** `df -h` shows filesystem below 80%. `kubectl describe node <node-name> | grep DiskPressure` shows `False`. No new eviction events for 10 minutes: `kubectl get events --all-namespaces --field-selector reason=Evicted`.
+
+---
+
+### Cause D: Inode exhaustion on node filesystem
+
+**Statement:** A workload that creates a very large number of small files exhausts the filesystem's inode table, triggering `nodefs.inodesFree` eviction even though disk space in bytes appears available.
+
+**Mechanism:** Each filesystem has a fixed number of inodes allocated at format time. When all inodes are consumed, no new files can be created even if bytes remain free. `df -h` shows available space but `df -ih` shows 0 inodes free. The kubelet monitors `nodefs.inodesFree` (default threshold: 4%) and triggers DiskPressure and eviction when the inode pool is exhausted.
+
+**Indicator:**
+
+- [Step 4] `df -hi` shows inode usage at or near 100% while `df -h` shows available space
+- [Step 2] `DiskPressure` condition is `True`
+- [Step 1] `Message` contains `inodes`
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "inodes"} -->
+
+**Mitigation:**
+
+- **Risk:** Deleting files from /tmp or application cache directories may remove data the application needs; confirm the source before bulk deleting.
 - **Command:**
+
   ```bash
-  # For managed Kubernetes (EKS, GKE, AKS), scale the node group
-  # Example for EKS:
-  eksctl scale nodegroup --cluster=<cluster> --name=<nodegroup> --nodes=<new-count>
+  # Find the directory with the most files
+  find /var/lib/kubelet/pods -xdev -printf '%h\n' 2>/dev/null | sort | uniq -c | sort -rn | head -10
+  find /tmp -xdev -printf '%h\n' 2>/dev/null | sort | uniq -c | sort -rn | head -10
 
-  # Verify cluster autoscaler is running
-  kubectl get pods -n kube-system -l app=cluster-autoscaler
+  # Delete small temporary files to recover inodes
+  sudo find /tmp -type f -atime +1 -delete
   ```
-- **Verify:**
-  ```bash
-  kubectl get nodes
-  kubectl top nodes
-  ```
-  New nodes should join and workloads should redistribute.
-- **Duration:** 5 to 15 minutes for new nodes to become Ready.
 
-### Option 4: Cordon the Pressured Node
+- **Duration:** Immediate once files are removed; DiskPressure clears within one kubelet monitoring interval (~10 seconds).
 
-Use to prevent new pods from landing on a node that is already under resource pressure.
+**Resolution:**
 
-- **Risk:** Low. Existing pods continue running; only new scheduling is blocked.
+```bash
+# Identify the pod or process producing the files and fix the root cause
+# Common culprits: logging frameworks writing per-request files, unmanaged temp dirs
+# After cleanup, verify with:
+df -ih
+kubectl describe node <node-name> | grep DiskPressure
+```
+
+**Verification:** `df -ih` shows inode usage below 80%. `kubectl describe node <node-name>` shows `DiskPressure: False`. No new eviction events in 5 minutes.
+
+---
+
+### Cause E: PID exhaustion from process-leaking workload
+
+**Statement:** A container that spawns child processes without reaping them exhausts the node's PID pool, triggering `pid.available` eviction and preventing any new processes from starting on the node.
+
+**Mechanism:** Linux nodes have a kernel-level PID limit (`/proc/sys/kernel/pid_max`). The kubelet monitors `pid.available` (available PIDs) and triggers PIDPressure when it falls below the threshold (default 4%). Once PIDs are exhausted, all fork/exec calls fail with EAGAIN, affecting the entire node — not just the offending pod. The kubelet evicts pods by QoS class to release PIDs held by their processes.
+
+**Indicator:**
+
+- [Step 2] `PIDPressure` condition is `True`
+- [Step 1] `Message` contains `pid`
+- [Symptom] System-wide process creation failures or fork errors in application logs
+
+<!-- match: {"step": 2, "predicate": "contains", "target": "PIDPressure  True"} -->
+<!-- match: {"step": 1, "predicate": "contains", "target": "pid"} -->
+
+**Mitigation:**
+
+- **Risk:** Increasing PID limits is a stopgap; the leaking workload will exhaust the higher limit without a fix.
 - **Command:**
+
   ```bash
-  kubectl cordon <node-name>
+  # On the node, find the process with the most children
+  ps -eo user,pid,ppid,nlwp,cmd --sort=-nlwp | head -20
+
+  # Temporary increase of node PID limit
+  echo 131072 | sudo tee /proc/sys/kernel/pid_max
+
+  # Evict the offending pod to release its PIDs
+  kubectl delete pod <offending-pod-name> -n <namespace>
   ```
-- **Verify:**
+
+- **Duration:** Temporary increase lasts until next reboot; fix the application and revert.
+
+**Resolution:**
+
+```bash
+# Fix the process-leaking application (ensure it reaps child processes)
+# Then set pod-level PID limits via LimitRange or pod security context:
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: pid-limit
+  namespace: <namespace>
+spec:
+  limits:
+  - type: Container
+    default:
+      pids: 1000
+    defaultRequest:
+      pids: 500
+EOF
+```
+
+**Verification:** `cat /proc/sys/kernel/pid_max` shows a safe headroom. `kubectl describe node <node-name> | grep PIDPressure` shows `False`. The offending pod's replacement does not re-create the leak (monitor with `ps -eo nlwp | awk '{sum += $1} END {print sum}'` on the node).
+
+---
+
+### Cause F: Low-priority pod evicted due to PriorityClass assignment
+
+**Statement:** A pod with a low or absent PriorityClass is preferentially evicted before higher-priority pods when the node is under any resource pressure, even if its resource usage is modest.
+
+**Mechanism:** When the kubelet selects candidates for eviction within a QoS tier, pods with lower `priority` values (from PriorityClass) are selected before higher-priority ones. A pod without a PriorityClass gets priority 0 by default, making it the first eviction candidate among peers. This means a low-priority but memory-efficient pod is evicted ahead of a high-priority but memory-hungry pod at the same QoS level.
+
+**Indicator:**
+
+- [Step 7] Evicted pod has no PriorityClass or a low numeric value (below 1000)
+- [Step 7] Other pods on the same node have higher PriorityClass values
+- [Step 5] `qosClass` is `Burstable` or `Guaranteed` but the pod was still evicted
+
+<!-- match: {"step": 7, "predicate": "absent", "target": "spec.priorityClassName"} -->
+
+**Mitigation:**
+
+- **Risk:** Assigning high priority to all pods defeats the purpose of priority classes; set priorities intentionally.
+- **Command:**
+
   ```bash
-  kubectl get node <node-name>
+  kubectl patch deployment <deployment-name> -n <namespace> --type='json' \
+    -p='[{"op":"add","path":"/spec/template/spec/priorityClassName","value":"high-priority"}]'
   ```
-  The node should show `SchedulingDisabled`.
-- **Duration:** Immediate.
 
-## Root Cause Resolution
+- **Duration:** Takes effect on next pod restart.
 
-**If** the eviction message indicates memory pressure **then** right-size pod memory requests and limits based on observed usage:
-
-```bash
-# Check actual memory usage across pods on the node
-kubectl top pods --all-namespaces --sort-by=memory --no-headers | head -20
-
-# Set appropriate memory requests and limits
-kubectl patch deployment <deployment-name> -n <namespace> --type='json' \
-  -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"256Mi"},
-       {"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"512Mi"}]'
-```
-
-**If** a single pod is consuming excessive memory (potential leak) **then** identify and fix the application memory leak, or set stricter limits and accept periodic OOMKill restarts until the fix is deployed.
-
-**If** the eviction message indicates disk pressure **then** address the root cause of disk consumption:
-
-```bash
-# Identify top disk consumers on the node
-sudo du -sh /var/lib/containerd/io.containerd.snapshotter/* | sort -rh | head -10
-sudo du -sh /var/log/pods/* | sort -rh | head -10
-```
-
-Configure container log rotation in the kubelet:
+**Resolution:**
 
 ```yaml
-# kubelet config
-containerLogMaxSize: "50Mi"
-containerLogMaxFiles: 3
-```
-
-**If** pods use `emptyDir` volumes that grow unbounded **then** set `sizeLimit` on the volume to prevent unchecked growth:
-
-```yaml
-volumes:
-  - name: tmp
-    emptyDir:
-      sizeLimit: "1Gi"
-```
-
-**If** a pod exceeds its `ephemeral-storage` limit **then** increase the limit or reduce the pod's disk usage:
-
-```yaml
-resources:
-  requests:
-    ephemeral-storage: "1Gi"
-  limits:
-    ephemeral-storage: "2Gi"
-```
-
-**If** eviction is caused by PID pressure **then** identify the process-leaking workload:
-
-```bash
-# On the node, find which process has the most children
-ps -eo user,pid,ppid,nlwp,cmd --sort=-nlwp | head -20
-
-# Check PID limits
-cat /proc/sys/kernel/pid_max
-```
-
-Fix the application that is leaking processes. As a stopgap, increase the PID limit: `echo 65536 | sudo tee /proc/sys/kernel/pid_max`.
-
-**If** evicted pods have BestEffort QoS (no resource requests) **then** add resource requests to elevate them to Burstable or Guaranteed QoS:
-
-```yaml
-resources:
-  requests:
-    cpu: "100m"
-    memory: "128Mi"
-  limits:
-    cpu: "500m"
-    memory: "512Mi"
-```
-
-**If** important pods are being evicted in favor of less important ones **then** assign PriorityClasses to protect critical workloads:
-
-```yaml
+# Create a PriorityClass hierarchy and assign appropriately
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
-  name: high-priority
+  name: service-critical
 value: 1000
 globalDefault: false
-description: "For business-critical applications"
+description: "Production-facing services"
 ---
-# In the pod spec:
-spec:
-  priorityClassName: high-priority
-```
-
-## Verification
-
-After resolving the resource pressure, confirm the cluster is healthy.
-
-```bash
-# 1. Confirm node conditions are healthy
-kubectl describe node <node-name> | grep -A 5 "Conditions:"
-# All pressure conditions should be False: MemoryPressure, DiskPressure, PIDPressure
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: batch-low
+value: 100
+globalDefault: false
+description: "Background batch jobs — safe to evict"
 ```
 
 ```bash
-# 2. Watch for new evictions over several minutes
-kubectl get events --all-namespaces --field-selector reason=Evicted --watch
-# No new eviction events should appear
+kubectl apply -f priority-classes.yaml
 ```
 
-```bash
-# 3. Verify workloads are running
-kubectl get pods -n <namespace> -l app=<app-label>
-# All expected pods should be Running with no recent restarts
-```
+**Verification:** `kubectl get pod <new-pod-name> -n <namespace> -o jsonpath='{.spec.priorityClassName}'` returns the expected class. The pod survives node pressure events that evict lower-priority batch pods.
 
-```bash
-# 4. Check resource headroom
-kubectl top nodes
-kubectl describe node <node-name> | grep -A 15 "Allocated resources:"
-# Verify adequate headroom between allocated and capacity
-```
+---
+
+### Cause Z: Unidentified eviction cause
+
+**Statement:** The eviction trigger cannot be conclusively identified from available diagnostic data.
+
+**Mechanism:** Eviction messages may be missing if the pod object was deleted before inspection, or the triggering signal may have resolved by the time diagnostics run. Transient pressure spikes below threshold dwell time may not leave a permanent node condition.
+
+**Indicator:**
+
+- [Default] None of the above causes match the observed eviction message or node conditions
+
+**Mitigation:**
+
+- **Risk:** Escalating without diagnosis may lead to unnecessary node replacements.
+- **Command:**
+
+  ```bash
+  # Collect kubelet logs from the time of eviction for escalation
+  sudo journalctl -u kubelet --since "2 hours ago" --no-pager > /tmp/kubelet-$(hostname).log
+  kubectl get events --all-namespaces --sort-by='.lastTimestamp' | grep -i evict | tail -30
+  kubectl describe node <node-name> > /tmp/node-describe-$(hostname).txt
+  ```
+
+- **Duration:** Diagnostic collection only; no runtime changes.
+
+**Resolution:** Out of runbook scope. Escalate with kubelet logs and node describe output to the infrastructure team for deeper analysis.
+
+**Verification:** Escalation ticket created with log artifacts attached. Monitor the node for 30 minutes for recurrence of eviction events.
 
 ## Prevention
 
-**Set resource requests and limits on all pods.** Every pod should have explicit CPU and memory requests and limits. Use `Guaranteed` QoS (requests equal limits) for critical workloads to minimize eviction risk. Enforce defaults with LimitRange objects.
+Set memory and CPU requests and limits on every container. Use `Guaranteed` QoS (requests equal limits) for production services to minimize eviction risk. Enforce defaults cluster-wide with a `LimitRange`:
 
-**Configure ephemeral storage limits.** Set `ephemeral-storage` requests and limits for pods that write temporary data to prevent a single pod from filling the node filesystem:
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: <namespace>
+spec:
+  limits:
+  - type: Container
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+    default:
+      cpu: "500m"
+      memory: "512Mi"
+```
+
+Set `ephemeral-storage` requests and limits for pods writing temporary data:
 
 ```yaml
 resources:
@@ -404,10 +465,9 @@ resources:
     ephemeral-storage: "2Gi"
 ```
 
-**Reserve system resources on nodes.** Configure kubelet to reserve resources for the OS and Kubernetes system components so that workloads cannot consume all node capacity:
+Reserve system resources in kubelet configuration so workloads cannot consume all node capacity:
 
 ```yaml
-# kubelet config
 systemReserved:
   cpu: "100m"
   memory: "256Mi"
@@ -418,25 +478,16 @@ kubeReserved:
   ephemeral-storage: "1Gi"
 ```
 
-**Use PriorityClasses strategically.** Define a hierarchy so that low-priority batch jobs are evicted before high-priority services:
+Configure kubelet log rotation to prevent log accumulation from triggering DiskPressure:
 
 ```yaml
-apiVersion: scheduling.k8s.io/v1
-kind: PriorityClass
-metadata:
-  name: batch-low
-value: 100
----
-apiVersion: scheduling.k8s.io/v1
-kind: PriorityClass
-metadata:
-  name: service-high
-value: 1000
+containerLogMaxSize: "50Mi"
+containerLogMaxFiles: 3
 ```
 
-**Enable Cluster Autoscaler.** Configure automatic node scaling to add nodes when resource pressure increases, preventing evictions due to insufficient capacity.
+Define a PriorityClass hierarchy so low-value batch workloads are evicted before production services. Enable Cluster Autoscaler to add nodes before resource pressure reaches eviction thresholds.
 
-**Monitor eviction events with alerts.** Set up Prometheus alerts for eviction events and node pressure conditions:
+Monitor with Prometheus alerts:
 
 ```yaml
 - alert: PodEvicted
@@ -454,38 +505,26 @@ value: 1000
     severity: warning
   annotations:
     summary: "Node {{ $labels.node }} has memory pressure"
+
+- alert: NodeDiskPressure
+  expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Node {{ $labels.node }} has disk pressure"
 ```
 
-**Automate evicted pod cleanup.** Schedule a CronJob to clean up evicted pod objects that accumulate over time:
+Schedule periodic cleanup of evicted pod objects to keep the API server free of stale `Failed` pod records:
 
-```yaml
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: cleanup-evicted-pods
-spec:
-  schedule: "0 */6 * * *"
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: pod-cleanup
-          containers:
-          - name: cleanup
-            image: bitnami/kubectl:latest
-            command: ["sh", "-c"]
-            args:
-            - >
-              kubectl get pods --all-namespaces --field-selector status.phase=Failed -o json |
-              jq -r '.items[] | select(.status.reason=="Evicted") | "\(.metadata.namespace) \(.metadata.name)"' |
-              while read ns name; do kubectl delete pod "$name" -n "$ns"; done
-          restartPolicy: OnFailure
+```bash
+kubectl get pods --all-namespaces --field-selector=status.phase=Failed -o json | \
+  jq -r '.items[] | select(.status.reason=="Evicted") | "\(.metadata.namespace) \(.metadata.name)"' | \
+  while read ns name; do kubectl delete pod "$name" -n "$ns"; done
 ```
 
 ## Sources
 
-- [Kubernetes: Node-pressure Eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/) -- Eviction signals, thresholds, pod selection order, soft and hard eviction configuration
-- [Kubernetes: Pod Quality of Service Classes](https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/) -- QoS class determination and its effect on eviction priority
-- [Kubernetes: Manage Resources for Containers](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/) -- Resource requests, limits, and ephemeral storage
-- [Kubernetes: Pod Priority and Preemption](https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/) -- PriorityClass and its effect on scheduling and eviction
-- [Kubernetes: Node Status](https://kubernetes.io/docs/reference/node/node-status/) -- Node conditions including MemoryPressure, DiskPressure, and PIDPressure
+- [Kubernetes: Node-pressure Eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/) — Priority 1. Eviction signals, hard and soft thresholds, pod selection order, kubelet configuration, filesystem topology (nodefs/imagefs/containerfs), memory.available calculation, PID pressure.
+- [Kubernetes: Pod Quality of Service Classes](https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/) — Priority 1. QoS class criteria (Guaranteed, Burstable, BestEffort), eviction order, cgroup v2 memory throttling, memory protection.
+- [Kubernetes: Manage Resources for Containers](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/) — Priority 1. Ephemeral-storage requests and limits, emptyDir sizeLimit, pod eviction on ephemeral-storage limit breach, memory-backed emptyDir volumes.

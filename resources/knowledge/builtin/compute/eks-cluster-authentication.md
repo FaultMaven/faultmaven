@@ -1,443 +1,567 @@
 ---
-id: eks-cluster-authentication
+id: "eks-cluster-authentication"
 title: "AWS EKS Cluster Authentication Failures"
 domain: compute
 service: aws-eks
-symptom_class:
-  - auth_failure
+symptom_class: [auth_failure]
 severity: high
 scope: global
-version: "2.1.0"
-last_updated: "2026-03-26"
-verified_by: kb-researcher
+version: "1.0.0"
+last_updated: "2026-05-12"
+verified_by: "kb-researcher"
 status: draft
-tags:
-  - aws
-  - eks
-  - kubernetes
-  - authentication
-  - iam
-  - aws-auth
-  - oidc
-  - kubectl
+tags: [aws, eks, kubernetes, iam, aws-auth, oidc, kubectl, access-entries, irsa]
 difficulty: intermediate
 ---
 
-# AWS EKS Cluster Authentication Failures
+## Symptom Recognition
 
-## Problem Definition
-
-This runbook applies to Amazon EKS clusters in any AWS region running Kubernetes 1.23 or later. You need the AWS CLI v2 with `eks:DescribeCluster` and `sts:GetCallerIdentity` permissions, `kubectl` 1.23+, and optionally `eksctl` for managing IAM identity mappings. For clusters using API-based access management (EKS platform version `eks.15`+ on Kubernetes 1.30+), you also need `eks:ListAccessEntries` and `eks:CreateAccessEntry` permissions.
-
-Kubectl commands against an EKS cluster fail with `Unauthorized`, `Forbidden`, or `Access Denied` errors. Users, CI/CD pipelines, or node groups cannot authenticate to the Kubernetes API server, preventing cluster management, deployments, and node registration. EKS authentication is a two-step process: AWS IAM authenticates the caller's identity via `aws eks get-token`, then the Kubernetes API server maps the IAM identity to a Kubernetes user/group using either EKS access entries (API-based) or the `aws-auth` ConfigMap (legacy). A failure at either step produces an authentication error.
-
-The most frequent causes are: kubeconfig using the wrong IAM identity or AWS profile, IAM principal not mapped in the `aws-auth` ConfigMap or access entries, IAM role ARN containing a path that EKS does not support, OIDC provider missing for IAM Roles for Service Accounts (IRSA), expired or incorrect STS token, and the cluster creator's IAM principal being deleted with no other admin mapping configured.
-
-**Typical error presentation:**
+`kubectl` commands fail with one of the following errors:
 
 ```text
-$ kubectl get pods
 error: You must be logged in to the server (Unauthorized)
 ```
 
 ```text
-$ kubectl get nodes
 could not get token: AccessDenied: Access denied
 ```
 
-For node registration failures:
+```text
+error: the server doesn't have a resource type "svc"
+```
+
+Worker node kubelet logs show:
 
 ```text
+Unable to register node "ip-10-40-175-122.ec2.internal" with API server: Unauthorized
 Container runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady
-Unable to register node with API server: Unauthorized
 ```
+
+Pods using IAM Roles for Service Accounts (IRSA) fail with:
+
+```text
+An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation: The security token included in the request is invalid
+```
+
+## Applicability
+
+Applies to Amazon EKS clusters in any AWS region running Kubernetes 1.23 or later. Required access: AWS CLI v2 with `sts:GetCallerIdentity` and `eks:DescribeCluster` permissions, `kubectl` 1.23+. For API-based access management (EKS platform version `eks.15`+ on Kubernetes 1.30+), also requires `eks:ListAccessEntries`, `eks:DescribeAccessEntry`, and `eks:CreateAccessEntry`. `eksctl` is needed for ConfigMap-based management. For OIDC/IRSA diagnosis, `iam:ListOpenIDConnectProviders` is required.
 
 ## Diagnostic Steps
 
-### Step 1: Verify Your Current AWS Identity
-
-**What this checks:** Which IAM user or role your kubectl session is using, so you can compare it against what the cluster authorizes.
+### Step 1: Verify current AWS identity
 
 ```bash
 aws sts get-caller-identity
 ```
 
-**Expected output:** JSON with `UserId`, `Account`, and `Arn` fields showing the IAM principal.
+Expected output: JSON with `UserId`, `Account`, and `Arn`. The `Arn` field shows the IAM principal (`iam::ACCOUNT:user/NAME` or `iam::ACCOUNT:role/NAME`). If this command itself fails with `AccessDenied`, the local credential chain is broken.
 
-**What the finding means:** If the ARN does not match the IAM principal authorized in the cluster, your AWS CLI is using the wrong profile, environment variable, or instance profile. The `Account` field confirms whether you are in the correct AWS account.
-
-### Step 2: Verify Kubeconfig Configuration
-
-**What this checks:** Whether the kubeconfig points to the correct cluster and uses the correct authentication command.
+### Step 2: Check kubeconfig exec configuration
 
 ```bash
-# Show current kubeconfig context
 kubectl config current-context
-
-# Show the full kubeconfig entry for the current context
 kubectl config view --minify
 ```
 
-**Expected output:** The `exec` section under `users` should use `aws eks get-token` with the correct `--cluster-name` and `--region`.
+Expected output: The `users[].user.exec` section should use `aws eks get-token` with `--cluster-name` and `--region` matching the target cluster. If `--role-arn` is present, that role must be assumable by the current identity from Step 1.
 
-**What the finding means:** If an `--role-arn` is specified in the exec args, verify that role exists and you can assume it. If the cluster name or region is wrong, the token will be generated for the wrong cluster.
-
-### Step 3: Test Token Generation
-
-**What this checks:** Whether your IAM identity can generate a valid authentication token for the cluster.
+### Step 3: Test token generation
 
 ```bash
 aws eks get-token --cluster-name my-cluster --region us-east-1
 ```
 
-**Expected output:** JSON containing a `token` field and an `expirationTimestamp`.
+Expected output: JSON with a `token` field and `expirationTimestamp`. If this fails with `AccessDenied`, the current IAM identity lacks `eks:DescribeCluster` permission or STS is unavailable. If it succeeds but kubectl still returns `Unauthorized`, the IAM principal has no Kubernetes mapping.
 
-**What the finding means:** If this fails with `AccessDenied`, the IAM identity does not have permission to call `eks:DescribeCluster` or the STS token is invalid. If it succeeds but kubectl still fails, the issue is in the IAM-to-Kubernetes mapping (Step 4 or 5).
-
-### Step 4: Check the Cluster Authentication Mode
-
-**What this checks:** Whether the cluster uses ConfigMap-based, API-based, or dual authentication, which determines where identity mappings are stored.
+### Step 4: Determine cluster authentication mode
 
 ```bash
 aws eks describe-cluster --name my-cluster \
-  --query 'cluster.accessConfig.authenticationMode'
+  --query 'cluster.accessConfig.authenticationMode' --output text
 ```
 
-**Expected output:** One of `CONFIG_MAP`, `API`, or `API_AND_CONFIG_MAP`.
+Expected output: One of `CONFIG_MAP`, `API`, or `API_AND_CONFIG_MAP`. `CONFIG_MAP` means only Step 5 applies. `API` means only Step 6 applies. `API_AND_CONFIG_MAP` means either method can grant access — check both.
 
-**What the finding means:** `CONFIG_MAP` means only the `aws-auth` ConfigMap is used (check Step 5). `API` means only EKS access entries are used (check Step 6). `API_AND_CONFIG_MAP` means both are active and either can grant access.
-
-### Step 5: Check aws-auth ConfigMap (Legacy Authentication)
-
-**What this checks:** Whether your IAM principal is mapped to a Kubernetes user/group in the ConfigMap.
+### Step 5: Inspect aws-auth ConfigMap (CONFIG_MAP or API_AND_CONFIG_MAP clusters)
 
 ```bash
-# Using eksctl (recommended)
 eksctl get iamidentitymapping --cluster my-cluster
-
-# Or directly via kubectl (requires existing access)
-kubectl get configmap aws-auth -n kube-system -o yaml
 ```
 
-**Expected output:** Your IAM role or user ARN listed in `mapRoles` or `mapUsers` with appropriate `groups`.
+Expected output: A table listing every mapped IAM ARN with its Kubernetes username and groups. If the command fails with an error, the ConfigMap may be missing. If the caller's ARN does not appear, they have no cluster access via this method. Role ARNs must not contain a path (e.g., `arn:aws:iam::111122223333:role/MyRole` not `arn:aws:iam::111122223333:role/path/MyRole`).
 
-**What the finding means:** If your IAM principal does not appear, it has no Kubernetes access via ConfigMap. Verify the `groups` list includes the required Kubernetes group (e.g., `system:masters` for admin access, `system:bootstrappers` and `system:nodes` for worker nodes). IAM role ARNs must not contain a path (e.g., use `arn:aws:iam::111122223333:role/MyRole`, not `arn:aws:iam::111122223333:role/path/to/MyRole`).
-
-### Step 6: Check EKS Access Entries (API-Based Authentication)
-
-**What this checks:** Whether your IAM principal has an access entry in the cluster via the EKS API.
+### Step 6: Inspect EKS access entries (API or API_AND_CONFIG_MAP clusters)
 
 ```bash
-# List all access entries for the cluster
-aws eks list-access-entries --cluster-name my-cluster
-
-# Describe a specific access entry
+aws eks list-access-entries --cluster-name my-cluster --output text
 aws eks describe-access-entry --cluster-name my-cluster \
   --principal-arn arn:aws:iam::111122223333:role/MyRole
 ```
 
-**Expected output:** Your IAM principal ARN listed in the access entries.
+Expected output: `list-access-entries` returns all principal ARNs with access entries. `describe-access-entry` shows the entry type and associated access policies. If the caller's ARN is absent, they have no API-based access.
 
-**What the finding means:** If your IAM principal does not appear, it has no Kubernetes access via the API method. You need to create an access entry and associate an access policy.
-
-### Step 7: Verify OIDC Provider (for IRSA / Service Account Issues)
-
-**What this checks:** Whether the cluster's OIDC provider is registered in IAM, which is required for pods using IAM Roles for Service Accounts.
+### Step 7: Check node IAM role mapping
 
 ```bash
-# Get the OIDC issuer URL
-aws eks describe-cluster --name my-cluster \
-  --query 'cluster.identity.oidc.issuer' --output text
-
-# List IAM OIDC providers and check if the cluster's provider exists
-aws iam list-open-id-connect-providers
+# For nodes in error state, get the node IAM role ARN from AWS console or:
+aws iam get-instance-profile --instance-profile-name MyNodeInstanceProfile \
+  --query 'InstanceProfile.Roles[0].Arn' --output text
 ```
 
-**Expected output:** The OIDC issuer URL from the cluster should match one of the registered providers.
+Expected output: A role ARN of the form `arn:aws:iam::111122223333:role/MyNodeRole`. Confirm this exact ARN (not the instance profile ARN) appears in the ConfigMap (`system:bootstrappers`, `system:nodes` groups) or as an `EC2_LINUX` type access entry.
 
-**What the finding means:** If pods using service accounts with IAM roles fail to authenticate to AWS services, the OIDC provider may be missing or its thumbprint may be stale.
-
-### Step 8: Check kubectl Verbose Output
-
-**What this checks:** Whether the failure is authentication (401) or authorization (403), which are different problems with different fixes.
+### Step 8: Verify OIDC provider for IRSA
 
 ```bash
-kubectl get pods -v=6
+OIDC_URL=$(aws eks describe-cluster --name my-cluster \
+  --query 'cluster.identity.oidc.issuer' --output text)
+echo "Cluster OIDC: $OIDC_URL"
+aws iam list-open-id-connect-providers \
+  --query 'OpenIDConnectProviderList[*].Arn' --output text
 ```
 
-**Expected output:** HTTP request and response details including status codes.
+Expected output: The cluster OIDC issuer URL (e.g., `https://oidc.eks.us-east-1.amazonaws.com/id/ABCDEF`) should correspond to one of the listed IAM OIDC provider ARNs. If no matching provider exists, all service accounts that reference IAM roles via annotations will fail to authenticate to AWS APIs.
 
-**What the finding means:** `401 Unauthorized` means authentication failed (IAM identity not recognized). `403 Forbidden` means authentication succeeded but the Kubernetes user lacks RBAC permissions for the requested action.
+### Step 9: Check verbose kubectl response code
 
-## Mitigation
+```bash
+kubectl get pods -v=6 2>&1 | grep -E 'Response Status|HTTP'
+```
 
-### Option 1: Update Kubeconfig with Correct Credentials
+Expected output: `Response Status: 401 Unauthorized` confirms authentication failure (IAM identity not recognized). `Response Status: 403 Forbidden` confirms authentication succeeded but the mapped Kubernetes user lacks RBAC permissions — the cause is insufficient Kubernetes group bindings, not IAM mapping.
 
-Use when the kubeconfig is stale or pointing to the wrong IAM identity.
+## Causes
 
-- **Risk:** Low. Only updates the local kubeconfig file.
+### Cause A: Wrong IAM identity active in local credential chain
+
+**Statement:** The AWS CLI is resolving credentials from the wrong profile, environment variable, or instance metadata endpoint, so the token is generated for an identity that has no cluster access.
+
+**Mechanism:** EKS authentication uses `aws eks get-token` to generate a presigned STS URL embedded in the kubeconfig exec credential. If the resolved IAM identity differs from the one that was mapped in the ConfigMap or access entries, the Kubernetes API server returns `Unauthorized` even though the token itself is cryptographically valid.
+
+**Indicator:**
+
+- [Step 1] `Arn` in `get-caller-identity` output does not match any ARN in Step 5 or Step 6
+- [Step 2] Kubeconfig `exec` section contains no `--role-arn` argument and ambient credentials are wrong
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "assumed-role"} -->
+
+**Mitigation:**
+
+- **Risk:** Low — regenerating kubeconfig only updates the local file.
 - **Command:**
 
   ```bash
-  # Update kubeconfig for the cluster
+  # Identify active credential source
+  aws configure list
+
+  # Use explicit profile
+  export AWS_PROFILE=eks-admin
   aws eks update-kubeconfig --name my-cluster --region us-east-1
 
-  # If you need to use a specific IAM role
+  # Or pin to a specific role
   aws eks update-kubeconfig --name my-cluster --region us-east-1 \
     --role-arn arn:aws:iam::111122223333:role/EKSAdminRole
   ```
 
-- **Verify:**
-
-  ```bash
-  kubectl get nodes
-  ```
-
-  The command should succeed and list cluster nodes.
 - **Duration:** Immediate.
 
-### Option 2: Add IAM Identity Mapping via eksctl
+**Resolution:** Same as Mitigation.
 
-Use when the IAM principal is not in the aws-auth ConfigMap.
+**Verification:**
 
-- **Risk:** Medium. Grants Kubernetes access to the specified IAM identity. Use the least-privilege group; avoid `system:masters` for non-admin users.
+```bash
+aws sts get-caller-identity
+kubectl auth whoami
+```
+
+`kubectl auth whoami` (Kubernetes 1.27+) returns the Kubernetes username and groups; it must match an authorized mapping. For older clusters use `kubectl get nodes`.
+
+### Cause B: IAM principal missing from aws-auth ConfigMap
+
+**Statement:** The caller's IAM role or user ARN has no entry in the `aws-auth` ConfigMap, so the Kubernetes API server cannot map the token to a Kubernetes identity.
+
+**Mechanism:** After `aws eks get-token` succeeds, the AWS IAM Authenticator on the control plane decodes the STS presigned URL, resolves the IAM principal, and looks it up in the `aws-auth` ConfigMap. If no matching `mapRoles` or `mapUsers` entry exists, the authenticator returns an empty identity and Kubernetes denies the request with `Unauthorized`.
+
+**Indicator:**
+
+- [Step 3] Token generation succeeds but kubectl returns `Unauthorized`
+- [Step 5] Caller's ARN does not appear in `eksctl get iamidentitymapping` output
+- [Step 4] Authentication mode is `CONFIG_MAP` or `API_AND_CONFIG_MAP`
+
+<!-- match: {"step": 5, "predicate": "absent", "target": "arn:aws:iam"} -->
+
+**Mitigation:**
+
+- **Risk:** Medium — grants Kubernetes API access to the specified IAM identity. Use the least-privilege group; reserve `system:masters` for admin roles only.
 - **Command:**
 
   ```bash
-  # Add an IAM role mapping
   eksctl create iamidentitymapping --cluster my-cluster \
     --arn arn:aws:iam::111122223333:role/MyRole \
     --group system:masters \
     --username admin-user
   ```
 
-- **Verify:**
+- **Duration:** Immediate — effective within seconds.
+
+**Resolution:** Same as Mitigation.
+
+**Impact:** Grants cluster-level Kubernetes access to the specified IAM principal. The access level is determined by the Kubernetes group (e.g., `system:masters` = full admin). Rollback is immediate.
+
+**Rollback:**
 
   ```bash
-  eksctl get iamidentitymapping --cluster my-cluster
-  kubectl get nodes
+  eksctl delete iamidentitymapping --cluster my-cluster \
+    --arn arn:aws:iam::111122223333:role/MyRole
   ```
 
-  The identity should appear in the mapping list and kubectl commands should succeed.
-- **Duration:** Immediate. The mapping takes effect within seconds.
+**Verification:**
 
-### Option 3: Create an EKS Access Entry
+```bash
+eksctl get iamidentitymapping --cluster my-cluster
+kubectl get nodes
+```
 
-For clusters using API-based access management.
+### Cause C: IAM principal missing from EKS access entries
 
-- **Risk:** Medium. Grants cluster access at the API level. Access policies control what the principal can do.
+**Statement:** The cluster uses API-based authentication mode and the caller's IAM principal has no access entry, so the EKS API returns no Kubernetes identity for the token.
+
+**Mechanism:** On clusters with `API` or `API_AND_CONFIG_MAP` authentication mode, identity resolution uses the EKS access entries API instead of (or alongside) the ConfigMap. If the principal ARN has no access entry and no ConfigMap entry, the IAM Authenticator finds no match and the API server rejects the request.
+
+**Indicator:**
+
+- [Step 4] Authentication mode is `API` or `API_AND_CONFIG_MAP`
+- [Step 6] Caller's ARN absent from `aws eks list-access-entries` output
+- [Step 3] Token generation succeeds but kubectl returns `Unauthorized`
+
+<!-- match: {"step": 4, "predicate": "contains", "target": "API"} -->
+
+**Mitigation:**
+
+- **Risk:** Medium — grants EKS cluster access at the API level. The access scope (cluster or namespace) and policy (e.g., `AmazonEKSClusterAdminPolicy`) control blast radius.
 - **Command:**
 
   ```bash
-  # Create access entry for a user or role
   aws eks create-access-entry --cluster-name my-cluster \
     --principal-arn arn:aws:iam::111122223333:role/MyRole \
     --type STANDARD
 
-  # Associate an access policy for cluster admin
   aws eks associate-access-policy --cluster-name my-cluster \
     --principal-arn arn:aws:iam::111122223333:role/MyRole \
     --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
     --access-scope type=cluster
   ```
 
-- **Verify:**
+- **Duration:** Immediate.
+
+**Resolution:** Same as Mitigation.
+
+**Impact:** Grants cluster-wide access if `access-scope type=cluster` is used. For least-privilege, use `type=namespace` with a specific namespace.
+
+**Rollback:**
 
   ```bash
-  aws eks list-access-entries --cluster-name my-cluster
-  kubectl get nodes
+  aws eks delete-access-entry --cluster-name my-cluster \
+    --principal-arn arn:aws:iam::111122223333:role/MyRole
+  ```
+
+**Verification:**
+
+```bash
+aws eks list-access-entries --cluster-name my-cluster
+kubectl get nodes
+```
+
+### Cause D: IAM role ARN contains a path segment unsupported by aws-auth
+
+**Statement:** The aws-auth ConfigMap entry uses an IAM role ARN with a path (e.g., `/division/team/`) that the AWS IAM Authenticator does not support, causing identity lookup to fail silently.
+
+**Mechanism:** The AWS IAM Authenticator only matches `mapRoles` entries against ARNs in the form `arn:aws:iam::ACCOUNT:role/ROLENAME` with no path prefix. When the STS-resolved ARN for a session includes a path (e.g., `arn:aws:iam::111122223333:role/ops/MyRole`), the string does not match the pathless entry and authentication fails.
+
+**Indicator:**
+
+- [Step 5] ConfigMap entry contains `rolearn` with a slash-separated path segment such as `arn:aws:iam::111122223333:role/ops/MyRole`
+- [Step 1] Caller ARN includes a path in its role segment
+
+<!-- match: {"step": 5, "predicate": "contains", "target": "role/ops/"} -->
+
+**Mitigation:**
+
+- **Risk:** Low — replaces an incorrect mapping with a correct one. Existing sessions using the old ARN lose access until the fix propagates (seconds).
+- **Command:**
+
+  ```bash
+  # Remove the path-containing entry
+  eksctl delete iamidentitymapping --cluster my-cluster \
+    --arn arn:aws:iam::111122223333:role/ops/MyRole
+
+  # Add with path-free ARN
+  eksctl create iamidentitymapping --cluster my-cluster \
+    --arn arn:aws:iam::111122223333:role/MyRole \
+    --group system:masters \
+    --username admin
   ```
 
 - **Duration:** Immediate.
 
-### Option 4: Fix Node Group Authentication
+**Resolution:** Same as Mitigation.
 
-When worker nodes fail to register with `Unauthorized`.
-
-- **Risk:** Low. Restores the required node-to-API-server authentication mapping.
-- **Command:**
-
-  ```bash
-  # For aws-auth ConfigMap clusters
-  eksctl create iamidentitymapping --cluster my-cluster \
-    --arn arn:aws:iam::111122223333:role/NodeInstanceRole \
-    --group system:bootstrappers,system:nodes \
-    --username system:node:{{EC2PrivateDNSName}}
-
-  # For API-based access clusters
-  aws eks create-access-entry --cluster-name my-cluster \
-    --principal-arn arn:aws:iam::111122223333:role/NodeInstanceRole \
-    --type EC2_LINUX
-  ```
-
-- **Verify:**
-
-  ```bash
-  kubectl get nodes
-  ```
-
-  Nodes should appear and transition to `Ready` status within 2-5 minutes.
-- **Duration:** Nodes register within 2-5 minutes.
-
-## Root Cause Resolution
-
-**If** Step 1 shows an IAM identity different from what was authorized **then** the AWS CLI is using the wrong profile, environment variable, or instance profile. Fix the credential chain:
+**Verification:**
 
 ```bash
-# Check which credentials are being used and why
-aws configure list
-
-# Set the correct profile explicitly
-export AWS_PROFILE=eks-admin
-
-# Or unset conflicting environment variables
-unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-
-# Regenerate kubeconfig
-aws eks update-kubeconfig --name my-cluster --region us-east-1
-```
-
-**If** Step 5 shows a role ARN with a path (e.g., `arn:aws:iam::111122223333:role/path/to/MyRole`) **then** EKS does not support paths in the aws-auth ConfigMap. Replace the mapping with the path-free ARN:
-
-```bash
-# Remove the incorrect mapping
-eksctl delete iamidentitymapping --cluster my-cluster \
-  --arn arn:aws:iam::111122223333:role/path/to/MyRole
-
-# Add with the correct ARN format (no path)
-eksctl create iamidentitymapping --cluster my-cluster \
-  --arn arn:aws:iam::111122223333:role/MyRole \
-  --group system:masters \
-  --username admin
-```
-
-**If** the ConfigMap uses an instance profile ARN instead of a role ARN **then** replace it with the role ARN. Instance profile ARNs look like `arn:aws:iam::111122223333:instance-profile/MyRole`; the correct format is `arn:aws:iam::111122223333:role/MyRole`.
-
-**If** Step 5 shows the aws-auth ConfigMap is missing or corrupted **then** recreate it using the cluster creator's credentials (who has implicit admin access):
-
-```yaml
-# Save as aws-auth.yaml and apply with: kubectl apply -f aws-auth.yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: aws-auth
-  namespace: kube-system
-data:
-  mapRoles: |
-    - rolearn: arn:aws:iam::111122223333:role/NodeInstanceRole
-      username: system:node:{{EC2PrivateDNSName}}
-      groups:
-        - system:bootstrappers
-        - system:nodes
-    - rolearn: arn:aws:iam::111122223333:role/AdminRole
-      username: admin
-      groups:
-        - system:masters
-```
-
-**If** Step 7 shows no OIDC provider for the cluster **then** create one:
-
-```bash
-eksctl utils associate-iam-oidc-provider --cluster my-cluster --approve
-```
-
-**If** the IAM principal that created the cluster has been deleted and no other admin mapping exists **then** use the EKS API to recover access (requires IAM permissions, not kubectl):
-
-```bash
-# Switch authentication mode to include API
-aws eks update-cluster-config --name my-cluster \
-  --access-config authenticationMode=API_AND_CONFIG_MAP
-
-# Create an access entry for a recovery role
-aws eks create-access-entry --cluster-name my-cluster \
-  --principal-arn arn:aws:iam::111122223333:role/RecoveryRole \
-  --type STANDARD
-aws eks associate-access-policy --cluster-name my-cluster \
-  --principal-arn arn:aws:iam::111122223333:role/RecoveryRole \
-  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
-  --access-scope type=cluster
-```
-
-## Verification
-
-After applying a fix, confirm authentication works end-to-end:
-
-```bash
-# Verify kubectl authentication and identity (requires Kubernetes 1.27+)
-kubectl auth whoami
-```
-
-This returns the Kubernetes username and groups your IAM identity is mapped to. For older clusters:
-
-```bash
+eksctl get iamidentitymapping --cluster my-cluster | grep MyRole
 kubectl get nodes
 ```
 
-A successful response with node list confirms authentication and basic authorization.
+Confirm no path segment appears in the `ARN` column.
+
+### Cause E: Worker node IAM role not mapped — nodes cannot register
+
+**Statement:** Worker nodes fail to join the cluster because the node IAM role ARN is not present in the aws-auth ConfigMap or as an EKS access entry, blocking kubelet registration.
+
+**Mechanism:** When a node boots, kubelet generates a TLS bootstrap token using `aws eks get-token` with the node's IAM role (via instance profile). The Kubernetes API server calls the AWS IAM Authenticator, which looks for a `mapRoles` entry matching the node role ARN. Without a mapping assigning the `system:bootstrappers` and `system:nodes` groups, the API server returns `Unauthorized` and the node never transitions to `Ready`.
+
+**Indicator:**
+
+- [Step 7] Node IAM role ARN absent from ConfigMap `mapRoles` entries or from `aws eks list-access-entries`
+- [Symptom] Kubelet logs show `Unable to register node ... with API server: Unauthorized`
+
+<!-- match: {"step": 7, "predicate": "absent", "target": "system:bootstrappers"} -->
+
+**Mitigation:**
+
+- **Risk:** Low — restores the minimum required node-to-cluster trust. Uses least-privilege groups `system:bootstrappers` and `system:nodes`.
+- **Command:**
+
+  ```bash
+  # For CONFIG_MAP clusters
+  eksctl create iamidentitymapping --cluster my-cluster \
+    --arn arn:aws:iam::111122223333:role/MyNodeRole \
+    --group system:bootstrappers,system:nodes \
+    --username system:node:{{EC2PrivateDNSName}}
+
+  # For API-mode clusters
+  aws eks create-access-entry --cluster-name my-cluster \
+    --principal-arn arn:aws:iam::111122223333:role/MyNodeRole \
+    --type EC2_LINUX
+  ```
+
+- **Duration:** Nodes re-register within 2–5 minutes.
+
+**Resolution:** Same as Mitigation.
+
+**Verification:**
 
 ```bash
-# Verify node registration (if fixing node auth)
 kubectl get nodes -o wide
 ```
 
-All expected nodes should be in `Ready` status. If nodes remain `NotReady`, check kubelet logs on the node via SSM:
+All nodes should appear in `Ready` status within 5 minutes. If nodes remain `NotReady`, check kubelet logs via SSM: `aws ssm start-session --target INSTANCE_ID` then `sudo journalctl -u kubelet -f`.
+
+### Cause F: Cluster creator IAM principal deleted with no other admin mapping
+
+**Statement:** The original cluster-creator IAM identity has been deleted and no other admin mapping exists, leaving the cluster without any administrative kubectl access.
+
+**Mechanism:** The IAM principal that creates an EKS cluster has implicit admin access when `CONFIG_MAP` mode is used — they are the first and only authorized user. If this account or role is deleted and no other principal was added to the ConfigMap or access entries, there is no kubectl-accessible identity. Recovery requires IAM-level AWS API calls (not kubectl), which remain available as long as the AWS account has `eks:UpdateClusterConfig` permission.
+
+**Indicator:**
+
+- [Step 5] `eksctl get iamidentitymapping` returns empty output or the command fails entirely
+- [Step 6] `aws eks list-access-entries` returns no admin-level entries
+- [Symptom] All kubectl commands return `Unauthorized` regardless of which IAM identity is used
+
+<!-- match: {"step": 5, "predicate": "absent", "target": "system:masters"} -->
+
+**Mitigation:**
+
+- **Risk:** Medium — changes the cluster authentication mode permanently (API mode cannot be disabled after enabling). Requires `eks:UpdateClusterConfig` and `eks:CreateAccessEntry` IAM permissions.
+- **Command:**
+
+  ```bash
+  # Enable API-based auth mode to allow recovery without kubectl
+  aws eks update-cluster-config --name my-cluster \
+    --access-config authenticationMode=API_AND_CONFIG_MAP
+
+  # Wait for update to complete
+  aws eks describe-cluster --name my-cluster \
+    --query 'cluster.accessConfig.authenticationMode' --output text
+
+  # Create a recovery access entry
+  aws eks create-access-entry --cluster-name my-cluster \
+    --principal-arn arn:aws:iam::111122223333:role/RecoveryRole \
+    --type STANDARD
+
+  aws eks associate-access-policy --cluster-name my-cluster \
+    --principal-arn arn:aws:iam::111122223333:role/RecoveryRole \
+    --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+    --access-scope type=cluster
+  ```
+
+- **Duration:** 2–5 minutes for the mode update to propagate.
+
+**Resolution:** Same as Mitigation.
+
+**Impact:** Cluster-wide — permanently enables API authentication mode alongside ConfigMap. Cannot be reverted to `CONFIG_MAP`-only.
+
+**Rollback:** Not applicable — mode change is one-way. Remove the recovery role after restoring the intended admin mappings.
+
+**Verification:**
 
 ```bash
-aws ssm start-session --target i-node-instance-id
-# Then: sudo journalctl -u kubelet -f
+aws eks update-kubeconfig --name my-cluster --region us-east-1 \
+  --role-arn arn:aws:iam::111122223333:role/RecoveryRole
+kubectl auth whoami
+kubectl get nodes
 ```
 
+### Cause G: OIDC provider missing or mismatched — IRSA pods cannot authenticate
+
+**Statement:** The EKS cluster's OIDC provider is not registered in IAM, so pods that use IAM Roles for Service Accounts cannot exchange service account tokens for AWS credentials.
+
+**Mechanism:** IRSA works by annotating a Kubernetes service account with an IAM role ARN. The pod token volume projection issues a OIDC-format JWT signed by the cluster's issuer. IAM's `AssumeRoleWithWebIdentity` validates the JWT against the registered OIDC provider. If no matching provider exists in IAM, the STS call fails and the pod receives `InvalidClientTokenId` or `AccessDenied`.
+
+**Indicator:**
+
+- [Step 8] Cluster OIDC issuer URL does not match any ARN in `aws iam list-open-id-connect-providers` output
+- [Symptom] Pods fail with `InvalidClientTokenId` or `An error occurred (AccessDenied) when calling AssumeRoleWithWebIdentity`
+
+<!-- match: {"step": 8, "predicate": "absent", "target": "oidc.eks"} -->
+
+**Mitigation:**
+
+- **Risk:** Low — creates an IAM resource without modifying the cluster. If a provider already exists for the cluster but with a stale thumbprint, delete it first.
+- **Command:**
+
+  ```bash
+  eksctl utils associate-iam-oidc-provider \
+    --cluster my-cluster --approve
+  ```
+
+- **Duration:** Immediate — OIDC provider creation is instant; pods using IRSA may need to restart to pick up new tokens.
+
+**Resolution:** Same as Mitigation.
+
+**Verification:**
+
 ```bash
-# Verify IRSA (if applicable)
-kubectl run test-irsa --image=amazon/aws-cli --restart=Never \
+# Confirm provider is registered
+aws iam list-open-id-connect-providers
+
+# Test IRSA from a pod
+kubectl run irsa-test --image=amazon/aws-cli --restart=Never \
   --overrides='{"spec":{"serviceAccountName":"my-service-account"}}' \
   -- sts get-caller-identity
-kubectl logs test-irsa
-kubectl delete pod test-irsa
+kubectl logs irsa-test
+kubectl delete pod irsa-test
 ```
 
-The output should show the IAM role associated with the service account, not the node instance role.
+IRSA is working if the output shows the IAM role ARN associated with the service account, not the node instance role.
+
+### Cause H: STS regional endpoint disabled for the AWS region
+
+**Statement:** The AWS STS regional endpoint for the cluster's region is not enabled, causing token generation to fail with `InvalidClientTokenId`.
+
+**Mechanism:** `aws eks get-token` calls the STS regional endpoint (e.g., `sts.us-west-2.amazonaws.com`) to generate the presigned authentication token. If the regional endpoint is not activated in the AWS account settings, the STS call fails with `InvalidClientTokenId`. This failure is distinct from an IAM permission error — the credential itself is invalid, not unauthorized.
+
+**Indicator:**
+
+- [Step 3] `aws eks get-token` fails with `InvalidClientTokenId`
+- [Symptom] Error message contains `The security token included in the request is invalid`
+
+<!-- match: {"step": 3, "predicate": "contains", "target": "InvalidClientTokenId"} -->
+
+**Mitigation:**
+
+- **Risk:** Low — enabling a regional STS endpoint is an account-level setting with no security downside.
+- **Command:**
+
+  ```bash
+  # Activate STS regional endpoint (AWS Console path):
+  # IAM → Account settings → STS endpoints → Activate for your region
+  # Or via CLI:
+  aws iam set-security-token-service-preferences \
+    --global-endpoint-token-version v2Token
+  ```
+
+- **Duration:** Takes effect within minutes of activation.
+
+**Resolution:** Same as Mitigation.
+
+**Verification:**
+
+```bash
+aws sts get-caller-identity --region us-west-2
+aws eks get-token --cluster-name my-cluster --region us-west-2
+kubectl get nodes
+```
+
+### Cause Z: Unidentified authentication failure
+
+**Statement:** The authentication failure does not match any of the above causes after completing all diagnostic steps.
+
+**Mechanism:** EKS authentication involves multiple layers — AWS credential chain, STS token generation, IAM Authenticator identity lookup, ConfigMap/access-entry resolution, and Kubernetes RBAC — and edge cases exist that require AWS Support or deeper network-level investigation.
+
+**Indicator:**
+
+- [Default] All Steps 1–9 completed but root cause not identified
+
+**Mitigation:**
+
+- **Risk:** Low — collecting diagnostic data is non-destructive.
+- **Command:**
+
+  ```bash
+  # Collect node-level diagnostics
+  sudo bash /etc/eks/log-collector-script/eks-log-collector.sh
+
+  # Check cluster health issues via AWS API
+  aws eks describe-cluster --name my-cluster \
+    --query 'cluster.health.issues'
+
+  # Run AWS-provided SSM automation
+  # AWSSupport-TroubleshootEKSWorkerNode via Systems Manager console
+  ```
+
+- **Duration:** Escalate to AWS Support if no resolution within 30 minutes.
+
+**Resolution:** Out of runbook scope — escalate to AWS Support with the log bundle from `eks-log-collector.sh` and the output of `aws eks describe-cluster --name my-cluster`.
+
+**Verification:** Confirmed by AWS Support case resolution or successful `kubectl get nodes` after remediation.
 
 ## Prevention
 
-### Use API-Based Access Management
-
-Migrate from the aws-auth ConfigMap to EKS access entries. Access entries are managed via the EKS API, are auditable via CloudTrail, and do not risk cluster lockout from a corrupted ConfigMap:
+Use API-based access management for all clusters at or above EKS platform version `eks.15` on Kubernetes 1.30+. API-based access entries are managed via IAM-auditable AWS APIs (CloudTrail), eliminate ConfigMap corruption risk, and support least-privilege namespace-scoped policies:
 
 ```bash
 aws eks update-cluster-config --name my-cluster \
   --access-config authenticationMode=API_AND_CONFIG_MAP
 ```
 
-### Always Have Multiple Admin Identities
+Always maintain at least two admin-level mappings — one for the operations team role and one for a break-glass emergency role. Never rely on a single IAM principal for cluster administrative access.
 
-Never rely on a single IAM principal for cluster admin access. Create at least two admin mappings: one for the operations team role and one for a break-glass emergency role stored in a secure vault.
+Map IAM roles, not IAM users. Roles can be assumed by multiple team members, are easier to rotate, and support IRSA patterns for workloads.
 
-### Use IAM Roles, Not IAM Users
-
-Map IAM roles (not individual users) in the aws-auth ConfigMap or access entries. Roles can be assumed by multiple team members and are easier to rotate than user credentials.
-
-### Audit Access Mappings Regularly
-
-Review aws-auth ConfigMap or access entries quarterly. Remove mappings for departed team members and unused roles:
+Audit access mappings quarterly and after any team changes:
 
 ```bash
 eksctl get iamidentitymapping --cluster my-cluster
 aws eks list-access-entries --cluster-name my-cluster
 ```
 
-### Enable CloudTrail Logging for EKS
+In CI/CD pipelines, always pin the kubeconfig to a specific IAM role using `--role-arn` so access does not depend on ambient credentials:
 
-Ensure CloudTrail is logging EKS API calls (`eks:DescribeCluster`, `sts:GetCallerIdentity`) and Kubernetes audit logs to diagnose authentication failures retroactively.
+```bash
+aws eks update-kubeconfig --name my-cluster --region us-east-1 \
+  --role-arn arn:aws:iam::111122223333:role/CI-EKSRole
+```
 
-### Pin kubeconfig to Specific IAM Roles
+Enable CloudTrail logging for `eks:*` and `sts:AssumeRole` API calls to enable retroactive diagnosis of future authentication failures.
 
-In CI/CD pipelines, always specify `--role-arn` in `aws eks update-kubeconfig` to avoid depending on ambient credentials that may change.
+Set up an alerting rule on CloudWatch for `aws eks describe-cluster` returning cluster health issues of type `ASSUME_ROLE_ACCESS_DENIED` or `PERMISSION_ACCESS_DENIED` — these indicate the cluster IAM role is broken before users hit authentication failures.
 
 ## Sources
 
-- [AWS EKS: Troubleshooting](https://docs.aws.amazon.com/eks/latest/userguide/troubleshooting.html) - Official EKS troubleshooting guide covering authentication errors, aws-auth ConfigMap, access entries, and node registration issues.
-- [AWS EKS: Grant IAM Access to Kubernetes](https://docs.aws.amazon.com/eks/latest/userguide/grant-k8s-access.html) - Detailed guide on EKS access entries and IAM-to-Kubernetes identity mapping.
-- [AWS EKS: Enabling IAM Principal Access](https://docs.aws.amazon.com/eks/latest/userguide/add-user-role.html) - aws-auth ConfigMap configuration reference.
-- [AWS EKS: Troubleshooting IAM](https://docs.aws.amazon.com/eks/latest/userguide/security_iam_troubleshoot.html) - IAM-specific EKS troubleshooting for role assumption and token generation failures.
-- [eksctl: IAM Identity Mappings](https://eksctl.io/usage/iam-identity-mappings/) - eksctl documentation for managing aws-auth ConfigMap entries.
+- [AWS EKS: Troubleshoot problems with Amazon EKS clusters and nodes](https://docs.aws.amazon.com/eks/latest/userguide/troubleshooting.html) — Official EKS troubleshooting guide covering `Unauthorized`/`AccessDenied` errors, node registration failures, aws-auth ConfigMap management, access entries, STS regional endpoint issues, and cluster health codes.
+- [AWS EKS: Grant IAM users and roles access to Kubernetes APIs](https://docs.aws.amazon.com/eks/latest/userguide/grant-k8s-access.html) — Authentication mode reference (`CONFIG_MAP`, `API`, `API_AND_CONFIG_MAP`), access entries vs ConfigMap comparison, migration guidance.
+- [AWS EKS: Troubleshooting IAM](https://docs.aws.amazon.com/eks/latest/userguide/security_iam_troubleshoot.html) — IAM-specific EKS troubleshooting for role assumption and token generation failures.

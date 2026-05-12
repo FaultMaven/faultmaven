@@ -1,256 +1,245 @@
 ---
-id: terraform-state-lock
-title: "Terraform State Lock"
+id: "terraform-state-lock"
+title: "Terraform State Lock Stuck or Orphaned"
 domain: application
 service: terraform
-symptom_class:
-  - timeout
+symptom_class: [timeout]
 severity: high
 scope: global
 version: "1.0.0"
-last_updated: "2026-03-26"
+last_updated: "2026-05-12"
 verified_by: "kb-researcher"
 status: draft
-tags:
-  - terraform
-  - state
-  - lock
-  - iac
-  - infrastructure-as-code
-  - dynamodb
+tags: [terraform, state, lock, iac, infrastructure-as-code, dynamodb, s3-backend, terraform-cloud]
 difficulty: intermediate
 ---
 
-# Terraform State Lock
+## Symptom Recognition
 
-## Problem Definition
+- `Error acquiring the state lock` with a `Lock Info` block containing `ID`, `Who`, `Operation`, `Created` fields
+- `ConditionalCheckFailedException: The conditional request failed` during S3+DynamoDB backend lock acquisition
+- Terraform commands hang indefinitely when `-lock-timeout` is not configured and another operation holds the lock
+- CI/CD pipelines time out because a prior run was killed before releasing the lock
+- `Error: Error releasing the state lock` after a completed operation, leaving an orphaned entry for the next run
+- `ResourceNotFoundException` when the DynamoDB lock table does not exist
+- `Error: Backend initialization required: please run "terraform init"` when the lock table is misconfigured
 
-Terraform acquires an exclusive lock on the state file before any write operation (`plan`, `apply`, `destroy`, `import`, `state mv`, `state rm`). When the lock cannot be acquired, Terraform blocks or fails immediately, preventing all infrastructure operations against that state. This runbook applies to Terraform v1.0 through v1.11+ (including OpenTofu v1.6+) using any backend that supports locking: S3+DynamoDB, Azure Blob Storage, GCS, Consul, Terraform Cloud/Enterprise, or local filesystem. Diagnosing lock issues requires shell access to the Terraform working directory, credentials for the state backend, and (for force-unlock) write access to the lock storage.
+## Applicability
 
-Lock failures manifest with the error `Error acquiring the state lock` followed by a `Lock Info` block. Common symptoms include:
-
-- `ConditionalCheckFailedException: The conditional request failed` when using S3+DynamoDB backend and another process holds the lock
-- `Error: Error locking state: Error acquiring the state lock` with a lock ID, path, operation type, owner identity (`Who`), Terraform version, and creation timestamp
-- Terraform commands hanging indefinitely when `-lock-timeout` is not set and another operation holds the lock
-- CI/CD pipelines timing out because a previous pipeline run was killed before releasing the lock
-- `Error: Error releasing the state lock` after a successful operation, leaving an orphaned lock for the next run
-- `Error: Backend initialization required: please run "terraform init"` when the DynamoDB lock table does not exist or is misconfigured
-
-The `Lock Info` block in the error output contains fields critical for diagnosis: `ID` (the lock identifier needed for force-unlock), `Who` (the user and hostname that acquired the lock), `Operation` (the Terraform command holding the lock), and `Created` (when the lock was acquired).
+- Terraform v1.0 through v1.11+ and OpenTofu v1.6+
+- Any backend that supports locking: S3+DynamoDB, Azure Blob Storage, GCS, Consul, Terraform Cloud/Enterprise, or local filesystem
+- Requires shell access to the Terraform working directory, credentials for the state backend, and (for force-unlock) write access to the lock storage
 
 ## Diagnostic Steps
 
-### Step 1. Record the Lock Info Fields
+### Step 1: Capture the Lock Info block
 
-Extract the lock metadata from the error message. Every subsequent diagnostic and mitigation step depends on these values.
+Record the full lock metadata from the error output. All downstream steps depend on these values.
 
 ```bash
 terraform plan 2>&1 | grep -A 10 "Lock Info:"
 ```
 
-Record the `ID`, `Who`, `Operation`, and `Created` fields. The `ID` is required for force-unlock. The `Who` field identifies the machine and user that holds the lock. The `Created` timestamp determines whether the lock is likely orphaned.
+Expected output: a block with `ID`, `Who`, `Operation`, `Created` fields. Note the `ID` value (needed for force-unlock) and the `Who` field (hostname/user that holds the lock).
 
-### Step 2. Determine If the Lock Is Legitimate
+### Step 2: Check whether the locking process is still alive
 
-Check whether the process identified in `Who` is still actively running a Terraform operation. A legitimate lock should not be force-unlocked.
+Verify that the process identified in `Who` is actively running a Terraform operation before considering force-unlock.
 
 ```bash
-# If the lock owner is a remote machine
+# Remote machine (SSH to hostname from Who field)
 ssh <hostname-from-who> "ps aux | grep '[t]erraform'"
 
-# If the lock owner is a CI/CD pipeline
-# GitHub Actions
+# GitHub Actions — check in_progress runs
 gh run list --workflow=terraform.yml --status=in_progress
 
-# GitLab CI
-# Check the pipeline page for running jobs in the Terraform stage
+# Local machine fallback
+ps aux | grep '[t]erraform'
 ```
 
-If the command returns an active Terraform process or the CI pipeline shows a running job, the lock is legitimate. Wait for the operation to complete. If no Terraform process is running and no CI job is active, the lock is orphaned.
+Expected output: if any Terraform process is listed or a CI job shows `in_progress`, the lock is legitimate — do not force-unlock. An empty result means the lock is orphaned.
 
-### Step 3. Calculate Lock Age
+### Step 3: Calculate lock age
 
-Compare the `Created` timestamp from Step 1 against the current time. Locks older than the maximum expected operation duration are almost certainly orphaned.
+Compare the `Created` timestamp from Step 1 to now. Locks older than 60 minutes with no active process are almost certainly orphaned.
 
 ```bash
-# Convert the lock creation time to epoch seconds
-lock_created=$(date -d "2026-03-26 10:30:00 UTC" +%s)
+lock_created=$(date -d "2026-05-12 10:30:00 UTC" +%s)
 now=$(date +%s)
 age_minutes=$(( (now - lock_created) / 60 ))
 echo "Lock age: ${age_minutes} minutes"
 ```
 
-Most Terraform operations complete within 30 minutes. A lock aged over 60 minutes with no active process (confirmed in Step 2) is orphaned. Very large infrastructures (hundreds of resources) may take longer; adjust the threshold based on your environment.
+Expected output: `Lock age: N minutes`. Values above 60 with no active process (Step 2) confirm an orphaned lock.
 
-### Step 4. Inspect the Backend Lock Entry Directly
+### Step 4: Inspect the backend lock entry directly
 
-Query the lock storage backend to confirm the lock exists and inspect its contents. This is useful when the Terraform error message is incomplete or when `terraform force-unlock` itself fails.
-
-For S3+DynamoDB backend:
+Query the lock storage to confirm the entry exists and retrieve its raw content. Useful when the Terraform error is incomplete or `force-unlock` itself fails to initialize.
 
 ```bash
+# S3+DynamoDB
 aws dynamodb get-item \
   --table-name terraform-locks \
   --key '{"LockID": {"S": "<state-path>/terraform.tfstate"}}' \
   --region <region>
-```
 
-For Azure Blob backend:
-
-```bash
+# Azure Blob
 az storage blob show \
   --container-name tfstate \
   --name <state-blob-name> \
   --account-name <storage-account> \
   --query "properties.lease"
-```
 
-For GCS backend:
-
-```bash
+# GCS
 gsutil stat gs://<bucket>/<state-path>
 ```
 
-If the DynamoDB item exists, the lock is held. If the Azure blob has an active lease, the lock is held. An empty response or missing item means the lock was already released and the error may be transient.
+Expected output: for DynamoDB, a JSON item with lock metadata if the lock is held; an empty response if already released. For Azure, a `leaseState: leased` value if held. An empty/missing result means the lock is already gone and the error may be transient.
 
-### Step 5. Check for Zombie Terraform Processes Locally
+### Step 5: Check for zombie Terraform processes on the local machine
 
-If the `Who` field points to the current machine, check for orphaned Terraform processes that may still hold file descriptors.
+If `Who` in Step 1 points to the current machine, look for orphaned Terraform processes holding file descriptors on the state.
 
 ```bash
 ps aux | grep '[t]erraform'
 lsof 2>/dev/null | grep terraform.tfstate
 ```
 
-If `ps` returns Terraform processes that are not part of any active terminal session or CI job, they are zombies. If `lsof` shows file handles on the state file, a local process is still holding the lock. Kill the zombie process before force-unlocking.
+Expected output: if `lsof` shows open file handles on the state file, a local zombie process is holding the lock. Note the PID for Cause D resolution.
 
-## Mitigation
+### Step 6: Check whether the DynamoDB lock table exists
 
-### Option 1. Wait with Lock Timeout
+Run this step only when the error message contains `ResourceNotFoundException` or `Backend initialization required`.
 
-If the lock is legitimate (another operation is in progress), retry with a timeout instead of failing immediately.
+```bash
+aws dynamodb describe-table \
+  --table-name terraform-locks \
+  --region <region> \
+  --query "Table.TableStatus"
+```
 
-- **Risk**: None. This queues the operation behind the active one. No state corruption risk.
-- **Command**:
+Expected output: `"ACTIVE"` if the table exists and is ready. A `ResourceNotFoundException` error means the table is absent.
+
+## Causes
+
+### Cause A: Orphaned lock from a killed CI/CD pipeline run
+
+**Statement:** A prior CI/CD pipeline run was terminated (runner timeout, spot instance preemption, manual cancellation) before Terraform could release the state lock, leaving an abandoned lock entry in the backend.
+
+**Mechanism:** Terraform acquires an exclusive lock before every write operation and releases it on exit. When the process is killed abruptly (SIGKILL or runner teardown), the release call never executes, and the lock record persists in the backend indefinitely. Subsequent runs hit `Error acquiring the state lock` until the orphaned entry is removed.
+
+**Indicator:**
+
+- [Step 2] no active Terraform process found on the lock owner host and no CI job is `in_progress`
+- [Step 3] lock age exceeds 60 minutes
+- [Symptom] `Who` field identifies a CI runner hostname, not a developer workstation
+
+<!-- match: {"step": 2, "predicate": "absent", "target": "terraform"} -->
+
+**Mitigation:**
+
+- **Risk:** Force-unlocking while a legitimate operation is writing can corrupt state. Confirm Steps 2 and 3 before proceeding.
+- **Command:**
+
+  ```bash
+  terraform force-unlock <lock-id-from-step-1>
+  ```
+
+- **Duration:** Seconds to execute; lock is released immediately.
+
+**Resolution:**
+
+```bash
+terraform force-unlock <lock-id-from-step-1>
+```
+
+- **Impact:** Single workspace; no infrastructure changes, state metadata only.
+
+- **Rollback:** Re-lock is automatic on the next Terraform operation. To restore a corrupted state use `terraform state push <backup.json>`.
+
+**Verification:** Run `terraform plan` and confirm it completes without a lock error. Then run `aws dynamodb scan --table-name terraform-locks --region <region> --select COUNT` and confirm the count is 0.
+
+---
+
+### Cause B: Concurrent parallel Terraform runs against the same workspace
+
+**Statement:** Multiple CI/CD jobs or developers triggered Terraform operations against the same state simultaneously, causing lock contention rather than an orphaned lock.
+
+**Mechanism:** Terraform backends grant locks exclusively; a second `terraform apply` will block or immediately fail if the first run has not yet released the lock. In CI systems without concurrency controls, parallel pipeline triggers (e.g., two pushes in quick succession, matrix builds, or manual re-runs) produce simultaneous lock attempts. The second run either hangs until `-lock-timeout` expires or fails immediately.
+
+**Indicator:**
+
+- [Step 2] an active Terraform process or an `in_progress` CI job is found for the lock owner
+- [Symptom] error appears during a period of high commit/deployment activity
+- [Step 3] lock age is recent (under 30 minutes)
+
+<!-- match: {"step": 2, "predicate": "contains", "target": "terraform"} -->
+
+**Mitigation:**
+
+- **Risk:** None — wait for the active operation to finish; do not force-unlock.
+- **Command:**
+
   ```bash
   terraform plan -lock-timeout=10m
   ```
-- **Verify**:
-  ```bash
-  terraform plan
-  ```
-  The plan should succeed without a lock error once the previous operation releases the lock.
-- **Duration**: Up to the specified timeout plus the plan execution time. Typically 1-30 minutes.
 
-### Option 2. Force-Unlock the State
+- **Duration:** Up to the specified timeout plus the plan/apply execution time; typically 1–30 minutes.
 
-If the lock is orphaned (confirmed by Steps 2-3), release it using the lock ID from the error message.
+**Resolution:**
 
-- **Risk**: High if the lock is legitimate. Force-unlocking while another operation is actively writing to the state can corrupt the state file. Confirm the locking process is dead before proceeding.
-- **Command**:
-  ```bash
-  terraform force-unlock <lock-id>
-  ```
-  Terraform prompts for confirmation. Type `yes` to proceed.
-- **Verify**:
-  ```bash
-  terraform plan
-  ```
-  The plan should succeed without a lock error. Review the plan output to confirm no state corruption.
-- **Duration**: Seconds.
-
-### Option 3. Remove the Lock Directly from the Backend
-
-If `terraform force-unlock` itself fails (for example, Terraform cannot initialize or the provider plugin is broken), remove the lock entry directly from the backend storage.
-
-- **Risk**: High. Same corruption risk as Option 2. Additionally, bypassing Terraform's lock management means Terraform does not verify the lock ID matches, so ensure no other operation is running.
-- **Command**:
-
-  For S3+DynamoDB:
-  ```bash
-  aws dynamodb delete-item \
-    --table-name terraform-locks \
-    --key '{"LockID": {"S": "<state-path>/terraform.tfstate"}}' \
-    --region <region>
-  ```
-
-  For Azure Blob (break the lease):
-  ```bash
-  az storage blob lease break \
-    --container-name tfstate \
-    --blob-name <state-blob-name> \
-    --account-name <storage-account>
-  ```
-
-  For Terraform Cloud/Enterprise:
-  ```bash
-  curl -s \
-    --header "Authorization: Bearer $TFC_TOKEN" \
-    --header "Content-Type: application/vnd.api+json" \
-    --request POST \
-    "https://app.terraform.io/api/v2/workspaces/<workspace-id>/actions/unlock"
-  ```
-- **Verify**:
-  ```bash
-  terraform plan
-  ```
-  The plan should succeed. Immediately run `terraform state list` to confirm state integrity.
-- **Duration**: Seconds.
-
-### Option 4. Kill the Zombie Process and Release
-
-If a local zombie Terraform process is holding the lock (identified in Step 5), kill it first, then force-unlock.
-
-- **Risk**: Medium. Killing a Terraform process mid-operation can leave partial state. The force-unlock afterward restores the ability to run new operations, but a state backup should be taken first.
-- **Command**:
-  ```bash
-  # Back up the state first
-  terraform state pull > state-backup-$(date +%Y%m%d%H%M%S).json
-
-  # Kill the zombie process
-  kill <pid>
-
-  # Force-unlock
-  terraform force-unlock <lock-id>
-  ```
-- **Verify**:
-  ```bash
-  terraform plan
-  terraform state list | wc -l
-  ```
-  Compare the resource count against the backup to confirm no resources were lost.
-- **Duration**: Under 1 minute.
-
-## Root Cause Resolution
-
-**If** the lock was orphaned because a CI pipeline was killed mid-operation (runner timeout, manual cancellation, spot instance termination), configure pipeline-level timeouts that exceed the expected Terraform operation duration and add graceful shutdown handling. For GitHub Actions, use `concurrency` groups to prevent parallel runs and `timeout-minutes` to set predictable limits:
+Add concurrency controls to the CI/CD pipeline to serialize Terraform operations:
 
 ```yaml
+# GitHub Actions
 concurrency:
   group: terraform-${{ github.ref }}
   cancel-in-progress: false
-
-jobs:
-  terraform:
-    timeout-minutes: 30
 ```
 
-**If** multiple CI pipelines run Terraform against the same state simultaneously, causing lock contention, serialize all Terraform operations. For GitHub Actions, use the `concurrency` group shown above. For GitLab CI, use `resource_group: terraform-<env>`. For Jenkins, use `lock(resource: 'terraform-production')` or `disableConcurrentBuilds()`.
-
-**If** the DynamoDB lock table does not exist (error message contains `ResourceNotFoundException`), create it with the correct schema:
-
-```bash
-aws dynamodb create-table \
-  --table-name terraform-locks \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region <region>
+```yaml
+# GitLab CI
+resource_group: terraform-production
 ```
 
-Then confirm the backend configuration references this table name in the `dynamodb_table` field.
+- **Impact:** Pipeline-level change; affects all future runs in that repo.
 
-**If** the backend configuration references the wrong table name, bucket, or container, fix the backend block to match the actual infrastructure:
+- **Rollback:** Remove the `concurrency` / `resource_group` key from the pipeline config.
+
+**Verification:** Trigger two pipeline runs simultaneously and confirm the second queues behind the first rather than failing with a lock error.
+
+---
+
+### Cause C: Missing or misconfigured DynamoDB lock table
+
+**Statement:** The DynamoDB table configured as the Terraform state lock backend does not exist or has an incorrect key schema, causing every Terraform operation to fail before acquiring a lock.
+
+**Mechanism:** The S3 backend requires a DynamoDB table with a `LockID` hash key of type String. If the table was never created, was deleted, or was created with a different key name, Terraform cannot write or read lock entries and raises `ResourceNotFoundException` or `ConditionalCheckFailedException`. This blocks all Terraform operations against the workspace, not just concurrent ones.
+
+**Indicator:**
+
+- [Step 6] `ResourceNotFoundException` returned by `aws dynamodb describe-table`
+- [Symptom] error message contains `ResourceNotFoundException` or `Backend initialization required`
+
+<!-- match: {"step": 6, "predicate": "absent", "target": "ACTIVE"} -->
+
+**Mitigation:**
+
+- **Risk:** Low — creates a new table; does not modify existing state files.
+- **Command:**
+
+  ```bash
+  aws dynamodb create-table \
+    --table-name terraform-locks \
+    --attribute-definitions AttributeName=LockID,AttributeType=S \
+    --key-schema AttributeName=LockID,KeyType=HASH \
+    --billing-mode PAY_PER_REQUEST \
+    --region <region>
+  ```
+
+- **Duration:** Table becomes `ACTIVE` within 10–30 seconds.
+
+**Resolution:** Same as Mitigation. Then verify the `dynamodb_table` field in the backend block matches the table name exactly:
 
 ```hcl
 terraform {
@@ -264,83 +253,142 @@ terraform {
 }
 ```
 
-**If** the lock is on a Terraform Cloud/Enterprise workspace and the locking run is no longer active, unlock it via the Terraform Cloud UI (Settings > Locking > Unlock) or via the API as shown in Mitigation Option 3.
+Run `terraform init -reconfigure` after fixing the backend block.
 
-**If** the lock release fails after a successful apply (the operation completed but the lock was not released due to a transient backend error), force-unlock the state and verify the apply was recorded correctly by running `terraform state list` and comparing against the expected resource count.
+**Verification:** Run `aws dynamodb describe-table --table-name terraform-locks --region <region> --query "Table.TableStatus"` and confirm `"ACTIVE"`. Then run `terraform plan` and confirm it completes without a lock or initialization error.
 
-## Verification
+---
 
-After resolving the lock issue, confirm that Terraform operations work correctly and the state is intact.
+### Cause D: Zombie Terraform process on local machine holding the lock
 
-1. Run a plan to confirm no lock errors remain:
+**Statement:** A previously interrupted Terraform process on the local machine is still alive with open file descriptors on the state file, preventing the lock from being released even after the terminal session appears idle.
 
-```bash
-terraform plan
-```
+**Mechanism:** When a Terraform process is suspended (Ctrl-Z), backgrounded, or left in a frozen shell, it retains the state lock without making progress. The process appears in `ps` output but is not associated with any active terminal. `lsof` shows open handles on the state file. `terraform force-unlock` will succeed at removing the backend lock record, but if the zombie process resumes, it may attempt to write with a stale lock, corrupting state.
 
-The plan should complete without any lock-related errors. Review the output for unexpected changes that might indicate state corruption.
+**Indicator:**
 
-2. Verify state integrity by listing all managed resources and checking the state version:
+- [Step 5] `lsof` shows open file handles on `terraform.tfstate`
+- [Step 2] `ps aux` finds a Terraform process on the local machine with no associated terminal
+- [Step 1] `Who` field contains the local machine hostname
+
+<!-- match: {"step": 5, "predicate": "contains", "target": "terraform.tfstate"} -->
+
+**Mitigation:**
+
+- **Risk:** Medium — killing a process mid-apply can leave partial state. Take a state backup first.
+- **Command:**
+
+  ```bash
+  terraform state pull > state-backup-$(date +%Y%m%d%H%M%S).json
+  kill <pid-from-step-5>
+  terraform force-unlock <lock-id-from-step-1>
+  ```
+
+- **Duration:** Under 1 minute.
+
+**Resolution:** Same as Mitigation. After killing the zombie, verify the backup matches expectations before re-running Terraform.
+
+**Verification:** Run `terraform plan` to confirm no lock error. Run `terraform state list | wc -l` and compare the resource count against the backup to confirm no resources were lost.
+
+---
+
+### Cause E: Backend lock release failed after a successful apply
+
+**Statement:** The Terraform apply completed successfully but a transient backend error prevented the state lock from being released, leaving an orphaned lock entry despite the infrastructure changes being applied.
+
+**Mechanism:** After writing the new state, Terraform makes a second call to delete the lock record from the backend. If this call fails due to a network blip, rate limit, or backend timeout, the lock persists even though the apply is fully recorded in the state file. The next `terraform plan` or `apply` hits `Error acquiring the state lock` but the state itself is intact and consistent.
+
+**Indicator:**
+
+- [Symptom] `Error: Error releasing the state lock` appears in the prior run's output immediately after `Apply complete!`
+- [Step 4] lock entry exists in the backend but its `Operation` field shows `OperationTypeApply`
+- [Step 3] lock age matches the time of the last successful apply
+
+<!-- match: {"step": 4, "predicate": "contains", "target": "OperationTypeApply"} -->
+
+**Mitigation:**
+
+- **Risk:** Low — the state is already consistent; force-unlock simply removes a stale record.
+- **Command:**
+
+  ```bash
+  terraform force-unlock <lock-id-from-step-1>
+  ```
+
+- **Duration:** Seconds.
+
+**Resolution:** Same as Mitigation. After unlocking, confirm state integrity:
 
 ```bash
 terraform state list
 terraform show -json | jq '.terraform_version, .format_version'
 ```
 
-The resource list should match expectations. The Terraform version should match your installed version.
+**Verification:** Run `terraform plan` and confirm it reports no changes (since the apply already completed) and no lock error. Confirm `aws dynamodb scan --table-name terraform-locks --region <region> --select COUNT` returns 0.
 
-3. Confirm no orphaned lock entries remain in the backend:
+---
 
-```bash
-# S3+DynamoDB
-aws dynamodb scan \
-  --table-name terraform-locks \
-  --region <region> \
-  --select COUNT
-```
+### Cause Z: Unidentified lock failure
 
-The item count should be 0 when no Terraform operations are actively running.
+**Statement:** The state lock failure does not match any of the recognized patterns above. [Default]
 
-4. Run a no-op apply to confirm the full write path works:
+**Mechanism:** Terraform state lock failures can originate from backend-specific bugs, IAM permission changes mid-operation, network partitions affecting only the lock table, or unsupported backend configurations. These cases require manual investigation of the specific backend's access logs and Terraform debug output.
 
-```bash
-terraform apply -auto-approve
-```
+**Indicator:**
 
-If no changes are pending, this should report `Apply complete! Resources: 0 added, 0 changed, 0 destroyed.`
+- [Default] none of Causes A–E indicators match the observed evidence
+
+**Mitigation:**
+
+- **Risk:** Low — gathering debug information only, no state changes.
+- **Command:**
+
+  ```bash
+  TF_LOG=DEBUG terraform plan 2>&1 | tee terraform-debug.log
+  grep -i "lock\|error\|fatal" terraform-debug.log
+  ```
+
+- **Duration:** 5–10 minutes for log collection.
+
+**Resolution:** Out of runbook scope. Escalate to the team with the debug log and the full `Lock Info` block. For Terraform Cloud/Enterprise, open a support ticket with the workspace ID and the lock timestamp.
+
+**Verification:** Resolution depends on the escalation outcome. Confirm with `terraform plan` once the underlying issue is addressed.
 
 ## Prevention
 
-- **Serialize Terraform operations in CI/CD.** Never run parallel Terraform operations against the same state file. Use GitHub Actions `concurrency` groups, GitLab CI `resource_group`, Jenkins `disableConcurrentBuilds()`, or Terraform Cloud workspace queuing.
+- **Serialize Terraform operations in CI/CD.** Never allow parallel runs against the same state. Use GitHub Actions `concurrency` groups, GitLab CI `resource_group`, Jenkins `disableConcurrentBuilds()`, or Terraform Cloud workspace queuing.
 
-- **Set `-lock-timeout` on all CI Terraform commands.** This handles brief lock contention from near-simultaneous pipeline triggers gracefully rather than failing immediately:
+- **Set `-lock-timeout` on all CI Terraform commands** to handle brief contention from near-simultaneous pipeline triggers:
 
-```bash
-terraform plan -lock-timeout=5m
-terraform apply -lock-timeout=5m -auto-approve
-```
+  ```bash
+  terraform plan -lock-timeout=5m
+  terraform apply -lock-timeout=5m -auto-approve
+  ```
 
-- **Always use remote state with locking enabled.** Local state files offer weaker locking guarantees and no protection across machines. Configure S3+DynamoDB, Azure Blob, GCS, or Terraform Cloud as the backend.
+- **Set pipeline timeouts that exceed expected operation duration.** If a Terraform apply typically takes 15 minutes, set the CI job timeout to at least 30 minutes to prevent premature kills that leave orphaned locks.
 
-- **Set pipeline timeouts that exceed expected operation duration.** If a Terraform apply typically takes 15 minutes, set the pipeline timeout to at least 30 minutes. This prevents premature kills that leave orphaned locks.
+- **Enable state file versioning for corruption recovery:**
 
-- **Enable state file versioning for corruption recovery.** Enable versioning on the S3 bucket, Azure Blob container, or GCS bucket so that a corrupted state can be recovered from a previous version:
+  ```bash
+  aws s3api put-bucket-versioning \
+    --bucket my-terraform-state \
+    --versioning-configuration Status=Enabled
+  ```
 
-```bash
-aws s3api put-bucket-versioning \
-  --bucket my-terraform-state \
-  --versioning-configuration Status=Enabled
-```
+- **Monitor for stale lock entries.** Create a scheduled job that scans the DynamoDB table for items older than 1 hour and alerts the team:
 
-- **Monitor for stale locks.** Create a scheduled job (cron, CloudWatch Events, GitHub Actions schedule) that scans the DynamoDB lock table for entries older than a threshold (e.g., 1 hour) and alerts the team.
+  ```bash
+  aws dynamodb scan \
+    --table-name terraform-locks \
+    --region <region> \
+    --select COUNT
+  ```
 
-- **Document the force-unlock procedure.** Ensure all team members know how to identify orphaned locks and safely force-unlock. Include the procedure in your team's incident runbook and the CI/CD pipeline documentation.
+- **Always use remote state with locking enabled.** Local state files offer no cross-machine protection. Configure S3+DynamoDB, Azure Blob, GCS, or Terraform Cloud as the backend.
 
 ## Sources
 
-- [Terraform Language: State Locking](https://developer.hashicorp.com/terraform/language/state/locking) -- Official documentation on lock behavior, backend support matrix, and lock timeout configuration.
-- [Terraform CLI: force-unlock Command](https://developer.hashicorp.com/terraform/cli/commands/force-unlock) -- Syntax, usage, and safety warnings for force-unlocking state.
-- [Terraform Language: S3 Backend](https://developer.hashicorp.com/terraform/language/settings/backends/s3) -- S3 backend configuration including DynamoDB lock table setup and IAM permissions.
-- [Terraform Language: Backend Configuration](https://developer.hashicorp.com/terraform/language/settings/backends/configuration) -- General backend setup for all supported backends with locking details.
-- [AWS DynamoDB: Working with Tables](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithTables.html) -- DynamoDB table creation, schema, and billing modes for Terraform lock tables.
-- [Terraform Cloud: Workspaces Locking](https://developer.hashicorp.com/terraform/cloud-docs/workspaces/settings#locking) -- Workspace lock management in Terraform Cloud/Enterprise.
+- [Terraform Language: State Locking](https://developer.hashicorp.com/terraform/language/state/locking) — Priority 1. Official documentation on lock behavior, backend support matrix, lock timeout configuration, and `Lock Info` field descriptions.
+- [Terraform CLI: force-unlock Command](https://developer.hashicorp.com/terraform/cli/commands/force-unlock) — Priority 1. Syntax, flags, usage, safety warnings, and when force-unlock is appropriate.
+- [Terraform Language: S3 Backend](https://developer.hashicorp.com/terraform/language/settings/backends/s3) — Priority 1. DynamoDB lock table schema requirements, IAM permissions, and backend configuration fields (`dynamodb_table`, `encrypt`, etc.).
+- [Terraform Language: Backend Configuration](https://developer.hashicorp.com/terraform/language/settings/backends/configuration) — Priority 1. General backend initialization, reconfiguration, and locking support across all backends.

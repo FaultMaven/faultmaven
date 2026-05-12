@@ -1,398 +1,461 @@
 ---
-id: k8s-service-unreachable
+id: "k8s-service-unreachable"
 title: "Kubernetes Service Unreachable"
 domain: compute
 service: kubernetes
-symptom_class:
-  - service_unavailable
-  - connection_refused
+symptom_class: [service_unavailable, connection_refused]
 severity: high
 scope: global
-version: "2.1.0"
-last_updated: "2026-03-26"
-verified_by: kb-researcher
+version: "1.0.0"
+last_updated: "2026-05-12"
+verified_by: "kb-researcher"
 status: draft
-tags:
-  - kubernetes
-  - services
-  - networking
-  - dns
-  - kube-proxy
-  - endpoints
+tags: [kubernetes, services, networking, dns, kube-proxy, endpoints, endpointslices]
 difficulty: intermediate
 ---
 
-# Kubernetes Service Unreachable
+## Symptom Recognition
 
-## Problem Definition
-
-Applies to Kubernetes 1.24+ clusters on any distribution. Requires `kubectl` access with permissions to get, describe Services, Endpoints, EndpointSlices, pods, and NetworkPolicies. Testing connectivity requires the ability to run ephemeral debug pods. Node-level diagnostics (iptables/IPVS inspection) require SSH access.
-
-A Kubernetes Service becomes unreachable when clients (pods or external traffic) cannot connect to the Service's ClusterIP, NodePort, or LoadBalancer address. The connection may time out, be refused, or return no response. This indicates a breakdown in the chain from DNS resolution through kube-proxy rules to backend pod endpoints.
-
-Kubernetes Services provide stable network endpoints backed by a set of pods selected by label selectors. The connection path involves multiple components: CoreDNS resolves the Service name to a ClusterIP, kube-proxy (or a CNI plugin in proxyless mode) programs iptables/IPVS rules to forward traffic from the ClusterIP to backend pod IPs, and the pod must be listening on the target port. A failure in any component breaks connectivity.
-
-Common root causes include selector mismatch (the Service's label selector does not match any running pod's labels, resulting in zero endpoints), no ready endpoints (backend pods exist but are not ready due to failing readiness probes), port mismatch (the Service `targetPort` does not match the port the application listens on), DNS resolution failure (CoreDNS is down or misconfigured), kube-proxy failure (kube-proxy is not running or has stale iptables/IPVS rules), NetworkPolicy blocking traffic (a policy denies ingress to the target pods or egress from the source), pod not listening (the application has crashed or is bound to localhost only), and namespace mismatch (the client references the Service without the correct namespace qualifier).
-
-Typical presentation from a client pod:
+Clients receive connection errors when contacting a Kubernetes Service by ClusterIP, NodePort, or DNS name. Common presentations from within a cluster pod:
 
 ```text
-$ curl http://my-service:8080/api
 curl: (7) Failed to connect to my-service port 8080: Connection refused
-```
-
-Or timeout:
-
-```text
-$ curl http://my-service:8080/api
 curl: (28) Connection timed out after 30001 milliseconds
+** server can't find my-service.default.svc.cluster.local: NXDOMAIN
+wget: server returned error: HTTP/1.1 503 Service Unavailable
 ```
 
-Or DNS failure:
+External clients via LoadBalancer or NodePort see `ERR_CONNECTION_REFUSED` or `504 Gateway Timeout`. Kubernetes events may show `Readiness probe failed` on backend pods. `kubectl get endpoints <service>` shows an empty `ENDPOINTS` column. Prometheus alert `KubernetesServiceEndpointsEmpty` fires.
 
-```text
-$ nslookup my-service
-** server can't find my-service: NXDOMAIN
-```
+## Applicability
+
+Applies to Kubernetes 1.21+ (EndpointSlices default) on any distribution (self-managed, EKS, GKE, AKS). Requires `kubectl` with `get`/`describe` permissions on Services, Endpoints, EndpointSlices, Pods, and NetworkPolicies. Running ephemeral debug pods requires `create pod` permission. Node-level iptables/IPVS inspection requires SSH or `kubectl debug node` access. Kube-proxy DaemonSet restart requires `patch` on DaemonSets in `kube-system`.
 
 ## Diagnostic Steps
 
-### Step 1: Verify the Service Exists and Is Configured Correctly
-
-**What this checks:** Whether the Service object exists with the correct type, ClusterIP, ports, and selector.
+### Step 1: Confirm the Service exists and inspect its configuration
 
 ```bash
 kubectl get svc <service-name> -n <namespace>
-kubectl describe svc <service-name> -n <namespace>
+kubectl get svc <service-name> -n <namespace> -o yaml
 ```
 
-**Expected output:** The Service with an assigned ClusterIP (not `None` unless headless), correct Port/TargetPort mapping, and a Selector that should match backend pods.
+Expected output: A Service with a non-`None` `clusterIP`, the correct `port`/`targetPort` mapping, and a populated `spec.selector`. A headless Service shows `clusterIP: None` — it has no VIP and kube-proxy does not program rules for it.
 
-**What the finding means:** If the Service does not exist, it needs to be created. If ClusterIP is `None`, it is a headless Service (no load balancing via kube-proxy). If the Port or TargetPort is wrong, traffic is routed to the wrong port on the pod.
-
-### Step 2: Check If Endpoints Exist
-
-**What this checks:** Whether the Service has backend pod IPs registered as endpoints.
+### Step 2: Check whether Endpoints or EndpointSlices are populated
 
 ```bash
-# Check endpoints
 kubectl get endpoints <service-name> -n <namespace>
-
-# Check EndpointSlices (preferred in Kubernetes 1.21+)
-kubectl get endpointslices -l kubernetes.io/service-name=<service-name> -n <namespace>
+kubectl get endpointslices -n <namespace> -l kubernetes.io/service-name=<service-name>
 ```
 
-**Expected output:** A list of pod IPs and ports. If the endpoints list is empty (no IPs), there are no matching ready pods.
+Expected output: One or more pod IPs listed under `ENDPOINTS`. An empty field (e.g., `<none>`) means no ready pods match the selector.
 
-**What the finding means:** Empty endpoints means either the selector does not match any pods (proceed to Step 3) or all matching pods are not ready (proceed to Step 4). If endpoints exist, the issue is further down the chain (kube-proxy, network, or the pod itself -- skip to Step 5).
-
-### Step 3: Verify Selector Matches Pod Labels
-
-**What this checks:** Whether the Service selector labels match the labels on running pods.
+### Step 3: Compare the Service selector against pod labels
 
 ```bash
-# Get the Service selector
-kubectl get svc <service-name> -n <namespace> -o jsonpath='{.spec.selector}' | jq .
-
-# List pods that match the selector
-kubectl get pods -n <namespace> -l <key>=<value>
-
-# Compare with pod labels
+kubectl get svc <service-name> -n <namespace> -o jsonpath='{.spec.selector}'
 kubectl get pods -n <namespace> --show-labels
+kubectl get pods -n <namespace> -l <key>=<value>
 ```
 
-**Expected output:** The selector key-value pairs and pods that match them.
+Expected output: The selector key-value pairs printed, and matching pods listed by the label query. Zero results from the label query confirm a selector mismatch.
 
-**What the finding means:** If no pods match the selector, either the selector is wrong (typo, outdated label) or the pods have incorrect labels (common after a deployment refactor). The fix is to align the selector with the pod labels or vice versa.
-
-### Step 4: Check Pod Readiness
-
-**What this checks:** Whether backend pods exist but are failing their readiness probes, which excludes them from Service endpoints.
+### Step 4: Inspect pod readiness status and readiness probe events
 
 ```bash
-# Check pod status and readiness
 kubectl get pods -n <namespace> -l <selector-key>=<selector-value>
-
-# Check readiness probe details
 kubectl describe pod <pod-name> -n <namespace> | grep -A 10 "Readiness:"
-
-# Check if readiness probe is failing
-kubectl events --for pod/<pod-name> -n <namespace> | grep -i readiness
+kubectl get events -n <namespace> --field-selector involvedObject.name=<pod-name> | grep -i readiness
 ```
 
-**Expected output:** Pod status showing `Running` but `READY 0/1`, and events indicating readiness probe failures.
+Expected output: Pods in `Running` status with `READY 1/1`. A `0/1` READY column with events containing `Readiness probe failed` indicates the pod is excluded from endpoints until the probe passes.
 
-**What the finding means:** Pods must pass their readiness probe to be added to Service endpoints. If a readiness probe is failing, the pod is excluded from traffic. Fix the readiness probe configuration or the application's health endpoint.
-
-### Step 5: Test DNS Resolution
-
-**What this checks:** Whether CoreDNS can resolve the Service name to the ClusterIP.
+### Step 5: Test DNS resolution for the Service name
 
 ```bash
-# Run a DNS test pod
-kubectl run -it --rm dns-test --image=busybox:1.36 --restart=Never -- nslookup <service-name>.<namespace>.svc.cluster.local
-
-# Check from inside an existing pod
-kubectl exec <pod-name> -n <namespace> -- cat /etc/resolv.conf
-kubectl exec <pod-name> -n <namespace> -- nslookup <service-name>
-```
-
-**Expected output:** The DNS query should return the Service ClusterIP address.
-
-**What the finding means:** If DNS returns `NXDOMAIN`, either the Service does not exist, the namespace qualifier is wrong, or CoreDNS is not functioning. If DNS returns the correct IP but the connection still fails, the issue is in kube-proxy or the pod itself.
-
-If DNS fails, check CoreDNS:
-
-```bash
+kubectl run -it --rm dns-test --image=busybox:1.36 --restart=Never -- \
+  nslookup <service-name>.<namespace>.svc.cluster.local
+kubectl exec -n <namespace> <pod-name> -- cat /etc/resolv.conf
 kubectl get pods -n kube-system -l k8s-app=kube-dns
 kubectl logs -n kube-system -l k8s-app=kube-dns --tail=50
 ```
 
-### Step 6: Test Direct Pod Connectivity
+Expected output: `nslookup` resolves the FQDN to the Service `clusterIP`. `/etc/resolv.conf` should contain `nameserver <dns-service-ip>` and `search <namespace>.svc.cluster.local svc.cluster.local cluster.local`. CoreDNS pods should be `Running`.
 
-**What this checks:** Whether the backend pod is reachable directly by IP, bypassing the Service and kube-proxy.
+### Step 6: Test direct pod IP connectivity bypassing the Service
 
 ```bash
-# Get pod IPs from endpoints
-kubectl get endpoints <service-name> -n <namespace> -o jsonpath='{.subsets[*].addresses[*].ip}'
-
-# Test direct connection to a pod IP
-kubectl run -it --rm curl-test --image=curlimages/curl --restart=Never -- curl -s -o /dev/null -w "%{http_code}" http://<pod-ip>:<target-port>/
+kubectl get endpoints <service-name> -n <namespace> \
+  -o jsonpath='{.subsets[*].addresses[*].ip}'
+kubectl run -it --rm curl-test --image=curlimages/curl --restart=Never -- \
+  curl -sv http://<pod-ip>:<target-port>/
+kubectl exec -n <namespace> <pod-name> -- ss -tlnp
 ```
 
-**Expected output:** An HTTP response code (e.g., 200) confirming the pod is reachable directly.
+Expected output: An HTTP response (e.g., `200 OK`) when hitting the pod IP directly. `ss -tlnp` lists the port the container is actually bound on. If the pod IP is unreachable or `ss` shows no matching listener, the application is at fault, not kube-proxy.
 
-**What the finding means:** If direct pod connectivity works but the Service ClusterIP does not, the issue is in kube-proxy or iptables rules. If direct pod connectivity also fails, the issue is in the pod itself (application not listening, wrong port, or NetworkPolicy blocking traffic).
-
-### Step 7: Check kube-proxy
-
-**What this checks:** Whether kube-proxy is running and has programmed the correct forwarding rules for the Service.
+### Step 7: Verify kube-proxy is running and has programmed forwarding rules
 
 ```bash
-# Check kube-proxy pods
 kubectl get pods -n kube-system -l k8s-app=kube-proxy
-
-# Check kube-proxy logs
 kubectl logs -n kube-system -l k8s-app=kube-proxy --tail=50
-
-# On a node, check iptables rules for the Service ClusterIP
+# On the affected node (requires SSH or kubectl debug node):
 sudo iptables -t nat -L KUBE-SERVICES -n | grep <cluster-ip>
-
-# For IPVS mode
-sudo ipvsadm -ln | grep <cluster-ip>
+sudo ipvsadm -L -n | grep <cluster-ip>
 ```
 
-**Expected output:** kube-proxy pods in Running state, and iptables/IPVS rules mapping the ClusterIP to backend pod IPs.
+Expected output: All kube-proxy pods in `Running` state. `iptables` output shows a `KUBE-SVC-*` chain entry for the Service ClusterIP. `ipvsadm` shows a virtual server entry for the ClusterIP with real server entries for each pod IP.
 
-**What the finding means:** If kube-proxy is not running, no Service routing works on that node. If kube-proxy is running but rules are missing or stale, a restart will regenerate them. In IPVS mode, check that virtual servers and real servers are correctly configured.
-
-### Step 8: Check Network Policies
-
-**What this checks:** Whether a NetworkPolicy is blocking traffic between the client and the backend pods.
+### Step 8: Check for NetworkPolicies blocking ingress to backend pods
 
 ```bash
-# List NetworkPolicies in the namespace
 kubectl get networkpolicy -n <namespace>
-
-# Describe policies to check ingress/egress rules
 kubectl describe networkpolicy -n <namespace>
 ```
 
-**Expected output:** NetworkPolicy rules showing which traffic is allowed or denied.
+Expected output: If any NetworkPolicy selects the backend pods with `policyTypes: [Ingress]`, only traffic from `from` selectors is allowed. An ingress policy with no matching `from` rule for the client pod blocks all other traffic.
 
-**What the finding means:** If a NetworkPolicy exists with an ingress rule, only traffic matching the `from` selector is allowed. Pods not matching the allowed sources are blocked. If no NetworkPolicy exists in the namespace, traffic is unrestricted by default.
+## Causes
 
-## Mitigation
+### Cause A: Selector Mismatch
 
-### Option 1: Fix Selector Mismatch
+**Statement:** The Service `spec.selector` contains a key-value pair that does not exactly match the labels on any running pod, so the controller creates no Endpoints.
 
-Use when endpoints are empty because the Service selector does not match pod labels.
+**Mechanism:** The Service controller watches pods and builds EndpointSlices from pods whose labels satisfy every key-value pair in the selector. A single typo, renamed label, or missing label key produces an empty EndpointSlice, causing kube-proxy to program zero backend rules for the ClusterIP. All traffic to the Service IP is silently dropped or times out.
 
-- **Risk:** Low. Updating the selector only changes which pods receive traffic.
+**Indicator:**
+
+- [Step 2] `ENDPOINTS` column is empty or shows `<none>`
+- [Step 3] `kubectl get pods -l <key>=<value>` returns zero pods
+
+<!-- match: {"step": 2, "predicate": "contains", "target": "<none>"} -->
+
+**Mitigation:**
+
+- **Risk:** Updating the Service selector is safe and takes effect immediately with no pod restarts.
 - **Command:**
+
   ```bash
   kubectl patch svc <service-name> -n <namespace> \
-    -p '{"spec":{"selector":{"app":"<correct-label>"}}}'
+    -p '{"spec":{"selector":{"<correct-key>":"<correct-value>"}}}'
   ```
-- **Verify:**
-  ```bash
-  kubectl get endpoints <service-name> -n <namespace>
-  ```
-  Endpoints should now list pod IPs.
-- **Duration:** Immediate (seconds).
 
-### Option 2: Fix Port Configuration
+- **Duration:** Immediate — endpoint controller reconciles within seconds.
 
-Use when the Service targetPort does not match the port the pod listens on.
+**Resolution:**
 
-- **Risk:** Low. Only changes the traffic routing target.
+```bash
+# Option A: fix the Service selector
+kubectl patch svc <service-name> -n <namespace> \
+  -p '{"spec":{"selector":{"app":"<correct-label-value>"}}}'
+
+# Option B: add the missing label to the Deployment pod template
+kubectl patch deployment <deployment-name> -n <namespace> \
+  -p '{"spec":{"template":{"metadata":{"labels":{"app":"<correct-label-value>"}}}}}'
+```
+
+- **Impact:** Selector patch is cluster-wide for this Service; Deployment label patch triggers a rolling restart of pods.
+
+- **Rollback:** `kubectl patch svc <service-name> -n <namespace> -p '{"spec":{"selector":{"app":"<old-value>"}}}'`
+
+**Verification:** `kubectl get endpoints <service-name> -n <namespace>` — ENDPOINTS column lists one or more pod IPs within 5 seconds of the patch.
+
+---
+
+### Cause B: Pods Not Ready Due to Failing Readiness Probe
+
+**Statement:** Backend pods are Running but excluded from Service Endpoints because their readiness probes are continuously failing.
+
+**Mechanism:** The endpoint controller only adds a pod to EndpointSlices when all containers report `Ready=True`. A readiness probe that targets the wrong path, wrong port, or fires before the application has initialized keeps the pod's `Ready` condition `False`. kube-proxy therefore programs no backend rule for that pod, so zero endpoints are available even though pods exist and are Running.
+
+**Indicator:**
+
+- [Step 2] `ENDPOINTS` is empty
+- [Step 4] Pod shows `READY 0/1` and events contain `Readiness probe failed`
+
+<!-- match: {"step": 4, "predicate": "contains", "target": "Readiness probe failed"} -->
+
+**Mitigation:**
+
+- **Risk:** Temporarily removing the readiness probe allows unready pods into rotation; only do this in a degraded production situation where uptime outweighs correctness.
 - **Command:**
+
+  ```bash
+  kubectl patch deployment <deployment-name> -n <namespace> \
+    -p '{"spec":{"template":{"spec":{"containers":[{"name":"<container>","readinessProbe":null}]}}}}'
+  ```
+
+- **Duration:** Until probe misconfiguration is corrected; revert immediately after traffic is restored.
+
+**Resolution:**
+
+```bash
+# Inspect the current probe and test the health endpoint manually
+kubectl get pod <pod-name> -n <namespace> \
+  -o jsonpath='{.spec.containers[0].readinessProbe}' | jq .
+kubectl exec <pod-name> -n <namespace> -- \
+  curl -sv localhost:<probe-port><probe-path>
+
+# Apply corrected probe via Deployment patch
+kubectl patch deployment <deployment-name> -n <namespace> --type='json' \
+  -p='[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/httpGet/path","value":"/healthz"}]'
+```
+
+**Verification:** `kubectl get pods -n <namespace> -l <selector>` — all pods show `READY 1/1` and `kubectl get endpoints <service-name> -n <namespace>` lists pod IPs.
+
+---
+
+### Cause C: Port or TargetPort Mismatch
+
+**Statement:** The Service `targetPort` field specifies a port number or name that does not match the port the container application actually listens on, causing immediate connection refusals at the pod.
+
+**Mechanism:** kube-proxy correctly programs rules routing ClusterIP traffic to pod IPs, but routes it to the wrong port on the pod. The kernel delivers the packet to that port; because nothing is listening, the kernel returns a TCP RST, which manifests as `Connection refused` in the client. The pod IP is reachable but the port is wrong.
+
+**Indicator:**
+
+- [Step 2] EndpointSlices are populated (pod IPs appear)
+- [Step 6] Direct curl to pod IP on the Service `targetPort` returns `Connection refused`, but `ss -tlnp` shows the container listening on a different port
+
+<!-- match: {"step": 6, "predicate": "contains", "target": "Connection refused"} -->
+
+**Mitigation:**
+
+- **Risk:** Changing `targetPort` takes effect for new connections immediately; in-flight connections are not affected.
+- **Command:**
+
   ```bash
   kubectl patch svc <service-name> -n <namespace> --type='json' \
     -p='[{"op":"replace","path":"/spec/ports/0/targetPort","value":<correct-port>}]'
   ```
-- **Verify:**
-  ```bash
-  kubectl run -it --rm test --image=curlimages/curl --restart=Never -- \
-    curl -s http://<service-name>.<namespace>.svc.cluster.local:<port>/
-  ```
-- **Duration:** Immediate (seconds).
 
-### Option 3: Restart kube-proxy
+- **Duration:** Immediate.
 
-Use when kube-proxy has stale rules or is in a bad state.
+**Resolution:** **Same as Mitigation.**
 
-- **Risk:** Low to Medium. There may be a brief disruption to Service routing cluster-wide during the rolling restart.
+- **Rollback:** Re-patch `targetPort` back to the original value.
+
+**Verification:** `kubectl run -it --rm curl-test --image=curlimages/curl --restart=Never -- curl -sv http://<service-name>.<namespace>.svc.cluster.local:<port>/` returns the expected HTTP status code.
+
+---
+
+### Cause D: DNS Resolution Failure (CoreDNS Down or Misconfigured)
+
+**Statement:** CoreDNS pods are unavailable or misconfigured, preventing pods from resolving Service names to ClusterIP addresses.
+
+**Mechanism:** Every pod's `/etc/resolv.conf` points to the CoreDNS ClusterIP as its nameserver. When a pod dials a Service by short name (e.g., `my-service`), the kernel appends the search domains from `resolv.conf` (e.g., `default.svc.cluster.local`) and queries CoreDNS. If CoreDNS pods are crashlooping, pending, or the Corefile contains a syntax error, DNS queries return `NXDOMAIN` or time out, and the application cannot resolve the Service IP at all.
+
+**Indicator:**
+
+- [Step 5] `nslookup` from a debug pod returns `NXDOMAIN` or `server can't find`
+- [Step 5] `kubectl get pods -n kube-system -l k8s-app=kube-dns` shows `CrashLoopBackOff` or `0/1 Running`
+
+<!-- match: {"step": 5, "predicate": "contains", "target": "NXDOMAIN"} -->
+
+**Mitigation:**
+
+- **Risk:** Medium — rolling restart of CoreDNS causes brief DNS unavailability cluster-wide (typically under 10 seconds with 2+ replicas).
 - **Command:**
-  ```bash
-  kubectl rollout restart daemonset/kube-proxy -n kube-system
-  ```
-- **Verify:**
-  ```bash
-  kubectl get pods -n kube-system -l k8s-app=kube-proxy -w
-  kubectl run -it --rm test --image=curlimages/curl --restart=Never -- \
-    curl -s http://<service-name>.<namespace>.svc.cluster.local:<port>/
-  ```
-- **Duration:** 1 to 5 minutes for the DaemonSet rollout.
 
-### Option 4: Restart CoreDNS
-
-Use when DNS resolution is failing cluster-wide.
-
-- **Risk:** Medium. DNS is briefly unavailable during restart, affecting all pod DNS lookups cluster-wide.
-- **Command:**
   ```bash
   kubectl rollout restart deployment/coredns -n kube-system
   ```
-- **Verify:**
-  ```bash
-  kubectl get pods -n kube-system -l k8s-app=kube-dns -w
-  kubectl run -it --rm dns-test --image=busybox:1.36 --restart=Never -- \
-    nslookup <service-name>.<namespace>.svc.cluster.local
-  ```
-- **Duration:** 1 to 3 minutes.
 
-## Root Cause Resolution
+- **Duration:** 1–3 minutes until rollout completes.
 
-**If** the Service selector labels do not match any pod labels **then** update either the Service selector or the pod labels to align:
+**Resolution:**
 
 ```bash
-# Option A: Update the Service selector
-kubectl patch svc <service-name> -n <namespace> \
-  -p '{"spec":{"selector":{"app":"<correct-label>"}}}'
-
-# Option B: Update the Deployment template labels
-kubectl patch deployment <deployment-name> -n <namespace> \
-  -p '{"spec":{"template":{"metadata":{"labels":{"app":"<correct-label>"}}}}}'
-```
-
-**If** pods exist but are not ready and events show readiness probe failures **then** fix the readiness probe:
-
-```bash
-# Check what the readiness probe expects
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[0].readinessProbe}' | jq .
-
-# Test the health endpoint manually
-kubectl exec <pod-name> -n <namespace> -- curl -s localhost:<probe-port><probe-path>
-```
-
-Fix the application's health endpoint or adjust the probe path, port, `initialDelaySeconds`, or `failureThreshold`.
-
-**If** the Service `targetPort` does not match the container's listening port **then** verify which port the application listens on:
-
-```bash
-kubectl exec <pod-name> -n <namespace> -- ss -tlnp
-# Or
-kubectl exec <pod-name> -n <namespace> -- netstat -tlnp
-```
-
-Ensure the `targetPort` in the Service matches the `containerPort` in the pod spec and the port the application actually binds to.
-
-**If** DNS resolution fails for Service names **then** check CoreDNS health:
-
-```bash
-kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide
+# Inspect Corefile for syntax errors
 kubectl get configmap coredns -n kube-system -o yaml
-kubectl get endpoints kube-dns -n kube-system
+
+# If configmap is corrupt, restore the default Corefile
+kubectl edit configmap coredns -n kube-system
+
+# After fixing, restart CoreDNS
+kubectl rollout restart deployment/coredns -n kube-system
+kubectl rollout status deployment/coredns -n kube-system
 ```
 
-If CoreDNS pods are crashlooping, check logs for configuration errors and fix the Corefile.
+**Verification:** `kubectl run -it --rm dns-test --image=busybox:1.36 --restart=Never -- nslookup <service-name>.<namespace>.svc.cluster.local` returns the Service ClusterIP.
 
-**If** direct pod access works but Service ClusterIP does not **then** kube-proxy rules may be stale:
+---
+
+### Cause E: kube-proxy Not Running or Has Stale/Missing Rules
+
+**Statement:** kube-proxy DaemonSet pods are absent or crashlooping on one or more nodes, so no iptables/IPVS forwarding rules exist for the Service ClusterIP on those nodes.
+
+**Mechanism:** kube-proxy watches Services and EndpointSlices and translates them into per-node iptables or IPVS rules. When kube-proxy crashes or is absent, traffic to the ClusterIP on that node has no forwarding rule and is dropped by the kernel. Pods scheduled on affected nodes cannot reach any Service by ClusterIP, while pods on healthy nodes are unaffected — this produces intermittent connectivity depending on which node the client pod is running on.
+
+**Indicator:**
+
+- [Step 6] Direct pod-IP connectivity works
+- [Step 7] kube-proxy pods show `CrashLoopBackOff` or fewer pods than nodes, or `iptables -t nat -L KUBE-SERVICES` returns no entry for the ClusterIP
+
+<!-- match: {"step": 7, "predicate": "absent", "target": "<cluster-ip>"} -->
+
+**Mitigation:**
+
+- **Risk:** Low to medium — a DaemonSet rolling restart briefly interrupts Service routing on each node in sequence; existing TCP connections may reset.
+- **Command:**
+
+  ```bash
+  kubectl rollout restart daemonset/kube-proxy -n kube-system
+  ```
+
+- **Duration:** 2–5 minutes for full DaemonSet rollout.
+
+**Resolution:**
 
 ```bash
-# On the affected node, flush and regenerate rules
-sudo iptables -t nat -F KUBE-SERVICES
+# Restart kube-proxy and monitor rollout
 kubectl rollout restart daemonset/kube-proxy -n kube-system
+kubectl rollout status daemonset/kube-proxy -n kube-system
+
+# Verify rules are reprogrammed on a node
+sudo iptables -t nat -L KUBE-SERVICES -n | grep <cluster-ip>
+# IPVS mode:
+sudo ipvsadm -L -n | grep <cluster-ip>
 ```
 
-**If** a NetworkPolicy blocks ingress to the target pods **then** update the policy to allow traffic from the source:
+**Verification:** `kubectl get pods -n kube-system -l k8s-app=kube-proxy` — all pods `Running 1/1`. Service connectivity test from a pod on the previously affected node returns expected HTTP response.
 
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-from-frontend
-  namespace: <namespace>
-spec:
-  podSelector:
-    matchLabels:
-      app: <backend-app>
-  ingress:
-  - from:
-    - podSelector:
-        matchLabels:
-          app: <frontend-app>
-    ports:
-    - protocol: TCP
-      port: <target-port>
-```
+---
 
-## Verification
+### Cause F: NetworkPolicy Blocking Ingress to Backend Pods
 
-After applying a fix, confirm end-to-end Service connectivity.
+**Statement:** A NetworkPolicy selects the backend pods with an `Ingress` rule that does not include an allow entry for the client pod or namespace, silently dropping traffic at the network layer.
+
+**Mechanism:** By default Kubernetes allows all pod-to-pod traffic. Once any NetworkPolicy selects a pod with `policyTypes: [Ingress]`, only traffic explicitly permitted by a `from` rule is delivered — all other ingress is blocked at the CNI layer before the pod's kernel even sees the packet. The connection attempt hangs (timeout rather than refused) because no TCP RST is sent.
+
+**Indicator:**
+
+- [Step 6] Direct pod-IP curl times out (not connection refused)
+- [Step 8] A NetworkPolicy exists that selects the backend pods and has no `from` rule covering the client pod's namespace or labels
+
+<!-- match: {"step": 8, "predicate": "contains", "target": "Ingress"} -->
+
+**Mitigation:**
+
+- **Risk:** Adding an allow rule to a NetworkPolicy opens a traffic path; review with the security team before applying in production.
+- **Command:**
+
+  ```bash
+  kubectl apply -f - <<'EOF'
+  apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    name: allow-client-to-backend
+    namespace: <namespace>
+  spec:
+    podSelector:
+      matchLabels:
+        app: <backend-label>
+    policyTypes:
+    - Ingress
+    ingress:
+    - from:
+      - podSelector:
+          matchLabels:
+            app: <client-label>
+      ports:
+      - protocol: TCP
+        port: <target-port>
+  EOF
+  ```
+
+- **Duration:** Effective immediately after apply.
+
+**Resolution:** **Same as Mitigation.** For namespace-level access, replace `podSelector` with `namespaceSelector`.
+
+**Verification:** Connectivity test from the client pod to `<service-name>.<namespace>.svc.cluster.local:<port>` succeeds within 5 seconds of policy apply.
+
+---
+
+### Cause G: Application Not Listening or Bound to Loopback Only
+
+**Statement:** The container application is not listening on the declared `targetPort`, or is bound to `127.0.0.1` only, so all external connections are refused even though the pod is Running and Ready.
+
+**Mechanism:** Endpoints are populated and kube-proxy rules are correct, so traffic reaches the pod IP on the target port. If the application has not started, has crashed silently, or binds to `localhost` (`127.0.0.1`) instead of `0.0.0.0`, the OS kernel has no listener on the pod's network interface and returns TCP RST immediately. This is indistinguishable from a port mismatch without inspecting the live socket table inside the container.
+
+**Indicator:**
+
+- [Step 2] EndpointSlices are populated
+- [Step 6] Direct curl to pod IP returns `Connection refused` AND `ss -tlnp` inside the pod shows no listener on `targetPort`, or shows listener bound to `127.0.0.1`
+
+<!-- match: {"step": 6, "predicate": "absent", "target": "0.0.0.0:<target-port>"} -->
+
+**Mitigation:**
+
+- **Risk:** Restarting the pod may cause brief downtime for connections to that replica.
+- **Command:**
+
+  ```bash
+  kubectl delete pod <pod-name> -n <namespace>
+  ```
+
+- **Duration:** Immediate; deployment controller recreates the pod.
+
+**Resolution:**
 
 ```bash
-# 1. Verify endpoints are populated
-kubectl get endpoints <service-name> -n <namespace>
-# Output should list one or more pod IPs with the correct port
+# Confirm the bind address inside the container
+kubectl exec <pod-name> -n <namespace> -- ss -tlnp
+
+# If application is misconfigured to bind localhost, fix the application config
+# or override via environment variable (application-specific):
+kubectl set env deployment/<deployment-name> -n <namespace> \
+  LISTEN_ADDR=0.0.0.0
+
+# Force rolling restart to apply
+kubectl rollout restart deployment/<deployment-name> -n <namespace>
 ```
 
-```bash
-# 2. Test DNS resolution
-kubectl run -it --rm dns-test --image=busybox:1.36 --restart=Never -- \
-  nslookup <service-name>.<namespace>.svc.cluster.local
-# DNS query should return the Service ClusterIP
-```
+**Verification:** `kubectl exec <pod-name> -n <namespace> -- ss -tlnp | grep <target-port>` shows a listener bound to `0.0.0.0` or `*` on the correct port. End-to-end Service curl succeeds.
 
-```bash
-# 3. Test Service connectivity
-kubectl run -it --rm curl-test --image=curlimages/curl --restart=Never -- \
-  curl -s -o /dev/null -w "%{http_code}\n" http://<service-name>.<namespace>.svc.cluster.local:<port>/
-# Should return expected HTTP status code (e.g., 200)
-```
+---
 
-```bash
-# 4. Verify from multiple source pods on different nodes
-kubectl run -it --rm test-cross-node --image=curlimages/curl --restart=Never \
-  -n <other-namespace> -- curl -s http://<service-name>.<namespace>.svc.cluster.local:<port>/
-```
+### Cause Z: Unidentified
+
+**Statement:** The Service is unreachable but none of the diagnostic steps reveal a clear cause such as selector mismatch, endpoint failure, DNS failure, kube-proxy failure, NetworkPolicy block, or application bind error.
+
+**Mechanism:** Edge cases — including CNI plugin bugs, kernel netfilter table corruption, IPv6/dual-stack misconfiguration, or intermittent infrastructure faults — can cause service unreachability that does not manifest in standard diagnostic outputs. Escalation to cluster administrators and CNI vendor support is required.
+
+**Indicator:**
+
+- [Default] All diagnostic steps (1–8) show nominally correct configuration: endpoints are populated, DNS resolves correctly, kube-proxy rules exist, no blocking NetworkPolicy, and the application listens on the correct address, yet connectivity fails.
+
+**Mitigation:**
+
+- **Risk:** Low — packet capture and CNI plugin diagnostics are read-only.
+- **Command:**
+
+  ```bash
+  # Capture traffic on the pod's veth interface on the node
+  NODE=$(kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.nodeName}')
+  kubectl debug node/$NODE -it --image=nicolaka/netshoot -- \
+    tcpdump -i any host <pod-ip> and port <target-port> -nn -c 100
+  ```
+
+- **Duration:** Capture can run for up to 10 minutes for intermittent issues.
+
+**Resolution:** Out of runbook scope. Escalate to cluster administrator with packet capture output, `kubectl cluster-info dump`, and CNI plugin logs from the affected node.
+
+**Verification:** After escalation, re-run the full diagnostic sequence (Steps 1–8) and confirm end-to-end Service connectivity from a debug pod.
 
 ## Prevention
 
-**Use consistent labeling standards.** Adopt a consistent labeling convention across all deployments and services using recommended Kubernetes labels:
+Use consistent labeling standards across all Deployments and Services. Apply the recommended Kubernetes common labels so selectors are predictable and discoverable:
 
 ```yaml
 metadata:
   labels:
     app.kubernetes.io/name: my-app
-    app.kubernetes.io/version: "1.0.0"
-    app.kubernetes.io/component: frontend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/version: "1.2.0"
 ```
 
-Use these same labels in Service selectors to avoid mismatches.
-
-**Configure readiness probes for all pods behind Services.** Every pod behind a Service should have a readiness probe that accurately reflects whether the pod can handle traffic:
+Configure readiness probes on every pod behind a Service. The probe must target the same path and port that handles real traffic:
 
 ```yaml
 readinessProbe:
@@ -404,7 +467,21 @@ readinessProbe:
   failureThreshold: 3
 ```
 
-**Monitor Service endpoints.** Alert when a Service has zero endpoints:
+Use named ports in both Pod specs and Service specs to eliminate numeric port mismatch:
+
+```yaml
+# Pod spec
+ports:
+  - name: http
+    containerPort: 8080
+# Service spec
+ports:
+  - name: http
+    port: 80
+    targetPort: http
+```
+
+Alert on zero-endpoint Services to catch selector mismatches before they reach production:
 
 ```yaml
 - alert: KubernetesServiceEndpointsEmpty
@@ -416,35 +493,18 @@ readinessProbe:
     summary: "Service {{ $labels.namespace }}/{{ $labels.endpoint }} has no ready endpoints"
 ```
 
-**Use port names instead of numbers.** Define named ports in both pods and Services to reduce port mismatch errors:
-
-```yaml
-# In the pod spec
-ports:
-  - name: http
-    containerPort: 8080
-
-# In the Service spec
-ports:
-  - name: http
-    port: 80
-    targetPort: http  # References the named port
-```
-
-**Test Service connectivity in CI/CD.** Add integration tests that verify Service connectivity after deployment:
+Add a smoke-test step in CI/CD pipelines that waits for pods to be ready and verifies Service connectivity before marking a deployment complete:
 
 ```bash
-kubectl wait --for=condition=ready pod -l app=<app-label> -n <namespace> --timeout=120s
-kubectl run -it --rm smoke-test --image=curlimages/curl --restart=Never -- \
+kubectl wait --for=condition=ready pod -l app=<label> -n <namespace> --timeout=120s
+kubectl run -it --rm smoke --image=curlimages/curl --restart=Never -- \
   curl -sf http://<service-name>.<namespace>.svc.cluster.local:<port>/healthz
 ```
 
-**Document NetworkPolicies.** Maintain documentation of all NetworkPolicies and their intended traffic flow. Regularly audit policies to ensure they do not inadvertently block legitimate traffic.
+Document all NetworkPolicies and audit them on each deployment change. Default-deny policies applied without corresponding allow rules are the leading cause of unexpected Service blockages after migrations.
 
 ## Sources
 
-- [Kubernetes: Debug Services](https://kubernetes.io/docs/tasks/debug/debug-application/debug-service/) -- Comprehensive guide for debugging Service connectivity issues
-- [Kubernetes: Service Concepts](https://kubernetes.io/docs/concepts/services-networking/service/) -- How Services, selectors, endpoints, and kube-proxy work
-- [Kubernetes: DNS for Services and Pods](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/) -- DNS resolution behavior for Services
-- [Kubernetes: Virtual IPs and Service Proxies](https://kubernetes.io/docs/reference/networking/virtual-ips/) -- iptables and IPVS proxy modes, kube-proxy behavior
-- [Kubernetes: kube-proxy Subtleties](https://kubernetes.io/blog/2019/03/29/kube-proxy-subtleties-debugging-an-intermittent-connection-reset/) -- Debugging intermittent connection resets caused by kube-proxy
+- [Kubernetes: Debug Services](https://kubernetes.io/docs/tasks/debug/debug-application/debug-service/) — Primary diagnostic workflow for service connectivity failures; commands and expected outputs used in Steps 1–9
+- [Kubernetes: Service Concepts](https://kubernetes.io/docs/concepts/services-networking/service/) — Port chain mechanics (port/targetPort/containerPort), selector-to-endpoint mapping, headless services, EndpointSlices
+- [Kubernetes: Virtual IPs and Service Proxies](https://kubernetes.io/docs/reference/networking/virtual-ips/) — kube-proxy iptables/IPVS rule programming, `KUBE-SERVICES` chain inspection, stale rule detection, IPVS vs iptables diagnostic differences

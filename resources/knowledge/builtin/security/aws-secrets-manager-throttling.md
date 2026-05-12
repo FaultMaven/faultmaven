@@ -1,65 +1,41 @@
 ---
-id: aws-secrets-manager-throttling
-title: "AWS Secrets Manager Throttling"
+id: "aws-secrets-manager-throttling"
+title: "AWS Secrets Manager RateExceeded Throttling"
 domain: security
 service: aws-secrets-manager
-symptom_class:
-  - timeout
-  - service_unavailable
-severity: medium
+symptom_class: [timeout, service_unavailable]
+severity: high
 scope: global
 version: "1.0.0"
-last_updated: "2026-03-26"
-verified_by: kb-researcher
+last_updated: "2026-05-12"
+verified_by: "kb-researcher"
 status: draft
-tags:
-  - aws
-  - secrets-manager
-  - throttling
-  - rate-limit
-  - caching
-  - sdk
+tags: [aws, secrets-manager, throttling, rate-limit, caching, sdk, lambda-extension]
 difficulty: intermediate
 ---
 
-# AWS Secrets Manager Throttling
+## Symptom Recognition
 
-## Problem Definition
+Applications receive `ThrottlingException` or `RateExceededException` from the AWS Secrets Manager API:
 
-Applies to all AWS accounts using Secrets Manager for secret retrieval. Requires `secretsmanager:GetSecretValue` and `secretsmanager:DescribeSecret` permissions, plus CloudTrail and CloudWatch access for diagnostics. Affects all AWS SDK versions and CLI v2+.
-
-Secrets Manager throttling occurs when API call rates exceed the per-account, per-region service limits. The caller receives a `ThrottlingException` or `RateExceededException`:
-
-```
-An error occurred (ThrottlingException) when calling the GetSecretValue operation:
-Rate exceeded
+```text
+An error occurred (ThrottlingException) when calling the GetSecretValue operation: Rate exceeded
 ```
 
-```
+```text
 botocore.exceptions.ClientError: An error occurred (ThrottlingException) when calling
 the GetSecretValue operation (reached max retries: 4): Rate exceeded
 ```
 
-Default API rate limits (per account, per region):
+CloudTrail shows `errorCode: ThrottlingException` on `secretsmanager.amazonaws.com` events. CloudWatch `APICallCount` for `GetSecretValue` spikes to or above service quota. Application response latency increases as SDK retry loops execute before ultimately failing.
 
-- **GetSecretValue**: 10,000 requests per second (sustained), burst to 10,000.
-- **DescribeSecret**: 2,000 requests per second.
-- **PutSecretValue / CreateSecret / UpdateSecret**: 50 requests per second.
-- **RotateSecret**: 50 requests per second.
+## Applicability
 
-Throttling typically occurs because:
-
-- **No client-side caching** — every function invocation or container startup calls GetSecretValue directly instead of caching the result.
-- **Lambda cold starts at scale** — hundreds of concurrent Lambda invocations each fetch secrets on startup.
-- **Microservice fleet restarts** — a rolling deployment or autoscaling event causes many pods/containers to fetch secrets simultaneously.
-- **Secret rotation storms** — multiple secrets rotating in the same window trigger bursts of read and write operations.
-- **Retry amplification** — SDK retries with insufficient backoff multiply the request rate during an existing throttle event.
+Applies to all AWS accounts using AWS Secrets Manager in any region. Affects all runtimes and AWS SDK versions (boto3, SDK for Java, SDK for JavaScript, AWS CLI v2, etc.). Requires the following permissions for diagnosis: `secretsmanager:GetSecretValue`, `cloudtrail:LookupEvents`, `cloudwatch:GetMetricStatistics`, `logs:FilterLogEvents`. Throttling quotas are per-account per-region and apply to cross-account callers based on the calling account's quota, not the secret owner's account.
 
 ## Diagnostic Steps
 
-### Step 1. Confirm throttling in CloudTrail
-
-Searches CloudTrail for Secrets Manager API calls that returned throttling errors, identifying which operations and which principals are being throttled.
+### Step 1: Search CloudTrail for Secrets Manager ThrottlingException events in the last hour
 
 ```bash
 aws cloudtrail lookup-events \
@@ -70,11 +46,9 @@ aws cloudtrail lookup-events \
   --output json
 ```
 
-Expected output shows events with `errorCode: ThrottlingException`. The `userIdentity.arn` field identifies which principal is generating the most calls. If no events appear, the throttling may be occurring at the SDK level before reaching CloudTrail.
+Expected output: JSON array of events with `errorCode: ThrottlingException`. The `userIdentity.arn` field identifies which principals are being throttled. Empty array means throttling occurs at SDK retry layer before CloudTrail records the call.
 
-### Step 2. Check current API call rate via CloudWatch
-
-Measures the actual API call rate to determine how close the account is to the service limit and which operations are hottest.
+### Step 2: Measure current GetSecretValue API call rate via CloudWatch to compare against quota
 
 ```bash
 aws cloudwatch get-metric-statistics \
@@ -84,237 +58,326 @@ aws cloudwatch get-metric-statistics \
   --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --period 60 \
   --statistics Sum \
-  --dimensions Name=Operation,Value=GetSecretValue
+  --dimensions Name=Operation,Value=GetSecretValue \
+  --output table
 ```
 
-Expected output shows the Sum of API calls per minute. Divide by 60 to get requests per second. If the value approaches or exceeds the service limit, throttling is expected.
+Expected output: `Sum` values per 60-second period. Divide by 60 to get requests per second. Values approaching 10,000 RPS indicate quota pressure; values at or above indicate throttling is expected.
 
-### Step 3. Identify the top callers
-
-Determines which IAM principals and source IPs are generating the most Secrets Manager API calls, helping pinpoint the service or workload responsible.
+### Step 3: Identify top callers by IAM principal using GetSecretValue call count
 
 ```bash
-# Use CloudTrail Insights or Athena for detailed breakdown
-# SELECT useridentity.arn, COUNT(*) as call_count
-# FROM cloudtrail_logs
-# WHERE eventsource = 'secretsmanager.amazonaws.com'
-#   AND eventname = 'GetSecretValue'
-#   AND eventtime > '2026-03-26T00:00:00Z'
-# GROUP BY useridentity.arn
-# ORDER BY call_count DESC
-# LIMIT 20;
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventSource,AttributeValue=secretsmanager.amazonaws.com \
+  --start-time "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" \
+  --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --query 'Events[?contains(CloudTrailEvent, `GetSecretValue`)].CloudTrailEvent' \
+  --output text | python3 -c "
+import sys, json, collections
+events = [json.loads(l) for l in sys.stdin if l.strip()]
+counts = collections.Counter(e.get('userIdentity',{}).get('arn','unknown') for e in events)
+[print(f'{c}\t{a}') for a, c in counts.most_common(10)]
+"
 ```
 
-The output identifies which roles/users are making the most calls. A single role with disproportionately high call counts indicates a caching issue in that workload.
+Expected output: tab-separated count and IAM ARN lines, most frequent first. A single role with disproportionately high call counts indicates a workload missing client-side caching.
 
-### Step 4. Check SDK retry configuration
-
-Examines whether the application's AWS SDK retry settings are amplifying the throttle. Default retry counts vary by SDK.
+### Step 4: Check whether the application uses the Secrets Manager caching library
 
 ```bash
-# Python (boto3) — check environment or code for retry config
-# boto3 defaults: 5 retries with exponential backoff for standard mode
-# Check for BOTO_MAX_RETRIES or AWS_MAX_ATTEMPTS environment variable
-env | grep -i 'retry\|max_attempt'
+pip show aws-secretsmanager-caching 2>/dev/null \
+  && echo "Caching library INSTALLED" \
+  || echo "Caching library NOT INSTALLED"
 ```
 
-If `AWS_MAX_ATTEMPTS` is set very high or retry mode is `legacy` (no exponential backoff), retries amplify the throttle. The `adaptive` retry mode is recommended for throttle-sensitive workloads.
+Expected output: `Caching library INSTALLED` means the library is available but may not be wired in. `NOT INSTALLED` means the application fetches directly on every call.
 
-### Step 5. Check for caching in the application
-
-Determines whether the application is using the Secrets Manager caching library or implementing its own cache. Without caching, every invocation makes a network call.
+### Step 5: Inspect the effective AWS SDK retry mode and max-attempts configuration
 
 ```bash
-# For Python applications, check if the caching library is installed
-pip show aws-secretsmanager-caching 2>/dev/null || echo "Caching library NOT installed"
-
-# For Java, check Maven dependencies
-# grep -r 'aws-secretsmanager-caching' pom.xml build.gradle 2>/dev/null
+env | grep -Ei 'retry|max_attempt|AWS_RETRY'
 ```
 
-If the caching library is not present and the application code calls `get_secret_value()` directly on every request, this is the root cause.
+Expected output: `AWS_RETRY_MODE=standard` or `adaptive` is correct. If unset, boto3 defaults to `legacy` mode (5 retries, fixed backoff), which amplifies throttle storms. `AWS_MAX_ATTEMPTS` values above 10 can significantly worsen burst throttling.
 
-## Mitigation
-
-### Option 1: Enable SDK adaptive retry mode
-
-**Risk**: Adaptive retry mode adds latency to retried calls (exponential backoff with jitter). This is intentional and preferred over failing fast during transient throttles.
-
-**Command**:
+### Step 6: Check current GetSecretValue service quota and pending quota increase requests
 
 ```bash
-# Set environment variable for all AWS SDK calls in the process
-export AWS_RETRY_MODE=adaptive
-export AWS_MAX_ATTEMPTS=5
-```
-
-**Verify**: Restart the application and monitor CloudWatch for reduced ThrottlingException counts.
-
-**Duration**: Permanent — adaptive retry mode is the recommended default.
-
-### Option 2: Request a service quota increase
-
-**Risk**: Higher quotas allow more API calls but do not address the underlying inefficiency. The account will eventually hit the new limit if caching is not implemented.
-
-**Command**:
-
-```bash
-aws service-quotas request-service-quota-increase \
+aws service-quotas get-service-quota \
   --service-code secretsmanager \
   --quota-code L-2F66A066 \
-  --desired-value 20000
+  --query 'Quota.{QuotaName:QuotaName,Value:Value,Adjustable:Adjustable}' \
+  --output table
 ```
 
-**Verify**:
+Expected output: shows the current GetSecretValue quota value (default 10,000 RPS) and whether it is adjustable. If the quota was already increased, this shows the adjusted value.
 
-```bash
-aws service-quotas get-requested-service-quota-change \
-  --request-id <request-id-from-above> \
-  --query 'RequestedQuota.{Status:Status,DesiredValue:DesiredValue}'
-```
+## Causes
 
-**Duration**: Quota increases are permanent. AWS may take 1-3 business days to approve.
+### Cause A: No client-side caching — every invocation calls GetSecretValue directly
 
-### Option 3: Stagger application restarts
+**Statement:** The application calls `GetSecretValue` on every request or function invocation without any in-process cache, multiplying API call rate by request throughput.
 
-**Risk**: Slower rollout increases deployment time. Acceptable for non-urgent deployments.
+**Mechanism:** Without caching, each HTTP request handled by the application (or each Lambda invocation) issues a separate `GetSecretValue` API call. At modest throughput — 100 RPS across 10 pods — this generates 1,000 Secrets Manager API calls per second. The service quota (typically 10,000 RPS per region) is shared across all secrets and all services in the account, so a single high-throughput service can consume the entire quota and starve other callers.
 
-**Command**:
+**Indicator:**
 
-```bash
-# For Kubernetes deployments, set maxSurge and maxUnavailable to limit concurrent pod starts
-kubectl patch deployment my-app -p '{"spec":{"strategy":{"rollingUpdate":{"maxSurge":"25%","maxUnavailable":"10%"}}}}'
-```
+- [Step 4] Output is `Caching library NOT INSTALLED`
+- [Step 3] A single IAM role ARN accounts for the majority of GetSecretValue calls
+<!-- match: {"step": 4, "predicate": "contains", "target": "NOT INSTALLED"} -->
 
-**Verify**: Monitor GetSecretValue call rate during deployment and confirm it stays below the service limit.
+**Mitigation:**
 
-**Duration**: Permanent deployment configuration change.
+- **Risk:** Installing the caching library requires a code change and re-deploy; secrets remain stale for up to `secret_refresh_interval` seconds after rotation.
+- **Command:**
 
-## Root Cause Resolution
+  ```bash
+  pip install aws-secretsmanager-caching
+  ```
 
-**If** the application has no client-side caching → implement the AWS Secrets Manager caching library:
+- **Duration:** Permanent — code must be updated to use the cache client.
 
-Python:
-
-```bash
-pip install aws-secretsmanager-caching
-```
+**Resolution:**
 
 ```python
 from aws_secretsmanager_caching import SecretCache, SecretCacheConfig
-from botocore.session import Session
+import boto3
 
 cache_config = SecretCacheConfig(
     max_cache_size=1000,
-    secret_refresh_interval=3600  # seconds
+    secret_refresh_interval=3600  # seconds; align with rotation schedule
 )
-cache = SecretCache(config=cache_config, client=Session().create_client('secretsmanager'))
+cache = SecretCache(config=cache_config, client=boto3.client('secretsmanager'))
 
-# Use cache.get_secret_string() instead of client.get_secret_value()
-secret_value = cache.get_secret_string('my-secret')
+# Replace client.get_secret_value() calls:
+secret_value = cache.get_secret_string('my-secret-name')
 ```
 
-**If** Lambda functions fetch secrets on every cold start → use the Lambda Extensions caching layer:
+**Verification:** After re-deploying, re-run Step 2. `APICallCount` for `GetSecretValue` should drop by 90%+ within 5 minutes. Confirm `ThrottlingException` count in CloudWatch reaches zero.
+
+---
+
+### Cause B: Lambda cold-start thundering herd — hundreds of concurrent invocations each fetch secrets on startup
+
+**Statement:** Concurrent Lambda cold starts each call `GetSecretValue` at initialization time, creating a burst that exceeds the account's Secrets Manager quota.
+
+**Mechanism:** Lambda functions that retrieve secrets in the global initialization scope (outside the handler) run that code on every cold start. An autoscaling event or traffic burst that triggers hundreds of concurrent cold starts within seconds generates an equivalent number of simultaneous `GetSecretValue` calls. Each Lambda execution environment has no shared state, so there is no cross-invocation caching without the Lambda extension. The burst may be short-lived but still triggers `ThrottlingException` for all concurrently initializing functions.
+
+**Indicator:**
+
+- [Symptom] `ThrottlingException` errors correlate with Lambda concurrency spikes visible in CloudWatch Lambda metrics
+- [Step 3] Multiple distinct Lambda execution role ARNs each contribute GetSecretValue calls at the same timestamp
+<!-- match: {"step": 1, "predicate": "contains", "target": "ThrottlingException"} -->
+
+**Mitigation:**
+
+- **Risk:** Adding the Lambda extension layer requires a function update; the extension adds ~10 ms cold-start overhead. Setting `SECRETS_MANAGER_TTL` too low (e.g., 0) disables caching and defeats the purpose.
+- **Command:**
+
+  ```bash
+  # Add the AWS Parameters and Secrets Lambda Extension layer
+  aws lambda update-function-configuration \
+    --function-name my-function \
+    --layers arn:aws:lambda:us-east-1:177933569100:layer:AWS-Parameters-and-Secrets-Lambda-Extension:11
+  ```
+
+- **Duration:** Permanent — extension caches secrets in the execution environment for `SECRETS_MANAGER_TTL` seconds (default: 300 s).
+
+**Resolution:**
 
 ```bash
-# Add the AWS Parameters and Secrets Lambda Extension layer
+# Set cache TTL; default is 300 s. Align with rotation schedule.
 aws lambda update-function-configuration \
   --function-name my-function \
-  --layers arn:aws:lambda:us-east-1:177933569100:layer:AWS-Parameters-and-Secrets-Lambda-Extension:11
+  --environment "Variables={SECRETS_MANAGER_TTL=300}"
 ```
 
-The extension caches secrets locally and serves them from `localhost:2773`, eliminating cold-start API calls to Secrets Manager.
+Replace `GetSecretValue` SDK calls with the extension HTTP endpoint:
 
-**If** secret rotation storms cause burst throttling → stagger rotation schedules across secrets:
+```python
+import os, json, requests
+
+def get_secret(secret_name):
+    url = f"http://localhost:2773/secretsmanager/get?secretId={secret_name}"
+    headers = {"X-Aws-Parameters-Secrets-Token": os.environ["AWS_SESSION_TOKEN"]}
+    return json.loads(requests.get(url, headers=headers).text)["SecretString"]
+```
+
+**Verification:** Deploy updated function, then trigger a concurrency spike (e.g., load test). CloudWatch `APICallCount` for `GetSecretValue` should not increase proportionally to Lambda invocation count.
+
+---
+
+### Cause C: Microservice fleet rolling restart — all pods fetch secrets on startup simultaneously
+
+**Statement:** A Kubernetes rolling deployment or autoscaling event causes many application pods to start simultaneously, each fetching secrets before serving traffic, creating a burst of `GetSecretValue` calls.
+
+**Mechanism:** Each pod fetches secrets during initialization (often before the readiness probe passes), concentrating API calls within a short window. With `maxSurge: 100%` and no delay between pod starts, a 50-pod deployment can generate 50 concurrent `GetSecretValue` calls per secret. If the application fetches multiple secrets and lacks caching, the burst multiplies further. The same pattern occurs during HPA scale-out events.
+
+**Indicator:**
+
+- [Symptom] `ThrottlingException` errors correlate with deployment or HPA scale events visible in Kubernetes events
+- [Step 1] CloudTrail ThrottlingException timestamps align with pod startup timestamps
+<!-- match: {"step": 1, "predicate": "contains", "target": "ThrottlingException"} -->
+
+**Mitigation:**
+
+- **Risk:** Slower rollout (`maxSurge: 25%`) increases total deployment time; in the interim, the workload may serve reduced capacity.
+- **Command:**
+
+  ```bash
+  kubectl patch deployment my-app -p \
+    '{"spec":{"strategy":{"rollingUpdate":{"maxSurge":"25%","maxUnavailable":"10%"}}}}'
+  ```
+
+- **Duration:** Permanent deployment configuration change; also address root cause by adding caching (see Cause A).
+
+**Resolution:**
 
 ```bash
-# Set different rotation schedules to avoid all secrets rotating at the same time
-aws secretsmanager rotate-secret \
-  --secret-id my-secret-1 \
-  --rotation-rules '{"ScheduleExpression":"rate(30 days)","Duration":"2h"}'
-
-aws secretsmanager rotate-secret \
-  --secret-id my-secret-2 \
-  --rotation-rules '{"ScheduleExpression":"cron(0 12 15 * ? *)","Duration":"2h"}'
+# Add a startup delay between pod initializations using minReadySeconds
+kubectl patch deployment my-app -p \
+  '{"spec":{"minReadySeconds":10}}'
 ```
 
-**If** SDK retry amplification is worsening throttles → configure adaptive retry mode in the SDK configuration:
+**Verification:** Monitor `GetSecretValue` call rate in CloudWatch during the next deployment. The rate should remain below 10% of quota throughout the rollout.
+
+---
+
+### Cause D: Secret rotation storm — multiple secrets rotating in the same window trigger concurrent read and write bursts
+
+**Statement:** Multiple secrets scheduled to rotate at the same time generate concurrent `GetSecretValue`, `PutSecretValue`, and `DescribeSecret` calls from the rotation Lambda functions, consuming burst capacity across multiple API operation types.
+
+**Mechanism:** Each secret rotation invokes a Lambda function that calls `GetSecretValue` (to retrieve the current secret), updates the credential in the target system, then calls `PutSecretValue`. Write APIs (`PutSecretValue`) have a much lower quota (50 RPS) than read APIs. When dozens of secrets rotate simultaneously, even moderate concurrency saturates write quotas. Rotation Lambdas also trigger `DescribeSecret` internally. The burst is self-reinforcing if rotation Lambdas retry aggressively.
+
+**Indicator:**
+
+- [Step 1] CloudTrail shows `ThrottlingException` on `PutSecretValue` or `DescribeSecret` operations (not only `GetSecretValue`)
+- [Step 2] Re-run Step 2 with `Value=PutSecretValue` — Sum divided by 60 approaches 50 RPS
+<!-- match: {"step": 1, "predicate": "contains", "target": "PutSecretValue"} -->
+
+**Mitigation:**
+
+- **Risk:** Staggering rotation schedules requires updating each secret individually; brief window where some secrets are on old credentials during the transition.
+- **Command:**
+
+  ```bash
+  # Stagger secrets across different hours/days using cron expressions
+  aws secretsmanager rotate-secret \
+    --secret-id my-secret-1 \
+    --rotation-rules '{"ScheduleExpression":"cron(0 2 1 * ? *)","Duration":"2h"}'
+
+  aws secretsmanager rotate-secret \
+    --secret-id my-secret-2 \
+    --rotation-rules '{"ScheduleExpression":"cron(0 8 15 * ? *)","Duration":"2h"}'
+  ```
+
+- **Duration:** Permanent — rotation schedules remain until changed.
+
+**Resolution:** Same as Mitigation.
+
+**Verification:** After staggering rotations, confirm CloudTrail shows no `ThrottlingException` events on `PutSecretValue` or `DescribeSecret` during the next rotation window.
+
+---
+
+### Cause E: SDK retry amplification — legacy or aggressive retry configuration multiplies requests during throttle events
+
+**Statement:** The application's AWS SDK is configured with `legacy` retry mode or an excessive `max_attempts` value, causing each throttled request to generate multiple retry calls that worsen the throttle cascade.
+
+**Mechanism:** In `legacy` retry mode, boto3 uses a fixed backoff with up to 5 retries per call. With no exponential backoff or jitter, all retrying callers fire at nearly the same time, creating synchronized retry waves. Each wave re-triggers throttling, sustaining the event far longer than necessary. `standard` mode uses truncated binary exponential backoff with jitter (max 20 s backoff) and a retry token bucket that prevents retry storms. `adaptive` mode additionally adds client-side rate limiting using a token bucket, but is not recommended for multi-tenant applications.
+
+**Indicator:**
+
+- [Step 5] `AWS_RETRY_MODE` is unset (defaults to `legacy`) or `AWS_MAX_ATTEMPTS` is set above 10
+- [Step 1] CloudTrail shows repeated ThrottlingException entries from the same ARN within seconds of each other
+<!-- match: {"step": 5, "predicate": "absent", "target": "AWS_RETRY_MODE"} -->
+
+**Mitigation:**
+
+- **Risk:** `standard` mode increases latency for throttled requests (up to 20 s backoff per retry). This is intentional — it prevents retry storms. `adaptive` mode can delay even the first request when a token bucket is drained; do not use with shared clients across unrelated secrets.
+- **Command:**
+
+  ```bash
+  export AWS_RETRY_MODE=standard
+  export AWS_MAX_ATTEMPTS=5
+  ```
+
+- **Duration:** Permanent — set in application environment or SDK config file.
+
+**Resolution:**
 
 ```python
 import boto3
 from botocore.config import Config
 
-config = Config(
-    retries={'mode': 'adaptive', 'max_attempts': 5}
-)
-client = boto3.client('secretsmanager', config=config)
+config = Config(retries={"mode": "standard", "max_attempts": 5})
+client = boto3.client("secretsmanager", config=config)
 ```
 
-**If** a single workload dominates the API call rate → consider storing the secret in AWS Systems Manager Parameter Store (SecureString) for high-throughput read scenarios, which has higher default rate limits (10,000 TPS for GetParameter).
+**Verification:** After restarting the application with the new retry config, confirm CloudTrail no longer shows rapid consecutive ThrottlingException entries from the same ARN within sub-second intervals.
 
-## Verification
+---
 
-1. Monitor the ThrottlingException count in CloudWatch after applying the fix:
+### Cause Z: Unidentified
 
-```bash
-aws cloudwatch get-metric-statistics \
-  --namespace AWS/SecretsManager \
-  --metric-name APICallCount \
-  --start-time "$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" \
-  --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --period 60 \
-  --statistics Sum \
-  --dimensions Name=Operation,Value=GetSecretValue
-```
+**Statement:** [Default] Throttling cause is not identifiable from available diagnostic output.
 
-The API call rate should drop significantly after caching is implemented. Expect a 90%+ reduction for workloads that previously fetched on every request.
+**Mechanism:** The diagnostic steps above cover the most common causes of Secrets Manager throttling. If all checks are inconclusive, the root cause may involve cross-account quota sharing, VPC endpoint request concentration, or a newly introduced workload not yet visible in historical CloudTrail data.
 
-2. Confirm no ThrottlingException errors in application logs:
+**Indicator:**
 
-```bash
-# For CloudWatch Logs
-aws logs filter-log-events \
-  --log-group-name /aws/lambda/my-function \
-  --start-time "$(date -u -d '30 minutes ago' +%s)000" \
-  --filter-pattern "ThrottlingException"
-```
+- [Default] None of Causes A–E match the diagnostic findings
 
-Expected output: no matching events.
+**Mitigation:**
 
-3. Verify the application retrieves secrets successfully under normal load by running a health check or smoke test.
+- **Risk:** Requesting a quota increase does not address underlying inefficiency; the account will eventually exhaust the higher limit without caching.
+- **Command:**
+
+  ```bash
+  aws service-quotas request-service-quota-increase \
+    --service-code secretsmanager \
+    --quota-code L-2F66A066 \
+    --desired-value 20000
+  ```
+
+- **Duration:** AWS processes quota increase requests in 1–3 business days; approved increases are permanent.
+
+**Resolution:** Escalate to AWS Support with CloudTrail event IDs and CloudWatch metric data. Simultaneously implement client-side caching (Cause A Resolution) as a defensive measure regardless of root cause.
+
+**Verification:** Monitor CloudWatch `APICallCount` after quota increase approval. Confirm `ThrottlingException` events cease.
 
 ## Prevention
 
-1. **Always use the Secrets Manager caching library** in production applications. Set `secret_refresh_interval` to match your rotation schedule (typically 1-24 hours).
+1. **Always use the Secrets Manager caching library** in production applications. Configure `secret_refresh_interval` to match the rotation schedule (1–24 hours is typical). Available for Python, Java, .NET, Go, and Rust.
 
-2. **Use the Lambda Parameters and Secrets Extension** for all Lambda functions that access Secrets Manager. It provides transparent caching without code changes.
+2. **Add the AWS Parameters and Secrets Lambda Extension** to all Lambda functions that access Secrets Manager. Default TTL is 300 seconds; set `SECRETS_MANAGER_TTL` to a value lower than your rotation window.
 
-3. **Stagger deployment rollouts** to avoid thundering-herd secret fetches. Configure Kubernetes `maxSurge` or ECS `minimumHealthyPercent` to limit concurrent startups.
+3. **Use `standard` retry mode in all AWS SDKs.** Set `AWS_RETRY_MODE=standard` in the environment or configure via `Config(retries={"mode": "standard"})` in boto3. Never leave `legacy` mode in place for production workloads.
 
-4. **Set up CloudWatch alarms on Secrets Manager throttling**:
+4. **Stagger Kubernetes rollouts** using `maxSurge: 25%` and `minReadySeconds: 10` to prevent simultaneous pod-startup secret fetch bursts.
 
-```bash
-aws cloudwatch put-metric-alarm \
-  --alarm-name SecretsManagerThrottling \
-  --metric-name ThrottleCount \
-  --namespace AWS/SecretsManager \
-  --statistic Sum \
-  --period 300 \
-  --threshold 10 \
-  --comparison-operator GreaterThanThreshold \
-  --evaluation-periods 1 \
-  --alarm-actions arn:aws:sns:us-east-1:123456789012:ops-alerts
-```
+5. **Stagger secret rotation schedules** using distinct cron expressions so that no more than 5 secrets rotate within the same hour.
 
-5. **Distribute secrets across regions** if the workload is multi-region, to avoid concentrating API calls in a single region's quota.
+6. **Set a CloudWatch alarm on Secrets Manager throttling:**
 
-6. **Use AWS Config rules** to detect applications deployed without caching libraries in their dependency manifests.
+   ```bash
+   aws cloudwatch put-metric-alarm \
+     --alarm-name SecretsManagerThrottling \
+     --metric-name APICallCount \
+     --namespace AWS/SecretsManager \
+     --statistic Sum \
+     --period 300 \
+     --threshold 50 \
+     --comparison-operator GreaterThanThreshold \
+     --dimensions Name=ErrorCode,Value=ThrottlingException \
+     --evaluation-periods 1 \
+     --alarm-actions arn:aws:sns:us-east-1:123456789012:ops-alerts
+   ```
+
+7. **Monitor quota headroom** using Service Quotas: set a CloudWatch alarm when `GetSecretValue` call rate exceeds 70% of the approved quota to provide lead time for quota increase requests.
 
 ## Sources
 
-- [Quotas for AWS Secrets Manager - AWS Secrets Manager User Guide](https://docs.aws.amazon.com/secretsmanager/latest/userguide/reference_limits.html)
-- [Reduce Secrets Manager API calls with client-side caching - AWS Secrets Manager User Guide](https://docs.aws.amazon.com/secretsmanager/latest/userguide/retrieving-secrets_cache-ref-implguide.html)
-- [AWS Parameters and Secrets Lambda Extension - AWS Lambda User Guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/ps-integration-lambda-extensions.html)
-- [Retry behavior in AWS SDKs - AWS General Reference](https://docs.aws.amazon.com/general/latest/gr/api-retries.html)
-- [Secrets Manager best practices - AWS Secrets Manager User Guide](https://docs.aws.amazon.com/secretsmanager/latest/userguide/best-practices.html)
-- [Troubleshoot AWS Secrets Manager throttling - AWS re:Post](https://repost.aws/knowledge-center/secrets-manager-throttling)
+- [AWS Secrets Manager quotas — AWS Secrets Manager User Guide](https://docs.aws.amazon.com/secretsmanager/latest/userguide/reference_limits.html) — quota values, throttling error types, backoff guidance; priority 1
+- [Use caching to retrieve secrets — AWS Secrets Manager best practices](https://docs.aws.amazon.com/secretsmanager/latest/userguide/best-practices.html) — caching library list, rotation best practices; priority 1
+- [Use Secrets Manager secrets in Lambda functions — AWS Lambda Developer Guide](https://docs.aws.amazon.com/lambda/latest/dg/with-secrets-manager.html) — Lambda extension setup, environment variables (SECRETS_MANAGER_TTL default 300 s, port 2773, cache size 1000), code examples for Python/Node/Java; priority 1
+- [Retry behavior — AWS SDKs and Tools Reference Guide](https://docs.aws.amazon.com/sdkref/latest/guide/feature-retry-behavior.html) — retry modes (legacy/standard/adaptive), max_attempts defaults, exponential backoff with jitter algorithm; priority 1

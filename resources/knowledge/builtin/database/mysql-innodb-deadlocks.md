@@ -1,189 +1,137 @@
 ---
-id: mysql-innodb-deadlocks
+id: "mysql-innodb-deadlocks"
 title: "MySQL InnoDB Deadlocks"
 domain: database
 service: mysql
-symptom_class:
-  - latency
-  - timeout
+symptom_class: [latency, timeout]
 severity: high
 scope: global
-version: "2.1.0"
-last_updated: "2026-03-26"
-verified_by: kb-researcher
+version: "1.0.0"
+last_updated: "2026-05-12"
+verified_by: "kb-researcher"
 status: draft
-tags:
-  - mysql
-  - innodb
-  - deadlock
-  - locking
-  - transactions
+tags: [innodb, deadlock, locking, transactions, isolation-level]
 difficulty: intermediate
 ---
 
-# MySQL InnoDB Deadlocks
+## Symptom Recognition
 
-## Problem Definition
+- Application receives MySQL error 1213: `Deadlock found when trying to get lock; try restarting transaction`
+- Transaction retry rates increase in application metrics; write throughput drops
+- Elevated query latency on write-heavy tables during peak traffic
+- `SHOW ENGINE INNODB STATUS` shows a non-empty `LATEST DETECTED DEADLOCK` section
+- `Innodb_deadlocks` status counter is incrementing
+- Error log entries containing `TRANSACTION` / `HOLDS THE LOCK` / `WAITING FOR THIS LOCK` (when `innodb_print_all_deadlocks = ON`)
+- Connection pool exhaustion or client timeouts caused by retried transactions backing up
 
-This runbook covers MySQL 8.0+ deployments using the InnoDB storage engine that are experiencing deadlocks. It applies to self-managed instances, Amazon RDS for MySQL, Aurora MySQL, Google Cloud SQL for MySQL, and MariaDB with InnoDB. You need a MySQL client with privileges to run `SHOW ENGINE INNODB STATUS`, query `information_schema.innodb_trx`, query `performance_schema.data_locks` and `performance_schema.data_lock_waits`, set global variables, and `KILL` threads. Access to the MySQL error log is also required.
+## Applicability
 
-A deadlock is a situation in which two or more transactions hold locks that the other transactions need, creating a circular wait dependency where none can proceed. InnoDB automatically detects deadlocks (when `innodb_deadlock_detect = ON`, the default) and rolls back one transaction (the "victim" -- typically the one with the fewest row modifications). If deadlock detection is disabled, InnoDB relies on `innodb_lock_wait_timeout` (default 50 seconds) to break the cycle. Frequent deadlocks are not dangerous to the database but indicate application-level issues that degrade performance and reliability.
+Applies to MySQL 8.0+ (self-managed), Amazon RDS for MySQL, Amazon Aurora MySQL, Google Cloud SQL for MySQL, and MariaDB 10.3+ using the InnoDB storage engine.
 
-**Common symptoms:**
+Required access: MySQL account with `PROCESS`, `REPLICATION CLIENT`, and `SUPER` (or `SYSTEM_VARIABLES_ADMIN`) privileges to run `SHOW ENGINE INNODB STATUS`, query `performance_schema`, set global variables, and issue `KILL` statements. Read access to the MySQL error log is required for Step 2.
 
-- Application receives error 1213: `Deadlock found when trying to get lock; try restarting transaction`
-- Increased transaction retry rates in application metrics
-- Elevated query latency during peak write traffic
-- Timeouts on write-heavy workloads
-- `SHOW ENGINE INNODB STATUS` shows a populated LATEST DETECTED DEADLOCK section
-- `Innodb_deadlocks` status variable increasing over time
-- Error log entries containing deadlock details (when `innodb_print_all_deadlocks` is enabled)
-
-**Common root causes:**
-
-- Inconsistent lock ordering across transactions (Transaction A locks row 1 then row 2, Transaction B locks row 2 then row 1)
-- Long-running transactions holding locks while waiting for additional locks
-- Missing or suboptimal indexes causing full table scans that acquire excessive row locks
-- Gap locks in `REPEATABLE READ` isolation level (the default) creating phantom lock conflicts
-- Bulk INSERT/UPDATE/DELETE operations competing with concurrent transactions
-- Foreign key constraint checks acquiring shared locks on parent tables
-- `SELECT ... FOR UPDATE` or `SELECT ... FOR SHARE` acquiring unnecessary locks
-- Next-key locks (record lock + gap lock) on secondary indexes blocking concurrent inserts
+Tools needed: `mysql` CLI client, access to the application source or ORM query log.
 
 ## Diagnostic Steps
 
-### Step 1: View the most recent deadlock
+### Step 1:
 
-**What this checks:** The full details of the last detected deadlock, including both transactions, the locks held and waited for, the SQL statements, and which transaction was chosen as the victim.
+Capture the most recent deadlock in full detail.
 
 ```bash
-mysql -e "SHOW ENGINE INNODB STATUS\G" | sed -n '/LATEST DETECTED DEADLOCK/,/^---/p'
+mysql -e "SHOW ENGINE INNODB STATUS\G" | awk '/LATEST DETECTED DEADLOCK/,/^---/'
 ```
 
-**Expected output:** A section showing two transactions (TRANSACTION 1 and TRANSACTION 2) with their lock information, SQL statements, and the rollback decision indicating which was rolled back.
+Expected output: A block containing `TRANSACTION 1` and `TRANSACTION 2` sections listing the SQL statements, lock types (`lock_mode X`, `lock_mode X,GAP`, `lock_mode S,GAP`), index names, and the `WE ROLL BACK TRANSACTION` line identifying the victim.
 
-**What the finding means:** The output shows the exact lock types involved (record lock, gap lock, next-key lock), the index used, and the SQL statements. The `lock_mode` field reveals whether the conflict involves shared (S) or exclusive (X) locks, and whether gap locks (indicated by `lock_mode X,GAP` or `lock_mode S,GAP`) are a factor. The transaction with "WE ROLL BACK" is the victim.
+### Step 2:
 
-### Step 2: Enable logging of all deadlocks
-
-**What this checks:** Configures MySQL to write every deadlock event to the error log, not just the most recent one, enabling historical analysis and frequency tracking.
+Enable logging of all deadlock events and inspect frequency.
 
 ```bash
 mysql -e "SET GLOBAL innodb_print_all_deadlocks = ON;"
+grep -i "deadlock" /var/log/mysql/error.log | grep -c "TRANSACTION"
 ```
 
-Review deadlocks in the error log:
+Expected output: An integer count of deadlock events in the error log. Zero means no historical data yet; any non-zero value with a timestamp within the last hour confirms active deadlock pressure. Disable this setting after debugging: `SET GLOBAL innodb_print_all_deadlocks = OFF;`
 
-```bash
-grep -i "deadlock" /var/log/mysql/error.log | tail -50
-```
+### Step 3:
 
-**Expected output:** Deadlock entries in the error log with timestamps and full transaction details identical to the LATEST DETECTED DEADLOCK section.
-
-**What the finding means:** Multiple deadlocks on the same tables/indexes in a short period indicate a systematic application-level lock ordering problem. Deadlocks on different tables suggest broader contention patterns. Disable this setting after debugging to avoid filling the error log: `SET GLOBAL innodb_print_all_deadlocks = OFF;`
-
-### Step 3: Monitor lock waits in real time
-
-**What this checks:** Which transactions are currently waiting for locks and which transactions are blocking them, showing the live lock-wait graph.
+Inspect the current lock-wait graph to identify blocking transactions.
 
 ```bash
 mysql -e "
 SELECT
-  r.trx_id AS waiting_trx_id,
+  r.trx_id AS waiting_trx,
   r.trx_mysql_thread_id AS waiting_thread,
   r.trx_query AS waiting_query,
-  b.trx_id AS blocking_trx_id,
+  b.trx_id AS blocking_trx,
   b.trx_mysql_thread_id AS blocking_thread,
   b.trx_query AS blocking_query,
-  TIMESTAMPDIFF(SECOND, r.trx_wait_started, NOW()) AS wait_seconds
+  TIMESTAMPDIFF(SECOND, r.trx_wait_started, NOW()) AS wait_sec
 FROM performance_schema.data_lock_waits w
 JOIN information_schema.innodb_trx b ON b.trx_id = w.BLOCKING_ENGINE_TRANSACTION_ID
 JOIN information_schema.innodb_trx r ON r.trx_id = w.REQUESTING_ENGINE_TRANSACTION_ID;
 "
 ```
 
-**Expected output:** Rows showing each waiting transaction paired with its blocker, including the SQL statement and wait duration.
+Expected output: Rows pairing each waiting transaction with its blocker, including the SQL text and wait duration in seconds. Empty result means no current lock waits.
 
-**What the finding means:** If the same blocking transaction appears repeatedly, it is holding locks for too long. If `wait_seconds` is high, the blocking transaction may be idle-in-transaction (the application opened a transaction but is not currently executing a statement). If `blocking_query` is NULL, the blocking connection is idle inside an open transaction.
+### Step 4:
 
-### Step 4: Examine current lock holders
-
-**What this checks:** All currently granted locks in the InnoDB engine, showing which transactions hold which locks on which tables and indexes.
+List all granted InnoDB locks to identify gap locks and excessive lock scope.
 
 ```bash
 mysql -e "
-SELECT
-  engine_lock_id,
-  engine_transaction_id,
-  lock_type,
-  lock_mode,
-  lock_status,
-  object_schema,
-  object_name,
-  index_name
+SELECT engine_transaction_id, lock_type, lock_mode, object_schema, object_name, index_name
 FROM performance_schema.data_locks
 WHERE lock_status = 'GRANTED'
-ORDER BY engine_transaction_id;
+ORDER BY engine_transaction_id, object_name;
 "
 ```
 
-**Expected output:** Rows listing each granted lock with its type (TABLE or RECORD), mode (S, X, IS, IX, S+GAP, X+GAP), and the table/index involved.
+Expected output: TABLE-level intent locks (IS, IX) plus RECORD-level row locks. Rows showing `lock_mode` values of `X,GAP` or `S,GAP` indicate gap locking (present only under `REPEATABLE READ`).
 
-**What the finding means:** A transaction holding many record locks on a table is likely performing a scan without a precise index. Gap locks (`S,GAP` or `X,GAP`) in the output indicate `REPEATABLE READ` isolation level gap locking, which is a common deadlock contributor. Intent locks (IS, IX) are table-level indicators of row-level lock intent and are generally harmless.
+### Step 5:
 
-### Step 5: Check transaction isolation level
-
-**What this checks:** The currently configured isolation level, which directly determines the lock types InnoDB uses.
+Check the transaction isolation level in effect.
 
 ```bash
 mysql -e "SELECT @@GLOBAL.transaction_isolation, @@SESSION.transaction_isolation;"
 ```
 
-**Expected output:** The global and session isolation levels (typically `REPEATABLE-READ`).
+Expected output: Both values typically `REPEATABLE-READ`. If either shows `READ-COMMITTED`, gap locking is already disabled for that scope.
 
-**What the finding means:** `REPEATABLE READ` (the MySQL default) uses next-key locks (record + gap) that increase deadlock probability compared to `READ COMMITTED`, which uses only record locks for most operations. Gap locks prevent phantom rows but create contention on index ranges. `READ COMMITTED` reads from a fresh snapshot for each consistent read within the same transaction.
+### Step 6:
 
-### Step 6: Identify long-running transactions
-
-**What this checks:** Transactions that have been running for an extended period and may be holding locks that contribute to deadlock chains.
+Identify long-running transactions holding locks.
 
 ```bash
 mysql -e "
-SELECT
-  trx_id,
-  trx_state,
-  trx_started,
-  TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS duration_seconds,
-  trx_rows_locked,
-  trx_rows_modified,
-  trx_query
+SELECT trx_id, trx_state,
+  TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS duration_sec,
+  trx_rows_locked, trx_rows_modified, trx_query
 FROM information_schema.innodb_trx
 WHERE trx_state = 'RUNNING'
 ORDER BY trx_started ASC;
 "
 ```
 
-**Expected output:** A list of running transactions with their age, number of locked rows, and current query.
+Expected output: Running transactions with their age, locked row counts, and current SQL. Rows with `trx_query = NULL` and high `duration_sec` indicate idle-in-transaction connections holding locks without executing statements.
 
-**What the finding means:** Transactions with high `duration_seconds` and high `trx_rows_locked` are holding locks for extended periods, increasing the probability that another transaction will need one of those locks and create a deadlock cycle. Transactions with `trx_query = NULL` are idle-in-transaction (the application opened a transaction but is not currently executing a statement).
+### Step 7:
 
-### Step 7: Analyze query execution plans for lock-heavy queries
-
-**What this checks:** Whether the queries involved in deadlocks are using indexes efficiently or are scanning excessive rows (and therefore locking excessive rows).
+Examine the execution plan of the queries from Step 1 to detect full-table-scan locking.
 
 ```bash
-mysql -e "EXPLAIN SELECT ... FOR UPDATE;"
+mysql -e "EXPLAIN <query_from_step1_deadlock_output>\G"
 ```
 
-Replace the SELECT with the actual query from the deadlock output in Step 1.
+Replace `<query_from_step1_deadlock_output>` with the actual SQL from the deadlock output. Expected output: The `type` column shows `ALL` (full table scan), `range`, `ref`, or `eq_ref`. The `rows` column shows the estimated row count examined and therefore locked.
 
-**Expected output:** An execution plan showing the access type (`ALL` for full scan, `range` for range scan, `ref`/`eq_ref` for index lookup) and estimated rows examined.
+### Step 8:
 
-**What the finding means:** Queries with `type: ALL` (full table scan) lock every row in the table, massively increasing deadlock probability. Queries with `type: range` on a secondary index in `REPEATABLE READ` acquire next-key locks on the entire scanned range. Switching to an index lookup (`ref`/`eq_ref`) reduces the locked row set to only the matched rows.
-
-### Step 8: Check the deadlock frequency trend
-
-**What this checks:** The cumulative deadlock count to establish whether deadlocks are increasing, stable, or decreasing over time.
+Sample deadlock counter growth rate to quantify severity.
 
 ```bash
 mysql -e "SHOW GLOBAL STATUS LIKE 'Innodb_deadlocks';"
@@ -191,229 +139,247 @@ mysql -e "SHOW GLOBAL STATUS LIKE 'Innodb_row_lock_waits';"
 mysql -e "SHOW GLOBAL STATUS LIKE 'Innodb_row_lock_time_avg';"
 ```
 
-**Expected output:** Counters showing total deadlocks since server start, total row lock waits, and average lock wait time in milliseconds.
+Expected output: Cumulative counters. Record these values and re-run after 5 minutes. A rising `Innodb_deadlocks` counter confirms ongoing deadlocks. `Innodb_row_lock_time_avg` above 1000 ms indicates long lock contention even between deadlock events.
 
-**What the finding means:** Record these values and compare after an interval (e.g., 1 hour). A stable `Innodb_deadlocks` count means no new deadlocks are occurring. Rising `Innodb_row_lock_waits` with stable `Innodb_deadlocks` means contention exists but is not reaching circular-wait conditions. High `Innodb_row_lock_time_avg` indicates that lock waits are long even when deadlocks do not occur.
+## Causes
 
-## Mitigation
+### Cause A: Inconsistent Lock Acquisition Order
 
-### Option 1: Implement application-level retry logic
-
-Deadlocks are expected in concurrent systems. The application should catch error 1213 and retry the transaction.
-
-- **Risk:** None. This is the standard approach recommended by the MySQL documentation. Always prepare applications to re-issue transactions if they fail due to deadlock.
+**Statement:** Two or more transactions acquire locks on the same rows or tables in opposite order, creating a circular wait.
+**Mechanism:** Transaction A locks row 1 then attempts to lock row 2; Transaction B already holds a lock on row 2 and is waiting for row 1. InnoDB detects the cycle and rolls back the victim. This is the most common deadlock pattern and stems from uncoordinated lock ordering in application code.
+**Indicator:**
+- [Step 1] Deadlock output shows Transaction 1 holding a lock on table/index X and waiting on table/index Y, while Transaction 2 holds on Y and waits on X
+- [Step 1] The two SQL statements access the same set of tables in a different sequence
+<!-- match: {"step": 1, "predicate": "contains", "target": "HOLDS THE LOCK(S)"} -->
+**Mitigation:**
+- **Risk:** None — this is a code change only; no production data is affected until the new code is deployed
 - **Command:**
 
-```python
-# Python pseudocode — implement in your application language
-MAX_RETRIES = 3
-for attempt in range(MAX_RETRIES):
-    try:
-        connection.begin()
-        # execute_transaction_statements()
-        connection.commit()
-        break
-    except MySQLError as e:
-        connection.rollback()
-        if e.errno == 1213 and attempt < MAX_RETRIES - 1:
-            time.sleep(0.1 * (2 ** attempt))  # exponential backoff
-            continue
-        raise
+  ```sql
+  -- Enforce alphabetical table order and ascending PK order within each table
+  BEGIN;
+  UPDATE accounts SET balance = balance - 100 WHERE id = 1;  -- lower PK first
+  UPDATE accounts SET balance = balance + 100 WHERE id = 2;  -- higher PK second
+  COMMIT;
+  ```
+
+- **Duration:** Permanent after application deployment; no server restart required
+**Resolution:**
+```sql
+-- Application-level change: ensure all code paths that write to multiple rows or tables
+-- do so in the same deterministic order (e.g., alphabetical by table, ascending by PK).
+-- Use stored procedures to enforce ordering when multiple code paths share the same data.
 ```
 
-- **Verify:**
+**Verification:** Monitor `Innodb_deadlocks` counter for 1 hour after deployment. Counter should stop incrementing or grow significantly slower.
 
-```bash
-mysql -e "SHOW GLOBAL STATUS LIKE 'Innodb_row_lock_waits';"
-# Expected: value stable or decreasing after retry logic absorbs transient deadlocks
-```
+### Cause B: Gap Locks Under REPEATABLE READ
 
-- **Duration:** Immediate after application deployment.
-
-### Option 2: Switch to READ COMMITTED isolation level
-
-Use when gap locks are a primary deadlock contributor (visible as `lock_mode X,GAP` in `SHOW ENGINE INNODB STATUS`).
-
-- **Risk:** Moderate. Phantom reads become possible (new rows inserted by other transactions become visible within a transaction). Non-repeatable reads occur. Each consistent read within the same transaction reads from its own fresh snapshot. Test application correctness thoroughly before changing in production.
+**Statement:** InnoDB's default REPEATABLE READ isolation level uses next-key locks (record + gap) that conflict with concurrent inserts into the same index range.
+**Mechanism:** A `SELECT ... FOR UPDATE` or `UPDATE` with a range predicate acquires next-key locks covering all index records and gaps in the scanned range. A concurrent `INSERT` into that gap acquires an insert-intention lock that conflicts with the held gap lock, producing a deadlock when two transactions each hold gap locks that the other's insert needs.
+**Indicator:**
+- [Step 4] `lock_mode` values of `X,GAP` or `S,GAP` appear in `performance_schema.data_locks`
+- [Step 5] `@@GLOBAL.transaction_isolation` is `REPEATABLE-READ`
+- [Step 1] Deadlock output contains `lock_mode X,GAP` or `lock_mode X locks gap before rec`
+<!-- match: {"step": 4, "predicate": "contains", "target": "GAP"} -->
+**Mitigation:**
+- **Risk:** Moderate — `READ COMMITTED` allows phantom reads (rows inserted by other transactions become visible within the same transaction) and non-repeatable reads. Test application correctness before enabling in production.
 - **Command:**
 
-```bash
-mysql -e "SET GLOBAL transaction_isolation = 'READ-COMMITTED';"
-```
+  ```bash
+  mysql -e "SET GLOBAL transaction_isolation = 'READ-COMMITTED';"
+  ```
 
-For persistence across restarts, add to `/etc/mysql/my.cnf`:
-
+- **Duration:** Immediate for new connections; existing sessions retain their prior isolation level until they reconnect. Persist in `my.cnf` for durability across restarts.
+**Resolution:**
 ```ini
+# Add to /etc/mysql/my.cnf (or /etc/my.cnf) under [mysqld]:
 [mysqld]
 transaction-isolation = READ-COMMITTED
 ```
 
-- **Verify:**
+**Impact:** Cluster-wide — affects all new connections on this MySQL instance. Requires MySQL restart to take effect from the config file.
+**Rollback:** `SET GLOBAL transaction_isolation = 'REPEATABLE-READ';` to revert at runtime; remove the `my.cnf` line and restart to revert persistently.
+**Verification:** Re-run Step 4 after switching to `READ COMMITTED`. `X,GAP` and `S,GAP` entries should be absent from `performance_schema.data_locks` for non-FK range queries.
 
-```bash
-mysql -e "SELECT @@GLOBAL.transaction_isolation;"
-# Expected: READ-COMMITTED
-```
+### Cause C: Missing or Suboptimal Index Causes Excessive Row Locking
 
-- **Duration:** Immediate for the global runtime setting. Requires a MySQL restart for config file persistence. Existing sessions retain their previous isolation level until they reconnect.
-
-### Option 3: Kill the blocking transaction
-
-Use when a specific long-running or idle-in-transaction session is causing a lock-wait chain and cannot be resolved otherwise.
-
-- **Risk:** Moderate. The killed transaction will be rolled back. Ensure it is safe to abort. The client application will receive an error and should handle reconnection.
+**Statement:** A write query without a selective index performs a full or broad table scan, locking far more rows than the operation requires and increasing deadlock collision probability.
+**Mechanism:** InnoDB locks every row it examines during query execution, not just the rows it modifies. A full table scan (`type: ALL` in EXPLAIN) locks every row in the table with an X or next-key lock. This massively expands the lock footprint, making it probable that a concurrent transaction needs one of the locked rows, creating a circular wait.
+**Indicator:**
+- [Step 7] `EXPLAIN` shows `type: ALL` or `type: index` for the query from the deadlock output
+- [Step 7] `rows` estimate is a large fraction of the total table row count
+<!-- match: {"step": 7, "predicate": "contains", "target": "ALL"} -->
+**Mitigation:**
+- **Risk:** Low — MySQL 8.0 online DDL with `ALGORITHM=INPLACE, LOCK=NONE` allows concurrent reads and writes during index creation on most table types. Adding an index increases write overhead proportionally.
 - **Command:**
 
+  ```bash
+  mysql -e "ALTER TABLE <table> ADD INDEX idx_col (<column>) ALGORITHM=INPLACE, LOCK=NONE;"
+  ```
+
+- **Duration:** Seconds to minutes depending on table size; concurrent DML is not blocked.
+**Resolution:**
 ```bash
-# Identify the blocking thread from Step 3 output, then:
-mysql -e "KILL <blocking_thread_id>;"
+mysql -e "ALTER TABLE <table> ADD INDEX idx_col (<column>) ALGORITHM=INPLACE, LOCK=NONE;"
 ```
 
-- **Verify:**
+**Verification:** Re-run `EXPLAIN <query>` from Step 7. `type` should change to `ref` or `eq_ref` and `rows` should drop to only the matching rows. Monitor `Innodb_deadlocks` over the next hour to confirm the reduction.
 
-```bash
-mysql -e "SELECT COUNT(*) FROM information_schema.innodb_trx WHERE trx_state = 'LOCK WAIT';"
-# Expected: 0 or significantly reduced count
-```
+### Cause D: Long-Running or Idle-in-Transaction Sessions Holding Locks
 
-- **Duration:** Immediate.
-
-### Option 4: Add missing indexes to reduce lock scope
-
-Use when `EXPLAIN` shows full table scans or broad range scans on queries involved in deadlocks.
-
-- **Risk:** Low. Online DDL in MySQL 8.0 (`ALGORITHM=INPLACE, LOCK=NONE`) allows concurrent reads and writes during index creation. Adding an index increases write overhead proportional to the number of indexed fields.
+**Statement:** A transaction that holds locks for an extended period — either running a slow query or sitting idle — blocks other transactions long enough to create deadlock cycles.
+**Mechanism:** Every second a transaction holds a row lock is another second during which a concurrent transaction that needs the same row must wait. When two such transactions each hold a lock the other needs, and neither times out, InnoDB detects the cycle. Idle-in-transaction connections (opened a transaction but the application is waiting on external I/O, user input, or is stuck) are a common source of long-held locks.
+**Indicator:**
+- [Step 6] Rows show `duration_sec` above 5 seconds with non-zero `trx_rows_locked`
+- [Step 6] Rows show `trx_query = NULL` (idle-in-transaction) with high `duration_sec`
+- [Step 3] `blocking_query` is NULL for the blocking thread (idle-in-transaction)
+<!-- match: {"step": 6, "predicate": "threshold", "target": "duration_sec", "op": ">", "value": 5} -->
+**Mitigation:**
+- **Risk:** Moderate — killing a transaction rolls it back. Confirm the session is safe to abort before issuing `KILL`. The client will receive a connection error and should reconnect.
 - **Command:**
 
-```bash
-mysql -e "ALTER TABLE <table_name> ADD INDEX idx_<column> (<column>) ALGORITHM=INPLACE, LOCK=NONE;"
-```
+  ```bash
+  # Identify blocking_thread from Step 3, then:
+  mysql -e "KILL <blocking_thread_id>;"
+  ```
 
-- **Verify:**
-
-```bash
-mysql -e "EXPLAIN SELECT ... FOR UPDATE;"
-# Expected: query uses the new index (type: ref or eq_ref) instead of full table scan (type: ALL)
-```
-
-- **Duration:** Seconds to minutes depending on table size.
-
-### Option 5: Reorder lock acquisition in application code
-
-Use when the deadlock output shows two transactions accessing the same rows/tables in opposite order.
-
-- **Risk:** Low. This is a code change that does not affect data. Requires careful review to ensure all transaction paths follow the same ordering convention.
-- **Command:**
-
-Application-level change -- ensure all transactions access tables and rows in a consistent, deterministic order:
-
+- **Duration:** Immediate; the killed transaction is rolled back and its locks are released.
+**Resolution:**
 ```sql
--- GOOD: Consistent order — always table1 before table2, ascending by PK
-BEGIN;
-UPDATE table1 SET ... WHERE id = 1;
-UPDATE table2 SET ... WHERE id = 2;
-COMMIT;
-
--- BAD: Inconsistent order causes deadlocks
--- Transaction A: UPDATE table1 then table2
--- Transaction B: UPDATE table2 then table1
+-- Set a global idle-in-transaction timeout to automatically close idle sessions:
+SET GLOBAL wait_timeout = 60;
+SET GLOBAL interactive_timeout = 60;
+-- For MySQL 8.0+, also set transaction-specific idle limit:
+SET GLOBAL innodb_rollback_on_timeout = ON;
 ```
 
-- **Verify:**
+**Impact:** Instance-wide — `wait_timeout` affects all connections. Reducing from the default (8 hours) to 60 seconds may close legitimate long-running application sessions; test with application connection pooler behavior first.
+**Rollback:** `SET GLOBAL wait_timeout = 28800; SET GLOBAL interactive_timeout = 28800;`
+**Verification:** Re-run Step 6 after applying the timeout. No rows should show `duration_sec` above the configured `wait_timeout`. Confirm `Innodb_deadlocks` stops incrementing over the next hour.
 
-```bash
-mysql -e "SHOW GLOBAL STATUS LIKE 'Innodb_deadlocks';"
-# Record value, wait 1 hour, check again
-# Expected: deadlock count stops increasing
+### Cause E: Foreign Key Constraint Checks Acquiring Parent-Table Locks
+
+**Statement:** InnoDB acquires shared locks on parent-table rows during foreign key constraint validation, which can conflict with concurrent exclusive locks on those same parent rows.
+**Mechanism:** When a child row is inserted or updated, InnoDB reads the referenced parent row to verify the constraint and acquires a shared lock (S lock) on it. If another transaction simultaneously holds or is waiting for an exclusive lock (X lock) on that parent row, the shared-lock attempt blocks and can complete a circular wait with the other transaction's waiting lock, producing a deadlock.
+**Indicator:**
+- [Step 1] Deadlock output shows one transaction waiting on a shared lock (`lock_mode S`) on the parent table while another holds an exclusive lock on the same row
+- [Step 4] Parent table appears in granted locks with both `S` and `IX` mode entries from different transactions
+<!-- match: {"step": 1, "predicate": "contains", "target": "lock_mode S"} -->
+**Mitigation:**
+- **Risk:** Low — ordering inserts so parent rows precede child rows is an application-level change with no data risk.
+- **Command:**
+
+  ```sql
+  BEGIN;
+  INSERT INTO parent_table (id, ...) VALUES (42, ...);  -- parent first
+  INSERT INTO child_table (parent_id, ...) VALUES (42, ...);  -- child second
+  COMMIT;
+  ```
+
+- **Duration:** Permanent after application code change; no server configuration needed.
+**Resolution:**
+```sql
+-- Ensure all application code paths insert parent rows before child rows within
+-- the same transaction. For bulk loads only (not normal application flow):
+SET FOREIGN_KEY_CHECKS = 0;
+-- <bulk insert child rows>
+SET FOREIGN_KEY_CHECKS = 1;
 ```
 
-- **Duration:** Immediate after application code deployment.
+**Verification:** Monitor `Innodb_deadlocks` for 1 hour after deploying the ordering fix. Run Step 3 during peak load to confirm parent tables no longer appear as contested resources.
 
-## Root Cause Resolution
+### Cause F: Bulk DML Operations Competing With Concurrent Transactions
 
-**If** deadlocks involve the same two tables accessed in opposite order --> rewrite application code to always access tables and rows in a consistent, deterministic order (for example, alphabetical by table name, ascending by primary key within a table). Use stored procedures to enforce ordering when multiple code paths access the same data.
+**Statement:** A single large INSERT, UPDATE, or DELETE affecting thousands of rows holds row locks across a wide range for the full transaction duration, colliding with concurrent transactions that need any of those rows.
+**Mechanism:** A bulk operation executed in a single transaction acquires and holds all its row locks until commit. The longer this takes (seconds to minutes for large tables), the larger the window in which a concurrent transaction can acquire a subset of the same locks in a different order, completing a circular wait. Row-level locking means every row examined in a full-table-scan bulk operation carries a lock.
+**Indicator:**
+- [Step 6] A transaction shows very high `trx_rows_modified` (thousands or more) and elevated `duration_sec`
+- [Step 1] Deadlock output involves a query with no `WHERE` clause or a very broad range predicate
+<!-- match: {"step": 6, "predicate": "threshold", "target": "trx_rows_modified", "op": ">", "value": 1000} -->
+**Mitigation:**
+- **Risk:** Low — batching writes into smaller transactions does not change the final data state; it only allows other transactions to interleave between batches.
+- **Command:**
 
-**If** `SHOW ENGINE INNODB STATUS` shows gap locks (`lock_mode X,GAP` or next-key locks) --> switch to `READ COMMITTED` isolation level, which eliminates gap locking for most operations. Only `REPEATABLE READ` and `SERIALIZABLE` use gap locks.
+  ```sql
+  -- Batch deletes in chunks of 1000 rows with explicit COMMIT between batches
+  SET @deleted = 1;
+  WHILE @deleted > 0 DO
+    DELETE FROM large_table WHERE status = 'expired' LIMIT 1000;
+    SET @deleted = ROW_COUNT();
+    COMMIT;
+  END WHILE;
+  ```
 
-**If** deadlocks occur on bulk operations (large INSERT/UPDATE/DELETE affecting thousands of rows) --> break bulk operations into smaller batches of 500-1000 rows per transaction with explicit `COMMIT` between batches, allowing other transactions to interleave.
-
-**If** foreign key constraint checks cause shared lock escalation on parent tables --> ensure parent table rows are inserted before child rows within the same transaction. Consider deferring foreign key checks with `SET FOREIGN_KEY_CHECKS=0` only during controlled bulk data loads (never in normal application flow).
-
-**If** `SELECT ... FOR UPDATE` acquires locks on more rows than needed --> add precise indexes so the `WHERE` clause matches an index, narrowing the locked row set to only the rows actually needed. Use plain `SELECT` (consistent read, no locks in InnoDB) when you only need to read data without preventing concurrent modifications.
-
-**If** long-running transactions hold locks for many seconds --> refactor the application to keep transactions as short as possible. Move all non-transactional work (external API calls, file I/O, user interaction) outside the transaction boundaries. Commit immediately after completing related changes.
-
-**If** deadlocks spike during peak hours but the lock ordering is already consistent --> implement connection pooling with transaction timeout limits (`innodb_lock_wait_timeout`, default 50 seconds). Consider read replicas to offload read traffic from the primary.
-
-**If** deadlock detection overhead is a concern at very high concurrency (thousands of concurrent transactions) --> consider disabling `innodb_deadlock_detect` and relying on `innodb_lock_wait_timeout` instead. This trades faster deadlock resolution for timeout-based resolution but eliminates the O(n^2) detection overhead.
-
-## Verification
-
-After applying fixes, confirm deadlock frequency has decreased:
-
-```bash
-# 1. Check deadlock count (should stop increasing or grow more slowly)
-mysql -e "SHOW GLOBAL STATUS LIKE 'Innodb_deadlocks';"
-# Record the value and compare after 1 hour
-
-# 2. Monitor average lock wait time
-mysql -e "SHOW GLOBAL STATUS LIKE 'Innodb_row_lock_time_avg';"
-# Expected: decreasing average wait time in milliseconds
-
-# 3. Verify no active lock waits
-mysql -e "SELECT COUNT(*) FROM information_schema.innodb_trx WHERE trx_state = 'LOCK WAIT';"
-# Expected: 0 during normal operation
-
-# 4. Check deadlock frequency in the error log
-grep -c "DEADLOCK" /var/log/mysql/error.log
-# Compare to the count before applying fixes
-
-# 5. Monitor lock wait events via Performance Schema
-mysql -e "
-SELECT EVENT_NAME, COUNT_STAR, SUM_TIMER_WAIT/1000000000 AS total_wait_ms
-FROM performance_schema.events_waits_summary_global_by_event_name
-WHERE EVENT_NAME LIKE '%innodb%lock%'
-ORDER BY SUM_TIMER_WAIT DESC
-LIMIT 10;
-"
-# Expected: lower COUNT_STAR and total_wait_ms compared to before
+- **Duration:** Permanent after application or script change; no server configuration needed.
+**Resolution:**
+```sql
+-- Same batch approach as Mitigation — break bulk operations into 500-1000 row
+-- transactions with COMMIT between batches to release locks and allow interleaving.
 ```
 
-Monitor for at least 24 hours during normal traffic patterns to confirm the improvement is sustained and deadlocks do not resurface under peak load.
+**Verification:** Run Step 6 during the next bulk operation. `trx_rows_modified` for any single transaction should stay below 1000. Confirm `Innodb_deadlocks` does not spike during bulk jobs.
+
+### Cause Z: Unidentified Deadlock Pattern
+
+**Statement:** The deadlock cannot be attributed to a known lock ordering, isolation level, index, session lifetime, foreign key, or bulk operation pattern.
+**Mechanism:** InnoDB's deadlock detection relies on identifiable circular waits between known lock types. When the LATEST DETECTED DEADLOCK output does not match any of the documented patterns — possibly due to application-level connection pooling, unusual isolation level combinations, or undocumented InnoDB edge cases — manual escalation to a DBA or MySQL support is required.
+**Indicator:**
+- [Default] None of Causes A–F patterns match the deadlock output from Step 1
+**Mitigation:**
+- **Risk:** Low — enabling retry logic is always safe and is the primary recommended defense against any deadlock pattern.
+- **Command:**
+
+  ```python
+  # Implement error-1213 retry with exponential backoff in the application:
+  import time
+  MAX_RETRIES = 3
+  for attempt in range(MAX_RETRIES):
+      try:
+          conn.begin()
+          # execute transaction statements
+          conn.commit()
+          break
+      except Exception as e:
+          conn.rollback()
+          if getattr(e, 'errno', None) == 1213 and attempt < MAX_RETRIES - 1:
+              time.sleep(0.1 * (2 ** attempt))
+              continue
+          raise
+  ```
+
+- **Duration:** Immediate after application deployment; covers all deadlock patterns regardless of root cause.
+**Resolution:** Out of runbook scope — escalate with the full `SHOW ENGINE INNODB STATUS` output, the application query log, and `performance_schema.data_locks` snapshots during the deadlock window.
+**Verification:** Confirm application error logs no longer surface unhandled error 1213 exceptions. Monitor `Innodb_deadlocks` trend; the counter may still increment but application-level impact should cease once retries absorb the deadlocks.
 
 ## Prevention
 
-1. **Enforce consistent lock ordering** -- Establish a coding convention that all transactions access tables and rows in the same deterministic order. Document the ordering rule in development guidelines and enforce it in code review.
+1. **Enforce consistent lock ordering** — Establish a coding convention that all transactions access tables and rows in the same deterministic order (e.g., alphabetical by table name, ascending by primary key). Enforce in code review and stored procedures.
 
-2. **Keep transactions short** -- Minimize the time between the first lock acquisition and `COMMIT`. Never include user interaction, external API calls, or file operations inside a transaction. Commit immediately after completing related changes.
+2. **Keep transactions as short as possible** — Commit immediately after completing related changes. Move external API calls, file I/O, and user interaction outside transaction boundaries. Never hold an open transaction while waiting for user input.
 
-3. **Use appropriate isolation level** -- Use `READ COMMITTED` unless your application specifically requires `REPEATABLE READ` guarantees. This eliminates gap locks and next-key locks, which are the most common deadlock contributors.
+3. **Implement retry logic for all database clients** — All client code must catch error 1213 and retry with exponential backoff (100 ms, 200 ms, 400 ms). This is mandatory regardless of other prevention measures, as some deadlock rate is unavoidable in concurrent systems.
 
-4. **Add indexes for all locked queries** -- Every `SELECT ... FOR UPDATE`, `UPDATE`, and `DELETE` should use an index in its `WHERE` clause. Regularly run `EXPLAIN` on write queries to verify index usage. Use `EXPLAIN SELECT` to determine which indexes MySQL regards as most appropriate.
+4. **Index every locked column** — Every `SELECT ... FOR UPDATE`, `UPDATE`, and `DELETE` must use a selective index in its `WHERE` clause. Run `EXPLAIN` on all write queries regularly and add indexes where `type: ALL` appears.
 
-5. **Implement retry logic in all database clients** -- All database client code should catch error 1213 and retry with exponential backoff (for example, 100ms, 200ms, 400ms). This is a best practice regardless of other prevention measures.
+5. **Use READ COMMITTED unless REPEATABLE READ is required** — `READ COMMITTED` eliminates gap locks and next-key locks, the most common deadlock contributors. Only switch to `REPEATABLE READ` when the application genuinely needs repeatable reads or phantom-row prevention.
 
-6. **Batch large writes** -- Break operations affecting thousands of rows into batches of 500-1000 rows, committing between batches to release locks and allow concurrent transactions to proceed.
+6. **Batch large write operations** — Break any INSERT/UPDATE/DELETE affecting more than 1000 rows into smaller transactions with explicit COMMIT between batches (500–1000 rows per batch).
 
-7. **Monitor deadlock metrics** -- Track `Innodb_deadlocks` and `Innodb_row_lock_waits` in your monitoring system (Prometheus with `mysqld_exporter`, or Percona `pt-deadlock-logger`). Set alerts for anomalous spikes above the historical baseline.
+7. **Set idle-in-transaction timeouts** — Configure `wait_timeout` and `interactive_timeout` to 60–120 seconds to automatically close sessions that open transactions and then go idle.
 
-8. **Avoid unnecessary locking** -- Use plain `SELECT` (consistent read, no locks in InnoDB) instead of `SELECT ... FOR UPDATE` when you only need to read data. Reserve locking reads for cases where you genuinely need to prevent concurrent modifications.
+8. **Monitor deadlock rate continuously** — Track `Innodb_deadlocks` and `Innodb_row_lock_time_avg` in Prometheus (`mysqld_exporter`) or CloudWatch. Alert on a deadlock rate above your historical baseline.
 
-9. **Enable the slow query log** -- Queries that take long to execute hold locks longer, increasing deadlock probability. Identify and optimize slow queries proactively:
+9. **Enable slow query log proactively** — Slow queries hold locks longer and increase deadlock probability:
 
-    ```bash
-    mysql -e "SET GLOBAL slow_query_log = ON; SET GLOBAL long_query_time = 1;"
-    ```
+   ```bash
+   mysql -e "SET GLOBAL slow_query_log = ON; SET GLOBAL long_query_time = 1;"
+   ```
 
-10. **Test under realistic concurrency** -- Stress-test write-heavy workflows with realistic concurrency levels before deployment. Tools like `sysbench` and `mysqlslap` can simulate concurrent transactions and expose deadlock-prone access patterns.
+10. **Stress-test write-heavy workloads before deployment** — Use `sysbench` or `mysqlslap` to simulate realistic concurrency levels and expose deadlock-prone access patterns in staging.
 
 ## Sources
 
-- [MySQL 8.0 Reference Manual -- Deadlocks in InnoDB](https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlocks.html)
-- [MySQL 8.0 Reference Manual -- How to Minimize and Handle Deadlocks](https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlocks-handling.html)
-- [MySQL 8.4 Reference Manual -- Deadlock Detection](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-detection.html)
-- [MySQL 8.0 Reference Manual -- InnoDB Troubleshooting](https://dev.mysql.com/doc/refman/8.0/en/innodb-troubleshooting.html)
-- [MySQL 8.0 Reference Manual -- SHOW ENGINE INNODB STATUS](https://dev.mysql.com/doc/refman/8.0/en/show-engine.html)
-- [MySQL 8.0 Reference Manual -- InnoDB Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.0/en/innodb-transaction-isolation-levels.html)
-- [MySQL 8.0 Reference Manual -- InnoDB Locking](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html)
-- [Percona -- How to Deal with MySQL Deadlocks](https://www.percona.com/blog/how-to-deal-with-mysql-deadlocks/)
+- [MySQL 8.0 Reference Manual — InnoDB Deadlocks](https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlocks.html) — deadlock detection mechanism, `innodb_deadlock_detect`, `innodb_print_all_deadlocks`, `innodb_lock_wait_timeout`; priority 1
+- [MySQL 8.0 Reference Manual — How to Minimize and Handle Deadlocks](https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlocks-handling.html) — retry logic recommendation, consistent lock ordering, transaction size, isolation level, index guidance; priority 1
+- [MySQL 8.0 Reference Manual — InnoDB Locking](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html) — shared/exclusive locks, gap locks, next-key locks, insert-intention locks, lock compatibility matrix, isolation-level comparison; priority 1

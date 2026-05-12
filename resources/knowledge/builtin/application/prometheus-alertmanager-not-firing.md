@@ -7,8 +7,8 @@ symptom_class:
   - service_unavailable
 severity: high
 scope: global
-version: "2.1.0"
-last_updated: "2026-03-26"
+version: "1.0.0"
+last_updated: "2026-05-12"
 verified_by: kb-researcher
 status: draft
 tags:
@@ -22,171 +22,203 @@ difficulty: intermediate
 
 # Prometheus Alerts Not Firing
 
-## Problem Definition
+## Symptom Recognition
 
-Applies to Prometheus 2.x+ and Alertmanager 0.25+. Requires access to the Prometheus web UI or API (port 9090), Alertmanager web UI or API (port 9093), and `amtool` CLI for routing tests. Admin access to `prometheus.yml` and `alertmanager.yml` configuration files is needed for fixes.
+- A known production outage produces no PagerDuty page, Slack message, or email despite the underlying condition having been true for many minutes.
+- The Prometheus UI shows an alert rule stuck in `inactive` or `pending` and never transitions to `firing`.
+- `prometheus_notifications_errors_total` is non-zero or `rate(prometheus_notifications_errors_total[5m]) > 0` for one or more Alertmanager peers.
+- `curl http://localhost:9090/api/v1/alertmanagers` returns an empty `activeAlertmanagers` array, or returns peers in `droppedAlertmanagers`.
+- Alerts are visible in `curl http://localhost:9093/api/v2/alerts` but no notification arrives at the configured receiver.
+- Alertmanager logs contain `msg="Notify for alerts failed"`, `context deadline exceeded`, `dial tcp ... connection refused`, or HTTP `401`/`403`/`429`/`5xx` from receiver endpoints.
+- An active silence in `curl http://localhost:9093/api/v2/silences` matches the alert's labels, or `amtool config routes test` resolves a missing alert to an unintended receiver.
+- A heartbeat / Watchdog alert that should fire continuously is missing from the receiver feed for longer than its `repeat_interval`.
+- `promtool check rules` or `amtool check-config` fails after a recent rule or routing change.
 
-Alerts fail to fire or notifications fail to deliver despite known outage conditions. The failure can occur at three stages in the pipeline: Prometheus alert rule evaluation (rule never transitions to `firing`), Prometheus-to-Alertmanager delivery (alerts fire in Prometheus but never reach Alertmanager), or Alertmanager notification delivery (alerts reach Alertmanager but receivers do not send notifications). Prometheus UI shows alert rules stuck in `inactive` state when the underlying expression should be true. The `prometheus_notifications_errors_total` counter incrementing indicates delivery failures to Alertmanager. Alertmanager logs show errors like `send notification failed`, `context deadline exceeded`, or HTTP 4xx/5xx from receiver endpoints. Silences or inhibition rules may suppress alerts without visible indication unless specifically checked. The `for` clause may be longer than the condition persists, causing the alert to resolve before transitioning from `pending` to `firing`.
+## Applicability
+
+- Prometheus 2.x or 3.x and Alertmanager 0.25+ (API v1 was removed in Alertmanager 0.27 — this runbook uses `/api/v2`).
+- Self-hosted Prometheus, kube-prometheus-stack, Prometheus Operator, or managed Prometheus (Grafana Cloud, AMP, GMP) — managed offerings expose the same APIs but vendor consoles supersede some commands.
+- HTTP access to Prometheus admin endpoints on port 9090 (`/api/v1/rules`, `/api/v1/alerts`, `/api/v1/alertmanagers`, `/api/v1/query`, `/-/reload`) and Alertmanager admin endpoints on port 9093 (`/api/v2/alerts`, `/api/v2/silences`, `/api/v2/status`, `/-/reload`).
+- The `--web.enable-lifecycle` flag must be set on both Prometheus and Alertmanager to use `/-/reload`. Otherwise reload via `SIGHUP` to the process or a Kubernetes ConfigMap update plus pod restart.
+- Write access to `prometheus.yml`, the alert rule files, and `alertmanager.yml`.
+- `promtool` and `amtool` CLIs on the local host or in a debug pod.
+- `curl` + `jq` for the diagnostic queries. `kubectl` if Prometheus/Alertmanager run on Kubernetes.
 
 ## Diagnostic Steps
 
-### 1. Check alert rule status and health in Prometheus
-
-Determines whether alert rules are evaluating correctly and identifies rules with evaluation errors.
+### Step 1: Read the alert rule state and health from Prometheus
 
 ```bash
-curl -s http://localhost:9090/api/v1/rules | \
-  jq '.data.groups[].rules[] | select(.type=="alerting") | {name: .name, state: .state, health: .health, lastError: .lastError}'
+curl -s http://localhost:9090/api/v1/rules \
+  | jq '.data.groups[].rules[] | select(.type=="alerting") | {name: .name, state: .state, health: .health, lastError: .lastError, duration: .duration}'
 ```
 
-**Expected output:** Rules should show `health: "ok"`. State should be `inactive` (condition not met), `pending` (condition met, waiting for `for` duration), or `firing` (condition met for `for` duration).
+Expected output: one object per alerting rule with `state` in `{inactive, pending, firing}` and `health` of `ok`. A non-empty `lastError` or `health: "err"` means the PromQL expression failed to evaluate (syntax error, missing metric, type mismatch). A `pending` state that never reaches `firing` indicates the condition resolves before the rule's `for` duration elapses.
 
-**What this means:** `health: "err"` with a `lastError` value indicates the PromQL expression has a syntax error or references a missing metric. State `inactive` when the condition is known to be true means the expression does not match current data -- test it directly (step 2). State `pending` that never transitions to `firing` means the condition resolves before the `for` duration elapses.
-
-### 2. Test the alert expression directly in Prometheus
-
-Confirms whether the alert condition's PromQL expression actually returns results against current data.
+### Step 2: Evaluate the alert expression directly against current data
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/query?query=up{job="my-service"}==0' | jq '.data.result'
+# Substitute the exact expr from the alert rule.
+curl -sG 'http://localhost:9090/api/v1/query' \
+  --data-urlencode 'query=up{job="my-service"} == 0' \
+  | jq '.data.result'
+# Confirm the metric exists at all by dropping the threshold:
+curl -sG 'http://localhost:9090/api/v1/query' \
+  --data-urlencode 'query=up{job="my-service"}' \
+  | jq '.data.result | length'
 ```
 
-Replace the query with the exact `expr` from the alert rule.
+Expected output: a non-empty `result` array when the alert condition is true; an empty array `[]` when the condition is not currently met. If the unfiltered query also returns 0 results, the metric is missing — the scrape is failing, the metric was renamed, or the label selector does not match actual label values.
 
-**Expected output:** Non-empty result array if the condition is true. Empty array `[]` if the condition is not met.
-
-**What this means:** If the query returns results but the alert is `inactive`, there may be a label mismatch between the rule file and the actual metric labels. If the query returns empty, the condition is genuinely not met -- verify the metric exists and has the expected labels using `up{job="my-service"}` without the `== 0` filter.
-
-### 3. Check Prometheus notification error metrics
-
-Determines whether Prometheus is failing to deliver fired alerts to Alertmanager.
+### Step 3: Check Prometheus's view of its Alertmanager peers
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/query?query=prometheus_notifications_errors_total' | jq '.data.result[] | {alertmanager: .metric.alertmanager, value: .value[1]}'
-curl -s 'http://localhost:9090/api/v1/query?query=rate(prometheus_notifications_errors_total[5m])' | jq '.data.result[0].value[1]'
+curl -s http://localhost:9090/api/v1/alertmanagers \
+  | jq '{active: .data.activeAlertmanagers, dropped: .data.droppedAlertmanagers}'
 ```
 
-**Expected output:** Error count should be 0 or the rate should be 0. Any non-zero rate means Prometheus is actively failing to send alerts.
+Expected output: `active` contains one entry per Alertmanager peer with a `url` like `http://alertmanager:9093/api/v2/alerts`; `dropped` is empty. An empty `active` array means Prometheus has no Alertmanager configured or service discovery resolved no peers. Entries in `dropped` indicate peers that failed health checks.
 
-**What this means:** Non-zero errors indicate a connectivity problem between Prometheus and Alertmanager. Check network policies, DNS resolution, and whether the Alertmanager endpoint in `prometheus.yml` is correct.
-
-### 4. Verify Prometheus has active Alertmanager targets
-
-Confirms that Prometheus has discovered and can reach at least one Alertmanager instance.
+### Step 4: Check Prometheus notification delivery error metrics
 
 ```bash
-curl -s http://localhost:9090/api/v1/alertmanagers | jq '.data.activeAlertmanagers'
+curl -sG 'http://localhost:9090/api/v1/query' \
+  --data-urlencode 'query=prometheus_notifications_errors_total' \
+  | jq '.data.result[] | {alertmanager: .metric.alertmanager, value: .value[1]}'
+curl -sG 'http://localhost:9090/api/v1/query' \
+  --data-urlencode 'query=rate(prometheus_notifications_errors_total[5m])' \
+  | jq '.data.result[] | {alertmanager: .metric.alertmanager, error_rate: .value[1]}'
+curl -sG 'http://localhost:9090/api/v1/query' \
+  --data-urlencode 'query=prometheus_notifications_dropped_total' \
+  | jq '.data.result[] | {value: .value[1]}'
 ```
 
-**Expected output:** An array with at least one entry containing the Alertmanager URL (e.g., `http://alertmanager:9093/api/v2/alerts`).
+Expected output: `prometheus_notifications_errors_total` flat per peer and `rate(...)` equal to `0`. Any sustained non-zero rate means Prometheus is failing to deliver fired alerts to that Alertmanager peer. `prometheus_notifications_dropped_total` increases when the notification queue overflows because Alertmanager is slow or unreachable.
 
-**What this means:** Empty array means Prometheus has no Alertmanager configured or cannot reach any. Check the `alerting.alertmanagers` section in `prometheus.yml`. For Kubernetes, verify the Alertmanager Service and Endpoints exist.
-
-### 5. Check Alertmanager for received alerts
-
-Determines whether alerts are reaching Alertmanager from Prometheus.
+### Step 5: Check whether alerts are reaching Alertmanager
 
 ```bash
-curl -s http://localhost:9093/api/v2/alerts | jq '.[].labels'
+curl -s http://localhost:9093/api/v2/alerts \
+  | jq '[.[] | {labels, status, startsAt, endsAt}]'
+curl -s 'http://localhost:9093/api/v2/alerts?active=true&silenced=true&inhibited=true' \
+  | jq '[.[] | {labels: .labels, status: .status.state, silencedBy: .status.silencedBy, inhibitedBy: .status.inhibitedBy}]'
 ```
 
-**Expected output:** If alerts are firing in Prometheus, they should appear here with matching labels.
+Expected output: every alert currently firing in Prometheus (Step 1) appears with matching labels in Alertmanager. Alerts present here with `status.state == "active"` but no notification mean the loss is downstream (routing, silence, inhibition, or receiver). Alerts missing entirely mean the loss is upstream (Steps 3–4).
 
-**What this means:** Alerts present here but no notification received means the problem is in Alertmanager routing, silences, inhibitions, or receiver configuration. No alerts here despite Prometheus showing `firing` means the delivery pipeline is broken (step 3/4).
-
-### 6. Check for active silences suppressing alerts
-
-Identifies silences that may be muting the expected alert notifications.
+### Step 6: List active silences and check whether any matches the alert
 
 ```bash
-curl -s http://localhost:9093/api/v2/silences | \
-  jq '.[] | select(.status.state=="active") | {id: .id, matchers: .matchers, createdBy: .createdBy, startsAt: .startsAt, endsAt: .endsAt}'
+curl -s http://localhost:9093/api/v2/silences \
+  | jq '[.[] | select(.status.state=="active") | {id, matchers, createdBy, startsAt, endsAt, comment}]'
+# Or via amtool:
+amtool silence query --alertmanager.url=http://localhost:9093 --active
 ```
 
-**Expected output:** List of active silences with their matchers. An empty result means no silences are active.
+Expected output: list of currently active silences, each with `matchers` (label match expressions), `createdBy`, and `endsAt`. An empty list means no silence is in play. Cross-reference each silence's `matchers` against the missing alert's labels (Step 5) — if a silence's matchers all match, that silence is suppressing the alert.
 
-**What this means:** If a silence matcher matches the alert's labels, the notification is suppressed. Silences are often created during maintenance windows and forgotten. Check whether the `endsAt` time is far in the future.
-
-### 7. Test Alertmanager routing with amtool
-
-Determines which receiver an alert with specific labels would be routed to, without sending a real notification.
+### Step 7: Test the Alertmanager routing tree with amtool
 
 ```bash
+# Use the exact label set from the missing alert.
 amtool config routes test --config.file=/etc/alertmanager/alertmanager.yml \
   severity=critical alertname=ServiceDown service=my-app
+amtool config routes show --config.file=/etc/alertmanager/alertmanager.yml
 ```
 
-**Expected output:** The name of the receiver that matches the given labels (e.g., `pagerduty-critical`).
+Expected output: the first command prints the name(s) of the receiver(s) the labels would route to. The second prints the routing tree as a text outline. If the resolved receiver is `default` (or any receiver that does not deliver to the expected channel) when a specific receiver was expected, the routing tree's `matchers` / `match` / `match_re` do not match the alert's labels.
 
-**What this means:** If the output shows the `default` receiver when a specific receiver was expected, the routing labels do not match any child route. The alert falls through to the default. This is the most common routing misconfiguration.
-
-### 8. Check Alertmanager logs for delivery failures
-
-Identifies failures in the notification delivery to external receivers (Slack, PagerDuty, email, webhook).
+### Step 8: Check active mute or time intervals
 
 ```bash
-journalctl -u alertmanager --since "1 hour ago" --no-pager | grep -iE "error|failed|timeout|rejected"
+curl -s http://localhost:9093/api/v2/status \
+  | jq '.config.original' -r \
+  | grep -A 30 -E 'time_intervals|mute_time_intervals|active_time_intervals'
+date -u
 ```
 
-For Kubernetes:
+Expected output: configured `time_intervals` blocks with `times`, `weekdays`, `months`, and `location`, plus the routes that reference them via `mute_time_intervals` or `active_time_intervals`. Compare the current UTC time and the configured `location` (IANA timezone) against each interval — if the current time falls inside a `mute_time_intervals` window or outside an `active_time_intervals` window, that route is intentionally muted.
+
+### Step 9: Check inhibition rules
 
 ```bash
-kubectl logs -n monitoring -l app.kubernetes.io/name=alertmanager --tail=200 | grep -iE "error|failed|timeout|rejected"
+curl -s http://localhost:9093/api/v2/status \
+  | jq '.config.original' -r \
+  | grep -A 20 -E 'inhibit_rules'
+curl -s 'http://localhost:9093/api/v2/alerts?inhibited=true' \
+  | jq '[.[] | {labels: .labels, inhibitedBy: .status.inhibitedBy}]'
 ```
 
-**Expected output:** No error lines for healthy operation. Errors include `msg="notify retry" err="..."`, HTTP status codes from receiver APIs, SMTP errors, or connection timeouts.
+Expected output: configured inhibition rules with `source_matchers`, `target_matchers`, and `equal` lists; plus any alerts currently inhibited and the IDs of the source alerts inhibiting them. An inhibition rule with broad `target_matchers` (e.g., matching all `severity=warning`) suppresses every warning alert whenever any critical alert with the same `equal` labels is firing.
 
-**What this means:** `401 Unauthorized` or `403 Forbidden` from receiver APIs means credentials (webhook URL, API key, integration key) are invalid or expired. Connection timeout means the Alertmanager cannot reach the receiver endpoint (network, firewall, DNS). `429 Too Many Requests` means rate limiting by the receiver.
-
-### 9. Check inhibition rules for unexpected suppression
-
-Identifies inhibition rules that may be silencing alerts because a related higher-severity alert is active.
+### Step 10: Validate Prometheus and Alertmanager configuration with promtool / amtool
 
 ```bash
-curl -s http://localhost:9093/api/v2/status | jq '.config.original' -r | grep -A 15 "inhibit_rules"
+promtool check config /etc/prometheus/prometheus.yml
+promtool check rules /etc/prometheus/rules/*.yml
+amtool check-config /etc/alertmanager/alertmanager.yml
 ```
 
-**Expected output:** List of inhibition rules with `source_matchers`, `target_matchers`, and `equal` fields.
+Expected output: each command exits 0 and prints `SUCCESS` or the number of validated rules. Any non-zero exit indicates the on-disk config is invalid — the last successful reload may be far in the past, and the running config does not match the file on disk.
 
-**What this means:** An inhibition rule with broad `target_matchers` (e.g., matching all `severity=warning`) will suppress all warning alerts whenever any critical alert is active with the same `equal` labels. Overly broad inhibition rules are a common cause of missed alerts.
+### Step 11: Read Alertmanager logs for receiver delivery failures
 
-## Mitigation
+```bash
+journalctl -u alertmanager --since "1 hour ago" --no-pager \
+  | grep -iE 'notify|error|failed|timeout|deadline|refused|401|403|429|5[0-9][0-9]'
+# Kubernetes:
+kubectl logs -n monitoring -l app.kubernetes.io/name=alertmanager --tail=500 \
+  | grep -iE 'notify|error|failed|timeout|deadline|refused|401|403|429|5[0-9][0-9]'
+```
 
-### Option 1: Fix Prometheus-to-Alertmanager connectivity
+Expected output: ideally no error lines for the failing receiver. Errors include `msg="Notify for alerts failed" ... err="..."`, `context deadline exceeded`, `dial tcp ... connection refused`, `HTTP 401 Unauthorized`, `HTTP 403 Forbidden`, `HTTP 429 Too Many Requests`, or SMTP error codes. Each error line names the receiver and the underlying transport failure.
 
-**Risk:** Low. Updating the Alertmanager endpoint does not affect existing alert rules or state.
+### Step 12: Verify the Prometheus → Alertmanager → receiver end-to-end path with a synthetic alert
 
-**Command:**
+```bash
+# Post a synthetic alert directly to Alertmanager.
+curl -X POST http://localhost:9093/api/v2/alerts \
+  -H 'Content-Type: application/json' \
+  -d '[{"labels":{"alertname":"E2ETest","severity":"info","service":"runbook-test"},"annotations":{"summary":"End-to-end pipeline test"},"startsAt":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}]'
+# Wait one group_wait, then check delivery:
+sleep 60
+curl -s http://localhost:9093/api/v2/alerts | jq '.[] | select(.labels.alertname=="E2ETest")'
+```
 
-Verify and update the `alerting` section in `prometheus.yml`:
+Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `group_wait` (default 30s) the configured receiver for that label set delivers a notification. No notification arriving despite the alert being present narrows the failure to receiver delivery (Step 11) or silences/inhibitions/time intervals (Steps 6, 8, 9).
+
+## Causes
+
+### Cause A: Alert rule expression returns empty against current data
+
+**Statement:** The alert rule's PromQL expression evaluates to an empty result against current metrics, so the rule stays `inactive` and never transitions to `pending` or `firing`.
+
+**Mechanism:** Prometheus evaluates the `expr` on each evaluation interval and only counts an alert as active when the expression returns a non-empty instant vector. Common causes of empty results are scrape failures that drop the underlying metric, label-value mismatches between the rule and the actual time series (case, spelling, or relabeling differences), or thresholds inverted relative to the metric's direction. The rule stays `inactive` until the expression matches — there is no log line announcing this, only the absence of state transitions.
+
+**Indicator:**
+
+- [Step 1] the rule's `state` is `inactive` and `health` is `ok` even when the underlying condition is known to be true
+- [Step 2] the alert's `expr` returns an empty `result` array, and the same query without the threshold filter also returns 0 series
+
+<!-- match: {"step": 2, "predicate": "contains", "target": "\"result\":[]"} -->
+
+**Mitigation:**
+
+- **Risk:** Loosening the expression temporarily can mask real label issues; document the change and revert once the metric path is fixed.
+- **Command:**
+
+  ```bash
+  # Reproduce against the running TSDB and iterate label-by-label until the query returns results.
+  curl -sG 'http://localhost:9090/api/v1/query' --data-urlencode 'query=up{job="my-service"}'
+  curl -sG 'http://localhost:9090/api/v1/query' --data-urlencode 'query=count by (__name__) ({job="my-service"})'
+  ```
+
+- **Duration:** Diagnostic only; do not leave a loosened expression in place beyond the current shift.
+
+**Resolution:**
 
 ```yaml
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets:
-            - alertmanager:9093
-```
-
-Reload Prometheus:
-
-```bash
-curl -X POST http://localhost:9090/-/reload
-```
-
-**Verify:** `curl -s http://localhost:9090/api/v1/alertmanagers | jq '.data.activeAlertmanagers | length'` returns at least 1.
-
-**Duration:** 1-2 minutes.
-
-### Option 2: Fix alert rule expression or for duration
-
-**Risk:** Low. Correcting an expression restores intended alerting behavior.
-
-**Command:**
-
-Edit the alert rule file:
-
-```yaml
+# rules/service-alerts.yml — correct the labels and threshold against actual metric data.
 groups:
   - name: service-alerts
     rules:
@@ -199,180 +231,524 @@ groups:
           summary: "Service {{ $labels.instance }} is down"
 ```
 
-Validate syntax before reloading:
-
 ```bash
-promtool check rules alert-rules.yml
+promtool check rules /etc/prometheus/rules/service-alerts.yml
 curl -X POST http://localhost:9090/-/reload
 ```
 
-**Verify:** `curl -s http://localhost:9090/api/v1/rules | jq '.data.groups[].rules[] | select(.name=="ServiceDown") | {state, health}'` shows `health: "ok"`.
+- **Impact:** Single rule file; takes effect on the next evaluation interval after reload. The rule will enter `pending` immediately if the condition is true and transition to `firing` after `for`.
+- **Rollback:** `git revert` the rule-file change and reload Prometheus.
 
-**Duration:** Alert enters `pending` after reload and fires after the `for` duration (e.g., 2 minutes).
+**Verification:** Re-run Step 2 and confirm the expression returns a non-empty `result`. Re-run Step 1 and confirm the rule moves to `pending` then `firing` within `for + scrape_interval`.
 
-### Option 3: Fix Alertmanager routing configuration
+### Cause B: Alert stays in pending and never reaches firing because `for` is longer than the condition persists
 
-**Risk:** Medium. Routing changes affect all alerts. Always test with `amtool` before applying.
+**Statement:** The rule's `for` duration is longer than the underlying condition persists, so the alert moves to `pending` and then back to `inactive` without ever reaching `firing`.
 
-**Command:**
+**Mechanism:** Prometheus requires the expression to return a non-empty result on every evaluation throughout the `for` window before transitioning the alert to `firing`. If the metric flaps — for example, a probe that succeeds intermittently or a scrape that misses one cycle — the `pending` counter resets to zero and the alert never matures. The rule looks healthy in the UI (`health: "ok"`), but no notification ever leaves Prometheus.
 
-Edit `alertmanager.yml`:
+**Indicator:**
+
+- [Step 1] the rule's `state` repeatedly shows `pending` but never reaches `firing` across multiple polls
+- [Step 2] the expression returns results some of the time but not on every evaluation
+- [Symptom] dashboards confirm the underlying condition is real but transient on the scrape-interval timescale
+
+<!-- match: {"step": 1, "predicate": "contains", "target": "\"state\":\"pending\""} -->
+
+**Mitigation:**
+
+- **Risk:** Shortening `for` increases sensitivity to flapping and may produce spurious pages; combine with `keep_firing_for` to smooth resolution.
+- **Command:**
+
+  ```yaml
+  # Reduce for to match actual condition persistence; keep_firing_for prevents flapping at resolution.
+  - alert: ServiceDown
+    expr: up{job="my-service"} == 0
+    for: 1m
+    keep_firing_for: 5m
+    labels:
+      severity: critical
+  ```
+
+  ```bash
+  promtool check rules /etc/prometheus/rules/service-alerts.yml
+  curl -X POST http://localhost:9090/-/reload
+  ```
+
+- **Duration:** Permanent once tuned against observed scrape intervals.
+
+**Resolution:**
 
 ```yaml
+# rules/service-alerts.yml — tune for against observed condition persistence; pair with keep_firing_for.
+- alert: ServiceDown
+  expr: up{job="my-service"} == 0
+  for: 1m
+  keep_firing_for: 5m
+  labels:
+    severity: critical
+```
+
+```bash
+promtool check rules /etc/prometheus/rules/service-alerts.yml
+curl -X POST http://localhost:9090/-/reload
+```
+
+- **Impact:** Single rule; affects only the timing of state transitions for the named alert.
+- **Rollback:** Restore the original `for` value and reload.
+
+**Verification:** Trigger the condition (or wait for the next real occurrence) and observe in Step 1 that the rule transitions `inactive → pending → firing` within `for + scrape_interval`. Confirm in Step 5 that Alertmanager receives the alert.
+
+### Cause C: Prometheus has no active Alertmanager peer
+
+**Statement:** Prometheus's `alerting.alertmanagers` configuration is empty, points at the wrong target, or resolves to no peers via service discovery, so fired alerts have nowhere to go.
+
+**Mechanism:** Prometheus only sends alerts to peers in its `activeAlertmanagers` list. The list is built from `static_configs` or service discovery under `alerting.alertmanagers`. When the DNS name does not resolve, the Kubernetes Service has no endpoints, a NetworkPolicy blocks port 9093, or the section is missing entirely, the list is empty. Alerts fire inside Prometheus (visible in `/api/v1/alerts`) but never reach Alertmanager, so no notification is produced.
+
+**Indicator:**
+
+- [Step 3] `data.activeAlertmanagers` is an empty array, or all peers appear under `droppedAlertmanagers`
+- [Step 5] `/api/v2/alerts` on Alertmanager shows no alerts despite Prometheus showing rules in `firing`
+
+<!-- match: {"step": 3, "predicate": "contains", "target": "\"active\":[]"} -->
+
+**Mitigation:**
+
+- **Risk:** Updating the Alertmanager endpoint does not affect existing alert rules or in-flight alerts; it only redirects future deliveries.
+- **Command:**
+
+  ```yaml
+  # prometheus.yml — point at the cluster Alertmanager Service for HA, list all peers explicitly.
+  alerting:
+    alertmanagers:
+      - static_configs:
+          - targets:
+              - alertmanager-0.alertmanager.monitoring.svc:9093
+              - alertmanager-1.alertmanager.monitoring.svc:9093
+              - alertmanager-2.alertmanager.monitoring.svc:9093
+  ```
+
+  ```bash
+  promtool check config /etc/prometheus/prometheus.yml
+  curl -X POST http://localhost:9090/-/reload
+  ```
+
+- **Duration:** Permanent. List every Alertmanager peer individually so each receives a copy of the alert (Alertmanager deduplicates via gossip).
+
+**Resolution:**
+
+```yaml
+# prometheus.yml — list every Alertmanager peer so Prometheus sends to all and Alertmanager gossip deduplicates.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager-0.alertmanager.monitoring.svc:9093
+            - alertmanager-1.alertmanager.monitoring.svc:9093
+            - alertmanager-2.alertmanager.monitoring.svc:9093
+```
+
+```bash
+promtool check config /etc/prometheus/prometheus.yml
+curl -X POST http://localhost:9090/-/reload
+```
+
+- **Impact:** Cluster-wide — restores notification delivery for every fired alert. Takes effect on the next evaluation after reload.
+- **Rollback:** Revert `prometheus.yml` and reload.
+
+**Verification:** Re-run Step 3; `activeAlertmanagers` must contain one entry per configured peer. Re-run Step 4; `rate(prometheus_notifications_errors_total[5m])` must be zero. Within one `group_wait`, an existing firing alert must appear in `/api/v2/alerts` (Step 5).
+
+### Cause D: Active silence matches the alert's labels
+
+**Statement:** An active silence's `matchers` all match the alert's labels, so Alertmanager accepts the alert but suppresses every notification until the silence expires.
+
+**Mechanism:** When an alert arrives, Alertmanager checks every active silence's `matchers` against the alert's labels. If all matchers for any one silence match, the alert is marked `suppressed` and is not dispatched to any receiver. Silences are commonly created during maintenance windows and forgotten — the `endsAt` may be hours, days, or weeks in the future. The alert is visible in `/api/v2/alerts` with `status.state == "suppressed"` and `status.silencedBy` populated.
+
+**Indicator:**
+
+- [Step 5] the alert is present with `status.state == "suppressed"` and a non-empty `silencedBy` array
+- [Step 6] at least one silence is in `active` state and its `matchers` match the alert's labels
+
+<!-- match: {"step": 5, "predicate": "contains", "target": "\"suppressed\""} -->
+
+**Mitigation:**
+
+- **Risk:** Expiring a silence immediately re-enables notifications for every matched alert; if many alerts match, expect a notification burst.
+- **Command:**
+
+  ```bash
+  amtool silence query --alertmanager.url=http://localhost:9093 --active
+  amtool silence expire <SILENCE_ID> --alertmanager.url=http://localhost:9093
+  ```
+
+- **Duration:** Immediate.
+
+**Resolution:**
+
+```bash
+# Same as Mitigation. If the silence is on a maintenance schedule, narrow the matchers or shorten endsAt instead of expiring.
+amtool silence expire <SILENCE_ID> --alertmanager.url=http://localhost:9093
+```
+
+- **Impact:** Single silence; affects only alerts whose labels match the removed silence's matchers.
+- **Rollback:** Re-create the silence with the same matchers via `amtool silence add` or `POST /api/v2/silences`.
+
+**Verification:** Re-run Step 6 and confirm the silence ID is no longer in the active list. Re-run Step 5 and confirm the alert's `status.state` is `active` (not `suppressed`) and `silencedBy` is empty. The next `group_interval` after expiry must deliver a notification.
+
+### Cause E: Routing tree does not match the alert's labels, alert falls through to an unintended receiver
+
+**Statement:** The Alertmanager routing tree's `matchers` / `match` / `match_re` do not select any child route for this alert, so it falls back to the root route's receiver instead of the intended specific receiver.
+
+**Mechanism:** Alertmanager walks the routing tree top-down. The first child route whose matchers match the alert's labels claims the alert (unless `continue: true` is set). If no child route matches, the alert is delivered to the root route's receiver. A common misconfiguration is a typo in a matcher label name or value (`servce` vs `service`, `Critical` vs `critical`), a child route using `match_re` with a pattern that misses the label format, or a missing label on the alert rule itself (the routing matcher expects `team=payments` but the rule only sets `service=payments`).
+
+**Indicator:**
+
+- [Step 7] `amtool config routes test` with the alert's exact labels resolves to a receiver other than the one expected (often the root/default)
+- [Step 5] the alert is present in `/api/v2/alerts` with `status.state == "active"` but the wrong receiver gets notified (or the silent default receiver gets it)
+
+<!-- match: {"step": 7, "predicate": "contains", "target": "default"} -->
+
+**Mitigation:**
+
+- **Risk:** Routing changes affect every alert in the system; always validate with `amtool config routes test` against representative label sets before reload.
+- **Command:**
+
+  ```yaml
+  # alertmanager.yml — explicit matchers for each child route.
+  route:
+    receiver: 'default-slack'
+    group_by: ['alertname', 'service', 'severity']
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    routes:
+      - matchers:
+          - severity = "critical"
+        receiver: 'pagerduty-critical'
+        continue: false
+      - matchers:
+          - severity = "warning"
+        receiver: 'slack-warnings'
+        continue: false
+  ```
+
+  ```bash
+  amtool check-config /etc/alertmanager/alertmanager.yml
+  amtool config routes test --config.file=/etc/alertmanager/alertmanager.yml \
+    severity=critical alertname=ServiceDown service=my-app
+  curl -X POST http://localhost:9093/-/reload
+  ```
+
+- **Duration:** Permanent. Keep test cases for representative label sets in CI alongside the routing config.
+
+**Resolution:**
+
+```yaml
+# alertmanager.yml — child routes with explicit matchers; validate before reload.
 route:
   receiver: 'default-slack'
-  group_by: ['alertname', 'severity']
+  group_by: ['alertname', 'service', 'severity']
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
   routes:
-    - match:
-        severity: critical
+    - matchers: [severity = "critical"]
       receiver: 'pagerduty-critical'
-    - match:
-        severity: warning
+    - matchers: [severity = "warning"]
       receiver: 'slack-warnings'
 ```
 
-Test before applying:
-
 ```bash
-amtool config routes test --config.file=alertmanager.yml severity=critical alertname=ServiceDown
-```
-
-Reload:
-
-```bash
+amtool check-config /etc/alertmanager/alertmanager.yml
+amtool config routes test --config.file=/etc/alertmanager/alertmanager.yml severity=critical alertname=ServiceDown service=my-app
 curl -X POST http://localhost:9093/-/reload
 ```
 
-**Verify:** `amtool config routes show --config.file=alertmanager.yml` displays the expected routing tree.
+- **Impact:** Cluster-wide for the Alertmanager instance. Affects every alert routed through the changed subtree. Takes effect on next reload.
+- **Rollback:** `git revert` the `alertmanager.yml` change and reload.
 
-**Duration:** 1-2 minutes.
+**Verification:** Re-run Step 7 with the same label set; the output must name the expected receiver. Send a synthetic alert via Step 12 with those exact labels and confirm delivery at the expected channel.
 
-### Option 4: Remove accidental silences
+### Cause F: Inhibition rule with broad target matchers suppresses the alert
 
-**Risk:** Low. Removing a silence re-enables notifications for matched alerts.
+**Statement:** An active inhibition rule's `target_matchers` match the alert's labels while a source alert is firing, so the target alert is accepted but silenced for as long as the source persists.
 
-**Command:**
+**Mechanism:** Inhibition is configured as `source_matchers`, `target_matchers`, and an `equal` label list. When a source-matching alert is `firing`, every target-matching alert with the same `equal` label values is marked `inhibited` and is not dispatched. Inhibition is intentional for cases like "node down inhibits per-pod alerts on that node", but overly broad rules (e.g., a `severity=critical` source matching all critical alerts, with `target_matchers` matching all `severity=warning`) silently swallow large classes of warning alerts whenever any critical alert is firing.
 
-```bash
-amtool silence query --alertmanager.url=http://localhost:9093
-amtool silence expire <SILENCE_ID> --alertmanager.url=http://localhost:9093
-```
+**Indicator:**
 
-Or via API:
+- [Step 5] alerts appear with `status.state == "suppressed"` and a non-empty `inhibitedBy` array, but no `silencedBy`
+- [Step 9] an `inhibit_rules` block has `target_matchers` that match the missing alert's labels, and at least one source alert is currently firing
 
-```bash
-curl -X DELETE http://localhost:9093/api/v2/silence/<SILENCE_ID>
-```
+<!-- match: {"step": 5, "predicate": "contains", "target": "\"inhibitedBy\""} -->
 
-**Verify:** `curl -s http://localhost:9093/api/v2/silences | jq '[.[] | select(.status.state=="active")] | length'` shows the count decreased.
+**Mitigation:**
 
-**Duration:** Immediate.
+- **Risk:** Narrowing inhibition can produce notification floods if the original broad rule was masking a known cascade; coordinate with the on-call team before tightening.
+- **Command:**
 
-### Option 5: Fix receiver credentials (Slack, PagerDuty, email)
+  ```yaml
+  # alertmanager.yml — narrow target_matchers and add labels to the equal list.
+  inhibit_rules:
+    - source_matchers:
+        - severity = "critical"
+        - alertname = "NodeDown"
+      target_matchers:
+        - severity = "warning"
+        - alertname =~ "PodNotReady|PodRestart"
+      equal: [cluster, node]
+  ```
 
-**Risk:** Low. Updating credentials restores notification delivery without affecting alert routing.
+  ```bash
+  amtool check-config /etc/alertmanager/alertmanager.yml
+  curl -X POST http://localhost:9093/-/reload
+  ```
 
-**Command:**
+- **Duration:** Permanent.
 
-Update the receiver section in `alertmanager.yml`:
+**Resolution:**
 
 ```yaml
+# alertmanager.yml — narrow target_matchers and add labels to equal so inhibition only covers the intended cascade.
+inhibit_rules:
+  - source_matchers:
+      - severity = "critical"
+      - alertname = "NodeDown"
+    target_matchers:
+      - severity = "warning"
+      - alertname =~ "PodNotReady|PodRestart"
+    equal: [cluster, node]
+```
+
+```bash
+amtool check-config /etc/alertmanager/alertmanager.yml
+curl -X POST http://localhost:9093/-/reload
+```
+
+- **Impact:** Cluster-wide for the Alertmanager instance. Previously-inhibited target alerts will start delivering on the next dispatch cycle.
+- **Rollback:** Revert the `inhibit_rules` block and reload.
+
+**Verification:** Re-run Step 9; the previously inhibited alert must no longer appear under `inhibited=true`. Confirm via Step 5 that `status.state` is `active` and `inhibitedBy` is empty. A notification must arrive on the next `group_interval`.
+
+### Cause G: Mute time interval is in effect for the route
+
+**Statement:** The route handling the alert references a `mute_time_intervals` entry whose current window matches the local time, so all notifications on that route are silenced.
+
+**Mechanism:** `time_intervals` define recurring time windows (by hour, weekday, day-of-month, month, year, IANA timezone). A route's `mute_time_intervals` lists intervals during which the route delivers nothing; `active_time_intervals` lists the only windows during which it delivers. Time-window mutes are commonly used to suppress non-urgent paging outside business hours. The alert is accepted, routed, and grouped — but the dispatcher drops it before sending. The alert is visible in `/api/v2/alerts` as `active`, and no log line announces the mute.
+
+**Indicator:**
+
+- [Step 5] the alert is `active` with no `silencedBy` and no `inhibitedBy`
+- [Step 8] a `time_intervals` block matches the current time in the configured `location`, and a route uses it under `mute_time_intervals`
+
+<!-- match: {"step": 8, "predicate": "contains", "target": "mute_time_intervals"} -->
+
+**Mitigation:**
+
+- **Risk:** Removing the mute restores out-of-hours paging; coordinate with the on-call team before applying.
+- **Command:**
+
+  ```yaml
+  # alertmanager.yml — remove or narrow the mute_time_intervals reference for the affected route.
+  route:
+    routes:
+      - matchers: [severity = "warning"]
+        receiver: 'slack-warnings'
+        # mute_time_intervals: ['weekends']   # remove or comment out to restore weekend delivery
+  ```
+
+  ```bash
+  amtool check-config /etc/alertmanager/alertmanager.yml
+  curl -X POST http://localhost:9093/-/reload
+  ```
+
+- **Duration:** Permanent (until the policy is revised).
+
+**Resolution:**
+
+```yaml
+# alertmanager.yml — remove or narrow mute_time_intervals on the affected route.
+route:
+  routes:
+    - matchers: [severity = "warning"]
+      receiver: 'slack-warnings'
+      # mute_time_intervals: ['weekends']   # remove or narrow to restore delivery
+```
+
+```bash
+amtool check-config /etc/alertmanager/alertmanager.yml
+curl -X POST http://localhost:9093/-/reload
+```
+
+- **Impact:** Affects only the specific route's delivery schedule.
+- **Rollback:** Restore the `mute_time_intervals` reference and reload.
+
+**Verification:** Re-run Step 8; the route must no longer reference the active interval, or the current time must fall outside any referenced mute interval. Step 12 synthetic alert must deliver during what was previously a muted window.
+
+### Cause H: Receiver credentials are invalid or expired (Slack, PagerDuty, webhook, SMTP)
+
+**Statement:** Alertmanager dispatches the alert to the receiver but the receiver endpoint rejects the request with an authentication error or unreachable status, so no notification reaches the destination channel.
+
+**Mechanism:** Each receiver type (Slack, PagerDuty, OpsGenie, webhook, email) authenticates with a credential — webhook URL, integration key, SMTP password, API token. Credentials expire, get rotated, or are pasted with a typo. Alertmanager logs the failure as `msg="Notify for alerts failed" ... err="..."` with the underlying HTTP status (`401`, `403`, `429`) or transport error (`dial tcp ... connection refused`, `context deadline exceeded`). Alertmanager retries per `retry` config but eventually drops the notification; `alertmanager_notifications_failed_total` increments.
+
+**Indicator:**
+
+- [Step 11] Alertmanager logs show `Notify for alerts failed` for the affected receiver with `401`, `403`, `429`, a `5xx`, `connection refused`, or `context deadline exceeded`
+- [Step 12] the synthetic alert reaches `/api/v2/alerts` but the receiver does not deliver a notification
+
+<!-- match: {"step": 11, "predicate": "contains", "target": "Notify for alerts failed"} -->
+
+**Mitigation:**
+
+- **Risk:** Pasting credentials into the wrong receiver block routes alerts to the wrong destination; validate the receiver name before reload.
+- **Command:**
+
+  ```yaml
+  # alertmanager.yml — update the credential for the failing receiver.
+  receivers:
+    - name: 'pagerduty-critical'
+      pagerduty_configs:
+        - routing_key: '<NEW_INTEGRATION_KEY>'
+          severity: '{{ .CommonLabels.severity }}'
+    - name: 'default-slack'
+      slack_configs:
+        - api_url_file: /etc/alertmanager/secrets/slack-webhook-url
+          channel: '#alerts'
+  ```
+
+  ```bash
+  amtool check-config /etc/alertmanager/alertmanager.yml
+  curl -X POST http://localhost:9093/-/reload
+  ```
+
+- **Duration:** Permanent (until the credential is rotated again).
+
+**Resolution:**
+
+```yaml
+# alertmanager.yml — store credentials in *_file variants so secret rotation is a file write, not a config edit.
 receivers:
   - name: 'pagerduty-critical'
     pagerduty_configs:
-      - routing_key: '<NEW_INTEGRATION_KEY>'
+      - routing_key_file: /etc/alertmanager/secrets/pagerduty-routing-key
         severity: '{{ .CommonLabels.severity }}'
   - name: 'default-slack'
     slack_configs:
-      - api_url: '<NEW_WEBHOOK_URL>'
+      - api_url_file: /etc/alertmanager/secrets/slack-webhook-url
         channel: '#alerts'
 ```
 
 ```bash
+amtool check-config /etc/alertmanager/alertmanager.yml
 curl -X POST http://localhost:9093/-/reload
 ```
 
-**Verify:** Send a test alert (see Verification step 4) and confirm the notification arrives at the receiver.
+- **Impact:** Affects only the named receiver; other receivers continue delivering.
+- **Rollback:** Restore the previous credential and reload. If the previous credential is also invalid, fall through to the on-call escalation path.
 
-**Duration:** 2-5 minutes.
+**Verification:** Re-run Step 12 (synthetic alert) with labels routed to this receiver and confirm a notification arrives. Re-run Step 11 and confirm no further `Notify for alerts failed` entries for this receiver.
 
-## Root Cause Resolution
+### Cause I: Configuration file is invalid and the running config does not match disk
 
-**If** Prometheus cannot reach Alertmanager → fix the `alerting.alertmanagers` configuration in `prometheus.yml`. For Kubernetes, verify the Alertmanager Service exists (`kubectl get svc -n monitoring`), the pod is running, and no NetworkPolicy blocks port 9093. For HA Alertmanager clusters, configure Prometheus to send to all instances (not load-balanced).
+**Statement:** A recent edit to `prometheus.yml`, an alert rule file, or `alertmanager.yml` failed validation, so the daemon kept its last good in-memory config and the on-disk changes never took effect.
 
-**If** the alert rule expression never evaluates to true → review the PromQL expression against actual metric data in the Prometheus query UI. Common mistakes: wrong label values (case-sensitive), missing metrics due to relabeling or scrape failures, thresholds inverted (`> 0.9` instead of `< 0.1`), or the metric does not exist for the target job.
+**Mechanism:** `promtool check rules`, `promtool check config`, and `amtool check-config` exit non-zero on syntax or semantic errors. A `/-/reload` against a daemon with a broken on-disk config logs an error and leaves the running config unchanged. The operator believes the change is live (the file is committed and deployed) but the daemon still serves the previous rules, routes, and receivers. Subsequent fixes are also blocked because every reload attempts to load the same broken file.
 
-**If** alerts stay in `pending` and never reach `firing` → the `for` duration is longer than the condition persists. Reduce `for` to match the expected condition duration. For critical alerts, use `for: 1m` or `for: 2m`. For flapping services, increase scrape frequency rather than extending `for`.
+**Indicator:**
 
-**If** Alertmanager routing does not match alert labels → the `route` tree's matchers do not match the alert's labels, and the alert falls to the default receiver. Use `amtool config routes test` with the alert's exact labels. Ensure child routes use `match` or `match_re` that correspond to labels set on the alert rule.
+- [Step 10] `promtool check rules`, `promtool check config`, or `amtool check-config` exits non-zero with a parse or schema error
+- [Step 11] Alertmanager logs contain `error loading config` or `msg="Loading configuration file failed"`
+- [Symptom] a recent commit to the rules or routing config does not appear to take effect in Step 1 or Step 7
 
-**If** receivers fail to deliver → update credentials. For Slack: regenerate the webhook URL in Slack app settings. For PagerDuty: verify the integration key in the service's integration tab. For email: test SMTP connectivity with `curl --url smtp://server:587 --mail-from sender@example.com --mail-rcpt receiver@example.com`. For webhooks: `curl -X POST <url> -d '{"test": true}'` to verify the endpoint is reachable.
+<!-- match: {"step": 10, "predicate": "exit_code", "target": 1} -->
 
-**If** inhibition rules are too broad → narrow `source_matchers` and `target_matchers` to specific services or alert groups. Add more labels to the `equal` list to prevent cross-service inhibition. Review inhibitions with `amtool config routes show`.
+**Mitigation:**
 
-## Verification
+- **Risk:** Reverting to the last good config rolls back any intentional changes in the broken commit; capture the diff before reverting.
+- **Command:**
 
-1. **Confirm alert rules evaluate correctly:**
+  ```bash
+  # Revert the broken commit, validate, and reload.
+  git -C /etc/prometheus log -n 5 --oneline
+  git -C /etc/prometheus revert <BROKEN_SHA> --no-edit
+  promtool check config /etc/prometheus/prometheus.yml
+  promtool check rules /etc/prometheus/rules/*.yml
+  curl -X POST http://localhost:9090/-/reload
+  # Alertmanager equivalent:
+  git -C /etc/alertmanager revert <BROKEN_SHA> --no-edit
+  amtool check-config /etc/alertmanager/alertmanager.yml
+  curl -X POST http://localhost:9093/-/reload
+  ```
 
-```bash
-curl -s http://localhost:9090/api/v1/rules | \
-  jq '.data.groups[].rules[] | select(.type=="alerting") | {name, state, health}'
-```
+- **Duration:** Permanent until the original change is corrected.
 
-All rules show `health: "ok"`. Rules for known conditions show `firing`.
-
-2. **Confirm Prometheus reaches Alertmanager with zero errors:**
-
-```bash
-curl -s http://localhost:9090/api/v1/alertmanagers | jq '.data.activeAlertmanagers | length'
-curl -s 'http://localhost:9090/api/v1/query?query=rate(prometheus_notifications_errors_total[5m])' | jq '.data.result[0].value[1]'
-```
-
-Active Alertmanagers >= 1. Error rate = 0.
-
-3. **Confirm no unexpected silences:**
-
-```bash
-curl -s http://localhost:9093/api/v2/silences | jq '[.[] | select(.status.state=="active")] | length'
-```
-
-Should be 0 (or only intentional maintenance silences).
-
-4. **End-to-end test with a synthetic alert:**
+**Resolution:**
 
 ```bash
-curl -X POST http://localhost:9093/api/v2/alerts \
-  -H 'Content-Type: application/json' \
-  -d '[{"labels":{"alertname":"TestAlert","severity":"info"},"annotations":{"summary":"End-to-end alerting pipeline test"}}]'
+# Revert broken commits on each side, validate, reload, then re-introduce the fix on a branch.
+git -C /etc/prometheus revert <BROKEN_SHA> --no-edit
+promtool check config /etc/prometheus/prometheus.yml
+promtool check rules /etc/prometheus/rules/*.yml
+curl -X POST http://localhost:9090/-/reload
+git -C /etc/alertmanager revert <BROKEN_SHA> --no-edit
+amtool check-config /etc/alertmanager/alertmanager.yml
+curl -X POST http://localhost:9093/-/reload
 ```
 
-Verify the notification arrives at the configured receiver. Then resolve:
+- **Impact:** Cluster-wide; restores the last known-good config for the affected daemon.
+- **Rollback:** Cherry-pick the reverted commit back once the syntax is fixed.
 
-```bash
-curl -X POST http://localhost:9093/api/v2/alerts \
-  -H 'Content-Type: application/json' \
-  -d '[{"labels":{"alertname":"TestAlert","severity":"info"},"endsAt":"2026-03-26T00:00:00Z"}]'
-```
+**Verification:** Re-run Step 10; all three commands must exit 0. Re-check Step 1 (Prometheus rules reflect the file on disk) and Step 7 (`amtool config routes show` matches the file on disk). The `prometheus_config_last_reload_successful` and `alertmanager_config_last_reload_successful` gauges must read `1`.
+
+### Cause Z: Unidentified
+
+**Statement:** Diagnostics confirm that an expected alert is not being delivered, but no Cause A–I indicator matches the gathered evidence.
+
+**Mechanism:** The rule evaluates correctly (Steps 1–2), Prometheus has active Alertmanager peers (Step 3) with no error rate (Step 4), the alert reaches Alertmanager (Step 5), no silence (Step 6), routing (Step 7), mute interval (Step 8), or inhibition (Step 9) matches the alert's labels, configs validate (Step 10), and receiver logs (Step 11) show no errors — yet the synthetic alert (Step 12) does not produce a notification. The driver is outside the controlled vocabulary above (custom routing logic, a downstream receiver that accepts and drops, network gear between Alertmanager and the receiver, vendor-side incident filtering).
+
+**Indicator:**
+
+- [Default] symptom is confirmed but Causes A–I indicators do not match the evidence
+
+**Mitigation:**
+
+- **Risk:** Capturing diagnostics is read-only and safe; raising alert verbosity may produce a brief notification burst.
+- **Command:**
+
+  ```bash
+  # Capture diagnostic artefacts for handoff.
+  curl -s http://localhost:9090/api/v1/rules > rules.json
+  curl -s http://localhost:9090/api/v1/alertmanagers > alertmanagers.json
+  curl -s http://localhost:9093/api/v2/alerts > am-alerts.json
+  curl -s http://localhost:9093/api/v2/silences > silences.json
+  curl -s http://localhost:9093/api/v2/status > am-status.json
+  kubectl logs -n monitoring -l app.kubernetes.io/name=alertmanager --tail=1000 > am-logs.txt
+  kubectl logs -n monitoring -l app.kubernetes.io/name=prometheus --tail=1000 > prom-logs.txt
+  ```
+
+- **Duration:** Hours, not days. Hold the captured artefacts while engaging the observability owner or vendor support.
+
+**Resolution:** Out of runbook scope. Hand off the captured `rules.json`, `alertmanagers.json`, `am-alerts.json`, `silences.json`, `am-status.json`, and the two log files to the observability owner or vendor support. Open an incident ticket with the failure-mode summary, the synthetic-alert payload from Step 12, and a named follow-up owner.
+
+**Verification:** Receiving engineer acknowledges the handoff; an incident ticket is opened with all captured artefacts attached and a named owner assigned for follow-up.
 
 ## Prevention
 
-- **Implement a dead-man's switch (Watchdog alert).** Configure an alert that always fires (e.g., `expr: vector(1)`). Route it to a heartbeat monitoring service (Healthchecks.io, PagerDuty heartbeat, Dead Man's Snitch). If the heartbeat stops, the alerting pipeline is broken.
-- **Validate alert rules in CI with promtool.** Run `promtool check rules rules.yml` and `promtool test rules test.yml` in the CI pipeline before deploying rule changes. Write unit tests for critical alert expressions.
-- **Monitor the monitoring system.** Alert on `rate(prometheus_notifications_errors_total[5m]) > 0` and `rate(prometheus_rule_evaluation_failures_total[5m]) > 0` to detect pipeline failures before they cause missed incidents.
-- **Require silence policies.** All silences must have a reason, a maximum duration (e.g., 4 hours), and a responsible person. Audit active silences weekly. Automate expiry enforcement.
-- **Version control Alertmanager configuration.** Store `alertmanager.yml` in Git. Review routing changes in pull requests using `amtool config routes show` output as a PR comment.
-- **Test routing changes with `amtool config routes test`** before deploying. Verify that each alert severity routes to the expected receiver.
-- **Configure receiver redundancy.** Add a fallback receiver (e.g., email) in case the primary receiver (Slack webhook, PagerDuty) fails. Use `webhook_configs` as a secondary path.
-- **Review `group_wait`, `group_interval`, and `repeat_interval`** quarterly to match SLA response requirements. Default values may be too slow for critical alerts.
+- Run a Watchdog / dead-man's switch: define an alert with `expr: vector(1)` that always fires, route it to a heartbeat endpoint (PagerDuty heartbeat, Healthchecks.io, Dead Man's Snitch). The heartbeat service pages when the heartbeat stops — that is the only reliable signal that the entire pipeline is healthy end-to-end.
+- Validate every config change in CI before merge: `promtool check config prometheus.yml`, `promtool check rules rules/*.yml`, `amtool check-config alertmanager.yml`, plus `amtool config routes test` against a fixture of representative label sets.
+- Alert on the alerting infrastructure: `rate(prometheus_notifications_errors_total[5m]) > 0`, `rate(prometheus_rule_evaluation_failures_total[5m]) > 0`, `prometheus_config_last_reload_successful == 0`, `alertmanager_config_last_reload_successful == 0`, `alertmanager_notifications_failed_total` increasing. Route these meta-alerts to a different receiver than the primary pipeline.
+- Enforce silence hygiene: every silence must have a `comment` (reason + ticket), a `createdBy`, and an `endsAt` no further than 24 hours out. Audit active silences daily via a scheduled `amtool silence query --active` report.
+- Store `prometheus.yml`, rule files, and `alertmanager.yml` in version control. Review routing and inhibition changes in pull requests with the `amtool config routes show` and `amtool config routes test` output as PR comments.
+- Configure receiver redundancy: add a fallback `webhook_configs` or `email_configs` in critical receivers so a single vendor outage does not silence the pipeline. Use `*_file` variants for every credential so secret rotation is a file write, not a config edit.
+- Review `group_wait`, `group_interval`, `repeat_interval`, and `for` values quarterly against the team's response-time SLAs. Defaults (30s / 5m / 4h) are appropriate for most teams but may be too slow for SEV1-only routes.
+- Keep at least two Alertmanager peers in the `alerting.alertmanagers` list on the Prometheus side, configured to gossip — Prometheus sends each alert to every peer and Alertmanager deduplicates. A single peer is a single point of failure for the entire notification path.
+- Pin Alertmanager and Prometheus minor versions in production and upgrade in a non-prod environment first. Alertmanager 0.27 removed API v1 — clients hitting `/api/v1/*` after upgrade silently fail.
 
 ## Sources
 
-- [Prometheus — Alertmanager Overview](https://prometheus.io/docs/alerting/latest/alertmanager/) — Grouping, inhibition, silences, and HA clustering architecture
-- [Prometheus — Alertmanager Configuration](https://prometheus.io/docs/alerting/latest/configuration/) — Routing tree, receiver definitions, inhibition rules, and silence matchers
-- [Prometheus — Alerting Rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/) — Alert rule syntax, `for` clause behavior, and evaluation semantics
-- [Prometheus — Alerting Best Practices](https://prometheus.io/docs/practices/alerting/) — Official guidance on designing reliable and actionable alert rules
-- [Troubleshooting Alertmanager: Common Issues and Debugging Techniques](https://dohost.us/index.php/2025/09/28/troubleshooting-alertmanager-common-issues-and-debugging-techniques/) — Step-by-step diagnostic procedures including amtool, log analysis, and routing debugging
-- [DrDroid — Alertmanager Not Receiving Alerts](https://drdroid.io/stack-diagnosis/prometheus-alertmanager-not-receiving-alerts) — Connectivity diagnosis between Prometheus and Alertmanager
+- [Prometheus — Alertmanager Configuration](https://prometheus.io/docs/alerting/latest/configuration/) — Priority 1. Routing tree semantics, `matchers` / `match` / `match_re` syntax, `group_by` / `group_wait` / `group_interval` / `repeat_interval` defaults, receiver definitions, `inhibit_rules`, `time_intervals`, `mute_time_intervals` vs `active_time_intervals`, and reload behaviour.
+- [Prometheus — Alertmanager Overview](https://prometheus.io/docs/alerting/latest/alertmanager/) — Priority 1. Grouping, inhibition, and silence semantics; `--alerts.per-alertname-limit` flag; high-availability gossip and deduplication model.
+- [Prometheus — Alerting Rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/) — Priority 1. Rule syntax (`expr`, `for`, `keep_firing_for`, `labels`, `annotations`), `inactive → pending → firing` state machine, and templating.
+- [Prometheus — Alerting Best Practices](https://prometheus.io/docs/practices/alerting/) — Priority 1. Symptom-based alerting, metamonitoring of the alerting pipeline, and end-to-end blackbox tests preferred over per-hop checks.
+- [Prometheus — Management API](https://prometheus.io/docs/prometheus/latest/management_api/) — Priority 1. `/-/reload`, `/-/healthy`, `/-/ready` endpoints; `--web.enable-lifecycle` flag requirement.
+- [Alertmanager — README and amtool reference](https://github.com/prometheus/alertmanager/blob/main/README.md) — Priority 1. `amtool` subcommands (`alert query`, `silence add/query/expire`, `config routes show/test`, `check-config`, `template render`); `/api/v2/alerts`, `/api/v2/silences`, `/api/v2/status` endpoints; API v1 removal in 0.27.
