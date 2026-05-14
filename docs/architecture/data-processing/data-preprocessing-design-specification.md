@@ -1,8 +1,6 @@
-# Data Preprocessing Design Specification v5.7
+# Data Preprocessing Design Specification
 
-**Status**: FINAL (sections referencing `EvidenceForm` are **superseded by migration 010**, 2026-05-11 — the `form` column was dropped; preprocessing artifacts now write directly to `uploaded_files`. The extraction/classification pipeline itself is unchanged.)
-**Date**: 2026-04-26
-**Supersedes**: v5.6
+**Status**: Live
 
 ---
 
@@ -390,7 +388,7 @@ For the full runtime-marker vocabulary (including `structure_extraction`, `none`
 
 **All 11 extractors use stdlib only** (re, ast, json). No external dependencies except optional `yaml`/`tomli` for config parsing. This means zero external risk, deterministic output, and fast execution.
 
-#### Coverage Metadata (v5.4 — file_meta dict)
+#### Coverage Metadata
 
 All 10 active extractors (excluding VisualEvidence) return **coverage metadata** as the `file_meta` field of `ExtractResult` — a structured dict returned alongside `file_extract` and `search_map`. The `--- COVERAGE METADATA ---` separator text no longer exists. Coverage data is now a structured dict, enabling downstream systems — particularly the orchestration layer's coverage gap detection (Section 6.1) — to read typed values directly rather than parsing separator text.
 
@@ -608,17 +606,30 @@ Each retry appended to `extractor.attempts` carries `triggered_by = "sanity_retr
 
 Every `PreprocessingResult` carries `coverage_start_ts` / `coverage_end_ts` — the earliest and latest timestamps parseable from the evidence's content, or `None` for content without recognisable timestamps (configs, code, screenshots, short pastes that fall through the timestamp scanner).
 
-- Implementation: `extract_time_range_ts(content)` in `extractors/utils.py` walks the first and last 10 lines (Tier 1 budget) against `_TS_PATTERNS` — ISO-8601 (with/without `T`), syslog BSD, epoch seconds, epoch milliseconds, and YYMMDD HHMMSS (Hadoop/HDFS compact format, added v5.7). The first matching pattern wins; no fuzzy parsing.
-- Persistence: `InvestigationService._preprocess_attachment` lifts both fields onto `Evidence.coverage_start_ts` / `coverage_end_ts` at row creation. The pattern that matched is recorded under `evidence.metadata.coverage.source` (one of `iso8601_t`, `iso8601`, `syslog_bsd`, `epoch_s`, `epoch_ms`, `yymmdd`, or absent).
+- Implementation: `extract_time_range_ts(content)` in `extractors/utils.py` returns `(start_ts, end_ts, source)`. It walks the first `_HEAD_SCAN_LINES=10` lines and back-walks the trailing `_TAIL_SCAN_LINES=100` lines (the tail window walks backwards rather than slicing the last 10 to survive trailing whitespace — ISS-036). The first matching pattern wins; no fuzzy parsing.
+- Pattern vocabulary (priority order): `iso8601_t`, `iso8601`, `healthapp` (`YYYYMMDD-H:M:S:ms`, ISS-017), `syslog_bsd`, `yymmdd` (Hadoop/HDFS compact), `yy_slash_mmdd` (Spark/log4j, ISS-027), `epoch_ms`, `epoch_s`.
+- Persistence: `InvestigationService._preprocess_attachment` lifts both timestamps onto the `UploadedFile` row (`uploaded_files.coverage_start_ts` / `coverage_end_ts`) at intake. The matched pattern name (`coverage.source`) is computed and surfaces in `PreprocessingResult.extraction_metadata["evidence_metadata"].coverage.source` for in-process consumers (e.g., context_builder, agent tools holding the result); persistence of the preprocessor's JSON diagnostics block onto `uploaded_files.metadata` is a tracked follow-up. The head pattern wins because a single file emits a single timestamp format in practice; when the head window is empty, the tail's pattern is used as fallback.
 - Use sites:
-  - The entity registry uses `Evidence.coverage_start_ts` to populate `case_entities.first_seen_ts` (entity-registry.md) — lets the registry answer "did this IP appear before or after the outage?" without re-opening the evidence.
-  - Orchestration's coverage-gap detection (R3, §6.1) uses the time range to flag user queries that target timestamps outside what any evidence in the case actually covers.
+  - The entity registry uses the file's coverage timestamps to populate `case_entities.first_seen_ts` (entity-registry.md) — lets the registry answer "did this IP appear before or after the outage?" without re-opening the evidence.
+  - Orchestration's coverage-gap detection (R3, §6.1) uses the time range to flag user queries that target timestamps outside what any data in the case actually covers.
 
 Best-effort throughout: extraction errors degrade to `None`; the field is Optional everywhere downstream and consumers tolerate absence.
 
+### 2.8 Operational Hardening
+
+Four behaviours that the §2.4 entry-point flow doesn't surface but are load-bearing in production. All have inline `ISS-…` rationale anchors in the source.
+
+**Page-capture shape validation (security gate).** Before dispatching `source_type=page_capture` content to its passthrough branch, `PreprocessingService` validates structural markers (`has_captured_at`, `has_h2_heading`) on the incoming markdown. A capture that fails the shape check is hard-rejected — it indicates either a misbehaving copilot build or a content-injection attempt. The `PAGE_CAPTURE_SHAPE_INVALID_TOTAL` Prometheus counter increments on each rejection so operators can alert on a sudden spike. Implementation: `preprocessing_service.py:444–499`.
+
+**Placeholder content preview.** When `classification_failed=True` short-circuits to a placeholder result, `_build_content_preview()` attaches a truncated preview of the original content to the placeholder so the agent has something concrete to reason about on the same turn (instead of just the literal "classification uncertain" string). ISS-030. Implementation: `preprocessing_service.py:152–212`.
+
+**Extraction yield observability.** After Phase 2c (sanity-retry), `PREPROCESSING_EXTRACTION_YIELD_RATIO` Prometheus histogram records the ratio of bytes the extractor emitted vs bytes it received, tagged with `data_type` and `retry_triggered`. The signal lets us flag pathologies where, say, the logs extractor emits 200 bytes from a 5 MB file because all entity caps tripped — operators can correlate yield collapses with classifier-drift or extractor regressions. Implementation: `preprocessing_service.py:858–861`.
+
+**Final synchronous fallback (post-retry).** If the type-specific extractor times out **and** all `_MAX_ALT_RETRIES=2` alternative-type attempts (§2.6 Phase 2c) also exhaust their budgets, the service makes one last synchronous direct-extraction attempt with no concurrency limit and no timeout. This bypasses the normal dispatch stack and is the only path that can produce non-empty extraction output when every governed path has failed — it accepts the latency risk in exchange for not returning an empty index for a file that the user is actively trying to investigate. Failures here propagate as the empty placeholder. Implementation: `preprocessing_service.py:_fallback_direct_extraction`.
+
 ---
 
-## 3. Tier 2: Mechanical Search (NEW)
+## 3. Tier 2: Mechanical Search
 
 ### 3.1 Purpose
 
@@ -761,7 +772,7 @@ async def _rerun_extractor(
 
 **Why no parameterization?** The agent can already reach any slice of the file through keyword/regex search. Parameterizing 11 extractors would fragment their API for marginal gain over the existing search paths.
 
-### 3.4 Zero-Result Recovery: Vocabulary Extraction (v4.2)
+### 3.4 Zero-Result Recovery: Vocabulary Extraction
 
 Implemented in the **`search_file` agent tool**, not in `BasicTier2Service`. When any search mode exposed by `search_file` returns 0 results, the tool extracts vocabulary from the file to help the agent reformulate its query. The response includes a `vocabulary` object and a `suggestion` string. `BasicTier2Service` directly returns a plain `"No matching sections found for the query."` message without vocabulary — callers wanting vocabulary recovery must go through `search_file`.
 
@@ -801,7 +812,7 @@ The `search_file` agent tool is a standalone implementation that coexists with o
 | `BasicTier2Service._keyword_search()` | Single-pass partial-match scorer, returned to the agent via the Tier 3 `deep_analysis` tool when backend is `basic` | Independent; neither two-pass nor vocabulary-recovery. `search_file` reimplements the richer two-pass + vocab-recovery flow directly on raw file content. |
 | `ReadFileTool` (`read_file`) | Read file content by evidence ID | Remains for reading; `search_file` adds search |
 | Domain extractors (Tier 1) | Single-use at upload | Made re-runnable via `search_file` extractor mode |
-| `DeepAnalysisTool` (`deep_analysis`) | LLM-powered analysis (backed by `ITier2AnalysisService` — basic / local / external / disabled) | Tier 3 interpreted search; orthogonal to `search_file` |
+| `DeepAnalysisTool` (`deep_analysis`) | LLM-powered analysis (backed by `ITier2SearchService` — basic / local / external / disabled) | Tier 3 interpreted search; orthogonal to `search_file` |
 
 ### 3.6 When to Use `search_file` vs `deep_analysis`
 
@@ -815,39 +826,41 @@ The `search_file` agent tool is a standalone implementation that coexists with o
 
 ---
 
-## 4. Tier 3: Deep LLM Analysis (Renamed from Tier 2)
+## 4. Tier 3: Deep LLM Analysis
 
-> **Functionally unchanged from v3.2 Section 6.** Renumbered from Tier 2 → Tier 3.
+The agent tool is `deep_analysis`. It calls `ITier2SearchService.analyze()` with one of the pluggable backends (external, local LLM, or basic search).
 
-The agent tool is `deep_analysis` (was already defined in v3.2). It calls `ITier2AnalysisService.analyze()` with one of the pluggable backends (external, local LLM, or basic search).
-
-**Key distinction from v4.0 Tier 2**: Tier 3 uses an LLM to *interpret* the data and generate an answer. Tier 2 returns raw excerpts for the agent to interpret itself.
+**Key distinction from Tier 2**: Tier 3 uses an LLM to *interpret* the data and generate an answer. Tier 2 returns raw excerpts for the agent to interpret itself.
 
 **When agent uses Tier 3:**
+
 1. Tier 1 structural index is insufficient
 2. Tier 2 keyword/regex search returns matches but the agent needs interpretation
 3. Hypothesis validation needs raw data analysis
 4. User explicitly asks for deeper analysis
 5. Image requires vision analysis (multimodal LLM)
 
-**Pluggable backends** (unchanged):
+**Pluggable backends:**
+
 - `ExternalTier2Client`: HTTP call to cloud microservice (Gemini, OpenAI, custom)
 - `LocalTier2Service`: In-process with local LLM (Ollama/vLLM)
 - `BasicTier2Service`: In-process keyword search, no LLM (fallback)
 
-**Configuration** (updated Phase 5):
+**Configuration**:
+
 ```bash
 DEEP_ANALYSIS_BACKEND=disabled    # external | local | basic | disabled
 DEEP_ANALYSIS_URL=                # URL for external backend
 DEEP_ANALYSIS_API_KEY=            # API key for external backend
-DEEP_ANALYSIS_TIMEOUT_SECONDS=30
+DEEP_ANALYSIS_TIMEOUT_SECONDS=30  # 5–120
+DEEP_ANALYSIS_MAX_TOKENS=2000     # 256–16000; local-backend response cap only
 ```
 
-> **Note**: The old `TIER2_*` config names are no longer supported. Phase 5 performed a clean break — use `DEEP_ANALYSIS_*` exclusively. In the codebase, the service is still called `ITier2AnalysisService`. The "Tier 3" naming is a spec-level concept for the processing model; in v5.0, tool selection is mode-driven rather than tier-driven.
+`DEEP_ANALYSIS_MAX_TOKENS` applies to the `local` backend (`LocalTier2Service`) — it caps the response size of the dedicated LLM call. The `external` backend governs its own response size server-side; `basic` does not call an LLM. The `Tier2` token in `ITier2SearchService` refers to the agent-tools tier system (Tier 2 = search, Tier 3 = interpreted analysis), not the preprocessing-tier system.
 
 ---
 
-## 5. Vectorization (Redesigned v5.0)
+## 5. Vectorization
 
 ### 5.1 Key Changes: Eager → On-Demand → Auto-Triggered → Proactive
 
@@ -885,7 +898,7 @@ VECTORIZATION_MAX_SIZE_BYTES = 50_000_000  # 50MB hard cap
 
 For files above the cap, the agent should use `search_file` (targeted search) and `deep_analysis` (windowed LLM analysis) instead.
 
-### 5.3 Proactive + Reactive Vectorization (v5.2)
+### 5.3 Proactive + Reactive Vectorization
 
 Vectorization uses a two-layer strategy: **proactive** for DA-mode queries with large files, **reactive** as a fallback when the proactive path wasn't taken or failed.
 
@@ -939,7 +952,7 @@ Three independent fallback trigger signals remain for cases where proactive vect
 
 **Reactive vectorization** calls `_reactive_vectorize()` which checks the size gate, calls `_vectorize_evidence()` wrapped with `asyncio.wait_for(..., timeout=settings.agent.vectorization_reactive_timeout_seconds)`, and injects the `[SYSTEM]` message on success. Each trigger fires independently — whichever fires first vectorizes the file. On reactive timeout, no advisory is appended and the agent proceeds without semantic-search results for that turn; a proactive task for the same evidence may still be in flight and can benefit later turns.
 
-**Time-bound semantics — proactive vs. reactive (v5.5)**: the two paths have intentionally different timeout policies. Proactive tasks are fire-and-forget background work that the tool loop never synchronously awaits, so time-bounding them via `asyncio.wait_for` only guarantees wasted CPU when the encode outlasts the bound (asyncio cancels the Future but cannot stop the thread-pool worker, which runs to completion anyway — but the post-encode `add_documents(...)` call never runs because the await was cancelled). Proactive therefore runs **unbounded** at the `_vectorize_evidence` / `_auto_vectorize` layer; the in-flight registry (`MilestoneEngine._inflight_vectorize`, mirrored in `AgentOrchestrationService._inflight_vectorize`) prevents duplicate tasks, and the persistent `Evidence.vectorized` flag captures completion for future turns. Reactive, by contrast, blocks the agent inside the tool loop, so it **must** be bounded — the bound lives at the callers (`MilestoneEngine._reactive_vectorize` and the auto-vectorization trigger in `AgentOrchestrationService.process_turn_streaming`) via the configurable `vectorization_reactive_timeout_seconds` setting (default 180 s). Both orchestration paths follow the same split. This was introduced after the 2026-04-21 incident where a hardcoded 60 s `wait_for` inside the vectorize helpers made BGE-M3 CPU encodes (observed ~135 s for OpenSSH_2k.log) always fail the persistence path, leaving `Evidence.vectorized = False` and re-triggering proactive on every subsequent turn.
+**Time-bound semantics — proactive vs. reactive**: the two paths have intentionally different timeout policies. Proactive tasks are fire-and-forget background work that the tool loop never synchronously awaits, so time-bounding them via `asyncio.wait_for` only guarantees wasted CPU when the encode outlasts the bound (asyncio cancels the Future but cannot stop the thread-pool worker, which runs to completion anyway — but the post-encode `add_documents(...)` call never runs because the await was cancelled). Proactive therefore runs **unbounded** at the `_vectorize_evidence` / `_auto_vectorize` layer; the in-flight registry (`MilestoneEngine._inflight_vectorize`, mirrored in `AgentOrchestrationService._inflight_vectorize`) prevents duplicate tasks, and the persistent `Evidence.vectorized` flag captures completion for future turns. Reactive, by contrast, blocks the agent inside the tool loop, so it **must** be bounded — the bound lives at the callers (`MilestoneEngine._reactive_vectorize` and the auto-vectorization trigger in `AgentOrchestrationService.process_turn_streaming`) via the configurable `vectorization_reactive_timeout_seconds` setting (default 180 s). Both orchestration paths follow the same split. This was introduced after the 2026-04-21 incident where a hardcoded 60 s `wait_for` inside the vectorize helpers made BGE-M3 CPU encodes (observed ~135 s for OpenSSH_2k.log) always fail the persistence path, leaving `Evidence.vectorized = False` and re-triggering proactive on every subsequent turn.
 
 When auto-vectorization fires (proactive or reactive), a `[SYSTEM]` message is injected into the tool result context:
 
@@ -957,7 +970,7 @@ Consider using deep_analysis with a different query approach.
 
 This advisory fires regardless of file size and is independent of the auto-vectorization trigger.
 
-### 5.4 Small-File DA Failure Fallback (v5.0)
+### 5.4 Small-File DA Failure Fallback
 
 When DA fails on a file **below** the vectorization size threshold, vectorization is not an option. Instead, the system injects the raw file content (up to 50KB safety cap) directly into the LLM context:
 
@@ -1078,7 +1091,7 @@ In v3.2, `store_in_vector_db_background()` is called automatically after every u
 
 ---
 
-## 6. Scenario-Driven Processing Modes (v5.0)
+## 6. Scenario-Driven Processing Modes
 
 The investigation agent receives a **mode-specific system prompt** based on the query classifier's output. This replaces the old linear escalation decision tree and "Never skip tiers" instruction.
 
@@ -1153,7 +1166,7 @@ appropriate for the question. If your analysis is insufficient, the system will
 automatically index large files for semantic search — you do not need to manage this.
 ```
 
-**Note (v5.6):** The per-turn routing rule in `_EVIDENCE_GROUNDING_BLOCK` (injected via
+**Note:** The per-turn routing rule in `_EVIDENCE_GROUNDING_BLOCK` (injected via
 `evidence_grounding=`) provides finer-grained routing guidance that supersedes the
 `DATA_ACCESS_DIRECTED_ANALYSIS` defaults for specific question types. See Section 1 of
 `templates.py` for the four-category rule (characterization / retrieval / count /
@@ -1174,7 +1187,7 @@ Default is Type A (evidence search is always safe).
 
 **File extract tagging**: In DA mode, file extracts are tagged `<file_extract role="orientation">` to signal they are orientation data, not the primary output. In Triage mode, plain `<file_extract>` is used.
 
-### 6.1 Orchestration Hardening: Mechanical Safety Nets (v4.2, updated v5.2)
+### 6.1 Orchestration Hardening: Mechanical Safety Nets
 
 Three mechanical safety nets in `AgentOrchestrationService`: coverage gap detection (R3), vectorization with proactive + reactive paths (R4), and context budgeting (R5).
 
@@ -1188,12 +1201,12 @@ Before each LLM call, the orchestration service extracts entities from the user'
 
 3. **Advisory injection** — Gap descriptions are appended to the LLM system prompt as `[COVERAGE ADVISORY]` blocks. Example: `"User asks about 14:00 but evidence ev_abc only covers 13:42-13:57. Agent should acknowledge the gap or search for additional data."`
 
-#### R4: Proactive Vectorization + Per-Evidence Reactive Fallback (v5.2)
+#### R4: Proactive Vectorization + Per-Evidence Reactive Fallback
 
 > **v5.2 change**: Proactive background vectorization for DA-mode large files. `da_call_count >= 3` reactive trigger removed. Cross-turn DA count initialized from persisted value at state creation.
 > **v5.0 change**: Replaced v4.2 global `consecutive_empty_searches` counter with per-evidence `EvidenceDAState`.
 
-**Proactive path (v5.2):** At the start of `_tool_augmented_generate()` in `milestone_engine.py`, `_start_proactive_vectorization()` starts `asyncio.create_task()` for each qualifying evidence file (above size threshold, not already vectorized). These tasks run concurrently with the DA tool loop. Since `_tool_augmented_generate()` is only called for DA-mode turns, no mode check is needed.
+**Proactive path:** At the start of `_tool_augmented_generate()` in `milestone_engine.py`, `_start_proactive_vectorization()` starts `asyncio.create_task()` for each qualifying evidence file (above size threshold, not already vectorized). These tasks run concurrently with the DA tool loop. Since `_tool_augmented_generate()` is only called for DA-mode turns, no mode check is needed.
 
 **Reactive fallback:** The tool loop also tracks DA failure signals per-evidence using simple counters (same pattern as `deep_analysis_count`):
 
@@ -1271,8 +1284,7 @@ DO NOT create evidence for:
 
 #### From Tier 2 (`search_file`) Results
 
-When the agent creates evidence from mechanical search results (post-010 — the
-`form` column was dropped; evidence is always claim-anchored):
+When the agent creates evidence from mechanical search results:
 
 | Evidence Field | Value | Source |
 |----------------|-------|--------|
@@ -1321,50 +1333,25 @@ This allows the UI to show: "This finding was derived from [original_file.log], 
 
 ---
 
-## 8. Evidence Source Model (post-010)
+## 8. Evidence Source Model
 
-> **Superseded:** the prior §8 documented an `EvidenceForm` enum
-> (`DOCUMENT` / `USER_TEXT` / `SUBMITTED_DATA`) and a tri-state form
-> assignment table. Migration 010 dropped the `form` column entirely.
-> Evidence is now claim-anchored only — there is no DOCUMENT shape that
-> mirrors a file's metadata, and there is no USER_TEXT carve-out: pure
-> user messages stay in `case_messages`. This section retains the same
-> position in the doc so cross-references still resolve, but the rules
-> below are the live model.
+Evidence rows are claim-anchored — every row attaches a finding to a specific source. Source is expressed by two fields on the row:
 
-### 8.1 What replaces EvidenceForm
+- `Evidence.source_type` ∈ `{logs, metrics, configuration, code, text, image, user_description}`. Describes what kind of data the finding draws from.
+- `Evidence.source_file_id` — points to an `uploaded_files` row when the finding came from a file. `NULL` only for `source_type = user_description` (chat-quoted system output embedded in a short user message).
 
-The two pieces of information that the old `form` discriminator carried
-are now expressed as two independent attributes — both on the same
-`Evidence` row when one exists:
+The `evidence_source_invariant` DB CHECK enforces the invariant: `source_file_id IS NOT NULL OR source_type = 'user_description'`.
 
-| Question the old `form` answered | Where the answer lives now |
-| --- | --- |
-| "Was this born from an upload or from agent tool use?" | Implicit in the upload path: file intake writes `UploadedFile` only. Any Evidence row points back via `source_file_id`; the LLM emits it via `evidence_to_add` during INVESTIGATING. |
-| "What kind of data is this?" | `Evidence.source_type` ∈ {logs, metrics, configuration, code, text, image, user_description}. |
-| "Is this just the user's words, with no file?" | `source_type = USER_DESCRIPTION` + `source_file_id IS NULL`. Guarded by the `evidence_source_invariant` DB CHECK. |
-
-### 8.2 Creation paths
+### 8.1 Creation paths
 
 Only two paths create Evidence rows. Neither runs at file intake.
 
-- **LLM extraction (the common path).** During INVESTIGATING, the LLM
-  emits `evidence_to_add[]` entries, each carrying `summary`, `category`,
-  `source_type`, and either `source_file_id` (pointing to an existing
-  `UploadedFile`) or, for the chat-quote case,
-  `source_type=USER_DESCRIPTION` with `source_file_id` left null.
-- **Tool-result extraction (Tier 2 / Tier 3 — same path, different
-  trigger).** `search_file` and `deep_analysis` return excerpts; the LLM
-  reads them and emits a follow-up `evidence_to_add` referencing the
-  searched file via `source_file_id`. The provenance chain is in §7.3.
+- **LLM extraction (the common path).** During `INVESTIGATING`, the LLM emits `evidence_to_add[]` entries, each carrying `summary`, `category`, `source_type`, and either `source_file_id` (pointing to an existing `UploadedFile`) or, for the chat-quote case, `source_type=user_description` with `source_file_id` left null.
+- **Tool-result extraction (`search_file` / `deep_analysis`).** Tool calls return excerpts; the LLM reads them and emits a follow-up `evidence_to_add` referencing the searched file via `source_file_id`. The provenance chain is in §7.3.
 
-> File uploads do **not** create Evidence. They write one `UploadedFile`
-> row with preprocessing artifacts (`summary`, `structural_index`,
-> `data_type`, `coverage_*`). The agent reads those artifacts via the
-> `<uploaded_file>` block in prompt context. See
-> [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model).
+> File uploads do **not** create Evidence. They write one `UploadedFile` row with preprocessing artifacts (`summary`, `structural_index`, `data_type`, `coverage_*`). The agent reads those artifacts via the `<uploaded_file>` block in prompt context. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model).
 
-### 8.3 What is NOT evidence
+### 8.2 What is NOT evidence
 
 - **User chat messages without a system-output quote** — they live in
   `case_messages` only. No Evidence is created.
@@ -1466,19 +1453,18 @@ SEARCH_FILE_CONTEXT_LINES=20
 # ============================================================
 # TIER 3: DEEP LLM ANALYSIS
 # ============================================================
-DEEP_ANALYSIS_BACKEND=disabled      # external | local | basic | disabled
-DEEP_ANALYSIS_URL=                  # URL for external backend
-DEEP_ANALYSIS_API_KEY=              # API key for external backend
-DEEP_ANALYSIS_TIMEOUT_SECONDS=30
-# NOTE: Old TIER2_* names are no longer supported (clean break in Phase 5)
+DEEP_ANALYSIS_BACKEND=disabled       # external | local | basic | disabled
+DEEP_ANALYSIS_URL=                   # URL for external backend
+DEEP_ANALYSIS_API_KEY=               # API key for external backend
+DEEP_ANALYSIS_TIMEOUT_SECONDS=30     # 5–120
+DEEP_ANALYSIS_MAX_TOKENS=2000        # 256–16000; local backend's LLM response cap
 
 # ============================================================
 # VECTORIZATION (proactive primary, reactive fallback)
 # ============================================================
-# VECTORIZATION_MIN_SIZE_BYTES is now configurable via AgentSettings
-# (settings.agent.vectorization_min_size_bytes). Default: 50000 (50KB).
-# Range: 1000-10000000. Set via env var VECTORIZATION_MIN_SIZE_BYTES.
-VECTORIZATION_MAX_SIZE_BYTES=50000000    # 50MB hard cap (not configurable)
+VECTORIZATION_MIN_SIZE_BYTES=50000        # Min file size for auto-vectorization eligibility
+VECTORIZATION_MAX_SIZE_BYTES=50000000     # 50MB hard cap (not configurable)
+VECTORIZATION_REACTIVE_TIMEOUT_SECONDS=180 # 30–600; bound on synchronous reactive vectorize inside the DA tool loop. Proactive vectorize is intentionally unbounded.
 CHROMADB_HOST=localhost
 CHROMADB_PORT=8000
 CHROMADB_COLLECTION_PREFIX=case_

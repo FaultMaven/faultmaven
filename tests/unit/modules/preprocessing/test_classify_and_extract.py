@@ -6,6 +6,7 @@ import pytest
 
 from faultmaven.core.preprocessing.models import PreprocessingResult, UnifiedDataType
 from faultmaven.models.api import DataType
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.preprocessing_service import PreprocessingService
 
 
@@ -28,10 +29,14 @@ def mock_logs_extractor():
     extractor = MagicMock()
     extractor.strategy_name = "crime_scene"
     extractor.llm_calls_used = 0
-    extractor.extract.return_value = (
-        "=== Crime Scene ===\n"
-        "Error cluster at line 42: NullPointerException\n"
-        "Context: Connection pool exhausted"
+    extractor.extract.return_value = ExtractResult(
+        file_extract=(
+            "=== Crime Scene ===\n"
+            "Error cluster at line 42: NullPointerException\n"
+            "Context: Connection pool exhausted"
+        ),
+        search_map="",
+        file_meta={},
     )
     return extractor
 

@@ -19,12 +19,12 @@ from faultmaven.core.preprocessing.models import (
     DeepAnalysisResult,
     UnifiedDataType,
 )
-from faultmaven.core.preprocessing.tier2.interface import ITier2AnalysisService
+from faultmaven.core.preprocessing.tier2.interface import ITier2SearchService
 
 logger = logging.getLogger(__name__)
 
 
-class LocalTier2Service(ITier2AnalysisService):
+class LocalTier2Service(ITier2SearchService):
     """In-process Tier 2 using local filesystem + local LLM (Ollama/vLLM)."""
 
     def __init__(

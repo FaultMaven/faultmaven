@@ -462,7 +462,7 @@ EVIDENCE FROM ATTACHMENTS                               Orientation: prior files
                                                         attachments arrive pre-processed in structural indexes
 WORKING WITH EVIDENCE DATA                              _DATA_CITATION_RULE constant (also used in
                                                         INQUIRY_TEMPLATE TRIAGE SUMMARY QUALITY)
-EVIDENCE CLASSIFICATION DECISION TREE                   4-category decision tree (post-010)
+EVIDENCE CLASSIFICATION DECISION TREE                   4-category decision tree
 CREATING EVIDENCE RECORDS                               evidence_to_add schema + examples
 EVIDENCE SUMMARY QUALITY                                Long-term memory for evidence artifacts
 INVESTIGATION JOURNAL                                   journal_entries schema + entry types

@@ -325,11 +325,12 @@ class EvidenceToAdd(BaseModel):
     @field_validator("category", mode="before")
     @classmethod
     def validate_category(cls, v):
-        """
-        Post-010: strict category validation. Unrecognized categories
-        fail loudly (no CONTEXTUAL_EVIDENCE fallback — it's no longer a
-        valid value). The LLM is instructed to use exactly one of the
-        four post-010 categories (symptom/causal/mitigation/solution).
+        """Strict category validation.
+
+        Unrecognized categories raise ``ValidationError``; the milestone
+        engine's self-correction loop reprompts the LLM with the error.
+        Valid values: ``symptom_evidence`` / ``causal_evidence`` /
+        ``mitigation_evidence`` / ``solution_evidence``.
         """
         if isinstance(v, str):
             return EvidenceCategory(v)

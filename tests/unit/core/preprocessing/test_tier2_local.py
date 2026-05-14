@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.preprocessing.models import AnalysisContext, UnifiedDataType
-from faultmaven.core.preprocessing.tier2.interface import ITier2AnalysisService
+from faultmaven.core.preprocessing.tier2.interface import ITier2SearchService
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 
 
@@ -49,7 +49,7 @@ def service(mock_llm, mock_storage):
 
 class TestLocalTier2Interface:
     def test_implements_interface(self):
-        assert issubclass(LocalTier2Service, ITier2AnalysisService)
+        assert issubclass(LocalTier2Service, ITier2SearchService)
 
     def test_default_params(self):
         s = LocalTier2Service(llm_client=AsyncMock(), storage_service=AsyncMock())

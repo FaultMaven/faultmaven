@@ -1189,18 +1189,13 @@ class EvidenceCategory(str, Enum):
     """
     Evidence classification by investigation purpose.
 
-    Post-010 redesign: 4 claim-attached categories. Each row is the LLM's
-    deliberate decision to record a specific extract as evidence for a
-    specific claim, created only during INVESTIGATING. The dropped
-    categories (CONTEXTUAL_EVIDENCE, REJECTED) had no claim attachment
-    and were structurally incompatible with the strict model:
-
-    - Contextual data now lives on ``uploaded_files`` (the file itself is
-      the data; no evidence row is needed until the agent extracts a
-      claim-relevant slice).
-    - Rejected submissions are expressed as the absence of an evidence
-      row (the agent simply doesn't promote them); hypothesis-level
-      refutation lives on ``hypothesis_evidence.stance``.
+    Four claim-attached categories. Every row is the LLM's deliberate
+    decision to record a specific extract as evidence for a specific
+    claim, created only during INVESTIGATING. Contextual data lives on
+    ``uploaded_files`` — no evidence row is needed until the agent
+    extracts a claim-relevant slice. Rejection is expressed as the
+    absence of an evidence row; hypothesis-level refutation lives on
+    ``hypothesis_evidence.stance``.
     """
 
     SYMPTOM_EVIDENCE = "symptom_evidence"
@@ -1265,15 +1260,10 @@ class EvidenceSourceType(str, Enum):
     """
     Fundamental type of data source.
 
-    Post-redesign (2026-02-14): Updated to align with data-classification-strategy.md (6 types).
-
-    Migration mapping:
-    - log_file, command_output, trace_data, api_response, other → LOGS
-    - metrics_data, monitoring_alert → METRICS
-    - config_file, database_query → CONFIGURATION
-    - code_review → CODE
-    - user_report → TEXT
-    - screenshot → IMAGE
+    Aligned with the data classifier (Tier 0); each value names what kind
+    of data the Evidence row's source is. ``USER_DESCRIPTION`` is the
+    chat-quote case where the source is a verbatim system-output quote
+    embedded in the user's message, not a file.
     """
 
     LOGS = "logs"
@@ -1768,8 +1758,7 @@ class Evidence(BaseModel):
             "'evidence.metadata JSON contract'. "
             "Canonical shape in "
             "faultmaven/core/preprocessing/evidence_metadata.py::EvidenceMetadata. "
-            "Optional for backward compatibility with evidence rows that predate "
-            "the Phase 1 classifier-confidence work."
+            "Optional — chat-quoted Evidence rows have no preprocessing trace."
         ),
     )
 

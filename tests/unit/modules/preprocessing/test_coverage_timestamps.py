@@ -63,26 +63,53 @@ class TestExtractTimeRangeTs:
         lines.extend([f"2026-04-23T14:{m:02d}:00 DEBUG noise" for m in range(1, 15)])
         lines.append("2026-04-23T14:59:59 INFO service stopped")
         content = "\n".join(lines)
-        start, end = extract_time_range_ts(content)
+        start, end, source = extract_time_range_ts(content)
         assert start == datetime(2026, 4, 23, 14, 0, 0, tzinfo=timezone.utc)
         assert end == datetime(2026, 4, 23, 14, 59, 59, tzinfo=timezone.utc)
+        assert source == "iso8601_t"
 
-    def test_no_timestamps_returns_none_pair(self):
+    def test_no_timestamps_returns_none_triple(self):
         """Config files, code, short prose — no parseable timestamps.
-        Must return (None, None) rather than raising."""
+        Must return (None, None, None) rather than raising."""
         content = "server:\n  port: 8080\n  workers: 4\n"
-        start, end = extract_time_range_ts(content)
+        start, end, source = extract_time_range_ts(content)
         assert start is None
         assert end is None
+        assert source is None
 
     def test_head_only_timestamp_returns_start_no_end(self):
-        """A single timestamp in the head returns (ts, None) — the
+        """A single timestamp in the head returns (ts, None, source) — the
         end-of-range hasn't been established. Callers who need a
         strict span check the end for None."""
         content = "2026-04-23T14:00:00 error\n" + "\n".join(["no timestamp here"] * 20)
-        start, end = extract_time_range_ts(content)
+        start, end, source = extract_time_range_ts(content)
         assert start is not None
         assert end is None
+        assert source == "iso8601_t"
+
+    def test_tail_only_timestamp_falls_back_to_tail_pattern(self):
+        """When the head window is empty but a tail timestamp is found,
+        ``source`` reflects the tail's pattern rather than ``None``."""
+        leading_noise = ["log line without timestamp"] * 20
+        content = "\n".join(leading_noise) + "\n2026-04-23T14:59:59 INFO bye"
+        start, end, source = extract_time_range_ts(content)
+        # Head scan only sees the first 10 lines (all unparseable), so start
+        # is None; tail scan walks back and finds the trailing timestamp.
+        assert start is None
+        assert end == datetime(2026, 4, 23, 14, 59, 59, tzinfo=timezone.utc)
+        assert source == "iso8601_t"
+
+    def test_syslog_bsd_source_label(self):
+        """Pattern name propagation for the syslog-bsd family — distinct
+        from iso8601_t so a regression that hardcodes one would be
+        caught."""
+        content = (
+            "Jun 14 15:16:01 host1 sshd[1]: starting\n"
+            + "\n".join([f"Jun 14 15:16:{s:02d} host1 sshd: noise" for s in range(15)])
+            + "\nJun 14 15:17:30 host1 sshd[1]: stopping"
+        )
+        _, _, source = extract_time_range_ts(content)
+        assert source == "syslog_bsd"
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +183,26 @@ class TestEvidenceMetadataCoverageBlock:
 
         ev_meta = result.extraction_metadata["evidence_metadata"]
         assert "coverage" in ev_meta
+
+    @pytest.mark.asyncio
+    async def test_coverage_source_pattern_name_propagates(self):
+        """``coverage.source`` must carry the pattern name that matched
+        the head timestamp on the in-process ``PreprocessingResult``.
+        Previously the producer discarded the matched pattern after
+        parsing, leaving this field forced to ``None`` despite the
+        schema documenting a closed vocabulary. The persistence path
+        from ``PreprocessingResult.extraction_metadata`` to
+        ``uploaded_files.metadata`` is a separate tracked follow-up;
+        this test pins the producer contract."""
+        log_content = "\n".join(["2026-04-23T14:00:00 INFO starting"] + ["filler"] * 20)
+        classifier = _make_classifier(DataType.LOGS_AND_ERRORS)
+        service = PreprocessingService(
+            classifier=classifier, logs_extractor=_make_extractor()
+        )
+        result = await service.classify_and_extract(content=log_content)
+
+        coverage = result.extraction_metadata["evidence_metadata"]["coverage"]
+        assert coverage.get("source") == "iso8601_t"
 
     @pytest.mark.asyncio
     async def test_coverage_block_absent_when_timeless(self):

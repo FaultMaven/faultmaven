@@ -1,6 +1,10 @@
 """
-ITier2AnalysisService — Abstract interface for Tier 3 deep analysis
-(legacy class name; the current spec places deep analysis at Tier 3).
+ITier2SearchService — Abstract interface for interpreted search
+("deep analysis") over case files. Invoked on demand by the investigation
+agent via the ``deep_analysis`` tool; not driven by the preprocessing
+pipeline. The ``Tier2`` token in the name refers to the agent-tools tier
+(structural-index search → interpreted search → semantic-vector search),
+not the preprocessing tier system.
 
 Design Reference:
     docs/architecture/data-processing/data-preprocessing-design-specification.md §4
@@ -15,7 +19,7 @@ from faultmaven.core.preprocessing.models import (
 )
 
 
-class ITier2AnalysisService(ABC):
+class ITier2SearchService(ABC):
     """
     Interface for Tier 2 deep analysis.
 

@@ -1468,39 +1468,14 @@ class DocumentType(str, Enum):
 
 ## 2. Evidence Model
 
-> **⚠️ EVIDENCE MODEL RELOCATED** (2026-02-12):
+> **Evidence model — canonical references**
 >
-> The complete evidence model specification has been moved to the Data Processing section.
-> See: **[Evidence Classification Design](../data-processing/evidence-classification-design.md)** (v2.0)
+> - **Data model:** [evidence-driven-investigation-framework.md §5](./evidence-driven-investigation-framework.md#5-evidence-model)
+> - **DB schema:** [data-and-storage/schemas/case-schema.md](../data-and-storage/schemas/case-schema.md) §"Evidence"
+> - **Preprocessing pipeline:** [data-processing/data-preprocessing-design-specification.md](../data-processing/data-preprocessing-design-specification.md)
+> - **Pipeline flows + sequence diagrams:** [data-processing/evidence-flow-architecture.md](../data-processing/evidence-flow-architecture.md)
 >
-> **Current Evidence Categories (4 total, post-010)**:
->
-> - `SYMPTOM_EVIDENCE` - Problem manifestation
-> - `CAUSAL_EVIDENCE` - Root cause indicators (requires a hypothesis to attach to)
-> - `MITIGATION_EVIDENCE` - Temp fix validation
-> - `SOLUTION_EVIDENCE` - Permanent fix validation
->
-> Migration 010 (2026-05-11) dropped `CONTEXTUAL_EVIDENCE` and `REJECTED`. Baseline/environmental context now lives on `uploaded_files` (the file row carries `summary`, `structural_index`, `data_type`, and coverage timestamps); rejection is expressed as the absence of an evidence row.
->
-> **Current Data Type (unified with preprocessing)**:
->
-> - `EvidenceSourceType` is the canonical evidence source classifier on `Evidence.source_type`. `UploadedFile.data_type` carries the same classification on the file row.
-> - Post-010 added `USER_DESCRIPTION` to `EvidenceSourceType` for the chat-quote source case (verbatim system-output quotes embedded in a short user message, size-bounded by the 10K-char `user_message` cap).
->
-> **Key Changes from Previous Design (now reflecting post-010)**:
->
-> - ❌ `UNCLASSIFIED` category **REMOVED** (single-phase creation, pre-010)
-> - ❌ `CONTEXTUAL_EVIDENCE` **REMOVED** (migration 010 — files cover this in `uploaded_files`)
-> - ❌ `REJECTED` **REMOVED** (migration 010 — rejection = no row)
-> - ❌ `EvidenceForm` **REMOVED** (migration 010 — no dual-path model)
-> - ✅ `USER_DESCRIPTION` **ADDED** to `EvidenceSourceType` (migration 010 — chat-quote source)
-> - ✅ `evidence_source_invariant` CHECK constraint **ADDED** (migration 010 — `source_file_id IS NOT NULL OR source_type = 'user_description'`)
->
-> For complete schemas, flows, and implementation details, see the canonical design documents:
->
-> - [Evidence Classification Design](../data-processing/evidence-classification-design.md) - Categories, DataType, schemas
-> - [Evidence Flow Architecture](../data-processing/evidence-flow-architecture.md) - System flows and diagrams
-> - [Data Preprocessing Design](../data-processing/data-preprocessing-design-specification.md) - Three-tier processing
+> Categories: `symptom_evidence`, `causal_evidence`, `mitigation_evidence`, `solution_evidence`. Source is expressed by `Evidence.source_type` + `Evidence.source_file_id`; the `evidence_source_invariant` DB CHECK requires `source_file_id IS NOT NULL OR source_type = 'user_description'`.
 
 ### 2.1 Evidence Fields Used by Investigation Engine
 

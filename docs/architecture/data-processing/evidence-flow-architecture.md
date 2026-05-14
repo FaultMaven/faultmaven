@@ -2,13 +2,13 @@
 
 **Version:** 2.7
 **Date:** 2026-04-26
-**Status:** **Partially superseded by migration 010** (2026-05-11). The overall two-step pipeline (preprocess attachments → LLM inference) and the system architecture diagram remain accurate. The "Key Design Decisions" subsection is stale: post-010 evidence is created only during INVESTIGATING via LLM `evidence_to_add`, has 4 claim-anchored categories, no `EvidenceForm` discriminator, no `CONTEXTUAL_EVIDENCE` fallback, and no retroactive INQUIRY→INVESTIGATING attribution. File-level metadata lives on `uploaded_files`. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) for the current model.
+**Status:** Live. The pipeline preprocesses attachments before the LLM, and Evidence is created during `INVESTIGATING` via the LLM's `evidence_to_add` (anchored to a `source_file_id` on `uploaded_files` or `source_type=user_description` for chat quotes). Categories are `symptom_evidence`, `causal_evidence`, `mitigation_evidence`, `solution_evidence`. The evidence taxonomy and DB schema live in [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) and [case-schema.md](../data-and-storage/schemas/case-schema.md) respectively.
 
 ---
 
 ## Overview
 
-This document describes the complete evidence flow architecture in FaultMaven. All user turns arrive via a unified endpoint (`POST /cases/{id}/turns`) and are processed through a two-step pipeline: (1) preprocess attachments through Tier 0+1 before the LLM, (2) LLM inference with structural indexes in context. Post-010, file attachments write only an `UploadedFile` row (carrying the preprocessing artifacts: `summary`, `structural_index`, `data_type`, `coverage_*`); Evidence rows are claim-anchored and born during INVESTIGATING when the LLM emits `evidence_to_add` referencing the source file via `source_file_id`. There is no `EvidenceForm` discriminator. File preprocessing follows the [scenario-driven processing model](./data-preprocessing-design-specification.md). A mechanical query classifier routes each turn to Triage or Directed Analysis mode, which determines the system prompt and tool selection strategy. For DA-mode turns, vectorization is started proactively in the background for qualifying large files at the start of the tool loop; reactive fallback triggers remain for edge cases.
+This document describes the complete evidence flow architecture in FaultMaven. All user turns arrive via a unified endpoint (`POST /cases/{id}/turns`) and are processed through a two-step pipeline: (1) preprocess attachments through Tier 0+1 before the LLM, (2) LLM inference with structural indexes in context. File attachments write only an `UploadedFile` row at intake (carrying preprocessing artifacts: `summary`, `structural_index`, `data_type`, coverage timestamps); Evidence rows are claim-anchored and born during `INVESTIGATING` when the LLM emits `evidence_to_add` referencing the source file via `source_file_id`. Source is expressed by `source_type` + `source_file_id` (the `evidence_source_invariant` DB CHECK requires one or the other). File preprocessing follows the [scenario-driven processing model](./data-preprocessing-design-specification.md). A mechanical query classifier routes each turn to Triage or Directed Analysis mode, which determines the system prompt and tool selection strategy. For DA-mode turns, vectorization is started proactively in the background for qualifying large files at the start of the tool loop; reactive fallback triggers remain for edge cases.
 
 ---
 
@@ -114,23 +114,25 @@ This document describes the complete evidence flow architecture in FaultMaven. A
       │ {state_updates, evidence_to_add, ...}
       ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    Evidence Creation Decision Layer                      │
+│                Evidence Creation Decision Layer                          │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ Payload-driven unified ingestion pipeline:                         │ │
+│  │ Two-step pipeline:                                                  │ │
 │  │                                                                     │ │
-│  │ Step 1 — Classification + Attachments (before LLM, Tier 0+1):    │ │
-│  │   All classification via Tier 0+1 (no LLM classification)        │ │
-│  │   Each attachment → _preprocess_attachment() → Evidence            │ │
-│  │   form=DOCUMENT, preprocessing_method from Tier 0+1               │ │
+│  │ Step 1 — Attachment intake (before LLM, Tier 0+1):                 │ │
+│  │   Each attachment → _preprocess_attachment() → UploadedFile row    │ │
+│  │   carrying summary, structural_index, data_type, coverage_*.       │ │
+│  │   No Evidence is created at intake.                                │ │
 │  │                                                                     │ │
-│  │ Step 2 — Agent findings (after LLM call):                         │ │
-│  │   For each item in evidence_to_add:                               │ │
-│  │     1. Compute content_hash for deduplication                     │ │
-│  │     2. Create Evidence with form=SUBMITTED_DATA                   │ │
-│  │     3. Infer milestone advancement                                │ │
-│  │     4. Insert into case                                            │ │
+│  │ Step 2 — Agent findings (after LLM call):                          │ │
+│  │   For each item in evidence_to_add:                                │ │
+│  │     1. Validate category (symptom / causal / mitigation /          │ │
+│  │        solution_evidence) — reject otherwise                       │ │
+│  │     2. Build Evidence row with source_file_id pointing at the      │ │
+│  │        originating UploadedFile (or source_type=user_description   │ │
+│  │        for chat-quote rows with no file)                           │ │
+│  │     3. Persist; milestone advancement derives from the category    │ │
 │  │                                                                     │ │
-│  │ No evidence_to_add → no evidence created (query-only turn)        │ │
+│  │ No evidence_to_add → no evidence created (query-only turn)         │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────┬───────────────────────────────────────────────────────────────────┘
       │
@@ -233,8 +235,8 @@ User          API(/turns)    Investigation    Preprocessing    Storage    LLM   
  │              │                │                │  Tier 1     │          │             │
  │              │                │                │──store──────>│          │             │
  │              │                │                │  raw file   │          │             │
- │              │                │<─Evidence───────│             │          │             │
- │              │                │ form=DOCUMENT  │             │          │             │
+ │              │                │<─UploadedFile──│             │          │             │
+ │              │                │  (no Evidence) │             │          │             │
  │              │                │                │             │          │             │
  │              │                │ ── STEP 2: LLM INFERENCE ── │          │             │
  │              │                │                │             │          │             │
@@ -443,58 +445,6 @@ User          API(/turns)    Investigation    Preprocessing
 
 ---
 
-## Sequence Diagram: LLM Timeout → Async Retry (Deferred Design)
-
-> **Status (2026-04-19):** The async-retry flow depicted below is a **deferred design**, not current behaviour. Current turn-level LLM failure handling is synchronous — `BaseExternalClient` retries in-process and the API returns `LLM_TIMEOUT` / `LLM_OVER_CAPACITY` / `RATE_LIMIT_EXCEEDED` with `Retry-After` on terminal failure. See [evidence-failure-modes.md](./evidence-failure-modes.md) for the rationale. The diagram is kept for historical design context; revisit on telemetry signal that synchronous UX harms users.
-
-```
-User          API          Investigation    LLM         Job Queue       Worker
- │              │                │             │             │             │
- │─POST file───>│                │             │             │             │
- │              │                │             │             │             │
- │              │─process_turn──>│             │             │             │
- │              │                │             │             │             │
- │              │                │─call LLM───>│             │             │
- │              │                │  (30s       │             │             │
- │              │                │   timeout)  │             │             │
- │              │                │             │             │             │
- │              │                │             │─(timeout)───│             │
- │              │                │             │  after 30s  │             │
- │              │                │             │             │             │
- │              │                │<────────────│             │             │
- │              │                │  LLMTimeout │             │             │
- │              │                │             │             │             │
- │              │                │─enqueue─────────────────>│             │
- │              │                │  retry job  │             │             │
- │              │                │  (case_id,  │             │             │
- │              │                │   content,  │             │             │
- │              │                │   retry=0)  │             │             │
- │              │                │             │             │             │
- │              │<─response──────│             │             │             │
- │              │  {status:      │             │             │             │
- │              │   analyzing}   │             │             │             │
- │              │                │             │             │             │
- │<─202────────│                │             │             │             │
- │  "Check back │                │             │             │             │
- │   shortly"   │                │             │             │             │
- │              │                │             │             │             │
- │              │                │             │             │             │
- │              │         (1 minute later)     │             │             │
- │              │                │             │             │<─pick job───│
- │              │                │             │             │             │
- │              │                │             │<────────────┼─────────────│
- │              │                │             │  retry LLM  │             │
- │              │                │             │  (60s       │             │
- │              │                │             │   timeout)  │             │
- │              │                │             │             │             │
- │              │                │             │─────────────┼───────────> │
- │              │                │             │  SUCCESS    │     create  │
- │              │                │             │  {category} │     evidence│
- │              │                │             │             │             │
-```
-
----
-
 ## State Machine: Evidence Lifecycle
 
 ```
@@ -519,13 +469,15 @@ User          API          Investigation    LLM         Job Queue       Worker
               │                             │
               ↓                             │
      ┌─────────────────┐                    │
-     │ Each attachment: │                    │
-     │ form=DOCUMENT    │                    │
-     │ Tier 0+1 classif │                    │
+     │ Each attachment:│                    │
+     │ Tier 0+1        │                    │
+     │ → UploadedFile  │                    │
+     │   (no Evidence) │                    │
      └────────┬────────┘                    │
               │                             │
               │ Check duplicate             │
-              │ (content_hash)              │
+              │ (content_hash on            │
+              │  uploaded_files)            │
               │                             │
          ┌────┴────┐                        │
          │ Dup?    │                        │
@@ -534,9 +486,9 @@ User          API          Investigation    LLM         Job Queue       Worker
          Yes ─┤─ No                         │
               │    │                         │
               ↓    ↓                         │
-     ┌──────────┐ Evidence                  │
-     │ Skip     │ created                   │
-     │ (dedup)  │ form=DOCUMENT             │
+     ┌──────────┐ UploadedFile               │
+     │ Skip     │ persisted                  │
+     │ (dedup)  │ (no Evidence yet)          │
      └──────────┘                           │
                                             │
               ┌─────────────────────────────┘
@@ -557,25 +509,22 @@ User          API          Investigation    LLM         Job Queue       Worker
          ↓         ↓
      ┌──────────┐  ┌──────────┐
      │ Each:    │  │ NO       │
-     │ form=    │  │ EVIDENCE │
-     │ SUBMITTED│  │ from LLM │
-     │ _DATA    │  │ (query-  │
-     │          │  │  only    │
-     │ Check    │  │  turn)   │
-     │ duplicate│  └──────────┘
+     │ category │  │ EVIDENCE │
+     │ ∈ {symp, │  │ from LLM │
+     │ causal,  │  │ (query-  │
+     │ mitig,   │  │  only    │
+     │ soln_ev} │  │  turn)   │
+     │          │  └──────────┘
+     │ source_  │
+     │ file_id  │
+     │ → upload │
      └────┬─────┘
           │
-     ┌────┴────┐
-     │ Dup?    │
-     └────┬────┘
+     Persist Evidence
           │
-     Yes ─┤─ No
-          │    │
-          ↓    ↓
-  ┌──────────┐ Evidence
-  │ Skip     │ created
-  │ (dedup)  │ form=SUBMITTED_DATA
-  └──────────┘
+          ↓
+  Evidence rows
+  created in DB
                     │
                     ↓
            ┌─────────────────┐
@@ -666,236 +615,17 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
 
 ---
 
-## Data Flow: INQUIRY Phase Classification
+## Data Flow: INQUIRY Phase
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│ Turn 1 (INQUIRY Phase)                                           │
-│                                                                  │
-│ User: "Can you check this log file?"                           │
-│ *uploads app.log with connection timeout errors*                │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-                              ↓
-                  ┌───────────────────────┐
-                  │ LLM Evaluates Content │
-                  └───────────┬───────────┘
-                              │
-                              │ Classifies based on CONTENT,
-                              │ not phase
-                              ↓
-          "This log shows connection timeout errors"
-                              │
-                              ↓
-                  ┌───────────────────────┐
-                  │ Category:             │
-                  │ SYMPTOM_EVIDENCE      │
-                  │                       │
-                  │ (based on what data   │
-                  │  CONTAINS, not phase) │
-                  └───────────┬───────────┘
-                              │
-                              ↓
-                  ┌───────────────────────┐
-                  │ Evidence Created:     │
-                  │ - category: SYMPTOM   │
-                  │ - collected_at_turn: 1│
-                  │ - advances_milestones:│
-                  │   [] (empty)          │
-                  │                       │
-                  │ (No milestone         │
-                  │  validation during    │
-                  │  INQUIRY)             │
-                  └───────────┬───────────┘
-                              │
-                              │
-┌─────────────────────────────┴────────────────────────────────────┐
-│ Turn 2 (INQUIRY → INVESTIGATING)                                 │
-│                                                                  │
-│ User: "This looks bad, let's investigate"                       │
-│ Status: INQUIRY → INVESTIGATING                                 │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-                              │
-┌─────────────────────────────┴────────────────────────────────────┐
-│ Turn 3 (INVESTIGATING Phase)                                     │
-│                                                                  │
-│ User uploads additional evidence: connection pool config         │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-                              ↓
-                  ┌───────────────────────┐
-                  │ Milestone Engine:     │
-                  │ NOW ACTIVE            │
-                  └───────────┬───────────┘
-                              │
-                              ↓
-                  ┌───────────────────────┐
-                  │ MilestoneUpdates:     │
-                  │ - symptom_verified    │
-                  └───────────┬───────────┘
-                              │
-                              ↓
-                  ┌───────────────────────┐
-                  │ System Infers:        │
-                  │                       │
-                  │ Evidence from turn 1: │
-                  │ advances_milestones = │
-                  │ ["symptom_verified"]  │
-                  │                       │
-                  │ (Evidence retroactively│
-                  │  contributes)         │
-                  └───────────────────────┘
-```
+During `INQUIRY` the user submits files to characterize the situation. No `Evidence` rows are created on intake — only `UploadedFile` rows carrying the preprocessing artifacts (`summary`, `structural_index`, `data_type`, coverage timestamps). The LLM reads files via `<uploaded_file file_id="...">` prompt blocks. When the case transitions to `INVESTIGATING` (the user confirms the problem statement), the LLM begins emitting `evidence_to_add` entries claim-by-claim; each new Evidence row carries a `source_file_id` back to the originating `UploadedFile`. There is no retroactive attribution sweep at the transition — milestones derive from evidence categories as rows are created turn-by-turn.
 
-Retroactive milestone-attribution flow. For the full scenario narrative and the "classify by content, not phase" rule, see [Evidence Classification Design → INQUIRY Phase Classification](./evidence-classification-design.md#inquiry-phase-classification-first-class-scenario).
+See `core/investigation/milestone_engine.py:_transition_to_investigating` for the transition handler.
 
 ---
 
-## Failure Handling Flow
+## Failure Handling
 
-### LLM Timeout Scenario (Deferred Async-Retry Design)
-
-> **Status (2026-04-19):** Same deferred-design caveat as the sequence diagram above — the async-retry flow below is **not implemented**. Current behaviour is synchronous in-process retry + specific error codes with `Retry-After` headers. Canonical status: [evidence-failure-modes.md → Current Implementation Status](./evidence-failure-modes.md#current-implementation-status-validated-2026-04-19).
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    LLM Timeout Handling                         │
-└─────────────────────────────────────────────────────────────────┘
-
-File Upload
-    │
-    ↓
-Preprocessing (success)
-    │
-    ↓
-Upload to S3 (success)
-    │
-    ↓
-Call LLM (30s timeout)
-    │
-    │──────────> (30 seconds pass)
-    │
-    ↓
-TIMEOUT!
-    │
-    ├─────────────────────────┐
-    │                         │
-    ↓                         ↓
-Return to User          Queue Retry Job
-"Analyzing, check       ├─ retry_count: 0
- back shortly"          ├─ max_retries: 3
-                        ├─ delay: 1 minute
-                        └─ content_ref, hash
-                              │
-                              │ (1 min later)
-                              ↓
-                        Worker picks job
-                              │
-                              ↓
-                        Call LLM (60s timeout)
-                              │
-                      ┌───────┴────────┐
-                      │                │
-                      ↓                ↓
-                   SUCCESS          TIMEOUT
-                      │                │
-                      ↓                ↓
-              Create Evidence   Retry again
-              Insert DB         (2 min delay)
-                                      │
-                                ┌─────┴────────┐
-                                │              │
-                                ↓              ↓
-                             SUCCESS       TIMEOUT
-                                │              │
-                                ↓              ↓
-                        Create Evidence   Retry again
-                        Insert DB         (4 min delay)
-                                              │
-                                        ┌─────┴─────┐
-                                        │           │
-                                        ↓           ↓
-                                    SUCCESS     TIMEOUT
-                                        │           │
-                                        ↓           ↓
-                                Create         Max retries
-                                Evidence       reached (3)
-                                                   │
-                                                   ↓
-                                            Create REJECTED
-                                            evidence
-                                            "Analysis failed
-                                             after retries"
-```
-
-### DB Insert Failure Scenario
-
-> **Status (2026-04-19):** Same deferred-design caveat as the LLM Timeout diagrams above — the async-retry flow below is **not implemented**. Current behaviour is synchronous in-process retry; terminal failures return a specific error code. Canonical status: [evidence-failure-modes.md → Current Implementation Status](./evidence-failure-modes.md#current-implementation-status-validated-2026-04-19).
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                 Database Insert Failure Handling                │
-└─────────────────────────────────────────────────────────────────┘
-
-LLM Analysis (success)
-    │
-    ├─ LLM result: {category, summary, ...}
-    │
-    ↓
-Create Evidence Object
-    │
-    ↓
-Insert to Database
-    │
-    ↓
-DATABASE ERROR!
-    │
-    ├─────────────────────────┐
-    │                         │
-    ↓                         ↓
-Return to User          Queue Retry Job
-"Processing, will       ├─ retry_count: 0
- appear shortly"        ├─ max_retries: 5
-                        ├─ delay: 10 seconds
-                        └─ llm_result (serialized)
-                              │
-                              │ (10 sec later)
-                              ↓
-                        Worker picks job
-                              │
-                              ↓
-                        Check if exists
-                        (idempotency via
-                         content_hash)
-                              │
-                        ┌─────┴──────┐
-                        │            │
-                        ↓            ↓
-                    Not exists   Exists
-                        │            │
-                        ↓            ↓
-                    Retry       Success
-                    INSERT      (skip)
-                        │
-                    ┌───┴────┐
-                    │        │
-                    ↓        ↓
-                SUCCESS   FAILURE
-                    │        │
-                    ↓        ↓
-                  DONE    Retry again
-                         (20s delay)
-                              │
-                         (max 5 retries)
-                              │
-                              ↓
-                    Max retries reached
-                              │
-                              ↓
-                    CRITICAL ALERT
-                    (ops team notified)
-```
+LLM and DB-insert failure handling is synchronous in-process retry via `BaseExternalClient`. Terminal failures return specific error codes (`LLM_TIMEOUT`, `LLM_OVER_CAPACITY`, `RATE_LIMIT_EXCEEDED`) with `Retry-After` headers; the client retries the same turn. Orphan-file cleanup, dedup, and metric definitions live in [evidence-failure-modes.md](./evidence-failure-modes.md). No async-retry queue or worker exists; if one is ever justified by production telemetry, the design discussion will live in `evidence-failure-modes.md` rather than here.
 
 ---
 
@@ -903,10 +633,10 @@ Return to User          Queue Retry Job
 
 The design decisions that govern the taxonomy and classification semantics live in their canonical documents. Pointers:
 
-- **Evidence table includes REJECTED submissions** (deduplication, audit trail, cost efficiency, user feedback) — see [Evidence Classification Design → Evidence Table Semantics](./evidence-classification-design.md#evidence-table-semantics).
-- **Category validation with `CONTEXTUAL_EVIDENCE` fallback** for unrecognized LLM-generated categories — see [Evidence Failure Modes → Scenario 3](./evidence-failure-modes.md).
-- **Classification based on content, not phase** (INQUIRY-phase evidence contributes retroactively when investigation starts) — see [Evidence Classification Design → INQUIRY Phase Classification](./evidence-classification-design.md#inquiry-phase-classification-first-class-scenario).
-- **System-inferred milestone advancement (Option 2.5)** via `CATEGORY_MILESTONE_MAP` — see [Evidence Classification Design → Milestone Advancement Attribution](./evidence-classification-design.md#milestone-advancement-attribution).
+- **Evidence is claim-anchored.** The `evidence` table holds rows that the LLM emits with a category (`symptom_evidence` / `causal_evidence` / `mitigation_evidence` / `solution_evidence`) and either a `source_file_id` pointing at an `uploaded_files` row or `source_type=user_description` for chat-quote rows. File-level dedup is on `uploaded_files.content_hash`; the LLM never sees duplicate intake. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model).
+- **Strict category validation.** `EvidenceToAdd.validate_category` raises `ValidationError` on any value outside the four valid categories; the milestone engine's self-correction loop reprompts the LLM with the validator's message. See [Evidence Failure Modes → Scenario 3](./evidence-failure-modes.md) and `core/investigation/schemas.py:validate_category`.
+- **No Evidence during INQUIRY; no retroactive attribution.** File uploads create `UploadedFile` rows only at intake. The LLM reads them via `<uploaded_file file_id="...">` prompt blocks and emits `evidence_to_add` once the case enters `INVESTIGATING`. Milestones derive from categories as rows are created turn-by-turn. See `core/investigation/milestone_engine.py:_transition_to_investigating`.
+- **Source-discriminator lives on the row, not in a separate column.** `source_type` + `source_file_id` carry the source information together; the `evidence_source_invariant` DB CHECK requires `source_file_id IS NOT NULL OR source_type = 'user_description'`.
 
 ---
 
@@ -953,8 +683,8 @@ For the canonical description of Stage 1 behaviour, pass-through branch, and for
 
 ## Related Documentation
 
-- [Evidence Classification Design](./evidence-classification-design.md) — Evidence taxonomy, categories, and DataType enum
-- [Evidence Failure Modes](./evidence-failure-modes.md) — Failure handling for single-phase creation
+- [Evidence Model](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) — Categories, source-type, `evidence_source_invariant`
+- [Evidence Failure Modes](./evidence-failure-modes.md) — Failure handling for evidence creation
 - [Data Preprocessing Design Specification](./data-preprocessing-design-specification.md) — Scenario-driven processing model, unified ingestion pipeline, query classifier, page capture pass-through, and orchestration hardening
 - [Data Classification Strategy](./data-classification-strategy.md) — Tier 0 classification rules, source_type propagation
 

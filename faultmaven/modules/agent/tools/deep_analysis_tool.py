@@ -60,7 +60,7 @@ class DeepAnalysisTool(AgentTool):
         """Initialize with a Tier 2 analysis service.
 
         Args:
-            tier2_service: ITier2AnalysisService implementation (or None if disabled)
+            tier2_service: ITier2SearchService implementation (or None if disabled)
         """
         self.tier2_service = tier2_service
 

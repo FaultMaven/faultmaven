@@ -5,7 +5,7 @@
 **Date**: 2026-04-18
 **Role in Four-Tier Model**: **Tier 0: Classification** — the first stage in the [Data Preprocessing](./data-preprocessing-design-specification.md) four-tier model. Tier 0 runs on every submission (file uploads and pasted text via `POST /cases/{id}/turns`), completes in <100 ms with zero LLM calls, and produces a `DataType` enum + confidence score that determines which Tier 1 extractor runs next.
 
-**Scope**: This document covers **data-type classification** — determining what kind of content has been submitted (logs vs metrics vs configuration, etc.). It is separate from **evidence classification** (SYMPTOM / CAUSAL / MITIGATION / SOLUTION / CONTEXTUAL / REJECTED), which is described in [evidence-classification-design.md](./evidence-classification-design.md).
+**Scope**: This document covers **data-type classification** — determining what kind of content has been submitted (logs vs metrics vs configuration, etc.). It is separate from **evidence classification** (symptom / causal / mitigation / solution_evidence — claim-anchored categories the LLM assigns during `INVESTIGATING`), which is described in [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model).
 
 **Entry point**: All turns arrive via `POST /cases/{id}/turns` as `{query?, attachments?[]}`. Attachments are routed through Tier 0+1 via `PreprocessingService.classify_and_extract()`. Query-only turns skip preprocessing entirely.
 
@@ -134,6 +134,10 @@ Classification walks five priorities **in signal-reliability order** (not in con
 
 Each priority is either *matched and returned* or *skipped to the next*. Priority 5 always returns a result (worst case: `UNSTRUCTURED_TEXT` at 0.30 with `classification_failed=True`).
 
+### Pre-Priority guard — empty/whitespace short-circuit
+
+Before Priority 1 runs, `classify()` checks for empty or whitespace-only content. A 0-byte upload (or a paste that boils down to whitespace) carries no analysable signal — routing it through Priority 5 would land on a low-confidence `UNSTRUCTURED_TEXT` with `classification_failed=True`, which surfaces the cooperative-clarification modal asking "what should we treat this as?" That is the wrong UX for a confirmed-empty file. The guard returns `(UNANALYZABLE, confidence=1.0, source="rule_based")` and lets the preprocessing service emit a clean "file is empty" placeholder. The guard is deliberately placed **above** Priority 1 because a user_override on empty content is also meaningless. See `classifier.py:classify` (the `if not content or not content.strip()` block).
+
 ---
 
 ## Priority 1 — User Override
@@ -212,6 +216,10 @@ The copilot extension passes a `browser_context` string (`sentry`, `kibana`, `gr
 The catch-all. Runs when no stronger signal is available. Uses a sample of the first 5 KB of content plus the filename extension.
 
 **File-upload boost.** When `source_metadata.source_type == "file_upload"`, add `FILE_UPLOAD_CONFIDENCE_BOOST = 0.03` to the final score (capped by type-specific max). Rationale: file extensions are trustworthy signals that pasted text and page captures don't carry.
+
+### Pre-decision guard: documentation extensions skip the STRUCTURED_CONFIG branch
+
+A `_doc_exts_early` set (`.md`, `.rst`, `.adoc`, `.txt`) is checked at the top of `_classify_with_rules` and, when matched, the STRUCTURED_CONFIG content heuristics are skipped. Without the guard, `.md` files containing YAML-looking fenced blocks or frontmatter would score high on the config detector and outrank the documentation path. The guard is an upstream filter, not a content veto — VISUAL_EVIDENCE / TRACE / PROFILING / etc. still run normally on those extensions.
 
 ### Decision order within Priority 5
 
@@ -337,11 +345,37 @@ CONFIDENCE_THRESHOLDS = {
 
 Thresholds are named so downstream UX (cooperative-clarification injector, agent tools) can reason about confidence bands symbolically.
 
+A third threshold — `LOW_CONFIDENCE_THRESHOLD = 0.65` — lives in `core/preprocessing/evidence_metadata.py` and captures the "classified-but-shaky" band between `auto_accept` (0.85) and `classification_failed` (0.50). When the per-attempt confidence falls in `[0.50, 0.65)`, the context_builder attaches `confidence="low"` to the `<evidence>` element in the agent prompt so the LLM treats the row as a hint rather than an assertion. Above 0.65, no marker is attached.
+
+### Confidence boosts by content origin
+
+The `_origin_boost()` step in `_classify_with_rules` adds a small confidence bump for signals that ride alongside the content:
+
+| Origin | Boost | Reason |
+| --- | --- | --- |
+| `file_upload` | `FILE_UPLOAD_CONFIDENCE_BOOST = 0.03` | A real filename + extension is a weak but real signal. |
+| `page_capture` | `PAGE_CAPTURE_CONFIDENCE_BOOST = 0.02` | Captured DOM carries structural hints (panels, headings) the raw classifier underweights. |
+| `text_paste` / chat-paste | `TEXT_PASTE_CONFIDENCE_BOOST = 0.0` | **Deliberately zero.** Paste content is format-neutral — there is no filename, no extension, no source URL. A nonzero boost would override rule-based signals that are doing the actual work. ISS-053. |
+
+The explicit zero is documented as a constant rather than left implicit because the boost table is the single audit point operators check when classification confidence looks off.
+
 ---
 
 ## `classification_failed` Path (Cooperative Clarification)
 
-When classification produces `confidence < 0.50`, or when the CSV/TSV structural gate yields low-confidence results, `classification_failed=True`. Every such path populates `ClassificationResult.suggested_types` with 2–3 candidate DataTypes from the scoring pass. The service short-circuits extraction and returns a placeholder `PreprocessingResult` with:
+When classification produces `confidence < 0.50`, or when the CSV/TSV structural gate yields low-confidence results, `classification_failed=True`. A third trigger — **short-text ambiguity** — also forces this path:
+
+| Constant | Value | Role |
+| --- | --- | --- |
+| `_SHORT_TEXT_MAX_CHARS` | 1500 | Upper bound on content length for the guard to fire. |
+| `_SHORT_TEXT_MAX_LINES` | 25 | Upper bound on line count for the guard to fire. |
+| `_AMBIGUITY_MIN_DISTINCT_CATEGORIES` | 3 | Min number of distinct rule-based categories whose patterns scored on the sample for the content to be flagged ambiguous. |
+
+When a `.txt`-extension paste lands inside both size bounds **and** triggers patterns in 3 or more distinct categories (e.g. a 20-line snippet that matches log, config, and code patterns simultaneously), `_assess_short_text_ambiguity()` forces `confidence = 0.40` and re-emits the result with `classification_failed=True` so the cooperative-clarification path runs. Without the guard, the rule-based scorer often returns one of the matched categories at 0.60+ on weak evidence and the user never sees the "this is ambiguous" affordance. ISS-023.
+
+Inside the guard, the per-category pattern checks themselves have signal-strength bars: **log-line shape requires at least two line-start datetime matches** before LOGS_AND_ERRORS counts as a candidate (ISS-050). A single datetime inside prose — e.g. a maintenance-window header like "scheduled for 2026-05-14 14:00 UTC" — is too weak; counting it would mis-suggest LOGS for any short notice that mentions a date. URL, email, code-fence, JSON-shape, and key:value patterns each contribute a single category vote on first match.
+
+Every classification_failed path populates `ClassificationResult.suggested_types` with 2–3 candidate DataTypes from the scoring pass. The service short-circuits extraction and returns a placeholder `PreprocessingResult` with:
 
 - `extraction_method = "classification_failed"`
 - Content: a user-facing text like `[Classification uncertain for 'foo.csv' — requesting user input] Suggested types: metrics_and_performance, unstructured_text`

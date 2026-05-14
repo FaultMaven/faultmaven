@@ -21,12 +21,12 @@ from faultmaven.core.preprocessing.models import (
     DeepAnalysisResult,
     UnifiedDataType,
 )
-from faultmaven.core.preprocessing.tier2.interface import ITier2AnalysisService
+from faultmaven.core.preprocessing.tier2.interface import ITier2SearchService
 
 logger = logging.getLogger(__name__)
 
 
-class ExternalTier2Client(ITier2AnalysisService):
+class ExternalTier2Client(ITier2SearchService):
     """Calls an external Tier 2 microservice via HTTP."""
 
     def __init__(

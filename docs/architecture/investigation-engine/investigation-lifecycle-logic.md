@@ -181,10 +181,10 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
         # Same transition path as above
 ```
 
-#### 1.2.1 Evidence Classification Lifecycle (post-010)
+#### 1.2.1 Evidence Classification Lifecycle
 
-Migration 010 made the strict two-table separation real (see
-[Evidence-Driven Investigation Framework §5](./evidence-driven-investigation-framework.md#5-evidence-model-post-010-strict-two-table-separation)
+The data model is a strict two-table separation (see
+[Evidence-Driven Investigation Framework §5](./evidence-driven-investigation-framework.md#5-evidence-model)
 for the canonical definition). Files are data; evidence is a
 claim-anchored extract. Evidence is born only when the LLM
 deliberately extracts a focused slice in support of a specific
@@ -1502,16 +1502,14 @@ def validate_milestone_claims(
 **Evidence Classification**:
 
 Evidence is created after LLM evaluation with a specific category assigned.
-See [Evidence Classification Design](../data-processing/evidence-classification-design.md) for complete details.
+See [Evidence Model](./evidence-driven-investigation-framework.md#5-evidence-model) for the canonical specification.
 
 | Category | Description | Used In Stage |
-|----------|-------------|---------------|
+| --- | --- | --- |
 | `SYMPTOM_EVIDENCE` | Data showing the problem exists (verifies symptoms, scope, timeline, changes) | DIAGNOSIS, TREATMENT |
 | `CAUSAL_EVIDENCE` | Data explaining why the problem happened (requires hypothesis to exist) | DIAGNOSIS, TREATMENT |
 | `MITIGATION_EVIDENCE` | Data showing whether the temporary fix worked | MITIGATION |
 | `SOLUTION_EVIDENCE` | Data showing whether the permanent fix worked | TREATMENT |
-| `CONTEXTUAL_EVIDENCE` | Provides baseline/environmental context | DIAGNOSIS, TREATMENT |
-| `REJECTED` | Analyzed but not useful for investigation | Any |
 
 ```
 

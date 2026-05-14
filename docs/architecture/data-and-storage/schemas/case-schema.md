@@ -528,13 +528,12 @@ CREATE TABLE evidence (
     source_file_id      VARCHAR(36) REFERENCES uploaded_files(file_id) ON DELETE SET NULL,
 
     -- Classification
-    -- domain EvidenceCategory enum: symptom_evidence | causal_evidence | mitigation_evidence
-    --                              | solution_evidence | resolution_evidence | contextual_evidence | rejected
+    -- domain EvidenceCategory enum: symptom_evidence | causal_evidence
+    --                              | mitigation_evidence | solution_evidence
     category            VARCHAR(50) NOT NULL,
-    -- domain EvidenceSourceType enum: logs | metrics | configuration | visual | user_description
-    source_type         VARCHAR(50),
-    -- EvidenceForm enum: document | user_text | submitted_data
-    form                VARCHAR(20) NOT NULL,
+    -- domain EvidenceSourceType enum: logs | metrics | configuration
+    --                                | code | text | image | user_description
+    source_type         VARCHAR(50) NOT NULL,
 
     -- Two-field content shape (see "Role of summary vs extract" above):
     summary             VARCHAR(500) NOT NULL,
@@ -583,7 +582,10 @@ CREATE TABLE evidence (
     CONSTRAINT evidence_extract_not_empty
         CHECK (extract IS NULL OR LENGTH(TRIM(extract)) > 0),
     CONSTRAINT evidence_reliability_range
-        CHECK (reliability_score IS NULL OR (reliability_score >= 0 AND reliability_score <= 1))
+        CHECK (reliability_score IS NULL OR (reliability_score >= 0 AND reliability_score <= 1)),
+    -- Every row has a known source: either a file or a chat-quoted system output.
+    CONSTRAINT evidence_source_invariant
+        CHECK (source_file_id IS NOT NULL OR source_type = 'user_description')
 );
 
 -- Tier 1 indexes (both dialects)
@@ -605,7 +607,7 @@ COMMENT ON TABLE evidence IS 'Investigation evidence — single table, case_id N
 
 - `summary` is `NOT NULL` and always present; `extract` is nullable so the LLM can omit a verbatim quote when the summary is self-contained.
 - `vectorized` flips to `TRUE` once the row is indexed into the case vector store.
-- `coverage_start_ts` / `coverage_end_ts` are the queryable projection of the extractor's time range; the rest of the coverage detail lives in `metadata.coverage`.
+- `coverage_start_ts` / `coverage_end_ts` are the queryable projection of the extractor's time range when an Evidence row inherits time coverage from its source file; the file's own time-range columns live on `uploaded_files`.
 - `metadata` is the SQL column name (Python attribute is `evidence_metadata`).
 
 #### `evidence.metadata` JSON contract
@@ -845,13 +847,11 @@ CREATE TABLE uploaded_files (
 
     uploaded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 
-    -- Preprocessing artifacts (re-added in migration 010 — moved off
-    -- the pre-010 auto-DOCUMENT Evidence row, where they did not
-    -- semantically belong). These describe the FILE; claim-anchored
+    -- Preprocessing artifacts. These describe the FILE; claim-anchored
     -- extracts live on Evidence rows that point back via source_file_id.
     summary TEXT,                                    -- short file summary
     structural_index TEXT,                           -- preprocessing-pipeline JSON blob
-    data_type VARCHAR(50),                           -- logs | metrics | config | code | text | image
+    data_type VARCHAR(50),                           -- logs | metrics | configuration | code | text | image
     coverage_start_ts TIMESTAMP WITH TIME ZONE,      -- earliest timestamp seen in the file
     coverage_end_ts   TIMESTAMP WITH TIME ZONE,      -- latest timestamp seen in the file
 
@@ -879,7 +879,6 @@ COMMENT ON COLUMN uploaded_files.structural_index IS 'Preprocessing-pipeline JSO
 - `upload_source` is the file's *provenance*; `evidence.source_type` is the *data shape* classification. They are distinct concerns and live on distinct tables.
 - `case_id` is nullable so conversion-job uploads (no case) and case-evidence uploads (with case) share the same table.
 - **Preprocessing-artifact lifecycle**: written by the preprocessing pipeline at intake; surfaced to the LLM via `<uploaded_file file_id="…">` during INQUIRY and via `<evidence …>` blocks (whose `source_file_id` points back here) during INVESTIGATING. Repositories use `COALESCE(EXCLUDED.x, uploaded_files.x)` on UPDATE so a failed re-run (NULL incoming) cannot clobber a prior good extraction; intentional clearing must go through a dedicated path.
-- Migration history: the pre-010 `preprocessing_summary` column was dropped in migration 004 and the artifacts briefly rode on the auto-DOCUMENT Evidence row (see Evidence dual-model history in [evidence-driven-investigation-framework.md](../../investigation-engine/evidence-driven-investigation-framework.md)); migration 010 collapsed that dual model and re-anchored the artifacts here.
 
 ### 4.7 case_messages (High-Cardinality Table)
 
@@ -1957,10 +1956,9 @@ The following tables and columns existed in earlier iterations of this design bu
 
 - **`cases.session_id`** — Coupling a case to an auth session was an anti-pattern. Cases now live independently of any auth session.
 - **`cases.degraded_mode`** — Vestigial flag with no live readers/writers.
-- **`uploaded_files.preprocessing_summary`** — Dropped in migration 004 (`f7bbadb43e4c`). Preprocessing artifacts now live on `evidence.metadata.extractor` alongside the row that backs them.
-- **`uploaded_files.data_type`** — Redundant with `evidence.source_type`. Removed before migration 001 baseline.
+- **`uploaded_files.preprocessing_summary`** — Dropped in migration 004 (`f7bbadb43e4c`). Preprocessing artifacts (`summary`, `structural_index`, `data_type`, `coverage_*`) now live as first-class columns on `uploaded_files` (re-added by migration 010).
 - **`uploaded_files.content_ref`** — Renamed to `storage_ref` to make the role (opaque key for the storage backend) clearer.
-- **`uploaded_files.source_type`** — Renamed to `upload_source` to disambiguate from `evidence.source_type`. The two columns now have distinct semantics: `upload_source` is provenance (file_upload | conversion_source | api_push); `evidence.source_type` is the data-shape classification (logs | metrics | configuration | visual | user_description).
+- **`uploaded_files.source_type`** — Renamed to `upload_source` to disambiguate from `evidence.source_type`. The two columns have distinct semantics: `upload_source` is provenance (file_upload | conversion_source | api_push); `evidence.source_type` is the data-shape classification (logs | metrics | configuration | code | text | image | user_description).
 - **`hypotheses.evidence_links`** — JSON-blob list replaced by the `hypothesis_evidence` junction table (§4.4-bis), which carries a `relationship_type` qualifier and per-link confidence/audit metadata.
 - **Report types `incident_report` and `post_mortem`** — Removed from `ReportType`. Only `resolution_summary` and `closure_summary` remain. Reusable knowledge derived from cases lives in `knowledge_items`, not `reports`.
 
@@ -2028,10 +2026,10 @@ Migration chain extended through 008.
 Aligned doc with the live ORM in `faultmaven/infrastructure/persistence/models.py` after the major redesign (migrations 001–006).
 
 - §4.2 `cases`: `description` is a first-class column with the migration-005 CHECK (`status IN ('inquiry','closed') OR LENGTH(TRIM(description)) > 0`); `current_turn`, `turns_without_progress`, `version` promoted to first-class columns; `is_archived`/`archived_at` removed (not in the live ORM).
-- §4.3 `evidence`: rewritten around `summary` (NOT NULL) and `extract` (nullable); `EvidenceForm` enum collapsed to three values (DOCUMENT, USER_TEXT, SUBMITTED_DATA); dropped legacy `preprocessed_content`, `content_ref`, `file_size`, `filename`, `content_hash`, `upload_timestamp` (file metadata lives on `uploaded_files`).
+- §4.3 `evidence`: rewritten around `summary` (NOT NULL) and `extract` (nullable); `form` column dropped (migration 010); `evidence_source_invariant` CHECK added; file metadata lives on `uploaded_files` (linked via `source_file_id`).
 - §4.4 `hypotheses`: dropped `evidence_links` JSON blob; added `hypothesis_evidence` junction table (§4.4-bis).
 - §4.5 `solutions`: `SolutionStatus` corrected to `proposed | accepted | rejected | implemented | verified`.
-- §4.6 `uploaded_files`: dropped `data_type` and `preprocessing_summary` (migration 004); renamed `content_ref` → `storage_ref` and `source_type` → `upload_source`; FK ordering and ON DELETE rules aligned with ORM.
+- §4.6 `uploaded_files`: renamed `content_ref` → `storage_ref` and `source_type` → `upload_source`; FK ordering and ON DELETE rules aligned with ORM; preprocessing artifacts (`summary`, `structural_index`, `data_type`, `coverage_*`) added (migration 010) so the file row is the canonical home for file-level metadata.
 - §4.10 `reports`: `report_type` CHECK restricted to `resolution_summary` and `closure_summary` (no `runbook`, `incident_report`, `post_mortem`).
 - §4.12: added Enterprise Tier section documenting the Enterprise → Organization → Team → User hierarchy and the migration-006 NOT NULL invariant on `users.enterprise_id` and `organizations.enterprise_id`, including the default enterprise UUID `00000000-0000-0000-0000-000000000002`.
 - §5.4: tenanted-tables list aligned to live schema.

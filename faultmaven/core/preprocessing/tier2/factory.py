@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 from faultmaven.core.preprocessing.tier2.basic import BasicTier2Service
 from faultmaven.core.preprocessing.tier2.external import ExternalTier2Client
-from faultmaven.core.preprocessing.tier2.interface import ITier2AnalysisService
+from faultmaven.core.preprocessing.tier2.interface import ITier2SearchService
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,8 @@ def create_tier2_service(
     llm_client: Optional[Any] = None,
     storage_service: Optional[Any] = None,
     timeout_seconds: int = 30,
-) -> Optional[ITier2AnalysisService]:
+    max_tokens: int = 2000,
+) -> Optional[ITier2SearchService]:
     """
     Factory: create Tier 2 service based on configuration.
 
@@ -36,15 +37,18 @@ def create_tier2_service(
         llm_client: LLM client for local backend
         storage_service: Storage service for file retrieval
         timeout_seconds: Timeout for Tier 2 calls
+        max_tokens: Maximum response tokens for the local LLM backend.
+            Ignored for external/basic backends.
 
     Returns:
-        ITier2AnalysisService instance, or None if disabled
+        ITier2SearchService instance, or None if disabled
 
     Configuration (env vars):
         DEEP_ANALYSIS_BACKEND=disabled    # external | local | basic | disabled
         DEEP_ANALYSIS_URL=                # URL for external backend
         DEEP_ANALYSIS_API_KEY=            # API key for external backend
         DEEP_ANALYSIS_TIMEOUT_SECONDS=30  # Timeout for deep analysis calls
+        DEEP_ANALYSIS_MAX_TOKENS=2000     # Local-backend response token cap
     """
     if backend == "disabled":
         logger.info("Tier 2 deep analysis: disabled")
@@ -70,6 +74,7 @@ def create_tier2_service(
         return LocalTier2Service(
             llm_client=llm_client,
             storage_service=storage_service,
+            max_tokens=max_tokens,
         )
 
     if backend == "basic":

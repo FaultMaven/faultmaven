@@ -18,12 +18,12 @@ from faultmaven.core.preprocessing.models import (
     DeepAnalysisResult,
     UnifiedDataType,
 )
-from faultmaven.core.preprocessing.tier2.interface import ITier2AnalysisService
+from faultmaven.core.preprocessing.tier2.interface import ITier2SearchService
 
 logger = logging.getLogger(__name__)
 
 
-class BasicTier2Service(ITier2AnalysisService):
+class BasicTier2Service(ITier2SearchService):
     """In-process keyword search, no LLM. Returns raw excerpts."""
 
     def __init__(

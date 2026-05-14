@@ -13,7 +13,7 @@ Platform-specific extractors intelligently parse and structure content from popu
 
 **Relationship to Four-Tier Model**: In the [Data Preprocessing](./data-preprocessing-design-specification.md) architecture, platform-specific extraction can operate at two levels:
 - **Tier 1 (frontend)**: Client-side platform detection and structured data extraction before upload
-- **Tier 3 (backend)**: Platform-aware deep analysis as a pluggable backend behind the `ITier2AnalysisService` interface (the "Tier 3" label is a spec-level concept; in the code the service is still called `ITier2AnalysisService`). Invoked via the `deep_analysis` agent tool.
+- **Tier 3 (backend)**: Platform-aware deep analysis as a pluggable backend behind the `ITier2SearchService` interface. The `Tier2` token refers to the agent-tools tier system (Tier 2 = search, Tier 3 = interpreted analysis), not the preprocessing-tier system. Invoked via the `deep_analysis` agent tool.
 
 This document primarily describes the Tier 1 (frontend) approach. For the Tier 3 service, see [Data Preprocessing §4](./data-preprocessing-design-specification.md#4-tier-3-deep-llm-analysis-renamed-from-tier-2).
 
@@ -262,7 +262,7 @@ structured = llm.extract_structured_data(prompt)
 ## References
 
 - [Data Preprocessing Architecture](./data-preprocessing-design-specification.md) — Four-tier model including Tier 3 pluggable backends
-- [Evidence Classification Design](./evidence-classification-design.md) — Evidence classification, categories, and unified DataType
+- [Evidence Model](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) — Categories, source-type, and `evidence_source_invariant`
 - [Data Classification Strategy](./data-classification-strategy.md) — Tier 0 data type classification
 
 ---

@@ -70,10 +70,16 @@ def mock_classifier():
 @pytest.fixture
 def mock_logs_extractor():
     """Logs extractor mock — must NOT be called on the page_capture path."""
+    from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
+
     extractor = MagicMock()
     extractor.strategy_name = "crime_scene"
     extractor.llm_calls_used = 0
-    extractor.extract.return_value = "should not be reached"
+    extractor.extract.return_value = ExtractResult(
+        file_extract="should not be reached",
+        search_map="",
+        file_meta={},
+    )
     return extractor
 
 

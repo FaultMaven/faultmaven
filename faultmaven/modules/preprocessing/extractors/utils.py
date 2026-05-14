@@ -174,11 +174,12 @@ _SYSLOG_MONTHS = {
 }
 
 
-def extract_timestamp(line: str) -> datetime | None:
-    """Extract the first recognisable timestamp from *line*.
+def _extract_timestamp_with_source(line: str) -> tuple[datetime | None, str | None]:
+    """Extract the first recognisable timestamp and its pattern name from *line*.
 
-    Supports ISO-8601 (with/without ``T``), syslog BSD, epoch seconds
-    and epoch milliseconds.  Returns ``None`` when no pattern matches.
+    Returns ``(dt, pattern_name)`` on success, ``(None, None)`` on no match.
+    Pattern names match the keys in ``_TS_PATTERNS`` and the documented
+    vocabulary of ``CoverageMetadata.source``.
     """
     for name, pat in _TS_PATTERNS:
         m = pat.search(line)
@@ -189,10 +190,13 @@ def extract_timestamp(line: str) -> datetime | None:
                 dt = datetime.fromisoformat(m.group(0))
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=UTC)
-                return dt
+                return dt, name
             if name == "iso8601":
-                return datetime.strptime(m.group(0), "%Y-%m-%d %H:%M:%S").replace(
-                    tzinfo=UTC
+                return (
+                    datetime.strptime(m.group(0), "%Y-%m-%d %H:%M:%S").replace(
+                        tzinfo=UTC
+                    ),
+                    name,
                 )
             if name == "healthapp":
                 # YYYYMMDD-H:M:S:ms (HealthApp). All seven groups are
@@ -209,7 +213,7 @@ def extract_timestamp(line: str) -> datetime | None:
                     and 0 <= ss <= 59
                 ):
                     continue
-                return datetime(yyyy, mo, dd, hh, mi, ss, tzinfo=UTC)
+                return datetime(yyyy, mo, dd, hh, mi, ss, tzinfo=UTC), name
             if name == "syslog_bsd":
                 # Single parser for the full BSD-syslog family. Use the
                 # explicit year when the input provides one; fall back to the
@@ -220,13 +224,16 @@ def extract_timestamp(line: str) -> datetime | None:
                 hh, mm, ss = (int(x) for x in m.group("time").split(":"))
                 year_str = m.group("year")
                 if year_str is not None:
-                    return datetime(int(year_str), month, day, hh, mm, ss, tzinfo=UTC)
+                    return (
+                        datetime(int(year_str), month, day, hh, mm, ss, tzinfo=UTC),
+                        name,
+                    )
 
                 now = datetime.now(tz=UTC)
                 dt = datetime(now.year, month, day, hh, mm, ss, tzinfo=UTC)
                 if dt > now:
                     dt = dt.replace(year=now.year - 1)
-                return dt
+                return dt, name
             if name == "yymmdd":
                 yy, mo, dd, hh, mm, ss = (int(x) for x in m.groups())
                 year = 2000 + yy
@@ -238,7 +245,7 @@ def extract_timestamp(line: str) -> datetime | None:
                     and 0 <= ss <= 59
                 ):
                     continue
-                return datetime(year, mo, dd, hh, mm, ss, tzinfo=UTC)
+                return datetime(year, mo, dd, hh, mm, ss, tzinfo=UTC), name
             if name == "yy_slash_mmdd":
                 yy, mo, dd, hh, mm, ss = (int(x) for x in m.groups())
                 # Two-digit year: 00-69 → 2000s, 70-99 → 1900s. Spark and
@@ -253,17 +260,29 @@ def extract_timestamp(line: str) -> datetime | None:
                     and 0 <= ss <= 59
                 ):
                     continue
-                return datetime(year, mo, dd, hh, mm, ss, tzinfo=UTC)
+                return datetime(year, mo, dd, hh, mm, ss, tzinfo=UTC), name
             if name in ("epoch_ms", "epoch_s"):
                 val = int(m.group(1))
                 secs = val / 1000 if name == "epoch_ms" else val
                 dt = datetime.fromtimestamp(secs, tz=UTC)
                 if 2000 <= dt.year <= 2100:
-                    return dt
+                    return dt, name
                 continue
         except (ValueError, OSError, OverflowError):
             continue
-    return None
+    return None, None
+
+
+def extract_timestamp(line: str) -> datetime | None:
+    """Extract the first recognisable timestamp from *line*.
+
+    Supports ISO-8601 (with/without ``T``), syslog BSD, epoch seconds,
+    epoch milliseconds, and the compact log4j/Hadoop variants. Returns
+    ``None`` when no pattern matches. Callers that also need the
+    matched pattern name should call ``_extract_timestamp_with_source``.
+    """
+    dt, _ = _extract_timestamp_with_source(line)
+    return dt
 
 
 def has_yearless_timestamps(content: str) -> tuple[bool, str | None]:
@@ -284,8 +303,8 @@ def has_yearless_timestamps(content: str) -> tuple[bool, str | None]:
 
 def extract_time_range_ts(
     content: str,
-) -> tuple[Optional["datetime"], Optional["datetime"]]:
-    """Return ``(start_ts, end_ts)`` datetime objects from *content*.
+) -> tuple[Optional["datetime"], Optional["datetime"], Optional[str]]:
+    """Return ``(start_ts, end_ts, source)`` from *content*.
 
     Scans the first ``_HEAD_SCAN_LINES`` lines and walks backwards through
     the trailing ``_TAIL_SCAN_LINES`` lines, returning the first parseable
@@ -301,16 +320,27 @@ def extract_time_range_ts(
     can populate ``evidence.coverage_start_ts`` / ``coverage_end_ts``
     without having to re-parse the strings emitted by
     ``extract_time_range``.
+
+    ``source`` is the name of the ``_TS_PATTERNS`` entry that matched the
+    head timestamp (one of ``iso8601_t``, ``iso8601``, ``healthapp``,
+    ``syslog_bsd``, ``yymmdd``, ``yy_slash_mmdd``, ``epoch_ms``,
+    ``epoch_s``), or ``None`` when no pattern matched. The head wins the
+    label because a file usually emits a single timestamp format; the
+    tail pattern is captured for diagnostics but only the head value is
+    returned. See ``CoverageMetadata.source`` in
+    ``core/preprocessing/evidence_metadata.py``.
     """
     lines = content.split("\n")
     head = lines[:_HEAD_SCAN_LINES]
 
     first_ts: datetime | None = None
+    source: str | None = None
     head_match_idx: int | None = None
     for i, line in enumerate(head):
-        ts = extract_timestamp(line)
+        ts, src = _extract_timestamp_with_source(line)
         if ts:
             first_ts = ts
+            source = src
             head_match_idx = i
             break
 
@@ -334,23 +364,28 @@ def extract_time_range_ts(
     for line in reversed(lines[tail_start:]):
         last_ts = extract_timestamp(line)
         if last_ts:
+            # If the head never matched, fall back to the tail's pattern
+            # so a single-bounded file still gets a ``source`` value.
+            if source is None:
+                _, tail_src = _extract_timestamp_with_source(line)
+                source = tail_src
             break
 
     # Meaningful coverage span requires both bounds. A single head
-    # timestamp without a tail bound collapses to (ts, None) — the
-    # Phase 3 repository query handles this by treating single-point
+    # timestamp without a tail bound collapses to (ts, None, source) —
+    # the Phase 3 repository query handles this by treating single-point
     # evidence as covering [ts, ts]; callers who need a strict range
     # check the end_ts for None.
-    return first_ts, last_ts
+    return first_ts, last_ts, source
 
 
 def extract_time_range(content: str) -> dict[str, str]:
     """Return ``{"Time range": "<start> to <end>"}`` from content.
 
-    Thin string-formatting wrapper around ``extract_time_range_ts`` —
-    kept for backward-compatibility with extractors that embed the
-    range in their coverage metadata text block. New code that needs
-    the timestamps themselves should call ``extract_time_range_ts``.
+    String-formatting helper used by extractors that embed the range in
+    their coverage-metadata text block. Callers that need the
+    ``datetime`` objects or the matched pattern name should call
+    ``extract_time_range_ts`` directly.
 
     When the source has yearless syslog BSD timestamps (e.g.,
     ``"Jun 14 15:16:01"``) we omit the year from the output. The
@@ -361,7 +396,7 @@ def extract_time_range(content: str) -> dict[str, str]:
     by a hedge. Better to render the format that the source actually
     has.
     """
-    first_ts, last_ts = extract_time_range_ts(content)
+    first_ts, last_ts, _ = extract_time_range_ts(content)
     yearless, _ = has_yearless_timestamps(content)
     fmt = "%b %d %H:%M:%S" if yearless else "%Y-%m-%d %H:%M:%S"
 

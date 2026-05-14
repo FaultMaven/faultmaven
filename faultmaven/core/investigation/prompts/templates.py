@@ -713,7 +713,7 @@ WORKING WITH EVIDENCE DATA:
 When your analysis discovers NEW findings not in the structural index, create
 evidence records via evidence_to_add with appropriate category and summary.
 
-EVIDENCE CLASSIFICATION — DECISION TREE (post-010, 4 categories):
+EVIDENCE CLASSIFICATION — DECISION TREE (4 categories):
 
 Each evidence row is a focused, claim-anchored extract. Rows that
 don't support a specific claim should NOT be created — files
@@ -1279,9 +1279,8 @@ happens only when this variable is set — conversational text alone is not enou
 Background/contextual material (architecture diagrams, baseline configs,
 deployment timestamps) lives on ``uploaded_files`` and is visible to
 you via the structural index — do NOT create an evidence_to_add row
-for context-only data. The post-010 ``contextual_evidence`` category
-has been removed; promote material to evidence only when it supports
-a specific claim.
+for context-only data. Promote material to evidence only when it
+supports a specific claim (symptom, cause, mitigation, or solution).
 
 **URGENCY RECOGNITION:**
 Watch for high-impact signals (revenue, production, data loss, customer complaints).

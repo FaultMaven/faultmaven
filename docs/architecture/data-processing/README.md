@@ -55,13 +55,16 @@ All documents in this section share a single DataType taxonomy. See [Data Classi
 
 - **[Platform-Specific Extractors](./platform-specific-extractors.md)** — Future enhancement: platform-aware extraction for SRE/DevOps tools (Datadog, Grafana, PagerDuty, etc.). Can integrate as Tier 1 frontend extractors or Tier 3 backends.
 
-### Evidence Classification
-
-- **[Evidence Classification Design](./evidence-classification-design.md)** — Evidence taxonomy: 6 categories (SYMPTOM, CAUSAL, MITIGATION, SOLUTION, CONTEXTUAL, REJECTED — 5 valid + 1 rejected), unified DataType, payload-driven form determination (DOCUMENT/USER_TEXT/SUBMITTED_DATA), content-based classification, and milestone attribution (Option 2.5).
+### Evidence Pipeline
 
 - **[Evidence Flow Architecture](./evidence-flow-architecture.md)** — System architecture and flow diagrams for the evidence pipeline. Covers the unified turn endpoint (`POST /cases/{id}/turns`) through two-step pipeline (preprocess attachments → LLM inference), to persistence, including sequence diagrams, state machines, and monitoring.
 
-- **[Evidence Failure Modes](./evidence-failure-modes.md)** — Failure handling design for single-phase evidence creation. Covers LLM timeout recovery, DB insert retries, storage cleanup, and deduplication strategies. *(Deferred to post-MVP)*
+- **[Evidence Failure Modes](./evidence-failure-modes.md)** — Failure handling for evidence creation: orphan-file cleanup, deduplication, storage retries.
+
+Evidence taxonomy and schema are defined in the investigation-engine domain:
+
+- **Live data model:** [investigation-engine/evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model)
+- **Live DB schema:** [data-and-storage/schemas/case-schema.md](../data-and-storage/schemas/case-schema.md) §"Evidence"
 
 ---
 
@@ -71,15 +74,15 @@ Several topics appear in multiple documents in this domain. To prevent drift, ea
 
 | Topic | Owning Document | Secondary (must defer, not restate) |
 | --- | --- | --- |
-| DataType enum (12 detailed → 6 unified) | [data-classification-strategy.md](./data-classification-strategy.md) §"Two-Layer Data Type Enum" | `evidence-classification-design.md`, this README |
+| DataType enum (12 detailed → 6 unified) | [data-classification-strategy.md](./data-classification-strategy.md) §"Two-Layer Data Type Enum" | this README |
 | Tier 0 classification rules & `classification_failed` path | [data-classification-strategy.md](./data-classification-strategy.md) | `data-preprocessing-design-specification.md` §2.5, `evidence-flow-architecture.md` |
-| `extraction_method` / `strategy_name` vocabulary | [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) Appendix B (code canonical: `core/preprocessing/models.py` → `ExtractionMethod`) | `evidence-classification-design.md` Evidence schema |
-| Unified ingestion pipeline (two-step preprocessing flow) | [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §2.4 | this README, `evidence-classification-design.md`, `evidence-flow-architecture.md` |
+| `extraction_method` / `strategy_name` vocabulary | [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) Appendix B (code canonical: `core/preprocessing/models.py` → `ExtractionMethod`) | — |
+| Unified ingestion pipeline (two-step preprocessing flow) | [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §2.4 | this README, `evidence-flow-architecture.md` |
 | Page capture pipeline (Stage 1/2) | [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §2.4 | `platform-specific-extractors.md`, `evidence-flow-architecture.md` |
 | Orchestration Hardening (R3/R4/R5) | [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §6.1 | `evidence-flow-architecture.md` |
 | DA Tool Loop (`_tool_augmented_generate`) | [orchestration-capabilities.md §5.4](../investigation-engine/orchestration-capabilities.md#54-tool-augmented-generation-v50--v60) (cross-domain) | `data-preprocessing-design-specification.md`, `evidence-flow-architecture.md`, this README |
-| Failure modes & Current Implementation Status (LLM timeout, sync vs async) | [evidence-failure-modes.md](./evidence-failure-modes.md) Status table | `evidence-flow-architecture.md` (deferred-design diagrams must carry the "deferred" caveat and link to the Status table) |
-| Evidence schema (`evidence_id` regex, fields, form determination) | [evidence-classification-design.md](./evidence-classification-design.md) §"Complete Evidence Schema" | `data-preprocessing-design-specification.md` |
+| Failure modes (orphan cleanup, dedup, storage retries) | [evidence-failure-modes.md](./evidence-failure-modes.md) Status table | `evidence-flow-architecture.md` |
+| Evidence taxonomy + schema | [investigation-engine/evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) + [data-and-storage/schemas/case-schema.md](../data-and-storage/schemas/case-schema.md) §"Evidence" | `data-preprocessing-design-specification.md` |
 
 **Rules of thumb for edits:**
 

@@ -12,7 +12,7 @@ from faultmaven.core.preprocessing.models import (
     UnifiedDataType,
 )
 from faultmaven.core.preprocessing.tier2.external import ExternalTier2Client
-from faultmaven.core.preprocessing.tier2.interface import ITier2AnalysisService
+from faultmaven.core.preprocessing.tier2.interface import ITier2SearchService
 
 
 @pytest.fixture
@@ -46,7 +46,7 @@ def _make_httpx_mock(post_responses=None, get_response=None):
 
 class TestExternalTier2Init:
     def test_implements_interface(self):
-        assert issubclass(ExternalTier2Client, ITier2AnalysisService)
+        assert issubclass(ExternalTier2Client, ITier2SearchService)
 
     def test_base_url_stripped(self):
         client = ExternalTier2Client(base_url="http://example.com/")

@@ -61,8 +61,7 @@ class ExtractorAttempt(BaseModel):
 
     The list is chronological: the most recent attempt is the one whose
     output is currently persisted as ``uploaded_files.structural_index``
-    (post-010: preprocessing artifacts live on the file row, not on
-    Evidence).
+    (preprocessing artifacts live on the file row, not on Evidence).
     Hard cap: 5 entries; oldest rotate off the head when exceeded.
     """
 
@@ -72,10 +71,8 @@ class ExtractorAttempt(BaseModel):
     sanity_passed: bool = True
     duration_ms: int = 0
     triggered_by: Optional[str] = None
-    """What initiated this attempt. Known values: ``initial``,
-    ``sanity_retry`` (Phase 2), ``user_override`` (Phase 1.5). ``None``
-    is tolerated for backward-compatibility with attempts recorded
-    before the field existed."""
+    """What initiated this attempt. One of ``initial``, ``sanity_retry``
+    (Phase 2), or ``user_override`` (Phase 1.5)."""
 
 
 class ExtractorMetadata(BaseModel):
@@ -115,9 +112,11 @@ class CoverageMetadata(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     source: Optional[str] = None
-    """Which timestamp-format pattern matched. One of ``iso8601_t``,
-    ``iso8601``, ``syslog_bsd``, ``epoch_s``, ``epoch_ms``, or None when
-    no pattern matched."""
+    """Which timestamp-format pattern matched the head timestamp. One of
+    ``iso8601_t``, ``iso8601``, ``healthapp``, ``syslog_bsd``, ``yymmdd``,
+    ``yy_slash_mmdd``, ``epoch_ms``, ``epoch_s``, or ``None`` when no
+    pattern matched. The producer is
+    ``extractors/utils.py:extract_time_range_ts``."""
 
 
 class EvidenceMetadata(BaseModel):

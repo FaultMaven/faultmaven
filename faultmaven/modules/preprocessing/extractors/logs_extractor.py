@@ -1113,7 +1113,7 @@ class LogsAndErrorsExtractor:
             return "", "ENTITY PROFILE: No entities found"
 
         # FILE SUMMARY — returned separately so extract() can place it in file_extract
-        first_ts, last_ts = extract_time_range_ts(content)
+        first_ts, last_ts, _ = extract_time_range_ts(content)
         tr = extract_time_range(content)
         yearless_ts, sample_raw_ts = has_yearless_timestamps(content)
         summary = self._build_summary(

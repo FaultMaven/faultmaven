@@ -1813,6 +1813,18 @@ class DeepAnalysisSettings(BaseSettings):
         description="Timeout for deep analysis calls",
     )
 
+    max_tokens: int = Field(
+        default=2000,
+        validation_alias="DEEP_ANALYSIS_MAX_TOKENS",
+        ge=256,
+        le=16000,
+        description=(
+            "Maximum response tokens for deep-analysis LLM calls. Applied "
+            "by the 'local' backend (LocalTier2Service); the 'external' "
+            "backend governs its own response size on the server side."
+        ),
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
@@ -1966,6 +1978,7 @@ class AgentSettings(BaseSettings):
         default=180,
         ge=30,
         le=600,
+        validation_alias="VECTORIZATION_REACTIVE_TIMEOUT_SECONDS",
         description=(
             "Upper bound for synchronous reactive vectorization inside "
             "the DA tool loop (MilestoneEngine._reactive_vectorize and "

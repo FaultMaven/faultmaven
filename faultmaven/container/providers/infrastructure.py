@@ -650,6 +650,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         llm_client=llm_provider if settings.deep_analysis.backend == "local" else None,
         storage_service=storage_service,
         timeout_seconds=settings.deep_analysis.timeout_seconds,
+        max_tokens=settings.deep_analysis.max_tokens,
     )
     if deep_analysis_service:
         container._register_service("deep_analysis_service", deep_analysis_service)

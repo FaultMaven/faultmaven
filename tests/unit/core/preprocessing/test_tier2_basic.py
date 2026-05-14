@@ -6,7 +6,7 @@ import pytest
 
 from faultmaven.core.preprocessing.models import AnalysisContext, UnifiedDataType
 from faultmaven.core.preprocessing.tier2.basic import BasicTier2Service
-from faultmaven.core.preprocessing.tier2.interface import ITier2AnalysisService
+from faultmaven.core.preprocessing.tier2.interface import ITier2SearchService
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def service(mock_storage):
 
 class TestBasicTier2ServiceInterface:
     def test_implements_interface(self):
-        assert issubclass(BasicTier2Service, ITier2AnalysisService)
+        assert issubclass(BasicTier2Service, ITier2SearchService)
 
     def test_default_params(self):
         s = BasicTier2Service(storage_service=AsyncMock())

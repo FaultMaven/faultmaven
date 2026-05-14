@@ -178,9 +178,8 @@ class SQLiteCaseRepository(CaseRepository):
 
             organization_id = case.organization_id
             await self._upsert_case_record(case)
-            # Post-010: evidence.source_file_id is a real FK to
-            # uploaded_files.file_id, so files must exist before any
-            # evidence row that references them gets inserted.
+            # evidence.source_file_id is a real FK to uploaded_files.file_id,
+            # so files must exist before any evidence row that references them.
             await self._upsert_uploaded_files(
                 case.case_id, case.uploaded_files, organization_id
             )
@@ -402,12 +401,14 @@ class SQLiteCaseRepository(CaseRepository):
         return solutions
 
     async def _load_uploaded_files(self, case_id: str) -> list[dict]:
-        """Load uploaded files for a case (post-redesign schema).
+        """Load uploaded files for a case.
 
         Schema columns: ``file_id``, ``filename``, ``size_bytes``,
         ``content_type`` (MIME), ``content_hash``, ``storage_ref``,
-        ``upload_source`` (renamed from ``source_type``),
-        ``uploaded_at_turn``, ``uploaded_at``, ``uploaded_by``.
+        ``upload_source``, ``uploaded_at_turn``, ``uploaded_at``,
+        ``uploaded_by``, plus the preprocessing artifacts (``summary``,
+        ``structural_index``, ``data_type``, ``coverage_start_ts``,
+        ``coverage_end_ts``).
         """
         query = text("""
             SELECT file_id, filename, size_bytes, content_type, content_hash,
@@ -501,17 +502,14 @@ class SQLiteCaseRepository(CaseRepository):
     async def _load_evidence_for_case(self, case: Case) -> None:
         """Load investigation evidence from the evidence table.
 
-        Post-010 columns selected (in this fixed order, consumed
-        positionally by ``_row_to_evidence``): ``evidence_id``, ``category``,
+        Columns selected (in this fixed order, consumed positionally by
+        ``_row_to_evidence``): ``evidence_id``, ``category``,
         ``source_type``, ``summary``, ``extract``, ``is_primary``,
         ``reliability_score``, ``tags``, ``collected_at_turn``,
         ``source_file_id``, ``vectorized``, ``coverage_start_ts``,
         ``coverage_end_ts``, ``metadata``, ``created_at``,
         ``primary_purpose``, ``analysis``, ``processing_mode``,
         ``advances_milestones``, ``collected_by``.
-
-        The ``form`` column was dropped in migration 010; the dual-path
-        evidence-creation model collapsed to a single LLM-mediated path.
         """
         try:
             query = text("""
@@ -544,20 +542,18 @@ class SQLiteCaseRepository(CaseRepository):
     def _row_to_evidence(self, row: Any) -> Optional[Evidence]:
         """Reconstruct a domain ``Evidence`` from a SELECT row.
 
-        Column order (fixed, post-010): ``evidence_id, category,
-        source_type, summary, extract, is_primary, reliability_score,
-        tags, collected_at_turn, source_file_id, vectorized,
-        coverage_start_ts, coverage_end_ts, metadata, created_at,
-        primary_purpose, analysis, processing_mode, advances_milestones,
-        collected_by``.
+        Column order: ``evidence_id, category, source_type, summary,
+        extract, is_primary, reliability_score, tags, collected_at_turn,
+        source_file_id, vectorized, coverage_start_ts, coverage_end_ts,
+        metadata, created_at, primary_purpose, analysis, processing_mode,
+        advances_milestones, collected_by``.
 
         Returns ``None`` and logs a warning when reconstruction fails so
         one bad row doesn't blank an entire result set.
         """
         try:
-            # Strict category validation — drop pre-010 CONTEXTUAL/REJECTED
-            # fallback; let bad rows fail loudly. Under the post-010 model
-            # every row is born with a valid 4-category classification.
+            # Strict category validation — bad rows fail loudly. Every row
+            # is born with a valid 4-category classification.
             category = EvidenceCategory(row[1])
 
             source_type = EvidenceSourceType(row[2]) if row[2] else None
@@ -845,7 +841,7 @@ class SQLiteCaseRepository(CaseRepository):
             for row in rows:
                 # Bulk row order is offset by one column (case_id at index 1).
                 # _row_to_evidence expects the per-case shape; remap by skipping
-                # case_id when calling. Post-010: form column dropped.
+                # case_id when calling.
                 ev_row = (
                     row[0],  # evidence_id
                     row[2],  # category
@@ -1013,11 +1009,11 @@ class SQLiteCaseRepository(CaseRepository):
     ) -> Optional[UploadedFile]:
         """Find oldest UploadedFile in a case whose ``content_hash`` matches.
 
-        Post-010 strict evidence model: file uploads create only an
-        UploadedFile row (no auto-Evidence at intake), so dedup is a
-        file-level concern. The hydrated UploadedFile carries the
-        preprocessing artifacts (summary, structural_index, data_type,
-        coverage timestamps) added in migration 010.
+        Dedup is a file-level concern: file uploads create only an
+        UploadedFile row at intake (no Evidence row), so deduplication
+        keys off ``uploaded_files.content_hash``. The hydrated
+        UploadedFile carries the preprocessing artifacts (summary,
+        structural_index, data_type, coverage timestamps).
         """
         if not content_hash:
             return None
@@ -2027,7 +2023,7 @@ class SQLiteCaseRepository(CaseRepository):
     async def _upsert_evidence(
         self, case_id: str, evidence_list: builtins.list[Evidence], organization_id: str
     ) -> None:
-        """Upsert evidence records (post-redesign schema).
+        """Upsert evidence records.
 
         Purely additive: inserts new rows and updates existing ones keyed by
         evidence_id. Does NOT remove rows absent from `evidence_list`. The
@@ -2132,7 +2128,7 @@ class SQLiteCaseRepository(CaseRepository):
     async def _upsert_hypotheses(
         self, case_id: str, hypotheses_dict: dict[str, Hypothesis], organization_id: str
     ) -> None:
-        """Upsert hypotheses records (post-redesign schema).
+        """Upsert hypotheses records.
 
         Purely additive — see `_upsert_evidence` for rationale. There is
         no concrete delete-hypothesis API on the case repo today; if a
@@ -2389,17 +2385,14 @@ class SQLiteCaseRepository(CaseRepository):
         files_list: builtins.list[UploadedFile],
         organization_id: str,
     ) -> None:
-        """Upsert uploaded_files records (post-redesign schema).
+        """Upsert ``uploaded_files`` records.
 
-        Purely additive — see `_upsert_evidence` for rationale. For
-        intentional removal, use `delete_uploaded_file(case_id, file_id)`.
-
-        Renamed columns: ``content_ref`` → ``storage_ref``,
-        ``source_type`` → ``upload_source``.
-        Added: ``content_hash``, ``content_type`` (MIME), ``uploaded_by``.
-        Migration 010 re-added preprocessing artifacts onto this table:
-        ``summary``, ``structural_index``, ``data_type``,
-        ``coverage_start_ts``, ``coverage_end_ts``.
+        Purely additive — see ``_upsert_evidence`` for rationale. For
+        intentional removal use ``delete_uploaded_file(case_id, file_id)``.
+        Preprocessing artifacts (``summary``, ``structural_index``,
+        ``data_type``, ``coverage_start_ts``, ``coverage_end_ts``) ride on
+        this row; ``COALESCE`` on UPDATE prevents a failed re-extraction
+        from clobbering a prior good extraction.
         """
         for file in files_list:
             query = text("""

@@ -914,21 +914,16 @@ class InvestigationService:
         uploaded_file.coverage_end_ts = preprocessing_result.coverage_end_ts
 
         # Preprocessor diagnostics (classifier confidence, extractor
-        # attempts, entity overflow markers) previously rode on the
-        # auto-Evidence row as ``metadata``. Under post-010 they have
-        # no claim-anchored Evidence to land on; the natural home is
-        # ``uploaded_files.metadata`` (JSON blob). Tracked as a
-        # follow-up — no currently-shipping feature regresses.
+        # attempts, entity overflow markers) have no claim-anchored
+        # Evidence to land on at intake; their natural home is
+        # ``uploaded_files.metadata`` (JSON blob). Tracked as a follow-up
+        # — no currently-shipping feature regresses.
 
-        # Post-010: case_entities population is deferred. Under the
-        # dual-path model these rows were anchored to the auto-Evidence
-        # row's ``evidence_id``. Under the new model, entities should
-        # either anchor to the UploadedFile (schema change) or be
-        # populated lazily when the LLM creates evidence_to_add rows
-        # referencing this file. Scheduled for a follow-up batch — the
-        # case_entities feature regresses transiently but the data is
-        # still in ``preprocessing_result.entities`` for any reader
-        # that wants it.
+        # ``case_entities`` population is deferred. Entities should either
+        # anchor to the UploadedFile (schema change) or be populated lazily
+        # when the LLM creates ``evidence_to_add`` rows referencing this
+        # file. The data is still in ``preprocessing_result.entities`` for
+        # any reader that wants it.
 
         # Surface classification clarification hints when the heuristic
         # classifier produced a low-confidence result. Suggested types are
@@ -1242,8 +1237,8 @@ class InvestigationService:
         this method fetches the stored raw bytes, re-runs extraction
         under ``user_override=data_type``, and updates the **backing
         UploadedFile**'s preprocessing artifacts (``data_type``,
-        ``summary``, ``structural_index``) — post-010 these live with
-        the file, not on Evidence. The Evidence row's ``source_type`` is
+        ``summary``, ``structural_index``) — these live with the file,
+        not on Evidence. The Evidence row's ``source_type`` is
         re-aligned so it stays consistent with the file's new
         classification, but the LLM-authored ``summary`` and ``extract``
         fields on Evidence are left untouched (they are claim content,

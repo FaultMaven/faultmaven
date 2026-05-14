@@ -2,7 +2,7 @@
 
 **Version:** 1.5
 **Date:** 2026-05-04
-**Status:** **Partially superseded by migration 010** (2026-05-11). Scenarios 1, 2, and 4 (storage, LLM timeout, DB insert) remain accurate; scenario 3 (invalid LLM category) no longer falls back — it now raises a validation error (no `CONTEXTUAL_EVIDENCE` category exists). Dedup is now file-level (`find_uploaded_file_by_content_hash`) rather than evidence-level. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) for the current evidence model.
+**Status:** Live. Dedup is file-level (`find_uploaded_file_by_content_hash`) — Evidence rows are claim-anchored extracts that the LLM emits during `INVESTIGATING`; the file dedup short-circuits the upload before any Evidence is considered. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) for the evidence model.
 **Context:** Failure analysis and recovery strategies for single-phase evidence creation
 
 ---
@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | Scenario 1 — File upload fails | Implicit (no code change needed) | Storage failures raise before any evidence object exists. No orphan state. |
 | Scenario 2 — LLM call timeout | **Deferred** | Current turn-submission path (`modules/case/api/routes.py:2234-2269`) already returns specific error codes (`LLM_OVER_CAPACITY`, `RATE_LIMIT_EXCEEDED`, `LLM_TIMEOUT`) with `Retry-After` headers and in-process synchronous retries via `BaseExternalClient`. An async-retry path was designed and discarded (see former `PLAN-async-turn-retry.md`, deleted 2026-04-19) — the additional machinery (forward-only schema migration, 202 polling, cancellation semantics) isn't justified without production evidence that the current error-path UX harms users. Revisit on telemetry signal. A partially-scaffolded `faultmaven/modules/agent/jobs/evidence_retry.py` (with a placeholder LLM call returning hardcoded `symptom_evidence` and an in-memory `asyncio.sleep` "queue") was a leftover from the original Option B recommendation and was **removed on 2026-05-04** to prevent it being mistakenly wired up. The scaffolded `evidence_turn_async_retry_*` Prometheus metrics remain registered as a tripwire if/when the design is revisited. |
-| Scenario 3 — LLM returns invalid category | **Done (post-010 — strict)** | `EvidenceToAdd.validate_category` in `core/investigation/schemas.py` raises a Pydantic `ValidationError` on any value outside the four post-010 categories (symptom / causal / mitigation / solution_evidence). The pre-010 `CONTEXTUAL_EVIDENCE` fallback was removed when migration 010 dropped that enum value — fail-loud is the deliberate choice so the milestone engine's self-correction loop (error-handling-and-recovery.md §3.2) can prompt the LLM to retry with a valid category instead of silently miscategorising the row. |
+| Scenario 3 — LLM returns invalid category | **Done** | `EvidenceToAdd.validate_category` raises Pydantic `ValidationError` on any value outside the four valid categories (`symptom_evidence` / `causal_evidence` / `mitigation_evidence` / `solution_evidence`). The milestone engine's self-correction loop (`error-handling-and-recovery.md §3.2`) reprompts the LLM with the validator's error message and accepts the corrected row within the same turn. |
 | Scenario 4 — DB insert fails after LLM / storage | **Partial** | Orphan-file cleanup (below) handles the "storage succeeded, evidence didn't persist" case. Idempotency on evidence creation itself is not implemented. |
 | Content-hash deduplication — hash consistency | **Done** | `PreprocessingService.classify_and_extract` computes `SHA-256(UTF-8 text)` uniformly for file uploads and pasted content. Both paths produce the same hash for the same content. |
 | Content-hash deduplication — repository lookup | **Done** | `ICaseRepository.find_by_content_hash()` live on all bound implementations (`SessionlessCaseRepository`, `SQLiteCaseRepository`, `PostgreSQLHybridCaseRepository`, `InMemoryCaseRepository`). `_preprocess_attachment` short-circuits on match, skipping storage write and evidence creation. See [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §2.4. Emits `faultmaven_evidence_dedup_hits_total`. |
@@ -234,72 +234,15 @@ async def retry_evidence_analysis(case_id, content_ref, content_hash, user_messa
 
 ### Scenario 3: LLM Returns Invalid Category
 
-**Failure Point:** LLM returns unrecognized/malformed category value
+**Failure Point:** LLM returns a `category` value outside the four valid categories (`symptom_evidence`, `causal_evidence`, `mitigation_evidence`, `solution_evidence`).
 
 **State:**
-- ✅ File in S3
+
+- ✅ File written to storage
 - ✅ LLM tokens spent
-- ❌ Can't create evidence (validation fails)
+- ❌ Pydantic `ValidationError` raised on the offending `evidence_to_add` entry
 
-**Problem:**
-- Lost LLM work (can't retry without re-spending tokens)
-- Invalid data from LLM (schema validation failure)
-
-**User Experience:**
-- Should NOT see "LLM returned invalid data" (internal error)
-- Should see: "Evidence was analyzed and saved"
-
-**Recovery Strategy: Category Fallback**
-
-```python
-# In schemas.py
-class EvidenceToAdd(BaseModel):
-    category: EvidenceCategory
-
-    @validator('category', pre=True)
-    def validate_category(cls, v):
-        """Fallback to CONTEXTUAL_EVIDENCE for unrecognized categories"""
-        if isinstance(v, str):
-            # Try exact match
-            try:
-                return EvidenceCategory(v)
-            except ValueError:
-                # Unrecognized category - fallback
-                logger.warning(
-                    f"LLM returned unrecognized category '{v}', "
-                    f"falling back to CONTEXTUAL_EVIDENCE"
-                )
-                return EvidenceCategory.CONTEXTUAL_EVIDENCE
-        return v
-```
-
-**Why CONTEXTUAL_EVIDENCE as fallback?**
-- Not REJECTED (user uploaded it intentionally)
-- Not SYMPTOM/CAUSAL/MITIGATION/SOLUTION (don't want false positives in investigation)
-- CONTEXTUAL is neutral ("we have this data, not sure what it means yet")
-
-**Alternative: Log + Manual Review**
-```python
-@validator('category', pre=True)
-def validate_category(cls, v):
-    if isinstance(v, str):
-        try:
-            return EvidenceCategory(v)
-        except ValueError:
-            # Create alert for manual review
-            logger.error(
-                f"LLM returned invalid category '{v}'. "
-                f"This may indicate prompt drift or schema mismatch.",
-                extra={
-                    "category_attempted": v,
-                    "alert_team": "llm_integration",
-                    "severity": "high"
-                }
-            )
-            # Still fallback to CONTEXTUAL_EVIDENCE
-            return EvidenceCategory.CONTEXTUAL_EVIDENCE
-    return v
-```
+**Recovery: fail-loud + self-correction.** `EvidenceToAdd.validate_category` in [core/investigation/schemas.py](../../../faultmaven/core/investigation/schemas.py) raises `ValidationError` rather than coercing. The milestone engine's self-correction loop ([error-handling-and-recovery.md §3.2](./error-handling-and-recovery.md#32-self-correction-loop)) catches the validation error, re-prompts the LLM with the validator's message ("expected one of: symptom_evidence, …"), and accepts the corrected row within the same turn. No silent miscategorisation; no tokens wasted on a separate retry turn.
 
 ---
 
@@ -743,7 +686,7 @@ async def process_turn_with_attachment(
 | **LLM timeout** (current) | In-process, synchronous | Synchronous retries via `BaseExternalClient`; on terminal failure returns `LLM_TIMEOUT` / `LLM_OVER_CAPACITY` / `RATE_LIMIT_EXCEEDED` with `Retry-After` header | Specific error code with actionable message and retry hint |
 | **LLM timeout** (deferred async design) | File in S3, no DB record | Async retry (3x) with exponential backoff | "Analyzing... check back shortly." |
 | **LLM error** | File in S3, no DB record | Delete file, user retries | "Analysis failed. Try again." |
-| **LLM invalid category** | File in S3, LLM done | Pydantic `ValidationError`; engine's self-correction loop reprompts the LLM (no CONTEXTUAL_EVIDENCE fallback post-010) | Transparent — corrected on retry within the same turn |
+| **LLM invalid category** | File in S3, LLM done | Pydantic `ValidationError`; engine's self-correction loop reprompts the LLM | Transparent — corrected on retry within the same turn |
 | **DB insert fails** | File in S3, LLM done | Async retry (5x), preserve LLM result | "Processing... evidence will appear shortly." |
 | **Orphaned file** | File in S3, no DB record after 24h | Daily cleanup job deletes file | N/A (background) |
 
@@ -757,7 +700,7 @@ Current state is summarised in the "Current Implementation Status" table at the 
 
 ## Related Documentation
 
-- [Evidence Classification Design](./evidence-classification-design.md) — Evidence taxonomy and categories
+- [Evidence Model](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) — Evidence taxonomy and categories
 - [Evidence Flow Architecture](./evidence-flow-architecture.md) — End-to-end evidence pipeline
 - [Data Preprocessing Design Specification](./data-preprocessing-design-specification.md) — Four-tier preprocessing model, unified ingestion pipeline, and tier-escalation hardening
 

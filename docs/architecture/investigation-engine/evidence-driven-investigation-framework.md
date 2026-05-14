@@ -399,7 +399,7 @@ The old milestones (symptom_verified, scope_assessed, timeline_established, chan
 In the current model:
 
 - **symptom_verified**: Retained as a progress indicator — confirms the problem exists before any hypothesis work begins.
-- **scope_assessed, timeline_established, changes_identified**: **Removed.** These failed both design tests: (a) their absence does not block progress (investigation continues without them), and (b) they don't require independent evidence searches — scope and timeline are extracted facts from symptom evidence, and change events are contextual triggers that, post-010, live in `uploaded_files` (as file-level metadata) rather than as a synthetic evidence category. The agent captures this context opportunistically; it never stalls waiting for it.
+- **scope_assessed, timeline_established, changes_identified**: **Removed.** These failed both design tests: (a) their absence does not block progress (investigation continues without them), and (b) they don't require independent evidence searches — scope and timeline are extracted facts from symptom evidence, and change events are contextual triggers that live on `uploaded_files` (as file-level metadata) rather than as a synthetic evidence category. The agent captures this context opportunistically; it never stalls waiting for it.
 - **root_cause_identified**: Retained as a progress indicator. Also reflected in hypothesis status (VALIDATED with high confidence ≥ 70%).
 - **solution_proposed**: Retained as a progress indicator, set programmatically (not by LLM) when a `ProposedAction` with `action_type=SOLUTION` is created. Tells the LLM "you already proposed a solution" without scanning conversation history.
 - **solution_applied**: Tracked as part of TREATMENT workflow. Not a milestone.
@@ -438,10 +438,9 @@ INQUIRY ──(user confirms problem)──► DIAGNOSIS
 
 ---
 
-## 5. Evidence Model (post-010: strict two-table separation)
+## 5. Evidence Model
 
-Migration 010 collapsed evidence's dual-path creation model into a
-clean two-table separation. Files are data — they live in
+Two tables, one role each. Files are data — they live in
 `uploaded_files` with all their preprocessing artifacts. Evidence is
 a claim-anchored extract — the LLM's deliberate decision to record a
 focused slice of system output that supports a specific claim. The
@@ -471,19 +470,17 @@ two tables play distinct roles and never carry duplicate information.
 | `mitigation_evidence` | Data showing whether the temp fix worked | MITIGATION | Post-mitigation metrics, error rate changes |
 | `solution_evidence` | Data showing whether the fix worked | TREATMENT | Post-fix metrics, clean logs, user confirmation |
 
-The pre-010 `contextual_evidence` and `rejected` categories were
-removed in migration 010. Contextual material (architecture
-diagrams, baseline configs, deployment timestamps) is data, not
-evidence — it lives on `uploaded_files` with its preprocessing
-artifacts and is visible to the agent via the structural index;
-no Evidence row is created until a slice is extracted in support
-of a specific claim. Rejected submissions are expressed as the
-absence of an Evidence row.
+Contextual material (architecture diagrams, baseline configs,
+deployment timestamps) is data, not evidence — it lives on
+`uploaded_files` with its preprocessing artifacts and is visible to
+the agent via the structural index; no Evidence row is created until
+a slice is extracted in support of a specific claim. Rejected
+submissions are expressed as the absence of an Evidence row.
 
 ### 5.2 The Source Invariant
 
-Every Evidence row has a known source. Migration 010 enforces this
-at three layers:
+Every Evidence row has a known source. The invariant is enforced at
+three layers:
 
 1. **DB-level CHECK** (`evidence_source_invariant`):
    `source_file_id IS NOT NULL OR source_type = 'user_description'`
@@ -569,11 +566,6 @@ invariant).
                 │     evidence_to_add entry            │
                 └──────────────────────────────────────┘
 ```
-
-The single creation path replaces the pre-010 dual model where file
-uploads created an auto-Evidence row at intake (the DOCUMENT-form)
-alongside the LLM's evidence_to_add rows (the SUBMITTED_DATA-form).
-The `form` discriminator column was dropped in migration 010.
 
 ### 5.5 Dedup is a file-level concern
 
@@ -962,39 +954,15 @@ class InvestigationProgress(BaseModel):
 
 ### 10.3 EvidenceCategory Enum
 
-Post-010: 4 claim-anchored categories. The historical sequence was
-6 → 6 (rename) → 4 (drop), captured here for reference.
+Four claim-anchored categories. Every Evidence row attaches a finding to a specific claim about the problem, its cause, a mitigation, or a permanent fix. Contextual data lives on `uploaded_files`, not in `evidence`; rejection is expressed as the absence of a row. See §5.1 for the rationale.
 
 ```python
-# v1 (pre-2026-02): single-letter naming + RESOLUTION_EVIDENCE
-class EvidenceCategory(str, Enum):
-    SYMPTOM_EVIDENCE = "symptom_evidence"
-    CAUSAL_EVIDENCE = "causal_evidence"
-    RESOLUTION_EVIDENCE = "resolution_evidence"
-    CONTEXTUAL_EVIDENCE = "contextual_evidence"
-    REJECTED = "rejected"
-
-# v2 (2026-02-11..2026-05-10): added MITIGATION; renamed RESOLUTION → SOLUTION
-class EvidenceCategory(str, Enum):
-    SYMPTOM_EVIDENCE = "symptom_evidence"
-    CAUSAL_EVIDENCE = "causal_evidence"
-    MITIGATION_EVIDENCE = "mitigation_evidence"
-    SOLUTION_EVIDENCE = "solution_evidence"
-    CONTEXTUAL_EVIDENCE = "contextual_evidence"
-    REJECTED = "rejected"
-
-# Post-010 (current): 4 categories, all claim-anchored
 class EvidenceCategory(str, Enum):
     SYMPTOM_EVIDENCE = "symptom_evidence"
     CAUSAL_EVIDENCE = "causal_evidence"
     MITIGATION_EVIDENCE = "mitigation_evidence"
     SOLUTION_EVIDENCE = "solution_evidence"
 ```
-
-The pre-010 `CONTEXTUAL_EVIDENCE` and `REJECTED` values were
-removed: context is data (it lives on `uploaded_files`, not in
-`evidence`), and rejection is expressed as the absence of an
-evidence row. See §5.1 for the full rationale.
 
 ### 10.4 InvestigationPath
 

@@ -125,10 +125,16 @@ def _make_classifier(
 
 
 def _make_extractor():
+    from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
+
     extractor = MagicMock()
     extractor.strategy_name = "crime_scene"
     extractor.llm_calls_used = 0
-    extractor.extract.return_value = "=== Crime Scene ===\nError at line 42"
+    extractor.extract.return_value = ExtractResult(
+        file_extract="=== Crime Scene ===\nError at line 42",
+        search_map="",
+        file_meta={},
+    )
     return extractor
 
 

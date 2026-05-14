@@ -298,13 +298,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                         '[]'::json
                     ) as solutions_data,
 
-                    -- Uploaded Files (post-redesign columns: storage_ref
-                    -- replaces content_ref; upload_source replaces
-                    -- source_type; content_hash, content_type and
-                    -- uploaded_by added. Migration 010 re-added the
-                    -- preprocessing artifacts onto this table — they
-                    -- must be hydrated here so the agent sees them on
-                    -- subsequent turns).
+                    -- Uploaded files — preprocessing artifacts (summary,
+                    -- structural_index, data_type, coverage_*) ride on
+                    -- this row and must be hydrated here so the agent
+                    -- sees them on subsequent turns.
                     COALESCE(
                         json_agg(DISTINCT jsonb_build_object(
                             'file_id', f.file_id,
@@ -391,9 +388,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         ``primary_purpose``, ``analysis``, ``processing_mode``,
         ``advances_milestones``, ``collected_by``.
 
-        The ``form`` column was dropped in migration 010. File-level
-        metadata (filename, content_hash, content_type, size,
-        storage_ref) lives on ``uploaded_files`` reachable via
+        File-level metadata (filename, content_hash, content_type, size,
+        storage_ref) lives on ``uploaded_files``, reachable via
         ``source_file_id``.
         """
         try:
@@ -427,20 +423,18 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     def _row_to_evidence(self, row: Any) -> Optional[Evidence]:
         """Reconstruct a domain ``Evidence`` from a SELECT row.
 
-        Column order (fixed, post-010): ``evidence_id, category,
-        source_type, summary, extract, is_primary, reliability_score,
-        tags, collected_at_turn, source_file_id, vectorized,
-        coverage_start_ts, coverage_end_ts, metadata, created_at,
-        primary_purpose, analysis, processing_mode, advances_milestones,
-        collected_by``.
+        Column order: ``evidence_id, category, source_type, summary,
+        extract, is_primary, reliability_score, tags, collected_at_turn,
+        source_file_id, vectorized, coverage_start_ts, coverage_end_ts,
+        metadata, created_at, primary_purpose, analysis, processing_mode,
+        advances_milestones, collected_by``.
 
         Returns ``None`` and logs a warning when reconstruction fails so
         one bad row doesn't blank an entire result set.
         """
         try:
-            # Strict category validation under the post-010 model — every
-            # row is born with a valid 4-category classification, no
-            # CONTEXTUAL/REJECTED fallback.
+            # Strict category validation — every row is born with a valid
+            # 4-category classification.
             category = EvidenceCategory(row[1])
 
             source_type = EvidenceSourceType(row[2]) if row[2] else None
@@ -701,11 +695,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     ) -> Optional[UploadedFile]:
         """Find oldest UploadedFile in a case whose ``content_hash`` matches.
 
-        Post-010 strict evidence model: file uploads create only an
-        UploadedFile row (no auto-Evidence at intake), so dedup is a
-        file-level concern. The hydrated UploadedFile carries the
-        preprocessing artifacts (summary, structural_index, data_type,
-        coverage timestamps) added in migration 010.
+        Dedup is a file-level concern: file uploads create only an
+        UploadedFile row at intake (no Evidence row), so deduplication
+        keys off ``uploaded_files.content_hash``. The hydrated
+        UploadedFile carries the preprocessing artifacts (summary,
+        structural_index, data_type, coverage timestamps).
         """
         if not content_hash:
             return None
@@ -1669,7 +1663,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def _upsert_evidence(
         self, case_id: str, evidence_list: List[Evidence], organization_id: str
     ) -> None:
-        """Upsert evidence records (post-redesign schema).
+        """Upsert evidence records.
 
         Purely additive: inserts new rows and updates existing ones keyed by
         evidence_id. Does NOT remove rows absent from `evidence_list`. The
@@ -1763,7 +1757,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def _upsert_hypotheses(
         self, case_id: str, hypotheses_dict: Dict[str, Hypothesis], organization_id: str
     ) -> None:
-        """Upsert hypotheses records (post-redesign schema).
+        """Upsert hypotheses records.
 
         Purely additive — see `_upsert_evidence` for rationale. There is
         no concrete delete-hypothesis API on the case repo today; if a
@@ -2007,7 +2001,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def _upsert_uploaded_files(
         self, case_id: str, files_list: List[UploadedFile], organization_id: str
     ) -> None:
-        """Upsert uploaded_files records (post-redesign schema).
+        """Upsert uploaded_files records.
 
         Purely additive — see `_upsert_evidence` for rationale. For
         intentional removal, use `delete_uploaded_file(case_id, file_id)`.
@@ -2441,9 +2435,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         # ``organization_id`` is NOT NULL FK CASCADE on reports; derive
         # it from the parent case via subquery so callers don't have to
-        # thread it through. ``report_type`` CHECK now allows only
-        # ('resolution_summary', 'closure_summary') — RUNBOOK is gone
-        # post-redesign.
+        # thread it through. ``report_type`` CHECK allows only
+        # ('resolution_summary', 'closure_summary').
         insert_query = text("""
             INSERT INTO reports (
                 report_id, case_id, organization_id, report_type, version, is_current,

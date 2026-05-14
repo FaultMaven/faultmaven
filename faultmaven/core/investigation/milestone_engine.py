@@ -127,9 +127,9 @@ CATEGORY_MILESTONE_MAP = {
         # Solution evidence verifies permanent fix effectiveness
         # solution_verified is a stage-gate milestone (set via User-Agent Handshake)
     ],
-    # Post-010: CONTEXTUAL_EVIDENCE was dropped. Baseline/environmental
-    # data lives on ``uploaded_files`` (not promoted to Evidence until
-    # the agent extracts a claim-relevant slice).
+    # Baseline/environmental data lives on ``uploaded_files``, not Evidence;
+    # Evidence rows are only created when the agent extracts a
+    # claim-relevant slice.
 }
 
 
@@ -271,8 +271,8 @@ def _infer_milestones(
     - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md
 
     Args:
-        category: The evidence category (one of SYMPTOM / CAUSAL /
-            MITIGATION / SOLUTION — the four post-010 values)
+        category: The evidence category (SYMPTOM / CAUSAL / MITIGATION /
+            SOLUTION)
         milestones_completed_this_turn: Milestones completed this turn from MilestoneUpdates
 
     Returns:
@@ -439,9 +439,7 @@ def validate_reasoning_first(
     evidence_being_added = (
         getattr(response_obj.state_updates, "evidence_to_add", []) or []
     )
-    # Post-010: every evidence row is claim-anchored and actionable
-    # (CONTEXTUAL_EVIDENCE was dropped). Any existing or to-add row
-    # counts as actionable.
+    # Every evidence row is claim-anchored — any existing or to-add row counts.
     has_actionable_evidence = bool(case.evidence) or bool(evidence_being_added)
 
     if internal_reasoning.milestone_justifications and not has_actionable_evidence:
@@ -4881,7 +4879,7 @@ class MilestoneEngine:
         This creates the initial investigation structures and copies the
         confirmed problem statement to the case description.
 
-        Evidence lifecycle (post-010 strict evidence model):
+        Evidence lifecycle:
             - File uploads create only ``UploadedFile`` rows at intake; no
               Evidence is auto-created. Preprocessing artifacts (summary,
               structural_index, data_type, coverage_*) live on the file row.

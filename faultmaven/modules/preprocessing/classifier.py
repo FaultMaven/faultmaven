@@ -1100,7 +1100,9 @@ class DataClassifier:
         # window header) is too weak — a one-off datetime would otherwise mark
         # any short notice mentioning a date as a log candidate, which trips
         # the rubric's forbidden_claim "suggests LOG as a candidate type" for
-        # short ambiguous text.
+        # short ambiguous text. See data-classification-strategy.md
+        # §"classification_failed Path (Cooperative Clarification)" for the
+        # surrounding short-text ambiguity gate and its other per-category bars.
         log_line_pat = re.compile(
             r"(?m)^(?:\d{4}-\d{2}-\d{2}[T\s]\d{1,2}:\d{2}"  # ISO datetime
             r"|\d{2}/\d{2}/\d{2}\s+\d{1,2}:\d{2}:\d{2}"  # YY/MM/DD HH:MM:SS

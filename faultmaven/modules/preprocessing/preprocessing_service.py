@@ -869,8 +869,11 @@ class PreprocessingService:
         # timestamps (configs, code, screenshots, short pastes).
         coverage_start_ts = None
         coverage_end_ts = None
+        coverage_source: str | None = None
         try:
-            coverage_start_ts, coverage_end_ts = extract_time_range_ts(content)
+            coverage_start_ts, coverage_end_ts, coverage_source = extract_time_range_ts(
+                content
+            )
         except Exception:
             # extract_time_range_ts already swallows per-line parse
             # errors; a top-level exception here would be unusual.
@@ -884,7 +887,7 @@ class PreprocessingService:
         # per the namespaced contract in case-schema.md §4.3.
         coverage_meta: Optional[CoverageMetadata] = None
         if coverage_start_ts is not None:
-            coverage_meta = CoverageMetadata(source=None)
+            coverage_meta = CoverageMetadata(source=coverage_source)
 
         evidence_meta = EvidenceMetadata(
             classification=ClassificationMetadata(
@@ -1056,20 +1059,21 @@ class PreprocessingService:
                 asyncio.to_thread(extractor.extract, content),
                 timeout=TIER1_TIMEOUT_SECONDS,
             )
-            if isinstance(result_content, ExtractResult):
-                return ExtractionResult(
-                    method=extractor.strategy_name,
-                    # content holds file_extract text for sanity checks;
-                    # extract_result_json carries the full structured payload.
-                    content=result_content.file_extract,
-                    metadata={"extract_result_json": result_content.to_json()},
+            # Every Tier 1 extractor returns ``ExtractResult`` per the
+            # protocol in ``extractors/protocol.py`` — enforce here so a
+            # broken extractor surfaces immediately rather than silently
+            # round-tripping through ``str()``.
+            if not isinstance(result_content, ExtractResult):
+                raise TypeError(
+                    f"Extractor {type(extractor).__name__} returned "
+                    f"{type(result_content).__name__}, expected ExtractResult"
                 )
-            # Fallback: extractor returned a plain string (should not happen
-            # once all extractors return ExtractResult, but kept for safety).
             return ExtractionResult(
                 method=extractor.strategy_name,
-                content=str(result_content),
-                metadata={},
+                # content holds file_extract text for sanity checks;
+                # extract_result_json carries the full structured payload.
+                content=result_content.file_extract,
+                metadata={"extract_result_json": result_content.to_json()},
             )
         except asyncio.TimeoutError:
             logger.warning(
