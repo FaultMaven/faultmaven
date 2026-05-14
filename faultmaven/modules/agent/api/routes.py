@@ -36,7 +36,7 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.modules.agent.domain.events.execution_events import ExecutionEventType
-from faultmaven.modules.agent.domain.models.agent_execution import AgentType
+from faultmaven.modules.case.contracts import AgentType
 from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
     AgentOrchestrationService,
 )

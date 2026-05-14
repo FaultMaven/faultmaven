@@ -23,7 +23,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.infrastructure.persistence.postgresql_hybrid_case_repository import (
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
     PostgreSQLHybridCaseRepository,
 )
 from faultmaven.modules.case.domain.models import Case, CaseStatus, UploadedFile
@@ -288,7 +288,7 @@ class TestPostgreSQLHybridSchemaConsistency:
     def test_insert_query_uses_correct_field_names(self):
         """Verify hybrid repo exposes the upsert path for uploaded_files."""
 
-        from faultmaven.infrastructure.persistence.postgresql_hybrid_case_repository import (
+        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
             PostgreSQLHybridCaseRepository,
         )
 
@@ -297,7 +297,7 @@ class TestPostgreSQLHybridSchemaConsistency:
     def test_select_query_uses_correct_field_names(self):
         """Verify hybrid repo exposes the get() entrypoint."""
 
-        from faultmaven.infrastructure.persistence.postgresql_hybrid_case_repository import (
+        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
             PostgreSQLHybridCaseRepository,
         )
 

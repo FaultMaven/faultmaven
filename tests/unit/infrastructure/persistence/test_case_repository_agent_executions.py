@@ -24,7 +24,7 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.modules.agent.domain.models.agent_execution import (
+from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentToolCall,
     AgentType,

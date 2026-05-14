@@ -20,7 +20,7 @@ from faultmaven.api.models import (
     ExecutionEventSSE,
     ToolCallResponse,
 )
-from faultmaven.modules.agent.domain.models.agent_execution import (
+from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentToolCall,
     AgentType,

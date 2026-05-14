@@ -4,17 +4,11 @@ This module provides agent orchestration, investigation workflows, and tool syst
 for the FaultMaven platform.
 
 Public API:
-    From domain.models.agent_execution:
-        - AgentExecution, AgentType, ExecutionStatus
-
-    From domain.models.investigation:
-        - InvestigationPhase, InvestigationState, InvestigationStrategy
+    From modules.case.contracts (agent-execution audit data is Case-owned):
+        - AgentExecution, AgentToolCall, AgentType, ExecutionStatus
 
     From domain.models.agentic:
         - QueryIntent, SuggestedAction
-
-    From domain.events.execution_events:
-        - ExecutionEvent, ExecutionEventType
 
     From domain.services (import directly):
         - AgentOrchestrationService
@@ -24,11 +18,7 @@ Public API:
         - tool_registry, AgentTool, ToolContext
 
 Usage:
-    # Models can be imported directly:
-    from faultmaven.modules.agent.domain.models.agent_execution import AgentType
-    from faultmaven.modules.agent.domain.models.investigation import InvestigationPhase
-
-    # Services should be imported where needed to avoid circular imports:
+    from faultmaven.modules.case.contracts import AgentType
     from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
 
 Note: This module does NOT eagerly import components to avoid circular dependencies.

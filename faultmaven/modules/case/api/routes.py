@@ -2686,7 +2686,7 @@ async def get_report_recommendations(
         500: Internal server error
     """
     from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
-    from faultmaven.modules.report.domain.models import ReportRecommendation
+    from faultmaven.modules.case.contracts import ReportRecommendation
     from faultmaven.modules.report.domain.services.report_recommendation_service import (
         ReportRecommendationService,
     )
@@ -2767,7 +2767,7 @@ async def generate_case_reports(
     Reports are auto-generated when a case reaches terminal state.
     This endpoint allows regeneration if the original was missing or needs refresh.
     """
-    from faultmaven.modules.report.domain.models import (
+    from faultmaven.modules.case.contracts import (
         ReportGenerationRequest,
         ReportType,
     )
@@ -2844,7 +2844,7 @@ async def get_case_reports(
             return []
 
         # Retrieve reports from storage via CaseRepository (TD-001)
-        from faultmaven.modules.report.domain.models import ReportType
+        from faultmaven.modules.case.contracts import ReportType
 
         filter_type = ReportType(report_type) if report_type else None
         reports = await case_repository.get_reports(
@@ -2978,7 +2978,7 @@ async def close_case(
     Returns:
         CaseClosureResponse with list of archived reports
     """
-    from faultmaven.modules.report.domain.models import (
+    from faultmaven.modules.case.contracts import (
         ArchivedReport,
         CaseClosureResponse,
     )

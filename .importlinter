@@ -243,7 +243,6 @@ source_modules =
 forbidden_modules =
     faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository
     faultmaven.modules.auth.infrastructure.repositories.token_repository
-    faultmaven.modules.auth.infrastructure.repositories.user_repository
 allow_indirect_imports = false
 ignore_imports =
     # Container is the composition root - allowed to wire all module internals

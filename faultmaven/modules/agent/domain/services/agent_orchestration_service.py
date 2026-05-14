@@ -51,7 +51,7 @@ from faultmaven.modules.agent.domain.events.execution_events import (
 from faultmaven.modules.agent.domain.events.execution_events import (
     ToolResult as DomainToolResult,
 )
-from faultmaven.modules.agent.domain.models.agent_execution import (
+from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentToolCall,
     AgentType,

@@ -29,7 +29,7 @@ from faultmaven.infrastructure.persistence.repository_factory import (
     reset_inmemory_investigation_session_repository,
 )
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.modules.agent.domain.models.agent_execution import (
+from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentToolCall,
     AgentType,

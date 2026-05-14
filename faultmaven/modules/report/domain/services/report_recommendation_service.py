@@ -16,7 +16,7 @@ from faultmaven.infrastructure.observability.tracing import trace
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import Case, CaseStatus
-from faultmaven.modules.report.domain.models import (
+from faultmaven.modules.case.contracts import (
     CaseReport,
     ReportRecommendation,
     ReportType,

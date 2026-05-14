@@ -82,7 +82,7 @@ async def authenticated_client(test_user):
     from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
         InMemoryOAuthCodeRepository,
     )
-    from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
+    from faultmaven.infrastructure.persistence.user_repository import (
         InMemoryUserRepository,
     )
 
@@ -109,7 +109,7 @@ async def authenticated_client(test_user):
     )
 
     # Add test user to repository (convert DevUser to User)
-    from faultmaven.modules.auth.infrastructure.repositories.user_repository import User
+    from faultmaven.infrastructure.persistence.user_repository import User
 
     repo_user = User(
         user_id=test_user.user_id,

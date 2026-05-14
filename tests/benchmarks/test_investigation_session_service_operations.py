@@ -27,7 +27,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 )
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.modules.agent.domain.models.agent_execution import (
+from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentType,
     ExecutionStatus,

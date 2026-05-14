@@ -39,7 +39,7 @@ from faultmaven.modules.case.infrastructure.case_repository import (
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
     PostgreSQLHybridCaseRepository,
 )
-from faultmaven.modules.report.domain.models import (
+from faultmaven.modules.case.contracts import (
     CaseReport,
     ReportStatus,
     ReportType,

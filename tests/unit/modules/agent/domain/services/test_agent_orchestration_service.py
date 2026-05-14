@@ -32,7 +32,7 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     Message,
     ToolCall,
 )
-from faultmaven.modules.agent.domain.models.agent_execution import (
+from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentToolCall,
     AgentType,

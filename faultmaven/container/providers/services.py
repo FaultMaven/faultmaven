@@ -432,7 +432,7 @@ def create_user_service(
 
     try:
         from faultmaven.modules.auth.domain.services.user_service import UserService
-        from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
+        from faultmaven.infrastructure.persistence.user_repository import (
             InMemoryUserRepository,
             PostgreSQLUserRepository,
         )

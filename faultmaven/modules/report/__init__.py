@@ -3,7 +3,7 @@
 Generates case documentation including incident reports, runbooks, and post-mortems.
 
 Public API:
-    From domain.models:
+    From modules.case.contracts (reports are Case-owned):
         - ReportType, ReportStatus, RunbookSource
         - CaseReport, ReportRecommendation
         - ReportGenerationRequest, ReportGenerationResponse
@@ -17,7 +17,7 @@ Structure:
 """
 
 # Domain models
-from faultmaven.modules.report.domain.models import (
+from faultmaven.modules.case.contracts import (
     CaseClosureRequest,
     CaseClosureResponse,
     CaseReport,

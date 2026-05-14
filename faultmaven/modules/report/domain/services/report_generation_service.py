@@ -35,7 +35,7 @@ from faultmaven.modules.case.contracts import (  # Report models - owned by Case
 )
 
 # Backward compatibility re-export (imported from case.contracts now)
-from faultmaven.modules.report.domain.models import (
+from faultmaven.modules.case.contracts import (
     CaseReport,
     ReportGenerationRequest,
     ReportGenerationResponse,

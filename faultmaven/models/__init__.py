@@ -20,7 +20,7 @@ from faultmaven.modules.case.domain.models import (
 )
 
 # Import report generation models from the new module location
-from faultmaven.modules.report.domain.models import (
+from faultmaven.modules.case.contracts import (
     CaseClosureRequest,
     CaseClosureResponse,
     CaseReport,
