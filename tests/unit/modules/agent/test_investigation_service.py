@@ -168,9 +168,14 @@ class TestInvestigationServiceProcessTurn:
             payload=sample_turn_payload,
         )
 
-        # Verify case was saved with agent response
+        # Verify case was saved with agent response.
+        # Role is "assistant" (OpenAI/Anthropic convention) — the legacy
+        # "agent" role was renamed in investigation_service so the persisted
+        # transcript stays compatible with provider message-role norms.
         saved_case = await mock_case_repository.get(sample_case.case_id)
-        agent_messages = [m for m in saved_case.messages if m.get("role") == "agent"]
+        agent_messages = [
+            m for m in saved_case.messages if m.get("role") == "assistant"
+        ]
         assert len(agent_messages) >= 1
         assert agent_messages[-1]["content"] == response.agent_response
 

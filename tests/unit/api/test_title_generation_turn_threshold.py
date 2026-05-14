@@ -74,9 +74,9 @@ class TestTurnThreshold:
         mock_case_service.repository.get_messages = AsyncMock(
             return_value=[
                 {"role": "user", "content": "Message 1"},
-                {"role": "agent", "content": "Response 1"},
+                {"role": "assistant", "content": "Response 1"},
                 {"role": "user", "content": "Message 2"},
-                {"role": "agent", "content": "Response 2"},
+                {"role": "assistant", "content": "Response 2"},
                 {"role": "user", "content": "Message 3"},
             ]
         )
@@ -112,22 +112,22 @@ class TestTurnThreshold:
                     "role": "user",
                     "content": "Database connection timeout issue with PostgreSQL server on production environment",
                 },
-                {"role": "agent", "content": "Response 1"},
+                {"role": "assistant", "content": "Response 1"},
                 {
                     "role": "user",
                     "content": "Error message shows authentication failed for postgres user",
                 },
-                {"role": "agent", "content": "Response 2"},
+                {"role": "assistant", "content": "Response 2"},
                 {
                     "role": "user",
                     "content": "I've verified the password is correct in environment variables",
                 },
-                {"role": "agent", "content": "Response 3"},
+                {"role": "assistant", "content": "Response 3"},
                 {
                     "role": "user",
                     "content": "Should I check the pg_hba.conf file for authentication settings",
                 },
-                {"role": "agent", "content": "Response 4"},
+                {"role": "assistant", "content": "Response 4"},
                 {
                     "role": "user",
                     "content": "Found the issue in authentication configuration thanks",
@@ -193,7 +193,7 @@ class TestTurnThreshold:
             )
             messages.append(
                 {
-                    "role": "agent",
+                    "role": "assistant",
                     "content": f"Let me help investigate that issue",
                 }
             )
@@ -238,21 +238,21 @@ class TestTurnThreshold:
     async def test_only_counts_user_role_messages(
         self, mock_request, mock_response, mock_user, mock_case
     ):
-        """Should only count user role messages, not agent or system"""
+        """Should only count user role messages, not assistant or system"""
         mock_case_service = AsyncMock()
         mock_case_service.get_case = AsyncMock(return_value=mock_case)
 
-        # 3 user + 3 agent + 2 system = only 3 user turns
+        # 3 user + 3 assistant + 2 system = only 3 user turns
         mock_case_service.repository.get_messages = AsyncMock(
             return_value=[
                 {"role": "system", "content": "Case created"},
                 {"role": "user", "content": "User 1"},
-                {"role": "agent", "content": "Agent 1"},
+                {"role": "assistant", "content": "Agent 1"},
                 {"role": "user", "content": "User 2"},
-                {"role": "agent", "content": "Agent 2"},
+                {"role": "assistant", "content": "Agent 2"},
                 {"role": "system", "content": "Case updated"},
                 {"role": "user", "content": "User 3"},
-                {"role": "agent", "content": "Agent 3"},
+                {"role": "assistant", "content": "Agent 3"},
             ]
         )
 
@@ -330,7 +330,7 @@ class TestTurnThreshold:
         mock_case_service.repository.get_messages = AsyncMock(
             return_value=[
                 {"role": "user", "content": "First"},
-                {"role": "agent", "content": "Response"},
+                {"role": "assistant", "content": "Response"},
                 {"role": "user", "content": "Second"},
             ]
         )

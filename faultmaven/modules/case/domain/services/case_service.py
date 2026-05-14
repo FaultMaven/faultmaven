@@ -559,15 +559,16 @@ class CaseService(ICaseService):
                 try:
                     created_at = parse_utc_timestamp(msg_dict.get("created_at"))
                     timestamp = created_at.strftime("%H:%M") if created_at else "??:??"
-                    # Use 'role' field from database schema
-                    # Values: "user", "agent", "system"
+                    # Use 'role' field from database schema.
+                    # Values: "user" | "assistant" | "system" (enforced by the
+                    # case_messages_role_check DB CHECK and MessageRole enum).
                     role = msg_dict.get("role", "system")
                     content = msg_dict.get("content", "")
 
                     if role == "user":
                         context_lines.append(f"{i}. [{timestamp}] User: {content}")
-                    elif role == "agent":
-                        # Truncate long agent responses
+                    elif role == "assistant":
+                        # Truncate long assistant responses
                         truncated = (
                             content[:200] + "..." if len(content) > 200 else content
                         )

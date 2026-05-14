@@ -4881,13 +4881,23 @@ class MilestoneEngine:
         This creates the initial investigation structures and copies the
         confirmed problem statement to the case description.
 
-        Evidence lifecycle:
-            - File uploads already created Evidence(contextual) at upload time.
-            - LLM may have created categorized evidence via evidence_to_add during INQUIRY.
-            - At transition, milestones are retroactively attributed based on evidence
-              categories. Contextual evidence naturally gets [] (no milestone mapping).
-            - Manual flow (only contextual evidence) → 0 milestones (natural consequence).
-            - Natural flow (LLM-categorized evidence may exist) → milestones from categories.
+        Evidence lifecycle (post-010 strict evidence model):
+            - File uploads create only ``UploadedFile`` rows at intake; no
+              Evidence is auto-created. Preprocessing artifacts (summary,
+              structural_index, data_type, coverage_*) live on the file row.
+            - During INQUIRY no Evidence rows exist — the
+              ``InquiryStateUpdate`` schema does not carry ``evidence_to_add``
+              and the engine does not synthesize Evidence on transition.
+              The LLM reads files via ``<uploaded_file>`` context blocks.
+            - Evidence is born during INVESTIGATING: the LLM extracts
+              claim-anchored slices via ``evidence_to_add``, each carrying a
+              category (symptom / causal / mitigation / solution_evidence)
+              and a ``source_file_id`` back to the originating file.
+            - Milestones derive from evidence categories as those rows are
+              created turn-by-turn, not retroactively at the transition.
+
+        Reference: ``docs/architecture/investigation-engine/
+        evidence-driven-investigation-framework.md`` §5.
         """
         logger.info(f"Transitioning case {case.case_id} to INVESTIGATING")
 

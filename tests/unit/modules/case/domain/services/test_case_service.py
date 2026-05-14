@@ -412,7 +412,7 @@ class TestGetConversationContext:
                 "created_at": "2024-01-01T12:00:00+00:00",
             },
             {
-                "role": "agent",
+                "role": "assistant",
                 "content": "Let me investigate the crash logs. " + "X" * 300,
                 "created_at": "2024-01-01T12:01:00+00:00",
             },

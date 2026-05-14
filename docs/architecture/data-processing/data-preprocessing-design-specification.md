@@ -512,9 +512,13 @@ investigation_service.process_turn(payload: TurnPayload)
   │                 → extract_entities_for_data_type(...) [Phase 4, flag-gated]
   │                 → PreprocessingResult (carries coverage_start/end_ts,
   │                   entities, entity_overflow_types, evidence_metadata)
-  │           → Evidence(form=DOCUMENT, preprocessed_content=ExtractResult.to_json(),
-  │                      coverage_start_ts/end_ts, metadata=EvidenceMetadata)
-  │           → CaseRepository.upsert_case_entities(case_id, evidence_id, entities)
+  │           → UploadedFile(summary, structural_index=ExtractResult.to_json(),
+  │                          data_type, coverage_start_ts/end_ts,
+  │                          metadata=EvidenceMetadata)
+  │             [Post-010: only UploadedFile is created at intake; Evidence
+  │              rows are born later during INVESTIGATING via the LLM's
+  │              evidence_to_add. See evidence-driven-investigation-framework.md §5.]
+  │           → CaseRepository.upsert_case_entities(case_id, file_id, entities)
   │
   │   PII redaction is NOT applied at extraction time.
   │   It runs at the LLM boundary (MilestoneEngine), so structural indexes
@@ -524,7 +528,9 @@ investigation_service.process_turn(payload: TurnPayload)
   │   Context includes file extracts via Context Sliding Window
   │   (Tier A: recent data with <file_extract>, <search_map>, and <file_meta> elements, searchable="true")
   │   Tools access raw files via ToolContext.in_memory_case
-  │   → LLM responds with evidence_to_add (agent findings → SUBMITTED_DATA)
+  │   → LLM responds with evidence_to_add — claim-anchored Evidence rows
+  │     (category ∈ symptom/causal/mitigation/solution_evidence, source_file_id
+  │      back to the originating UploadedFile)
   │
   └─ Result: TurnResponse
 ```
@@ -539,7 +545,7 @@ investigation_service.process_turn(payload: TurnPayload)
 | **Raw file storage** | Stored via `content_ref` | Stored via `content_ref` |
 | **Content hash** | SHA-256 of UTF-8 text | SHA-256 of UTF-8 text |
 | **Extractors used** | Same 11 | Same 11 |
-| **Form** | `DOCUMENT` | `DOCUMENT` |
+| **Intake row** | One `UploadedFile` | One `UploadedFile` |
 | **Preprocessing** | Step 1 (before LLM) | Step 1 (before LLM) |
 
 **Single entry point**: `PreprocessingService.classify_and_extract(content, filename, source_metadata, user_override)`. The service short-circuits extraction for **four** special paths (in evaluation order):
@@ -1265,18 +1271,16 @@ DO NOT create evidence for:
 
 #### From Tier 2 (`search_file`) Results
 
-When the agent creates evidence from mechanical search results:
+When the agent creates evidence from mechanical search results (post-010 — the
+`form` column was dropped; evidence is always claim-anchored):
 
 | Evidence Field | Value | Source |
 |----------------|-------|--------|
 | `summary` | Agent-written description of the finding | LLM generates from search excerpts |
-| `category` | LLM-classified (SYMPTOM/CAUSAL/etc.) | LLM determines from finding nature |
-| `source_type` | Same as original evidence's `source_type` | Inherited from searched file |
-| `form` | `EvidenceForm.SUBMITTED_DATA` | Data was re-analyzed from submitted file |
-| `source_file_id` | Original evidence's `source_file_id` | Links back to the source file |
-| `preprocessed_content` | Key excerpts from search results | Agent selects relevant excerpts |
-| `content_size_bytes` | Size of excerpts | Computed from excerpts |
-| `preprocessing_method` | `"search_file_keyword"` or `"search_file_regex"` or `"search_file_extractor"` | Search mode used |
+| `category` | LLM-classified (symptom/causal/mitigation/solution_evidence) | LLM determines from finding nature |
+| `source_type` | logs / metrics / configuration / code / text / image | LLM determines from data shape |
+| `source_file_id` | The searched UploadedFile's `file_id` | Links back to the source file |
+| `extract` | Verbatim quote supporting the summary (optional) | Agent selects supporting excerpt |
 | `primary_purpose` | LLM-generated description | Why this finding matters |
 
 #### From Tier 3 (`deep_analysis`) Results
@@ -1284,70 +1288,93 @@ When the agent creates evidence from mechanical search results:
 | Evidence Field | Value | Source |
 |----------------|-------|--------|
 | `summary` | Agent-written description of the analysis finding | LLM generates |
-| `category` | LLM-classified | LLM determines |
-| `source_type` | Same as original evidence's `source_type` | Inherited |
-| `form` | `EvidenceForm.SUBMITTED_DATA` | Data was analyzed from submitted file |
-| `source_file_id` | Original evidence's `source_file_id` | Links back |
-| `preprocessed_content` | `DeepAnalysisResult.answer` + formatted excerpts | From Tier 3 output |
-| `content_size_bytes` | Size of answer + excerpts | Computed |
-| `preprocessing_method` | `"deep_analysis_{backend}"` (e.g., `"deep_analysis_local_llm"`) | Backend used |
+| `category` | LLM-classified (symptom/causal/mitigation/solution_evidence) | LLM determines |
+| `source_type` | logs / metrics / configuration / code / text / image | LLM determines from data shape |
+| `source_file_id` | The analyzed UploadedFile's `file_id` | Links back |
+| `extract` | Verbatim quote from `DeepAnalysisResult.answer` (optional) | Agent selects supporting excerpt |
 | `primary_purpose` | LLM-generated | Why this finding matters |
+
+> Tool-method metadata (search mode, deep_analysis backend) is no longer
+> persisted on Evidence; agent tool calls are recorded on
+> `agent_tool_calls` rows linked to the execution, not on the Evidence row.
 
 ### 7.3 Provenance Chain
 
-Evidence created from search/analysis results maintains a provenance chain back to the original submission:
+Evidence created from search/analysis results maintains a provenance chain
+back to the original submission. Post-010 the chain anchors on
+`UploadedFile`, not on a pre-existing Evidence row:
 
 ```
-Original upload → Evidence A (form=DOCUMENT, source_file_id=file_123)
+Original upload → UploadedFile (file_id=file_123, structural_index=...)
                       |
-                Agent uses search_file on Evidence A
+                Agent reads <uploaded_file file_id="file_123"> in prompt
+                      |
+                Agent uses search_file with evidence_id=file_123
                       |
                       v
-                  Evidence B (form=SUBMITTED_DATA,
-                              source_file_id=file_123,
-                              primary_purpose="Tier 2 search finding: ...")
+                  Evidence (category=symptom_evidence,
+                            source_file_id=file_123,
+                            primary_purpose="Search finding: ...")
 ```
 
 This allows the UI to show: "This finding was derived from [original_file.log], discovered during search."
 
 ---
 
-## 8. Evidence Form Classification (Updated)
+## 8. Evidence Source Model (post-010)
 
-### 8.1 EvidenceForm Values
+> **Superseded:** the prior §8 documented an `EvidenceForm` enum
+> (`DOCUMENT` / `USER_TEXT` / `SUBMITTED_DATA`) and a tri-state form
+> assignment table. Migration 010 dropped the `form` column entirely.
+> Evidence is now claim-anchored only — there is no DOCUMENT shape that
+> mirrors a file's metadata, and there is no USER_TEXT carve-out: pure
+> user messages stay in `case_messages`. This section retains the same
+> position in the doc so cross-references still resolve, but the rules
+> below are the live model.
 
-```python
-class EvidenceForm(str, Enum):
-    DOCUMENT = "document"
-    """Data submitted as attachment via /turns endpoint — file uploads AND pasted data."""
+### 8.1 What replaces EvidenceForm
 
-    USER_TEXT = "user_text"
-    """Query-only turn with no attachments (questions, descriptions, observations)."""
+The two pieces of information that the old `form` discriminator carried
+are now expressed as two independent attributes — both on the same
+`Evidence` row when one exists:
 
-    SUBMITTED_DATA = "submitted_data"
-    """Evidence derived from agent tool use (search_file, deep_analysis results).
-    Not used for direct user submissions — those are DOCUMENT."""
-```
+| Question the old `form` answered | Where the answer lives now |
+| --- | --- |
+| "Was this born from an upload or from agent tool use?" | Implicit in the upload path: file intake writes `UploadedFile` only. Any Evidence row points back via `source_file_id`; the LLM emits it via `evidence_to_add` during INVESTIGATING. |
+| "What kind of data is this?" | `Evidence.source_type` ∈ {logs, metrics, configuration, code, text, image, user_description}. |
+| "Is this just the user's words, with no file?" | `source_type = USER_DESCRIPTION` + `source_file_id IS NULL`. Guarded by the `evidence_source_invariant` DB CHECK. |
 
-### 8.2 Classification Logic
+### 8.2 Creation paths
 
-> **v4.1 Update:** The `_determine_evidence_form()` function and `submission_classification` field have been **removed**. Evidence form is now determined by payload context (which code path creates the evidence), not by LLM classification. See Section 2.4 for the unified pipeline flow.
+Only two paths create Evidence rows. Neither runs at file intake.
 
-Evidence form is assigned deterministically based on how evidence enters the system:
+- **LLM extraction (the common path).** During INVESTIGATING, the LLM
+  emits `evidence_to_add[]` entries, each carrying `summary`, `category`,
+  `source_type`, and either `source_file_id` (pointing to an existing
+  `UploadedFile`) or, for the chat-quote case,
+  `source_type=USER_DESCRIPTION` with `source_file_id` left null.
+- **Tool-result extraction (Tier 2 / Tier 3 — same path, different
+  trigger).** `search_file` and `deep_analysis` return excerpts; the LLM
+  reads them and emits a follow-up `evidence_to_add` referencing the
+  searched file via `source_file_id`. The provenance chain is in §7.3.
 
-- **Attachments** (file uploads, pasted data processed through `_preprocess_attachment()`) → `DOCUMENT`
-- **Agent findings** (LLM `evidence_to_add` applied in milestone engine) → `SUBMITTED_DATA`
-- **User text** (conversational messages without data) → not created as evidence; stays in `case.messages[]`
+> File uploads do **not** create Evidence. They write one `UploadedFile`
+> row with preprocessing artifacts (`summary`, `structural_index`,
+> `data_type`, `coverage_*`). The agent reads those artifacts via the
+> `<uploaded_file>` block in prompt context. See
+> [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model).
 
-### 8.3 Form Assignment by Context
+### 8.3 What is NOT evidence
 
-| Context | EvidenceForm | How Determined |
-|---------|-------------|----------------|
-| File upload attachment | `DOCUMENT` | Set in `_preprocess_attachment()` during Step 1 |
-| Pasted data attachment | `DOCUMENT` | Set in `_preprocess_attachment()` during Step 1 |
-| LLM-identified evidence (`evidence_to_add`) | `SUBMITTED_DATA` | Hardcoded in milestone engine evidence creation |
-| Evidence from Tier 2/3 search results | `SUBMITTED_DATA` | Derived from submitted file data |
-| User types a question (no data) | N/A | No evidence created; message only |
+- **User chat messages without a system-output quote** — they live in
+  `case_messages` only. No Evidence is created.
+- **Knowledge from `kb_qa` / `web_search` / LLM training data** — these
+  are reference material, not case-specific findings. The agent uses them
+  to reason but must not record them via `evidence_to_add` (rule
+  enforced by the DA system instruction; see
+  [agent-behavioral-rules.md §"EVIDENCE vs KNOWLEDGE distinction"](../investigation-engine/agent-behavioral-rules.md)).
+- **Intermediate search steps** — the search itself is not evidence. Only
+  a claim-relevant slice the LLM extracts becomes a row.
 
 ---
 

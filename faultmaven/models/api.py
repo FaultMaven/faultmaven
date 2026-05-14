@@ -700,7 +700,7 @@ class Message(BaseModel):
     turn_number: int = Field(
         ..., description="Turn number in conversation (user messages increment turn)"
     )
-    role: Literal["user", "agent", "assistant", "system"]
+    role: Literal["user", "assistant", "system"]
     content: str
     created_at: str = Field(
         ..., description="ISO 8601 datetime string (matches SQL schema)"
