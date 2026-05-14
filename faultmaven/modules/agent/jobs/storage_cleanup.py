@@ -1,6 +1,6 @@
 """Storage Cleanup Job — TTL-Based Orphan File Removal
 
-Implements per PLAN-evidence-failure-modes-implementation.md §M1. Deletes
+Implements per evidence-failure-modes.md. Deletes
 files whose sidecar metadata shows `linked=False` AND whose `uploaded_at`
 is older than `orphan_file_ttl_hours`. Files without sidecars are skipped
 (unknown state is not a license to delete).

@@ -181,7 +181,7 @@ class WebSearchTool(AgentTool):
     def _auto_select_provider(settings: Any) -> Optional[SearchProvider]:
         """Auto-select provider based on configured API keys.
 
-        Priority: Tavily (cleaner content) > Google CSE (legacy).
+        Priority: Tavily (preferred — cleaner content) > Google CSE.
         """
         # Check Tavily first
         tavily_key = settings.knowledge.tavily_api_key

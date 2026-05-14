@@ -13,8 +13,6 @@ from enum import Enum, IntEnum
 from typing import Any, Dict, List, Optional
 
 # BGE-M3 produces 1024-dimensional vectors (canonical embedding model).
-# Note: the legacy EmbeddingService/KnowledgeSearchService path referenced
-# text-embedding-3-small at 1536 dims — that path is superseded.
 EMBEDDING_DIMENSIONS = 1024
 
 

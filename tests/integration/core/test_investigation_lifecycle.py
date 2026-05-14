@@ -305,7 +305,6 @@ def engine(mock_llm, case_repo, checkpoint_service) -> MilestoneEngine:
         llm_provider=mock_llm,
         repository=case_repo,
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
         knowledge_service=None,
         trace_enabled=False,
         checkpoint_service=checkpoint_service,

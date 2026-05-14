@@ -103,7 +103,6 @@ class TestDependencyFunctionSignatures:
             "get_session_service",
             "get_case_service",
             "get_knowledge_service",
-            "get_evidence_service",
         ]
 
         for func_name in dependency_functions:

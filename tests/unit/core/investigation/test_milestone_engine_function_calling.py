@@ -134,7 +134,6 @@ class TestMilestoneEngineFunctionCalling:
             function_calling_provider,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # This will fail validation but we just want to check the parameters passed
@@ -168,7 +167,6 @@ class TestMilestoneEngineFunctionCalling:
             function_calling_provider,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # This will fail validation but we just want to check the prompt

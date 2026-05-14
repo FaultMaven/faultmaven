@@ -74,8 +74,8 @@ class MockTool(AgentTool):
 def sample_context():
     """Create a sample tool context.
 
-    Storage redesign 2026-04 phase 2: ToolContext now carries
-    `case_repository` (replacing the deleted `evidence_service`).
+    ``ToolContext`` carries ``case_repository``; tools read evidence from
+    ``case.evidence`` directly.
     """
     return ToolContext(
         session_id="session_test",
@@ -113,8 +113,6 @@ class TestToolContext:
         assert context.case_id == "case_456"
         assert context.organization_id == "org_789"
         assert context.user_id == "user_abc"
-        # Storage redesign 2026-04 phase 2: evidence_service replaced by
-        # case_repository.
         assert context.case_repository is None
         assert context.execution_id is None
         assert context.metadata == {}
@@ -198,7 +196,7 @@ class TestAgentTool:
 
     @pytest.mark.asyncio
     async def test_agent_tool_execute_without_context(self):
-        """Test execute (legacy interface) returns error."""
+        """Calling the no-context ``execute`` returns a clear error."""
         tool = MockTool()
         result = await tool.execute({"input": "test"})
 

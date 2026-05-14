@@ -94,7 +94,6 @@ async def test_path_selection_triggered_after_verification(
         mock_llm,
         mock_repo,
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
 
     # Setup: Case has None path_selection
@@ -154,7 +153,6 @@ async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
         mock_llm,
         mock_repo,
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
 
     # Add existing evidence for validation
@@ -224,7 +222,6 @@ async def test_turn_outcome_logic(mock_llm, mock_repo, base_case):
         mock_llm,
         mock_repo,
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
 
     # Add existing evidence for validation

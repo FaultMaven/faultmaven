@@ -265,8 +265,7 @@ class AgentOrchestrationService:
 
         Attributes:
         session_service: Investigation session service
-        evidence_service: Evidence artifact service
-        case_repo: Case repository (handles agent executions - migrated from AgentExecutionRepository)
+        case_repo: Case repository (handles agent executions and evidence)
         tool_registry: Registry of available tools
         llm_client: LLM client for API calls
     """
@@ -275,7 +274,6 @@ class AgentOrchestrationService:
         self,
         case_repo: ICaseRepository,
         session_service: Any,
-        evidence_service: Any = None,
         tool_registry: AgentToolRegistry | None = None,
         llm_client: LLMClient | None = None,
         max_retries: int = 3,
@@ -288,14 +286,9 @@ class AgentOrchestrationService:
         """Initialize agent orchestration service.
 
         Args:
-            case_repo: Case repository (handles agent executions and is also the
-                source of evidence via `case.evidence` after the storage redesign
-                2026-04 phase 2 standalone-evidence deletion)
+            case_repo: Case repository (handles agent executions and serves
+                as the source of evidence via ``case.evidence``).
             session_service: Investigation session service (required)
-            evidence_service: DEPRECATED — kept as a positional/keyword
-                placeholder for backward-compatible callers. Storage redesign
-                2026-04 phase 2 deleted the standalone evidence service; tools
-                now read evidence from `case.evidence` via `case_repo`.
             tool_registry: Registry of available tools (uses global if not provided)
             llm_client: LLM client (creates default if not provided)
             max_retries: Maximum retry attempts for LLM calls
@@ -323,8 +316,6 @@ class AgentOrchestrationService:
             )
 
         self.session_service = session_service
-        # Retained for any in-flight callers; new code paths should use case_repo.
-        self.evidence_service = evidence_service
 
         self.tool_registry = tool_registry or agent_tool_registry
         self._llm_client = llm_client
@@ -1651,8 +1642,8 @@ class AgentOrchestrationService:
     ) -> int:
         """Get the file size in bytes for an evidence record.
 
-        Reads from `case.evidence` (storage redesign 2026-04 phase 2: standalone
-        evidence path is deleted; evidence is case-tied only).
+        Reads ``size_bytes`` from the ``UploadedFile`` linked via
+        ``evidence.source_file_id``.
         """
         try:
             case = tool_context.in_memory_case

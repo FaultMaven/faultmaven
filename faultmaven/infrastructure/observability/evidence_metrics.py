@@ -1,6 +1,6 @@
 """Prometheus metrics for the evidence-handling failure domain.
 
-Scaffolded per PLAN-evidence-failure-modes-implementation.md §M2 so subsequent
+Scaffolded per evidence-failure-modes.md so subsequent
 plans can emit into stable metric names:
 
 - ``evidence_dedup_hits_total`` — emitted now (PLAN-content-hash-deduplication

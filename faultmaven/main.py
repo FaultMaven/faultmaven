@@ -483,7 +483,6 @@ async def lifespan(app: FastAPI):
                 )
                 app.state.conversion_service = None
 
-            app.state.evidence_service = container.get_evidence_service()
             app.state.preprocessing_service = container.get_preprocessing_service()
             app.state.enhanced_agent_service = container.get_enhanced_agent_service()
             app.state.orchestration_service = container.get_orchestration_service()

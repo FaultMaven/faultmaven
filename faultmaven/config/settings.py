@@ -2112,7 +2112,7 @@ class EvidenceStorageSettings(BaseSettings):
     # azure_container: Optional[str] = Field(default=None)
     # gcs_bucket: Optional[str] = Field(default=None)
 
-    # Orphan-file cleanup (PLAN-evidence-failure-modes-implementation.md §M1)
+    # Orphan-file cleanup (evidence-failure-modes.md)
     orphan_cleanup_enabled: bool = Field(
         default=False,
         validation_alias="ORPHAN_CLEANUP_ENABLED",

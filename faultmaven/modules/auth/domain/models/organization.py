@@ -15,8 +15,8 @@ Cross-layer parity:
 - ``Role.scope`` is typed as :class:`RoleScope` to mirror DB roles_scope_check.
 
 Sibling file ``faultmaven.models.interfaces_user`` defines a parallel
-Pydantic family for the same DB rows (legacy migration in progress);
-keep validators in sync until consolidation lands.
+Pydantic family for the same DB rows; keep validators in sync until the
+two families are consolidated.
 """
 
 from abc import ABC, abstractmethod

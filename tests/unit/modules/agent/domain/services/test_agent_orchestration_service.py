@@ -61,13 +61,6 @@ def mock_session_service():
 
 
 @pytest.fixture
-def mock_evidence_service():
-    """Create a mock evidence service."""
-    service = AsyncMock()
-    return service
-
-
-@pytest.fixture
 def mock_case_repo():
     """Create a mock case repository."""
     repo = AsyncMock()
@@ -134,7 +127,6 @@ def sample_execution():
 @pytest.fixture
 def orchestration_service(
     mock_session_service,
-    mock_evidence_service,
     mock_case_repo,
     mock_tool_registry,
     mock_llm_client,
@@ -143,7 +135,6 @@ def orchestration_service(
     return AgentOrchestrationService(
         case_repo=mock_case_repo,
         session_service=mock_session_service,
-        evidence_service=mock_evidence_service,
         tool_registry=mock_tool_registry,
         llm_client=mock_llm_client,
         max_retries=3,
@@ -796,7 +787,6 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_evidence_service,
         sample_session,
         mock_case_repo,
     ):
@@ -835,7 +825,6 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_evidence_service,
         sample_session,
         mock_case_repo,
     ):
@@ -881,7 +870,6 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_evidence_service,
         sample_session,
         mock_case_repo,
     ):
@@ -927,7 +915,6 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_evidence_service,
         sample_session,
         mock_case_repo,
     ):
@@ -972,7 +959,6 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_evidence_service,
         sample_session,
         mock_case_repo,
     ):
@@ -1011,7 +997,6 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_evidence_service,
         sample_session,
         mock_case_repo,
     ):
@@ -1813,7 +1798,6 @@ class TestShouldAutoVectorize:
     def service(
         self,
         mock_session_service,
-        mock_evidence_service,
         mock_case_repo,
         mock_tool_registry,
         mock_llm_client,
@@ -1821,7 +1805,6 @@ class TestShouldAutoVectorize:
         return AgentOrchestrationService(
             case_repo=mock_case_repo,
             session_service=mock_session_service,
-            evidence_service=mock_evidence_service,
             tool_registry=mock_tool_registry,
             llm_client=mock_llm_client,
         )
@@ -2032,17 +2015,13 @@ class TestEvidenceDAState:
 
 
 class TestGetEvidenceSize:
-    """Tests for _get_evidence_size — resolves file size from evidence service.
-
-    The evidence_service returns objects exposing 'file_size'; the method
-    must read that attribute (not 'content_size_bytes').
-    """
+    """Tests for ``_get_evidence_size`` — reads ``size_bytes`` from the
+    ``UploadedFile`` linked via ``evidence.source_file_id``."""
 
     @pytest.fixture
     def service(
         self,
         mock_session_service,
-        mock_evidence_service,
         mock_case_repo,
         mock_tool_registry,
         mock_llm_client,
@@ -2050,7 +2029,6 @@ class TestGetEvidenceSize:
         return AgentOrchestrationService(
             case_repo=mock_case_repo,
             session_service=mock_session_service,
-            evidence_service=mock_evidence_service,
             tool_registry=mock_tool_registry,
             llm_client=mock_llm_client,
         )

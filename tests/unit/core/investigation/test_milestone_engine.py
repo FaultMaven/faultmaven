@@ -128,7 +128,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Add evidence to the case (required for milestone completion)
@@ -209,7 +208,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         case = Case(
@@ -246,7 +244,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Mock LLM response with NO state updates
@@ -361,7 +358,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Mock LLM response with blocker detection
@@ -401,7 +397,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Mock LLM response with quality issues
@@ -452,7 +447,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         base_case.status = CaseStatus.INVESTIGATING
@@ -505,7 +499,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Start in INVESTIGATING with resolution-ready case
@@ -606,7 +599,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Create case in INQUIRY status
@@ -680,7 +672,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Start in INVESTIGATING with some progress
@@ -742,7 +733,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Create case in INQUIRY status with a proposed problem statement
@@ -810,7 +800,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         inquiry_case = Case(
@@ -882,7 +871,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         result = await engine.process_turn(
@@ -924,7 +912,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         result = await engine.process_turn(
@@ -961,7 +948,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Set up pending transition from a previous turn
@@ -1022,7 +1008,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         result = await engine.process_turn(
@@ -1052,7 +1037,6 @@ class TestMilestoneEngine:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         result = await engine.process_turn(
@@ -1086,7 +1070,6 @@ class TestInquiryConfirmation:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         case = Case(
@@ -1124,7 +1107,6 @@ class TestInquiryConfirmation:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         case = Case(
@@ -1159,7 +1141,6 @@ class TestInquiryConfirmation:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         case = Case(
@@ -1653,7 +1634,6 @@ class TestContradictingIntentCancelsPendingTransition:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         case = Case(
@@ -1715,7 +1695,6 @@ class TestContradictingIntentCancelsPendingTransition:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         case = Case(
@@ -1783,7 +1762,6 @@ class TestRootCauseConclusionPersistence:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         base_case.progress.symptom_verified = True
@@ -1838,7 +1816,6 @@ class TestRootCauseConclusionPersistence:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         assert base_case.root_cause_conclusion is None

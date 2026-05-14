@@ -820,8 +820,8 @@ class InvestigationService:
                     )
                 )
             except AttributeError:
-                # Repository doesn't implement dedup lookup — graceful fallback.
-                # Happens in legacy test doubles. Silently skip dedup.
+                # Repository doesn't implement dedup lookup (test doubles).
+                # Silently skip dedup.
                 existing_file = None
         if existing_file is not None:
             logger.info(
@@ -879,10 +879,10 @@ class InvestigationService:
         )
         case.uploaded_files.append(uploaded_file)
 
-        # Best-effort sidecar "linked" flag for orphan cleanup. Skipped when
-        # storage_ref is None (no storage service or store_file returned
-        # nothing); legacy storage services without mark_linked are handled
-        # gracefully.
+        # Best-effort sidecar "linked" flag for orphan cleanup. Skipped
+        # when storage_ref is None (no storage service or store_file
+        # returned nothing); storage services without mark_linked (test
+        # doubles, minimal stubs) are handled gracefully.
         mark_linked = (
             getattr(self.file_storage_service, "mark_linked", None)
             if self.file_storage_service

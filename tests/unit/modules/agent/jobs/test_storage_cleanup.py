@@ -1,6 +1,6 @@
 """Unit tests for the sidecar-based storage cleanup job.
 
-Covers per PLAN-evidence-failure-modes-implementation.md §M1:
+Covers per evidence-failure-modes.md:
 
 1. Sidecar writing on `FileStorageService.store_file()`.
 2. `mark_linked()` flips the sidecar to linked=True.

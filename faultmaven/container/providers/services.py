@@ -57,7 +57,6 @@ def create_milestone_engine(
     llm_provider: Any,
     case_repository: Any | None,
     investigation_tools: Any,
-    evidence_service: Any,
     da_provider: Any | None = None,
     da_model: str | None = None,
     sanitizer: Any | None = None,
@@ -69,7 +68,6 @@ def create_milestone_engine(
         llm_provider: LLM provider (ILLMProvider interface)
         case_repository: Case persistence layer (required)
         investigation_tools: AgentToolRegistry with investigation tools (required)
-        evidence_service: Evidence service for tool context (required)
         da_provider: Dedicated provider for DA (directed analysis) turns
             (configured via DA_PROVIDER). Falls back to llm_provider when None.
         da_model: Model to use with da_provider (e.g., claude-sonnet-4-5).
@@ -86,7 +84,6 @@ def create_milestone_engine(
             llm_provider=llm_provider,
             repository=case_repository,
             investigation_tools=investigation_tools,
-            evidence_service=evidence_service,
             da_provider=da_provider,
             da_model=da_model,
             sanitizer=sanitizer,
@@ -770,12 +767,8 @@ def register_services(container: BaseDIContainer) -> None:
     container._register_service("case_service", case_service)
 
     # Evidence service removed in storage redesign 2026-04 phase 2 (standalone path deletion).
-    # Agent tools that previously used evidence_service.list_evidence_by_case now read
-    # evidence directly from case.evidence via case_repository.
-    evidence_service = None
-    container.evidence_service = None
-
-    # Milestone Engine (with investigation tools for evidence searching)
+    # Milestone Engine (with investigation tools for evidence searching).
+    # Agent tools read evidence directly from case.evidence via case_repository.
     llm_provider = container.get_service("llm_provider")
     investigation_tools = _create_investigation_tools(container)
 
@@ -792,7 +785,6 @@ def register_services(container: BaseDIContainer) -> None:
         llm_provider,
         case_repository,
         investigation_tools=investigation_tools,
-        evidence_service=evidence_service,
         da_provider=da_provider,
         da_model=da_model,
         sanitizer=sanitizer,

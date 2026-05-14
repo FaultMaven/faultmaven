@@ -797,7 +797,6 @@ class MilestoneEngine:
         llm_provider: ILLMProvider,
         repository: Any,  # Case repository abstraction (duck typing)
         investigation_tools: Any,
-        evidence_service: Any,
         knowledge_service: IKnowledgeService | None = None,
         trace_enabled: bool = True,
         checkpoint_service: Any | None = None,
@@ -815,8 +814,6 @@ class MilestoneEngine:
             investigation_tools: AgentToolRegistry with investigation tools
                 (search_file, deep_analysis, etc.). Required — DA turns use
                 these for evidence searching during generation.
-            evidence_service: Evidence service for tool context. Required for
-                building tool execution context.
             knowledge_service: Optional knowledge service for KB searches
             trace_enabled: Enable observability tracing
             checkpoint_service: Optional CheckpointService for state snapshots
@@ -840,7 +837,6 @@ class MilestoneEngine:
         self.trace_enabled = trace_enabled
         self.checkpoint_service = checkpoint_service
         self.investigation_tools = investigation_tools
-        self.evidence_service = evidence_service
         self.da_provider = da_provider
         self.da_model = da_model
         self.sanitizer = sanitizer

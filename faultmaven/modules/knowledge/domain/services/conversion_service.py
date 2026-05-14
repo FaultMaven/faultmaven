@@ -778,11 +778,10 @@ class ConversionService:
             return
 
         async with self._db_session_factory() as session:
-            # Per the post-redesign schema (alembic 002 + earlier): the four
-            # source_* columns on conversion_jobs were dropped in favor of a
-            # single source_file_id FK to uploaded_files (ON DELETE RESTRICT).
-            # Create the upload row first; the conversion_jobs row references
-            # it. Both tables require organization_id NOT NULL.
+            # ``conversion_jobs`` carries a single ``source_file_id`` FK to
+            # ``uploaded_files`` (ON DELETE RESTRICT). Create the upload row
+            # first; the conversion_jobs row references it. Both tables
+            # require organization_id NOT NULL.
             org_id = organization_id or DEFAULT_ORGANIZATION_ID
             source_file_id = f"file_{uuid4().hex[:12]}"
             upload = UploadedFileModel(
@@ -917,10 +916,9 @@ class ConversionService:
                 )
             )
 
-            # Source file metadata moved to uploaded_files (post-redesign);
-            # traverse via source_file_id FK rather than the dropped
-            # source_filename / source_content_type / source_size_bytes /
-            # source_path columns.
+            # Source file metadata lives on ``uploaded_files``; traverse
+            # via the ``source_file_id`` FK to read filename / size /
+            # content_type / storage_ref.
             upload = await session.get(UploadedFileModel, job.source_file_id)
             source_file = (
                 SourceFileInfo(
@@ -994,9 +992,9 @@ class ConversionService:
             jobs = result.scalars().all()
 
             # Bulk-fetch source uploads for all jobs in this page so we can
-            # resolve source_filename without an N+1 query. Source filename
-            # lives on uploaded_files.filename (post-redesign) — the
-            # conversion_jobs.source_filename column is gone.
+            # resolve source_filename without an N+1 query. Filename lives
+            # on ``uploaded_files.filename``, reachable via
+            # ``conversion_jobs.source_file_id``.
             file_ids = [j.source_file_id for j in jobs if j.source_file_id]
             uploads_by_id: dict[str, str] = {}
             if file_ids:

@@ -155,39 +155,33 @@ class TestCreateMilestoneEngine:
         """Returns None when case_repository is None."""
         mock_provider = MagicMock()
         mock_tools = MagicMock()
-        mock_evidence = MagicMock()
         result = create_milestone_engine(
             llm_provider=mock_provider,
             case_repository=None,
             investigation_tools=mock_tools,
-            evidence_service=mock_evidence,
         )
         assert result is None
 
     def test_creates_engine_with_investigation_tools(self):
-        """Forwards investigation_tools and evidence_service to MilestoneEngine."""
+        """Forwards investigation_tools to MilestoneEngine."""
         mock_provider = MagicMock()
         mock_repo = MagicMock()
         mock_tools = MagicMock()
-        mock_evidence = MagicMock()
 
         result = create_milestone_engine(
             llm_provider=mock_provider,
             case_repository=mock_repo,
             investigation_tools=mock_tools,
-            evidence_service=mock_evidence,
         )
 
         assert result is not None
         assert result.investigation_tools is mock_tools
-        assert result.evidence_service is mock_evidence
 
     def test_returns_none_on_initialization_error(self):
         """Returns None when MilestoneEngine initialization raises."""
         mock_provider = MagicMock()
         mock_repo = MagicMock()
         mock_tools = MagicMock()
-        mock_evidence = MagicMock()
 
         with patch(
             "faultmaven.core.investigation.milestone_engine.MilestoneEngine.__init__",
@@ -197,7 +191,6 @@ class TestCreateMilestoneEngine:
                 llm_provider=mock_provider,
                 case_repository=mock_repo,
                 investigation_tools=mock_tools,
-                evidence_service=mock_evidence,
             )
             assert result is None
 
@@ -206,14 +199,12 @@ class TestCreateMilestoneEngine:
         mock_provider = MagicMock()
         mock_repo = MagicMock()
         mock_tools = MagicMock()
-        mock_evidence = MagicMock()
         mock_tcp = MagicMock()
 
         result = create_milestone_engine(
             llm_provider=mock_provider,
             case_repository=mock_repo,
             investigation_tools=mock_tools,
-            evidence_service=mock_evidence,
             da_provider=mock_tcp,
             da_model="claude-sonnet-4-5-20250929",
         )
@@ -227,13 +218,11 @@ class TestCreateMilestoneEngine:
         mock_provider = MagicMock()
         mock_repo = MagicMock()
         mock_tools = MagicMock()
-        mock_evidence = MagicMock()
 
         result = create_milestone_engine(
             llm_provider=mock_provider,
             case_repository=mock_repo,
             investigation_tools=mock_tools,
-            evidence_service=mock_evidence,
         )
 
         assert result is not None

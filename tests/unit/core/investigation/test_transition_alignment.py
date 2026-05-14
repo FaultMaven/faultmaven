@@ -116,7 +116,6 @@ async def test_ui_dropdown_inquiry_to_closed_emits_canonical_close_pair():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_inquiry_case()
     result = await engine.process_turn(
@@ -139,7 +138,6 @@ async def test_ui_dropdown_investigating_to_closed_emits_canonical_close_pair():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
@@ -165,7 +163,6 @@ async def test_ui_dropdown_investigating_to_resolved_ready_emits_resolve_pair():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
@@ -197,7 +194,6 @@ async def test_ui_dropdown_resolve_pivots_to_close_when_thin():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
@@ -231,7 +227,6 @@ async def test_ui_dropdown_resolve_needs_info_keeps_resolve_pair():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
@@ -293,7 +288,6 @@ async def test_check_automatic_transitions_sets_override_for_resolved():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
@@ -322,7 +316,6 @@ async def test_check_automatic_transitions_sets_override_for_closed():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_investigating_case()
 
@@ -354,7 +347,6 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_inquiry_case()
 
@@ -383,7 +375,6 @@ async def test_check_automatic_transitions_closure_reason_mitigation_sufficient(
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_investigating_case()
     case.progress.mitigation_verified = True
@@ -414,7 +405,6 @@ async def test_llm_emit_resolved_pivots_to_close_when_thin():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
@@ -451,7 +441,6 @@ async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
@@ -499,7 +488,6 @@ async def test_llm_emit_resolved_ready_keeps_resolve_pair():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
@@ -531,7 +519,6 @@ async def test_check_automatic_transitions_no_override_when_no_proposal():
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
-        evidence_service=MagicMock(),
     )
     case = _make_investigating_case()
 

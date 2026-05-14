@@ -1,7 +1,7 @@
 """Unit tests for evidence-domain Prometheus metrics.
 
 Covers:
-- All 6 metrics defined per PLAN-evidence-failure-modes-implementation.md §M2
+- All 6 metrics defined per evidence-failure-modes.md
   are importable and have the expected name + type.
 - `evidence_dedup_hits_total` increments when `_preprocess_attachment` hits
   the dedup short-circuit (integration with PLAN-content-hash-deduplication).

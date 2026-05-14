@@ -166,7 +166,6 @@ class TestObservabilityIntegration:
         # Check that key methods have been wrapped with @trace
         # LogProcessor has @trace decorators on process methods
         assert hasattr(LogProcessor.process, "__wrapped__")
-        assert hasattr(LogProcessor.process_detailed, "__wrapped__")
 
     def test_knowledge_base_has_tracing(self):
         """Verify knowledge base methods have trace decorators."""

@@ -11,7 +11,6 @@ Usage:
         factory = ServiceFactory(session)
         case_service = factory.create_case_service()
         session_service = factory.create_investigation_session_service()
-        evidence_service = factory.create_evidence_artifact_service()
         # Use services for operations...
 """
 
@@ -154,11 +153,8 @@ class ServiceFactory:
             or getattr(settings, "allowed_evidence_mime_types", []),
         )
 
-    # create_evidence_artifact_service was removed in storage redesign 2026-04 phase 2.
-    # The standalone evidence path (POST /api/v1/evidence + evidence_artifacts /
-    # standalone_evidence tables) is deleted. Evidence is now case-tied only.
-    # Agent tools that previously used the evidence service now access case.evidence
-    # directly via self.case_repo.
+    # Evidence is case-tied only — there is no standalone evidence service.
+    # Agent tools access case.evidence directly via self.case_repo.
 
     def create_agent_orchestration_service(
         self,
@@ -182,7 +178,6 @@ class ServiceFactory:
         return AgentOrchestrationService(
             case_repo=self.case_repo,
             session_service=self.create_investigation_session_service(),
-            evidence_service=None,  # Standalone evidence service removed in storage redesign phase 2
             tool_registry=agent_tool_registry,
             team_service=team_service,
             # LLM client will be created lazily by the service

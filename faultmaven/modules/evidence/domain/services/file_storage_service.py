@@ -29,7 +29,7 @@ from faultmaven.exceptions import ServiceError, ValidationException
 from faultmaven.services.base import BaseService
 
 # Sidecar metadata suffix for orphan-file tracking
-# (PLAN-evidence-failure-modes-implementation.md §M1).
+# (evidence-failure-modes.md).
 # Written alongside each stored file; the orphan-cleanup job reads these
 # to decide what's safe to delete.
 SIDECAR_SUFFIX = ".meta.json"

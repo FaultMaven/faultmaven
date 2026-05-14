@@ -105,7 +105,6 @@ class TestInquiryTransitionLogic:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Mock LLM response for critical production outage
@@ -153,7 +152,6 @@ class TestInquiryTransitionLogic:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Mock LLM response for vague query
@@ -185,7 +183,6 @@ class TestInquiryTransitionLogic:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Mock LLM response for informational query
@@ -216,7 +213,6 @@ class TestInquiryTransitionLogic:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Mock LLM response for historical post-mortem
@@ -265,7 +261,6 @@ class TestInquiryTransitionLogic:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Mock LLM response for medium urgency issue
@@ -312,7 +307,6 @@ class TestInquiryTransitionLogic:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Turn 1: Vague initial query
@@ -384,7 +378,6 @@ class TestInquiryTransitionLogic:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Mock LLM response matching the original bug report
@@ -433,7 +426,6 @@ class TestInquiryTransitionLogic:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Mock LLM response for HIGH urgency ongoing issue
@@ -477,7 +469,6 @@ class TestInquiryTransitionLogic:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Mock LLM response with proposed_problem_statement but no preliminary_guidance
@@ -531,7 +522,6 @@ class TestInquiryTransitionLogic:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Turn 1: Agent detects incident and presents problem statement
@@ -601,7 +591,6 @@ class TestInquiryTransitionLogic:
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
-            evidence_service=MagicMock(),
         )
 
         # Turn 1: Agent detects incident and presents problem statement

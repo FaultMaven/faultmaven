@@ -184,7 +184,7 @@ class DIContainer(BaseDIContainer):
     def _ensure_initialized_for_getter(self) -> None:
         """Best-effort lazy initialization for sync getter methods.
 
-        Tests and some legacy call sites expect getters to trigger initialization.
+        Tests and sync call sites expect getters to trigger initialization.
 
         Behavior:
         - If initialize() is mocked (not a coroutine function), call it directly.
@@ -787,15 +787,6 @@ class DIContainer(BaseDIContainer):
             if not getattr(self, "_initializing", False):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "investigation_service", None)
-
-    def get_evidence_service(self):
-        """Get the evidence service (PR #46b - Evidence management)"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Evidence service requested but container not initialized")
-            if not getattr(self, "_initializing", False):
-                pass  # Container must be initialized via await container.initialize() at startup
-        return getattr(self, "evidence_service", None)
 
     def get_organization_service(self):
         """Get the organization service implementation (optional feature)"""
@@ -1874,14 +1865,6 @@ class DIContainer(BaseDIContainer):
             if not getattr(self, "_initializing", False):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "gateway_service", None)
-
-    def get_loop_guard_service(self):
-        """Get the loop guard service (legacy - always returns None)"""
-        return None
-
-    def get_orchestrator_service(self):
-        """Get the orchestrator service (legacy - always returns None)"""
-        return None
 
     def get_redis_client(self):
         """Get the Redis client for job persistence and caching"""

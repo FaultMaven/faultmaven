@@ -99,12 +99,12 @@ class AgentTool(BaseTool, ABC):
         pass
 
     async def execute(self, params: Dict[str, Any]) -> ToolResult:
-        """Execute the tool with parameters (legacy interface).
+        """Default ``execute`` implementation required by ``BaseTool``.
 
-        This method exists for compatibility with BaseTool.
-        Agent tools should override execute_with_context instead.
+        ``AgentTool`` subclasses run via ``execute_with_context``; calling
+        the no-context form returns a clear error instead of silently
+        executing without the tool context.
         """
-        # Return error if called without context
         return ToolResult(
             success=False,
             data=None,

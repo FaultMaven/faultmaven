@@ -360,8 +360,3 @@ class TestFileStorageServiceCreation:
         service2 = factory.create_file_storage_service()
 
         assert service1 is not service2
-
-
-# Evidence Artifact Service tests removed in storage redesign 2026-04 phase 2.
-# APIEvidenceArtifactService and create_evidence_artifact_service are deleted;
-# evidence is case-tied only and accessed via case.evidence.

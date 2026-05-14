@@ -1351,9 +1351,8 @@ class KnowledgeService:
                 file_path.write_text(content, encoding="utf-8")
 
                 async with self._db_session_factory() as session:
-                    # Per the post-redesign schema: source_* columns on
-                    # conversion_jobs were dropped in favor of source_file_id
-                    # FK to uploaded_files. Create the upload row first.
+                    # ``conversion_jobs.source_file_id`` is a FK to
+                    # ``uploaded_files``. Create the upload row first.
                     source_file_id = f"file_{_uuid.uuid4().hex[:12]}"
                     upload = UploadedFileModel(
                         file_id=source_file_id,

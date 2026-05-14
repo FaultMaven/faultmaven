@@ -110,8 +110,8 @@ def _parse_extract(raw: str) -> tuple[str, str | None, dict]:
 
     Format is JSON with ``{"v": 1, "file_extract": ..., "search_map": ...,
     "file_meta": ...}`` (see extractors/protocol.py SCHEMA_VERSION). Falls
-    back to treating the raw string as file_extract for legacy plaintext
-    records.
+    back to treating the raw string as file_extract when the input is not
+    JSON-shaped.
     """
     if not raw:
         return "", None, {}
@@ -911,9 +911,10 @@ def _score_evidence_for_tier_a(
     current_turn = max(case.current_turn, 1)
     score += ev.collected_at_turn / current_turn
 
-    # Data type priority: diagnostic evidence over text
-    # Handles both DataType enum values (logs_and_errors, metrics_and_performance)
-    # and legacy/test values (LOGS, metrics, log, etc.)
+    # Data type priority: diagnostic evidence over text. Substring-match
+    # over the source_type value tolerates both detailed
+    # (logs_and_errors, metrics_and_performance) and unified (logs,
+    # metrics) forms without enumerating each.
     dt = ev.source_type.value.lower()
     if "log" in dt or "metric" in dt or "trace" in dt or "error_report" in dt:
         score += 2
@@ -1812,8 +1813,8 @@ async def fetch_entity_highlights(
     the results as a tight XML block the template can drop in directly.
     Empty string when:
 
-    - the repository is ``None`` or lacks ``list_top_entities`` (legacy
-      doubles),
+    - the repository is ``None`` or lacks ``list_top_entities`` (test
+      doubles without the full surface),
     - every type returned zero rows,
     - or the query raised (failures are logged and degraded).
 

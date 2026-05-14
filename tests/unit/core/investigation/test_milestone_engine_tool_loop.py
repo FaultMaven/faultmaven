@@ -113,7 +113,6 @@ def _make_no_tool_call_response() -> LLMResponse:
 def _make_engine(
     mock_provider=None,
     mock_registry=None,
-    mock_evidence_service=None,
     da_provider=None,
 ):
     """Create a MilestoneEngine with mocked dependencies."""
@@ -125,7 +124,6 @@ def _make_engine(
         llm_provider=provider,
         repository=repo,
         investigation_tools=mock_registry,
-        evidence_service=mock_evidence_service,
         da_provider=da_provider,
     )
     return engine
@@ -831,11 +829,10 @@ class TestBuildToolContext:
     def test_creates_tool_context_with_case_fields(self):
         """Verifies ToolContext created with correct case fields.
 
-        Storage redesign 2026-04 phase 2: ToolContext carries `case_repository`
-        instead of `evidence_service` — tools now read evidence from
-        `case.evidence` directly.
+        ToolContext carries ``case_repository``; tools read evidence from
+        ``case.evidence`` directly.
         """
-        engine = _make_engine(mock_evidence_service=MagicMock())
+        engine = _make_engine()
 
         mock_case = MagicMock()
         mock_case.case_id = "case_001"
@@ -1163,7 +1160,6 @@ class TestDaProviderRouting:
         engine = _make_engine(
             mock_provider=default_provider,
             mock_registry=registry,
-            mock_evidence_service=MagicMock(),
             da_provider=da_prov,
         )
 
@@ -1195,7 +1191,6 @@ class TestDaProviderRouting:
         engine = _make_engine(
             mock_provider=default_provider,
             mock_registry=registry,
-            mock_evidence_service=MagicMock(),
             da_provider=None,
         )
 
@@ -1299,7 +1294,6 @@ class TestVectorizedFlagPersistence:
             llm_provider=provider,
             repository=repo,
             investigation_tools=mock_registry,
-            evidence_service=None,
         )
         return engine, repo
 
@@ -1420,7 +1414,6 @@ class TestInflightVectorizeDedup:
             llm_provider=provider,
             repository=repo,
             investigation_tools=mock_registry,
-            evidence_service=None,
         )
         assert engine._inflight_vectorize == {}
         return engine
@@ -1526,7 +1519,6 @@ class TestReactiveVectorizeTimeout:
             llm_provider=provider,
             repository=repo,
             investigation_tools=mock_registry,
-            evidence_service=None,
         )
 
         # Simulate an encode that runs far longer than the reactive

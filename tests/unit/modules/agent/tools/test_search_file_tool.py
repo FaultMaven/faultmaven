@@ -14,9 +14,8 @@ from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
 def tool():
     """SearchFileTool with a mock storage_service that returns canned bytes.
 
-    Storage redesign 2026-04 phase 2: SearchFileTool reads raw file content via
-    `self.storage_service.retrieve_file(content_ref)` instead of the deleted
-    evidence_service.
+    ``SearchFileTool`` reads raw file content via
+    ``self.storage_service.retrieve_file(content_ref)``.
     """
     storage = AsyncMock()
     storage.retrieve_file = AsyncMock(
@@ -34,9 +33,8 @@ def _make_search_tool_with_storage(
 ):
     """Build a SearchFileTool wired to a mock storage_service returning *content*.
 
-    Storage redesign 2026-04 phase 2: tests need to inject the storage_service
-    directly because the tool resolves evidence content through it (no longer
-    via the deleted evidence_service path).
+    Tests inject ``storage_service`` directly because the tool resolves
+    evidence content through it.
     """
     storage = AsyncMock()
     storage.retrieve_file = AsyncMock(return_value=content)
@@ -266,9 +264,8 @@ class TestPartialMatchFallback:
     def multi_keyword_context(self, tool):
         """Context where only one keyword matches.
 
-        Storage redesign 2026-04 phase 2: file content is sourced from
-        `tool.storage_service.retrieve_file`, not the deleted evidence_service.
-        We mutate the canned content for this fixture's scenario.
+        File content is sourced from ``tool.storage_service.retrieve_file``;
+        we mutate the canned content for this fixture's scenario.
         """
         tool.storage_service.retrieve_file = AsyncMock(
             return_value=(
