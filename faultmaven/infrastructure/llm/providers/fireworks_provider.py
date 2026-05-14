@@ -108,6 +108,10 @@ class FireworksProvider(BaseLLMProvider):
             if tool_choice:
                 payload["tool_choice"] = tool_choice
 
+        # Extract routing-level timeout override before payload update so it
+        # is not forwarded to the Fireworks API as an unknown request field.
+        effective_timeout = kwargs.pop("timeout", None) or self.config.timeout
+
         # Add any additional kwargs, filtering out None values to avoid
         # overwriting constructed payload fields
         payload.update({k: v for k, v in kwargs.items() if v is not None})
@@ -119,7 +123,7 @@ class FireworksProvider(BaseLLMProvider):
                     f"{self.config.base_url}/chat/completions",
                     headers=headers,
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                    timeout=aiohttp.ClientTimeout(total=effective_timeout),
                 ) as response:
 
                     if response.status != 200:
@@ -170,6 +174,6 @@ class FireworksProvider(BaseLLMProvider):
                     )
         except asyncio.TimeoutError:
             raise LLMException(
-                f"Fireworks API request timed out after {self.config.timeout}s "
+                f"Fireworks API request timed out after {effective_timeout}s "
                 f"(model: {effective_model})"
             )

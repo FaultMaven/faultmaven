@@ -683,19 +683,27 @@ __all__ = [
 | `timeout` | Yes | Request timeout in seconds | `30` |
 | `confidence_score` | Yes | Default confidence for responses | `0.85` |
 
-**Global Timeout Configuration**: The `LLM_REQUEST_TIMEOUT` environment variable overrides individual provider timeout settings:
+**Timeout Configuration**: timeouts resolve in three layers, most-specific-wins:
+
+1. **Per-provider override** — `LLM_PROVIDER_TIMEOUT_OVERRIDES` (a JSON-shaped dict) lets slow providers carve out their own ceiling. The registry calls `LLMSettings.timeout_for_provider(name)` so a provider not listed falls through to the global default.
+2. **Provider schema default** — `schema["timeout"]` in `registry.py` (set per provider when the schema is declared). Used when neither the env override nor a registry override is present. `0` is treated as unset (the registry uses `schema.get("timeout") or timeout_for_provider(name)`).
+3. **Global default** — `LLM_REQUEST_TIMEOUT` (defaults to 30s). Applied only when neither (1) nor (2) supplies a value.
 
 ```bash
-# Global timeout configuration (applies to all providers)
-LLM_REQUEST_TIMEOUT=30  # Base timeout for all LLM requests
+# Global default (all providers without an override)
+LLM_REQUEST_TIMEOUT=30
 
-# Three-layer timeout architecture:
-# - Infrastructure Layer: 30 seconds (LLM_REQUEST_TIMEOUT value)
-# - Service Layer: 32 seconds (infrastructure + 2s buffer)
-# - API Layer: 35 seconds (service + 3s buffer)
+# Per-provider overrides for slow models (Fireworks/DeepSeek reasoning,
+# local Ollama on cold-cached models). Resolved per provider name.
+LLM_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 180, "local": 120}'
+
+# Three-layer wrapping (each outer layer adds buffer over the inner):
+# - Infrastructure Layer: as resolved above (per provider)
+# - Service Layer: infrastructure + 2s buffer
+# - API Layer: service + 3s buffer
 ```
 
-This ensures consistent timeout behavior across all providers while providing appropriate buffer layers for robust error handling.
+The per-provider override exists because forcing slow providers under the global default produced false timeouts on legitimate long-running reasoning calls, while widening the global default delayed fail-fast behavior for fast providers.
 
 ## Testing New Providers
 

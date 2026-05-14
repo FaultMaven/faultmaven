@@ -228,7 +228,11 @@ async def create_test_schema(session: AsyncSession):
         )
     """))
 
-    # Create uploaded_files table (per case-schema.md §4.6)
+    # Create uploaded_files table (per case-schema.md §4.6, post-010).
+    # The five trailing columns (summary, structural_index, data_type,
+    # coverage_start_ts, coverage_end_ts) were added by migration 010 to
+    # hold the file-level preprocessing artifacts that previously rode
+    # on the auto-DOCUMENT Evidence row.
     await session.execute(text("""
         CREATE TABLE IF NOT EXISTS uploaded_files (
             file_id TEXT PRIMARY KEY,
@@ -244,6 +248,11 @@ async def create_test_schema(session: AsyncSession):
             uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             uploaded_by TEXT,
             metadata TEXT DEFAULT '{}',
+            summary TEXT,
+            structural_index TEXT,
+            data_type TEXT,
+            coverage_start_ts TIMESTAMP,
+            coverage_end_ts TIMESTAMP,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
     """))
@@ -807,3 +816,170 @@ class TestDialectDetection:
 
         # Should return SQLiteCaseRepository for SQLite dialect
         assert isinstance(repo, SQLiteCaseRepository)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestUploadedFilePreprocessingRoundtrip:
+    """Verify migration-010 preprocessing artifacts roundtrip through save/load.
+
+    Pre-fix the SQLite repository's INSERT and SELECT both omitted the five
+    columns added by migration 010 (``summary``, ``structural_index``,
+    ``data_type``, ``coverage_start_ts``, ``coverage_end_ts``), so the
+    preprocessing pipeline's output was set in memory and silently dropped
+    on save / reloaded as None on the next turn.
+    """
+
+    async def test_preprocessing_columns_roundtrip(self, sqlite_session):
+        """save() then get() must preserve all five preprocessing fields."""
+        from faultmaven.modules.case.domain.models import (
+            Case,
+            CaseStatus,
+            DocumentationData,
+            InquiryData,
+            InvestigationProgress,
+            UploadedFile,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(sqlite_session)
+        case_id = f"case_{uuid4().hex[:12]}"
+        file_id = f"file_{uuid4().hex[:12]}"
+        coverage_start = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+        coverage_end = datetime(2026, 5, 1, 14, 30, 0, tzinfo=timezone.utc)
+        structural_index = (
+            '{"v":1,"file_extract":"ERROR: OOM at 14:03","search_map":"[search: OOM]"}'
+        )
+
+        case = Case(
+            case_id=case_id,
+            user_id="user_001",
+            organization_id="00000000-0000-0000-0000-000000000001",
+            title="Preprocessing roundtrip case",
+            status=CaseStatus.INQUIRY,
+            inquiry=InquiryData(),
+            documentation=DocumentationData(),
+            progress=InvestigationProgress(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            uploaded_files=[
+                UploadedFile(
+                    file_id=file_id,
+                    filename="app.log",
+                    size_bytes=2048,
+                    content_type="text/plain",
+                    storage_ref="local://test/app.log",
+                    upload_source="file_upload",
+                    uploaded_at_turn=1,
+                    uploaded_at=datetime.now(timezone.utc),
+                    uploaded_by="user_001",
+                    summary="OOM error burst between 14:02 and 14:30 UTC",
+                    structural_index=structural_index,
+                    data_type="logs",
+                    coverage_start_ts=coverage_start,
+                    coverage_end_ts=coverage_end,
+                )
+            ],
+        )
+
+        await repo.save(case)
+        retrieved = await repo.get(case_id)
+
+        assert retrieved is not None
+        assert len(retrieved.uploaded_files) == 1
+        uf = retrieved.uploaded_files[0]
+        assert uf.summary == "OOM error burst between 14:02 and 14:30 UTC"
+        assert uf.structural_index == structural_index
+        assert uf.data_type == "logs"
+        # SQLite stores datetimes as ISO strings; Pydantic re-parses to datetime.
+        assert uf.coverage_start_ts is not None
+        assert uf.coverage_end_ts is not None
+        assert uf.coverage_start_ts.replace(tzinfo=None) == coverage_start.replace(
+            tzinfo=None
+        )
+        assert uf.coverage_end_ts.replace(tzinfo=None) == coverage_end.replace(
+            tzinfo=None
+        )
+
+    async def test_coalesce_preserves_prior_extraction_on_null_reupsert(
+        self, sqlite_session
+    ):
+        """Re-upserting with NULL preprocessing fields must not clobber the
+        prior values — `_upsert_uploaded_files` uses COALESCE so a failed
+        re-run cannot erase a good extraction.
+        """
+        from faultmaven.modules.case.domain.models import (
+            Case,
+            CaseStatus,
+            DocumentationData,
+            InquiryData,
+            InvestigationProgress,
+            UploadedFile,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(sqlite_session)
+        case_id = f"case_{uuid4().hex[:12]}"
+        file_id = f"file_{uuid4().hex[:12]}"
+
+        # First save: file with a populated structural_index.
+        case = Case(
+            case_id=case_id,
+            user_id="user_001",
+            organization_id="00000000-0000-0000-0000-000000000001",
+            title="COALESCE upsert test",
+            status=CaseStatus.INQUIRY,
+            inquiry=InquiryData(),
+            documentation=DocumentationData(),
+            progress=InvestigationProgress(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            uploaded_files=[
+                UploadedFile(
+                    file_id=file_id,
+                    filename="app.log",
+                    size_bytes=2048,
+                    storage_ref="local://test/app.log",
+                    upload_source="file_upload",
+                    uploaded_at_turn=1,
+                    uploaded_at=datetime.now(timezone.utc),
+                    summary="initial summary",
+                    structural_index='{"v":1,"file_extract":"initial"}',
+                    data_type="logs",
+                ),
+            ],
+        )
+        await repo.save(case)
+
+        # Second save: same file_id, but preprocessing fields NULL.
+        reloaded = await repo.get(case_id)
+        assert reloaded is not None
+        # Mutate the in-memory file to simulate a failed re-extraction
+        # (e.g. preprocessing pipeline raised before computing artifacts).
+        reloaded.uploaded_files[0] = UploadedFile(
+            file_id=file_id,
+            filename="app.log",
+            size_bytes=2048,
+            storage_ref="local://test/app.log",
+            upload_source="file_upload",
+            uploaded_at_turn=2,
+            uploaded_at=datetime.now(timezone.utc),
+            summary=None,
+            structural_index=None,
+            data_type=None,
+        )
+        await repo.save(reloaded)
+
+        # Third load: prior preprocessing data must still be there.
+        final = await repo.get(case_id)
+        assert final is not None
+        uf = final.uploaded_files[0]
+        assert uf.summary == "initial summary"
+        assert uf.structural_index == '{"v":1,"file_extract":"initial"}'
+        assert uf.data_type == "logs"
+        # Mutable fields (turn) still update normally.
+        assert uf.uploaded_at_turn == 2

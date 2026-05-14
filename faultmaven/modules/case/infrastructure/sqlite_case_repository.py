@@ -412,7 +412,9 @@ class SQLiteCaseRepository(CaseRepository):
         query = text("""
             SELECT file_id, filename, size_bytes, content_type, content_hash,
                    storage_ref, upload_source, uploaded_at_turn, uploaded_at,
-                   uploaded_by
+                   uploaded_by,
+                   summary, structural_index, data_type,
+                   coverage_start_ts, coverage_end_ts
             FROM uploaded_files
             WHERE case_id = :case_id
         """)
@@ -438,6 +440,11 @@ class SQLiteCaseRepository(CaseRepository):
                     "uploaded_at_turn": row_dict.get("uploaded_at_turn", 0),
                     "uploaded_at": row_dict.get("uploaded_at"),
                     "uploaded_by": row_dict.get("uploaded_by"),
+                    "summary": row_dict.get("summary"),
+                    "structural_index": row_dict.get("structural_index"),
+                    "data_type": row_dict.get("data_type"),
+                    "coverage_start_ts": row_dict.get("coverage_start_ts"),
+                    "coverage_end_ts": row_dict.get("coverage_end_ts"),
                 }
             )
         return files
@@ -728,7 +735,9 @@ class SQLiteCaseRepository(CaseRepository):
         query = text(f"""
             SELECT case_id, file_id, filename, size_bytes, content_type,
                    content_hash, storage_ref, upload_source, uploaded_at_turn,
-                   uploaded_at, uploaded_by
+                   uploaded_at, uploaded_by,
+                   summary, structural_index, data_type,
+                   coverage_start_ts, coverage_end_ts
             FROM uploaded_files
             WHERE case_id IN ({placeholders})
         """)
@@ -749,6 +758,11 @@ class SQLiteCaseRepository(CaseRepository):
                     "uploaded_at_turn": row[8] or 0,
                     "uploaded_at": row[9],
                     "uploaded_by": row[10],
+                    "summary": row[11],
+                    "structural_index": row[12],
+                    "data_type": row[13],
+                    "coverage_start_ts": row[14],
+                    "coverage_end_ts": row[15],
                 }
             )
         return by_case
@@ -2381,8 +2395,11 @@ class SQLiteCaseRepository(CaseRepository):
         intentional removal, use `delete_uploaded_file(case_id, file_id)`.
 
         Renamed columns: ``content_ref`` → ``storage_ref``,
-        ``source_type`` → ``upload_source``. Dropped: ``data_type``.
+        ``source_type`` → ``upload_source``.
         Added: ``content_hash``, ``content_type`` (MIME), ``uploaded_by``.
+        Migration 010 re-added preprocessing artifacts onto this table:
+        ``summary``, ``structural_index``, ``data_type``,
+        ``coverage_start_ts``, ``coverage_end_ts``.
         """
         for file in files_list:
             query = text("""
@@ -2391,13 +2408,17 @@ class SQLiteCaseRepository(CaseRepository):
                     filename, size_bytes, content_type, content_hash,
                     storage_ref, upload_source,
                     uploaded_at_turn, uploaded_at,
-                    metadata
+                    metadata,
+                    summary, structural_index, data_type,
+                    coverage_start_ts, coverage_end_ts
                 ) VALUES (
                     :file_id, :case_id, :organization_id, :uploaded_by,
                     :filename, :size_bytes, :content_type, :content_hash,
                     :storage_ref, :upload_source,
                     :uploaded_at_turn, :uploaded_at,
-                    :metadata
+                    :metadata,
+                    :summary, :structural_index, :data_type,
+                    :coverage_start_ts, :coverage_end_ts
                 )
                 ON CONFLICT (file_id) DO UPDATE SET
                     uploaded_by = EXCLUDED.uploaded_by,
@@ -2408,7 +2429,15 @@ class SQLiteCaseRepository(CaseRepository):
                     storage_ref = EXCLUDED.storage_ref,
                     upload_source = EXCLUDED.upload_source,
                     uploaded_at_turn = EXCLUDED.uploaded_at_turn,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    -- Preprocessing artifacts use COALESCE so a failed re-run
+                    -- (NULL incoming) cannot clobber a prior good extraction.
+                    -- Intentional clearing must go through a dedicated path.
+                    summary = COALESCE(EXCLUDED.summary, uploaded_files.summary),
+                    structural_index = COALESCE(EXCLUDED.structural_index, uploaded_files.structural_index),
+                    data_type = COALESCE(EXCLUDED.data_type, uploaded_files.data_type),
+                    coverage_start_ts = COALESCE(EXCLUDED.coverage_start_ts, uploaded_files.coverage_start_ts),
+                    coverage_end_ts = COALESCE(EXCLUDED.coverage_end_ts, uploaded_files.coverage_end_ts)
             """)
 
             await self.db.execute(
@@ -2427,6 +2456,11 @@ class SQLiteCaseRepository(CaseRepository):
                     "uploaded_at_turn": file.uploaded_at_turn,
                     "uploaded_at": file.uploaded_at,
                     "metadata": json.dumps({}),
+                    "summary": file.summary,
+                    "structural_index": file.structural_index,
+                    "data_type": file.data_type,
+                    "coverage_start_ts": file.coverage_start_ts,
+                    "coverage_end_ts": file.coverage_end_ts,
                 },
             )
 

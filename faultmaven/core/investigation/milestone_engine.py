@@ -3481,6 +3481,17 @@ class MilestoneEngine:
         # Recursively parse nested JSON strings
         content_obj = self._parse_nested_json(content_obj)
 
+        # Coerce unresolvable state_updates to {} so Pydantic field defaults apply.
+        # Covers two Fireworks/DeepSeek V3 failure modes:
+        #   (a) null — LLM omitted the field entirely
+        #   (b) string — JSON was truncated/malformed and _parse_nested_json
+        #       could not repair it (e.g. closing "} cut off before XML tag)
+        _su = (
+            content_obj.get("state_updates") if isinstance(content_obj, dict) else None
+        )
+        if isinstance(content_obj, dict) and (_su is None or isinstance(_su, str)):
+            content_obj["state_updates"] = {}
+
         # Fix hallucinated enum values
         schema_dict = schema_model.model_json_schema()
         content_obj = self._fix_enum_violations(
@@ -3593,6 +3604,11 @@ class MilestoneEngine:
 
         content_obj = json.loads(cleaned, strict=False)
         content_obj = self._parse_nested_json(content_obj)
+        _su = (
+            content_obj.get("state_updates") if isinstance(content_obj, dict) else None
+        )
+        if isinstance(content_obj, dict) and (_su is None or isinstance(_su, str)):
+            content_obj["state_updates"] = {}
         schema_dict = schema_model.model_json_schema()
         content_obj = self._fix_enum_violations(
             content_obj,
@@ -3715,6 +3731,40 @@ class MilestoneEngine:
                 parsed = json.loads(obj)
                 return MilestoneEngine._parse_nested_json(parsed)
             except (json.JSONDecodeError, TypeError):
+                # Fireworks/DeepSeek V3 leaks XML tool-call format artifacts.
+                # Apply two repair passes before giving up:
+                #
+                # Pass 1: strip trailing XML closing tags (e.g. </parameter></invoke>)
+                # Pass 2: for JSON containers, truncate at the last valid terminator
+                #         to handle stray closing braces/brackets (e.g. "[...]}")
+                stripped_obj = obj.strip()
+
+                # Pass 1 — XML closing tags
+                stripped = re.sub(r"(\s*</\w+>)+\s*$", "", stripped_obj)
+                if stripped != stripped_obj:
+                    try:
+                        parsed = json.loads(stripped)
+                        return MilestoneEngine._parse_nested_json(parsed)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                # Pass 2 — truncate at last valid JSON container terminator
+                if stripped_obj:
+                    first_ch = stripped_obj[0]
+                    search_ch = (
+                        "]" if first_ch == "[" else "}" if first_ch == "{" else None
+                    )
+                    if search_ch:
+                        last_pos = stripped_obj.rfind(search_ch)
+                        if last_pos > 0:
+                            candidate = stripped_obj[: last_pos + 1]
+                            if candidate != stripped_obj:
+                                try:
+                                    parsed = json.loads(candidate)
+                                    return MilestoneEngine._parse_nested_json(parsed)
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+
                 return obj
         else:
             return obj
@@ -4015,6 +4065,20 @@ class MilestoneEngine:
 
                 # Parse any nested JSON strings (reuse class static method)
                 content_obj = MilestoneEngine._parse_nested_json(content_obj)
+
+                # Some LLMs (Fireworks/DeepSeek V3) return null for required
+                # object fields, or leave state_updates as an unparsed string
+                # when JSON was truncated. Coerce both to {} so Pydantic field
+                # defaults apply instead of a hard validation error.
+                _su = (
+                    content_obj.get("state_updates")
+                    if isinstance(content_obj, dict)
+                    else None
+                )
+                if isinstance(content_obj, dict) and (
+                    _su is None or isinstance(_su, str)
+                ):
+                    content_obj["state_updates"] = {}
 
                 # Fix any hallucinated enum values (reuse class static method)
                 schema_dict = schema_model.model_json_schema()

@@ -722,6 +722,18 @@ class BaseInteractionResponse(BaseModel):
         description="2-4 contextual follow-up actions the user can take. Each should be specific to the current investigation state.",
     )
 
+    @field_validator("suggested_follow_ups", mode="before")
+    @classmethod
+    def coerce_follow_ups_from_string(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            import json as _json
+
+            try:
+                v = _json.loads(v)
+            except (ValueError, TypeError):
+                return None
+        return v
+
 
 class InquiryResponse(BaseInteractionResponse):
     """Response schema for INQUIRY status."""
@@ -815,7 +827,10 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
                 "The transition is NOT executed until the user explicitly confirms."
             ),
         )
-        outcome: TurnOutcome
+        outcome: Optional[TurnOutcome] = Field(
+            default=TurnOutcome.CONVERSATION,
+            description="Classification of this turn's outcome. Server recomputes from actual state changes; omit if unsure.",
+        )
 
     internal_reasoning: Optional[InternalReasoning] = Field(
         None,
@@ -853,7 +868,10 @@ class InvestigationResponse_Mitigation(BaseInteractionResponse):
                 "The transition is NOT executed until the user explicitly confirms."
             ),
         )
-        outcome: TurnOutcome
+        outcome: Optional[TurnOutcome] = Field(
+            default=TurnOutcome.CONVERSATION,
+            description="Classification of this turn's outcome. Server recomputes from actual state changes; omit if unsure.",
+        )
 
     internal_reasoning: Optional[InternalReasoning] = Field(
         None,
@@ -889,7 +907,10 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
                 "The transition is NOT executed until the user explicitly confirms."
             ),
         )
-        outcome: TurnOutcome
+        outcome: Optional[TurnOutcome] = Field(
+            default=TurnOutcome.CONVERSATION,
+            description="Classification of this turn's outcome. Server recomputes from actual state changes; omit if unsure.",
+        )
 
     internal_reasoning: Optional[InternalReasoning] = Field(
         None,
@@ -933,7 +954,10 @@ class InvestigationResponse_General(BaseInteractionResponse):
                 "The transition is NOT executed until the user explicitly confirms."
             ),
         )
-        outcome: TurnOutcome
+        outcome: Optional[TurnOutcome] = Field(
+            default=TurnOutcome.CONVERSATION,
+            description="Classification of this turn's outcome. Server recomputes from actual state changes; omit if unsure.",
+        )
 
     internal_reasoning: Optional[InternalReasoning] = Field(
         None,

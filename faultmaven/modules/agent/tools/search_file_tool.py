@@ -62,10 +62,11 @@ class SearchFileTool(AgentTool):
     def description(self) -> str:
         return (
             "Search a previously uploaded evidence file for specific information. "
+            "Use the evidence_id from an <evidence> or <uploaded_file> element "
+            "shown in the context — no need to call list_evidence first. "
             "Two output formats: 'excerpts' (default) returns context windows for "
             "detailed investigation; 'count' returns compact matched lines for "
-            "counting and aggregation queries (e.g. 'how many unique IPs?'). "
-            "Use list_evidence first to find the evidence_id."
+            "counting and aggregation queries (e.g. 'how many unique IPs?')."
         )
 
     @property
@@ -415,6 +416,46 @@ class SearchFileTool(AgentTool):
                 break
 
         if case_evidence is None:
+            # During INQUIRY, evidence rows don't exist yet — files are stored
+            # as uploaded_files. Try to resolve the ID against uploaded_files
+            # so the LLM can keyword-search raw log files before the case
+            # transitions to INVESTIGATING and evidence rows are created.
+            uploaded_files = getattr(case, "uploaded_files", []) or []
+            matching_upload = next(
+                (
+                    uf
+                    for uf in uploaded_files
+                    if getattr(uf, "file_id", None) == evidence_id
+                ),
+                None,
+            )
+            if matching_upload is not None:
+                storage_ref = getattr(matching_upload, "storage_ref", None)
+                if (
+                    storage_ref
+                    and self.storage_service is not None
+                    and hasattr(self.storage_service, "retrieve_file")
+                ):
+                    try:
+                        file_data = await self.storage_service.retrieve_file(
+                            storage_ref
+                        )
+                        filename = (
+                            getattr(matching_upload, "filename", None) or evidence_id
+                        )
+                        content = file_data.decode("utf-8", errors="replace")
+                        logger.debug(
+                            "search_file: resolved %s via uploaded_files (INQUIRY phase)",
+                            evidence_id,
+                        )
+                        return content, filename, matching_upload
+                    except Exception as e:
+                        logger.warning(
+                            "search_file: uploaded_file %s storage retrieval failed: %s",
+                            evidence_id,
+                            e,
+                        )
+
             logger.warning(
                 "search_file: evidence %s not found in case %s (has %d evidence items)",
                 evidence_id,

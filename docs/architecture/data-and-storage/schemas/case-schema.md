@@ -819,7 +819,7 @@ COMMENT ON TABLE solutions IS 'Proposed and verified solutions';
 
 ### 4.6 uploaded_files (High-Cardinality Table)
 
-Stores file metadata only — the actual bytes live in the file-storage backend (local FS, S3, Azure blob), reachable via `storage_ref`. `case_id` is nullable because KB conversion uploads (`POST /knowledge/convert`) do not carry a case.
+Stores file metadata **and the file-level preprocessing artifacts** that describe its content. The actual bytes live in the file-storage backend (local FS, S3, Azure blob), reachable via `storage_ref`. `case_id` is nullable because KB conversion uploads (`POST /knowledge/convert`) do not carry a case.
 
 ```sql
 CREATE TABLE uploaded_files (
@@ -845,6 +845,16 @@ CREATE TABLE uploaded_files (
 
     uploaded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 
+    -- Preprocessing artifacts (re-added in migration 010 — moved off
+    -- the pre-010 auto-DOCUMENT Evidence row, where they did not
+    -- semantically belong). These describe the FILE; claim-anchored
+    -- extracts live on Evidence rows that point back via source_file_id.
+    summary TEXT,                                    -- short file summary
+    structural_index TEXT,                           -- preprocessing-pipeline JSON blob
+    data_type VARCHAR(50),                           -- logs | metrics | config | code | text | image
+    coverage_start_ts TIMESTAMP WITH TIME ZONE,      -- earliest timestamp seen in the file
+    coverage_end_ts   TIMESTAMP WITH TIME ZONE,      -- latest timestamp seen in the file
+
     CONSTRAINT uploaded_files_filename_not_empty
         CHECK (LENGTH(TRIM(filename)) > 0),
     CONSTRAINT uploaded_files_size_nonnegative
@@ -858,8 +868,9 @@ CREATE INDEX ix_uploaded_files_case_id ON uploaded_files(case_id);
 CREATE INDEX ix_uploaded_files_uploaded_by ON uploaded_files(uploaded_by);
 CREATE INDEX ix_uploaded_files_content_hash ON uploaded_files(content_hash);
 
-COMMENT ON TABLE uploaded_files IS 'Raw file upload metadata - storage backend opaque via storage_ref';
+COMMENT ON TABLE uploaded_files IS 'Raw file upload metadata + file-level preprocessing artifacts; storage backend opaque via storage_ref';
 COMMENT ON COLUMN uploaded_files.upload_source IS 'Provenance (file_upload | conversion_source | api_push). Distinct from evidence.source_type which classifies data shape.';
+COMMENT ON COLUMN uploaded_files.structural_index IS 'Preprocessing-pipeline JSON ({v, file_extract, search_map, file_meta}); the LLM sees this as <file_extract> inside <uploaded_file> during INQUIRY.';
 ```
 
 **Design Notes**:
@@ -867,7 +878,8 @@ COMMENT ON COLUMN uploaded_files.upload_source IS 'Provenance (file_upload | con
 - `storage_ref` is opaque to the schema — only the storage backend interprets it. Renamed from the historical `content_ref` to make the role clear.
 - `upload_source` is the file's *provenance*; `evidence.source_type` is the *data shape* classification. They are distinct concerns and live on distinct tables.
 - `case_id` is nullable so conversion-job uploads (no case) and case-evidence uploads (with case) share the same table.
-- The historical `preprocessing_summary` column was dropped in migration 004; preprocessing artifacts now live alongside the evidence row that backs them (see `evidence.metadata.extractor`).
+- **Preprocessing-artifact lifecycle**: written by the preprocessing pipeline at intake; surfaced to the LLM via `<uploaded_file file_id="…">` during INQUIRY and via `<evidence …>` blocks (whose `source_file_id` points back here) during INVESTIGATING. Repositories use `COALESCE(EXCLUDED.x, uploaded_files.x)` on UPDATE so a failed re-run (NULL incoming) cannot clobber a prior good extraction; intentional clearing must go through a dedicated path.
+- Migration history: the pre-010 `preprocessing_summary` column was dropped in migration 004 and the artifacts briefly rode on the auto-DOCUMENT Evidence row (see Evidence dual-model history in [evidence-driven-investigation-framework.md](../../investigation-engine/evidence-driven-investigation-framework.md)); migration 010 collapsed that dual model and re-anchored the artifacts here.
 
 ### 4.7 case_messages (High-Cardinality Table)
 

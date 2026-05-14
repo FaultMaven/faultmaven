@@ -23,6 +23,10 @@ This document defines error handling and recovery strategies for the FaultMaven 
 1. [Error Categories](#1-error-categories)
 2. [LLM Error Handling](#2-llm-error-handling)
 3. [Response Parsing Errors](#3-response-parsing-errors)
+   - 3.1 [Graceful Parsing with Fallback](#31-graceful-parsing-with-fallback)
+   - 3.2 [Reasoning Validation with Self-Correction](#32-reasoning-validation-with-self-correction)
+   - 3.3 [System Feedback Loop](#33-system-feedback-loop)
+   - 3.4 [Defensive Schema Coercion](#34-defensive-schema-coercion)
 4. [State Validation](#4-state-validation)
 5. [Progress Transparency](#5-progress-transparency)
 6. [Recovery Strategies](#6-recovery-strategies)
@@ -388,6 +392,18 @@ Validation errors from multiple sources are merged into `system_feedback` on the
 | State validator | `validation_repairs` | Automatic state corrections applied |
 
 This ensures the LLM receives corrective instructions for the next turn even when the current turn's issues are non-fatal.
+
+### 3.4 Defensive Schema Coercion
+
+Some LLMs (notably Fireworks/DeepSeek V3) return shapes that would otherwise fail Pydantic validation with a hard 500: required fields omitted, object fields returned as JSON-encoded strings, or `null` where an object is expected. The response schemas (`faultmaven/core/investigation/schemas.py`) carry narrow `mode="before"` validators / Optional-with-default fields so these LLM quirks degrade to safe defaults instead of crashing the turn:
+
+| Field | Defensive treatment | Rationale |
+| --- | --- | --- |
+| `*StateUpdate.outcome` | `Optional[TurnOutcome]` with default `CONVERSATION` | The server recomputes outcome from actual state changes via `determine_turn_outcome()`; the LLM's value is ignored. Making it optional turns an LLM omission into a no-op instead of a 500. |
+| `BaseInteractionResponse.suggested_follow_ups` | `field_validator(mode="before")` parses a JSON string into a list, returning `None` on parse failure | Suggestions are advisory UI affordances; a malformed list shouldn't fail the entire turn. |
+| `state_updates` (top-level) | Coerced to `{}` when the LLM returns `null` or an unparseable string (see `milestone_engine.py` JSON repair passes) | Allows Pydantic field defaults to fire when the LLM truncates output mid-object. |
+
+The rule: defensive coercion is reserved for fields where the server has an authoritative or safe-default value. Fields whose values genuinely come from the LLM (`agent_response`, `evidence_to_add` entries, milestone justifications) stay strict — they cannot be quietly defaulted without losing fidelity, so they remain required and either retry via the self-correction loop (§3.2) or surface as a validation error.
 
 ---
 

@@ -115,23 +115,73 @@ _BINARY_MIME_PREFIXES = (
     "application/pdf",
     "application/zip",
     "application/x-",
-    "application/octet-stream",
+    # application/octet-stream intentionally excluded: it is a generic client
+    # fallback ("I don't know the type"), not a declarative binary signal.
+    # Clients that know the type (browsers, SDK) send specific MIME types.
+    # Clients that don't (curl, programmatic uploaders) send octet-stream for
+    # text files too. Ambiguous cases are resolved by Layer 3 byte sniffing.
 )
 
+# Scan at most this many bytes when sniffing content for binary signals.
+# 8 KB is enough to catch any real binary format's magic bytes and provides
+# a statistically reliable non-printable ratio sample.
+_SNIFF_SAMPLE = 8192
 
-def _is_binary_content(filename: Optional[str], content_type: Optional[str]) -> bool:
-    """Return True when filename or MIME signals binary content.
 
-    Checked at attachment-intake time so we do not destructively UTF-8 decode
-    image/video/PDF bytes into a string of replacement characters before the
-    visual extractor (or other binary-aware extractor) ever sees them.
+def _sniff_binary(content: bytes) -> bool:
+    """Return True when raw bytes look like binary data.
+
+    Uses two heuristics in priority order:
+    1. Null byte (\\x00): text files in any encoding never contain null bytes.
+       A single null in the sample is a definitive binary signal — the same
+       heuristic used by git, grep -I, and the POSIX `file` command.
+    2. Non-printable character ratio: catches binary files that happen to lack
+       null bytes in the first 8 KB (rare, but possible with some encodings or
+       encrypted payloads). Threshold of 30 % matches the `file` command's
+       default heuristic for "binary" classification.
+    """
+    sample = content[:_SNIFF_SAMPLE]
+    if not sample:
+        return False
+    if b"\x00" in sample:
+        return True
+    non_text = sum(1 for b in sample if b < 0x09 or (0x0E <= b <= 0x1F) or b == 0x7F)
+    return (non_text / len(sample)) > 0.30
+
+
+def _is_binary_content(
+    filename: Optional[str],
+    content_type: Optional[str],
+    content: Optional[bytes] = None,
+) -> bool:
+    """Return True when filename, MIME type, or byte content signals binary.
+
+    Three-layer detection in priority order:
+
+    Layer 1 — Filename extension: definitive for known binary formats
+    (.png, .pdf, .zip, .exe …). Fast path, no I/O.
+
+    Layer 2 — MIME type: definitive only for protocol-level binary signals
+    (image/*, video/*, audio/*, application/pdf …). application/octet-stream
+    is excluded because it is a generic client fallback, not a binary signal.
+
+    Layer 3 — Byte sniffing: resolves ambiguous MIME types (octet-stream or
+    absent) by inspecting the actual bytes. Uses null-byte presence and
+    non-printable character ratio — the same heuristics used by git and the
+    POSIX `file` command. Only applied when content is provided.
     """
     fname = (filename or "").lower()
     if any(fname.endswith(ext) for ext in _BINARY_EXTENSIONS):
         return True
+
     ctype = (content_type or "").lower()
     if any(ctype.startswith(prefix) for prefix in _BINARY_MIME_PREFIXES):
         return True
+
+    # MIME is ambiguous (octet-stream or absent) — sniff bytes if available.
+    if content is not None and (ctype == "application/octet-stream" or not ctype):
+        return _sniff_binary(content)
+
     return False
 
 
@@ -543,7 +593,7 @@ class InvestigationService:
             agent_message = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": updated_case.current_turn,
-                "role": "agent",
+                "role": "assistant",
                 "message_type": "agent_response",
                 "content": agent_response_text,
                 "created_at": to_json_compatible(datetime.now(timezone.utc)),
@@ -715,7 +765,9 @@ class InvestigationService:
         # (filename, MIME, size) so it can route to VISUAL_EVIDENCE; the
         # raw bytes are preserved in attachment.content / file storage for
         # multimodal/binary-aware extractors downstream.
-        if _is_binary_content(attachment.filename, attachment.content_type):
+        if _is_binary_content(
+            attachment.filename, attachment.content_type, attachment.content
+        ):
             content = _binary_placeholder(
                 attachment.filename,
                 attachment.content_type,
@@ -1260,7 +1312,7 @@ class InvestigationService:
         raw_bytes = await self.file_storage_service.retrieve_file(storage_ref)
         filename = file_meta.filename if file_meta else "evidence"
         # Reclassify path doesn't carry a separate content_type; rely on filename.
-        if _is_binary_content(filename, None):
+        if _is_binary_content(filename, None, raw_bytes):
             content = _binary_placeholder(filename, None, len(raw_bytes))
             logger.info(
                 "binary evidence: skipping UTF-8 decode on reclassify",

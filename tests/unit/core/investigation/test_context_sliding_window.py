@@ -195,6 +195,137 @@ class TestNoEvidence:
 
 
 # ============================================================
+# INQUIRY: uploaded_files present, no Evidence rows yet
+# ============================================================
+
+
+def _make_inquiry_case_with_uploaded_files(
+    uploaded_files: list[UploadedFile],
+) -> Case:
+    """Build an INQUIRY-phase case carrying uploaded_files but no Evidence.
+
+    Mirrors the post-010 reality: during INQUIRY the LLM extracts files
+    into ``uploaded_files`` with preprocessing artifacts; no Evidence row
+    exists until the case transitions to INVESTIGATING.
+    """
+    return Case(
+        case_id="case_aabb11223344",
+        title="INQUIRY Test Case",
+        description="Test description",
+        user_id="user_123",
+        organization_id="org_123",
+        status=CaseStatus.INQUIRY,
+        inquiry=InquiryData(),
+        evidence=[],
+        uploaded_files=uploaded_files,
+    )
+
+
+class TestInquiryUploadedFilesBlock:
+    """Cover the INQUIRY fallback path in ``_build_evidence_context``.
+
+    Pre-fix the empty-evidence branch always emitted the
+    "No formal evidence collected yet" placeholder even when uploaded_files
+    carried a usable structural_index. The fallback now surfaces the
+    file under ``<uploaded_file file_id="...">`` so the LLM can read the
+    extract on turn 1.
+    """
+
+    def _file(self, file_id: str = "file_aabbccdd1122", **overrides) -> UploadedFile:
+        defaults = dict(
+            file_id=file_id,
+            filename="app.log",
+            size_bytes=1024,
+            content_type="text/plain",
+            uploaded_at_turn=1,
+            uploaded_at=datetime.now(UTC),
+            uploaded_by="user_123",
+            data_type="logs",
+            structural_index=(
+                '{"v":1,"file_extract":"ERROR: OOM at 14:03",'
+                '"search_map":"[search: OOM] 142 matches",'
+                '"file_meta":{"line_count":2048,"top_error":"OOM"}}'
+            ),
+        )
+        defaults.update(overrides)
+        return UploadedFile(**defaults)
+
+    def test_emits_uploaded_file_block_with_file_id_attribute(self):
+        """uploaded_file element exposes file_id (not evidence_id) to match the
+        <evidence file_id="..."> convention used during INVESTIGATING."""
+        case = _make_inquiry_case_with_uploaded_files([self._file()])
+        result = _build_evidence_context(case)
+
+        assert "<uploaded_file" in result
+        assert 'file_id="file_aabbccdd1122"' in result
+        assert 'evidence_id="' not in result
+        assert "<file_extract>" in result
+        assert "ERROR: OOM at 14:03" in result
+        # search_map and file_meta also surface so the agent can plan
+        # search_file queries from the preprocessed hints.
+        assert "<search_map>" in result
+        assert "[search: OOM]" in result
+        assert "<file_meta>" in result
+        assert "line_count=2048" in result
+
+    def test_marks_uploaded_file_searchable(self):
+        """The block declares searchable=\"true\" so the LLM knows it can
+        pass the file_id to search_file."""
+        case = _make_inquiry_case_with_uploaded_files([self._file()])
+        result = _build_evidence_context(case)
+        assert 'searchable="true"' in result
+
+    def test_truncates_long_extract_with_file_id_pointer(self):
+        """Long file_extract → truncation note mentions file_id (not the
+        legacy evidence_id wording), pointing the LLM at search_file."""
+        long_extract = "X" * (EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM + 5000)
+        index_blob = (
+            '{"v":1,"file_extract":"'
+            + long_extract
+            + '","search_map":null,"file_meta":{}}'
+        )
+        case = _make_inquiry_case_with_uploaded_files(
+            [self._file(structural_index=index_blob)]
+        )
+        result = _build_evidence_context(case)
+
+        assert "[TRUNCATED:" in result
+        assert "file_id" in result
+        # Old phrasing must not regress.
+        assert "evidence_id above" not in result
+
+    def test_skips_files_without_structural_index(self):
+        """Files with empty / missing structural_index do not produce a block.
+        When no file qualifies, fall through to the empty placeholder."""
+        bare = self._file(file_id="file_111111111111", structural_index=None)
+        case = _make_inquiry_case_with_uploaded_files([bare])
+        result = _build_evidence_context(case)
+        assert "No formal evidence collected yet." in result
+        assert "<uploaded_file" not in result
+
+    def test_skips_files_with_trivial_structural_index(self):
+        """structural_index shorter than the >10-char threshold is treated as
+        absent (defensive against extractor stubs that emit '{}' or similar)."""
+        stub = self._file(file_id="file_222222222222", structural_index="{}")
+        case = _make_inquiry_case_with_uploaded_files([stub])
+        result = _build_evidence_context(case)
+        assert "<uploaded_file" not in result
+
+    def test_renders_multiple_files(self):
+        """Multiple qualifying files all surface — INQUIRY may have several
+        uploads on turn 1 (e.g., logs + a config dump)."""
+        files = [
+            self._file(file_id="file_aaaaaaaaaaaa", filename="a.log"),
+            self._file(file_id="file_bbbbbbbbbbbb", filename="b.log"),
+        ]
+        case = _make_inquiry_case_with_uploaded_files(files)
+        result = _build_evidence_context(case)
+        assert 'file_id="file_aaaaaaaaaaaa"' in result
+        assert 'file_id="file_bbbbbbbbbbbb"' in result
+        assert result.count("<uploaded_file") == 2
+
+
+# ============================================================
 # Tier A: Recent Data Evidence
 # ============================================================
 
@@ -275,7 +406,13 @@ class TestTruncation:
     """Test per-item and total budget truncation."""
 
     def test_structural_index_exceeds_per_item_cap_truncated(self):
-        """Structural index > 4000 chars → truncated with [TRUNCATED] marker."""
+        """Structural index > 4000 chars → truncated with [TRUNCATED] marker.
+
+        The truncation note redirects the LLM at ``search_file`` rather than
+        the older "suggest a targeted command the user can run" wording,
+        which silently pushed work back onto the user instead of using the
+        available tool.
+        """
         long_content = "X" * 6000  # Exceeds default 4000 cap
         ev = _make_evidence(
             extract=long_content,
@@ -285,7 +422,9 @@ class TestTruncation:
 
         assert "[TRUNCATED:" in result
         assert "more characters" in result
-        assert "suggest a targeted command" in result
+        # Post-fix wording: point the agent at search_file, not a manual command.
+        assert "search_file" in result
+        assert "evidence id" in result
         # The displayed content should be capped at EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
         assert (
             len(long_content[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM])

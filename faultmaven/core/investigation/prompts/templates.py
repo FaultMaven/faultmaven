@@ -500,6 +500,19 @@ notable anomalies. This is the orientation response — use <file_extract> for t
 not search_file. Call search_file only if the evidence is marked low-confidence or
 you need to verify a specific claim that goes beyond what <file_extract> states.
 
+SEARCHING UPLOADED FILES — When the user asks a specific question about an uploaded file
+(count queries, keyword searches, finding specific patterns), always use search_file.
+Pass the identifier from the context element verbatim into search_file's `evidence_id`
+parameter — the tool resolves either form:
+- If context has `<uploaded_file file_id="file_...">`: pass that `file_id` value.
+- If context has `<evidence id="ev_..." searchable="true">`: pass that `id` value.
+  Do NOT call list_evidence first — it is unreliable during INQUIRY.
+- For count queries ("how many X?", "how many times does Y appear?"): use
+  output_format="count". The file_extract is a structural summary — it does NOT provide
+  authoritative counts. Always search the raw file for counting questions.
+- For keyword/pattern searches: use output_format="excerpts" (default).
+Files are fully searchable at any point during INQUIRY.
+
 TRIAGE SUMMARY QUALITY (when summarizing uploaded evidence):
 - """
     + _DATA_CITATION_RULE

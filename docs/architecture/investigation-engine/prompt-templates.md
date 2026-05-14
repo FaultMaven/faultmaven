@@ -45,6 +45,19 @@ To prevent drift between templates that share behavior, the module defines sever
 
 The two constants ending in `_BLOCK` and injected via placeholders (`_EVIDENCE_GROUNDING_BLOCK` and `_DIAGNOSTIC_REASONING_BLOCK`) are gated to `""` in `knowledge_query` mode — see §4.
 
+### 2.1 XML Element Conventions in `<evidence_collected>`
+
+`build_investigation_context()` renders evidence and uploaded files into a `<evidence_collected>` XML envelope. The element names and attribute names are load-bearing — the templates reference them by name when telling the LLM how to read context and how to populate `source_file_id` on `evidence_to_add`. They must stay in lockstep with the emitter in `prompts/context_builder.py`.
+
+| Element | Phase | Attributes | Notes |
+| --- | --- | --- | --- |
+| `<uploaded_file …>` | INQUIRY (and INVESTIGATING when no Evidence rows exist yet) | `file_id="file_…"`, `filename`, `data_type`, `searchable="true"` | Surfaced when `case.evidence` is empty but `case.uploaded_files` carry a non-trivial `structural_index`. The file id is exposed under `file_id`, matching the attribute name used on `<evidence>` so the source_file_id rule is phase-uniform. |
+| `<evidence …>` | INVESTIGATING | `id="ev_…"` (evidence id), `file_id="file_…"` (source file FK), `data_type`, `searchable`, `confidence` | The `id=` attribute is the evidence id; `file_id=` is the FK back to `uploaded_files`. The LLM passes either value into `search_file`'s `evidence_id` parameter — the tool resolves both forms via `search_file_tool`'s dual-resolution path. |
+
+**Rule:** when the LLM is asked to populate `evidence_to_add.source_file_id`, the templates instruct it to copy verbatim from the `file_id` attribute on either element. The pre-existing `evidence_id` parameter name on `search_file` is a naming artifact; the tool accepts both an `ev_…` and a `file_…` value, so the templates can speak in `file_id` terms uniformly without renaming the tool API.
+
+The INQUIRY template includes a SEARCHING UPLOADED FILES block that codifies this contract (and explicitly steers the agent to `search_file` for count queries — `<file_extract>` is a structural summary, not an authoritative count source).
+
 ---
 
 ## 3. INVESTIGATION_BASE Structure
@@ -201,6 +214,8 @@ For any rendering audit (e.g., regression testing the templates after edits), th
 - `DIAGNOSTIC REASONING REQUIREMENTS (Anti-Hallucination):` only in case-investigating modes — absent from INV_kq, INQUIRY, TERMINAL.
 - 4-step procedure (`1. Identify the next data point` ... `4. Only ask the user`) present in DIAG_Z1/Z2/Z3, MITIGATION, TREATMENT.
 - `_FILE_SELECTION_DEFAULT` canonical text count per path: DIAG×2, MIT/TRE×1, INV_kq/INQUIRY/TERMINAL×0.
+- `SEARCHING UPLOADED FILES` block present only in INQUIRY; references `<uploaded_file file_id=…>` and `<evidence id="ev_…" searchable="true">` (no `evidence_id=` attribute name — see §2.1).
+- `source_file_id` description in evidence-creation prose references `file_id="…"` on both `<evidence>` and `<uploaded_file>` (the two elements share the attribute convention).
 - All `.format()` calls render without `KeyError` / `IndexError` when given empty-string values for every placeholder.
 
 Engine tests `tests/unit/core/investigation/test_indicator_evaluator.py` and `tests/unit/modules/agent/tools/test_kb_qa_cause_parsing.py` (20 tests total) exercise the dispatcher and indirectly validate template renderability.

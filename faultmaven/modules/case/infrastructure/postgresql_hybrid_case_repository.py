@@ -300,8 +300,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
                     -- Uploaded Files (post-redesign columns: storage_ref
                     -- replaces content_ref; upload_source replaces
-                    -- source_type; data_type is gone; content_hash,
-                    -- content_type and uploaded_by added).
+                    -- source_type; content_hash, content_type and
+                    -- uploaded_by added. Migration 010 re-added the
+                    -- preprocessing artifacts onto this table — they
+                    -- must be hydrated here so the agent sees them on
+                    -- subsequent turns).
                     COALESCE(
                         json_agg(DISTINCT jsonb_build_object(
                             'file_id', f.file_id,
@@ -313,7 +316,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             'upload_source', f.upload_source,
                             'uploaded_at_turn', f.uploaded_at_turn,
                             'uploaded_at', f.uploaded_at,
-                            'uploaded_by', f.uploaded_by
+                            'uploaded_by', f.uploaded_by,
+                            'summary', f.summary,
+                            'structural_index', f.structural_index,
+                            'data_type', f.data_type,
+                            'coverage_start_ts', f.coverage_start_ts,
+                            'coverage_end_ts', f.coverage_end_ts
                         )) FILTER (WHERE f.file_id IS NOT NULL),
                         '[]'::json
                     ) as uploaded_files_data,
@@ -2018,13 +2026,17 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     filename, size_bytes, content_type, content_hash,
                     storage_ref, upload_source,
                     uploaded_at_turn, uploaded_at,
-                    metadata
+                    metadata,
+                    summary, structural_index, data_type,
+                    coverage_start_ts, coverage_end_ts
                 ) VALUES (
                     :file_id, :case_id, :organization_id, :uploaded_by,
                     :filename, :size_bytes, :content_type, :content_hash,
                     :storage_ref, :upload_source,
                     :uploaded_at_turn, :uploaded_at,
-                    :metadata::jsonb
+                    :metadata::jsonb,
+                    :summary, :structural_index, :data_type,
+                    :coverage_start_ts, :coverage_end_ts
                 )
                 ON CONFLICT (file_id) DO UPDATE SET
                     uploaded_by = EXCLUDED.uploaded_by,
@@ -2035,7 +2047,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     storage_ref = EXCLUDED.storage_ref,
                     upload_source = EXCLUDED.upload_source,
                     uploaded_at_turn = EXCLUDED.uploaded_at_turn,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    -- Preprocessing artifacts use COALESCE so a failed re-run
+                    -- (NULL incoming) cannot clobber a prior good extraction.
+                    -- Intentional clearing must go through a dedicated path.
+                    summary = COALESCE(EXCLUDED.summary, uploaded_files.summary),
+                    structural_index = COALESCE(EXCLUDED.structural_index, uploaded_files.structural_index),
+                    data_type = COALESCE(EXCLUDED.data_type, uploaded_files.data_type),
+                    coverage_start_ts = COALESCE(EXCLUDED.coverage_start_ts, uploaded_files.coverage_start_ts),
+                    coverage_end_ts = COALESCE(EXCLUDED.coverage_end_ts, uploaded_files.coverage_end_ts)
             """)
 
             await self.db.execute(
@@ -2054,6 +2074,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "uploaded_at_turn": file.uploaded_at_turn,
                     "uploaded_at": file.uploaded_at,
                     "metadata": json.dumps({}),
+                    "summary": file.summary,
+                    "structural_index": file.structural_index,
+                    "data_type": file.data_type,
+                    "coverage_start_ts": file.coverage_start_ts,
+                    "coverage_end_ts": file.coverage_end_ts,
                 },
             )
 

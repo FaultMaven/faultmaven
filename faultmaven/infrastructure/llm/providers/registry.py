@@ -446,8 +446,14 @@ class ProviderRegistry:
                 )
                 return None
 
-        # Get timeout and max_retries from schema or settings
-        timeout = schema.get("timeout", llm_settings.request_timeout)
+        # Get timeout and max_retries from schema or settings.
+        # Prefer the per-provider override so slow models (Fireworks/DeepSeek,
+        # local Ollama) get their own ceiling without widening the global default.
+        # Note: `or` falls through on schema timeout=0, which is fine — 0 is
+        # not a meaningful HTTP timeout and would never be set intentionally.
+        timeout = schema.get("timeout") or llm_settings.timeout_for_provider(
+            provider_name
+        )
         max_retries = schema.get("max_retries", llm_settings.max_retries)
 
         self.logger.debug(

@@ -998,6 +998,63 @@ def _build_evidence_context(
     chars = 12,000 chars (~3000 tokens).
     """
     if not case.evidence:
+        # Post-010 strict evidence model: during INQUIRY, files are stored on
+        # uploaded_files (not promoted to Evidence until INVESTIGATING). Surface
+        # structural_index here so the INQUIRY template's <file_extract> reference
+        # resolves and the agent can characterize the file on the first turn.
+        if hasattr(case, "uploaded_files") and case.uploaded_files:
+            files_with_content = [
+                uf
+                for uf in case.uploaded_files
+                if uf.structural_index and len(uf.structural_index) > 10
+            ]
+            if files_with_content:
+                result = "<evidence_collected>\n"
+                for uf in files_with_content:
+                    file_extract, search_map, file_meta = _parse_extract(
+                        uf.structural_index or ""
+                    )
+                    # Emit file_id under the same attribute name used on
+                    # <evidence file_id="..."> so the source_file_id rule is
+                    # phase-uniform. The LLM passes this value into
+                    # search_file's evidence_id parameter (the tool accepts
+                    # either an ev_xxx or a file_xxx during INQUIRY).
+                    file_id_attr = f' file_id="{uf.file_id}"' if uf.file_id else ""
+                    filename_attr = f' filename="{uf.filename}"' if uf.filename else ""
+                    data_type_attr = (
+                        f' data_type="{uf.data_type}"' if uf.data_type else ""
+                    )
+                    result += (
+                        f"  <uploaded_file{file_id_attr}{filename_attr}"
+                        f'{data_type_attr} searchable="true">\n'
+                    )
+                    if file_extract.strip():
+                        truncation_note = ""
+                        if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
+                            remaining_chars = (
+                                len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
+                            )
+                            file_extract = file_extract[
+                                :EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
+                            ]
+                            truncation_note = (
+                                f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. "
+                                "Use search_file with the file_id above for specific lookups.]"
+                            )
+                        result += "    <file_extract>\n"
+                        if uf.filename:
+                            result += f"[Source: {uf.filename}]\n"
+                        result += file_extract
+                        result += truncation_note
+                        result += "\n    </file_extract>\n"
+                    if search_map and search_map.strip():
+                        result += f"    <search_map>\n{search_map}\n    </search_map>\n"
+                    if file_meta:
+                        meta_lines = _format_file_meta(file_meta)
+                        result += f"    <file_meta>{meta_lines}</file_meta>\n"
+                    result += "  </uploaded_file>\n"
+                result += "</evidence_collected>"
+                return result
         return (
             "<evidence_collected>\n"
             "No formal evidence collected yet.\n"
@@ -1124,7 +1181,7 @@ def _build_evidence_context(
                 result += f"{confidence_advisory}\n"
             result += file_extract
             if truncated:
-                result += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Work with the visible content above. If you need specific details beyond what's shown, suggest a targeted command the user can run.]"
+                result += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Use search_file with the evidence id above to search for specific content in the raw file.]"
             result += "\n    </file_extract>\n"
         # Post-010: surface the agent's verbatim quote (when present) as a
         # distinct claim-supporting snippet, separate from the file's

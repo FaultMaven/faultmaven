@@ -125,17 +125,35 @@ class CaseVectorStore(BaseExternalClient):
 
     async def search(
         self,
-        case_id: str,
-        query: str,
+        case_id: Optional[str] = None,
+        query: str = "",
         k: int = 5,
         where: Optional[Dict[str, Any]] = None,
+        collection_name: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search for similar documents in case-specific collection.
 
         Uses explicit BGE-M3 embeddings (1024 dims) to match vectors stored
         at indexing time. Falls back to ChromaDB default embedding if BGE-M3
         is unavailable (graceful degradation for existing 384-dim collections).
+
+        Accepts either ``case_id`` (canonical) or ``collection_name`` (alias used
+        by DocumentQATool, which names collections as "case_{case_id}"). When
+        ``collection_name`` is provided, the "case_" prefix is stripped to recover
+        ``case_id``.
         """
+        if case_id is None and collection_name is not None:
+            # DocumentQATool passes collection_name="case_{case_id}" from CaseEvidenceConfig
+            prefix = "case_"
+            case_id = (
+                collection_name[len(prefix) :]
+                if collection_name.startswith(prefix)
+                else collection_name
+            )
+        if not case_id:
+            raise ValueError(
+                "case_id (or collection_name) is required for case vector search"
+            )
 
         async def _search_wrapper():
             from faultmaven.infrastructure.model_cache import model_cache

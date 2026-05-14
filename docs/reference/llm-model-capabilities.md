@@ -67,8 +67,9 @@ Provider and model selection is configured in `config/settings.py` under `LLMSet
 LLM_PROVIDER=fireworks
 FIREWORKS_MODELS=accounts/fireworks/models/deepseek-v3
 
-# Timeout
+# Timeout — global default; per-provider override below for slow models
 LLM_REQUEST_TIMEOUT=90
+LLM_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 180}'
 ```
 
 ## Error Handling
@@ -76,6 +77,6 @@ LLM_REQUEST_TIMEOUT=90
 LLM errors carry retryability information:
 - **4xx errors** (client errors): Non-retryable, fail fast
 - **5xx errors** (server errors): Retryable with backoff
-- **Timeouts**: Non-retryable (configurable via `LLM_REQUEST_TIMEOUT`)
+- **Timeouts**: Non-retryable. Per-provider ceiling resolves via `LLM_PROVIDER_TIMEOUT_OVERRIDES.<provider>` first, falling back to `LLM_REQUEST_TIMEOUT`. See [adding-llm-providers.md](../guides/adding-llm-providers.md) for the three-layer resolution rule.
 
 See `LLMException` in `faultmaven/exceptions.py` for the retryability system.
