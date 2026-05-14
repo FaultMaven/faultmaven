@@ -1387,12 +1387,7 @@ class SQLiteCaseRepository(CaseRepository):
                 return False
 
             message_id = message_dict.get("message_id", f"msg_{uuid4().hex[:16]}")
-            # Accept both 'timestamp' (legacy) and 'created_at' (design spec)
-            created_at = (
-                message_dict.get("created_at")
-                or message_dict.get("timestamp")
-                or datetime.now(UTC)
-            )
+            created_at = message_dict.get("created_at") or datetime.now(UTC)
 
             # SQLite-compatible: no ::jsonb type cast
             # organization_id derived from the parent case (already verified

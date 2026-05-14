@@ -515,43 +515,6 @@ class TestConfigurationArchitectureCompliance:
         assert hasattr(settings.features, "use_di_container")
 
 
-class TestConfigurationBridge:
-    """Test the legacy compatibility bridge during migration"""
-
-    def test_configuration_bridge_access(self):
-        """Test that configuration bridge provides legacy access patterns"""
-        from faultmaven.config.settings import config_bridge
-
-        # Should be able to access nested configuration
-        provider = config_bridge.get("llm.provider", "default")
-        assert provider is not None
-
-        host = config_bridge.get("server.host", "default")
-        assert host is not None
-
-        # Should return default for non-existent keys
-        unknown = config_bridge.get("non.existent.key", "default_value")
-        assert unknown == "default_value"
-
-    def test_bridge_with_environment_variables(self):
-        """Test bridge works with environment variable overrides"""
-        from faultmaven.config.settings import config_bridge
-
-        with patch.dict(
-            os.environ,
-            {"CHAT_PROVIDER": "anthropic", "REDIS_HOST": "bridge-test-redis"},
-            clear=False,
-        ):
-            reset_settings()
-
-            # Bridge should be able to access settings (values may come from defaults or environment)
-            provider = config_bridge.get("llm.provider")
-            assert provider is not None
-
-            redis_host = config_bridge.get("database.redis_host")
-            assert redis_host is not None
-
-
 if __name__ == "__main__":
     # Allow running this test file directly for development
     pytest.main([__file__, "-v"])

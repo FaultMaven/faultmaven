@@ -842,19 +842,6 @@ class AuthMode(str, Enum):
     LOCAL = "local"
     OAUTH = "oauth"
 
-    # Backward compatibility alias
-    @classmethod
-    def _missing_(cls, value: object) -> "AuthMode | None":
-        """Handle legacy 'dev-login' value for backward compatibility."""
-        if value == "dev-login":
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "AUTH_MODE='dev-login' is deprecated. Use AUTH_MODE='local' instead."
-            )
-            return cls.LOCAL
-        return None
-
 
 class AuthSettings(BaseSettings):
     """Authentication configuration (deployment-agnostic).
@@ -2453,38 +2440,3 @@ def reset_settings() -> None:
 # =============================================================================
 # LEGACY COMPATIBILITY BRIDGE
 # =============================================================================
-
-
-class ConfigurationBridge:
-    """
-    Temporary bridge for legacy configuration access during migration.
-
-    Allows gradual migration from old config systems.
-    This class should be REMOVED once migration is complete.
-    """
-
-    def __init__(self):
-        self._settings = get_settings()
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """
-        Get configuration value using dot notation.
-
-        Examples:
-            bridge.get("llm.provider") -> "fireworks"
-            bridge.get("server.port") -> 8090
-        """
-        try:
-            parts = key.split(".")
-            value = self._settings
-
-            for part in parts:
-                value = getattr(value, part)
-
-            return value
-        except (AttributeError, TypeError):
-            return default
-
-
-# Global bridge instance for legacy compatibility
-config_bridge = ConfigurationBridge()
