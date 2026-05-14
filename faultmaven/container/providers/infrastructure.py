@@ -408,18 +408,8 @@ def create_session_store(redis_client: Any, settings: FaultMavenSettings) -> Any
 def create_token_manager(
     redis_client: Any,
     settings: FaultMavenSettings,
-    user_store: Any | None = None,
 ) -> Any:
-    """Create token manager backed by Redis (real or FakeRedis).
-
-    Args:
-        redis_client: Async Redis-compatible client (always provided)
-        settings: Application settings
-        user_store: Unused (kept for backward compatibility)
-
-    Returns:
-        RedisTokenManager instance
-    """
+    """Create token manager backed by Redis (real or FakeRedis)."""
     from faultmaven.infrastructure.auth.token_manager import RedisTokenManager
 
     manager = RedisTokenManager(redis_client=redis_client)
@@ -737,9 +727,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
 
     # Token manager (Redis-backed, real or FakeRedis)
     try:
-        token_manager = create_token_manager(
-            redis_client, settings, user_store=user_store
-        )
+        token_manager = create_token_manager(redis_client, settings)
         if token_manager is None:
             logger.error(
                 "❌ Failed to create token manager: create_token_manager returned None"

@@ -319,7 +319,7 @@ class TestContainerHealthAndDiagnostics:
             if hasattr(service, "health_check"):
                 service.health_check.return_value = {"status": "healthy"}
 
-        health_status = container.health_check()
+        health_status = container.get_health()
 
         assert health_status is not None
         assert isinstance(health_status, dict)
@@ -340,7 +340,7 @@ class TestContainerHealthAndDiagnostics:
         container._llm_provider = healthy_llm
         container._sanitizer = unhealthy_sanitizer
 
-        health_status = container.health_check()
+        health_status = container.get_health()
 
         # Should still return health status with details
         assert health_status is not None
@@ -379,7 +379,7 @@ class TestContainerHealthAndDiagnostics:
         container.data_classifier = Mock()
         container.log_processor = Mock()
 
-        health_status = container.health_check()
+        health_status = container.get_health()
 
         assert health_status is not None
         assert isinstance(health_status, dict)
@@ -404,7 +404,7 @@ class TestContainerHealthAndDiagnostics:
         container.data_classifier = Mock()
         container.log_processor = Mock()
 
-        health_status = container.health_check()
+        health_status = container.get_health()
 
         assert health_status is not None
         assert isinstance(health_status, dict)

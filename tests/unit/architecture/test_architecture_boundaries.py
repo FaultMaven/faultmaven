@@ -186,7 +186,7 @@ class TestDependencyInjection:
         from faultmaven.container import BaseDIContainer
 
         container = BaseDIContainer()
-        health = container.health_check()
+        health = container.get_health()
 
         # Health check should return proper structure
         assert "status" in health

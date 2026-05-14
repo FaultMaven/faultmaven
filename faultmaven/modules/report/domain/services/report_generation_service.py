@@ -67,8 +67,6 @@ class ReportGenerationService:
         case_repository: Optional[ICaseRepository] = None,
         lock_manager: Optional[ReportLockManager] = None,
         pii_redactor: Optional[Any] = None,
-        # Legacy kwargs accepted for backward compatibility with existing DI wiring
-        **kwargs: Any,
     ):
         """
         Initialize report generation service.

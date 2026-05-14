@@ -13,7 +13,6 @@ Per module-organization-design.md (lines 592-605, 757-770):
 - Case contracts export models for Case-owned tables (evidence, reports, agent_executions)
 """
 
-from abc import ABC
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -308,36 +307,6 @@ class ICaseRepository(Protocol):
 
 
 # ============================================================
-# Service Contract
-# ============================================================
-
-
-class ICaseService(ABC):
-    """
-    Service interface for Case business logic and orchestration.
-
-    This interface defines the contract for case management business operations,
-    coordinating between case storage, session management, and other services.
-    """
-
-    # Note: Using ABC here because ICaseService is already defined in models/interfaces_case.py
-    # We'll import and re-export it, or define a simplified version here.
-    # For now, we'll reference the existing interface.
-    pass
-
-
-# ============================================================
-# Import and Re-export existing interfaces from models
-# ============================================================
-
-# Re-export ICaseService from models/interfaces_case for backward compatibility
-# Eventually, this should be migrated fully to contracts.py
-from faultmaven.models.interfaces_case import ICaseService as _ICaseService
-
-ICaseService = _ICaseService  # Re-export with same name
-
-
-# ============================================================
 # DTOs (Data Transfer Objects) for Cross-Module Use
 # ============================================================
 
@@ -372,9 +341,9 @@ class CaseDTO:
     updated_at: Optional[datetime] = None
 
 
-# Re-export domain models for backward compatibility
-# These can be used directly until full DTO migration is complete
-# Services should import from contracts.py (not domain.models) per Principle 2
+# Re-export domain models so other modules can import them from
+# ``case.contracts`` instead of reaching into ``case.domain.models``
+# directly (per the layer-boundary import-linter contract).
 from faultmaven.modules.case.domain.models import (  # noqa: E402
     ActionAttempt,
     Case,
@@ -382,7 +351,6 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     CaseEntity,
     CaseSeverity,
     CaseStatus,
-    CaseStatusTransition,  # Backward compat alias for CaseAction
     ConfidenceLevel,
     DocumentationData,
     DocumentType,
@@ -431,7 +399,6 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
 __all__ = [
     # Repository and Service Contracts
     "ICaseRepository",
-    "ICaseService",
     # DTOs
     "CaseStatusDTO",
     "CaseDTO",
@@ -462,12 +429,11 @@ __all__ = [
     # Case-owned Checkpoint models
     "CaseCheckpoint",
     # Investigation models from Agent module (shared for investigation coordination)
-    # Case domain models (backward compatibility)
+    # Case domain models
     "Case",
     "CaseAction",
     "CaseSeverity",
     "CaseStatus",
-    "CaseStatusTransition",  # Backward compat alias for CaseAction
     "ConfidenceLevel",
     "InquiryData",
     "DocumentationData",

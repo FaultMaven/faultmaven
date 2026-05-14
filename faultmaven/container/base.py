@@ -276,14 +276,6 @@ class BaseDIContainer:
         tools = self.get_service("tools", required=False)
         return tools if tools is not None else []
 
-    def health_check(self) -> Dict[str, Any]:
-        """Alias for get_health() for backward compatibility.
-
-        Returns:
-            Dict with status and component details
-        """
-        return self.get_health()
-
     def reset(self) -> None:
         """Reset container state.
 

@@ -455,15 +455,11 @@ def create_user_service(
 
 
 def create_tenant_provider(
-    db_session: Any | None,
     organization_repository: Any | None,
     settings: FaultMavenSettings,
     enterprise_repository: Any | None = None,
 ) -> Any | None:
     """Create tenant provider for deployment neutrality.
-
-    Note: db_session parameter is deprecated and unused since we now use
-    SessionlessOrganizationRepository. Kept for backward compatibility.
 
     enterprise_repository is optional; when present (single-tenant mode), the
     SingleTenantProvider uses it for default-enterprise bootstrap. Absence is
@@ -746,7 +742,6 @@ def register_services(container: BaseDIContainer) -> None:
     # Tenant Provider (create after OrganizationService + EnterpriseRepository,
     # before CaseService)
     tenant_provider = create_tenant_provider(
-        db_session,
         organization_repository,
         settings,
         enterprise_repository=enterprise_repository,
