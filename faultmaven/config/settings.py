@@ -1452,23 +1452,6 @@ class FeatureSettings(BaseSettings):
     enable_conversation_summarization: bool = Field(default=True)
     # Note: Token budgets and thresholds live under settings.ooda
 
-    # DEPRECATED: Query Classification System (Replaced by OODA v3.2.0)
-    # These settings are no longer used - OODA uses structured responses instead of classification
-    # Will be removed in v4.0.0
-    llm_classification_mode: str = Field(default="enhancement", deprecated=True)
-    enable_multidimensional_confidence: bool = Field(default=True, deprecated=True)
-    pattern_weighted_scoring: bool = Field(default=True, deprecated=True)
-    pattern_exclusion_rules: bool = Field(default=True, deprecated=True)
-    enable_structure_analysis: bool = Field(default=True, deprecated=True)
-    enable_linguistic_analysis: bool = Field(default=True, deprecated=True)
-    enable_entity_analysis: bool = Field(default=True, deprecated=True)
-    enable_context_analysis: bool = Field(default=True, deprecated=True)
-    enable_disambiguation_check: bool = Field(default=True, deprecated=True)
-
-    # Note: Self-correction thresholds moved to ConversationThresholds class above
-    # Deprecated: SELF_CORRECTION_THRESHOLD → use ConversationThresholds.self_correction_max_confidence
-    # Deprecated: FORCED_CLARIFICATION_THRESHOLD → use ConversationThresholds.confidence_override_threshold
-
     # Job Runner Configuration
     job_runner_type: str = Field(
         default="inmemory",
@@ -1608,8 +1591,8 @@ class PreprocessingSettings(BaseSettings):
     # chain when suggested_types is empty). Bounded at 2 retries; if all
     # candidates fail sanity, the direct-truncation fallback is used.
     # Each attempt is recorded in ``metadata.extractor.attempts`` for
-    # observability. Default OFF — ships dark; the legacy single-shot
-    # dispatch remains the default to minimise behaviour change.
+    # observability. Default OFF — ships dark; single-shot dispatch
+    # remains the default and the retry loop is opt-in per environment.
     extractor_retry_enabled: bool = Field(
         default=False,
         validation_alias="FAULTMAVEN_PREPROCESSING_EXTRACTOR_RETRY",

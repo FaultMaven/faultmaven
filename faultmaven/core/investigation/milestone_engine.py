@@ -1,8 +1,8 @@
 """Data-Driven and Opportunistic Investigation Engine
 
-This module implements the data-driven investigation system that replaces
-legacy process-based frameworks. Instead of rigid phase orchestration, this engine
-completes milestones opportunistically based on data availability.
+This module implements the data-driven investigation system: instead of
+rigid phase orchestration, the engine completes milestones
+opportunistically based on data availability.
 
 Key Design Principles:
 - Process-Agnostic: No rigid phase transitions - milestones complete when data is available
@@ -775,8 +775,8 @@ class MilestoneEngine:
     """
     Data-Driven and Opportunistic Investigation Engine.
 
-    Replaces legacy process-based engines with a simpler, more flexible approach where
-    the agent completes milestones opportunistically based on available data.
+    The agent completes milestones opportunistically based on available
+    data, rather than following a rigid phase pipeline.
 
     Responsibilities:
     - Generate prompts based on case status (INQUIRY, INVESTIGATING, RESOLVED)

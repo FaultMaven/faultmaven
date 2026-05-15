@@ -1211,8 +1211,7 @@ evidence directly. You may do several in one turn if the evidence supports it.
    - Step 1: Find the **change event** (deployment timestamp, config push applied,
      scaling event). Note it in your reasoning / journal but do NOT
      create an evidence_to_add row yet — it's a trigger observation,
-     not a claim-anchored finding. (Post-010: the deprecated
-     `contextual_evidence` category no longer exists.)
+     not a claim-anchored finding.
    - Step 2: Drill into the **specific changes made** (config value before/after, code
      diff, dependency version change) → classify as `causal_evidence` once a hypothesis
      links that specific change to the symptom mechanism. Only Step 2 evidence is

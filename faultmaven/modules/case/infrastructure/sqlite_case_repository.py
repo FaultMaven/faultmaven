@@ -1832,13 +1832,13 @@ class SQLiteCaseRepository(CaseRepository):
         in-memory ``case.version`` is bumped on successful update so
         subsequent saves within the same flow work without reloading.
 
-        Phase 6 (storage redesign 2026-04): persists ``closure_reason``,
-        ``last_activity_at``, ``resolved_at`` and ``closed_at`` to first-class
-        columns instead of the ``metadata`` JSON blob. ``last_activity_at`` is
-        bumped to the current UTC time on every save so staleness queries
-        work without scanning JSON. The legacy ``metadata`` JSON keeps the
-        same fields for backward compatibility with rows that pre-date the
-        columns.
+        ``closure_reason``, ``last_activity_at``, ``resolved_at`` and
+        ``closed_at`` live in first-class columns; ``last_activity_at``
+        is bumped to the current UTC time on every save so staleness
+        queries can run without scanning JSON. The ``metadata`` JSON
+        column carries transient runtime state that has no first-class
+        column yet (``message_count``, ``pending_transition``,
+        ``proposed_actions``, ``action_attempts``, ``turn_history``).
         """
         last_activity_at = datetime.now(UTC)
         params = self._case_record_params(case, last_activity_at)
@@ -2687,9 +2687,9 @@ class SQLiteCaseRepository(CaseRepository):
             ),
         }
 
-        # ``description`` is now a first-class column. Auto-heal the
-        # legacy case where an INVESTIGATING row lost its description
-        # (rare; pre-redesign rows that fell through the migration).
+        # ``description`` is a first-class column. The CHECK constraint
+        # forbids empty description for non-INQUIRY rows; the ``or ""``
+        # is paranoid coalesce against any row that somehow has NULL.
         description = row.description or ""
         if (
             CaseStatus(row.status) == CaseStatus.INVESTIGATING
@@ -3045,9 +3045,9 @@ class SQLiteCaseRepository(CaseRepository):
         """Resolve organization_id for an execution.
 
         Production callers (agent_orchestration_service) populate
-        execution.organization_id from the authenticated session. Tests and
-        legacy callers may leave it None; in that case fall back to the
-        parent case row.
+        execution.organization_id from the authenticated session. Tests
+        may construct execution objects without it; in that case fall
+        back to the parent case row.
         """
         org_id = getattr(execution, "organization_id", None)
         if org_id:
