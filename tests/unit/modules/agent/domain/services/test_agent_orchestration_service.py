@@ -32,12 +32,6 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     Message,
     ToolCall,
 )
-from faultmaven.modules.case.contracts import (
-    AgentExecution,
-    AgentToolCall,
-    AgentType,
-    ExecutionStatus,
-)
 from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
     AGENT_SYSTEM_PROMPTS,
     DATA_ACCESS_DIRECTED_ANALYSIS,
@@ -46,6 +40,12 @@ from faultmaven.modules.agent.domain.services.agent_orchestration_service import
     EvidenceDAState,
 )
 from faultmaven.modules.agent.tools.base import AgentToolRegistry, ToolContext
+from faultmaven.modules.case.contracts import (
+    AgentExecution,
+    AgentToolCall,
+    AgentType,
+    ExecutionStatus,
+)
 from faultmaven.modules.case.domain.models import Case, CaseStatus
 
 # =============================================================================

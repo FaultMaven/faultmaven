@@ -10,15 +10,6 @@ from faultmaven.modules.agent.domain.models.agentic import SuggestedAction
 # Import session model from auth module
 from faultmaven.modules.auth.domain.models.session import Session
 
-# Import case models from the new module location
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseSeverity,
-    CaseStatus,
-    MessageType,
-    UrgencyLevel,
-)
-
 # Import report generation models from the new module location
 from faultmaven.modules.case.contracts import (
     CaseClosureRequest,
@@ -33,6 +24,15 @@ from faultmaven.modules.case.contracts import (
     RunbookRecommendation,
     RunbookSource,
     SimilarRunbook,
+)
+
+# Import case models from the new module location
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseSeverity,
+    CaseStatus,
+    MessageType,
+    UrgencyLevel,
 )
 
 # Import new v3.1.0 API models

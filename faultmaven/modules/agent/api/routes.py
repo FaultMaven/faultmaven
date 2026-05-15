@@ -36,11 +36,11 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.modules.agent.domain.events.execution_events import ExecutionEventType
-from faultmaven.modules.case.contracts import AgentType
 from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
     AgentOrchestrationService,
 )
 from faultmaven.modules.auth.contracts import AuthenticatedUser
+from faultmaven.modules.case.contracts import AgentType
 
 logger = logging.getLogger(__name__)
 

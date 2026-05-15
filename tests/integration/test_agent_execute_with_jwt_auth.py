@@ -27,11 +27,11 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     ExecutionEvent,
     ExecutionEventType,
 )
+from faultmaven.modules.auth.domain.services.auth_service import AuthService
 from faultmaven.modules.case.contracts import (
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.modules.auth.domain.services.auth_service import AuthService
 
 # ============================================================
 # Fixtures

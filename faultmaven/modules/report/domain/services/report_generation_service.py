@@ -22,21 +22,13 @@ from faultmaven.infrastructure.concurrency import (
 )
 from faultmaven.infrastructure.observability.tracing import trace
 
-# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import (  # Report models - owned by Case module
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts).
+# Report models are Case-owned and live in case.contracts.
+from faultmaven.modules.case.contracts import (
     Case,
     CaseReport,
     CaseStatus,
     ICaseRepository,
-    ReportGenerationRequest,
-    ReportGenerationResponse,
-    ReportStatus,
-    ReportType,
-)
-
-# Backward compatibility re-export (imported from case.contracts now)
-from faultmaven.modules.case.contracts import (
-    CaseReport,
     ReportGenerationRequest,
     ReportGenerationResponse,
     ReportStatus,

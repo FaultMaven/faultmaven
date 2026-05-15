@@ -77,13 +77,13 @@ async def authenticated_client(test_user):
 
     from faultmaven.api.v1.auth_dependencies import require_authentication
     from faultmaven.config.settings import get_settings
+    from faultmaven.infrastructure.persistence.user_repository import (
+        InMemoryUserRepository,
+    )
     from faultmaven.modules.auth.api.oauth import get_oauth_service
     from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
     from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
         InMemoryOAuthCodeRepository,
-    )
-    from faultmaven.infrastructure.persistence.user_repository import (
-        InMemoryUserRepository,
     )
 
     settings = get_settings()

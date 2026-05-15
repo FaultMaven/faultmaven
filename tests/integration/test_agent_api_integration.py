@@ -35,13 +35,13 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     ExecutionEvent,
     ExecutionEventType,
 )
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentToolCall,
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 # ============================================================
 # Fixtures

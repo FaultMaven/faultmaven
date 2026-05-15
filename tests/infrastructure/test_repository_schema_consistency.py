@@ -23,12 +23,12 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
-    PostgreSQLHybridCaseRepository,
-)
 from faultmaven.modules.case.domain.models import Case, CaseStatus, UploadedFile
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
+)
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
+    PostgreSQLHybridCaseRepository,
 )
 
 # ============================================================

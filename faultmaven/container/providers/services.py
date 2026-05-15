@@ -428,11 +428,11 @@ def create_user_service(
         return None
 
     try:
-        from faultmaven.modules.auth.domain.services.user_service import UserService
         from faultmaven.infrastructure.persistence.user_repository import (
             InMemoryUserRepository,
             PostgreSQLUserRepository,
         )
+        from faultmaven.modules.auth.domain.services.user_service import UserService
 
         # Use PostgreSQL if db_session available, else InMemory for development
         if db_session:

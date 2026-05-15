@@ -26,6 +26,13 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from faultmaven.modules.case.contracts import (
+    CaseReport,
+    ReportStatus,
+    ReportType,
+    RunbookMetadata,
+    RunbookSource,
+)
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
@@ -38,13 +45,6 @@ from faultmaven.modules.case.infrastructure.case_repository import (
 )
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
     PostgreSQLHybridCaseRepository,
-)
-from faultmaven.modules.case.contracts import (
-    CaseReport,
-    ReportStatus,
-    ReportType,
-    RunbookMetadata,
-    RunbookSource,
 )
 from faultmaven.utils.serialization import to_json_compatible
 

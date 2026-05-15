@@ -51,12 +51,6 @@ from faultmaven.modules.agent.domain.events.execution_events import (
 from faultmaven.modules.agent.domain.events.execution_events import (
     ToolResult as DomainToolResult,
 )
-from faultmaven.modules.case.contracts import (
-    AgentExecution,
-    AgentToolCall,
-    AgentType,
-    ExecutionStatus,
-)
 from faultmaven.modules.agent.domain.services.llm_client import (
     LLMClient,
     create_llm_client,
@@ -70,7 +64,13 @@ from faultmaven.modules.agent.tools.base import tool_registry as agent_tool_regi
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
     VECTORIZATION_MAX_SIZE_BYTES,
 )
-from faultmaven.modules.case.contracts import ICaseRepository
+from faultmaven.modules.case.contracts import (
+    AgentExecution,
+    AgentToolCall,
+    AgentType,
+    ExecutionStatus,
+    ICaseRepository,
+)
 from faultmaven.modules.preprocessing.extractors.utils import COVERAGE_SEPARATOR
 
 logger = logging.getLogger(__name__)
