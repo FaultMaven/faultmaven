@@ -1607,43 +1607,6 @@ class TestAgentExecutionPersistence:
 
 
 # ============================================================
-# Legacy data conversion (_convert_legacy_inquiry_data)
-# ============================================================
-
-
-class TestLegacyInquiryConversion:
-    """_convert_legacy_inquiry_data normalizes pre-schema LLM format."""
-
-    def test_converts_null_preliminary_guidance_to_empty_string(self, repository):
-        data = {"problem_confirmation": {"preliminary_guidance": None}}
-        result = repository._convert_legacy_inquiry_data(data)
-        assert result["problem_confirmation"]["preliminary_guidance"] == ""
-
-    def test_lowercases_urgency_level(self, repository):
-        data = {"preliminary_urgency": {"level": "HIGH"}}
-        result = repository._convert_legacy_inquiry_data(data)
-        assert result["preliminary_urgency"]["level"] == "high"
-
-    def test_adds_missing_assessed_at_turn(self, repository):
-        data = {"preliminary_urgency": {"level": "medium"}}
-        result = repository._convert_legacy_inquiry_data(data)
-        assert result["preliminary_urgency"]["assessed_at_turn"] == 1
-
-    def test_passes_through_unchanged_data(self, repository):
-        data = {"unrelated_key": "unchanged"}
-        result = repository._convert_legacy_inquiry_data(data)
-        assert result == {"unrelated_key": "unchanged"}
-
-    def test_handles_empty_dict(self, repository):
-        assert repository._convert_legacy_inquiry_data({}) == {}
-
-    def test_does_not_touch_populated_guidance(self, repository):
-        data = {"problem_confirmation": {"preliminary_guidance": "already set"}}
-        result = repository._convert_legacy_inquiry_data(data)
-        assert result["problem_confirmation"]["preliminary_guidance"] == "already set"
-
-
-# ============================================================
 # Optimistic concurrency control (OCC)
 # ============================================================
 

@@ -2188,37 +2188,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
         return actions
 
-    def _convert_legacy_inquiry_data(self, data: dict) -> dict:
-        """Convert legacy LLM schema format to domain model format for backward compatibility.
-
-        Old cases may have been saved with LLM schema format before conversion was added:
-        - problem_confirmation.preliminary_guidance: Optional[str] (can be None)
-        - preliminary_urgency.level: Literal["CRITICAL", "HIGH", ...] (uppercase)
-        - preliminary_urgency.assessed_at_turn: missing field
-
-        This method converts to domain model format:
-        - problem_confirmation.preliminary_guidance: str (required, convert None to "")
-        - preliminary_urgency.level: UrgencyLevel enum (lowercase)
-        - preliminary_urgency.assessed_at_turn: int (default to 1)
-        """
-        # Handle problem_confirmation conversion
-        if "problem_confirmation" in data and data["problem_confirmation"]:
-            pc = data["problem_confirmation"]
-            if "preliminary_guidance" in pc and pc["preliminary_guidance"] is None:
-                pc["preliminary_guidance"] = ""
-
-        # Handle preliminary_urgency conversion
-        if "preliminary_urgency" in data and data["preliminary_urgency"]:
-            pu = data["preliminary_urgency"]
-            # Convert uppercase level to lowercase for UrgencyLevel enum
-            if "level" in pu and isinstance(pu["level"], str):
-                pu["level"] = pu["level"].lower()
-            # Add missing assessed_at_turn field (default to 1 for old data)
-            if "assessed_at_turn" not in pu:
-                pu["assessed_at_turn"] = 1
-
-        return data
-
     async def _row_to_case(
         self,
         row,
@@ -2251,7 +2220,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             return json.loads(value)
 
         inquiry_data = _maybe_load(row.inquiry) or {}
-        inquiry_data = self._convert_legacy_inquiry_data(inquiry_data)
         inquiry = InquiryData(**inquiry_data) if inquiry_data else InquiryData()
         problem_verification = (
             ProblemVerification(**_maybe_load(row.problem_verification))
