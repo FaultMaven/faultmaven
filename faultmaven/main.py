@@ -69,13 +69,15 @@ def _is_test_environment(settings=None) -> bool:
     if settings is None:
         settings = _app_settings
         if settings is None:
-            # Fallback: try to get settings (for early calls before lifespan)
+            # Lazy load from get_settings() — handles calls before lifespan
+            # runs. If construction itself raises (e.g. an env-var validator
+            # rejects an input), degrade to reading the two test-env hints
+            # directly so pytest collection doesn't crash on broken envs.
             try:
                 from .config.settings import get_settings
 
                 settings = get_settings()
             except Exception:
-                # If settings not available, fall back to os.getenv for backward compatibility
                 if os.getenv("SKIP_SERVICE_CHECKS", "").lower() == "true":
                     return True
                 if os.getenv("PYTEST_CURRENT_TEST"):

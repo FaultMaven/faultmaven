@@ -29,12 +29,16 @@ def load_protection_settings(settings=None) -> ProtectionSettings:
         ProtectionSettings instance with loaded configuration
 
     Design Notes:
-        - Always attempts to use settings first (deployment-agnostic)
-        - Only falls back to os.getenv() if settings are completely unavailable
-        - This maintains backward compatibility while following settings-only principle
+        - Prefer the settings path. ``_load_from_settings`` is the
+          canonical, deployment-agnostic source.
+        - Degrade to ``_load_from_environment`` only when settings
+          construction itself raises (very early init, or env-var
+          validator rejection). It is also the only path that exposes
+          the rate-limit / dedup / timeout knobs as env vars — the
+          settings-side migration for those keys is incomplete (see TODO
+          in ``_load_from_environment``).
     """
 
-    # Always try to get settings first (deployment-agnostic)
     if settings is None:
         try:
             from faultmaven.config.settings import get_settings
@@ -44,12 +48,8 @@ def load_protection_settings(settings=None) -> ProtectionSettings:
             settings = None
 
     if settings is not None:
-        # Use settings-based configuration (preferred path)
         return _load_from_settings(settings)
-    else:
-        # Fallback to environment variables (backward compatibility only)
-        # This should rarely happen in normal operation
-        return _load_from_environment()
+    return _load_from_environment()
 
 
 def _load_from_settings(settings) -> ProtectionSettings:
@@ -91,17 +91,22 @@ def _load_from_settings(settings) -> ProtectionSettings:
 
 
 def _load_from_environment() -> ProtectionSettings:
-    """Load protection settings from environment variables (backward compatibility fallback).
+    """Load protection settings directly from environment variables.
 
-    NOTE: This function uses os.getenv() directly, which violates the "Settings-Only
-    Environment Reads" principle. However, this is intentional as a fallback for
-    backward compatibility when settings are unavailable.
+    This is the only path that exposes rate-limit, deduplication, and
+    timeout knobs as env vars; the settings-side migration for those
+    keys is incomplete. ``_load_from_settings`` therefore uses hardcoded
+    defaults for the same knobs.
 
-    This function should only be called when settings cannot be loaded. In normal
-    operation, _load_from_settings() should be used instead.
+    Invoked in two situations:
+    1. ``get_settings()`` raised during construction (broken env-var
+       validator, very early init) — degrades gracefully.
+    2. Operators explicitly need to tune the rate-limit / dedup / timeout
+       env vars below.
 
-    TODO: Add rate limits, deduplication, and timeout settings to ProtectionSettings
-    in settings.py to fully eliminate os.getenv() usage here.
+    TODO: Promote ``RATE_LIMIT_*``, ``DEDUP_*``, ``TIMEOUT_*`` into
+    ``ProtectionSettings`` so this function becomes the
+    settings-construction-failure path only.
     """
 
     # Helper function to parse rate limit string

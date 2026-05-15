@@ -67,9 +67,10 @@ def get_storage_type() -> str:
         Storage type string ("inmemory" or "database")
 
     Design Notes:
-        - Always attempts to use settings first (deployment-agnostic)
-        - Falls back to os.getenv() only if settings unavailable (backward compatibility)
-        - This fallback should rarely occur in normal operation
+        - Always attempts to use settings first (deployment-agnostic).
+        - Degrades to ``os.getenv()`` only if settings construction itself
+          raises (very early init, or env-var validator rejection). Lets
+          pytest collection survive a partly-broken environment.
     """
     from faultmaven.config.settings import get_settings
 
@@ -77,9 +78,6 @@ def get_storage_type() -> str:
         settings = get_settings()
         return settings.database.case_storage_type
     except Exception:
-        # Fallback for early initialization before settings are available
-        # NOTE: os.getenv() usage here is intentional for backward compatibility
-        # when settings are unavailable during early initialization
         logger.debug(
             "Settings unavailable, falling back to os.getenv() for storage type"
         )
@@ -153,7 +151,7 @@ def get_investigation_session_storage_type() -> str:
             or get_storage_type()
         )
     except Exception:
-        # Fallback for early initialization (backward compatibility)
+        # Degrade gracefully when settings construction itself raises
         logger.debug(
             "Settings unavailable, falling back to os.getenv() for investigation session storage type"
         )
@@ -337,7 +335,7 @@ def get_knowledge_item_storage_type() -> str:
             or get_storage_type()
         )
     except Exception:
-        # Fallback for early initialization (backward compatibility)
+        # Degrade gracefully when settings construction itself raises
         logger.debug(
             "Settings unavailable, falling back to os.getenv() for knowledge item storage type"
         )
