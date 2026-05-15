@@ -209,10 +209,6 @@ class CaseAction(BaseModel):
         frozen = True  # Immutable once created
 
 
-# Backward compatibility alias
-CaseStatusTransition = CaseAction
-
-
 def is_valid_action(from_status: CaseStatus, to_status: CaseStatus) -> bool:
     """
     Validate a case action (phase transition or disposition change).
