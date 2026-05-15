@@ -69,10 +69,10 @@ class CommandOutputExtractor:
         parser = parsers.get(command_type, self._fallback_extraction)
         parser_output = parser(content)
 
-        # Parsers may return either a plain summary string (legacy contract)
-        # or a (summary, extra_meta) tuple. The latter is used by parsers that
-        # need to surface structured facts the agent should read from FILE
-        # SUMMARY without re-parsing the raw output.
+        # Parsers may return either a plain summary string or a
+        # ``(summary, extra_meta)`` tuple. The tuple form is used by
+        # parsers that need to surface structured facts the agent should
+        # read from FILE SUMMARY without re-parsing the raw output.
         if isinstance(parser_output, tuple):
             summary_text, extra_meta = parser_output
         else:
@@ -495,7 +495,7 @@ class CommandOutputExtractor:
     # %util threshold for "saturated" classification on iostat -x. Distinct
     # from THRESHOLDS["cpu_high"] etc. because disk saturation is the
     # standard ≥50% busy heuristic — well below the 80% level used for
-    # individual-device anomaly flagging in the legacy parser.
+    # individual-device anomaly flagging in the basic-iostat parser.
     _IOSTAT_SATURATED_UTIL_PCT = 50.0
     # %util ≤ this in *every* sample → idle. Set tight so we report only
     # devices that are unambiguously doing nothing (≈0% across the whole
@@ -516,11 +516,12 @@ class CommandOutputExtractor:
           + ``file_meta`` so the agent can answer counting questions
           (sample count, device count, saturated devices) without re-reading
           the raw file. Read-side metrics (r/s, rkB/s) and write-side
-          metrics (w/s, wkB/s) are both surfaced — the legacy fallback
-          dropped reads entirely.
+          metrics (w/s, wkB/s) are both surfaced — the basic-iostat
+          parser only surfaces write-side, since that layout does not
+          carry separate read/write columns.
 
         - **iostat (basic)**: single-sample ``Device tps kB_read/s ...``
-          layout. Falls through to the legacy formatter, which flags
+          layout. Routed to ``_parse_iostat_basic``, which flags
           high-await/high-util devices.
 
         Routing is by header signature; the -x layout is detected by the
@@ -537,9 +538,8 @@ class CommandOutputExtractor:
     def _parse_iostat_basic(self, lines: list[str]) -> str:
         """Parse the basic ``iostat`` layout (tps/kB_read/s columns).
 
-        Single-sample, device-anomaly-focused. Kept verbatim from the
-        legacy implementation so existing tests against the basic layout
-        keep passing.
+        Single-sample, device-anomaly-focused. Used when the input does
+        not carry the ``-x`` extended columns (r/s, w/s, rkB/s, wkB/s).
         """
 
         summary = ["I/O Statistics (iostat command)", ""]
@@ -676,11 +676,13 @@ class CommandOutputExtractor:
           (``sample_count``, ``distinct_devices``, ``saturated_devices``,
           ``idle_devices``).
 
-        Why this exists: the legacy parser flattened all samples into a
-        single device list, double-counted devices appearing in multiple
-        samples, dropped read-side metrics (rkB/s, r/s) entirely, and
-        offered no sample count. Counting questions like "how many samples
-        and how many devices" got incoherent answers.
+        Why a dedicated parser for ``-x``: the basic-iostat parser
+        flattens all samples into a single device list, which on
+        multi-sample ``iostat -x`` output double-counts devices appearing
+        in multiple samples and offers no sample count — counting
+        questions like "how many samples and how many devices" became
+        incoherent. This parser keeps samples distinct and exposes
+        per-device read+write metrics.
         """
         # Locate every sample. A "sample" starts at an ``avg-cpu:`` header
         # and ends at the next one (or EOF). Each sample contains a single

@@ -832,11 +832,13 @@ class MetricsAndPerformanceExtractor:
           side, with a minimum-spread guard so nearly constant data doesn't
           flag every trivial fluctuation.
         - Drops: Symmetric IQR-proxy threshold on the lower side
-          (p50 - 1.5 × (p95 - p50)) **plus** the legacy ≥50%-below-baseline
-          rule. The two rules are unioned so we capture both gradual sustained
-          dips (caught by IQR proxy) and catastrophic single-point drops
-          (caught by the percent rule). The same flat-data guard suppresses
-          spurious drops on nearly constant data.
+          (p50 - 1.5 × (p95 - p50)) **unioned with** a percent-of-baseline
+          rule (≥50% below mean). The two rules are complementary: IQR
+          proxy catches gradual sustained dips, the percent rule catches
+          catastrophic single-point drops on series where the IQR proxy
+          is dominated by noise (e.g. a flatline from 100% to 0%). The
+          same flat-data guard suppresses spurious drops on nearly
+          constant data.
 
         Anomalies are returned sorted by absolute deviation from the median
         (largest first) so that the display cap surfaces the most extreme
@@ -879,9 +881,10 @@ class MetricsAndPerformanceExtractor:
         else:
             iqr_drop_threshold = p50 - (1.5 * iqr_proxy)
 
-        # Legacy percent-based drop rule retained for catastrophic drops on
+        # Percent-of-baseline drop rule. Catches catastrophic drops on
         # series where the IQR proxy is dominated by noise (e.g. a single
-        # service that flatlines from 100% to 0%). Union with the IQR rule.
+        # service that flatlines from 100% to 0%). Unioned with the IQR
+        # rule — they are complementary detectors.
         percent_drop_threshold = (
             mean * (1 - self.DROP_PERCENT_THRESHOLD) if mean > 0 else None
         )
@@ -900,7 +903,7 @@ class MetricsAndPerformanceExtractor:
                     }
                 )
 
-            # Detect drops (IQR-proxy OR legacy 50%-below rule).
+            # Detect drops (IQR-proxy OR percent-of-baseline rule).
             elif value < iqr_drop_threshold or (
                 percent_drop_threshold is not None and value < percent_drop_threshold
             ):
