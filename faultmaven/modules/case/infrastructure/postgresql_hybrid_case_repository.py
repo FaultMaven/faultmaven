@@ -482,7 +482,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             return Evidence(
                 evidence_id=str(row[0]),
                 category=category,
-                primary_purpose=row[15] or "legacy",
+                primary_purpose=row[15],
                 summary=row[3] if row[3] else "Evidence",
                 extract=row[4],
                 analysis=row[16],
