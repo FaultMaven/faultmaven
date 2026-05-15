@@ -129,13 +129,13 @@ class GroqProvider(BaseLLMProvider):
             if tool_choice:
                 payload["tool_choice"] = tool_choice
 
-        # Add response format if specified in kwargs
-        # The capability system in base.py handles detection and fallback
+        # Add response format if specified in kwargs.
         response_format = kwargs.pop("response_format", None)
         if response_format:
 
-            # Use capability system to check if we need to fall back
-            # (Keep backward compatibility while transitioning to capability system)
+            # Per-model capability check: not every Groq-hosted model
+            # supports strict json_schema, so degrade to json_object when
+            # the capability indicates anything weaker than STRICT.
             if response_format.get("type") == "json_schema":
                 capability = self.get_structured_output_capability(effective_model)
                 from faultmaven.infrastructure.llm.structured_output_capability import (
