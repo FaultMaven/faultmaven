@@ -1166,24 +1166,17 @@ class KnowledgeService:
             return 0
 
     async def _remove_from_vector_store(self, document_id: str) -> None:
-        """Remove document and all its chunks from vector store."""
+        """Remove all chunks for a document from the vector store.
+
+        Indexing always chunks (see ``_index_in_vector_store``), so deletion
+        keys off ``parent_document_id``.
+        """
         if not self._vector_store:
             return
 
         try:
-            # Try chunk-aware deletion first (new chunked documents)
-            if hasattr(self._vector_store, "delete_documents_by_parent_id"):
-                count = await self._vector_store.delete_documents_by_parent_id(
-                    document_id
-                )
-                if count > 0:
-                    logger.info(f"Removed {count} chunks for document {document_id}")
-                    return
-
-            # Fallback: try exact ID match (legacy unchunked documents)
-            if hasattr(self._vector_store, "delete_documents"):
-                await self._vector_store.delete_documents([document_id])
-                logger.info(f"Removed document {document_id} from vector store")
+            count = await self._vector_store.delete_documents_by_parent_id(document_id)
+            logger.info(f"Removed {count} chunks for document {document_id}")
         except Exception as e:
             logger.error(f"Failed to remove document from vector store: {e}")
 
