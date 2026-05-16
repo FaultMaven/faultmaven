@@ -253,6 +253,127 @@ class TestEdgeCases:
         assert properties["metadata"]["type"] == "object"
 
 
+class TestRefInlining:
+    """Test that nested-model $refs are inlined into the tool schema.
+
+    Pydantic v2 emits nested-model schemas as $ref pointers into a sibling
+    $defs map. Some OpenAI-compatible providers (Fireworks observed) fail
+    to dereference these and reject the tool definition with a 400 error
+    ("Error resolving schema reference '#/$defs/...'").
+    pydantic_to_openai_function inlines all refs so the tool's parameters
+    schema is self-contained.
+    """
+
+    def test_no_defs_block_after_conversion(self):
+        """Converted schemas must not carry a $defs block to downstream providers."""
+
+        class Inner(BaseModel):
+            label: str
+
+        class Outer(BaseModel):
+            inner: Inner
+            items: List[Inner]
+
+        result = pydantic_to_openai_function(Outer)
+        params = result["parameters"]
+
+        assert "$defs" not in params, (
+            "$defs leaked into tool parameters — providers that strictly "
+            "validate tool schemas (Fireworks) will 400 on this."
+        )
+
+    def test_no_refs_in_nested_property(self):
+        """A direct nested-model field is inlined, not referenced."""
+
+        class Inner(BaseModel):
+            label: str
+            count: int = 0
+
+        class Outer(BaseModel):
+            inner: Inner
+
+        result = pydantic_to_openai_function(Outer)
+        inner_schema = result["parameters"]["properties"]["inner"]
+
+        assert "$ref" not in inner_schema
+        assert inner_schema["type"] == "object"
+        assert "label" in inner_schema["properties"]
+        assert "count" in inner_schema["properties"]
+
+    def test_no_refs_in_list_of_models(self):
+        """A List[NestedModel] field's items are inlined, not referenced."""
+
+        class Item(BaseModel):
+            name: str
+
+        class Container(BaseModel):
+            items: List[Item]
+
+        result = pydantic_to_openai_function(Container)
+        items_schema = result["parameters"]["properties"]["items"]
+
+        assert items_schema["type"] == "array"
+        # items.items is the schema of each list element
+        element_schema = items_schema["items"]
+        assert "$ref" not in element_schema
+        assert element_schema["type"] == "object"
+        assert "name" in element_schema["properties"]
+
+    def test_no_refs_in_optional_list_of_models(self):
+        """Optional[List[NestedModel]] — the exact shape that triggered the bug.
+
+        Pydantic emits anyOf: [{array of $ref}, {null}]. The $ref inside
+        the array branch must be inlined.
+        """
+
+        class Suggestion(BaseModel):
+            label: str
+            payload: str
+
+        class Response(BaseModel):
+            agent_response: str
+            suggested_follow_ups: Optional[List[Suggestion]] = None
+
+        result = pydantic_to_openai_function(Response)
+        params = result["parameters"]
+
+        # No $defs anywhere
+        assert "$defs" not in params
+
+        # The suggested_follow_ups property is anyOf with array + null;
+        # the array's items schema must be inlined.
+        suggested = params["properties"]["suggested_follow_ups"]
+        # Walk the anyOf to find the array branch
+        array_branch = next(
+            (
+                b
+                for b in suggested.get("anyOf", [suggested])
+                if b.get("type") == "array"
+            ),
+            None,
+        )
+        assert (
+            array_branch is not None
+        ), "Expected an array branch in the Optional[List[Suggestion]] anyOf"
+        element_schema = array_branch["items"]
+        assert "$ref" not in element_schema
+        assert element_schema["type"] == "object"
+        assert "label" in element_schema["properties"]
+        assert "payload" in element_schema["properties"]
+
+    def test_recursive_ref_raises(self):
+        """Recursive schemas can't be inlined — surface the limitation explicitly."""
+
+        class TreeNode(BaseModel):
+            value: str
+            child: Optional["TreeNode"] = None
+
+        TreeNode.model_rebuild()
+
+        with pytest.raises(ValueError, match="Recursive"):
+            pydantic_to_openai_function(TreeNode)
+
+
 class TestFunctionNaming:
     """Test function naming conventions"""
 
@@ -333,7 +454,13 @@ class TestCreateResponseFormatJsonSchema:
         assert "priority" in schema["properties"]
 
     def test_handles_nested_models(self):
-        """Test that nested Pydantic models are handled correctly"""
+        """Nested Pydantic models are inlined — no $defs/$ref leak through.
+
+        Some OpenAI-compatible providers (Fireworks observed) fail to
+        dereference $ref pointers in tool / response_format schemas.
+        create_response_format_json_schema inlines all refs so the
+        downstream schema is self-contained.
+        """
 
         class InnerModel(BaseModel):
             value: str
@@ -347,7 +474,13 @@ class TestCreateResponseFormatJsonSchema:
 
         assert "inner" in schema["properties"]
         assert "items" in schema["properties"]
-        assert "$defs" in schema or "$ref" in str(schema)
+        # No $defs block, no dangling $refs anywhere in the schema.
+        assert "$defs" not in schema
+        assert "$ref" not in str(schema)
+        # The nested model is inlined as an object schema in-place.
+        inner = schema["properties"]["inner"]
+        assert inner["type"] == "object"
+        assert "value" in inner["properties"]
 
     def test_no_forbidden_format_keyword_in_top_level(self):
         """Test that top-level properties don't use forbidden 'format' keyword"""
