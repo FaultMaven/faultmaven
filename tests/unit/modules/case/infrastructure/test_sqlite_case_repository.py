@@ -1691,6 +1691,59 @@ class TestOptimisticConcurrencyControl:
         assert retrieved.version == initial_version  # unchanged
         assert retrieved.evidence[0].vectorized is True
 
+    async def test_update_metadata_fields_does_not_bump_version(self, repository):
+        """update_metadata_fields writes title/description without OCC.
+
+        Cosmetic labels are not investigation state — they must not
+        stale-conflict an in-flight turn save.
+        """
+        case = _make_case(title="original", description="orig desc")
+        await repository.save(case)
+        initial_version = case.version
+        assert initial_version == 1
+
+        ok = await repository.update_metadata_fields(
+            case.case_id, title="new title", description="new desc"
+        )
+        assert ok is True
+
+        retrieved = await repository.get(case.case_id)
+        assert retrieved.title == "new title"
+        assert retrieved.description == "new desc"
+        assert retrieved.version == initial_version  # unchanged — no OCC
+
+    async def test_update_metadata_fields_does_not_conflict_with_stale_save(
+        self, repository
+    ):
+        """A title rename mid-turn must not invalidate the turn's pending save.
+
+        Reproduces the production race: turn handler loads v1, runs 49s of LLM
+        work, then saves; meanwhile a title rename lands. Under the v2.4 OCC
+        design that rename bumped to v2 and the turn 409'd. Under v2.6 the
+        rename uses the scoped metadata path — no version bump — so the turn
+        save succeeds.
+        """
+        case = _make_case(title="original")
+        await repository.save(case)  # v1
+
+        # Turn handler loads the case (v1) and starts mutating in memory.
+        turn_case = await repository.get(case.case_id)
+        assert turn_case.version == 1
+        turn_case.current_turn = 7  # simulated turn work
+
+        # Meanwhile, a title rename lands via the scoped metadata path.
+        await repository.update_metadata_fields(case.case_id, title="renamed by user")
+
+        # Turn handler now saves its (still v1-versioned) case — must succeed.
+        await repository.save(turn_case)
+        assert turn_case.version == 2
+
+        retrieved = await repository.get(case.case_id)
+        # Turn's investigation state wrote; title is whatever the turn held
+        # in memory. The point of the test is that the save *didn't 409*.
+        assert retrieved.version == 2
+        assert retrieved.current_turn == 7
+
     async def test_retry_helper_reloads_and_retries_on_conflict(self, repository):
         """``update_case_with_retry`` must see a fresh Case each attempt
         and succeed when another writer has since moved on."""

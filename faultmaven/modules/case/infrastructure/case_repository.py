@@ -398,6 +398,36 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
+    async def update_metadata_fields(
+        self,
+        case_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> bool:
+        """
+        Scoped UPDATE of cosmetic metadata fields — does NOT bump version.
+
+        ``title`` and ``description`` are user-facing labels, not part of
+        the investigation state machine. Writing them through the
+        versioned ``save(case)`` path would stale-conflict any concurrent
+        turn save (an in-flight LLM tool loop can hold the case in memory
+        for tens of seconds).
+
+        Pass only the fields to change; ``None`` means "leave as-is".
+
+        Status, closure_reason, and other investigation-state fields
+        still go through ``save`` so OCC protects them.
+
+        Returns:
+            True if a row was updated.
+
+        Raises:
+            RepositoryException: If the update fails.
+        """
+        pass
+
+    @abstractmethod
     async def update_evidence_vectorized(
         self, case_id: str, evidence_id: str, vectorized: bool
     ) -> bool:
@@ -990,6 +1020,26 @@ class InMemoryCaseRepository(CaseRepository):
             return False
 
         case.last_activity_at = datetime.now(timezone.utc)
+        return True
+
+    async def update_metadata_fields(
+        self,
+        case_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> bool:
+        """In-memory scoped update of title/description (no version bump)."""
+        case = self._cases.get(case_id)
+        if not case:
+            return False
+        if title is None and description is None:
+            return False
+        if title is not None:
+            case.title = title
+        if description is not None:
+            case.description = description
+        case.updated_at = datetime.now(timezone.utc)
         return True
 
     async def update_evidence_vectorized(

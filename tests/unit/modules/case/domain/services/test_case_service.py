@@ -1,7 +1,7 @@
 """Tests for CaseService - case lifecycle, access control, conversation management."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -45,6 +45,7 @@ def mock_repo():
     repo.add_message = AsyncMock(return_value=True)
     repo.get_messages = AsyncMock(return_value=[])
     repo.update_activity_timestamp = AsyncMock()
+    repo.update_metadata_fields = AsyncMock(return_value=True)
     repo.get_analytics = AsyncMock(return_value={})
     repo.cleanup_expired = AsyncMock(return_value=0)
     repo.count_user_cases_on_date = AsyncMock(return_value=0)
@@ -205,7 +206,12 @@ class TestUpdateCase:
     """Test case updates with validation and access control."""
 
     @pytest.mark.asyncio
-    async def test_updates_allowed_fields(self, service, mock_repo):
+    async def test_metadata_only_updates_skip_versioned_save(self, service, mock_repo):
+        """Title/description go through the scoped metadata path — no OCC.
+
+        Writing cosmetic labels through ``save(case)`` would bump
+        ``cases.version`` and stale-conflict a concurrent turn save.
+        """
         case = _make_case()
         mock_repo.get.return_value = case
         result = await service.update_case(
@@ -213,7 +219,49 @@ class TestUpdateCase:
             {"title": "New Title", "description": "Updated"},
         )
         assert result is True
+        mock_repo.update_metadata_fields.assert_awaited_once_with(
+            "case_abc123abc123", title="New Title", description="Updated"
+        )
+        mock_repo.save.assert_not_awaited()
+
+    @staticmethod
+    def _make_closed_case():
+        """Build a CLOSED case with all closure-required fields set.
+
+        Pydantic cross-field validators require CLOSED status to carry
+        ``closed_at`` and ``closure_reason``. We bypass them via
+        ``object.__setattr__`` for test setup.
+        """
+        case = _make_case()
+        future = datetime.now(timezone.utc) + timedelta(seconds=1)
+        object.__setattr__(case, "status", CaseStatus.CLOSED)
+        object.__setattr__(case, "closed_at", future)
+        object.__setattr__(case, "closure_reason", "inquiry_only")
+        return case
+
+    @pytest.mark.asyncio
+    async def test_state_updates_go_through_versioned_save(self, service, mock_repo):
+        """Status / closure_reason still use the versioned save with OCC retry."""
+        mock_repo.get.return_value = self._make_closed_case()
+        result = await service.update_case(
+            "case_abc123abc123",
+            {"closure_reason": "mitigation_sufficient"},
+        )
+        assert result is True
         mock_repo.save.assert_awaited()
+        mock_repo.update_metadata_fields.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_mixed_updates_use_versioned_save(self, service, mock_repo):
+        """If any state field is present, the whole update is versioned."""
+        mock_repo.get.return_value = self._make_closed_case()
+        result = await service.update_case(
+            "case_abc123abc123",
+            {"title": "New", "closure_reason": "mitigation_sufficient"},
+        )
+        assert result is True
+        mock_repo.save.assert_awaited()
+        mock_repo.update_metadata_fields.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rejects_empty_case_id(self, service):

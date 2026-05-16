@@ -91,6 +91,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.domain.services.investigation_router import (
     determine_investigation_path,
 )
+from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
 
 # =============================================================================
@@ -2681,6 +2682,11 @@ class MilestoneEngine:
                 },
             }
 
+        except StaleCaseException:
+            # OCC conflict on the case row — the route handler maps this
+            # to HTTP 409. Do NOT wrap in MilestoneEngineError, or the
+            # type identity is lost and the handler falls through to 500.
+            raise
         except Exception as e:
             # Use LLMErrorHandler's classification instead of duplicating patterns
             is_external = self.llm_error_handler.is_retryable_error(e)

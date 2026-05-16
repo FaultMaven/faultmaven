@@ -286,6 +286,20 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             return await repo.update_activity_timestamp(case_id)
 
+    async def update_metadata_fields(
+        self,
+        case_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> bool:
+        """Scoped UPDATE of cosmetic metadata fields (no version bump)."""
+        async with get_db_session() as session:
+            repo = get_repository_for_session(session)
+            return await repo.update_metadata_fields(
+                case_id, title=title, description=description
+            )
+
     async def update_evidence_vectorized(
         self, case_id: str, evidence_id: str, vectorized: bool
     ) -> bool:

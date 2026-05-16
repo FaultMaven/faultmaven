@@ -1293,6 +1293,41 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 f"Failed to update activity timestamp for case {case_id}: {e}"
             ) from e
 
+    async def update_metadata_fields(
+        self,
+        case_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> bool:
+        """Scoped UPDATE of cosmetic metadata fields — does NOT bump version.
+
+        See ``ICaseRepository.update_metadata_fields`` for rationale.
+        """
+        if title is None and description is None:
+            return False
+
+        sets: list[str] = []
+        params: dict[str, Any] = {"case_id": case_id}
+        if title is not None:
+            sets.append("title = :title")
+            params["title"] = title
+        if description is not None:
+            sets.append("description = :description")
+            params["description"] = description
+        sets.append("updated_at = NOW()")
+
+        try:
+            query = text(f"UPDATE cases SET {', '.join(sets)} WHERE case_id = :case_id")
+            result = await self.db.execute(query, params)
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to update metadata fields for case {case_id}: {e}"
+            ) from e
+
     async def update_evidence_vectorized(
         self, case_id: str, evidence_id: str, vectorized: bool
     ) -> bool:

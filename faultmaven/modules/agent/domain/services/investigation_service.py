@@ -49,6 +49,7 @@ from faultmaven.modules.case.domain.models import (
     EvidenceSourceType,
     UploadedFile,
 )
+from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -666,7 +667,9 @@ class InvestigationService:
 
             return response
 
-        except (NotFoundError, PermissionDeniedException):
+        except (NotFoundError, PermissionDeniedException, StaleCaseException):
+            # StaleCaseException must pass through unwrapped so the
+            # /turns route handler can map it to HTTP 409.
             raise
         except Exception as e:
             logger.error(f"Failed to process turn for case {case_id}: {e}")
