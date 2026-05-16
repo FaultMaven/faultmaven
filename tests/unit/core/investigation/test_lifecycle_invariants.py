@@ -11,9 +11,9 @@ corresponding test. When an existing row's enforcement category changes
 pin the new mechanism.
 """
 
-from datetime import datetime, timezone
-
 import inspect
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -35,9 +35,7 @@ from faultmaven.modules.case.domain.models import (
     ProblemVerification,
     is_valid_action,
 )
-from faultmaven.modules.case.domain.services.case_action_manager import (
-    ALLOWED_ACTIONS,
-)
+from faultmaven.modules.case.domain.services.case_action_manager import ALLOWED_ACTIONS
 
 
 def _make_investigating_case() -> Case:
@@ -531,3 +529,216 @@ class TestINV06_KBResolutionUsesPendingTransition:
         assert result is True
         assert case.status == CaseStatus.RESOLVED
         assert case.resolved_at is not None
+
+
+# =============================================================================
+# INV-14: Manual case-action dropdown uses standard handshake
+# =============================================================================
+#
+# Source: §1.5 *Manual Case Action Requests* — Core Principle: "Manual case
+#   actions follow the same confirmation pattern as natural progression —
+#   all case actions require explicit user confirmation."
+# Statement: Manual case-action requests (status dropdown) flow through the
+#   same confirmation pattern as natural progression — they cannot bypass
+#   the User-Agent Handshake.
+# Enforcement: Structural — the UI sends a system message with
+#   ``intent_type="status_transition"`` that routes through ``submit_turn``
+#   + the standard ``pending_transition`` mechanism. Each target either
+#   calls ``propose_transition`` (CLOSED, RESOLVED) or falls through to
+#   the LLM pipeline (INVESTIGATING) which writes pending via the LLM-
+#   emitted ProposedTransition.
+#
+# Drift surfaced during verification (to fold into §1.3.1 drift notes):
+#
+#   a. Design §1.5.2 Step 2 describes a system-generated message
+#      format ("[User requested to change case status to X]") sent to
+#      ``/queries`` as plain text. The current implementation uses
+#      ``intent_type="status_transition"`` + structured ``intent_data``,
+#      added by the 2026-02-09 bug fix (milestone_engine.py:1714).
+#      The text-based mechanism the design describes is no longer how
+#      the dropdown flows — §1.5.2 should be updated to describe the
+#      structured-intent route.
+#
+#   b. The RESOLVED dropdown is *path-dependent*: if a matching
+#      pending_transition already exists, the click confirms it
+#      (milestone_engine.py:1801-1816); otherwise the click runs
+#      ``assess_resolution_readiness`` and may propose RESOLVED, pivot
+#      to propose CLOSED, or ask for needs_info. The §1.5.2 narrative
+#      doesn't surface this branching; readers won't know the dropdown
+#      can do these three different things. Worth a paragraph.
+
+
+class TestINV14_DropdownUsesStandardHandshake:
+    """INV-14: dropdown-initiated case actions never bypass the handshake.
+
+    Each test verifies that after the dropdown intent is processed:
+      - case.status is UNCHANGED (no auto-execution).
+      - pending_transition is set (for CLOSED/RESOLVED) — handshake
+        proposal landed.
+      - resolved_at / closed_at remain None.
+
+    The existing test_transition_alignment.py tests verify the same
+    paths emit the canonical confirmation pair. These tests assert the
+    stronger property: the case is NOT in a terminal state after the
+    dropdown turn.
+    """
+
+    @staticmethod
+    def _engine_and_repo() -> tuple[MilestoneEngine, MagicMock]:
+        repo = MagicMock()
+        repo.save = AsyncMock(side_effect=lambda c: c)
+        repo.get = AsyncMock(side_effect=lambda cid: None)
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+        return engine, repo
+
+    @pytest.mark.asyncio
+    async def test_inv14_dropdown_inquiry_to_closed_proposes_does_not_execute(self):
+        """Dropdown INQUIRY → CLOSED writes pending_transition and returns
+        confirmation suggestions. Case status stays INQUIRY this turn.
+        """
+        engine, _ = self._engine_and_repo()
+        case = Case(
+            case_id="case_a1b2c3d4e5f6",
+            title="INV-14 inquiry",
+            status=CaseStatus.INQUIRY,
+            user_id="user_test",
+            organization_id="org_test",
+            description="Inquiry case",
+            problem_verification=ProblemVerification(
+                symptom_statement="Test",
+                severity="HIGH",
+                temporal_state="ongoing",
+                urgency_level="high",
+            ),
+            inquiry=InquiryData(thread_id="t1"),
+        )
+
+        result = await engine.process_turn(
+            case=case,
+            user_message="Close this case.",
+            intent_type="status_transition",
+            intent_data={
+                "from_status": "inquiry",
+                "to_status": "closed",
+                "user_confirmed": True,
+            },
+        )
+
+        updated = result["case_updated"]
+        # Handshake: pending written, status untouched
+        assert updated.pending_transition is not None
+        assert updated.pending_transition["to_status"] == "closed"
+        assert updated.status == CaseStatus.INQUIRY
+        assert updated.closed_at is None
+
+    @pytest.mark.asyncio
+    async def test_inv14_dropdown_investigating_to_closed_proposes_does_not_execute(
+        self,
+    ):
+        """Dropdown INVESTIGATING → CLOSED writes pending_transition; status
+        stays INVESTIGATING this turn.
+        """
+        engine, _ = self._engine_and_repo()
+        case = _make_investigating_case()
+        case.progress.symptom_verified = True
+
+        result = await engine.process_turn(
+            case=case,
+            user_message="Close this case as unresolved.",
+            intent_type="status_transition",
+            intent_data={
+                "from_status": "investigating",
+                "to_status": "closed",
+                "user_confirmed": True,
+            },
+        )
+
+        updated = result["case_updated"]
+        assert updated.pending_transition is not None
+        assert updated.pending_transition["to_status"] == "closed"
+        assert updated.status == CaseStatus.INVESTIGATING
+        assert updated.closed_at is None
+
+    @pytest.mark.asyncio
+    async def test_inv14_dropdown_investigating_to_resolved_thin_does_not_execute(
+        self,
+    ):
+        """Dropdown INVESTIGATING → RESOLVED on a case lacking root cause /
+        solution pivots to propose CLOSED (assess_resolution_readiness
+        verdict SUGGEST_CLOSE). Either way, the case is NOT auto-resolved
+        and NOT auto-closed — a pending_transition is written for user
+        confirmation.
+
+        Pins that the readiness-pivot branch (lines 1850-1873) honors the
+        handshake just like the direct-resolve branch.
+        """
+        engine, _ = self._engine_and_repo()
+        case = _make_investigating_case()
+        # No root cause, no solutions → SUGGEST_CLOSE verdict
+
+        result = await engine.process_turn(
+            case=case,
+            user_message="Mark this resolved.",
+            intent_type="status_transition",
+            intent_data={
+                "from_status": "investigating",
+                "to_status": "resolved",
+                "user_confirmed": True,
+            },
+        )
+
+        updated = result["case_updated"]
+        # Either RESOLVED or CLOSED could be proposed depending on
+        # readiness verdict. The invariant is: not auto-executed.
+        assert updated.pending_transition is not None
+        assert updated.status == CaseStatus.INVESTIGATING
+        assert updated.resolved_at is None
+        assert updated.closed_at is None
+
+    def test_inv14_dropdown_investigating_branch_does_not_directly_execute_resolved(
+        self,
+    ):
+        """Static check: the engine's ``elif to_status_str == "investigating"``
+        branch does NOT contain calls to ``_execute_resolved_transition``,
+        ``_execute_closed_transition``, ``confirm_pending_transition``,
+        or direct status mutations. The branch falls through to the LLM
+        pipeline so the standard handshake handles confirmation.
+
+        Complement to the functional tests above: pins the structural
+        property of the INVESTIGATING branch even without exercising
+        the full LLM pipeline.
+        """
+        source = inspect.getsource(MilestoneEngine._process_turn_impl)
+
+        # Find the investigating-target branch within the status_transition
+        # intent handler.
+        investigating_idx = source.find('elif to_status_str == "investigating":')
+        assert investigating_idx >= 0, (
+            "Could not locate the 'investigating' branch of the "
+            "status_transition intent handler. The static check below "
+            "assumes this structure."
+        )
+
+        # Walk to the next sibling branch / end-of-block. The
+        # 'investigating' branch ends when the next major block begins.
+        # Take a generous 1500-char window.
+        branch_region = source[investigating_idx : investigating_idx + 1500]
+
+        # The invariant: this branch must not directly execute a transition.
+        # It should fall through to the LLM pipeline so the standard
+        # ProposedTransition handshake handles disposition.
+        forbidden_calls = [
+            "_execute_resolved_transition",
+            "_execute_closed_transition",
+            "confirm_pending_transition(case, case.user_id)",
+            "case.status = CaseStatus.INVESTIGATING\n",
+        ]
+        for forbidden in forbidden_calls:
+            assert forbidden not in branch_region, (
+                f"INV-14 violation: the INQUIRY → INVESTIGATING dropdown "
+                f"branch contains '{forbidden}'. The dropdown must not "
+                f"directly execute the transition; it must fall through "
+                f"to the LLM pipeline so user_confirmed_investigation=True "
+                f"drives the transition through the standard handshake. "
+                f"See §1.5 *Core Principle*."
+            )
