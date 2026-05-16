@@ -148,37 +148,44 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
     """
     Handle structured updates during INQUIRY.
 
-    Logic:
-    1. If LLM detects user confirmation -> transition to INVESTIGATING
-    2. If LLM misses confirmation but user_confirms() matches -> mechanical fallback
-    3. If user provides preliminary guidance -> Refine problem statement
-    4. If user decides to investigate -> Set flag
+    Confirmation routing (two-tier):
+      1. Click path — COOPERATIVE confirmation suggestions carry
+         intent metadata. A click sends intent_type="confirmation"
+         + confirmation_value=True, which the engine routes
+         deterministically through IntentResolver (see §1.5.3).
+      2. LLM path — the LLM sets `user_confirmed_investigation=True`
+         in `state_updates`. The engine accepts it ONLY when a
+         `proposed_problem_statement` existed on a PRIOR turn (the
+         same-turn-confirmation guard added in commit 13ff2eae, after
+         the LLM was observed collapsing the two-step handshake on
+         first-turn "please investigate" inputs).
 
-    The mechanical fallback (step 2) uses a word-boundary regex matcher with a
-    100-char message length guard (inline in milestone_engine.py) to catch
-    explicit confirmations ("yes", "proceed", "looks good") that the LLM missed.
-    This prevents the INQUIRY confirmation loop where the agent re-asks "Let me
-    confirm..." across multiple turns without progressing.
+    Free-typed paraphrases ("yes", "proceed") do NOT route through this
+    function. The historical word-boundary regex matcher
+    (`user_confirms()`) was removed in commit 06cfa834 (2026-03-17)
+    when intent-routing for explicit clicks became the canonical
+    confirmation path. Typed responses that match a confirmation
+    pattern only fire on a TERMINAL case via `_user_confirms_transition`
+    (see terminal_transitions handling — disposition paths only).
     """
+
+    # Capture pre-turn state for the same-turn-confirmation guard
+    statement_existed_before_turn = bool(
+        case.inquiry.proposed_problem_statement
+        and case.inquiry.proposed_problem_statement.strip()
+    )
 
     # 1. Capture problem statement
     if updates.proposed_problem_statement:
         case.inquiry.proposed_problem_statement = updates.proposed_problem_statement
 
-    # 2. Check for transition (LLM path)
-    if updates.user_confirmed_investigation and case.inquiry.proposed_problem_statement:
+    # 2. Check for transition (LLM path) — gated on prior-turn statement
+    if (updates.user_confirmed_investigation
+            and case.inquiry.proposed_problem_statement
+            and statement_existed_before_turn):
         case.inquiry.problem_statement_confirmed = True
         case.inquiry.decided_to_investigate = True
         # ... transition fires via _check_automatic_transitions
-
-    # 2b. Mechanical fallback: LLM missed confirmation, but user message matches
-    elif (not updates.user_confirmed_investigation
-          and case.inquiry.proposed_problem_statement
-          and not case.inquiry.problem_statement_confirmed
-          and user_confirms(user_message)):
-        case.inquiry.problem_statement_confirmed = True
-        case.inquiry.decided_to_investigate = True
-        # Same transition path as above
 ```
 
 #### 1.2.1 Evidence Classification Lifecycle
@@ -502,12 +509,12 @@ This matrix is the audit instrument for the design. A refactor that moves any ro
 | INV-01 | INQUIRY → INVESTIGATING requires the user to confirm a `proposed_problem_statement` that was presented on a **prior** turn. The LLM cannot collapse the handshake into a single turn. | §1.2 *Two-Step Confirmation Flow* (above); `INQUIRY_TEMPLATE` ("Never set `user_confirmed_investigation=True` on the same turn you first present the problem statement") | **Code-guarded** — `_apply_inquiry_updates` captures `_statement_existed_before_turn` and gates the confirmation branch on it. Same-turn confirmations log a WARNING and are deferred. | `test_inquiry_transition::test_same_turn_confirmation_is_rejected`; `::test_confirmation_accepted_when_statement_persisted_across_turns` |
 | INV-02 | INQUIRY → INVESTIGATING never auto-fires on CRITICAL/HIGH urgency alone — confirmation is still required regardless of severity. | §1.2 *Two-Step Confirmation Flow* — "Even for CRITICAL + ongoing issues" | **Code-guarded** — the urgency branch in `_apply_inquiry_updates` logs only; the transition gate still requires explicit `user_confirmed_investigation=True`. | `test_inquiry_transition::test_critical_outage_stays_inquiry_until_confirmed` |
 | INV-03 | Disposition transitions (INVESTIGATING → RESOLVED, INVESTIGATING → CLOSED, INQUIRY → CLOSED) NEVER auto-fire. The agent emits `ProposedTransition`; the user confirms on a subsequent turn. | §1.2 *INVESTIGATING → RESOLVED (Disposition)*; §1.4 line 488 ("Disposition actions are NEVER automatic") | **Structural** — `propose_transition` writes `pending_transition`; only `confirm_pending_transition` executes the state change. The two functions cannot be called within the same `process_turn` invocation without an intervening case save and LLM turn. | implicit via lifecycle tests; **gap** — no test asserts the two-call requirement explicitly |
-| INV-04 | INQUIRY → RESOLVED has no direct edge. Every RESOLVED case flows through INVESTIGATING — even KB-matched cases. | §1.3 (line 442); `VALID_TRANSITIONS` dict | **Code-guarded** + **schema** — `VALID_TRANSITIONS` dict; Case status validators reject illegal pairs. | implicit; **gap** — add a test asserting `INQUIRY → RESOLVED` is rejected at the engine layer |
+| INV-04 | INQUIRY → RESOLVED has no direct edge. Every RESOLVED case flows through INVESTIGATING — even KB-matched cases. | §1.3 (line 442); `ALLOWED_ACTIONS` dict + `is_valid_action()` | **Schema** (`is_valid_action()` in `models.py` runs as a Pydantic model_validator on every `CaseAction` instantiation — `CaseAction` is `frozen=True` so the audit history cannot record the forbidden transition) + **Code-guarded** (`_execute_resolved_transition` raises `ValueError` on non-INVESTIGATING input — runtime backstop). `ALLOWED_ACTIONS` in `case_action_manager.py` is UI-affordance only (drives `get_allowed_transitions`); the dict's `validate_action` method has no production callers. | `test_inv04_*` in `test_lifecycle_invariants.py` |
 | INV-05 | Stage transitions within INVESTIGATING (DIAGNOSIS → MITIGATION → TREATMENT) are AUTOMATIC when the LLM sets the corresponding gate milestone — NO User-Agent Handshake. This is the only place where LLM-emitted state changes proceed without explicit user confirmation, by design. | §1.4 line 488 | **Prompt-only via gate milestone semantics** — the engine acts directly on whichever gate milestone the LLM emits. | **gap** — no test pins the auto-vs-handshake distinction for stage gates |
 | INV-06 | The KB-Resolution same-turn collapse (INVESTIGATING → RESOLVED in one turn for runbook-matched cases) still goes through `propose_transition` + user confirmation. The engine does **not** auto-resolve from a runbook match. | §1.2 *KB-Resolution Path* (lines 380-385); §4.2 | **Structural** — uses the same `pending_transition` mechanism as the multi-turn path. The "collapse" is in milestone-state authoring, not transition timing. | **gap** — assert no direct INVESTIGATING → RESOLVED path bypasses pending_transition for KB cases |
 | INV-07 | Evidence rows are born only during INVESTIGATING. No Evidence creation during INQUIRY — `InquiryStateUpdate` has no `evidence_to_add` field. Uploads during INQUIRY persist as `UploadedFile` only. | §1.2.1 *Core principles* | **Schema** — `InquiryStateUpdate` Pydantic model does not declare `evidence_to_add`; engine `_apply_inquiry_updates` has no evidence-creation branch. | schema-level (field absence); **verify** with a test that asserts evidence-add during INQUIRY raises or is ignored |
 | INV-08 | Every Evidence row has a known source: `source_file_id` set, **or** `source_type=USER_DESCRIPTION` for chat-quote evidence. There is no escape hatch. | §1.2.1 lines 215-222 | **Schema + DB** — Pydantic validators on `Evidence` and `EvidenceToAdd`; DB CHECK constraint `evidence_source_invariant` (migration 010). | exhaustive evidence-model tests |
-| INV-09 | Terminal cases (RESOLVED/CLOSED) are immutable: no new evidence, no transitions, no milestone updates. Only text Q&A, report regeneration, and runbook creation are permitted. | §1.7 *Terminal Mode* (lines 1039-1080) | **API-level** — `require_case_not_terminal()` middleware rejects mutating endpoints. **Code-guarded** — `_process_terminal_turn` short-circuits the milestone engine. | API integration tests; **verify** |
+| INV-09 | Terminal cases (RESOLVED/CLOSED) are immutable: no new evidence, no transitions, no milestone updates. Only text Q&A, report regeneration, and runbook creation are permitted. | §1.7 *Terminal Mode* (lines 1039-1080) | **API-level** — `require_case_not_terminal()` helper function (used at the case-update endpoint; other write endpoints inline the `case.is_terminal` check). **Code-guarded** — `_process_turn_impl` short-circuits to `_process_terminal_turn` for terminal cases, bypassing the milestone-engine state-mutation pipeline. | `test_inv09_*` in `test_lifecycle_invariants.py` |
 | INV-10 | `submit_turn` on a terminal case: text query → routed to terminal Q&A; files / pasted content → 409 Conflict; status-transition intent → 409 Conflict. | §1.7 *Terminal Mode* (lines 1072-1078) | **API-level** — `submit_turn` endpoint inspects payload kind. | API integration tests; **verify** |
 | INV-11 | Auto-generated `CLOSURE_SUMMARY` is gated on **investigation substance** (`evidence>0` OR `hypotheses>0` OR `completed_milestones>0`). The verdict is stable post-closure because all three signals are immutable in CLOSED state. `RESOLUTION_SUMMARY` always generates. | §1.7.3, §4.5.0 | **Code-guarded** — `should_generate_terminal_summary` in `terminal_transitions.py` | `test_milestone_engine::test_summary_guardrail_*`; `::test_skip_reason_*` |
 | INV-12 | Free-typed paraphrases of regen/runbook intent ("recap", "summarize", "new runbook please") route to terminal Q&A and **never** produce a persisted Report or Runbook side effect. Only **exact-match** of the COOPERATIVE-suggestion payload triggers a persisted side effect. | §1.7.3 *Regeneration* (free-text routes to Q&A) | **Code-guarded** — `_REPORT_REGEN_PATTERNS` and `_RUNBOOK_CREATION_PATTERNS` use exact-match (`msg_lower in patterns`); paraphrases fall through to `_process_terminal_qa`. | **gap** — add a test asserting paraphrases route to Q&A |
@@ -772,35 +779,63 @@ Are you sure you want to proceed?
 
 ---
 
-**Step 2: Submit Request via Chat**
+**Step 2: Submit Request via Chat (Structured Intent)**
 
-User confirms modal → Frontend sends system-generated message:
+User confirms modal → Frontend sends a turn submission carrying a structured intent payload (NOT plain text):
 
 ```typescript
-POST /api/v1/cases/{case_id}/queries
-Body: {
-  "message": "[User requested to change case status to Investigating]"
-}
+POST /api/v1/cases/{case_id}/turns
+Body (multipart/form-data):
+  query: ""                          // empty — intent is in the structured fields
+  intent_type: "status_transition"
+  intent_data: '{
+    "from_status": "inquiry",
+    "to_status": "investigating",
+    "user_confirmed": true
+  }'
 ```
 
-**API Endpoint**: `POST /api/v1/cases/{case_id}/queries`
-- **Purpose**: Submit user messages (including system-generated ones)
-- **Auth**: Requires Bearer token + X-Session-Id
-- **Returns**: AgentResponse with agent's confirmation message
+**API Endpoint**: `POST /api/v1/cases/{case_id}/turns`
+- **Purpose**: Submit a turn — query text, attachments, and/or structured intent.
+- **Auth**: Requires Bearer token + X-Session-Id.
+- **Returns**: `TurnResponse` with the agent's reply.
+
+The structured-intent route was introduced in the 2026-02-09 bug fix
+([milestone_engine.py:1714](../../../faultmaven/core/investigation/milestone_engine.py#L1714))
+when `intent_type="status_transition"` was added as an explicit dispatch path. Earlier
+versions used a plain-text system-generated message ("[User requested to change case
+status to X]") submitted to `/queries`. That mechanism is deprecated for dropdown flows;
+the structured payload is unambiguous and skips the LLM's intent classification.
 
 ---
 
-##### Step 3: Agent Validates and Responds
+##### Step 3: Engine Validates and Responds
 
-The dropdown injects a pre-composed message and routes through the normal INQUIRY
-LLM pipeline. The LLM handles validation and confirmation:
+The engine's `status_transition` handler (in `_process_turn_impl`) branches by target
+status. Each branch honors the User-Agent Handshake — none of them auto-execute.
 
-**With problem statement**: The LLM presents the existing problem description for
-confirmation. When the LLM sets `user_confirmed_investigation=True`, the transition
-fires automatically through `_check_automatic_transitions`.
+**→ INVESTIGATING (from INQUIRY)**: falls through to the normal INQUIRY LLM pipeline.
+The LLM presents the existing problem statement for confirmation. When the LLM sets
+`user_confirmed_investigation=True` on a subsequent turn (gated by the same-turn
+guard — the statement must have been presented on a prior turn), the transition
+fires via `_check_automatic_transitions`.
 
-**Without problem statement**: The LLM asks the user to describe the problem.
-No transition occurs until the user provides context and the LLM confirms.
+**→ CLOSED (from INQUIRY or INVESTIGATING)**: the engine calls `propose_transition`
+directly, returns a closure-readiness summary plus the canonical Yes/No confirmation
+pair. The transition fires only when the user confirms on the next turn.
+
+**→ RESOLVED (from INVESTIGATING)**: branches three ways based on
+`assess_resolution_readiness(case)`:
+
+| Verdict | Engine action |
+|---|---|
+| `READY` (root cause + actionable solution captured) | `propose_transition("resolved")`; returns Yes/No confirmation pair. User confirms on next turn. |
+| `SUGGEST_CLOSE` (case is thin — no root cause / solution) | Pivots to `propose_transition("closed")`. The dropdown said *"mark resolved"* but the engine recognizes the case has nothing to mark as resolved; the user is offered close instead, with a readiness-message explaining why. |
+| `NEEDS_INFO` (partial state — some criteria met, some not) | `propose_transition("resolved")` with `needs_info=True` flag set on the pending transition. The agent asks the user for the missing piece (root cause OR solution detail). The next turn re-evaluates readiness once the user replies. |
+
+Whichever branch fires, the case stays in INVESTIGATING this turn and the transition
+proposal is held pending. The user has the next-turn confirmation step to accept,
+decline, or refine.
 
 ---
 
