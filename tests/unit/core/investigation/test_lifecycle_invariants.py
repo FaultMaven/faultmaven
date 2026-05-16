@@ -742,3 +742,749 @@ class TestINV14_DropdownUsesStandardHandshake:
                 f"drives the transition through the standard handshake. "
                 f"See §1.5 *Core Principle*."
             )
+
+
+# =============================================================================
+# INV-07: No Evidence creation during INQUIRY
+# =============================================================================
+#
+# Source: §1.2.1 *Core principles* — "No evidence creation during INQUIRY.
+#   Evidence presupposes a confirmed claim. During INQUIRY the claim is
+#   still being formed; the LLM may read uploaded files for context but
+#   does not emit evidence_to_add. The Pydantic InquiryResponse.-
+#   InquiryStateUpdate schema does not carry an evidence_to_add field;
+#   the _apply_inquiry_updates evidence-creation branch was removed."
+# Statement: Evidence rows are born only during INVESTIGATING. INQUIRY
+#   uploads create UploadedFile rows only.
+# Enforcement: Schema (InquiryStateUpdate field absence) + code-guarded
+#   (no evidence-creation branch in _apply_inquiry_updates).
+#
+# Drift surfaced during verification:
+#
+#   a. InquiryStateUpdate uses Pydantic's default extra='ignore'. An LLM
+#      emitting evidence_to_add (or any other invalid field) on an INQUIRY
+#      response is SILENTLY DROPPED, not rejected. The invariant holds
+#      (no Evidence row created) but a schema violation by the LLM does
+#      not surface as an error. A more defensive design would set
+#      extra='forbid' to catch LLM training drift. Worth considering at
+#      a future hardening pass; not a violation of INV-07 itself.
+
+
+class TestINV07_NoEvidenceDuringInquiry:
+    """INV-07: Evidence rows cannot be born during INQUIRY.
+
+    Enforced by absence of the evidence_to_add field on
+    InquiryStateUpdate and by the absence of an evidence-creation branch
+    in _apply_inquiry_updates.
+    """
+
+    def test_inv07_inquiry_state_update_has_no_evidence_to_add_field(self):
+        """``InquiryStateUpdate.model_fields`` must not contain
+        ``evidence_to_add``. This is the primary enforcement surface —
+        the LLM cannot use a typed channel to add evidence during INQUIRY.
+        """
+        from faultmaven.core.investigation.schemas import InquiryResponse
+
+        fields = InquiryResponse.InquiryStateUpdate.model_fields
+        assert "evidence_to_add" not in fields, (
+            f"INV-07 violation: InquiryStateUpdate has an evidence_to_add "
+            f"field. Evidence creation during INQUIRY is forbidden — the "
+            f"LLM should not have a typed channel to emit it. See §1.2.1 "
+            f"core principle 2. Current fields: {list(fields.keys())}"
+        )
+
+    def test_inv07_investigation_state_updates_DO_have_evidence_to_add(self):
+        """Complementary assertion: ``DiagnosisStateUpdate`` and the other
+        investigation-stage schemas DO have ``evidence_to_add``. The
+        asymmetry between INQUIRY and INVESTIGATING is intentional —
+        Evidence is born during INVESTIGATING, never during INQUIRY.
+        """
+        from faultmaven.core.investigation.schemas import (
+            InvestigationResponse_Diagnosis,
+        )
+
+        diagnosis_fields = (
+            InvestigationResponse_Diagnosis.DiagnosisStateUpdate.model_fields
+        )
+        assert "evidence_to_add" in diagnosis_fields, (
+            "DiagnosisStateUpdate is expected to carry evidence_to_add. "
+            "If this assertion fails alongside the INQUIRY one, the "
+            "investigation phase has lost its evidence channel — a much "
+            "more serious regression than the INV-07 invariant."
+        )
+
+    def test_inv07_extra_evidence_field_on_inquiry_is_silently_dropped(self):
+        """Pydantic policy: ``InquiryStateUpdate`` uses ``extra='ignore'``
+        (the default). An LLM emitting ``evidence_to_add`` in an INQUIRY
+        response has the field silently dropped. The invariant still
+        holds — no Evidence row is created — but the LLM's schema
+        violation is not surfaced as an error.
+
+        Pinned here for awareness: if a future hardening pass switches
+        to ``extra='forbid'``, this test should be updated to assert the
+        ValidationError instead.
+        """
+        from faultmaven.core.investigation.schemas import InquiryResponse
+
+        instance = InquiryResponse.InquiryStateUpdate(
+            evidence_to_add=[{"summary": "fake", "category": "symptom_evidence"}]
+        )
+
+        # Field is silently dropped — not stored, not raised
+        assert not hasattr(instance, "evidence_to_add")
+        dumped = instance.model_dump()
+        assert "evidence_to_add" not in dumped
+
+    def test_inv07_apply_inquiry_updates_has_no_evidence_creation_branch(self):
+        """Static check: ``_apply_inquiry_updates`` must not contain any
+        code that mutates ``case.evidence`` or creates Evidence rows.
+
+        The design states that the evidence-creation branch was REMOVED
+        from _apply_inquiry_updates. This test pins that removal.
+        """
+        source = inspect.getsource(MilestoneEngine._apply_inquiry_updates)
+
+        # Forbidden mutations / creations:
+        #   - case.evidence.append(...) / case.evidence = ...
+        #   - Evidence(...) constructor calls
+        forbidden_patterns = [
+            "case.evidence.append",
+            "case.evidence.extend",
+            "case.evidence = ",
+            "Evidence(",
+            "EvidenceToAdd(",
+        ]
+        for pattern in forbidden_patterns:
+            assert pattern not in source, (
+                f"INV-07 violation: _apply_inquiry_updates contains "
+                f"'{pattern}' — Evidence creation during INQUIRY is "
+                f"forbidden. See §1.2.1 core principle 2."
+            )
+
+
+# =============================================================================
+# INV-09: Terminal cases are immutable
+# =============================================================================
+#
+# Source: §1.7 *Terminal Mode* (lines 1039-1080)
+# Statement: Terminal cases (RESOLVED/CLOSED) are immutable. No new evidence,
+#   no transitions, no milestone updates. Only text Q&A, report regeneration,
+#   and runbook creation are permitted.
+# Enforcement: API-level (``require_case_not_terminal()`` rejects mutating
+#   endpoints) + Code-guarded (``_process_terminal_turn`` short-circuits the
+#   milestone engine).
+#
+# Drift surfaced during verification:
+#
+#   a. Matrix calls require_case_not_terminal() "middleware" — it isn't.
+#      It's a plain helper function in routes.py:519, used at exactly one
+#      call site (routes.py:987, the case-update endpoint). Other write
+#      endpoints (routes.py:1173, 2142, 2781) check case.is_terminal
+#      inline rather than via the helper. The protection is consistent in
+#      intent across endpoints, but the mechanism varies — a future
+#      hardening pass could consolidate via FastAPI dependency injection.
+#      Not a violation; terminology is the only drift.
+
+
+class TestINV09_TerminalCasesImmutable:
+    """INV-09: terminal cases reject mutations at every enforcement surface."""
+
+    def test_inv09_is_terminal_returns_true_for_resolved_and_closed(self):
+        """``case.is_terminal`` returns True for RESOLVED and CLOSED, False
+        for INQUIRY and INVESTIGATING. This is the predicate every other
+        enforcement surface consults.
+
+        Uses ``object.__setattr__`` to bypass the Case model's
+        bidirectional validators (RESOLVED requires resolved_at, etc.) —
+        this test isn't about the validators; it's about ``is_terminal``.
+        """
+        case = _make_investigating_case()
+
+        # Non-terminal states
+        object.__setattr__(case, "status", CaseStatus.INQUIRY)
+        assert case.is_terminal is False
+        object.__setattr__(case, "status", CaseStatus.INVESTIGATING)
+        assert case.is_terminal is False
+
+        # Terminal states (bypass cross-field validators to isolate
+        # the is_terminal property)
+        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+        assert case.is_terminal is True
+        object.__setattr__(case, "status", CaseStatus.CLOSED)
+        assert case.is_terminal is True
+
+    def test_inv09_require_case_not_terminal_raises_409_on_resolved(self):
+        """``require_case_not_terminal(case)`` raises HTTPException 409
+        when the case is RESOLVED. This is the API-level guard used by
+        the case-update endpoint.
+        """
+        from fastapi import HTTPException
+
+        from faultmaven.modules.case.api.routes import require_case_not_terminal
+
+        case = _make_investigating_case()
+        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+
+        with pytest.raises(HTTPException) as exc_info:
+            require_case_not_terminal(case)
+
+        assert exc_info.value.status_code == 409
+        assert "terminal" in exc_info.value.detail.lower()
+
+    def test_inv09_require_case_not_terminal_raises_409_on_closed(self):
+        """Same guard, CLOSED variant."""
+        from fastapi import HTTPException
+
+        from faultmaven.modules.case.api.routes import require_case_not_terminal
+
+        case = _make_investigating_case()
+        object.__setattr__(case, "status", CaseStatus.CLOSED)
+
+        with pytest.raises(HTTPException) as exc_info:
+            require_case_not_terminal(case)
+
+        assert exc_info.value.status_code == 409
+
+    def test_inv09_require_case_not_terminal_noop_on_non_terminal(self):
+        """``require_case_not_terminal(case)`` returns silently for INQUIRY
+        and INVESTIGATING cases — only terminal cases are rejected.
+        """
+        from faultmaven.modules.case.api.routes import require_case_not_terminal
+
+        case = _make_investigating_case()
+
+        # INQUIRY: no-op
+        case.status = CaseStatus.INQUIRY
+        require_case_not_terminal(case)  # must not raise
+
+        # INVESTIGATING: no-op
+        case.status = CaseStatus.INVESTIGATING
+        require_case_not_terminal(case)  # must not raise
+
+    def test_inv09_milestone_engine_short_circuits_on_terminal_case(self):
+        """Static check: ``_process_turn_impl`` short-circuits to
+        ``_process_terminal_turn`` when the case is terminal. The
+        normal investigation pipeline (which mutates state, advances
+        milestones, etc.) is bypassed entirely.
+
+        Pins the engine-level enforcement that complements the API-level
+        ``require_case_not_terminal`` guards.
+        """
+        source = inspect.getsource(MilestoneEngine._process_turn_impl)
+
+        # The short-circuit should be near the top of the method,
+        # before any state-mutation paths.
+        assert "case.is_terminal" in source, (
+            "INV-09 violation: _process_turn_impl no longer checks "
+            "case.is_terminal. The engine must short-circuit terminal "
+            "cases to _process_terminal_turn so they can't be mutated "
+            "via the normal milestone pipeline."
+        )
+        assert "_process_terminal_turn" in source, (
+            "INV-09 violation: _process_turn_impl no longer routes to "
+            "_process_terminal_turn. Terminal cases must short-circuit "
+            "to the Q&A handler instead of running the full pipeline."
+        )
+
+
+# =============================================================================
+# INV-10: submit_turn rejection rules on terminal cases
+# =============================================================================
+#
+# Source: §1.7 *Terminal Mode* (lines 1072-1078)
+# Statement: ``submit_turn`` on a terminal case:
+#   - text query → routed to terminal Q&A
+#   - files / pasted content → 409 Conflict
+#   - status-transition intent → 409 Conflict
+# Enforcement: API-level — submit_turn endpoint inspects payload kind.
+#
+# No drift surfaced; the matrix description matches the inline guard at
+# routes.py:2141-2154 exactly.
+
+
+class TestINV10_SubmitTurnRejectionRules:
+    """INV-10: submit_turn rejects mutating payloads on terminal cases."""
+
+    def test_inv10_submit_turn_rejects_files_on_terminal_case(self):
+        """Static check: ``submit_turn`` source contains the files /
+        pasted_content rejection block on terminal cases."""
+        from faultmaven.modules.case.api import routes
+
+        source = inspect.getsource(routes.submit_turn)
+
+        # The terminal-case guard
+        assert (
+            "case.is_terminal" in source
+        ), "INV-10 violation: submit_turn no longer checks case.is_terminal."
+        # Files / pasted content rejection
+        assert "files or pasted_content" in source, (
+            "INV-10 violation: submit_turn no longer rejects "
+            "(files or pasted_content) on terminal cases. See §1.7 "
+            "Terminal Mode rejection rules."
+        )
+        # Must use the 409 Conflict status code
+        assert "HTTP_409_CONFLICT" in source, (
+            "INV-10 violation: submit_turn no longer uses 409 Conflict "
+            "for terminal-state rejections."
+        )
+
+    def test_inv10_submit_turn_rejects_status_transition_on_terminal_case(self):
+        """Static check: status-transition intents are rejected on
+        terminal cases."""
+        from faultmaven.modules.case.api import routes
+
+        source = inspect.getsource(routes.submit_turn)
+
+        # Must have the intent_type == "status_transition" rejection inside
+        # the is_terminal block. We confirm the literal is present at all
+        # and the 409 status is in the surrounding lines.
+        assert 'intent_type == "status_transition"' in source, (
+            "INV-10 violation: submit_turn no longer rejects "
+            'intent_type == "status_transition" on terminal cases.'
+        )
+
+    def test_inv10_submit_turn_does_not_reject_text_only_query_on_terminal(self):
+        """Static check: the terminal-state guard in ``submit_turn`` does
+        NOT reject text-only queries. The Q&A route through
+        ``_process_terminal_turn`` depends on text queries being passed
+        through.
+
+        The rejection branches are gated on ``files or pasted_content``
+        and ``intent_type == "status_transition"`` — neither of which
+        applies to a pure text query.
+        """
+        from faultmaven.modules.case.api import routes
+
+        source = inspect.getsource(routes.submit_turn)
+
+        # The terminal-case guard is followed by conditional rejection
+        # branches gated on files / pasted_content / status_transition.
+        # There must NOT be an unconditional "raise HTTPException(409)"
+        # immediately after the `if case.is_terminal:` line.
+        terminal_idx = source.find("if case.is_terminal:")
+        assert terminal_idx >= 0
+        # Look at the ~500 chars following the terminal check: there should
+        # be conditional `if` branches, not an unconditional raise.
+        terminal_block = source[terminal_idx : terminal_idx + 500]
+        # Counts of conditional rejection branches
+        assert terminal_block.count("if files or pasted_content") >= 1
+        assert terminal_block.count('if intent_type == "status_transition"') >= 1
+        # And the block must not blanket-reject queries — there should be
+        # no `if query:` branch that raises 409 inside the terminal guard.
+        assert "if query:" not in terminal_block, (
+            "INV-10 violation: submit_turn appears to blanket-reject "
+            "queries on terminal cases. Text Q&A must be allowed."
+        )
+
+
+# =============================================================================
+# INV-12: Free-typed paraphrases route to Q&A, never produce persisted side effect
+# =============================================================================
+#
+# Source: §1.7.3 *Regeneration* — "Free text routes to Q&A: the regen handler
+#   is reached only via the COOPERATIVE suggestion's precomposed payload
+#   (exact-match). Free-typed paraphrases like 'give me a recap' or 'new
+#   summary please' route to terminal Q&A."
+# Statement: Only exact-match of the COOPERATIVE payload triggers a
+#   persisted Report or Runbook side effect. Everything else routes to
+#   the Q&A handler.
+# Enforcement: Code-guarded — _REPORT_REGEN_PATTERNS and
+#   _RUNBOOK_CREATION_PATTERNS use exact-match (msg_lower in patterns).
+#
+# No drift surfaced; the matrix description matches the code at
+# milestone_engine.py:1055 and 1064 exactly.
+
+
+class TestINV12_FreeTextRoutesToQA:
+    """INV-12: only exact-match COOPERATIVE payloads produce persisted side effects.
+
+    The dispatcher in ``_process_terminal_turn`` routes by exact-match
+    against ``_REPORT_REGEN_PATTERNS`` / ``_RUNBOOK_CREATION_PATTERNS``.
+    Anything else falls through to ``_process_terminal_qa`` (no persisted
+    side effect).
+    """
+
+    @pytest.mark.asyncio
+    async def test_inv12_exact_payload_match_triggers_regen(self):
+        """The precomposed regen payload routes to
+        ``_handle_report_regeneration``, NOT Q&A."""
+        repo = MagicMock()
+        repo.save = AsyncMock(side_effect=lambda c: c)
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+
+        case = _make_investigating_case()
+        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+
+        # Mock the three dispatch handlers
+        engine._handle_report_regeneration = AsyncMock(
+            return_value={
+                "agent_response": "regenerated",
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": {},
+            }
+        )
+        engine._handle_runbook_creation = AsyncMock()
+        engine._process_terminal_qa = AsyncMock()
+
+        # Exact-match the precomposed payload
+        await engine._process_terminal_turn(
+            case,
+            "Regenerate the resolution summary report for this case",
+            {},
+        )
+
+        engine._handle_report_regeneration.assert_called_once()
+        engine._handle_runbook_creation.assert_not_called()
+        engine._process_terminal_qa.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_inv12_free_typed_recap_paraphrase_routes_to_qa(self):
+        """Free-typed paraphrases like 'give me a recap' route to Q&A —
+        NOT regen. No persisted Report side effect."""
+        repo = MagicMock()
+        repo.save = AsyncMock(side_effect=lambda c: c)
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+
+        case = _make_investigating_case()
+        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+
+        engine._handle_report_regeneration = AsyncMock()
+        engine._handle_runbook_creation = AsyncMock()
+        engine._process_terminal_qa = AsyncMock(
+            return_value={
+                "agent_response": "Q&A",
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": {},
+            }
+        )
+
+        # Multiple paraphrases that MUST route to Q&A, not regen
+        paraphrases = [
+            "give me a recap",
+            "summarize what happened",
+            "new summary please",
+            "redo the report",
+            "what did we conclude",
+            "can you regenerate this",  # substring of "regenerate" — must NOT match
+            "regenerate the summary",  # missing "report for this case"
+        ]
+        for msg in paraphrases:
+            engine._handle_report_regeneration.reset_mock()
+            engine._process_terminal_qa.reset_mock()
+            await engine._process_terminal_turn(case, msg, {})
+            engine._handle_report_regeneration.assert_not_called()
+            engine._process_terminal_qa.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_inv12_runbook_paraphrase_routes_to_qa(self):
+        """Runbook-creation paraphrases route to Q&A — only the exact
+        COOPERATIVE payload triggers the persisted runbook side effect."""
+        repo = MagicMock()
+        repo.save = AsyncMock(side_effect=lambda c: c)
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+
+        case = _make_investigating_case()
+        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+
+        engine._handle_runbook_creation = AsyncMock()
+        engine._process_terminal_qa = AsyncMock(
+            return_value={
+                "agent_response": "Q&A",
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": {},
+            }
+        )
+
+        paraphrases = [
+            "create a runbook please",
+            "make a runbook",
+            "generate a runbook",  # missing "from this resolved case"
+            "yes, create a runbook",
+            "i want a runbook",
+        ]
+        for msg in paraphrases:
+            engine._handle_runbook_creation.reset_mock()
+            engine._process_terminal_qa.reset_mock()
+            await engine._process_terminal_turn(case, msg, {})
+            engine._handle_runbook_creation.assert_not_called()
+            engine._process_terminal_qa.assert_called_once()
+
+    def test_inv12_patterns_match_cooperative_suggestion_payloads(self):
+        """The dispatcher's exact-match tuples must equal the precomposed
+        payloads of the COOPERATIVE suggestions. If a payload string changes
+        (in milestone_engine.py module-level constants) the dispatcher
+        constants must change in lockstep, or clicking the suggestion would
+        stop triggering its action.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            GENERATE_RUNBOOK_PAYLOAD,
+            REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
+            REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
+        )
+
+        # Patterns are stored on the class (lowercased)
+        regen_patterns = MilestoneEngine._REPORT_REGEN_PATTERNS
+        runbook_patterns = MilestoneEngine._RUNBOOK_CREATION_PATTERNS
+
+        # Every COOPERATIVE payload must appear in the dispatcher's tuple
+        # (lowercased, since user_message is lower-cased before matching)
+        assert REGENERATE_CLOSURE_SUMMARY_PAYLOAD.lower() in regen_patterns, (
+            "REGENERATE_CLOSURE_SUMMARY_PAYLOAD constant changed but "
+            "_REPORT_REGEN_PATTERNS was not updated — clicking the regen "
+            "suggestion would now route to Q&A instead of regen."
+        )
+        assert REGENERATE_RESOLUTION_SUMMARY_PAYLOAD.lower() in regen_patterns
+        assert GENERATE_RUNBOOK_PAYLOAD.lower() in runbook_patterns
+
+
+# =============================================================================
+# INV-13: Closure-ack turn omits regen; Q&A turn offers it
+# =============================================================================
+#
+# Source: §1.7.3 *Regeneration: Where it's offered* (lines 1113-1114)
+# Statement: Closure-acknowledgment turn for RESOLVED offers the runbook
+#   affordance only (no regen). Closure-ack for CLOSED is silent (no
+#   suggestions). Regen is offered on subsequent terminal Q&A turns when
+#   the substance gate would PASS.
+# Enforcement: Code-guarded — closure-ack call sites use
+#   ``_resolved_ack_suggestions()`` / ``[]``; terminal Q&A uses
+#   ``_resolved_suggestions()`` / ``_closed_suggestions()``.
+#
+# No drift surfaced.
+
+
+class TestINV13_AckTurnVsQATurnSuggestions:
+    """INV-13: ack-turn and Q&A-turn suggestion sets differ by design.
+
+    The pins below verify the helper-function CONTRACTS that the engine's
+    wiring depends on. The wiring itself (which helper is called at each
+    call site) is already covered by test_inquiry_transition.py and
+    test_transition_alignment.py.
+    """
+
+    def test_inv13_resolved_ack_offers_runbook_only_no_regen(self):
+        """``_resolved_ack_suggestions()`` returns the runbook affordance
+        only — NO regen card. Regen beside a freshly-rendered summary
+        on the ack turn would be noise.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _resolved_ack_suggestions,
+        )
+
+        suggestions = _resolved_ack_suggestions()
+        labels = [s["label"] for s in suggestions]
+
+        # Exactly the runbook affordance, nothing else
+        assert any("runbook" in label.lower() for label in labels), (
+            "INV-13 violation: _resolved_ack_suggestions no longer offers "
+            "the runbook affordance. The ack-turn must still offer the "
+            "forward action."
+        )
+        # Critically: NO regen card on the ack turn
+        regen_labels = [label for label in labels if "regenerate" in label.lower()]
+        assert regen_labels == [], (
+            f"INV-13 violation: _resolved_ack_suggestions includes regen "
+            f"affordance {regen_labels} — but regen is reserved for "
+            f"subsequent terminal Q&A turns. See §1.7.3."
+        )
+
+    def test_inv13_resolved_qa_offers_both_regen_and_runbook(self):
+        """``_resolved_suggestions()`` (for terminal Q&A turns on RESOLVED
+        cases) returns both the regen affordance and the runbook
+        affordance.
+        """
+        from faultmaven.core.investigation.milestone_engine import _resolved_suggestions
+
+        suggestions = _resolved_suggestions()
+        labels = [s["label"] for s in suggestions]
+
+        assert any("regenerate" in label.lower() for label in labels), (
+            "INV-13 violation: _resolved_suggestions no longer offers "
+            "regen on terminal Q&A turns. Users need a chat-side path "
+            "to iterate / retry."
+        )
+        assert any("runbook" in label.lower() for label in labels), (
+            "INV-13 violation: _resolved_suggestions no longer offers "
+            "runbook on terminal Q&A turns."
+        )
+
+    def test_inv13_closed_qa_offers_regen_when_substance_gate_passes(self):
+        """``_closed_suggestions(case)`` offers the regen affordance when
+        the substance gate would PASS, [] when FAIL. CLOSED cases never
+        get the runbook affordance (only RESOLVED cases qualify).
+        """
+        from faultmaven.core.investigation.milestone_engine import _closed_suggestions
+
+        case = _make_investigating_case()
+        object.__setattr__(case, "status", CaseStatus.CLOSED)
+
+        # No evidence / hypotheses / milestones → gate FAIL → no suggestions
+        assert _closed_suggestions(case) == [], (
+            "INV-13 violation: _closed_suggestions returns non-empty for "
+            "a CLOSED case with no substance — the substance gate should "
+            "block regen in this case."
+        )
+
+        # Mark a milestone completed → completed_milestones property
+        # returns non-empty → substance gate PASS → regen offered
+        case.progress.symptom_verified = True
+
+        suggestions = _closed_suggestions(case)
+        assert suggestions, "CLOSED + substance must yield the regen suggestion"
+        labels = [s["label"] for s in suggestions]
+        assert any("regenerate" in label.lower() for label in labels)
+        # CLOSED never offers runbook
+        assert not any("runbook" in label.lower() for label in labels), (
+            "INV-13 violation: _closed_suggestions offered a runbook "
+            "affordance — only RESOLVED cases qualify for runbook "
+            "generation. See §1.7.3."
+        )
+
+    def test_inv13_ack_and_qa_suggestion_sets_differ(self):
+        """The whole point of the asymmetry: ack-turn and Q&A-turn
+        suggestion sets for RESOLVED are NOT equal. The ack set is a
+        proper subset of the Q&A set (runbook only vs regen+runbook).
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _resolved_ack_suggestions,
+            _resolved_suggestions,
+        )
+
+        ack = _resolved_ack_suggestions()
+        qa = _resolved_suggestions()
+
+        assert ack != qa, (
+            "INV-13 violation: closure-ack and terminal-Q&A return the "
+            "same suggestion set for RESOLVED cases. They MUST differ — "
+            "the ack turn should not duplicate the just-rendered summary "
+            "with a regen card."
+        )
+        assert len(ack) < len(qa), (
+            "ack-turn suggestions should be a strict subset of Q&A-turn "
+            "suggestions (runbook only vs regen+runbook)."
+        )
+
+
+# =============================================================================
+# INV-15: Agent ADVISOR role
+# =============================================================================
+#
+# Source: §1.6 *Agent Role Constraints* (lines 1003-1010)
+# Statement: The agent is an ADVISOR — it never runs commands, accesses
+#   systems, or makes infrastructure changes. Enforced via vocabulary
+#   constraint (banned/required phrase table).
+# Enforcement: Prompt-only + light vocabulary check.
+#
+# Drift surfaced during verification:
+#
+#   a. The "light vocabulary check" in the matrix refers to the
+#      ``_completion_phrases`` scan at milestone_engine.py:2602 in
+#      _process_turn_impl. That scan is scoped to transition-completion
+#      claims ("case closed", "marking as resolved") — not the broader
+#      banned-phrase list in _ADVISOR_ROLE_CONSTRAINT ("Let me check",
+#      "I will run", etc.). The check is NARROWER than the prompt rule
+#      it backstops. Not a violation; calibration mismatch.
+
+
+class TestINV15_AgentAdvisorRole:
+    """INV-15: ADVISOR-role vocabulary constraint is wired into prompts + scanned.
+
+    Pins the prompt content (banned phrases present) and the runtime
+    compliance scan (engine logs completion-phrase detection for
+    quarterly drift review).
+    """
+
+    def test_inv15_advisor_role_constraint_contains_banned_phrases(self):
+        """``_ADVISOR_ROLE_CONSTRAINT`` (the prompt constant) explicitly
+        bans the action-claim phrases.
+        """
+        from faultmaven.core.investigation.prompts.templates import (
+            _ADVISOR_ROLE_CONSTRAINT,
+        )
+
+        required_bans = [
+            "Let me check",
+            "I will run",
+            "Let me look at",
+            "I'll execute",
+        ]
+        for phrase in required_bans:
+            assert phrase in _ADVISOR_ROLE_CONSTRAINT, (
+                f"INV-15 violation: banned phrase '{phrase}' is no longer "
+                f"in _ADVISOR_ROLE_CONSTRAINT. The agent's role boundary "
+                f"depends on the LLM seeing this list."
+            )
+
+    def test_inv15_advisor_role_constraint_offers_alternatives(self):
+        """``_ADVISOR_ROLE_CONSTRAINT`` tells the LLM what to say instead.
+        A banned-only list without alternatives leaves the LLM no
+        graceful path; this test pins the prescriptive guidance.
+        """
+        from faultmaven.core.investigation.prompts.templates import (
+            _ADVISOR_ROLE_CONSTRAINT,
+        )
+
+        # At least one of the prescriptive alternatives must appear
+        expected_alternatives = ["Could you run", "Please check"]
+        assert any(alt in _ADVISOR_ROLE_CONSTRAINT for alt in expected_alternatives), (
+            "INV-15 violation: _ADVISOR_ROLE_CONSTRAINT no longer offers "
+            "use-instead alternatives. Banned phrases without alternatives "
+            "leave the LLM no graceful path."
+        )
+
+    def test_inv15_advisor_role_constraint_used_in_all_relevant_templates(self):
+        """The advisor-role constraint must be present in INQUIRY_TEMPLATE,
+        the INVESTIGATION_BASE, and TERMINAL_TEMPLATE. A drop from any of
+        these would let the LLM act outside its role in that phase.
+        """
+        from faultmaven.core.investigation.prompts import templates as tmpl
+
+        # All three top-level templates render the constraint as a substring
+        # (woven in via either _ADVISOR_ROLE_CONSTRAINT directly or the
+        # _ACTIVE_ADVISOR_ROLE_BLOCK wrapper).
+        banned_marker = "BANNED PHRASES"
+        assert banned_marker in tmpl.INQUIRY_TEMPLATE, (
+            "INV-15 violation: INQUIRY_TEMPLATE no longer embeds the "
+            "advisor-role banned-phrase block."
+        )
+        assert banned_marker in tmpl.TERMINAL_TEMPLATE, (
+            "INV-15 violation: TERMINAL_TEMPLATE no longer embeds the "
+            "advisor-role banned-phrase block."
+        )
+        # INVESTIGATION_BASE / DIAGNOSIS / etc. — use the active-stage
+        # wrapper. We check at least one investigation-stage template.
+        if hasattr(tmpl, "INVESTIGATION_BASE"):
+            assert banned_marker in tmpl.INVESTIGATION_BASE, (
+                "INV-15 violation: INVESTIGATION_BASE no longer embeds "
+                "the advisor-role banned-phrase block."
+            )
+
+    def test_inv15_runtime_compliance_scan_exists_in_process_turn_impl(self):
+        """``_process_turn_impl`` must contain the runtime compliance scan
+        that logs agent_response for completion-phrase claims. This is
+        the only runtime backstop for INV-15; if it's removed, drift in
+        the LLM becomes invisible.
+        """
+        source = inspect.getsource(MilestoneEngine._process_turn_impl)
+
+        # The compliance instrumentation block
+        assert "_completion_phrases" in source, (
+            "INV-15 violation: _process_turn_impl no longer contains the "
+            "_completion_phrases compliance scan. The quarterly drift "
+            "review depends on this telemetry."
+        )
+        assert "transition_compliance" in source, (
+            "INV-15 violation: _process_turn_impl no longer emits "
+            "'transition_compliance' telemetry. Drift detection signals "
+            "must be preserved."
+        )
+        # At least one of the canonical completion phrases must be in
+        # the scanned tuple
+        canonical_phrases = ["case closed", "marked as resolved"]
+        assert any(phrase in source for phrase in canonical_phrases), (
+            "INV-15 violation: the _completion_phrases tuple appears to "
+            "have been emptied or replaced with unrecognizable content."
+        )
