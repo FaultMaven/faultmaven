@@ -135,6 +135,26 @@ class ICaseRepository(Protocol):
         """Update case last_activity_at timestamp."""
         ...
 
+    async def update_metadata_fields(
+        self,
+        case_id: str,
+        *,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> bool:
+        """Scoped update of cosmetic metadata fields (title, description).
+
+        Does NOT bump ``cases.version``. These fields are not part of
+        the investigation state machine — they're labels shown to the
+        user. Concurrent writes to title/description must not invalidate
+        an in-flight turn's save (which can take tens of seconds during
+        an LLM tool loop).
+
+        Status/closure_reason still go through the versioned ``save``
+        path because they are investigation state.
+        """
+        ...
+
     async def update_evidence_vectorized(
         self, case_id: str, evidence_id: str, vectorized: bool
     ) -> bool:

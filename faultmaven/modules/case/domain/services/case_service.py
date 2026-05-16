@@ -282,11 +282,18 @@ class CaseService(ICaseService):
         """
         Update case with access control.
 
-        Read-modify-write is wrapped in ``update_case_with_retry`` so a
-        racing concurrent writer (OCC conflict) causes a reload + re-
-        apply rather than a silent loss. The mutator is idempotent: it
-        only sets the requested fields, so re-applying it against a
-        fresher Case produces the same result.
+        Splits writes into two channels based on field semantics:
+
+        - **Metadata only** (title, description): goes through the scoped
+          ``update_metadata_fields`` repo method. Does NOT bump
+          ``cases.version`` and therefore cannot stale-conflict with an
+          in-flight turn save. This is the common path for title
+          generation and dashboard renames.
+        - **Investigation state** (status, closure_reason, or mixed with
+          metadata): goes through ``update_case_with_retry``, which uses
+          the versioned ``save`` path with OCC retry on conflict. Status
+          transitions are real investigation events; concurrent writers
+          must coordinate.
 
         Args:
             case_id: Case identifier
@@ -302,15 +309,15 @@ class CaseService(ICaseService):
         if not updates:
             raise ValidationException("Updates cannot be empty")
 
-        from faultmaven.modules.case.utils import update_case_with_retry
-
         # Validate and apply updates directly to Case object
-        allowed_fields = {"title", "description", "status", "closure_reason"}
+        metadata_fields = {"title", "description"}
+        state_fields = {"status", "closure_reason"}
+        allowed_fields = metadata_fields | state_fields
         safe_updates = {k: v for k, v in updates.items() if k in allowed_fields}
 
         try:
             # Access check happens by loading via get_case first. Then the
-            # retry helper reloads on conflict — but it uses the plain
+            # retry helper (state path) reloads on conflict via
             # repository.get(), which skips the access check. We enforce
             # the check once up front; no privilege escalation window
             # exists because the user_id doesn't change between attempts.
@@ -318,12 +325,32 @@ class CaseService(ICaseService):
             if not existing:
                 return False
 
-            async def apply(case: Case) -> None:
-                for key, value in safe_updates.items():
-                    if hasattr(case, key):
-                        setattr(case, key, value)
+            touches_state = any(k in state_fields for k in safe_updates)
+            touches_metadata = any(k in metadata_fields for k in safe_updates)
 
-            await update_case_with_retry(self.repository, case_id, apply)
+            if not touches_state and touches_metadata:
+                # Metadata-only path: scoped UPDATE, no version bump.
+                await self.repository.update_metadata_fields(
+                    case_id,
+                    title=safe_updates.get("title"),
+                    description=safe_updates.get("description"),
+                )
+            elif touches_state:
+                # Investigation-state path: versioned save with OCC retry.
+                # Any metadata fields in the same call ride along on the
+                # versioned save — the OCC has to fire for the state
+                # change anyway, so there's no value in splitting them.
+                from faultmaven.modules.case.utils import update_case_with_retry
+
+                async def apply(case: Case) -> None:
+                    for key, value in safe_updates.items():
+                        if hasattr(case, key):
+                            setattr(case, key, value)
+
+                await update_case_with_retry(self.repository, case_id, apply)
+            # else: no recognized fields — treat as no-op success (matches
+            # pre-split behavior for forward compatibility with callers
+            # that pass unrelated keys).
 
             logger.info(f"Updated case {case_id}")
             return True

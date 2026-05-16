@@ -1647,6 +1647,49 @@ class SQLiteCaseRepository(CaseRepository):
                 f"Failed to update activity timestamp for case {case_id}: {e}"
             ) from e
 
+    async def update_metadata_fields(
+        self,
+        case_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> bool:
+        """Scoped UPDATE of cosmetic metadata fields — does NOT bump version.
+
+        title/description are user-facing labels, not investigation state.
+        Writing them through ``save(case)`` would bump ``cases.version``
+        and stale-conflict any in-flight turn save (which can hold the
+        case in memory for tens of seconds during the LLM tool loop).
+
+        Pass only the fields you want to change; ``None`` means "leave
+        as-is". Returns True if a row was updated.
+        """
+        if title is None and description is None:
+            return False
+
+        sets: list[str] = ["updated_at = :updated_at"]
+        params: dict[str, Any] = {
+            "case_id": case_id,
+            "updated_at": datetime.now(UTC),
+        }
+        if title is not None:
+            sets.append("title = :title")
+            params["title"] = title
+        if description is not None:
+            sets.append("description = :description")
+            params["description"] = description
+
+        try:
+            query = text(f"UPDATE cases SET {', '.join(sets)} WHERE case_id = :case_id")
+            result = await self.db.execute(query, params)
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to update metadata fields for case {case_id}: {e}"
+            ) from e
+
     async def update_evidence_vectorized(
         self, case_id: str, evidence_id: str, vectorized: bool
     ) -> bool:
