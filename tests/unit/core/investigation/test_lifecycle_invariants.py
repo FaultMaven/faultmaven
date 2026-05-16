@@ -13,9 +13,12 @@ pin the new mechanism.
 
 from datetime import datetime, timezone
 
+import inspect
+
 import pytest
 from pydantic import ValidationError
 
+from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.terminal_transitions import (
     _execute_resolved_transition,
     cancel_pending_transition,
@@ -28,6 +31,7 @@ from faultmaven.modules.case.domain.models import (
     CaseStatus,
     InquiryData,
     InvestigationProgress,
+    KnowledgeResolution,
     ProblemVerification,
     is_valid_action,
 )
@@ -367,3 +371,163 @@ class TestINV04_NoDirectInquiryToResolved:
                     f"is_valid_action says {func_allows}. "
                     f"These must agree — see INV-04 drift note."
                 )
+
+
+# =============================================================================
+# INV-06: KB-Resolution path still uses pending_transition (no auto-resolve)
+# =============================================================================
+#
+# Source: §1.2 *KB-Resolution Path (Same-Turn Variant)* (lines 345-385).
+# Statement: When the LLM emits ``knowledge_resolution`` (runbook fix
+#   confirmed by user), the engine does NOT bypass the disposition
+#   handshake. It populates milestone state from the matched runbook Cause
+#   and lets the standard ProposedTransition flow handle the disposition.
+# Enforcement: Structural — uses the same ``pending_transition`` mechanism
+#   as the multi-turn path. The "collapse" is in milestone-state authoring,
+#   not transition timing.
+#
+# Drift surfaced during verification (to fold into §1.3.1 drift notes):
+#
+#   a. Design §1.2 overstates the same-turn collapse. The text claims "no
+#      additional confirmation turn is required", but the engine's
+#      ``transition_proposed_this_turn`` guard at milestone_engine.py:5253
+#      prevents same-turn confirmation. In current code, the KB-resolution
+#      path STILL requires a separate confirmation turn — same as the
+#      multi-turn path. The "collapse" is only in milestone-state
+#      authoring (RootCauseConclusion + Solution populated in one turn),
+#      NOT in user-side disposition timing.
+#
+#   b. The matrix row for INV-06 is accurate ("still goes through
+#      propose_transition + user confirmation") but doesn't reflect the
+#      design-text overstatement in §1.2. The matrix understates while
+#      §1.2 oversells. Both should converge on the actual behavior.
+#
+#   c. ``metadata["knowledge_resolution_signalled"]`` is set in
+#      _apply_investigation_updates (line 4690) but never read elsewhere.
+#      Dead metadata. Minor; flag for cleanup.
+#
+# INV-06's structural invariant itself HOLDS — the engine does not
+# auto-resolve from ``knowledge_resolution``. The tests below pin that.
+
+
+class TestINV06_KBResolutionUsesPendingTransition:
+    """INV-06: knowledge_resolution does not bypass the propose+confirm gate."""
+
+    def test_inv06_propose_transition_with_knowledge_resolution_present_does_not_execute(
+        self,
+    ):
+        """``propose_transition`` behaves identically whether or not
+        ``knowledge_resolution`` is set on the case.
+
+        Pins that the KB-resolution path uses the same structural
+        mechanism as multi-turn resolution. The presence of
+        knowledge_resolution does NOT grant a same-turn execute
+        bypass at the function level.
+        """
+        case = _make_investigating_case()
+        # Simulate the LLM having stored a runbook resolution signal:
+        case.inquiry.knowledge_resolution = KnowledgeResolution(
+            match_id="rb_abc123",
+            match_type="runbook",
+            solution_applied="Restarted the service per runbook",
+            user_confirmation="That fixed it",
+            resolution_turn=2,
+        )
+
+        propose_transition(
+            case,
+            to_status="resolved",
+            summary="Resolved via runbook rb_abc123",
+            evidence_ids=[],
+        )
+
+        # Standard pending_transition write — identical to INV-03
+        assert case.pending_transition is not None
+        assert case.pending_transition["to_status"] == "resolved"
+        # Status UNCHANGED — no auto-resolve from knowledge_resolution
+        assert case.status == CaseStatus.INVESTIGATING
+        assert case.resolved_at is None
+        # knowledge_resolution is preserved on the case (audit trail)
+        assert case.inquiry.knowledge_resolution is not None
+        assert case.inquiry.knowledge_resolution.match_id == "rb_abc123"
+
+    def test_inv06_engine_knowledge_resolution_handler_does_not_auto_resolve(self):
+        """The engine's ``_apply_investigation_updates`` knowledge_resolution
+        handler stores the signal but does NOT call confirm or execute.
+
+        This is a code-shape pin: future refactors that add an
+        auto-resolve shortcut inside the knowledge_resolution block would
+        break this test. The pin is on the structural property documented
+        at milestone_engine.py:4673-4697 ("Standard ProposedTransition
+        handshake handles disposition").
+        """
+        source = inspect.getsource(MilestoneEngine._apply_investigation_updates)
+
+        # Find the knowledge_resolution handling block. The comment
+        # immediately above the if-statement (line 4673-4681 at time of
+        # writing) anchors the block.
+        kr_idx = source.find('if hasattr(updates, "knowledge_resolution")')
+        assert kr_idx >= 0, (
+            "Could not locate knowledge_resolution handling block in "
+            "_apply_investigation_updates. The static check below assumes "
+            "this structure; if the handler moved, this test must move "
+            "with it."
+        )
+
+        # Walk forward until the next top-level comment block or the next
+        # major if-statement to bound the kr handler region. A 1500-char
+        # window is conservative — the actual handler is ~20 lines.
+        kr_region = source[kr_idx : kr_idx + 1500]
+
+        # These calls indicate auto-resolution. None should appear inside
+        # the kr handler:
+        forbidden_calls = [
+            "confirm_pending_transition",
+            "_execute_resolved_transition",
+            "_execute_closed_transition",
+            "case.status = CaseStatus.RESOLVED",
+            "case.atomic_update(\n            status=CaseStatus.RESOLVED",
+        ]
+        for forbidden in forbidden_calls:
+            assert forbidden not in kr_region, (
+                f"INV-06 violation: knowledge_resolution handler in "
+                f"_apply_investigation_updates contains '{forbidden}'. "
+                f"The engine must not auto-resolve from knowledge_resolution; "
+                f"the standard ProposedTransition handshake handles "
+                f"disposition (see §1.2 KB-Resolution Path)."
+            )
+
+    def test_inv06_full_kb_resolution_path_requires_explicit_confirm(self):
+        """End-to-end pin: knowledge_resolution + propose_transition leave
+        the case INVESTIGATING. Only ``confirm_pending_transition`` —
+        invoked separately — executes the disposition.
+
+        Documents the canonical KB-resolution sequence and asserts the
+        invariant explicitly.
+        """
+        case = _make_investigating_case()
+        case.inquiry.knowledge_resolution = KnowledgeResolution(
+            match_id="rb_abc123",
+            match_type="runbook",
+            solution_applied="Applied runbook fix",
+            user_confirmation="It worked",
+            resolution_turn=2,
+        )
+
+        # Step 1: engine proposes (LLM emitted knowledge_resolution + ProposedTransition)
+        propose_transition(
+            case,
+            to_status="resolved",
+            summary="Resolved via runbook",
+            evidence_ids=[],
+        )
+        assert case.status == CaseStatus.INVESTIGATING  # NOT yet resolved
+        assert case.pending_transition is not None
+
+        # Step 2: explicit confirm (next turn, or via intent-routed click)
+        # is the ONLY thing that completes the transition.
+        result = confirm_pending_transition(case, user_id="user_test")
+
+        assert result is True
+        assert case.status == CaseStatus.RESOLVED
+        assert case.resolved_at is not None
