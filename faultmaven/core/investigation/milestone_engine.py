@@ -4446,6 +4446,21 @@ class MilestoneEngine:
         user_message: str = "",
     ) -> None:
         """Apply updates during INQUIRY phase."""
+        # Capture pre-turn state for the same-turn-confirmation guard
+        # applied later in this method. The design requires the user to
+        # confirm a problem statement that was presented on a PRIOR turn —
+        # never one that was first written this turn. The INQUIRY_TEMPLATE
+        # instructs the LLM accordingly ("Never set user_confirmed_-
+        # investigation=True on the same turn you first present the
+        # problem statement"), but LLMs are stochastic and the rule was
+        # observed to be violated on first-turn cases with explicit
+        # "please investigate" phrasing. This local makes the invariant
+        # enforceable independently of prompt compliance.
+        _statement_existed_before_turn = bool(
+            case.inquiry.proposed_problem_statement
+            and case.inquiry.proposed_problem_statement.strip()
+        )
+
         if updates.proposed_problem_statement:
             case.inquiry.proposed_problem_statement = updates.proposed_problem_statement
 
@@ -4510,12 +4525,18 @@ class MilestoneEngine:
             updates.preliminary_urgency, "is_incident_report", False
         )
 
-        # Check if LLM detected user confirmation of the problem statement
+        # Check if LLM detected user confirmation of the problem statement.
+        # Same-turn-confirmation guard: the proposed_problem_statement must
+        # have existed BEFORE this turn — otherwise the LLM is trying to
+        # write the statement and confirm it in one shot, which collapses
+        # the User-Agent Handshake. See the captured
+        # _statement_existed_before_turn at the top of this method.
         if (
             getattr(updates, "user_confirmed_investigation", False)
             and case.inquiry.proposed_problem_statement
             and case.inquiry.proposed_problem_statement.strip()
             and not case.inquiry.problem_statement_confirmed
+            and _statement_existed_before_turn
         ):
             case.inquiry.problem_statement_confirmed = True
             case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
@@ -4524,6 +4545,29 @@ class MilestoneEngine:
             logger.info(
                 f"User confirmed problem statement — transitioning to INVESTIGATING. "
                 f"statement='{case.inquiry.proposed_problem_statement[:80]}...'"
+            )
+        elif (
+            getattr(updates, "user_confirmed_investigation", False)
+            and case.inquiry.proposed_problem_statement
+            and case.inquiry.proposed_problem_statement.strip()
+            and not case.inquiry.problem_statement_confirmed
+            and not _statement_existed_before_turn
+        ):
+            # LLM tried to set the problem statement AND confirm investigation
+            # in the same turn — design forbids this (the user must see the
+            # statement first, then confirm on a subsequent turn). Refuse
+            # the transition; the agent will re-present the statement on
+            # the next turn. Logged so drift is observable in telemetry.
+            logger.warning(
+                f"Same-turn-confirmation guard rejected INQUIRY→INVESTIGATING "
+                f"for case {case.case_id}: LLM emitted "
+                f"user_confirmed_investigation=True on the same turn that "
+                f"first set proposed_problem_statement. Deferring to next turn.",
+                extra={
+                    "case_id": case.case_id,
+                    "turn": case.current_turn,
+                    "statement_preview": case.inquiry.proposed_problem_statement[:80],
+                },
             )
         elif (
             updates.preliminary_urgency
