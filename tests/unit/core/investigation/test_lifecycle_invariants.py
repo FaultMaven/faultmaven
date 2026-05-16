@@ -35,9 +35,7 @@ from faultmaven.modules.case.domain.models import (
     ProblemVerification,
     is_valid_action,
 )
-from faultmaven.modules.case.domain.services.case_action_manager import (
-    ALLOWED_ACTIONS,
-)
+from faultmaven.modules.case.domain.services.case_action_manager import ALLOWED_ACTIONS
 
 
 def _make_investigating_case() -> Case:
