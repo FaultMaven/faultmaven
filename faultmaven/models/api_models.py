@@ -875,3 +875,11 @@ class EvidenceDetailsResponse(BaseModel):
         ),
     )
     analysis: Optional[str] = None
+
+
+class CaseEvidenceListResponse(BaseModel):
+    """All evidence records for a case, each with source and hypothesis linkage."""
+
+    case_id: str
+    total_count: int
+    evidence: List[EvidenceDetailsResponse]

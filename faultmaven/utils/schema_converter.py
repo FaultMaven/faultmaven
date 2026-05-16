@@ -6,10 +6,69 @@ function calling schemas for structured output enforcement.
 Design Reference: docs/architecture/RESPONSE_FORMAT_INTEGRATION_SPEC.md
 """
 
+import copy
 import inspect
 from typing import Any, Dict, Type, get_args, get_origin
 
 from pydantic import BaseModel
+
+
+def _inline_refs(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve every ``$ref`` against a top-level ``$defs`` block and drop ``$defs``.
+
+    Pydantic v2 emits nested-model schemas as ``$ref`` references into a
+    sibling ``$defs`` map. Some OpenAI-compatible providers (Fireworks
+    observed; their server-side ``referencing`` library raises
+    ``AttributeError("'NoneType' object has no attribute 'lookup'")`` on
+    these refs) fail to dereference these when the schema is passed as a
+    tool's ``parameters``. Inlining is the universal fix: any JSON-Schema
+    validator accepts a schema with no ``$ref``/``$defs`` at all.
+
+    The function is non-mutating (returns a deep copy), handles arbitrary
+    nesting (refs that reference defs that reference defs), and detects
+    recursive references — raising rather than looping. None of the
+    project's structured-output schemas are recursive; if that changes,
+    the caller needs a different strategy (e.g., bounded inlining depth).
+    """
+    schema = copy.deepcopy(schema)
+    defs = schema.pop("$defs", None)
+    if not defs:
+        return schema
+
+    def resolve(node: Any, in_progress: set[str]) -> Any:
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                key = ref[len("#/$defs/") :]
+                if key in in_progress:
+                    raise ValueError(
+                        f"Recursive $ref to '{key}' cannot be inlined. "
+                        f"This schema is not safe for providers that require "
+                        f"flat schemas. Consider a non-recursive design."
+                    )
+                target = defs.get(key)
+                if target is None:
+                    # Leave the $ref intact — caller's responsibility. We
+                    # don't fabricate a placeholder; an unresolvable ref
+                    # signals a malformed schema upstream.
+                    return node
+                # Merge: inline the resolved target, but preserve any
+                # sibling keys on the $ref node (e.g. description overrides).
+                resolved = resolve(target, in_progress | {key})
+                if not isinstance(resolved, dict):
+                    return resolved
+                merged = {k: v for k, v in node.items() if k != "$ref"}
+                # $ref siblings win over the resolved target (Pydantic
+                # convention: title/description on the use-site override
+                # the definition).
+                out = {**resolved, **merged}
+                return out
+            return {k: resolve(v, in_progress) for k, v in node.items()}
+        if isinstance(node, list):
+            return [resolve(item, in_progress) for item in node]
+        return node
+
+    return resolve(schema, set())
 
 
 def pydantic_to_openai_function(
@@ -42,8 +101,14 @@ def pydantic_to_openai_function(
     if description is None:
         description = model.__doc__ or f"{model.__name__} response"
 
-    # Get JSON schema from Pydantic
-    schema = model.model_json_schema()
+    # Get JSON schema from Pydantic. Pydantic v2 emits nested-model
+    # references via a sibling $defs block + $ref pointers. Some
+    # OpenAI-compatible providers (Fireworks observed) fail to dereference
+    # those when the schema is passed as a tool's parameters — their
+    # server-side resolver raises an AttributeError on the lookup.
+    # Inlining all refs eliminates that whole class of bug and keeps the
+    # tool's parameters schema self-contained.
+    schema = _inline_refs(model.model_json_schema())
 
     # Convert to OpenAI function format
     function_schema = {
@@ -55,10 +120,6 @@ def pydantic_to_openai_function(
             "required": schema.get("required", []),
         },
     }
-
-    # Add descriptions from field metadata if available
-    if "$defs" in schema:
-        function_schema["parameters"]["$defs"] = schema["$defs"]
 
     return function_schema
 
@@ -149,7 +210,11 @@ def create_response_format_json_schema(model: Type[BaseModel]) -> Dict[str, Any]
         - https://platform.openai.com/docs/guides/structured-outputs
         - docs/development/structured-output-guide.md
     """
-    schema = model.model_json_schema()
+    # Same rationale as pydantic_to_openai_function: inline all $defs so
+    # downstream resolvers don't have to walk references. OpenAI's strict
+    # mode accepts both inlined and $defs-based schemas; inlining is
+    # universally valid and avoids provider-specific resolver bugs.
+    schema = _inline_refs(model.model_json_schema())
 
     return {
         "type": "json_schema",

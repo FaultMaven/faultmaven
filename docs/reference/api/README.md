@@ -79,7 +79,7 @@ All data submitted to the API is processed through privacy-first pipelines with:
 
 **Version:** 1.0.0  
 **Base URL:** `/`  
-**Generated:** 2026-05-11T06:20:11.371335Z
+**Generated:** 2026-05-16T06:00:24.389609Z
 
 ## Authentication
 
@@ -590,54 +590,6 @@ Frontend uses this to determine which auth flow to implement.
 
 ---
 
-### `/api/v1/auth/dev-delete-user/{username}`
-
-#### DELETE
-
-**Dev Delete User**
-
-Development endpoint to delete a user by username.
-
-Deletes (soft delete) a user by username for development/debugging.
-This endpoint is only available in development environments.
-
-**Security**: Gated by require_development_environment dependency.
-
-**Tags:** `authentication`
-
-**Parameters:**
-
-- `username` (path) ✅ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/auth/dev-list-users`
-
-#### GET
-
-**Dev List Users**
-
-Development endpoint to list all users.
-
-Returns a list of all users in the system for development/debugging.
-This endpoint is only available in development environments.
-
-**Security**: Gated by require_development_environment dependency.
-
-**Tags:** `authentication`
-
-**Responses:**
-
-**200** - Successful Response
-
----
-
 ### `/api/v1/auth/dev-login`
 
 #### POST
@@ -717,39 +669,6 @@ Content-Type: `application/json`
     "user_id": "550e8400-e29b-41d4-a716-446655440000",
     "username": "john.doe"
   }
-}
-```
-
-**422** - Validation Error
-
----
-
-### `/api/v1/auth/dev/revoke-all-tokens`
-
-#### POST
-
-**Dev Revoke All User Tokens**
-
-Development endpoint: Revoke all tokens for current user.
-
-This endpoint is only available in development environments.
-
-**Security**: Gated by require_development_environment dependency.
-
-**Tags:** `authentication`
-
-**Parameters:**
-
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-```json
-{
-  "message": "Logged out successfully",
-  "revoked_tokens": 1
 }
 ```
 
@@ -1001,6 +920,81 @@ Content-Type: `application/json`
   }
 }
 ```
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/auth/users`
+
+#### GET
+
+**List Users**
+
+List all users. Admin only.
+
+**Tags:** `authentication`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/auth/users/{user_id}/revoke-tokens`
+
+#### POST
+
+**Revoke User Tokens**
+
+Revoke all tokens for a user. Admin only.
+
+**Tags:** `authentication`
+
+**Parameters:**
+
+- `user_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+```json
+{
+  "message": "Logged out successfully",
+  "revoked_tokens": 1
+}
+```
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/auth/users/{username}`
+
+#### DELETE
+
+**Delete User**
+
+Delete a user by username. Admin only.
+
+**Tags:** `authentication`
+
+**Parameters:**
+
+- `username` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
 
 **422** - Validation Error
 
@@ -1459,6 +1453,29 @@ Returns a dictionary describing added, removed, and modified fields.
 - `case_id` (path) ✅ - No description
 - `from` (query) ✅ - Start turn number
 - `to` (query) ✅ - End turn number
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/evidence`
+
+#### GET
+
+**List all evidence for a case**
+
+Retrieve all evidence records for a case, each with source-file reference and hypothesis linkage.
+
+**Tags:** `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - Case ID
 - `Authorization` (header) ❌ - No description
 
 **Responses:**
@@ -2469,15 +2486,22 @@ in a single response optimized for the current investigation phase.
 
 #### GET
 
-**List uploaded files with evidence counts**
+**List Uploaded Files**
 
-Get all uploaded files for a case with metadata and evidence linkage counts.
+List uploaded files for a case with pagination.
+
+Returns:
+    Paginated list of file metadata with AI analysis status
 
 **Tags:** `cases`
 
 **Parameters:**
 
-- `case_id` (path) ✅ - Case ID
+- `case_id` (path) ✅ - No description
+- `limit` (query) ❌ - Maximum number of files to return
+- `offset` (query) ❌ - Number of files to skip (for pagination)
+- `sort_by` (query) ❌ - Sort field: uploaded_at_turn | filename | size
+- `sort_order` (query) ❌ - Sort direction: asc | desc
 - `Authorization` (header) ❌ - No description
 
 **Responses:**
@@ -5395,6 +5419,18 @@ Detailed case information for single case view.
 
 ---
 
+### CaseEvidenceListResponse
+
+All evidence records for a case, each with source and hypothesis linkage.
+
+**Properties:**
+
+- `case_id` (string) ✅ - No description
+- `total_count` (integer) ✅ - No description
+- `evidence` (array) ✅ - No description
+
+---
+
 ### CaseListResponse
 
 Response for case listing.
@@ -5475,10 +5511,14 @@ Values fall into two categories:
 
 Case Actions (phase transitions and dispositions):
   INQUIRY → INVESTIGATING  (phase transition)
-  INQUIRY → RESOLVED       (fast-track disposition)
   INQUIRY → CLOSED         (disposition)
-  INVESTIGATING → RESOLVED (disposition)
+  INVESTIGATING → RESOLVED (disposition; includes the same-turn KB-resolution variant)
   INVESTIGATING → CLOSED   (disposition)
+
+v3: INQUIRY → RESOLVED edge removed. KB-driven cases collapse INVESTIGATING
+to one or two turns via per-runbook Cause attribution rather than skipping
+the phase. See docs/architecture/investigation-engine/investigation-lifecycle-logic.md
+§1.2 INVESTIGATING → RESOLVED → KB-Resolution Path.
 
 ---
 
@@ -5817,7 +5857,7 @@ System fills: evidence_id, collected_at_turn, collected_by,
 - `collected_at` (string) ❌ - When evidence was collected
 - `collected_by` (string) ✅ - Who collected: user_id or 'system' for automated collection
 - `collected_at_turn` (integer) ✅ - Turn number when evidence was collected
-- `metadata` (unknown) ❌ - Structured diagnostic metadata from the preprocessing pipeline. Top-level keys are namespaced — see docs/architecture/data-and-storage/schemas/case-schema.md §4.3 'evidence.metadata JSON contract'. Canonical shape in faultmaven/core/preprocessing/evidence_metadata.py::EvidenceMetadata. Optional for backward compatibility with evidence rows that predate the Phase 1 classifier-confidence work.
+- `metadata` (unknown) ❌ - Structured diagnostic metadata from the preprocessing pipeline. Top-level keys are namespaced — see docs/architecture/data-and-storage/schemas/case-schema.md §4.3 'evidence.metadata JSON contract'. Canonical shape in faultmaven/core/preprocessing/evidence_metadata.py::EvidenceMetadata. Optional — chat-quoted Evidence rows have no preprocessing trace.
 - `coverage_start_ts` (unknown) ❌ - Earliest timestamp parsed from the evidence's content. None when the content has no parseable timestamps.
 - `coverage_end_ts` (unknown) ❌ - Latest timestamp parsed from the evidence's content. None when the content has no parseable timestamps.
 
@@ -5827,18 +5867,13 @@ System fills: evidence_id, collected_at_turn, collected_by,
 
 Evidence classification by investigation purpose.
 
-Post-010 redesign: 4 claim-attached categories. Each row is the LLM's
-deliberate decision to record a specific extract as evidence for a
-specific claim, created only during INVESTIGATING. The dropped
-categories (CONTEXTUAL_EVIDENCE, REJECTED) had no claim attachment
-and were structurally incompatible with the strict model:
-
-- Contextual data now lives on ``uploaded_files`` (the file itself is
-  the data; no evidence row is needed until the agent extracts a
-  claim-relevant slice).
-- Rejected submissions are expressed as the absence of an evidence
-  row (the agent simply doesn't promote them); hypothesis-level
-  refutation lives on ``hypothesis_evidence.stance``.
+Four claim-attached categories. Every row is the LLM's deliberate
+decision to record a specific extract as evidence for a specific
+claim, created only during INVESTIGATING. Contextual data lives on
+``uploaded_files`` — no evidence row is needed until the agent
+extracts a claim-relevant slice. Rejection is expressed as the
+absence of an evidence row; hypothesis-level refutation lives on
+``hypothesis_evidence.stance``.
 
 ---
 
@@ -5867,15 +5902,10 @@ Detailed evidence information with source and hypothesis linkage.
 
 Fundamental type of data source.
 
-Post-redesign (2026-02-14): Updated to align with data-classification-strategy.md (6 types).
-
-Migration mapping:
-- log_file, command_output, trace_data, api_response, other → LOGS
-- metrics_data, monitoring_alert → METRICS
-- config_file, database_query → CONFIGURATION
-- code_review → CODE
-- user_report → TEXT
-- screenshot → IMAGE
+Aligned with the data classifier (Tier 0); each value names what kind
+of data the Evidence row's source is. ``USER_DESCRIPTION`` is the
+chat-quote case where the source is a verbatim system-output quote
+embedded in the user's message, not a file.
 
 ---
 
@@ -7006,11 +7036,10 @@ Root cause information for RESOLVED phase.
 - `scope` (string) ✅ - No description
 - `tags` (array) ❌ - No description
 - `difficulty` (string) ❌ - No description
-- `problem_definition` (string) ✅ - No description
+- `symptom_recognition` (string) ✅ - No description
+- `applicability` (string) ✅ - No description
 - `diagnostic_steps` (string) ✅ - No description
-- `mitigation` (string) ✅ - No description
-- `root_cause_resolution` (string) ✅ - No description
-- `verification` (string) ✅ - No description
+- `causes` (string) ✅ - Pre-formatted markdown with ### Cause N subsections. Each cause needs Statement, Mechanism, Indicator, Mitigation, Resolution, Verification sub-fields. Include ### Cause Z: Unidentified with [Default] indicator as fallback.
 - `prevention` (string) ✅ - No description
 - `team_id` (unknown) ❌ - No description
 
@@ -7066,22 +7095,6 @@ Request model for creating investigation session.
 - `session_goal` (unknown) ❌ - No description
 - `token_budget_limit` (unknown) ❌ - No description
 - `metadata` (unknown) ❌ - No description
-
----
-
-### SessionResponse
-
-**Properties:**
-
-- `session_id` (string) ✅ - Unique session identifier
-- `user_id` (string) ❌ - Associated user identifier
-- `client_id` (string) ❌ - Client/device identifier for session resumption
-- `status` (string) ✅ - Current session status
-- `created_at` (string) ❌ - Session creation timestamp
-- `session_resumed` (boolean) ❌ - Indicates if this was an existing session resumed
-- `session_type` (string) ❌ - Type of session (e.g., troubleshooting)
-- `message` (string) ❌ - Status message about session creation/resumption
-- `metadata` (object) ❌ - Session metadata and context
 
 ---
 
@@ -7484,18 +7497,6 @@ Paginated list of uploaded files.
 
 ---
 
-### UploadedFilesListResponse
-
-List of uploaded files with evidence counts.
-
-**Properties:**
-
-- `case_id` (string) ✅ - No description
-- `total_count` (integer) ✅ - No description
-- `files` (array) ✅ - No description
-
----
-
 ### UrgencyLevel
 
 Urgency classification for path routing.
@@ -7669,6 +7670,31 @@ Agent's current understanding during INVESTIGATING phase.
 
 ---
 
+### faultmaven__api__models__SessionResponse
+
+Response model for investigation session.
+
+**Properties:**
+
+- `session_id` (string) ✅ - No description
+- `case_id` (string) ✅ - No description
+- `user_id` (string) ✅ - No description
+- `organization_id` (string) ✅ - No description
+- `status` (unknown) ✅ - No description
+- `started_at` (string) ✅ - No description
+- `ended_at` (unknown) ❌ - No description
+- `last_activity_at` (string) ✅ - No description
+- `total_duration_ms` (unknown) ❌ - No description
+- `session_goal` (unknown) ❌ - No description
+- `findings_summary` (unknown) ❌ - No description
+- `total_token_usage` (integer) ✅ - No description
+- `total_agent_executions` (integer) ✅ - No description
+- `token_budget_limit` (unknown) ❌ - No description
+- `created_at` (string) ✅ - No description
+- `updated_at` (string) ✅ - No description
+
+---
+
 ### faultmaven__models__api__SessionResponse
 
 Response payload for auth session operations - API spec compliance.
@@ -7813,6 +7839,22 @@ Response payload for auth session operations - API spec compliance.
   }
 }
 ```
+
+---
+
+### SessionResponse
+
+**Properties:**
+
+- `session_id` (string) ✅ - Unique session identifier
+- `user_id` (string) ❌ - Associated user identifier
+- `client_id` (string) ❌ - Client/device identifier for session resumption
+- `status` (string) ✅ - Current session status
+- `created_at` (string) ❌ - Session creation timestamp
+- `session_resumed` (boolean) ❌ - Indicates if this was an existing session resumed
+- `session_type` (string) ❌ - Type of session (e.g., troubleshooting)
+- `message` (string) ❌ - Status message about session creation/resumption
+- `metadata` (object) ❌ - Session metadata and context
 
 ---
 
