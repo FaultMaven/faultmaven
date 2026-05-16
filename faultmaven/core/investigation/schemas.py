@@ -740,6 +740,17 @@ class InquiryResponse(BaseInteractionResponse):
     """Response schema for INQUIRY status."""
 
     class InquiryStateUpdate(BaseModel):
+        # Pydantic policy: extra='ignore' (the v2 default) is deliberate.
+        # The INV-07 invariant ("no Evidence creation during INQUIRY") is
+        # enforced by field absence + the absence of an evidence-creation
+        # branch in _apply_inquiry_updates — NOT by rejecting unknown
+        # fields. Switching to extra='forbid' was considered and rejected:
+        # it would convert benign LLM drift into user-facing turn
+        # failures with no improvement to the invariant. See
+        # investigation-lifecycle-logic.md §1.3.1 (INV-07 drift note).
+        # If LLM drift becomes a concern, add a passive observability
+        # signal at the structured-output parse step instead of
+        # tightening the schema.
         problem_confirmation: Optional[ProblemConfirmation] = None
         proposed_problem_statement: Optional[str] = None
         preliminary_urgency: Optional[PreliminaryUrgency] = None
