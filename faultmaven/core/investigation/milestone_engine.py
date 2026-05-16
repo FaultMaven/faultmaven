@@ -5293,8 +5293,39 @@ class MilestoneEngine:
         # 0. Handle pending transition confirmation from previous turn
         # Skip confirmation check if we just proposed a transition this turn (User-Agent Handshake)
         if hasattr(case, "pending_transition") and case.pending_transition:
+            # KB-Resolution Path same-turn collapse (§1.2). When the LLM
+            # emits ``knowledge_resolution`` (user confirmed a runbook fix
+            # worked) alongside ``ProposedTransition``, the user's
+            # confirmation message IS the disposition acknowledgment —
+            # no separate confirmation turn required. This is the only
+            # path that fires confirm_pending_transition in the same turn
+            # the proposal was written; every other transition follows
+            # the standard 2-turn handshake.
+            #
+            # Gating on BOTH ``transition_proposed_this_turn`` (set by
+            # propose_transition) AND ``knowledge_resolution_signalled``
+            # (set in _apply_investigation_updates when ``updates.knowledge_-
+            # resolution`` is present) ensures this special path fires
+            # only on the well-scoped KB-resolution scenario. All other
+            # ProposedTransition emissions still flow through the
+            # 2-turn handshake via the elif branch below.
+            if metadata.get("transition_proposed_this_turn", False) and metadata.get(
+                "knowledge_resolution_signalled", False
+            ):
+                from faultmaven.core.investigation.terminal_transitions import (
+                    confirm_pending_transition,
+                )
+
+                confirm_pending_transition(case, case.user_id)
+                metadata["status_transitioned"] = True
+                logger.info(
+                    f"KB-Resolution same-turn collapse: confirmed "
+                    f"pending transition for case {case.case_id} "
+                    f"(user's runbook-confirmation message covers "
+                    f"both signals — §1.2 KB-Resolution Path)"
+                )
             # Don't confirm a transition that was just proposed in this same turn
-            if metadata.get("transition_proposed_this_turn", False):
+            elif metadata.get("transition_proposed_this_turn", False):
                 logger.info(
                     f"Skipping confirmation check - transition was just proposed this turn"
                 )
