@@ -647,6 +647,144 @@ class TestInquiryTransitionLogic:
             == "API returning 504 timeout errors affecting users"
         )
 
+    @pytest.mark.asyncio
+    async def test_same_turn_confirmation_is_rejected(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """Regression: LLM must not collapse the User-Agent Handshake into one turn.
+
+        The design (INQUIRY_TEMPLATE: "Never set user_confirmed_investigation=True
+        on the same turn you first present the problem statement") requires the
+        user to see the proposed_problem_statement on turn N before confirming
+        on turn N+1.
+
+        Before the same-turn-confirmation guard in _apply_inquiry_updates, the
+        engine accepted any turn that carried BOTH a new proposed_problem_statement
+        AND user_confirmed_investigation=True — collapsing the two-step handshake.
+        Observed on first-turn cases with explicit "please investigate" phrasing,
+        which prompts the LLM to write the statement and signal confirmation in
+        the same response.
+
+        Asserts that on turn 1, even if the LLM sets both fields, the case
+        stays in INQUIRY (transition deferred to turn 2).
+        """
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+        )
+
+        # Turn 1: LLM tries to set the statement AND confirm in one shot.
+        # This is the anti-case the prompt forbids but the LLM may still emit.
+        mock_response_turn1 = json.dumps(
+            {
+                "agent_response": "Starting investigation into API 503 errors.",
+                "state_updates": {
+                    "problem_confirmation": {
+                        "problem_type": "unavailability",
+                        "severity_guess": "high",
+                        "preliminary_guidance": "API returning 503 errors",
+                    },
+                    "preliminary_urgency": {
+                        "level": "HIGH",
+                        "is_ongoing": True,
+                        "is_incident_report": True,
+                        "impact_assessment": "Users seeing errors",
+                    },
+                    "proposed_problem_statement": "API returning 503 errors affecting users",
+                    "user_confirmed_investigation": True,
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_turn1
+
+        result1 = await engine.process_turn(
+            inquiry_case,
+            "My API is returning 503s, please investigate.",
+        )
+
+        # The guard must refuse the same-turn confirmation. The statement
+        # is captured (so it can be presented to the user) but the
+        # transition does NOT fire — case stays in INQUIRY for the user
+        # to confirm explicitly on a subsequent turn.
+        case_after_turn1 = result1["case_updated"]
+        assert case_after_turn1.status == CaseStatus.INQUIRY, (
+            "Same-turn confirmation collapsed the handshake — INQUIRY → INVESTIGATING "
+            "fired without giving the user a chance to confirm. This is the "
+            "regression the same-turn guard prevents."
+        )
+        assert case_after_turn1.inquiry.problem_statement_confirmed is False
+        assert case_after_turn1.inquiry.decided_to_investigate is False
+        # The statement IS persisted — the agent presents it on the
+        # next turn and the user confirms then.
+        assert (
+            case_after_turn1.inquiry.proposed_problem_statement
+            == "API returning 503 errors affecting users"
+        )
+
+    @pytest.mark.asyncio
+    async def test_confirmation_accepted_when_statement_persisted_across_turns(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """Confirmation IS accepted when the statement existed on a prior turn.
+
+        Complement to test_same_turn_confirmation_is_rejected: ensures the
+        guard is precise. A confirmation must be accepted when the
+        proposed_problem_statement was set on a previous turn (i.e., the
+        user actually saw it before confirming). This is the normal
+        two-turn handshake flow.
+        """
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+        )
+
+        # Turn 1: agent writes the statement, leaves user_confirmed=False.
+        mock_response_turn1 = json.dumps(
+            {
+                "agent_response": "Let me confirm: API returning 503 errors. Is this right?",
+                "state_updates": {
+                    "problem_confirmation": {
+                        "problem_type": "unavailability",
+                        "severity_guess": "high",
+                        "preliminary_guidance": "API returning 503 errors",
+                    },
+                    "preliminary_urgency": {
+                        "level": "HIGH",
+                        "is_ongoing": True,
+                        "is_incident_report": True,
+                        "impact_assessment": "Users seeing errors",
+                    },
+                    "proposed_problem_statement": "API returning 503 errors affecting users",
+                    "user_confirmed_investigation": False,
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_turn1
+        result1 = await engine.process_turn(inquiry_case, "API is returning 503s")
+        case_after_turn1 = result1["case_updated"]
+        assert case_after_turn1.status == CaseStatus.INQUIRY
+
+        # Turn 2: user confirms; LLM only emits user_confirmed_investigation=True
+        # (no new proposed_problem_statement). Statement existed before this
+        # turn → guard passes → transition fires.
+        mock_response_turn2 = json.dumps(
+            {
+                "agent_response": "Confirmed. Investigating.",
+                "state_updates": {
+                    "user_confirmed_investigation": True,
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_turn2
+        result2 = await engine.process_turn(case_after_turn1, "yes")
+
+        case_after_turn2 = result2["case_updated"]
+        assert case_after_turn2.status == CaseStatus.INVESTIGATING
+        assert case_after_turn2.inquiry.problem_statement_confirmed is True
+        assert case_after_turn2.inquiry.decided_to_investigate is True
+
 
 class TestContextBuilderConfirmationInjection:
     """Tests for Fix 2: AWAITING_CONFIRMATION replaced with NOT_YET_CONFIRMED.
