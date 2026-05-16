@@ -87,38 +87,6 @@ class CaseActionManager:
         return status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
 
     @staticmethod
-    def validate_action(
-        old_status: CaseStatus, new_status: CaseStatus
-    ) -> tuple[bool, Optional[str]]:
-        """
-        Validate a case action.
-
-        Returns:
-            (is_valid, error_message)
-        """
-        # Cannot change dispositions
-        if CaseActionManager.is_terminal_state(old_status):
-            return (
-                False,
-                f"Cannot change status from disposition {old_status.value}. "
-                f"To reopen, create a new case.",
-            )
-
-        # Check if action is allowed
-        allowed = ALLOWED_ACTIONS.get(old_status, [])
-        if new_status not in allowed:
-            return (
-                False,
-                f"Invalid case action: {old_status.value} → {new_status.value}. "
-                f"Allowed actions: {[s.value for s in allowed]}",
-            )
-
-        return (True, None)
-
-    # Backward compatibility alias
-    validate_transition = validate_action
-
-    @staticmethod
     def get_agent_message(
         old_status: CaseStatus, new_status: CaseStatus
     ) -> Optional[str]:
