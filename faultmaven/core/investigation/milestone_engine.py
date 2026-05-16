@@ -675,6 +675,12 @@ def _close_confirmation_suggestions() -> list:
 
     Mirrors the INQUIRY and RESOLVED confirmation patterns: one positive
     (confirm close) and one mild negative (continue investigating).
+
+    Note: the confirmation prompt is purely about the irreversibility of
+    closing. The summary is a downstream Dashboard artifact; mentioning it
+    here would either promise unconditionally (sometimes false, when the
+    substance gate skips) or muddy the decision the user is being asked to
+    make. The body text deliberately stays silent about the report.
     """
     return [
         {
@@ -682,7 +688,7 @@ def _close_confirmation_suggestions() -> list:
             "action_type": "COOPERATIVE",
             "cooperative_action": "query_submit",
             "payload": "Yes, close this case without resolution.",
-            "body": "Confirm closing the case. A summary will be generated.",
+            "body": "Confirm closing the case. Closing is irreversible — the case becomes read-only.",
             "intent": {"type": "confirmation", "confirmation_value": True},
         },
         {
@@ -697,9 +703,11 @@ def _close_confirmation_suggestions() -> list:
 
 
 def _terminal_confirmation_response(case) -> str:
-    """Deterministic agent response after a transition is confirmed.
+    """Deterministic status line after a transition is confirmed.
 
     Closure-reason-aware so the user can tell at a glance what was preserved.
+    The terminal reply is composed by ``_compose_terminal_reply`` which
+    appends the auto-generated summary content (when produced).
     """
     if case.status == CaseStatus.RESOLVED:
         return "Case resolved."
@@ -714,53 +722,120 @@ def _terminal_confirmation_response(case) -> str:
     return "Case closed."
 
 
-def _resolved_suggestions() -> list:
-    """Suggestions offered after a case is marked RESOLVED.
+def _compose_terminal_reply(case, summary_payload: str | None) -> str:
+    """Compose the closure-turn chat reply for the *deterministic* paths.
 
-    Report viewing is via Dashboard (auto-generated at transition time).
-    These offer regeneration and runbook creation. Runbook evaluation
-    (readiness, deduplication) happens when the user accepts.
+    Used by the two paths where the engine controls the reply text
+    directly: the explicit confirm-button path and the dropdown-resolution
+    path. Prepends a deterministic status line (e.g. "Case closed.") and
+    appends the auto-generated summary content (or skip / failure note).
+
+    Not used by the LLM-driven transition path (end of process_turn), where
+    the LLM has already produced narrative text for the turn — that path
+    appends ``summary_payload`` directly to the LLM's text. The end-state
+    chat content is equivalent (status line / LLM narrative, then the
+    summary inline) but the composition site differs.
+
+    ``summary_payload`` may be:
+      - The rendered summary markdown (gate PASS, generation succeeded).
+      - A skip note (gate FAIL — low-substance closure).
+      - A failure note (gate PASS, LLM error).
+      - None (no report service configured — stays silent).
+    """
+    status_line = _terminal_confirmation_response(case)
+    if not summary_payload:
+        return status_line
+    return f"{status_line}\n\n{summary_payload}"
+
+
+REGENERATE_RESOLUTION_SUMMARY_PAYLOAD = (
+    "Regenerate the resolution summary report for this case"
+)
+
+REGENERATE_CLOSURE_SUMMARY_PAYLOAD = (
+    "Regenerate the closure summary report for this case"
+)
+
+GENERATE_RUNBOOK_PAYLOAD = "Generate a runbook from this resolved case"
+
+
+def _runbook_suggestion() -> dict:
+    """The runbook-generation COOPERATIVE suggestion (RESOLVED-only)."""
+    return {
+        "label": "Generate runbook from this case",
+        "action_type": "COOPERATIVE",
+        "cooperative_action": "query_submit",
+        "payload": GENERATE_RUNBOOK_PAYLOAD,
+        "body": "Create a reusable troubleshooting runbook from the root cause and solution.",
+    }
+
+
+def _regenerate_resolution_summary_suggestion() -> dict:
+    return {
+        "label": "Regenerate resolution summary",
+        "action_type": "COOPERATIVE",
+        "cooperative_action": "query_submit",
+        "payload": REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
+        "body": "Re-create the resolution report.",
+    }
+
+
+def _resolved_ack_suggestions() -> list:
+    """Suggestions for the resolution-acknowledgment turn.
+
+    The summary was just generated and is rendered inline above in this
+    same agent reply — offering "Regenerate" beside it would be noise.
+    Only the forward action (runbook) is offered here. Regen is reserved
+    for subsequent terminal Q&A turns via ``_resolved_suggestions``.
+    """
+    return [_runbook_suggestion()]
+
+
+def _resolved_suggestions() -> list:
+    """Suggestions for terminal Q&A turns on a RESOLVED case.
+
+    Both the regen affordance and the runbook affordance are offered.
+    The regen path serves as the chat-side recovery if initial generation
+    failed and as a way to iterate; the runbook path is the forward
+    action. Symmetric with ``_closed_suggestions`` for CLOSED cases.
     """
     return [
-        {
-            "label": "Regenerate resolution summary",
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
-            "payload": "Regenerate the resolution summary report for this case",
-            "body": "Re-create the resolution report. View the current report in the Dashboard.",
-        },
-        {
-            "label": "Generate runbook from this case",
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
-            "payload": "Generate a runbook from this resolved case",
-            "body": "Create a reusable troubleshooting runbook from the root cause and solution.",
-        },
+        _regenerate_resolution_summary_suggestion(),
+        _runbook_suggestion(),
     ]
 
 
 def _closed_suggestions(case) -> list:
-    """Suggestions offered after a case is CLOSED.
+    """Suggestions offered on terminal Q&A turns for a CLOSED case.
 
-    "Regenerate closure summary" is shown only when an auto-generated summary
-    actually exists (gated by ``_pending_summary``, set at closure time by
-    the substance check). For low-substance closures (e.g. inquiry_only with
-    no investigation), no summary was generated, so there is nothing to
-    regenerate — return no suggestions.
+    Returned only on subsequent terminal Q&A turns — NOT on the
+    closure-acknowledgment turn itself (that turn's reply renders the
+    summary inline; offering "Regenerate" beside the freshly-generated
+    summary is noise). Callers must respect that.
 
-    Report viewing is via Dashboard. Runbook generation is intentionally
-    not offered on CLOSED cases — runbooks codify complete troubleshooting
-    scenarios (root cause + verified solution) and only RESOLVED cases
-    qualify.
+    The regenerate affordance is offered when the substance gate would
+    PASS — independent of whether the Report row currently exists. This
+    handles two cases with one rule: a successful initial generation (user
+    wants a re-roll) and a failed initial generation (user wants to retry).
+    For low-substance closures (gate FAIL), nothing is offered — there is
+    nothing summarizable.
+
+    Runbooks are intentionally not offered for CLOSED cases — they require
+    a confirmed root cause + verified solution, which RESOLVED implies and
+    CLOSED does not.
     """
-    if not getattr(case, "_pending_summary", False):
+    from faultmaven.core.investigation.terminal_transitions import (
+        should_generate_terminal_summary,
+    )
+
+    if not should_generate_terminal_summary(case):
         return []
     return [
         {
             "label": "Regenerate closure summary",
             "action_type": "COOPERATIVE",
             "cooperative_action": "query_submit",
-            "payload": "Regenerate the closure summary report for this case",
+            "payload": REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
             "body": "Re-create the closure report. View the current report in the Dashboard.",
         },
     ]
@@ -864,73 +939,95 @@ class MilestoneEngine:
 
         logger.info("MilestoneEngine initialized with structured output engine")
 
-    async def _auto_generate_report(self, case: "Case") -> None:
-        """Fire-and-forget auto-generation of terminal summary.
+    async def _auto_generate_report(self, case: "Case") -> str | None:
+        """Synchronous auto-generation of terminal summary.
 
-        Generates RESOLUTION_SUMMARY for RESOLVED cases and CLOSURE_SUMMARY
-        for CLOSED cases. Called after case is saved in terminal state.
-        Failure is logged but does not propagate — the transition is
-        already complete.
+        RESOLVED cases always generate (a confirmed solution is meaningful
+        content by definition). CLOSED cases generate only when the
+        substance gate passes — gated by
+        ``should_generate_terminal_summary``.
+
+        Returns:
+            - rendered summary string on success
+            - human-readable skip-or-failure note on skip / LLM failure
+            - None when no report service is configured
+
+        Callers embed the return value in the closure-turn agent reply.
+        Exceptions are caught and reported as a return value rather than
+        propagated — the closure state transition has already committed
+        and must not be undone by a synthesis-LLM hiccup.
         """
-        if not getattr(case, "_pending_summary", False):
-            logger.debug(
-                f"Auto-summary skipped for case {case.case_id}: "
-                f"guardrail determined insufficient substance"
-            )
-            return
+        from faultmaven.core.investigation.terminal_transitions import (
+            should_generate_terminal_summary,
+            terminal_summary_skip_reason,
+        )
+
+        if case.status == CaseStatus.CLOSED and not should_generate_terminal_summary(
+            case
+        ):
+            skip = terminal_summary_skip_reason(case)
+            logger.info(f"Auto-summary skipped for case {case.case_id}: {skip}")
+            return skip
+
         if not self.report_service:
             logger.debug("No report service available — skipping auto-summary")
-            return
+            return None
+
+        from faultmaven.modules.case.domain.owned_models.report import ReportType
+
+        if case.status == CaseStatus.RESOLVED:
+            report_type = ReportType.RESOLUTION_SUMMARY
+        elif case.status == CaseStatus.CLOSED:
+            report_type = ReportType.CLOSURE_SUMMARY
+        else:
+            logger.warning(
+                f"Unexpected status {case.status} for auto-summary on case {case.case_id}"
+            )
+            return None
 
         try:
-            from faultmaven.modules.case.domain.owned_models.report import ReportType
-
-            if case.status == CaseStatus.RESOLVED:
-                report_type = ReportType.RESOLUTION_SUMMARY
-            elif case.status == CaseStatus.CLOSED:
-                report_type = ReportType.CLOSURE_SUMMARY
-            else:
-                logger.warning(
-                    f"Unexpected status {case.status} for auto-summary on case {case.case_id}"
-                )
-                return
-
-            await self.report_service.generate_reports(case, [report_type])
+            reports = await self.report_service.generate_reports(case, [report_type])
             logger.info(
                 f"Auto-generated {report_type.value} for case {case.case_id}",
                 extra={"case_id": case.case_id, "report_type": report_type.value},
             )
+            # Pull the rendered markdown content from the freshly-generated
+            # report so it can be embedded in the closure-turn reply.
+            if reports:
+                content = getattr(reports[0], "content", None) or getattr(
+                    reports[0], "markdown_content", None
+                )
+                if content:
+                    return content
+            return None
         except Exception as e:
             logger.warning(
                 f"Auto-summary generation failed for case {case.case_id}: {e}",
                 extra={"case_id": case.case_id},
             )
+            return (
+                "Closure summary generation did not complete. "
+                "You can retry from the Regenerate option."
+            )
 
+    # Only the precomposed payloads submitted by the COOPERATIVE regen
+    # suggestions reach this set. Free-typed summary-shaped requests
+    # (e.g. "give me a recap", "summarize what we discussed") fall through
+    # to terminal Q&A on purpose: typing should never produce a persisted
+    # Report side effect. The Q&A prompt is instructed to redirect those
+    # asks to the existing summary + regen affordance.
     _REPORT_REGEN_PATTERNS = (
-        "regenerate",
-        "re-generate",
-        "redo the report",
-        "redo the summary",
-        "new report",
-        "new summary",
-        "update the report",
-        "update the summary",
-        "better report",
-        "better summary",
-        "generate a report",
-        "generate a summary",
-        "generate report",
-        "generate summary",
+        "regenerate the closure summary report for this case",
+        "regenerate the resolution summary report for this case",
     )
 
-    _RUNBOOK_CREATION_PATTERNS = (
-        "generate a runbook",
-        "generate runbook",
-        "create a runbook",
-        "create runbook",
-        "yes, generate",
-        "yes, create",
-    )
+    # Same exact-match policy as _REPORT_REGEN_PATTERNS: only the
+    # precomposed COOPERATIVE-suggestion payload reaches the runbook
+    # creation path. Free-typed paraphrases ("create a runbook please")
+    # fall through to Q&A. This keeps the principle consistent across
+    # terminal-state actions: clicking triggers persisted side effects;
+    # typing never does.
+    _RUNBOOK_CREATION_PATTERNS = (GENERATE_RUNBOOK_PAYLOAD.lower(),)
 
     async def _process_terminal_turn(
         self,
@@ -948,19 +1045,22 @@ class MilestoneEngine:
              troubleshooting scenarios (root cause + verified solution).
           3. User asks questions about the case → answer via TERMINAL_TEMPLATE.
         """
-        msg_lower = user_message.lower()
+        msg_lower = user_message.lower().strip().rstrip(".!? ")
 
-        # Scenario 1: Report regeneration
-        if any(p in msg_lower for p in self._REPORT_REGEN_PATTERNS):
+        # Scenario 1: Report regeneration. Strict exact-match against the
+        # COOPERATIVE suggestion payloads — free-typed paraphrases fall
+        # through to Q&A so typing can never produce a persisted Report
+        # side effect.
+        if msg_lower in self._REPORT_REGEN_PATTERNS:
             return await self._handle_report_regeneration(case, metadata)
 
-        # Scenario 2: Runbook creation. Runbooks codify complete
-        # troubleshooting scenarios (root cause + verified solution),
-        # so only RESOLVED cases are eligible.
+        # Scenario 2: Runbook creation. Strict exact-match (same policy
+        # as regen): only the COOPERATIVE suggestion's precomposed
+        # payload triggers persisted runbook generation; paraphrases
+        # fall through to Q&A. RESOLVED-only — runbooks codify a
+        # confirmed root-cause-to-solution chain.
         is_runbook_eligible = case.status == CaseStatus.RESOLVED
-        if is_runbook_eligible and any(
-            p in msg_lower for p in self._RUNBOOK_CREATION_PATTERNS
-        ):
+        if is_runbook_eligible and msg_lower in self._RUNBOOK_CREATION_PATTERNS:
             return await self._handle_runbook_creation(case, metadata)
 
         # Scenario 3: Q&A
@@ -971,7 +1071,21 @@ class MilestoneEngine:
         case: "Case",
         metadata: dict[str, Any],
     ) -> dict[str, Any]:
-        """Regenerate the terminal summary report for a closed case."""
+        """Regenerate the terminal summary report for a terminal case.
+
+        For CLOSED cases, the same substance gate applied at closure time
+        applies here — strict gating, no end-run around
+        ``should_generate_terminal_summary``. RESOLVED cases regenerate
+        unconditionally (a confirmed solution is always summarizable).
+
+        The freshly-generated content is rendered inline in chat (same
+        principle as the closure-ack turn), since summary writing is an
+        interactive operation in this codebase.
+        """
+        from faultmaven.core.investigation.terminal_transitions import (
+            should_generate_terminal_summary,
+            terminal_summary_skip_reason,
+        )
         from faultmaven.modules.case.domain.owned_models.report import ReportType
 
         if case.status == CaseStatus.RESOLVED:
@@ -980,6 +1094,22 @@ class MilestoneEngine:
         else:
             report_type = ReportType.CLOSURE_SUMMARY
             report_label = "Closure Summary"
+
+        # Strict gating for CLOSED: the verdict at regen time must agree
+        # with the verdict at closure time. Substance signals are frozen
+        # in CLOSED state, so this is a stable check.
+        if case.status == CaseStatus.CLOSED and not should_generate_terminal_summary(
+            case
+        ):
+            skip = terminal_summary_skip_reason(case) or (
+                "No closure summary can be generated for this case."
+            )
+            return {
+                "agent_response": skip,
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": metadata,
+            }
 
         if not self.report_service:
             return {
@@ -993,9 +1123,16 @@ class MilestoneEngine:
             }
 
         try:
-            await self.report_service.generate_reports(case, [report_type])
+            reports = await self.report_service.generate_reports(case, [report_type])
+            content = None
+            if reports:
+                content = getattr(reports[0], "content", None) or getattr(
+                    reports[0], "markdown_content", None
+                )
             agent_response = (
-                f"The {report_label} has been regenerated. "
+                content
+                if content
+                else f"The {report_label} has been regenerated. "
                 f"You can view it in the Dashboard."
             )
             logger.info(
@@ -1008,12 +1145,19 @@ class MilestoneEngine:
                 extra={"case_id": case.case_id},
             )
             agent_response = (
-                f"Failed to regenerate the {report_label}. " f"Please try again later."
+                f"Failed to regenerate the {report_label}. Please try again."
             )
+
+        # Re-offer the regen affordance — the user may want to iterate.
+        follow_ups = (
+            _resolved_suggestions()
+            if case.status == CaseStatus.RESOLVED
+            else _closed_suggestions(case)
+        )
 
         return {
             "agent_response": agent_response,
-            "suggested_follow_ups": [],
+            "suggested_follow_ups": follow_ups,
             "case_updated": case,
             "metadata": metadata,
         }
@@ -1223,6 +1367,21 @@ class MilestoneEngine:
                     suggestion["intent"] = f.intent
                 follow_ups.append(suggestion)
 
+        # Attach terminal-Q&A suggestions deterministically. The
+        # TERMINAL_TEMPLATE instructs the LLM to leave its own
+        # suggested_follow_ups empty; the engine owns these so the rules
+        # don't drift turn-to-turn:
+        #   - CLOSED: regen-closure-summary card iff the substance gate
+        #     PASSes (also the chat-side retry path when initial
+        #     generation failed).
+        #   - RESOLVED: regen-resolution-summary + runbook cards. Regen
+        #     mirrors CLOSED's offering; runbook is the forward action
+        #     RESOLVED enables.
+        if case.status == CaseStatus.CLOSED:
+            follow_ups = follow_ups + _closed_suggestions(case)
+        elif case.status == CaseStatus.RESOLVED:
+            follow_ups = follow_ups + _resolved_suggestions()
+
         return {
             "agent_response": response_obj.agent_response,
             "suggested_follow_ups": follow_ups,
@@ -1425,19 +1584,33 @@ class MilestoneEngine:
 
                         confirm_pending_transition(case, case.user_id)
 
-                        agent_response = _terminal_confirmation_response(case)
+                        # Persist the terminal status before generating the
+                        # summary — the Report row FKs to case_id.
+                        await self.repository.save(case)
+
+                        # Synchronous summary generation. Returns rendered
+                        # markdown on success, a skip note when the gate
+                        # blocks generation, a failure note on LLM error,
+                        # or None when no report service is configured.
+                        summary_payload = await self._auto_generate_report(case)
+
+                        agent_response = _compose_terminal_reply(case, summary_payload)
                         self._record_deterministic_turn(
                             case, user_message or "", agent_response
                         )
                         await self.repository.save(case)
 
-                        # Auto-generate report (fire-and-forget)
-                        await self._auto_generate_report(case)
-
+                        # Closure-ack turn keeps suggestions minimal: the
+                        # summary was just rendered inline, so the regen
+                        # affordance would be noise. RESOLVED still offers
+                        # the forward-looking runbook action; CLOSED
+                        # offers nothing. Regen is reserved for subsequent
+                        # terminal Q&A turns (attached in
+                        # _process_terminal_qa).
                         follow_ups = (
-                            _resolved_suggestions()
+                            _resolved_ack_suggestions()
                             if case.status == CaseStatus.RESOLVED
-                            else _closed_suggestions(case)
+                            else []
                         )
 
                         return {
@@ -1641,16 +1814,18 @@ class MilestoneEngine:
                             f"transition for case {case.case_id}"
                         )
 
-                        _resp = "Case resolved. The issue has been marked as resolved."
+                        # Persist terminal state before synthesis (Report
+                        # row FKs to case_id), then synthesize, then record
+                        # the composed reply.
+                        await self.repository.save(case)
+                        summary_payload = await self._auto_generate_report(case)
+                        _resp = _compose_terminal_reply(case, summary_payload)
                         self._record_deterministic_turn(case, user_message or "", _resp)
                         await self.repository.save(case)
 
-                        # Auto-generate incident report (fire-and-forget)
-                        await self._auto_generate_report(case)
-
                         return {
                             "agent_response": _resp,
-                            "suggested_follow_ups": _resolved_suggestions(),
+                            "suggested_follow_ups": _resolved_ack_suggestions(),
                             "case_updated": case,
                             "metadata": {
                                 "turn_number": case.current_turn,
@@ -2313,12 +2488,17 @@ class MilestoneEngine:
             case_updated.last_activity_at = datetime.now(UTC)
             await self.repository.save(case_updated)
 
-            # Step 7b: Auto-generate incident report on terminal transition (fire-and-forget)
+            # Step 7b: Auto-generate terminal summary synchronously on
+            # terminal transition. The rendered summary (or skip / failure
+            # note) is appended to the agent reply below so it appears in
+            # chat at the moment of generation — consistent with the
+            # explicit-confirmation path.
+            summary_payload: str | None = None
             if metadata.get("status_transitioned") and case_updated.status in (
                 CaseStatus.RESOLVED,
                 CaseStatus.CLOSED,
             ):
-                await self._auto_generate_report(case_updated)
+                summary_payload = await self._auto_generate_report(case_updated)
 
             logger.info(
                 f"Turn {case_updated.current_turn} processed successfully. "
@@ -2389,14 +2569,29 @@ class MilestoneEngine:
                 # the same deterministic confirmation UX.
                 follow_ups = metadata["override_suggestions"]
 
-            # Offer runbook suggestion when case just transitioned to RESOLVED.
-            # Evaluation (readiness + dedup) happens when user accepts,
-            # inside _process_terminal_turn → _handle_runbook_creation.
+            # Closure-ack turn (LLM-driven path): suggestions stay minimal
+            # so the rendered summary isn't accompanied by a redundant
+            # regen card. RESOLVED still offers the forward-looking
+            # runbook action; CLOSED offers nothing. Regen is reserved
+            # for subsequent terminal Q&A turns (attached in
+            # _process_terminal_qa).
             if metadata.get("status_transitioned"):
                 if case_updated.status == CaseStatus.RESOLVED:
-                    follow_ups = _resolved_suggestions()
+                    follow_ups = _resolved_ack_suggestions()
                 elif case_updated.status == CaseStatus.CLOSED:
-                    follow_ups = _closed_suggestions(case_updated)
+                    follow_ups = []
+
+            # Append the synthesized summary (or skip / failure note) so it
+            # appears in chat at the moment of generation. Update the
+            # already-recorded turn_record in place and re-save so chat
+            # history persists the composed reply, not just the LLM's text.
+            if summary_payload:
+                agent_response_text = (
+                    f"{agent_response_text}\n\n{summary_payload}".strip()
+                )
+                if case_updated.turn_history:
+                    case_updated.turn_history[-1].agent_response = agent_response_text
+                    await self.repository.save(case_updated)
 
             # Compliance instrumentation: per-turn signal on whether the LLM
             # is honoring the transition-handling prompt rules. Used for
