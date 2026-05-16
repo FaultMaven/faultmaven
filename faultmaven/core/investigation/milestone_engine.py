@@ -2599,6 +2599,17 @@ class MilestoneEngine:
             # quarterly drift review across model-version changes and prompt
             # growth. Cheap regex on agent_response checks for completion
             # phrases the rule explicitly forbids.
+            #
+            # Scope (INV-15 §1.3.1): scan is deliberately narrow — only
+            # transition-completion claims. The broader _ADVISOR_ROLE_-
+            # CONSTRAINT banned-phrase list ("Let me check", "I will run",
+            # etc.) is NOT scanned here because those phrases have higher
+            # false-positive rates in legitimate context. If broader
+            # advisor-role drift detection becomes valuable, add a
+            # separately-tagged "advisor_role_compliance" log signal
+            # alongside this one — don't dilute the transition_compliance
+            # tuple. See investigation-lifecycle-logic.md §1.3.1
+            # (INV-15 drift note).
             _completion_phrases = (
                 "case closed",
                 "case is closed",
