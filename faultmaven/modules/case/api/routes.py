@@ -41,7 +41,6 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 
-from faultmaven.api.dependencies import get_api_case_service
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_id,
     get_current_user_optional,
@@ -90,6 +89,7 @@ from faultmaven.models.api_models import (  # Phase 2: Evidence-to-File Linkage
     AttachmentResult,
     CaseCreateRequest,
     CaseDetail,
+    CaseEvidenceListResponse,
     CaseListFilter,
     CaseListResponse,
     CaseMessage,
@@ -108,7 +108,6 @@ from faultmaven.models.api_models import (  # Phase 2: Evidence-to-File Linkage
     UploadedFileDetailsResponse,
     UploadedFileMetadata,
     UploadedFilesList,
-    UploadedFilesListResponse,
 )
 from faultmaven.models.case_ui import CaseUIResponse
 from faultmaven.models.interfaces_case import ICaseService
@@ -117,7 +116,6 @@ from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
 from faultmaven.modules.case.domain.models import Case as CaseEntity
 from faultmaven.modules.case.domain.models import CaseStatus
-from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.case_converter import CaseConverter
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
@@ -3091,7 +3089,7 @@ async def close_case(
 @router.get(
     "/{case_id}/uploaded-files",
     response_model=UploadedFilesList,
-    operation_id="list_uploaded_files_v1",
+    operation_id="list_uploaded_files",
 )
 @trace("api_list_uploaded_files")
 async def list_uploaded_files(
@@ -3173,13 +3171,13 @@ async def list_uploaded_files(
     response_model=UploadedFileDetailsResponse,
     summary="Get uploaded file details with derived evidence",
     description="Retrieve detailed information about an uploaded file including all evidence derived from it and hypothesis linkage.",
-    operation_id="get_uploaded_file_details_v2",
+    operation_id="get_uploaded_file_details",
 )
 async def get_uploaded_file_details(
     case_id: str = Path(..., description="Case ID"),
     file_id: str = Path(..., description="File ID"),
     current_user: UserDTO = Depends(require_authentication),
-    case_service: APICaseService = Depends(get_api_case_service),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
 ):
     """
     GET /api/v1/cases/{case_id}/uploaded-files/{file_id}
@@ -3189,13 +3187,15 @@ async def get_uploaded_file_details(
     - List of evidence derived from this file
     - Hypothesis linkage for each evidence piece
     """
+    case_service = check_case_service_available(case_service)
     user_id = current_user.user_id
 
     try:
-        # Get case and verify ownership
+        # ICaseService.get_case applies ownership-based access control and
+        # returns None for both "not found" and "not owned" — both surface as 404.
         case = await case_service.get_case(case_id, user_id)
-        if case.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        if not case:
+            raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
 
         # Find the uploaded file
         uploaded_file = next(
@@ -3269,71 +3269,100 @@ async def get_uploaded_file_details(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get(
-    "/{case_id}/uploaded-files",
-    response_model=UploadedFilesListResponse,
-    summary="List uploaded files with evidence counts",
-    description="Get all uploaded files for a case with metadata and evidence linkage counts.",
-    operation_id="list_uploaded_files_v2",
-)
-async def list_uploaded_files(
-    case_id: str = Path(..., description="Case ID"),
-    auth: tuple = Depends(require_authentication),
-    case_service: APICaseService = Depends(get_api_case_service),
-):
+def _build_evidence_response(case, evidence, case_id: str) -> EvidenceDetailsResponse:
+    """Build an EvidenceDetailsResponse from a domain Evidence + its parent Case.
+
+    Resolves the source-file reference via the canonical FK and walks the
+    hypothesis-evidence junction once to collect every related hypothesis.
+    Shared by ``list_case_evidence`` and ``get_evidence_details`` so both
+    endpoints produce identical row shapes.
     """
-    GET /api/v1/cases/{case_id}/uploaded-files
+    matched_file = case.find_uploaded_file(evidence.source_file_id)
+    source_file = (
+        SourceFileReference(
+            file_id=matched_file.file_id,
+            filename=matched_file.filename,
+            uploaded_at_turn=matched_file.uploaded_at_turn,
+        )
+        if matched_file
+        else None
+    )
 
-    Returns list of all uploaded files with:
-    - File metadata
-    - Count of evidence derived from each file
-    """
-    session_id, user_id = auth
-
-    try:
-        # Get case and verify ownership
-        case = await case_service.get_case(case_id, user_id)
-        if case.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
-
-        # Build file list with evidence counts
-        files_with_counts = []
-        for uploaded_file in case.uploaded_files:
-            # Count evidence derived from this file via the canonical FK
-            evidence_count = sum(
-                1 for e in case.evidence if e.source_file_id == uploaded_file.file_id
-            )
-
-            # Format file size
-            size_bytes = uploaded_file.size_bytes
-            if size_bytes < 1024:
-                size_display = f"{size_bytes} B"
-            elif size_bytes < 1024 * 1024:
-                size_display = f"{size_bytes / 1024:.1f} KB"
-            else:
-                size_display = f"{size_bytes / (1024 * 1024):.1f} MB"
-
-            files_with_counts.append(
-                UploadedFileMetadata(
-                    file_id=uploaded_file.file_id,
-                    filename=uploaded_file.filename,
-                    size_bytes=uploaded_file.size_bytes,
-                    size_display=size_display,
-                    uploaded_at_turn=uploaded_file.uploaded_at_turn,
-                    uploaded_at=uploaded_file.uploaded_at,
-                    source_type=uploaded_file.upload_source,
-                    summary=None,  # case-scoped summary lives on linked Evidence
+    related_hypotheses = []
+    for hypothesis in case.hypotheses:
+        for link in hypothesis.evidence_links:
+            if link.evidence_id != evidence.evidence_id:
+                continue
+            related_hypotheses.append(
+                RelatedHypothesis(
+                    hypothesis_id=hypothesis.hypothesis_id,
+                    statement=hypothesis.statement,
+                    stance=(
+                        link.stance.value
+                        if hasattr(link.stance, "value")
+                        else str(link.stance)
+                    ),
                 )
             )
 
-        return UploadedFilesListResponse(
-            case_id=case_id, total_count=len(files_with_counts), files=files_with_counts
+    return EvidenceDetailsResponse(
+        evidence_id=evidence.evidence_id,
+        case_id=case_id,
+        summary=evidence.summary,
+        category=_safe_enum_value(evidence.category),
+        primary_purpose=evidence.primary_purpose,
+        collected_at_turn=evidence.collected_at_turn,
+        collected_at=evidence.collected_at,
+        collected_by=evidence.collected_by,
+        source_file=source_file,
+        related_hypotheses=related_hypotheses,
+        extract=evidence.extract,
+        analysis=evidence.analysis,
+    )
+
+
+@router.get(
+    "/{case_id}/evidence",
+    response_model=CaseEvidenceListResponse,
+    summary="List all evidence for a case",
+    description="Retrieve all evidence records for a case, each with source-file reference and hypothesis linkage.",
+    operation_id="list_case_evidence",
+)
+async def list_case_evidence(
+    case_id: str = Path(..., description="Case ID"),
+    current_user: UserDTO = Depends(require_authentication),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+):
+    """
+    GET /api/v1/cases/{case_id}/evidence
+
+    Returns the full evidence list for a case. Each item carries the
+    same shape as the single-evidence endpoint so the UI can render a
+    list view and a detail panel from one payload.
+    """
+    case_service = check_case_service_available(case_service)
+    user_id = current_user.user_id
+
+    try:
+        case = await case_service.get_case(case_id, user_id)
+        if not case:
+            raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
+
+        evidence_items = [
+            _build_evidence_response(case, evidence, case_id)
+            for evidence in case.evidence
+        ]
+
+        return CaseEvidenceListResponse(
+            case_id=case_id,
+            total_count=len(evidence_items),
+            evidence=evidence_items,
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to list files: {e}", exc_info=True)
+        logger.error(f"Failed to list evidence: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3346,8 +3375,8 @@ async def list_uploaded_files(
 async def get_evidence_details(
     case_id: str = Path(..., description="Case ID"),
     evidence_id: str = Path(..., description="Evidence ID"),
-    auth: tuple = Depends(require_authentication),
-    case_service: APICaseService = Depends(get_api_case_service),
+    current_user: UserDTO = Depends(require_authentication),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
 ):
     """
     GET /api/v1/cases/{case_id}/evidence/{evidence_id}
@@ -3357,15 +3386,14 @@ async def get_evidence_details(
     - Source file reference (if derived from upload)
     - Related hypotheses with stance (SUPPORTS/REFUTES/NEUTRAL)
     """
-    session_id, user_id = auth
+    case_service = check_case_service_available(case_service)
+    user_id = current_user.user_id
 
     try:
-        # Get case and verify ownership
         case = await case_service.get_case(case_id, user_id)
-        if case.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        if not case:
+            raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
 
-        # Find the evidence
         evidence = next(
             (e for e in case.evidence if e.evidence_id == evidence_id), None
         )
@@ -3375,52 +3403,7 @@ async def get_evidence_details(
                 detail=f"Evidence {evidence_id} not found in case {case_id}",
             )
 
-        # Source file via canonical FK. Chat-extracted evidence
-        # (source_type=USER_DESCRIPTION, source_file_id IS NULL) returns
-        # source_file=None.
-        matched_file = case.find_uploaded_file(evidence.source_file_id)
-        source_file = (
-            SourceFileReference(
-                file_id=matched_file.file_id,
-                filename=matched_file.filename,
-                uploaded_at_turn=matched_file.uploaded_at_turn,
-            )
-            if matched_file
-            else None
-        )
-
-        # Related hypotheses via the junction-backed list
-        related_hypotheses = []
-        for hypothesis in case.hypotheses:
-            for link in hypothesis.evidence_links:
-                if link.evidence_id != evidence.evidence_id:
-                    continue
-                related_hypotheses.append(
-                    RelatedHypothesis(
-                        hypothesis_id=hypothesis.hypothesis_id,
-                        statement=hypothesis.statement,
-                        stance=(
-                            link.stance.value
-                            if hasattr(link.stance, "value")
-                            else str(link.stance)
-                        ),
-                    )
-                )
-
-        return EvidenceDetailsResponse(
-            evidence_id=evidence.evidence_id,
-            case_id=case_id,
-            summary=evidence.summary,
-            category=evidence.category,
-            primary_purpose=evidence.primary_purpose,
-            collected_at_turn=evidence.collected_at_turn,
-            collected_at=evidence.collected_at,
-            collected_by=evidence.collected_by,
-            source_file=source_file,
-            related_hypotheses=related_hypotheses,
-            extract=evidence.extract,
-            analysis=evidence.analysis,
-        )
+        return _build_evidence_response(case, evidence, case_id)
 
     except HTTPException:
         raise

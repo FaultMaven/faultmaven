@@ -581,14 +581,32 @@
         }
       }
     },
-    "/api/v1/auth/dev-list-users": {
+    "/api/v1/auth/users": {
       "get": {
         "tags": [
           "authentication"
         ],
-        "summary": "Dev List Users",
-        "description": "Development endpoint to list all users.\n\nReturns a list of all users in the system for development/debugging.\nThis endpoint is only available in development environments.\n\n**Security**: Gated by require_development_environment dependency.",
-        "operationId": "dev_list_users_api_v1_auth_dev_list_users_get",
+        "summary": "List Users",
+        "description": "List all users. Admin only.",
+        "operationId": "list_users_api_v1_auth_users_get",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -596,7 +614,17 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "title": "Response Dev List Users Api V1 Auth Dev List Users Get"
+                  "title": "Response List Users Api V1 Auth Users Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -604,14 +632,14 @@
         }
       }
     },
-    "/api/v1/auth/dev-delete-user/{username}": {
+    "/api/v1/auth/users/{username}": {
       "delete": {
         "tags": [
           "authentication"
         ],
-        "summary": "Dev Delete User",
-        "description": "Development endpoint to delete a user by username.\n\nDeletes (soft delete) a user by username for development/debugging.\nThis endpoint is only available in development environments.\n\n**Security**: Gated by require_development_environment dependency.",
-        "operationId": "dev_delete_user_api_v1_auth_dev_delete_user__username__delete",
+        "summary": "Delete User",
+        "description": "Delete a user by username. Admin only.",
+        "operationId": "delete_user_api_v1_auth_users__username__delete",
         "parameters": [
           {
             "name": "username",
@@ -621,6 +649,22 @@
               "type": "string",
               "title": "Username"
             }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
           }
         ],
         "responses": {
@@ -630,7 +674,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "title": "Response Dev Delete User Api V1 Auth Dev Delete User  Username  Delete"
+                  "title": "Response Delete User Api V1 Auth Users  Username  Delete"
                 }
               }
             }
@@ -818,15 +862,24 @@
         }
       }
     },
-    "/api/v1/auth/dev/revoke-all-tokens": {
+    "/api/v1/auth/users/{user_id}/revoke-tokens": {
       "post": {
         "tags": [
           "authentication"
         ],
-        "summary": "Dev Revoke All User Tokens",
-        "description": "Development endpoint: Revoke all tokens for current user.\n\nThis endpoint is only available in development environments.\n\n**Security**: Gated by require_development_environment dependency.",
-        "operationId": "dev_revoke_all_user_tokens_api_v1_auth_dev_revoke_all_tokens_post",
+        "summary": "Revoke User Tokens",
+        "description": "Revoke all tokens for a user. Admin only.",
+        "operationId": "revoke_user_tokens_api_v1_auth_users__user_id__revoke_tokens_post",
         "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          },
           {
             "name": "Authorization",
             "in": "header",
@@ -2758,9 +2811,9 @@
         "tags": [
           "cases"
         ],
-        "summary": "List uploaded files with evidence counts",
-        "description": "Get all uploaded files for a case with metadata and evidence linkage counts.",
-        "operationId": "list_uploaded_files_v2",
+        "summary": "List Uploaded Files",
+        "description": "List uploaded files for a case with pagination.\n\nReturns:\n    Paginated list of file metadata with AI analysis status",
+        "operationId": "list_uploaded_files",
         "parameters": [
           {
             "name": "case_id",
@@ -2768,10 +2821,59 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "Case ID",
               "title": "Case Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Maximum number of files to return",
+              "default": 50,
+              "title": "Limit"
             },
-            "description": "Case ID"
+            "description": "Maximum number of files to return"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of files to skip (for pagination)",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "Number of files to skip (for pagination)"
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Sort field: uploaded_at_turn | filename | size",
+              "default": "uploaded_at_turn",
+              "title": "Sort By"
+            },
+            "description": "Sort field: uploaded_at_turn | filename | size"
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Sort direction: asc | desc",
+              "default": "desc",
+              "title": "Sort Order"
+            },
+            "description": "Sort direction: asc | desc"
           },
           {
             "name": "Authorization",
@@ -2796,7 +2898,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UploadedFilesListResponse"
+                  "$ref": "#/components/schemas/UploadedFilesList"
                 }
               }
             }
@@ -2821,7 +2923,7 @@
         ],
         "summary": "Get uploaded file details with derived evidence",
         "description": "Retrieve detailed information about an uploaded file including all evidence derived from it and hypothesis linkage.",
-        "operationId": "get_uploaded_file_details_v2",
+        "operationId": "get_uploaded_file_details",
         "parameters": [
           {
             "name": "case_id",
@@ -2869,6 +2971,67 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadedFileDetailsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cases/{case_id}/evidence": {
+      "get": {
+        "tags": [
+          "cases"
+        ],
+        "summary": "List all evidence for a case",
+        "description": "Retrieve all evidence records for a case, each with source-file reference and hypothesis linkage.",
+        "operationId": "list_case_evidence",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Case ID",
+              "title": "Case Id"
+            },
+            "description": "Case ID"
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseEvidenceListResponse"
                 }
               }
             }
@@ -3357,7 +3520,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionResponse"
+                  "$ref": "#/components/schemas/faultmaven__api__models__SessionResponse"
                 }
               }
             }
@@ -3460,7 +3623,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/SessionResponse"
+                    "$ref": "#/components/schemas/faultmaven__api__models__SessionResponse"
                   },
                   "title": "Response List Sessions Api V1 Cases  Case Id  Sessions Get"
                 }
@@ -3528,7 +3691,7 @@
                 "schema": {
                   "anyOf": [
                     {
-                      "$ref": "#/components/schemas/SessionResponse"
+                      "$ref": "#/components/schemas/faultmaven__api__models__SessionResponse"
                     },
                     {
                       "type": "null"
@@ -3607,7 +3770,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionResponse"
+                  "$ref": "#/components/schemas/faultmaven__api__models__SessionResponse"
                 }
               }
             }
@@ -3688,7 +3851,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionResponse"
+                  "$ref": "#/components/schemas/faultmaven__api__models__SessionResponse"
                 }
               }
             }
@@ -3761,7 +3924,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionResponse"
+                  "$ref": "#/components/schemas/faultmaven__api__models__SessionResponse"
                 }
               }
             }
@@ -3834,7 +3997,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionResponse"
+                  "$ref": "#/components/schemas/faultmaven__api__models__SessionResponse"
                 }
               }
             }
@@ -3917,7 +4080,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionResponse"
+                  "$ref": "#/components/schemas/faultmaven__api__models__SessionResponse"
                 }
               }
             }
@@ -11423,6 +11586,33 @@
         "title": "CaseDetail",
         "description": "Detailed case information for single case view."
       },
+      "CaseEvidenceListResponse": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "total_count": {
+            "type": "integer",
+            "title": "Total Count"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceDetailsResponse"
+            },
+            "type": "array",
+            "title": "Evidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "case_id",
+          "total_count",
+          "evidence"
+        ],
+        "title": "CaseEvidenceListResponse",
+        "description": "All evidence records for a case, each with source and hypothesis linkage."
+      },
       "CaseListResponse": {
         "properties": {
           "cases": {
@@ -11704,7 +11894,7 @@
           "closed"
         ],
         "title": "CaseStatus",
-        "description": "Case lifecycle status \u2014 passive label describing a case's current condition.\n\nValues fall into two categories:\n- **Phases** (active work): INQUIRY, INVESTIGATING\n- **Dispositions** (terminal resolution): RESOLVED, CLOSED\n\nCase Actions (phase transitions and dispositions):\n  INQUIRY \u2192 INVESTIGATING  (phase transition)\n  INQUIRY \u2192 RESOLVED       (fast-track disposition)\n  INQUIRY \u2192 CLOSED         (disposition)\n  INVESTIGATING \u2192 RESOLVED (disposition)\n  INVESTIGATING \u2192 CLOSED   (disposition)"
+        "description": "Case lifecycle status \u2014 passive label describing a case's current condition.\n\nValues fall into two categories:\n- **Phases** (active work): INQUIRY, INVESTIGATING\n- **Dispositions** (terminal resolution): RESOLVED, CLOSED\n\nCase Actions (phase transitions and dispositions):\n  INQUIRY \u2192 INVESTIGATING  (phase transition)\n  INQUIRY \u2192 CLOSED         (disposition)\n  INVESTIGATING \u2192 RESOLVED (disposition; includes the same-turn KB-resolution variant)\n  INVESTIGATING \u2192 CLOSED   (disposition)\n\nv3: INQUIRY \u2192 RESOLVED edge removed. KB-driven cases collapse INVESTIGATING\nto one or two turns via per-runbook Cause attribution rather than skipping\nthe phase. See docs/architecture/investigation-engine/investigation-lifecycle-logic.md\n\u00a71.2 INVESTIGATING \u2192 RESOLVED \u2192 KB-Resolution Path."
       },
       "CaseSummary": {
         "properties": {
@@ -12956,7 +13146,7 @@
               }
             ],
             "title": "Metadata",
-            "description": "Structured diagnostic metadata from the preprocessing pipeline. Top-level keys are namespaced \u2014 see docs/architecture/data-and-storage/schemas/case-schema.md \u00a74.3 'evidence.metadata JSON contract'. Canonical shape in faultmaven/core/preprocessing/evidence_metadata.py::EvidenceMetadata. Optional for backward compatibility with evidence rows that predate the Phase 1 classifier-confidence work."
+            "description": "Structured diagnostic metadata from the preprocessing pipeline. Top-level keys are namespaced \u2014 see docs/architecture/data-and-storage/schemas/case-schema.md \u00a74.3 'evidence.metadata JSON contract'. Canonical shape in faultmaven/core/preprocessing/evidence_metadata.py::EvidenceMetadata. Optional \u2014 chat-quoted Evidence rows have no preprocessing trace."
           },
           "coverage_start_ts": {
             "anyOf": [
@@ -13006,7 +13196,7 @@
           "solution_evidence"
         ],
         "title": "EvidenceCategory",
-        "description": "Evidence classification by investigation purpose.\n\nPost-010 redesign: 4 claim-attached categories. Each row is the LLM's\ndeliberate decision to record a specific extract as evidence for a\nspecific claim, created only during INVESTIGATING. The dropped\ncategories (CONTEXTUAL_EVIDENCE, REJECTED) had no claim attachment\nand were structurally incompatible with the strict model:\n\n- Contextual data now lives on ``uploaded_files`` (the file itself is\n  the data; no evidence row is needed until the agent extracts a\n  claim-relevant slice).\n- Rejected submissions are expressed as the absence of an evidence\n  row (the agent simply doesn't promote them); hypothesis-level\n  refutation lives on ``hypothesis_evidence.stance``."
+        "description": "Evidence classification by investigation purpose.\n\nFour claim-attached categories. Every row is the LLM's deliberate\ndecision to record a specific extract as evidence for a specific\nclaim, created only during INVESTIGATING. Contextual data lives on\n``uploaded_files`` \u2014 no evidence row is needed until the agent\nextracts a claim-relevant slice. Rejection is expressed as the\nabsence of an evidence row; hypothesis-level refutation lives on\n``hypothesis_evidence.stance``."
       },
       "EvidenceDetailsResponse": {
         "properties": {
@@ -13112,7 +13302,7 @@
           "user_description"
         ],
         "title": "EvidenceSourceType",
-        "description": "Fundamental type of data source.\n\nPost-redesign (2026-02-14): Updated to align with data-classification-strategy.md (6 types).\n\nMigration mapping:\n- log_file, command_output, trace_data, api_response, other \u2192 LOGS\n- metrics_data, monitoring_alert \u2192 METRICS\n- config_file, database_query \u2192 CONFIGURATION\n- code_review \u2192 CODE\n- user_report \u2192 TEXT\n- screenshot \u2192 IMAGE"
+        "description": "Fundamental type of data source.\n\nAligned with the data classifier (Tier 0); each value names what kind\nof data the Evidence row's source is. ``USER_DESCRIPTION`` is the\nchat-quote case where the source is a verbatim system-output quote\nembedded in the user's message, not a file."
       },
       "EvidenceStance": {
         "type": "string",
@@ -14925,7 +15115,6 @@
             "type": "string",
             "enum": [
               "user",
-              "agent",
               "assistant",
               "system"
             ],
@@ -16477,30 +16666,26 @@
             "title": "Difficulty",
             "default": "intermediate"
           },
-          "problem_definition": {
+          "symptom_recognition": {
             "type": "string",
             "minLength": 10,
-            "title": "Problem Definition"
+            "title": "Symptom Recognition"
+          },
+          "applicability": {
+            "type": "string",
+            "minLength": 10,
+            "title": "Applicability"
           },
           "diagnostic_steps": {
             "type": "string",
             "minLength": 10,
             "title": "Diagnostic Steps"
           },
-          "mitigation": {
+          "causes": {
             "type": "string",
             "minLength": 10,
-            "title": "Mitigation"
-          },
-          "root_cause_resolution": {
-            "type": "string",
-            "minLength": 10,
-            "title": "Root Cause Resolution"
-          },
-          "verification": {
-            "type": "string",
-            "minLength": 10,
-            "title": "Verification"
+            "title": "Causes",
+            "description": "Pre-formatted markdown with ### Cause N subsections. Each cause needs Statement, Mechanism, Indicator, Mitigation, Resolution, Verification sub-fields. Include ### Cause Z: Unidentified with [Default] indicator as fallback."
           },
           "prevention": {
             "type": "string",
@@ -16527,11 +16712,10 @@
           "symptom_class",
           "severity",
           "scope",
-          "problem_definition",
+          "symptom_recognition",
+          "applicability",
           "diagnostic_steps",
-          "mitigation",
-          "root_cause_resolution",
-          "verification",
+          "causes",
           "prevention"
         ],
         "title": "RunbookCreateRequest"
@@ -16771,97 +16955,6 @@
         "type": "object",
         "title": "SessionCreateRequest",
         "description": "Request model for creating investigation session."
-      },
-      "SessionResponse": {
-        "type": "object",
-        "required": [
-          "session_id",
-          "status"
-        ],
-        "properties": {
-          "session_id": {
-            "type": "string",
-            "description": "Unique session identifier"
-          },
-          "user_id": {
-            "type": "string",
-            "description": "Associated user identifier",
-            "nullable": true
-          },
-          "client_id": {
-            "type": "string",
-            "description": "Client/device identifier for session resumption",
-            "nullable": true
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "active",
-              "idle",
-              "expired"
-            ],
-            "description": "Current session status"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Session creation timestamp"
-          },
-          "session_resumed": {
-            "type": "boolean",
-            "description": "Indicates if this was an existing session resumed",
-            "nullable": true
-          },
-          "session_type": {
-            "type": "string",
-            "description": "Type of session (e.g., troubleshooting)"
-          },
-          "message": {
-            "type": "string",
-            "description": "Status message about session creation/resumption"
-          },
-          "metadata": {
-            "type": "object",
-            "description": "Session metadata and context"
-          }
-        },
-        "examples": {
-          "new_session": {
-            "summary": "New Session Created",
-            "value": {
-              "session_id": "session_abc123",
-              "user_id": "user_123",
-              "client_id": "browser-client-abc123",
-              "status": "active",
-              "created_at": "2025-01-15T10:00:00Z",
-              "session_resumed": false,
-              "session_type": "troubleshooting",
-              "message": "Session created successfully",
-              "metadata": {
-                "environment": "production",
-                "team": "platform-team"
-              }
-            }
-          },
-          "resumed_session": {
-            "summary": "Existing Session Resumed",
-            "value": {
-              "session_id": "session_existing_456",
-              "user_id": "user_123",
-              "client_id": "browser-client-abc123",
-              "status": "active",
-              "created_at": "2025-01-15T09:30:00Z",
-              "session_resumed": true,
-              "session_type": "troubleshooting",
-              "message": "Session resumed successfully",
-              "metadata": {
-                "environment": "production",
-                "team": "platform-team",
-                "investigations_count": 2
-              }
-            }
-          }
-        }
       },
       "SessionRestoreRequest": {
         "properties": {
@@ -18298,33 +18391,6 @@
         "title": "UploadedFilesList",
         "description": "Paginated list of uploaded files."
       },
-      "UploadedFilesListResponse": {
-        "properties": {
-          "case_id": {
-            "type": "string",
-            "title": "Case Id"
-          },
-          "total_count": {
-            "type": "integer",
-            "title": "Total Count"
-          },
-          "files": {
-            "items": {
-              "$ref": "#/components/schemas/UploadedFileMetadata"
-            },
-            "type": "array",
-            "title": "Files"
-          }
-        },
-        "type": "object",
-        "required": [
-          "case_id",
-          "total_count",
-          "files"
-        ],
-        "title": "UploadedFilesListResponse",
-        "description": "List of uploaded files with evidence counts."
-      },
       "UrgencyLevel": {
         "type": "string",
         "enum": [
@@ -18766,6 +18832,129 @@
         "title": "WorkingConclusionSummary",
         "description": "Agent's current understanding during INVESTIGATING phase."
       },
+      "faultmaven__api__models__SessionResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "case_id": {
+            "type": "string",
+            "title": "Case Id"
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "organization_id": {
+            "type": "string",
+            "title": "Organization Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SessionStatus"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "last_activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Activity At"
+          },
+          "total_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Duration Ms"
+          },
+          "session_goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Goal"
+          },
+          "findings_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Findings Summary"
+          },
+          "total_token_usage": {
+            "type": "integer",
+            "title": "Total Token Usage"
+          },
+          "total_agent_executions": {
+            "type": "integer",
+            "title": "Total Agent Executions"
+          },
+          "token_budget_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Budget Limit"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "case_id",
+          "user_id",
+          "organization_id",
+          "status",
+          "started_at",
+          "last_activity_at",
+          "total_token_usage",
+          "total_agent_executions",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SessionResponse",
+        "description": "Response model for investigation session."
+      },
       "faultmaven__models__api__SessionResponse": {
         "properties": {
           "schema_version": {
@@ -19157,6 +19346,97 @@
             "errors_found": 23,
             "insights_extracted": 8,
             "processing_time_ms": 2340
+          }
+        }
+      },
+      "SessionResponse": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "status"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Unique session identifier"
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Associated user identifier",
+            "nullable": true
+          },
+          "client_id": {
+            "type": "string",
+            "description": "Client/device identifier for session resumption",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "idle",
+              "expired"
+            ],
+            "description": "Current session status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Session creation timestamp"
+          },
+          "session_resumed": {
+            "type": "boolean",
+            "description": "Indicates if this was an existing session resumed",
+            "nullable": true
+          },
+          "session_type": {
+            "type": "string",
+            "description": "Type of session (e.g., troubleshooting)"
+          },
+          "message": {
+            "type": "string",
+            "description": "Status message about session creation/resumption"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Session metadata and context"
+          }
+        },
+        "examples": {
+          "new_session": {
+            "summary": "New Session Created",
+            "value": {
+              "session_id": "session_abc123",
+              "user_id": "user_123",
+              "client_id": "browser-client-abc123",
+              "status": "active",
+              "created_at": "2025-01-15T10:00:00Z",
+              "session_resumed": false,
+              "session_type": "troubleshooting",
+              "message": "Session created successfully",
+              "metadata": {
+                "environment": "production",
+                "team": "platform-team"
+              }
+            }
+          },
+          "resumed_session": {
+            "summary": "Existing Session Resumed",
+            "value": {
+              "session_id": "session_existing_456",
+              "user_id": "user_123",
+              "client_id": "browser-client-abc123",
+              "status": "active",
+              "created_at": "2025-01-15T09:30:00Z",
+              "session_resumed": true,
+              "session_type": "troubleshooting",
+              "message": "Session resumed successfully",
+              "metadata": {
+                "environment": "production",
+                "team": "platform-team",
+                "investigations_count": 2
+              }
+            }
           }
         }
       }
