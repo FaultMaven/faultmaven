@@ -598,7 +598,7 @@ class ReportType(str, Enum):
 
     # Auto-generated on terminal transition
     RESOLUTION_SUMMARY = "resolution_summary"  # RESOLVED cases (always generated)
-    CLOSURE_SUMMARY = "closure_summary"        # CLOSED cases (subject to skip-if-trivial guardrail)
+    CLOSURE_SUMMARY = "closure_summary"        # CLOSED cases (subject to substance gate)
 
     # User-requested via ConversionService
     RUNBOOK = "runbook"                        # From RESOLVED cases only (requires root cause)
@@ -635,7 +635,7 @@ class CaseReport(BaseModel):
 - `version=1` — no versioning for auto-summaries (generated once); the `version` field caps at 5 for user-requested reports
 - The model has no `created_by` field; system vs user origin is inferred from `auto_generated`
 
-The content-focus table (which fields each summary type covers), the skip-if-trivial guardrail (≥4 messages + substance check, duplicate exclusion), the set of terminal transition paths that schedule generation, and the SYNTHESIS-capability generation path are canonical in:
+The content-focus table (which fields each summary type covers), the substance gate (evidence / hypotheses / completed_milestones — see `should_generate_terminal_summary`), the set of terminal transition paths that synchronously generate, the chat-side rendering of the summary inline at the moment of generation, and the SYNTHESIS-capability generation path are canonical in:
 
 See **[Investigation Lifecycle Logic §4.5.0](./investigation-lifecycle-logic.md#450-auto-generated-terminal-summary)** (full specification) and **[§1.7.3](./investigation-lifecycle-logic.md#173-auto-generated-terminal-summary)** (post-terminal lifecycle view).
 

@@ -601,8 +601,8 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
         triggered_by=user_id,
         reason=f"User force-closed: {reason}"
     ))
-    # Schedule auto-summary generation (skip-if-trivial guardrail applies)
-    case._pending_summary = should_generate_terminal_summary(case)
+    # Caller invokes synchronous summary generation after this transition
+    # (gated by should_generate_terminal_summary). See §1.7.3.
     # DISPOSITION - no further case actions
 
 
@@ -628,8 +628,8 @@ def close_from_inquiry(case: Case, user_id: str):
         triggered_by=user_id,
         reason="User closed after inquiry only"
     ))
-    # Schedule auto-summary generation (skip-if-trivial guardrail applies)
-    case._pending_summary = should_generate_terminal_summary(case)
+    # Caller invokes synchronous summary generation after this transition
+    # (gated by should_generate_terminal_summary). See §1.7.3.
     # DISPOSITION - no further case actions
 ```
 
@@ -900,9 +900,9 @@ Here's what I have on record:
 Is this correct? Once you confirm, I'll mark the case as resolved.
 
 What will happen:
-- A Resolution Summary will be auto-generated
+- This is irreversible — the case becomes read-only
 - No further evidence submission or investigation will be possible
-- You can still ask questions about this case and regenerate the summary report
+- You can still ask questions about this case
 - Archive the case from Dashboard when you are done
 
 [✅ Yes, mark as resolved]  [❌ No, continue investigating]"""
@@ -919,9 +919,9 @@ Current findings: {case.working_conclusion.summary if exists else "Limited data"
 
 Here's what will happen when I close this case:
 
-- A Closure Summary will be auto-generated capturing investigation state and findings so far
+- This is irreversible — the case becomes read-only
 - No further evidence submission or investigation will be possible
-- You can still ask questions about this case and regenerate the summary report
+- You can still ask questions about this case
 - Archive the case from Dashboard when you are done
 
 Please select a closure reason:
@@ -939,7 +939,7 @@ return f"""You've requested to close this case without investigation.
 
 Here's what will happen:
 
-- A Closure Summary will be auto-generated with the inquiry conversation
+- This is irreversible — the case becomes read-only
 - The case will remain on your list until archived from the Dashboard
 
 Close this case?
@@ -1067,7 +1067,7 @@ async def _process_turn_impl(self, case, user_message, ...):
     # Normal investigation flow...
 ```
 
-**Report regeneration**: The summary report is auto-generated at closure time (same turn). Users can request regeneration at any point while the case is in terminal state. Regeneration overwrites the existing report — there is always exactly one summary report per case.
+**Report regeneration**: The summary report is auto-generated at closure time and rendered inline in the closure-turn chat reply. Users can request regeneration on subsequent terminal Q&A turns via the COOPERATIVE *"Regenerate closure summary"* affordance (the only chat-side path — free-typed paraphrases like *"give me a recap"* route to Q&A and never produce a persisted Report). Regeneration overwrites the existing report — there is always exactly one summary per case.
 
 **API-level enforcement** (`submit_turn` endpoint):
 
@@ -1081,7 +1081,7 @@ async def _process_turn_impl(self, case, user_message, ...):
 
 #### 1.7.3 Auto-Generated Terminal Summary
 
-When a case reaches any terminal state, the system automatically generates a lightweight summary report in the same turn. This is the canonical "what happened" record, generated using the SYNTHESIS LLM capability (cheap/fast provider).
+When a case reaches a terminal state, the system synchronously generates a lightweight summary report. There is exactly **one summary per case**, persisted as a `Report` row and viewed through two surfaces: the chat (rendered inline on the closure-confirmation turn) and the Dashboard `ReportTab` (persistent view). Both surfaces show the same record.
 
 **Two summary types**:
 
@@ -1092,52 +1092,27 @@ When a case reaches any terminal state, the system automatically generates a lig
 
 **Generation approach**:
 
-- Single LLM call using SYNTHESIS capability (Fireworks/Groq for speed and cost)
-- Input assembled via `context_builder.py`: case messages, evidence list, hypothesis states, action_history, milestone progress
-- Stored as `Report` with `auto_generated=True` (distinguishes from user-requested reports)
-- **Fire-and-forget**: failure does not block the transition. Error logged, case still transitions. Summary can be regenerated later via chat.
-- One report per case — regeneration overwrites the existing report
+- Single LLM call using SYNTHESIS capability (Fireworks/Groq for speed and cost).
+- Input assembled via `context_builder.py`: case messages, evidence list, hypothesis states, action_history, milestone progress.
+- Stored as `Report` with `auto_generated=True` (distinguishes from user-requested reports).
+- **Synchronous**: the closure-turn agent reply waits for generation to complete and then embeds the rendered markdown inline. The state transition itself does not depend on LLM availability — generation exceptions are caught and the closure still commits, but the chat reply tells the user generation didn't complete and the regen affordance is offered on the next terminal turn for retry.
+- One report per case — regeneration overwrites the existing row.
 
-**Resolution Summary content**:
+**Substance gate** (`should_generate_terminal_summary()` in `terminal_transitions.py`):
 
-```
-Problem Statement    — One-line description of the issue
-Root Cause           — What was identified as the cause
-Solution Applied     — What fixed it, with key commands/configs
-Confirming Evidence  — Which evidence items confirmed the fix
-Timeline             — created_at → key milestones → resolved_at
-Milestones Reached   — Which of the 6 progress milestones completed
-Investigation Path   — MITIGATION_FIRST or ROOT_CAUSE, mitigation applied?
-```
+RESOLVED transitions always generate — a confirmed solution is meaningful content by definition. CLOSED transitions are gated on **investigation substance**: at least one of `evidence > 0`, `hypotheses > 0`, or `completed_milestones > 0`.
 
-**Closure Summary content**:
+The gate is intentionally **substance-only**. Conversation depth (`message_count`) is *not* a signal: terminal Q&A turns inflate it, so including it would let post-closure chat flip the verdict. The three substance signals are naturally frozen in CLOSED state (the API rejects new evidence/transitions), so the gate is stable across the terminal lifetime without needing a snapshot field. The case description is also excluded — creation-time metadata, not investigation output.
 
-```
-Problem Statement         — One-line description
-Investigation State       — How far diagnosis progressed (milestones reached)
-Approaches Attempted      — What was tried (from action_history + action_attempts)
-Closure Reason            — The reason + any user-provided context
-Leading Hypotheses        — Top hypotheses at time of closure with confidence
-Mitigation Status         — Whether mitigation was applied (for "mitigation_sufficient")
-Timeline                  — created_at → key actions → closed_at
-Recommendation            — If escalated: what the next investigator should look at first
-```
+**Pre-close confirmation prompt**: the confirmation prompt that asks *"are you sure?"* before a terminal transition speaks only to the irreversibility of closing — it does not mention the summary. Conditional promises ("a summary will be generated *if*…") would muddy the decision; the summary is a downstream Dashboard artifact and the only chat-side reference to it is the COOPERATIVE regen affordance offered after closure (when applicable).
 
-**Skip-if-trivial guardrail** (`should_generate_terminal_summary()` in `terminal_transitions.py`):
+**Skip-reason surfacing**: when a closed case fails the substance gate and has no Report row, `terminal_summary_skip_reason(case)` in `terminal_transitions.py` returns a human-readable note. The case UI adapter populates the Dashboard Report tab with `status="skipped"` and this derived note. The closure-turn chat reply also embeds the skip note inline so the user gets the explanation where they are.
 
-RESOLVED transitions always generate a summary — a confirmed solution is meaningful content by definition. The guardrail applies only to CLOSED transitions, and skips generation when a case lacks meaningful content. Two independent checks must both pass:
+**Regeneration**:
 
-1. **Minimum conversation depth**: At least 4 messages (enough to summarize)
-2. **Investigation substance** (at least one must be true):
-   - Has evidence (investigation produced data)
-   - Has hypotheses (investigation produced theories)
-   - Has completed milestones (investigation made progress)
-
-The case description is intentionally excluded from substance signals — it's creation-time metadata, not investigation output. A case closed without any of the three substance signals (i.e. closed before investigation produced anything) gets no auto-generated summary.
-
-Always skipped for `closure_reason == "duplicate"` — parent case has the real content.
-
-**Skip-reason surfacing**: When a closed case fails the guardrail and has no summary, `terminal_summary_skip_reason(case)` in `terminal_transitions.py` returns a human-readable note. The case UI adapter populates the Report tab with `status="skipped"` and this derived note, so the tab explains why rather than appearing blank.
+- **Where it's offered**: only on subsequent terminal Q&A turns, never on the closure-acknowledgment turn itself (that turn's reply already contains the freshly-generated summary). A COOPERATIVE *"Regenerate closure summary"* card appears below the agent reply when the substance gate would PASS — independent of whether the Report row currently exists, which makes the same affordance handle both "redo it" and "retry failed generation".
+- **Strict gating**: regeneration re-applies the same substance check. Low-substance closures can't be regenerated into existence by clicking around; the gate is one-way and consistent.
+- **Free text routes to Q&A**: the regen handler is reached only via the COOPERATIVE suggestion's precomposed payload (exact-match). Free-typed paraphrases like *"give me a recap"* or *"new summary please"* route to terminal Q&A, where the prompt instructs the agent not to produce a competing summary and instead redirect to the existing summary + regen affordance. This keeps the rule clean: typing never produces a persisted Report side effect; clicking always does.
 
 #### 1.7.4 Session Cleanup on Terminal Transition
 
@@ -1872,13 +1847,11 @@ After a case reaches RESOLVED or CLOSED, the system auto-generates a terminal su
 
 #### 4.5.0 Auto-Generated Terminal Summary
 
-**Trigger**: Automatic on terminal transition (both RESOLVED and CLOSED), fire-and-forget — failure does not block the transition.
+**Trigger**: Synchronous on terminal transition (both RESOLVED and CLOSED). The closure-turn agent reply waits for generation to complete and embeds the rendered markdown inline. Generation exceptions are caught — the state transition still commits — but the chat reply tells the user generation didn't complete and the regen affordance is offered on the next terminal turn for retry.
 
-**Implementation**: `MilestoneEngine._auto_generate_report()` calls `ReportGenerationService.generate_reports()` after the case is saved in terminal state. Called from both transition paths in the milestone engine (dropdown confirm and main process_turn).
+**Implementation**: `MilestoneEngine._auto_generate_report()` calls `ReportGenerationService.generate_reports()` after the case is saved in terminal state, returns either the rendered markdown (success), a skip note (gate FAIL), or a failure note (LLM error). The closure-turn reply is composed by `_compose_terminal_reply()` which appends the return value to the deterministic status line. Called from three places: the explicit-confirmation path, the dropdown-resolution path, and the end-of-turn LLM-driven transition path.
 
-**Guardrail**: `should_generate_terminal_summary()` in `terminal_transitions.py` applies only to CLOSED transitions. RESOLVED transitions always generate a summary unconditionally — a verified solution is meaningful content by definition. For CLOSED transitions, generation is skipped when:
-- Duplicate closures (`closure_reason == "duplicate"`) — parent case has the real content
-- Trivial cases — no evidence AND no hypotheses AND fewer than 4 messages
+**Substance gate** (`should_generate_terminal_summary()` in `terminal_transitions.py`): RESOLVED always generates — a verified solution is meaningful content by definition. CLOSED requires `evidence > 0` OR `hypotheses > 0` OR `completed_milestones > 0`. The gate is substance-only by design — conversation depth (`message_count`) is intentionally not a signal, since terminal Q&A inflates it and would let the verdict flip after closure. The three substance signals are naturally frozen in CLOSED state, so the gate is stable across the terminal lifetime without a snapshot field.
 
 **Summary types**:
 
@@ -1892,10 +1865,12 @@ Summaries are built from case data fields (hypotheses, solutions, evidence, mile
 **Report type enum** (`ReportType` in `case/domain/owned_models/report.py`):
 
 - `RESOLUTION_SUMMARY` — auto-generated for resolved cases (always generated)
-- `CLOSURE_SUMMARY` — auto-generated for closed cases (subject to skip-if-trivial guardrail)
+- `CLOSURE_SUMMARY` — auto-generated for closed cases (subject to substance gate)
 - `RUNBOOK` — user-requested via ConversionService (see §4.5.1)
 
-**Dashboard**: `ReportTab` is view-only — displays auto-generated summaries with formatted markdown rendering and download. No manual generate button. If no summary was generated for a closed case (trivial case), the tab surfaces a derived skip-reason note (via `terminal_summary_skip_reason()` in `terminal_transitions.py`) rather than appearing blank. RESOLVED cases always have a summary.
+**Dashboard**: `ReportTab` is view-only — displays auto-generated summaries with formatted markdown rendering and download. No manual generate button. If no summary was generated for a closed case (substance gate FAIL), the tab surfaces a derived skip-reason note (via `terminal_summary_skip_reason()` in `terminal_transitions.py`). If the gate PASSed but no Report row exists (generation failed), the tab surfaces a "regenerate from Copilot" note. RESOLVED cases always have a summary.
+
+**Two views, one record**: The chat and the Dashboard show the same `CaseReport` row. The chat renders it once at the moment of generation (and again on each regeneration); the Dashboard renders it persistently. There is exactly one summary per case — each regeneration overwrites the row.
 
 **API endpoints:**
 
@@ -1905,7 +1880,7 @@ Summaries are built from case data fields (hypotheses, solutions, evidence, mile
 
 #### 4.5.1 Runbook Generation (Knowledge Flywheel)
 
-**Eligibility**: RESOLVED cases only. CLOSED cases are not eligible regardless of `closure_reason` — they lack the confirmed root-cause-to-solution chain that a future investigator can apply. The post-close suggestion menu for a CLOSED case offers "Regenerate closure summary" only when an auto-generated summary was actually produced (gated by the substance check above). For low-substance closures with no auto-generated summary, no suggestions are offered — there's nothing to regenerate.
+**Eligibility**: RESOLVED cases only. CLOSED cases are not eligible regardless of `closure_reason` — they lack the confirmed root-cause-to-solution chain that a future investigator can apply. On subsequent terminal Q&A turns, a CLOSED case offers "Regenerate closure summary" when the substance gate would PASS (independent of whether the Report row currently exists — the same affordance handles both re-roll and failed-generation retry). For low-substance closures, no suggestion is offered — there's nothing to summarize.
 
 **Design**: Suggest first, evaluate on acceptance. The agent always offers a COOPERATIVE suggestion at resolution time. Readiness assessment and deduplication happen only when the user accepts — not upfront. This avoids wasted computation and gives the user a clear accept/decline choice.
 

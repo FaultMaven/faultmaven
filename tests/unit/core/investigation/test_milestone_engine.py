@@ -1346,8 +1346,16 @@ class TestReadinessAssessments:
         result = assess_runbook_readiness(case)
         assert result.verdict == result.NEEDS_ENRICHMENT
 
-    def test_summary_guardrail_skips_too_few_messages(self):
-        """Case with <4 messages → skip summary regardless of substance."""
+    def test_summary_guardrail_passes_with_evidence_even_for_short_chat(self):
+        """The gate is now substance-only: evidence is enough.
+
+        Conversation depth (message_count) is intentionally NOT a gate
+        signal — terminal Q&A turns inflate message_count, so including
+        it would let the verdict flip after closure. Substance signals
+        (evidence / hypotheses / milestones) are naturally frozen in
+        CLOSED state and carry the meaningful "is there something to
+        summarize?" signal on their own.
+        """
         from faultmaven.core.investigation.terminal_transitions import (
             should_generate_terminal_summary,
         )
@@ -1355,12 +1363,12 @@ class TestReadinessAssessments:
         case = MagicMock()
         case.case_id = "case_short"
         case.closure_reason = "inquiry_only"
-        case.evidence = [MagicMock()]  # Has substance but too few messages
+        case.evidence = [MagicMock()]  # Substance present
         case.hypotheses = {}
         case.description = "A real problem"
         case.progress.completed_milestones = []
-        case.message_count = 2
-        assert should_generate_terminal_summary(case) is False
+        case.message_count = 2  # No longer part of the gate
+        assert should_generate_terminal_summary(case) is True
 
     def test_summary_guardrail_skips_no_substance(self):
         """Case with enough messages but no substance → skip summary."""
@@ -1420,8 +1428,13 @@ class TestReadinessAssessments:
         case.message_count = 1
         assert terminal_summary_skip_reason(case) is None
 
-    def test_skip_reason_closed_thin_conversation(self):
-        """Closed case with <4 messages → skip reason mentions conversation."""
+    def test_skip_reason_closed_short_chat_with_evidence_returns_none(self):
+        """Closed case with evidence — no skip note even if chat is short.
+
+        message_count is no longer a gate signal (it's inflated by
+        terminal Q&A), so a short conversation with real investigation
+        substance still produces a summary.
+        """
         from faultmaven.core.investigation.terminal_transitions import (
             terminal_summary_skip_reason,
         )
@@ -1434,9 +1447,7 @@ class TestReadinessAssessments:
         case.description = "A real problem"
         case.progress.completed_milestones = []
         case.message_count = 2
-        reason = terminal_summary_skip_reason(case)
-        assert reason is not None
-        assert "meaningful conversation" in reason
+        assert terminal_summary_skip_reason(case) is None
 
     def test_skip_reason_closed_no_substance(self):
         """Closed case with enough messages but no substance → skip reason

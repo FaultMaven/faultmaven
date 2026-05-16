@@ -217,12 +217,6 @@ def _execute_resolved_transition(case: Case, user_id: str):
         )
     )
 
-    # Resolutions always produce a summary — RESOLVED implies a confirmed
-    # solution, which is meaningful content by definition. The substance
-    # heuristic gates only CLOSED transitions, where thin/inquiry-only
-    # closures legitimately have nothing worth summarizing.
-    case._pending_summary = True
-
     logger.info(f"Case {case.case_id} transitioned to RESOLVED (terminal state)")
 
 
@@ -264,9 +258,6 @@ def _execute_closed_transition(case: Case, user_id: str, closure_reason: str):
             reason=f"User confirmed closure ({closure_reason})",
         )
     )
-
-    # Schedule auto-summary generation (checked by milestone engine after save)
-    case._pending_summary = should_generate_terminal_summary(case)
 
     logger.info(f"Case {case.case_id} transitioned to CLOSED (terminal state)")
 
@@ -650,44 +641,27 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
 def should_generate_terminal_summary(case: "Case") -> bool:
     """Determine whether a terminal case warrants an auto-generated summary.
 
-    A useful summary requires both sufficient conversation AND investigation
-    substance. Skip generation when the case lacks meaningful content.
+    Gated on investigation substance — at least one of evidence, hypotheses,
+    or completed milestones. The three signals are naturally frozen for
+    CLOSED cases (the API rejects new evidence/transitions in terminal
+    state), so the verdict is stable across the terminal lifetime without
+    needing a separate snapshot field. Terminal Q&A turns inflate
+    message_count, which is why message_count is intentionally NOT part of
+    the gate — including it would let conversation depth flip the verdict
+    after closure.
 
-    Two independent checks (both must pass):
-    1. Minimum 4 messages (enough conversation to summarize)
-    2. At least one investigation-output indicator:
-       - Has evidence (investigation produced data)
-       - Has hypotheses (investigation produced theories)
-       - Has completed milestones (investigation made progress)
+    The case description is intentionally excluded — creation-time metadata,
+    not investigation output.
 
-    The case description is creation-time metadata, not investigation output,
-    and is intentionally excluded from the substance signal.
-
-    Always skip for duplicate closures — the parent case has the real content.
+    RESOLVED always generates (a confirmed solution is meaningful content
+    by definition); the gate matters only for CLOSED.
     """
-    # Note: a 'duplicate' closure-reason short-circuit existed previously but
-    # was removed when closure_reason was simplified to 3 engine-derived
-    # values. If duplicate-tracking is reintroduced, it should be a separate
-    # field (e.g., is_duplicate_of: case_id) — not an enum value the engine
-    # can't reliably assign on its own.
-
-    message_count = getattr(case, "message_count", 0) or 0
     evidence_count = len(case.evidence) if case.evidence else 0
     hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
     milestones_completed = (
         len(case.progress.completed_milestones) if case.progress else 0
     )
 
-    # Check 1: Minimum conversation depth
-    if message_count < 4:
-        logger.info(
-            f"Skipping terminal summary for case {case.case_id}: insufficient "
-            f"conversation (messages={message_count}, threshold=4)"
-        )
-        return False
-
-    # Check 2: Investigation substance (description excluded — creation
-    # metadata is not an investigation output)
     has_substance = (
         evidence_count > 0 or hypothesis_count > 0 or milestones_completed > 0
     )
@@ -716,28 +690,13 @@ def terminal_summary_skip_reason(case: "Case") -> Optional[str]:
     if case.status != CaseStatus.CLOSED:
         return None
 
-    message_count = getattr(case, "message_count", 0) or 0
-    if message_count < 4:
-        return "No closure summary generated: case was closed without meaningful conversation."
+    if should_generate_terminal_summary(case):
+        return None
 
-    evidence_count = len(case.evidence) if case.evidence else 0
-    hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
-    milestones_completed = (
-        len(case.progress.completed_milestones) if case.progress else 0
+    return (
+        "No closure summary generated: no evidence, hypotheses, "
+        "or completed milestones to summarize."
     )
-    # Substance = investigation output. Description is creation-time
-    # metadata and is intentionally excluded — must match the substance
-    # check in should_generate_terminal_summary.
-    has_substance = (
-        evidence_count > 0 or hypothesis_count > 0 or milestones_completed > 0
-    )
-    if not has_substance:
-        return (
-            "No closure summary generated: no evidence, hypotheses, "
-            "or completed milestones to summarize."
-        )
-
-    return None
 
 
 # ============================================================

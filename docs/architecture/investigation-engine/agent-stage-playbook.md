@@ -83,7 +83,7 @@ INVESTIGATING
 
 TERMINAL — immutable; Q&A only
   RESOLVED — resolution_summary always generated; runbook eligible (requires root cause)
-  CLOSED   — closure_summary generated (subject to skip-if-trivial guardrail); no runbook generation
+  CLOSED   — closure_summary generated when investigation has substance (evidence/hypotheses/milestones); no runbook generation
 ```
 
 ### Key Definitions

@@ -720,7 +720,7 @@ RESOLVED case
 1. **Content readiness** (`assess_runbook_readiness`) — Maps case data to the 7 canonical runbook sections. Requires problem definition + root cause with actionable fix (commands/steps). Returns READY, NEEDS_ENRICHMENT, or NOT_SUITABLE.
 2. **No similar runbook exists** — Vector search in ChromaDB via `RunbookKnowledgeBase`. ≥85% match → existing covers. 70-84% → suggest with caveat. <70% → no conflict.
 
-**Auto-summary generation**: Terminal cases with meaningful content get an auto-generated summary (`RESOLUTION_SUMMARY` or `CLOSURE_SUMMARY`). See [Investigation Lifecycle Logic §4.5.0](./investigation-lifecycle-logic.md#450-auto-generated-terminal-summary) for the canonical spec (content-focus table, skip-if-trivial guardrail, transition paths).
+**Auto-summary generation**: Terminal cases with investigation substance (evidence / hypotheses / completed milestones) get an auto-generated summary (`RESOLUTION_SUMMARY` or `CLOSURE_SUMMARY`), synthesized synchronously on terminal transition and rendered inline in the closure-turn chat reply. See [Investigation Lifecycle Logic §4.5.0](./investigation-lifecycle-logic.md#450-auto-generated-terminal-summary) for the canonical spec (content-focus table, substance gate, regen rules).
 
 **Flywheel effect**: Runbooks generated from resolved cases are indexed in ChromaDB. When future cases arrive with similar symptoms, the agent's `kb_qa` tool surfaces these runbooks, potentially enabling fast-track resolution (INQUIRY → RESOLVED) without a full investigation cycle.
 
