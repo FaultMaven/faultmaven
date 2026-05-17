@@ -410,7 +410,7 @@ Two pieces of rule-adjacent content are injected at runtime:
 
 1. **Focus Zone Emphasis** — a progress milestone-driven priority signal computed by `_get_diagnosis_focus_emphasis()` and prepended to DIAGNOSIS_INSTRUCTIONS inside `get_prompt_for_case()`. See [Evidence-Driven Investigation Framework §8.5](./evidence-driven-investigation-framework.md#85-focus-zone-emphasis-progress-milestone-driven).
 
-2. **INQUIRY State** — an `<inquiry_state>` XML block injected into the INQUIRY template by `_build_context()` when a proposed problem statement exists but hasn't been confirmed. It tells the LLM to detect implicit confirmation (data uploads, engagement with the problem) rather than re-proposing the problem statement repeatedly. See [Context Engineering Analysis: INQUIRY State Injection](../../reference/deep-dives/context-engineering-analysis.md#inquiry-state-injection-dynamic-context).
+2. **INQUIRY State** — an `<inquiry_state>` XML block injected into the INQUIRY template by `_build_context()` when a proposed problem statement exists but hasn't been confirmed. It tells the LLM to detect implicit confirmation (data uploads, engagement with the problem) rather than re-proposing the problem statement repeatedly.
 
 Neither is a behavioral rule; both are system-computed adaptive context that modifies what the LLM *sees* rather than constraining what it *does*.
 
