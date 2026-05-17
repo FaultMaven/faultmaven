@@ -443,7 +443,7 @@ The DA system instruction also carries six operational clauses that are not beha
 
 These clauses are prompt-layer operational guidance rather than behavioral rules, which is why they live in the DA system instruction rather than in Rules 1–8.
 
-**Location:** `milestone_engine.py::_build_da_system_instruction()` (lines 3377-3533).
+**Location:** `milestone_engine.py::_build_da_system_instruction()`. (Line numbers are intentionally omitted; they drift with refactors — `grep` for the function name.)
 
 ### INVESTIGATION_BASE Layout
 

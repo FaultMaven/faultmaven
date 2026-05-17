@@ -7,15 +7,16 @@ Merges:
 - faultmaven/services/agentic/hypothesis/hypothesis_manager.py (NEW - evidence linking)
 
 Design Reference:
-- docs/architecture/investigation-phases-and-ooda-integration.md
+- docs/architecture/investigation-engine/evidence-driven-investigation-framework.md
+- docs/architecture/investigation-engine/investigation-data-models.md (§3 Hypothesis Lifecycle)
 
-Hypothesis Lifecycle (Unified):
-- CAPTURED: Opportunistic hypothesis from early phases (Phases 0-2)
+Hypothesis Lifecycle (matches HypothesisStatus enum):
+- CAPTURED: Opportunistic hypothesis (not yet promoted to active testing)
 - ACTIVE: Currently being tested (promoted from CAPTURED or systematic generation)
-- VALIDATED: Confirmed by evidence (confidence ≥70% + ≥2 supporting evidence)
-- REFUTED: Disproved by evidence (confidence ≤20% + ≥2 refuting evidence)
-- RETIRED: Abandoned due to low confidence or anchoring
-- SUPERSEDED: Better hypothesis found
+- VALIDATED: Confirmed by evidence (likelihood ≥0.70 + ≥2 supporting evidence)
+- REFUTED: Disproved by evidence (likelihood ≤0.20 + ≥2 refuting evidence)
+- INCONCLUSIVE: System-automated — likelihood 0.3–0.5 stagnant for 3+ turns
+- RETIRED: System-automated (likelihood <0.30) or manual abandonment without disproof
 
 Confidence Management:
 - Evidence-ratio based: initial + (0.15 × supporting) - (0.20 × refuting)

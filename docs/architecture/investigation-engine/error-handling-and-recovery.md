@@ -561,14 +561,11 @@ class StateValidator:
         for hyp_id, hypothesis in case.hypotheses.items():
             # VALIDATED requires sufficient evidence
             if hypothesis.status == HypothesisStatus.VALIDATED:
-                supporting = sum(
-                    1 for link in hypothesis.evidence_links.values()
-                    if link.stance.value == "supports"
-                )
-                if supporting < 2:
+                supporting_count = len(hypothesis.supporting_evidence)
+                if supporting_count < 2:
                     issues.append(ValidationIssue(
                         code="HYPOTHESIS_STATE_001",
-                        message=f"Hypothesis {hyp_id} is VALIDATED with only {supporting} supporting evidence",
+                        message=f"Hypothesis {hyp_id} is VALIDATED with only {supporting_count} supporting evidence",
                         severity=ValidationSeverity.WARNING,
                         field=f"hypotheses.{hyp_id}",
                         suggested_fix="Require at least 2 supporting evidence items"
@@ -579,10 +576,13 @@ class StateValidator:
     def _validate_evidence_links(self, case: Case) -> List[ValidationIssue]:
         """Validate evidence-hypothesis links are consistent."""
         issues = []
-        evidence_ids = {e.id for e in case.evidence}
+        evidence_ids = {e.evidence_id for e in case.evidence}
 
         for hyp_id, hypothesis in case.hypotheses.items():
-            for ev_ref in hypothesis.evidence_links.keys():
+            # evidence_links is a List[HypothesisEvidenceLink]; iterate
+            # directly and read the FK from each link row.
+            for link in hypothesis.evidence_links:
+                ev_ref = link.evidence_id
                 # Skip new_index references (created same turn)
                 if ev_ref.startswith("new_index_"):
                     continue
