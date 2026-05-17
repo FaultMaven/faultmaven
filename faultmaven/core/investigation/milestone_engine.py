@@ -792,6 +792,33 @@ def _resolved_ack_suggestions() -> list:
     return [_runbook_suggestion()]
 
 
+def _select_ack_follow_ups(case, summary_failed: bool) -> list:
+    """Choose follow-up suggestions for the closure-acknowledgment turn.
+
+    Success path: minimal suggestions per ``_resolved_ack_suggestions`` /
+    ``[]`` for CLOSED — the summary is rendered inline, so a regen card
+    next to it would be noise.
+
+    Failure path (G2): include the standard terminal Q&A suggestions —
+    ``_resolved_suggestions`` (regen + runbook) for RESOLVED, or
+    ``_closed_suggestions`` (regen when substance gate passes) for CLOSED.
+    Generation reaches the failure branch only when generation was
+    attempted (so the substance gate has already PASSED for CLOSED),
+    which means ``_closed_suggestions`` will return a non-empty list with
+    the regen affordance. The "noise next to inline summary" rationale
+    doesn't apply when there's no inline summary — only a failure note.
+    """
+    if summary_failed:
+        if case.status == CaseStatus.RESOLVED:
+            return _resolved_suggestions()
+        if case.status == CaseStatus.CLOSED:
+            return _closed_suggestions(case)
+        return []
+    if case.status == CaseStatus.RESOLVED:
+        return _resolved_ack_suggestions()
+    return []
+
+
 def _resolved_suggestions() -> list:
     """Suggestions for terminal Q&A turns on a RESOLVED case.
 
@@ -940,7 +967,7 @@ class MilestoneEngine:
 
         logger.info("MilestoneEngine initialized with structured output engine")
 
-    async def _auto_generate_report(self, case: "Case") -> str | None:
+    async def _auto_generate_report(self, case: "Case") -> tuple[str | None, bool]:
         """Synchronous auto-generation of terminal summary.
 
         RESOLVED cases always generate (a confirmed solution is meaningful
@@ -949,14 +976,21 @@ class MilestoneEngine:
         ``should_generate_terminal_summary``.
 
         Returns:
-            - rendered summary string on success
-            - human-readable skip-or-failure note on skip / LLM failure
-            - None when no report service is configured
+            A tuple ``(payload, generation_failed)``:
 
-        Callers embed the return value in the closure-turn agent reply.
-        Exceptions are caught and reported as a return value rather than
-        propagated — the closure state transition has already committed
-        and must not be undone by a synthesis-LLM hiccup.
+            - ``(rendered_markdown, False)`` on success — embed inline.
+            - ``(failure_note, True)`` on LLM exception — embed inline AND
+              offer the regen affordance on the ack-turn (G2).
+            - ``(skip_note, False)`` when the substance gate skipped
+              generation (CLOSED-only path).
+            - ``(None, False)`` when no report service is configured.
+
+        Callers embed ``payload`` in the closure-turn agent reply and use
+        ``generation_failed`` to decide whether to offer the regen
+        affordance on the ack-turn. Exceptions are caught and reported as
+        a return value rather than propagated — the closure state
+        transition has already committed and must not be undone by a
+        synthesis-LLM hiccup.
         """
         from faultmaven.core.investigation.terminal_transitions import (
             should_generate_terminal_summary,
@@ -968,23 +1002,25 @@ class MilestoneEngine:
         ):
             skip = terminal_summary_skip_reason(case)
             logger.info(f"Auto-summary skipped for case {case.case_id}: {skip}")
-            return skip
+            return skip, False
 
         if not self.report_service:
             logger.debug("No report service available — skipping auto-summary")
-            return None
+            return None, False
 
         from faultmaven.modules.case.domain.owned_models.report import ReportType
 
         if case.status == CaseStatus.RESOLVED:
             report_type = ReportType.RESOLUTION_SUMMARY
+            report_label = "Resolution summary"
         elif case.status == CaseStatus.CLOSED:
             report_type = ReportType.CLOSURE_SUMMARY
+            report_label = "Closure summary"
         else:
             logger.warning(
                 f"Unexpected status {case.status} for auto-summary on case {case.case_id}"
             )
-            return None
+            return None, False
 
         try:
             reports = await self.report_service.generate_reports(case, [report_type])
@@ -999,16 +1035,17 @@ class MilestoneEngine:
                     reports[0], "markdown_content", None
                 )
                 if content:
-                    return content
-            return None
+                    return content, False
+            return None, False
         except Exception as e:
             logger.warning(
                 f"Auto-summary generation failed for case {case.case_id}: {e}",
                 extra={"case_id": case.case_id},
             )
             return (
-                "Closure summary generation did not complete. "
-                "You can retry from the Regenerate option."
+                f"{report_label} generation did not complete. "
+                f"You can retry from the **Regenerate** option.",
+                True,
             )
 
     # Only the precomposed payloads submitted by the COOPERATIVE regen
@@ -1241,12 +1278,19 @@ class MilestoneEngine:
 
             agent_response = (
                 "Creating your runbook draft from this case. "
-                "You'll find it in the Dashboard under **Knowledge > Drafts** once it's ready."
+                "I'll let you know here when it's ready — you'll also find it in "
+                "the Dashboard under **Knowledge > Drafts**."
             )
             logger.info(
                 f"Runbook creation initiated for case {case.case_id}",
                 extra={"case_id": case.case_id},
             )
+            # Success path re-offers the standard terminal Q&A affordances
+            # (regenerate summary, generate runbook) so the user can iterate
+            # on the summary while the background runbook conversion runs,
+            # or retry the runbook if the background task fails (the
+            # completion notification will tell them so).
+            follow_ups = _resolved_suggestions()
         except Exception as e:
             logger.warning(
                 f"Failed to initiate runbook creation for case {case.case_id}: {e}",
@@ -1256,10 +1300,14 @@ class MilestoneEngine:
                 "Failed to start runbook generation. "
                 "You can try again or create one from the Dashboard."
             )
+            # Failure path stays empty — the text already says "try again",
+            # and the user will see the standard terminal Q&A suggestions
+            # on the next turn anyway.
+            follow_ups = []
 
         return {
             "agent_response": agent_response,
-            "suggested_follow_ups": [],
+            "suggested_follow_ups": follow_ups,
             "case_updated": case,
             "metadata": metadata,
         }
@@ -1270,7 +1318,15 @@ class MilestoneEngine:
         request,
         user_id: str,
     ) -> None:
-        """Background task for runbook conversion. Logs success/failure."""
+        """Background task for runbook conversion.
+
+        Logs success/failure and writes a completion notification to the
+        case transcript so the chat-side user sees a confirmation message
+        (success) or a failure note with a retry path. The notification is
+        best-effort: if writing it fails, the background task swallows the
+        secondary error rather than masking the primary outcome.
+        """
+        notification_content: str
         try:
             result = await conversion_service.convert_from_case(
                 request=request,
@@ -1286,15 +1342,64 @@ class MilestoneEngine:
                         "runbook_id": draft.runbook_id,
                     },
                 )
+                notification_content = (
+                    f"Your runbook draft **{draft.title}** is ready. "
+                    f"View it in the Dashboard under **Knowledge > Drafts**."
+                )
             else:
                 logger.warning(
                     f"Runbook conversion completed but no drafts produced "
                     f"for case {request.case_id}",
                     extra={"case_id": request.case_id},
                 )
+                notification_content = (
+                    "Runbook generation completed but no draft was produced. "
+                    "Click **Generate runbook from this case** to retry."
+                )
         except Exception as e:
             logger.error(
                 f"Background runbook creation failed for case {request.case_id}: {e}",
+                extra={"case_id": request.case_id},
+                exc_info=True,
+            )
+            notification_content = (
+                "Runbook generation failed. "
+                "Click **Generate runbook from this case** to retry."
+            )
+
+        # Best-effort completion notification. The case is loaded fresh
+        # because terminal cases can still receive Q&A turns that mutate
+        # `messages`, and the per-case lock prevents this write from
+        # interleaving with a concurrent Q&A turn.
+        try:
+            async with self._case_locks[request.case_id]:
+                case = await self.repository.get(request.case_id)
+                if case is None:
+                    logger.warning(
+                        f"Case {request.case_id} not found when writing "
+                        f"runbook completion notification — case may have "
+                        f"been deleted while the background task was running.",
+                        extra={"case_id": request.case_id},
+                    )
+                    return
+                case.messages.append(
+                    {
+                        "message_id": f"msg_{uuid4().hex[:12]}",
+                        "case_id": case.case_id,
+                        "author_id": "system",
+                        "role": "system",
+                        "content": notification_content,
+                        "created_at": datetime.now(UTC).isoformat(),
+                        "turn_number": case.current_turn,
+                        "metadata": {"source": "runbook_conversion_complete"},
+                    }
+                )
+                case.message_count = len(case.messages)
+                await self.repository.save(case)
+        except Exception as e:
+            logger.warning(
+                f"Failed to write runbook completion notification for case "
+                f"{request.case_id}: {e}",
                 extra={"case_id": request.case_id},
                 exc_info=True,
             )
@@ -1593,7 +1698,14 @@ class MilestoneEngine:
                         # markdown on success, a skip note when the gate
                         # blocks generation, a failure note on LLM error,
                         # or None when no report service is configured.
-                        summary_payload = await self._auto_generate_report(case)
+                        # The second tuple element flags an LLM-error
+                        # failure so the ack-turn can offer the regen
+                        # affordance (G2 — there's no inline summary to
+                        # be noisy next to when generation failed).
+                        (
+                            summary_payload,
+                            summary_failed,
+                        ) = await self._auto_generate_report(case)
 
                         agent_response = _compose_terminal_reply(case, summary_payload)
                         self._record_deterministic_turn(
@@ -1601,18 +1713,15 @@ class MilestoneEngine:
                         )
                         await self.repository.save(case)
 
-                        # Closure-ack turn keeps suggestions minimal: the
-                        # summary was just rendered inline, so the regen
-                        # affordance would be noise. RESOLVED still offers
-                        # the forward-looking runbook action; CLOSED
-                        # offers nothing. Regen is reserved for subsequent
-                        # terminal Q&A turns (attached in
-                        # _process_terminal_qa).
-                        follow_ups = (
-                            _resolved_ack_suggestions()
-                            if case.status == CaseStatus.RESOLVED
-                            else []
-                        )
+                        # Closure-ack follow-ups depend on whether
+                        # generation succeeded. Success: minimal
+                        # suggestions (the summary is rendered inline,
+                        # so a regen card next to it would be noise).
+                        # Failure: include the regen affordance so the
+                        # user can retry immediately — the "noise next
+                        # to inline summary" rationale doesn't apply
+                        # when there's no summary inline.
+                        follow_ups = _select_ack_follow_ups(case, summary_failed)
 
                         return {
                             "agent_response": agent_response,
@@ -1819,14 +1928,19 @@ class MilestoneEngine:
                         # row FKs to case_id), then synthesize, then record
                         # the composed reply.
                         await self.repository.save(case)
-                        summary_payload = await self._auto_generate_report(case)
+                        (
+                            summary_payload,
+                            summary_failed,
+                        ) = await self._auto_generate_report(case)
                         _resp = _compose_terminal_reply(case, summary_payload)
                         self._record_deterministic_turn(case, user_message or "", _resp)
                         await self.repository.save(case)
 
                         return {
                             "agent_response": _resp,
-                            "suggested_follow_ups": _resolved_ack_suggestions(),
+                            "suggested_follow_ups": _select_ack_follow_ups(
+                                case, summary_failed
+                            ),
                             "case_updated": case,
                             "metadata": {
                                 "turn_number": case.current_turn,
@@ -2493,13 +2607,18 @@ class MilestoneEngine:
             # terminal transition. The rendered summary (or skip / failure
             # note) is appended to the agent reply below so it appears in
             # chat at the moment of generation — consistent with the
-            # explicit-confirmation path.
+            # explicit-confirmation path. `summary_failed` flags an LLM-
+            # error so the ack-turn follow-ups can include the regen
+            # affordance (G2).
             summary_payload: str | None = None
+            summary_failed: bool = False
             if metadata.get("status_transitioned") and case_updated.status in (
                 CaseStatus.RESOLVED,
                 CaseStatus.CLOSED,
             ):
-                summary_payload = await self._auto_generate_report(case_updated)
+                summary_payload, summary_failed = await self._auto_generate_report(
+                    case_updated
+                )
 
             logger.info(
                 f"Turn {case_updated.current_turn} processed successfully. "
@@ -2570,17 +2689,17 @@ class MilestoneEngine:
                 # the same deterministic confirmation UX.
                 follow_ups = metadata["override_suggestions"]
 
-            # Closure-ack turn (LLM-driven path): suggestions stay minimal
-            # so the rendered summary isn't accompanied by a redundant
-            # regen card. RESOLVED still offers the forward-looking
-            # runbook action; CLOSED offers nothing. Regen is reserved
-            # for subsequent terminal Q&A turns (attached in
-            # _process_terminal_qa).
-            if metadata.get("status_transitioned"):
-                if case_updated.status == CaseStatus.RESOLVED:
-                    follow_ups = _resolved_ack_suggestions()
-                elif case_updated.status == CaseStatus.CLOSED:
-                    follow_ups = []
+            # Closure-ack turn (LLM-driven path): when generation
+            # succeeded, suggestions stay minimal — the rendered summary
+            # is right above and a regen card next to it would be noise.
+            # When generation failed, include the regen affordance so the
+            # user can retry immediately (G2 — the "noise" guard doesn't
+            # apply when there's no inline summary).
+            if metadata.get("status_transitioned") and case_updated.status in (
+                CaseStatus.RESOLVED,
+                CaseStatus.CLOSED,
+            ):
+                follow_ups = _select_ack_follow_ups(case_updated, summary_failed)
 
             # Append the synthesized summary (or skip / failure note) so it
             # appears in chat at the moment of generation. Update the

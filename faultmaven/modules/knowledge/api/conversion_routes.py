@@ -514,114 +514,11 @@ async def convert_from_case(
             detail=f"Case must be in RESOLVED status (current: {case_status})",
         )
 
-    # =========================================================================
-    # Extract case data for runbook generation using actual Case domain model
-    # =========================================================================
-
-    # Root cause — from RootCauseConclusion (authoritative)
-    root_cause_obj = getattr(case, "root_cause_conclusion", None)
-    root_cause = None
-    root_cause_mechanism = None
-    if root_cause_obj:
-        root_cause = getattr(root_cause_obj, "root_cause", None)
-        root_cause_mechanism = getattr(root_cause_obj, "mechanism", None)
-
-    # Problem description — from ProblemVerification (created at INQUIRY → INVESTIGATING)
-    problem_verification = getattr(case, "problem_verification", None)
-    symptom_statement = ""
-    severity = "medium"
-    affected_services = []
-    if problem_verification:
-        symptom_statement = getattr(problem_verification, "symptom_statement", "") or ""
-        severity = getattr(problem_verification, "severity", "medium") or "medium"
-        affected_services = getattr(problem_verification, "affected_services", []) or []
-
-    # Solutions — use rich Solution model fields (title, immediate_action, longterm_fix,
-    # implementation_steps, commands, risks)
-    solutions = []
-    case_solutions = getattr(case, "solutions", []) or []
-    for sol in case_solutions:
-        parts = []
-        title = getattr(sol, "title", None)
-        if title:
-            parts.append(f"Solution: {title}")
-        immediate = getattr(sol, "immediate_action", None)
-        if immediate:
-            parts.append(f"Immediate action: {immediate}")
-        longterm = getattr(sol, "longterm_fix", None)
-        if longterm:
-            parts.append(f"Permanent fix: {longterm}")
-        steps = getattr(sol, "implementation_steps", []) or []
-        if steps:
-            numbered = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(steps))
-            parts.append(f"Steps:\n{numbered}")
-        commands = getattr(sol, "commands", []) or []
-        if commands:
-            cmds = "\n".join(f"  $ {c}" for c in commands)
-            parts.append(f"Commands:\n{cmds}")
-        risks = getattr(sol, "risks", []) or []
-        if risks:
-            parts.append(f"Risks: {'; '.join(risks)}")
-        if parts:
-            solutions.append("\n".join(parts))
-
-    # Hypotheses — extract validated hypotheses with their statements
-    hypotheses = getattr(case, "hypotheses", {}) or {}
-    validated = []
-    for h_id, h in hypotheses.items() if isinstance(hypotheses, dict) else []:
-        status = getattr(h, "status", None)
-        status_val = status.value if hasattr(status, "value") else str(status)
-        if status_val == "validated":
-            statement = getattr(h, "statement", None) or str(h)
-            validated.append(statement)
-    hypotheses_summary = "; ".join(validated) if validated else ""
-
-    # Evidence summary — from WorkingConclusion (agent's best understanding)
-    working_conclusion = getattr(case, "working_conclusion", None)
-    evidence_summary = ""
-    if working_conclusion:
-        evidence_summary = getattr(working_conclusion, "statement", "") or ""
-        reasoning = getattr(working_conclusion, "reasoning", None)
-        if reasoning:
-            evidence_summary += f"\nReasoning: {reasoning}"
-
-    # Key evidence summaries — collect brief summaries from evidence items
-    evidence_items = getattr(case, "evidence", []) or []
-    evidence_briefs = []
-    for ev in evidence_items:
-        summary = getattr(ev, "summary", None)
-        if summary:
-            evidence_briefs.append(summary)
-    if evidence_briefs:
-        evidence_summary += "\n\nKey evidence:\n" + "\n".join(
-            f"- {b}" for b in evidence_briefs[:10]
-        )
-
-    # Domain/service — derive from affected_services in ProblemVerification
-    domain = "general"
-    service = "unknown"
-    if affected_services:
-        # Use first affected service as service name
-        service = affected_services[0]
-    # Fall back to case tags if available
-    case_tags = getattr(case, "tags", []) or []
-
-    case_request = CaseConversionRequest(
-        case_id=body.case_id,
-        title=getattr(case, "title", "Untitled Case") or "Untitled Case",
-        description=symptom_statement,
-        root_cause=root_cause,
-        root_cause_mechanism=root_cause_mechanism,
-        solutions=solutions,
-        hypotheses_summary=hypotheses_summary,
-        evidence_summary=evidence_summary,
-        domain=domain,
-        service=service,
-        symptom_class=[],
-        severity=severity.lower() if isinstance(severity, str) else "medium",
-        tags=case_tags if case_tags else affected_services,
-        scope=body.scope,
-    )
+    # Extract case data via the canonical factory (shared with chat-side
+    # `_handle_runbook_creation` in milestone_engine.py). Keeping both
+    # call sites converged on `from_case` avoids the drift risk of two
+    # parallel extraction paths.
+    case_request = CaseConversionRequest.from_case(case, scope=body.scope)
 
     try:
         result = await service.convert_from_case(

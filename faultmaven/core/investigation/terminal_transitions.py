@@ -754,7 +754,17 @@ async def evaluate_runbook_suggestion(
             message=readiness.message,
         )
 
-    # Factor 3: Deduplication (requires ChromaDB, skip if KB unavailable)
+    # Factor 3: Deduplication (requires ChromaDB, skip if KB unavailable).
+    # Local-dev configurations without ChromaDB legitimately reach here with
+    # runbook_kb=None; logging at WARN keeps the silent-skip observable so a
+    # production misconfiguration doesn't hide as "quietly working".
+    if not runbook_kb:
+        logger.warning(
+            f"Runbook deduplication skipped for case {case.case_id}: "
+            f"runbook_kb is not available. Duplicate runbooks may be created "
+            f"if a similar one already exists in the KB.",
+            extra={"case_id": case.case_id, "metric": "runbook.dedup_skipped"},
+        )
     if runbook_kb:
         try:
             similar = await _find_similar_runbooks_for_case(case, runbook_kb)
