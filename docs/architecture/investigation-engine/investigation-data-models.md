@@ -1479,28 +1479,52 @@ class DocumentType(str, Enum):
 
 ### 2.1 Evidence Fields Used by Investigation Engine
 
-The investigation engine primarily interacts with these evidence fields:
+The investigation engine primarily interacts with these `Evidence` fields:
 
 ```python
-# Evidence fields relevant to investigation logic
-evidence_id: str              # Reference in LLM responses
-category: EvidenceCategory    # Determines milestone advancement
-data_type: DataType           # Type of data (LOGS, METRICS, etc.)
-summary: str                  # Brief description (<500 chars)
-content_ref: str              # Storage location
-original_filename: Optional[str]  # Original upload filename (e.g., 'OpenSSH_2k.log')
-                                  # Set during _preprocess_attachment(). Used by
-                                  # search_file tool for display in results.
+# Evidence fields the investigation engine reads/writes directly
+evidence_id: str                 # Reference in LLM responses
+category: EvidenceCategory       # Determines milestone advancement
+summary: str                     # Brief description (<500 chars, NOT NULL)
+extract: Optional[str]           # Verbatim quote that grounds the summary
+analysis: Optional[str]          # LLM-written interpretation of the evidence
+primary_purpose: Optional[str]   # What this evidence is intended to establish
 
-# Hypothesis linkage (for CAUSAL_EVIDENCE)
-tests_hypothesis_id: Optional[str]
-stance: Optional[EvidenceStance]  # SUPPORTS, REFUTES, NEUTRAL
-stance_confidence: Optional[float]  # 0.0-1.0
+# Source identification
+source_type: EvidenceSourceType  # logs | metrics | configuration | code | text |
+                                 # image | user_description
+source_file_id: Optional[str]    # FK → UploadedFile (NULL only when
+                                 # source_type='user_description')
+
+# Hypothesis evaluation lives on HypothesisEvidenceLink, not on Evidence.
+# See the table immediately below for the full move map.
 
 # Milestone tracking
-advances_milestones: List[str]  # System-inferred from category
-collected_at_turn: int          # When evidence was added
+advances_milestones: List[str]   # System-inferred from category
+collected_at_turn: int           # Turn this evidence was added
+collected_at: datetime
+collected_by: Optional[str]
+is_primary: bool                 # Marked as a primary piece of evidence
+
+# Processing metadata
+processing_mode: Optional[str]
+reliability_score: Optional[float]
+vectorized: bool                 # Whether the source file has been vectorized
+                                 # (gated by Evidence.source_file_id → UploadedFile)
 ```
+
+**Fields previously listed here that live on other models:**
+
+| Field | Where it actually lives | Why |
+| ----- | ----------------------- | --- |
+| `data_type` | `UploadedFile.data_type` | File-level classification produced by preprocessing; Evidence rows reference it via `source_file_id → UploadedFile`. |
+| `original_filename` | `UploadedFile.filename` | Same: file-level attribute, accessed via the FK. |
+| `content_ref` | `UploadedFile.storage_ref` | Storage pointer is on the file, not the per-extract Evidence row. |
+| `tests_hypothesis_id` | `HypothesisEvidenceLink.hypothesis_id` | Hypothesis–evidence is many-to-many. The junction row carries the link. |
+| `stance` | `HypothesisEvidenceLink.stance` | One Evidence can support hypothesis A and refute hypothesis B; stance is per-link, not per-evidence. |
+| `stance_confidence` | `HypothesisEvidenceLink.stance_confidence` | Same: per-link. |
+
+This split was finalized by [migration 010 (strict evidence-model redesign)](../data-and-storage/schemas/case-schema.md). Pipeline tools that need any of the above fields read them through `source_file_id` (for file-level data) or through `hypothesis.evidence_links` (for hypothesis-side data).
 
 ### 2.2 Evidence Stance
 
@@ -1544,17 +1568,19 @@ class Hypothesis(BaseModel):
     likelihood: float = Field(ge=0.0, le=1.0)
 
     # Evidence relationships (many-to-many via HypothesisEvidenceLink)
-    evidence_links: Dict[str, HypothesisEvidenceLink] = Field(default_factory=dict)
+    # Each list entry is a row from the hypothesis_evidence junction table
+    # binding (hypothesis_id, evidence_id, stance, stance_confidence, reasoning).
+    evidence_links: List[HypothesisEvidenceLink] = Field(default_factory=list)
 
     # Computed properties (filter evidence_links by stance)
     @property
     def supporting_evidence(self) -> List[str]:
-        return [eid for eid, link in self.evidence_links.items()
+        return [link.evidence_id for link in self.evidence_links
                 if link.stance == EvidenceStance.SUPPORTS]
 
     @property
     def refuting_evidence(self) -> List[str]:
-        return [eid for eid, link in self.evidence_links.items()
+        return [link.evidence_id for link in self.evidence_links
                 if link.stance == EvidenceStance.REFUTES]
 
     # Metadata

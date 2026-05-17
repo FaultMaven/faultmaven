@@ -242,7 +242,7 @@ When a case reaches a terminal state (RESOLVED or CLOSED), the system emits stru
 All labels use bounded, enumerated values:
 
 - `status`: `"resolved"` | `"closed"` (from `CaseStatus` enum)
-- `closure_reason`: `"resolved"` | `"abandoned"` | `"escalated"` | `"mitigation_sufficient"` | `"inquiry_only"` | `"duplicate"` | `"other"`
+- `closure_reason`: `"closed_after_investigation"` | `"mitigation_sufficient"` | `"inquiry_only"` (from `VALID_CLOSURE_REASONS`, set by `derive_closure_reason()`)
 - `summary_type`: `"resolution_summary"` | `"closure_summary"` (from `ReportType` enum)
 
 ### 6.3 Emission Point
@@ -300,7 +300,7 @@ structlog.get_logger().info(
 |----------|---------------|
 | What % of cases resolve vs get abandoned? | `case_terminal_total` by `status` |
 | How long do investigations take? | `case_duration_seconds` p50/p90/p99 |
-| Are cases getting abandoned faster (triage failure)? | `case_duration_seconds{closure_reason="abandoned"}` trend |
+| Are cases getting abandoned faster (triage failure)? | `case_duration_seconds{closure_reason="closed_after_investigation"}` trend |
 | Do cases with more evidence resolve faster? | Correlate `case_evidence_count` with `case_duration_seconds` |
 | Is mitigation becoming a terminal path too often? | `case_terminal_total{closure_reason="mitigation_sufficient"}` / total |
 | Are auto-summaries generating reliably? | `summary_generated_total` success vs failure rate |
