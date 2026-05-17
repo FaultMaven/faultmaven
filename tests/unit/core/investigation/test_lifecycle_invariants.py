@@ -1582,3 +1582,286 @@ class TestINV15_AgentAdvisorRole:
             "INV-15 violation: the _completion_phrases tuple appears to "
             "have been emptied or replaced with unrecognizable content."
         )
+
+
+# =============================================================================
+# INV-16: LLM structured output is the sole authority for milestone advancement
+# =============================================================================
+#
+# Source: §3.1 *Evidence Milestone Validation* (lines 1520-1530) —
+#   "The LLM structured output is the sole authority for milestone
+#   advancement... [the evidence processor] does NOT independently
+#   advance milestones."
+# Statement: validate_milestone_claims() reads case state and returns
+#   validation results; it MUST NOT mutate case.progress. The
+#   keyword-based discovery layer that was removed (Issue A in §3.1)
+#   must not return.
+# Enforcement: Code-by-construction (function returns
+#   List[MilestoneValidationResult]; no case.progress writes inside).
+#
+# No drift surfaced — code matches design.
+
+
+class TestINV16_LLMSoleAuthorityForMilestoneAdvancement:
+    """INV-16: validate_milestone_claims is read-only; LLM is sole authority."""
+
+    def test_inv16_validate_milestone_claims_does_not_mutate_case_progress(self):
+        """Calling ``validate_milestone_claims`` does not change any
+        progress milestone on the case. The function returns validation
+        results; advancement happens elsewhere (LLM structured output).
+        """
+        from copy import deepcopy
+
+        from faultmaven.core.investigation.evidence_processor import (
+            validate_milestone_claims,
+        )
+
+        case = _make_investigating_case()
+        progress_before = deepcopy(case.progress)
+
+        # Claim several milestones — function should NOT advance them
+        validate_milestone_claims(
+            case,
+            milestones_claimed=[
+                "symptom_verified",
+                "root_cause_identified",
+                "solution_proposed",
+            ],
+            reasoning=None,
+        )
+
+        # Every progress field is unchanged
+        assert case.progress.symptom_verified == progress_before.symptom_verified
+        assert (
+            case.progress.root_cause_identified == progress_before.root_cause_identified
+        )
+        assert case.progress.solution_proposed == progress_before.solution_proposed
+        assert case.progress.mitigation_accepted == progress_before.mitigation_accepted
+        assert case.progress.mitigation_verified == progress_before.mitigation_verified
+        assert case.progress.solution_accepted == progress_before.solution_accepted
+        assert case.progress.solution_verified == progress_before.solution_verified
+
+    def test_inv16_validate_milestone_claims_source_has_no_progress_writes(self):
+        """Static guard: ``validate_milestone_claims`` source must not
+        contain assignments to ``case.progress.<field>``. The function
+        is validation-only by construction; this test pins the
+        construction.
+
+        The keyword-discovery layer described in §3.1 (Issue A) was
+        removed because it created a dual pathway for milestone
+        advancement. If a future refactor reintroduces ANY write to
+        case.progress inside the evidence processor, this test breaks.
+        """
+        from faultmaven.core.investigation import evidence_processor
+
+        source = inspect.getsource(evidence_processor.validate_milestone_claims)
+
+        # The dual-pathway risk: any assignment like `case.progress.X = ...`
+        # signals milestone advancement happening outside the LLM path.
+        forbidden_patterns = [
+            "case.progress.symptom_verified =",
+            "case.progress.root_cause_identified =",
+            "case.progress.solution_proposed =",
+            "case.progress.mitigation_accepted =",
+            "case.progress.mitigation_verified =",
+            "case.progress.solution_accepted =",
+            "case.progress.solution_verified =",
+        ]
+        for forbidden in forbidden_patterns:
+            assert forbidden not in source, (
+                f"INV-16 violation: validate_milestone_claims contains "
+                f"'{forbidden}' — milestone advancement must flow ONLY "
+                f"from the LLM's structured output via the milestone "
+                f"engine, not from the evidence processor. The dual-"
+                f"pathway risk (§3.1 Issue A) has returned."
+            )
+
+
+# =============================================================================
+# INV-17: Hypothesis must exist before evidence can be classified as
+#         causal_evidence
+# =============================================================================
+#
+# Source: §4.3 line 1801 (bolded "Constraint") + templates.py:1886
+# Statement: An LLM must not classify evidence as causal_evidence
+#   unless at least one hypothesis exists on the case.
+# Enforcement: **Prompt-only**. The INVESTIGATION_BASE template's
+#   SAFETY RULES include the explicit ban; there is no code-level or
+#   schema-level validator that rejects causal_evidence without a
+#   hypothesis.
+#
+# Drift surfaced: the design uses the word "Constraint" (bolded) at
+# §4.3 line 1801, which suggests stronger enforcement than prompt-only.
+# A reviewer reading just the design might expect a Pydantic validator
+# on EvidenceToAdd; verifying the code confirms NO such validator
+# exists. This is structurally similar to INV-15 — a "Constraint" that
+# in practice depends on LLM prompt compliance. Open follow-up: decide
+# whether to add a code-level gate (engine could reject causal_evidence
+# in evidence_to_add when case.hypotheses is empty).
+
+
+class TestINV17_HypothesisBeforeCausalEvidence:
+    """INV-17: causal_evidence presupposes a hypothesis (prompt-only)."""
+
+    def test_inv17_investigation_template_bans_causal_evidence_without_hypothesis(
+        self,
+    ):
+        """The INVESTIGATION_BASE template's SAFETY RULES must explicitly
+        ban classifying evidence as causal_evidence without a prior
+        hypothesis. This is the SOLE enforcement surface (no code/schema
+        check); removing it from the prompt removes the invariant
+        entirely.
+        """
+        from faultmaven.core.investigation.prompts import templates as tmpl
+
+        # The exact rule lives in INVESTIGATION_BASE / FALLBACK_INVESTIGATION_TEMPLATE.
+        # Check at least one investigation-stage template contains the ban.
+        candidates = []
+        for name in (
+            "INVESTIGATION_BASE",
+            "FALLBACK_INVESTIGATION_TEMPLATE",
+        ):
+            tmpl_text = getattr(tmpl, name, None)
+            if tmpl_text:
+                candidates.append((name, tmpl_text))
+        assert candidates, (
+            "Neither INVESTIGATION_BASE nor FALLBACK_INVESTIGATION_TEMPLATE "
+            "exists — INV-17's prompt-side enforcement surface is gone."
+        )
+
+        # The canonical phrasing in templates.py:1886.
+        marker = "causal_evidence without a hypothesis"
+        assert any(marker in text for _, text in candidates), (
+            f"INV-17 violation: no investigation template contains the "
+            f"phrase '{marker}'. The hypothesis-before-causal-evidence "
+            f"constraint is prompt-only (no code/schema check); removing "
+            f"this phrase removes the only enforcement surface."
+        )
+
+
+# =============================================================================
+# INV-18: Runbook generation is RESOLVED-only
+# =============================================================================
+#
+# Source: §4.5.1 line 1971 — "Eligibility: RESOLVED cases only.
+#   CLOSED cases are not eligible regardless of closure_reason."
+# Statement: Runbook generation paths reject non-RESOLVED cases at
+#   both the chat-side dispatcher AND the API endpoint.
+# Enforcement: **Code-guarded at two layers**:
+#   1. Engine: _process_terminal_turn computes
+#      is_runbook_eligible = case.status == CaseStatus.RESOLVED and
+#      refuses to dispatch the runbook-creation handler otherwise.
+#   2. API: POST /knowledge/convert-from-case returns HTTP 400 when
+#      case_status != "resolved".
+#
+# No drift surfaced.
+
+
+class TestINV18_RunbookEligibilityResolvedOnly:
+    """INV-18: runbook generation paths reject non-RESOLVED cases."""
+
+    @pytest.mark.asyncio
+    async def test_inv18_engine_runbook_dispatch_skipped_on_closed(self):
+        """Engine layer: when a CLOSED case receives the runbook-creation
+        payload, the dispatcher must NOT route to _handle_runbook_creation.
+        Falls through to terminal Q&A instead.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            GENERATE_RUNBOOK_PAYLOAD,
+        )
+
+        repo = MagicMock()
+        repo.save = AsyncMock(side_effect=lambda c: c)
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+
+        case = _make_investigating_case()
+        object.__setattr__(case, "status", CaseStatus.CLOSED)
+
+        engine._handle_runbook_creation = AsyncMock()
+        engine._process_terminal_qa = AsyncMock(
+            return_value={
+                "agent_response": "Q&A",
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": {},
+            }
+        )
+
+        # Submit the exact COOPERATIVE runbook payload on a CLOSED case
+        await engine._process_terminal_turn(case, GENERATE_RUNBOOK_PAYLOAD, {})
+
+        # Runbook handler NOT called — eligibility gate refused the dispatch
+        engine._handle_runbook_creation.assert_not_called()
+        # Falls through to Q&A
+        engine._process_terminal_qa.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_inv18_engine_runbook_dispatch_fires_on_resolved(self):
+        """Complementary positive pin: the same exact payload on a
+        RESOLVED case DOES route to _handle_runbook_creation. Confirms
+        the eligibility gate is precise (not over-rejecting).
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            GENERATE_RUNBOOK_PAYLOAD,
+        )
+
+        repo = MagicMock()
+        repo.save = AsyncMock(side_effect=lambda c: c)
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+
+        case = _make_investigating_case()
+        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+
+        engine._handle_runbook_creation = AsyncMock(
+            return_value={
+                "agent_response": "runbook",
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": {},
+            }
+        )
+        engine._process_terminal_qa = AsyncMock()
+
+        await engine._process_terminal_turn(case, GENERATE_RUNBOOK_PAYLOAD, {})
+
+        engine._handle_runbook_creation.assert_called_once()
+        engine._process_terminal_qa.assert_not_called()
+
+    def test_inv18_api_runbook_endpoint_rejects_non_resolved(self):
+        """API layer: ``POST /knowledge/convert-from-case`` must reject
+        cases whose status is not RESOLVED with HTTP 400.
+
+        Static check on the route source. Confirms the gate exists at
+        the API surface independently of the engine-layer dispatcher.
+        """
+        from faultmaven.modules.knowledge.api import conversion_routes
+
+        # Find the route function. It's the only @router.post for
+        # /convert-from-case in the module.
+        source = inspect.getsource(conversion_routes)
+
+        # Locate the convert-from-case endpoint and check it contains
+        # the RESOLVED gate.
+        endpoint_idx = source.find('@router.post("/convert-from-case"')
+        assert endpoint_idx >= 0, (
+            "INV-18 violation: /convert-from-case endpoint not found. "
+            "If the endpoint moved, this test must move with it."
+        )
+
+        # Window the function body — generous to survive minor edits.
+        endpoint_region = source[endpoint_idx : endpoint_idx + 4000]
+
+        # The status gate
+        assert (
+            '"resolved"' in endpoint_region.lower() or "resolved" in endpoint_region
+        ), (
+            "INV-18 violation: /convert-from-case no longer references "
+            "RESOLVED in its eligibility check."
+        )
+        # And it must raise on non-RESOLVED (the 400 status code)
+        assert (
+            "400" in endpoint_region and "Case must be in RESOLVED" in endpoint_region
+        ), (
+            "INV-18 violation: /convert-from-case no longer rejects "
+            "non-RESOLVED cases with HTTP 400."
+        )
