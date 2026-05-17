@@ -120,7 +120,7 @@ Rows 8 and 3 are agent-internal — no user input required. The agent resolves t
 
 Multiple variables can advance in the same turn when evidence supports it. The agent processes all submitted evidence first, sets every variable the evidence justifies, then composes a response from the resulting new state — not from the state at turn start.
 
-Scope, timeline, and change correlation are not tracked as separate variables. They are facts extracted from symptom evidence during diagnosis — scope and timeline emerge from the same evidence that confirms `symptom_verified`, and change events classify as `contextual_evidence` that feeds hypothesis formation. Their absence never blocks progress.
+Scope, timeline, and change correlation are not tracked as separate variables. They are facts extracted from symptom evidence during diagnosis — scope and timeline emerge from the same evidence that confirms `symptom_verified`, and change events are background signals sourced from the structural index of uploaded files that inform hypothesis formation (post-migration-010, change events are not their own evidence row; only the specific change slice linked to a hypothesis becomes `causal_evidence`). Their absence never blocks progress.
 
 ---
 
@@ -287,7 +287,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 
 1. **Search KB first (once, at Zone 2 entry)** — call `kb_qa` for the confirmed symptom before generating hypotheses. If a runbook matches, follow its diagnostic steps as the default approach. Do not call `kb_qa` in Zone 1 — KB contains procedures, not incident facts.
 2. **Use scope to prioritise hypothesis categories.** Wide scope (multiple services, regions, pods) → systemic hypotheses first: shared dependency failure, network issue, config push affecting all instances. Narrow scope (single pod, user, endpoint) → isolated hypotheses first: pod-specific config, user-specific data, targeted code path.
-3. **Use timeline as the search anchor.** Every evidence request in Zone 2 must reference the timeline window established in Zone 1. Before generating hypotheses, run a targeted search for change events just before the timeline: deployments, updates, config pushes, scaling events. A change event near the timeline raises confidence in a deployment/change hypothesis — classify it as `contextual_evidence`. Then drill into the specific changes made to find the candidate root cause.
+3. **Use timeline as the search anchor.** Every evidence request in Zone 2 must reference the timeline window established in Zone 1. Before generating hypotheses, run a targeted search for change events just before the timeline: deployments, updates, config pushes, scaling events. A change event near the timeline raises confidence in a deployment/change hypothesis. It is a trigger signal sourced from the structural index of uploaded files — not its own evidence row. Drill into the specific changes made to find the candidate root cause; when a specific change links to the symptom mechanism, classify that slice as `causal_evidence` (post-migration-010 evidence-category set: `symptom_evidence`, `causal_evidence`, `mitigation_evidence`, `solution_evidence`).
 4. Apply the hypothesis-evidence ordering: form hypothesis → apply three-step pattern for `root_cause_identified` → validate or refute.
 5. **Single-shot vs multi-hypothesis:** if the root cause is obvious from existing evidence (clear error chain, strong timing correlation, specific change found), form one hypothesis and validate in the same turn. If ambiguous, form 2–4 hypotheses across different categories and request targeted evidence per hypothesis.
 6. Each evidence request must be tied to a specific hypothesis and follow the specificity standard.
@@ -296,7 +296,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 **Search for (per hypothesis category):**
 
 - Deployment / change — **two steps, distinct evidence types:**
-  - Step 1: Find the **change event** (deployment timestamp, update applied, config push, scaling event near the timeline window) → `contextual_evidence`. This is a trigger signal — it narrows the search space and raises hypothesis confidence, but is not itself a root cause.
+  - Step 1: Find the **change event** (deployment timestamp, update applied, config push, scaling event near the timeline window). This is a trigger signal sourced from the structural index of uploaded files — not its own evidence row. It narrows the search space and raises hypothesis confidence, but is not itself a root cause.
   - Step 2: Drill into the **specific changes made** in that event (code diff, config values before/after, dependency version change, schema alteration) → `causal_evidence` once a hypothesis links a specific change to the symptom mechanism. A deployment is a trigger; the changed `max_connections` value is a candidate root cause.
 - Resource exhaustion: memory / CPU / disk / connection counts at or near limits
 - Dependency failure: downstream service timeouts, external API errors, database failures

@@ -4,7 +4,6 @@ A structured, append-only log of key decisions and findings that gives the Fault
 
 **Related Documents**:
 
-- [Context Engineering Analysis](../../reference/deep-dives/context-engineering-analysis.md) — Token budget management and context assembly
 - [Progress Transparency](./progress-transparency.md) — Progress monitoring and milestone dependencies
 - [Agent Behavioral Rules](./agent-behavioral-rules.md) — Rules governing agent behavior (esp. Rule 2: Evidence-Grounded)
 - [Investigation Data Models](./investigation-data-models.md) — Case domain model and turn tracking
