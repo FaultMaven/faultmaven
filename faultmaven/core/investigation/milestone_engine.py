@@ -3644,7 +3644,7 @@ class MilestoneEngine:
 
         # Extract current investigation stage for tool context enrichment
         metadata: dict[str, Any] = {}
-        progress = getattr(case, "investigation_progress", None)
+        progress = getattr(case, "progress", None)
         if progress:
             current_stage = getattr(progress, "current_stage", None)
             if current_stage:
