@@ -148,6 +148,13 @@ Both sources use the same downstream pipeline (LLM generation with canonical tem
 
 The `ConversionService.convert_from_case()` method constructs a `FailureModeAnalysis` from the case data and calls `_convert_single_failure_mode()` — the same method used for document-driven conversion. This ensures identical template compliance, validation, and quality scoring.
 
+**Case-data extraction is single-sourced**: both the API endpoint (`POST /knowledge/convert-from-case`) and the chat-side dispatcher (`MilestoneEngine._handle_runbook_creation`) build the `CaseConversionRequest` via the same `CaseConversionRequest.from_case(case, scope=...)` factory in `faultmaven/modules/knowledge/domain/models/conversion.py`. Keeping the two call sites converged on one extraction prevents drift between the Dashboard-initiated and chat-initiated runbook paths.
+
+**Two trigger paths for the Case Source**:
+
+- **Dashboard-initiated**: user clicks the "Create runbook from this case" button on a RESOLVED case detail page. Frontend calls `POST /knowledge/convert-from-case` and renders the result page directly.
+- **Chat-initiated (Copilot)**: on the RESOLVED ack-turn, the agent emits a COOPERATIVE *"Generate runbook from this case"* suggestion. Clicking submits the precomposed payload, which routes via exact-match dispatch in `_process_terminal_turn` to `_handle_runbook_creation`. The chat-initiated path runs the pre-flight gates (content readiness + deduplication) synchronously, then kicks off the conversion pipeline as a fire-and-forget background task (`asyncio.create_task` wrapping `_run_runbook_conversion`). The agent reply returns immediately ("Creating your runbook draft…"). When the background task finishes (success, no-drafts, or exception), it appends a `role="system"` completion message to `case.messages` with the outcome — naming the draft on success or a retry hint on failure. The append acquires the per-case lock to avoid interleaving with a concurrent Q&A turn, and notification-write failures are logged but never propagate. See `investigation-lifecycle-logic.md §1.7.3` for the chat-side flow in full.
+
 **Case conversion lookup**: `GET /knowledge/conversions/by-case/{case_id}` returns the conversion job and drafts for a specific case, used by the Dashboard Runbook tab.
 
 ---

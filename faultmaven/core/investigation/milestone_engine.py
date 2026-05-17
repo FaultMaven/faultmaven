@@ -1278,7 +1278,8 @@ class MilestoneEngine:
 
             agent_response = (
                 "Creating your runbook draft from this case. "
-                "You'll find it in the Dashboard under **Knowledge > Drafts** once it's ready."
+                "I'll let you know here when it's ready — you'll also find it in "
+                "the Dashboard under **Knowledge > Drafts**."
             )
             logger.info(
                 f"Runbook creation initiated for case {case.case_id}",
@@ -1353,8 +1354,7 @@ class MilestoneEngine:
                 )
                 notification_content = (
                     "Runbook generation completed but no draft was produced. "
-                    "You can retry by clicking **Generate runbook from this case** "
-                    "on the next turn."
+                    "Click **Generate runbook from this case** to retry."
                 )
         except Exception as e:
             logger.error(
@@ -1363,8 +1363,8 @@ class MilestoneEngine:
                 exc_info=True,
             )
             notification_content = (
-                "Runbook generation failed. You can retry by clicking "
-                "**Generate runbook from this case** on the next turn."
+                "Runbook generation failed. "
+                "Click **Generate runbook from this case** to retry."
             )
 
         # Best-effort completion notification. The case is loaded fresh
