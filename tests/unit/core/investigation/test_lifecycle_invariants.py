@@ -372,6 +372,106 @@ class TestINV04_NoDirectInquiryToResolved:
 
 
 # =============================================================================
+# INV-05: Stage transitions auto-fire on gate milestones (no User-Agent Handshake)
+# =============================================================================
+#
+# Source: §1.4 line 488 — "Disposition actions are NEVER automatic."
+#   Stage transitions within INVESTIGATING (DIAGNOSIS → MITIGATION →
+#   TREATMENT), by contrast, ARE automatic: the engine acts directly on
+#   the gate milestone the LLM emits, without a propose/confirm round-trip.
+# Statement: Setting a stage-gate milestone (mitigation_accepted,
+#   solution_accepted) advances ``case.current_stage`` immediately. No
+#   pending_transition is written, no user confirmation turn is required.
+# Enforcement: Prompt-only via gate milestone semantics — the engine acts
+#   directly on whichever gate milestone the LLM emits, and the
+#   ``current_stage`` property on ``InvestigationProgress`` is a pure
+#   function of the gate milestone flags (no handshake state involved).
+#
+# Why pin this: INV-03 forbids auto-firing for dispositions; INV-05
+# permits auto-firing for stage transitions. A refactor that mistakenly
+# applies the disposition handshake to stage gates would break the
+# investigation flow (each stage would require an extra turn). A refactor
+# that mistakenly applies the stage auto-fire to dispositions would let
+# the agent auto-resolve cases. The asymmetry MUST stay pinned.
+
+
+class TestINV05_StageGatesAutoFireWithoutHandshake:
+    """INV-05: stage-gate milestones advance ``current_stage`` without handshake."""
+
+    def test_inv05_initial_stage_is_diagnosis(self):
+        """A fresh INVESTIGATING case starts in DIAGNOSIS. No gate flags
+        set → ``current_stage`` returns DIAGNOSIS (the default).
+        """
+        from faultmaven.modules.case.domain.models import InvestigationStage
+
+        case = _make_investigating_case()
+        assert case.current_stage == InvestigationStage.DIAGNOSIS
+        # And critically: no pending_transition is involved for stage state
+        assert case.pending_transition is None
+
+    def test_inv05_mitigation_accepted_advances_stage_immediately(self):
+        """Setting ``mitigation_accepted=True`` advances ``current_stage``
+        to MITIGATION immediately. No propose+confirm round-trip; no
+        pending_transition is written; no user-confirmation turn is
+        required. Asymmetric with INV-03's disposition handshake.
+        """
+        from faultmaven.modules.case.domain.models import InvestigationStage
+
+        case = _make_investigating_case()
+        assert case.current_stage == InvestigationStage.DIAGNOSIS
+
+        # LLM-emitted gate milestone — engine sets the flag directly
+        case.progress.mitigation_accepted = True
+
+        # Stage advances immediately (computed from flags, no state
+        # machine in between)
+        assert case.current_stage == InvestigationStage.MITIGATION
+        # Critically: no handshake artifacts
+        assert case.pending_transition is None
+        # And disposition is unchanged — stage transition does NOT touch
+        # case.status
+        assert case.status == CaseStatus.INVESTIGATING
+
+    def test_inv05_solution_accepted_advances_stage_immediately(self):
+        """Setting ``solution_accepted=True`` advances ``current_stage``
+        to TREATMENT immediately. Same auto-fire semantics as
+        mitigation_accepted; same absence of handshake artifacts.
+        """
+        from faultmaven.modules.case.domain.models import InvestigationStage
+
+        case = _make_investigating_case()
+        case.progress.solution_accepted = True
+
+        assert case.current_stage == InvestigationStage.TREATMENT
+        assert case.pending_transition is None
+        assert case.status == CaseStatus.INVESTIGATING
+
+    def test_inv05_stage_property_does_not_write_pending_transition(self):
+        """Static guard: ``InvestigationProgress.current_stage`` is a pure
+        computed property — it must not contain any code that writes
+        ``case.pending_transition`` or ``self.pending_transition``. If a
+        future refactor introduces a handshake into stage computation,
+        this test breaks and INV-05's asymmetry with INV-03 collapses.
+        """
+        from faultmaven.modules.case.domain.models import InvestigationProgress
+
+        # The progress-level computed property
+        source = inspect.getsource(
+            InvestigationProgress.current_stage.fget  # type: ignore[union-attr]
+        )
+
+        forbidden = ["pending_transition", "propose_transition", "confirm_pending"]
+        for token in forbidden:
+            assert token not in source, (
+                f"INV-05 violation: InvestigationProgress.current_stage "
+                f"references '{token}'. Stage transitions must auto-fire "
+                f"from gate milestones — introducing handshake plumbing "
+                f"into stage computation collapses the asymmetry with "
+                f"INV-03 (disposition handshake)."
+            )
+
+
+# =============================================================================
 # INV-06: KB-Resolution path still uses pending_transition (no auto-resolve)
 # =============================================================================
 #
