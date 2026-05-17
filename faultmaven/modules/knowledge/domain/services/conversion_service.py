@@ -14,7 +14,7 @@ import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -231,6 +231,12 @@ class ConversionService:
         self._validator = RunbookValidator()
         self._scorer = QualityScorer()
         self._scan_lock = asyncio.Lock()
+        # In-flight case-conversion dedup. Keyed by case_id; the value is
+        # the running asyncio.Task that other concurrent callers can await.
+        # Mirrors `_inflight_vectorize` on MilestoneEngine. Prevents
+        # duplicate drafts when the user clicks the runbook affordance
+        # twice in rapid succession. See convert_from_case().
+        self._inflight_runbook: Dict[str, asyncio.Task] = {}
 
     @property
     def _data_dir(self) -> Path:
@@ -399,7 +405,46 @@ class ConversionService:
         Skips preprocessing and analysis (case data is already structured).
         Reuses _convert_single_failure_mode() for LLM generation, validation,
         scoring, and persistence — same pipeline as document-driven conversion.
+
+        Dedup: if a conversion is already in flight for this case, the
+        in-flight Task is awaited rather than a duplicate started. Prevents
+        duplicate drafts when the user clicks the runbook affordance twice
+        in rapid succession (chat-triggered) or when the chat-triggered and
+        HTTP-triggered paths race. Mirrors the `_inflight_vectorize`
+        pattern on MilestoneEngine.
         """
+        # Short-circuit if a conversion for this case is already running.
+        inflight = self._inflight_runbook.get(request.case_id)
+        if inflight is not None and not inflight.done():
+            logger.info(
+                "case_conversion_dedup_hit",
+                extra={"case_id": request.case_id},
+            )
+            return await inflight
+
+        # Wrap the actual work in a Task so other concurrent callers can
+        # await the same result.
+        task = asyncio.create_task(
+            self._convert_from_case_impl(request, user_id, organization_id, team_id)
+        )
+        self._inflight_runbook[request.case_id] = task
+        try:
+            return await task
+        finally:
+            # Defensive cleanup: only remove if this is still our task,
+            # in case a subsequent caller has already overwritten the entry.
+            if self._inflight_runbook.get(request.case_id) is task:
+                self._inflight_runbook.pop(request.case_id, None)
+
+    async def _convert_from_case_impl(
+        self,
+        request: "CaseConversionRequest",
+        user_id: str,
+        organization_id: str = None,
+        team_id: str = None,
+    ) -> ConversionResponse:
+        """Internal: the actual conversion pipeline. Always called via
+        `convert_from_case`, which wraps this with the dedup registry."""
         # Verify LLM provider is available
         try:
             knowledge_model = self._settings.llm.get_knowledge_model()

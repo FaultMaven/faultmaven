@@ -13,6 +13,7 @@ Tests cover:
 - ConversionRejectedError for non-actionable documents
 """
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -1250,3 +1251,143 @@ class TestScanBulkDiscardGuard:
         ):
             result = await svc.scan_for_runbooks(user_id="u1")
         assert isinstance(result, dict)
+
+
+# =============================================================================
+# Case Conversion Dedup
+# =============================================================================
+
+
+def _make_fake_response(conversion_id: str = "conv_test123") -> "object":
+    """Build a minimal ConversionResponse stub for use in dedup tests.
+
+    We only assert identity (same conversion_id) across racing callers, so a
+    SimpleNamespace is enough — we don't construct a real Pydantic model.
+    """
+    return SimpleNamespace(conversion_id=conversion_id)
+
+
+class TestConvertFromCaseDedup:
+    """`convert_from_case` deduplicates in-flight conversions by case_id.
+
+    Mirrors the `_inflight_vectorize` pattern on MilestoneEngine. Two rapid
+    clicks of the runbook affordance — chat-triggered, HTTP-triggered, or
+    one of each — should produce one ConversionJob row, not two.
+    """
+
+    def _make_request(self, case_id: str = "case-dedup-1"):
+        from faultmaven.modules.knowledge.domain.models.conversion import (
+            CaseConversionRequest,
+        )
+
+        return CaseConversionRequest(
+            case_id=case_id,
+            title="Test failure",
+            domain="application",
+            service="test-svc",
+            symptom_class=["timeout"],
+            severity="high",
+            description="The thing failed",
+            root_cause="ChromaDB pooling disabled by default",
+            scope="personal",
+        )
+
+    @pytest.mark.asyncio
+    async def test_concurrent_calls_share_one_inflight_task(self, service):
+        """Two simultaneous calls for the same case_id: impl runs ONCE,
+        both callers get the same response."""
+        request = self._make_request("case-shared-1")
+
+        call_count = 0
+
+        async def slow_impl(req, user_id, organization_id=None, team_id=None):
+            nonlocal call_count
+            call_count += 1
+            # Yield long enough for the second call to enter and find the
+            # in-flight task in the registry.
+            await asyncio.sleep(0.05)
+            return _make_fake_response(conversion_id="conv_shared")
+
+        with patch.object(service, "_convert_from_case_impl", side_effect=slow_impl):
+            results = await asyncio.gather(
+                service.convert_from_case(request, user_id="u1"),
+                service.convert_from_case(request, user_id="u1"),
+            )
+
+        assert call_count == 1, "Impl should run once when two callers race"
+        assert results[0].conversion_id == results[1].conversion_id
+        assert results[0].conversion_id == "conv_shared"
+
+    @pytest.mark.asyncio
+    async def test_sequential_calls_after_completion_create_new_tasks(self, service):
+        """Once the first call finishes, the registry entry is cleared so a
+        subsequent call for the same case_id starts a fresh conversion."""
+        request = self._make_request("case-sequential-1")
+
+        call_count = 0
+
+        async def fast_impl(req, user_id, organization_id=None, team_id=None):
+            nonlocal call_count
+            call_count += 1
+            return _make_fake_response(conversion_id=f"conv_seq_{call_count}")
+
+        with patch.object(service, "_convert_from_case_impl", side_effect=fast_impl):
+            first = await service.convert_from_case(request, user_id="u1")
+            second = await service.convert_from_case(request, user_id="u1")
+
+        assert call_count == 2, "Sequential calls should each run impl"
+        assert first.conversion_id == "conv_seq_1"
+        assert second.conversion_id == "conv_seq_2"
+
+    @pytest.mark.asyncio
+    async def test_registry_cleared_after_success(self, service):
+        """After a successful conversion, the case_id is removed from
+        `_inflight_runbook` so it does not leak."""
+        request = self._make_request("case-cleanup-1")
+
+        async def fast_impl(req, user_id, organization_id=None, team_id=None):
+            return _make_fake_response()
+
+        with patch.object(service, "_convert_from_case_impl", side_effect=fast_impl):
+            await service.convert_from_case(request, user_id="u1")
+
+        assert request.case_id not in service._inflight_runbook
+
+    @pytest.mark.asyncio
+    async def test_registry_cleared_after_exception(self, service):
+        """If the impl raises, the registry entry is still cleaned up so a
+        retry can proceed."""
+        request = self._make_request("case-exc-1")
+
+        async def failing_impl(req, user_id, organization_id=None, team_id=None):
+            raise RuntimeError("boom")
+
+        with patch.object(service, "_convert_from_case_impl", side_effect=failing_impl):
+            with pytest.raises(RuntimeError, match="boom"):
+                await service.convert_from_case(request, user_id="u1")
+
+        assert request.case_id not in service._inflight_runbook
+
+    @pytest.mark.asyncio
+    async def test_different_cases_do_not_share_inflight(self, service):
+        """Two concurrent calls for DIFFERENT case_ids both run their own
+        impls — dedup is per case_id, not global."""
+        req_a = self._make_request("case-A")
+        req_b = self._make_request("case-B")
+
+        call_count = 0
+
+        async def slow_impl(req, user_id, organization_id=None, team_id=None):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0.05)
+            return _make_fake_response(conversion_id=f"conv_{req.case_id}")
+
+        with patch.object(service, "_convert_from_case_impl", side_effect=slow_impl):
+            results = await asyncio.gather(
+                service.convert_from_case(req_a, user_id="u1"),
+                service.convert_from_case(req_b, user_id="u1"),
+            )
+
+        assert call_count == 2, "Different cases must each run impl"
+        assert results[0].conversion_id != results[1].conversion_id
