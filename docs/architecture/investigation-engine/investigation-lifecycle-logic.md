@@ -106,49 +106,6 @@ Confirmations reduce errors but create friction. Use conditional logic:
 Both flows converge at the confirmation step.
 
 ```python
-async def handle_inquiry_turn(case: Case, user_message: str) -> str:
-    """
-    Process inquiry turn and manage problem statement workflow.
-
-    ITERATIVE REFINEMENT PATTERN:
-    1. Agent generates proposed_problem_statement from conversation
-    2. Agent presents statement for confirmation
-    3. User confirms OR provides corrections
-    4. If corrections: Update proposed_problem_statement and repeat step 2
-    5. If confirmed: Set problem_statement_confirmed = True
-    """
-
-    # Generate or update proposed_problem_statement
-    if not case.inquiry.proposed_problem_statement or user_provides_corrections(user_message):
-        case.inquiry.proposed_problem_statement = await llm_generate_problem_statement(
-            conversation_history=case.messages,
-            problem_confirmation=case.inquiry.problem_confirmation,
-            user_corrections=extract_corrections(user_message)
-        )
-
-    # Check if user confirms statement
-    if user_confirms(user_message):  # "Yes", "Yes, investigate", "That's right", etc.
-        case.inquiry.problem_statement_confirmed = True
-        case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-        case.inquiry.decided_to_investigate = True
-        case.inquiry.decision_made_at = datetime.now(timezone.utc)
-
-        # Now can_start_investigation returns True
-        return await transition_to_investigating(case)
-
-    else:
-        # Present statement for confirmation
-        return f"""Based on our conversation, the problem is:
-
-{case.inquiry.proposed_problem_statement}
-
-Is this what you want me to investigate?
-
-[✅ Yes]  [❌ No]
-
-💡 Tip: Click a button or type to clarify"""
-
-
 def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
                            user_message: str = ""):
     """
@@ -162,12 +119,16 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
       2. LLM path — the LLM sets `user_confirmed_investigation=True`
          in `state_updates`. The engine accepts it ONLY when a
          `proposed_problem_statement` existed on a PRIOR turn (the
-         same-turn-confirmation guard added in commit 13ff2eae, after
-         the LLM was observed collapsing the two-step handshake on
-         first-turn "please investigate" inputs).
+         same-turn-confirmation guard). When the guard fires, the
+         engine sets `case.inquiry.handshake_deferred_at_turn` so the
+         next turn's context_builder switches the inquiry_state block
+         to `HANDSHAKE_DEFERRED` (re-present instruction) and the
+         response builder emits the canonical confirmation suggestions
+         deterministically — see INV-01's *Composition seam* in §1.3.1
+         and the "Deferred recovery" sub-flow above.
 
-    Free-typed paraphrases ("yes", "proceed") do NOT route through this
-    function. The historical word-boundary regex matcher
+    Free-typed paraphrases ("yes", "proceed") do NOT route through
+    this function. The historical word-boundary regex matcher
     (`user_confirms()`) was removed in commit 06cfa834 (2026-03-17)
     when intent-routing for explicit clicks became the canonical
     confirmation path. Typed responses that match a confirmation
@@ -192,6 +153,14 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
         case.inquiry.problem_statement_confirmed = True
         case.inquiry.decided_to_investigate = True
         # ... transition fires via _check_automatic_transitions
+
+    # 3. Same-turn collapse → defer to next turn (guard rejects but
+    # preserves the statement; recovery is Code-guarded — see INV-01).
+    elif (updates.user_confirmed_investigation
+            and case.inquiry.proposed_problem_statement
+            and not statement_existed_before_turn):
+        case.inquiry.handshake_deferred_at_turn = case.current_turn
+        # WARNING log + outcome metric increment (see lifecycle_metrics).
 ```
 
 #### 1.2.1 Evidence Classification Lifecycle
@@ -543,7 +512,7 @@ Every load-bearing lifecycle rule has at least one enforcement surface: code, sc
 
 **Drift notes (as of this writing):**
 
-- **INV-01** historical drift: the design previously described a mechanical regex fallback (`user_confirms()`) inside `_apply_inquiry_updates` as the second confirmation path. That fallback was deliberately removed in commit `06cfa834` (2026-03-17) in favor of intent-routing for explicit clicks. The pseudocode at the top of §1.2 still references the old fallback and should be updated separately. The same-turn-confirmation guard documented in INV-01 was added in `13ff2eae` after the gap was observed in production.
+- **INV-01** historical drift *(resolved)*: the design previously described a mechanical regex fallback (`user_confirms()`) inside `_apply_inquiry_updates` as the second confirmation path. That fallback was deliberately removed in commit `06cfa834` (2026-03-17) in favor of intent-routing for explicit clicks. The §1.2 pseudocode previously still referenced the old fallback; it has now been cleaned up — the stale `handle_inquiry_turn` illustrative block was removed and the surviving `_apply_inquiry_updates` block extended with the same-turn-collapse branch that sets `handshake_deferred_at_turn`. The same-turn-confirmation guard documented in INV-01 was added in `13ff2eae` after the gap was observed in production; the paired Code-guarded recovery affordance (HANDSHAKE_DEFERRED block + deterministic suggestion emission + outcome telemetry) was added in the follow-up bug-fix + roadmap PRs (#309, #308/#310, #311, #312, #313).
 - **INV-01** deferral-without-recovery gap *(resolved)*: when commit `13ff2eae` added the same-turn-confirmation guard, its commit message stated *"the transition is deferred to the next turn (where the LLM re-presents the statement and the user confirms explicitly)."* That deferral assumption was never code-backed. The recovery turn's context still carried the `NOT_YET_CONFIRMED` block from `16bb0912` (2026-04-23), which actively instructs the LLM *"Do NOT re-propose the same statement."* When the guard fired, the case stalled silently — statement persisted, no LLM re-present, no clickable affordance. Observed on case `case_bb917dcd5bb2` (turn 14 "Yes, let's investigate this"): guard fired, user moved on to other questions, case never transitioned. Fix: `case.inquiry.handshake_deferred_at_turn` flag set at the guard site; `context_builder` switches to `HANDSHAKE_DEFERRED` on the recovery turn; engine deterministically emits the canonical confirmation suggestions. The matrix row above now lists both Code-guarded layers (deferral + recovery affordance) so future audits surface the prompt-code dependency before a similar regression slips through.
 - **INV-04** matrix-text drift *(resolved)*: the INV-04 row now names the real symbols (`ALLOWED_ACTIONS` + `is_valid_action()`), and §1.3's pseudocode block now uses `ALLOWED_ACTIONS` instead of the non-existent `VALID_TRANSITIONS`. The duplication-risk note below is the remaining open item — graph still lives in three places, gated by `test_inv04_valid_action_graphs_agree_across_definitions`.
 - **INV-04** duplication risk: the valid-action graph is duplicated across **three** locations — `ALLOWED_ACTIONS` (case_action_manager.py), `valid_actions` (inside `is_valid_action()` in models.py), and implicit in the `_execute_*_transition` runtime preconditions in `terminal_transitions.py`. They currently agree, but no single source of truth means a future single-sided edit would let the forbidden edge slip through one enforcement surface while the others still reject it. `test_inv04_valid_action_graphs_agree_across_definitions` is the consistency guard until consolidation; the cleanup itself is separate work.
