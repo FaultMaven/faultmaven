@@ -410,7 +410,7 @@ Two pieces of rule-adjacent content are injected at runtime:
 
 1. **Focus Zone Emphasis** — a progress milestone-driven priority signal computed by `_get_diagnosis_focus_emphasis()` and prepended to DIAGNOSIS_INSTRUCTIONS inside `get_prompt_for_case()`. See [Evidence-Driven Investigation Framework §8.5](./evidence-driven-investigation-framework.md#85-focus-zone-emphasis-progress-milestone-driven).
 
-2. **INQUIRY State** — an `<inquiry_state>` XML block injected into the INQUIRY template by `_build_context()` when a proposed problem statement exists but hasn't been confirmed. It tells the LLM to detect implicit confirmation (data uploads, engagement with the problem) rather than re-proposing the problem statement repeatedly.
+2. **INQUIRY State** — an `<inquiry_state>` XML block injected into the INQUIRY template by `_build_context()` when a proposed problem statement exists but hasn't been confirmed. It switches between two modes: (a) `NOT_YET_CONFIRMED` — the default, which instructs the LLM not to re-propose the same statement and to focus on the user's current message; (b) `HANDSHAKE_DEFERRED` — fires only on the turn immediately following a same-turn-confirmation guard fire (see [INV-01](./investigation-lifecycle-logic.md#13-status-lifecycle-invariants)), instructing the LLM to re-present the statement and ask for confirmation explicitly. The two modes are mutually exclusive and the switch is keyed on `case.inquiry.handshake_deferred_at_turn`.
 
 Neither is a behavioral rule; both are system-computed adaptive context that modifies what the LLM *sees* rather than constraining what it *does*.
 

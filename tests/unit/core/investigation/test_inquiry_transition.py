@@ -846,3 +846,177 @@ class TestContextBuilderConfirmationInjection:
         context_str = str(context.values())
         assert "NOT_YET_CONFIRMED" not in context_str
         assert "AWAITING_CONFIRMATION" not in context_str
+
+
+class TestHandshakeDeferredRecovery:
+    """Pinning tests for the recovery path after the same-turn-confirmation guard fires.
+
+    The guard at _apply_inquiry_updates rejects the same-turn collapse and sets
+    case.inquiry.handshake_deferred_at_turn. On the NEXT turn, two things must
+    happen so the user has a deterministic recovery path:
+
+    1. context_builder switches the inquiry_state block from NOT_YET_CONFIRMED
+       ("don't re-propose") to HANDSHAKE_DEFERRED (re-present + ask).
+    2. The engine emits confirmation suggestions deterministically, even if the
+       LLM disobeys the prompt and fails to surface its own confirmation pair.
+    """
+
+    def test_handshake_deferred_block_injected_on_recovery_turn(self):
+        """Context builder injects HANDSHAKE_DEFERRED on turn following guard fire."""
+        from faultmaven.core.investigation.prompts.context_builder import (
+            build_investigation_context,
+        )
+
+        # Guard fired on turn 3; we're now processing turn 4.
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="",
+            current_turn=4,
+            inquiry=InquiryData(
+                thread_id="thread_123",
+                proposed_problem_statement="API timeout errors affecting users",
+                problem_statement_confirmed=False,
+                handshake_deferred_at_turn=3,
+            ),
+        )
+
+        context = build_investigation_context(case, user_message="anything")
+
+        context_str = str(context.values())
+        assert "HANDSHAKE_DEFERRED" in context_str, (
+            "Recovery-turn prompt did not include HANDSHAKE_DEFERRED — LLM has "
+            "no signal to re-present the statement."
+        )
+        assert "NOT_YET_CONFIRMED" not in context_str, (
+            "Recovery-turn prompt still includes NOT_YET_CONFIRMED — the two "
+            "blocks are mutually exclusive and the guard's deferral assumption "
+            "depends on the LLM being told to re-present, not to stay quiet."
+        )
+
+    def test_not_yet_confirmed_block_used_when_flag_is_stale(self):
+        """Stale flag (older than one turn) falls back to NOT_YET_CONFIRMED."""
+        from faultmaven.core.investigation.prompts.context_builder import (
+            build_investigation_context,
+        )
+
+        # Guard fired on turn 3; recovery turn 4 has come and gone; we're on turn 5.
+        # The flag is stale and the default NOT_YET_CONFIRMED behavior resumes.
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="",
+            current_turn=5,
+            inquiry=InquiryData(
+                thread_id="thread_123",
+                proposed_problem_statement="API timeout errors affecting users",
+                problem_statement_confirmed=False,
+                handshake_deferred_at_turn=3,
+            ),
+        )
+
+        context = build_investigation_context(case, user_message="anything")
+
+        context_str = str(context.values())
+        assert "NOT_YET_CONFIRMED" in context_str
+        assert "HANDSHAKE_DEFERRED" not in context_str
+
+    @pytest.mark.asyncio
+    async def test_deterministic_confirmation_suggestions_on_recovery_turn(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """Engine emits confirmation suggestions on the recovery turn even when
+        the LLM ignores HANDSHAKE_DEFERRED and emits no suggestions of its own.
+
+        This is the Code-guarded backstop — the user must have a clickable path
+        regardless of LLM compliance with the re-present instruction.
+        """
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+        )
+
+        # The engine assumes current_turn was incremented by investigation_service
+        # before each process_turn call (see milestone_engine.py:1574). Simulate that.
+        inquiry_case.current_turn = 1
+
+        # Turn 1: LLM one-shots — guard will fire.
+        mock_response_turn1 = json.dumps(
+            {
+                "agent_response": "Starting investigation into API 503 errors.",
+                "state_updates": {
+                    "problem_confirmation": {
+                        "problem_type": "unavailability",
+                        "severity_guess": "high",
+                        "preliminary_guidance": "API returning 503 errors",
+                    },
+                    "preliminary_urgency": {
+                        "level": "HIGH",
+                        "is_ongoing": True,
+                        "is_incident_report": True,
+                        "impact_assessment": "Users seeing errors",
+                    },
+                    "proposed_problem_statement": "API returning 503 errors affecting users",
+                    "user_confirmed_investigation": True,
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_turn1
+        result1 = await engine.process_turn(
+            inquiry_case,
+            "My API is returning 503s, please investigate.",
+        )
+        case_after_turn1 = result1["case_updated"]
+
+        # Guard fired: flag set to this turn, no transition.
+        assert case_after_turn1.status == CaseStatus.INQUIRY
+        assert case_after_turn1.inquiry.handshake_deferred_at_turn == 1
+
+        # Simulate investigation_service incrementing current_turn for turn 2.
+        case_after_turn1.current_turn = 2
+
+        # Turn 2 (recovery): LLM disobeys HANDSHAKE_DEFERRED and emits no
+        # follow-up suggestions. Engine must still emit them deterministically.
+        mock_response_turn2 = json.dumps(
+            {
+                "agent_response": "Looking at this more...",
+                "state_updates": {
+                    "user_confirmed_investigation": False,
+                },
+                "suggested_follow_ups": [],
+            }
+        )
+        mock_llm.generate.return_value = mock_response_turn2
+        result2 = await engine.process_turn(case_after_turn1, "ok")
+
+        follow_ups = result2["suggested_follow_ups"]
+        confirmation_labels = {f.get("label") for f in follow_ups}
+        assert any(
+            "investigate" in (lbl or "").lower() for lbl in confirmation_labels
+        ), (
+            f"Recovery turn did not emit a confirmation suggestion. "
+            f"follow_ups={follow_ups}"
+        )
+        # The positive suggestion carries the deterministic confirmation intent,
+        # so clicking it hits the engine's CONFIRMATION intent path and transitions
+        # without further LLM involvement.
+        positive = next(
+            (
+                f
+                for f in follow_ups
+                if f.get("intent", {}).get("confirmation_value") is True
+            ),
+            None,
+        )
+        assert positive is not None, (
+            "Recovery turn emitted suggestions but none carried "
+            "intent.confirmation_value=True — clicking provides no deterministic "
+            "transition path."
+        )
