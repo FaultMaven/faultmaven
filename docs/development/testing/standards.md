@@ -40,6 +40,56 @@ This document establishes the new testing architecture and standards for FaultMa
 - Real database/cache integration where feasible
 - User journey validation
 
+#### **Real-LLM Integration Tests** (`tests/integration/real_llm/`)
+
+These tests hit a live LLM provider API (Anthropic by default). They are **opt-in**, marked with `@pytest.mark.real_llm`, and excluded from the default `pytest` run via `-m "not real_llm"` in `pyproject.toml` and `pytest.ini`. To run them:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+pytest -m real_llm
+```
+
+Tests skip cleanly (not fail) when the API key is absent — a developer without provider access can still run the rest of the suite.
+
+**When to write a real-LLM test.** This category catches a class of regression mocked tests cannot surface by construction: **prompt-compliance drift**. The mock emits whatever JSON we feed it; a real LLM either reads the prompt and behaves correctly or it doesn't. The candidate cases are:
+
+- Invariants with a `*Composition seam:*` annotation in the [invariant matrix](../../architecture/investigation-engine/investigation-lifecycle-logic.md#131-invariant-enforcement-matrix). The seam by definition means a prompt rule is load-bearing for the design goal — exactly what real-LLM tests should pin.
+- Prompt-only invariants (INV-15, INV-17 at the time of writing) where there is no code backstop.
+- Behaviors discovered to have drifted in production (the post-mortem follow-up).
+
+Avoid real-LLM tests for behaviors already pinned at the schema, structural, or pure code-guarded layer — mocked tests are cheaper and faster for those.
+
+**Assertion discipline.** Real-LLM tests must assert on **structural outcomes**, never on LLM-generated text content. The heuristic: would this assertion pass if the LLM phrased its response slightly differently but the system state ended up the same? If yes, the assertion is robust. If no, reconsider what you're testing. Asserting on text is exactly the brittleness that real-LLM tests are supposed to avoid.
+
+Good assertions:
+
+```python
+assert case.status == CaseStatus.INVESTIGATING
+assert case.inquiry.problem_statement_confirmed is True
+assert any(f["intent"]["confirmation_value"] is True for f in follow_ups)
+```
+
+Bad assertions (text-pattern):
+
+```python
+assert "Is this accurate?" in result["agent_response"]  # LLM rewording = flake
+assert "investigation" in case.inquiry.proposed_problem_statement  # ambiguous
+```
+
+Outcome-based helpers live in `tests/integration/real_llm/helpers.py` — extend that module rather than inlining assertions.
+
+**Flakiness policy.** LLMs are stochastic. To reduce flake:
+
+1. Use `temperature=0` where the provider supports deterministic output (most chat providers do).
+2. Scope each test to one decision point. Multi-turn tests compound stochasticity.
+3. Assert on the strongest signal available — prefer `case.status` over `metadata["transition_proposed"]`, prefer presence of intent-typed suggestions over message text.
+4. When a test flakes, the first response should be tightening the assertion or scoping the scenario, **not** adding retries. Retries hide the signal that the prompt-LLM interaction has weakened.
+5. If retries are genuinely needed, prefer a smaller scenario over `pytest-rerunfailures` — moving the test to a tighter scenario is a real improvement, retries are a bandage.
+
+**Cost.** Default model is Anthropic Haiku 4.5 (cheapest current model, ~$0.001 per test). Override via `REAL_LLM_TEST_MODEL` env var for smarter checks on Sonnet/Opus. Each test should make 1–2 LLM calls; tests requiring more LLM rounds are probably exercising too much in one scenario.
+
+**Where they live.** `tests/integration/real_llm/`. Each test file pins one invariant (or one closely-related cluster). File names follow `test_invXX_<behavior>.py` to match the matrix convention.
+
 ---
 
 ## **Testing Architecture Standards**
