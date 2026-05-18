@@ -35,6 +35,10 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
+from faultmaven.core.investigation.lifecycle_metrics import (
+    inquiry_handshake_deferred_total,
+    inquiry_handshake_recovered_total,
+)
 from faultmaven.core.investigation.llm_error_handler import ErrorAction, LLMErrorHandler
 from faultmaven.core.investigation.progress_monitor import (
     ProgressMonitor,
@@ -4717,6 +4721,7 @@ class MilestoneEngine:
             # so process_turn deterministically emits confirmation
             # suggestions regardless of LLM compliance.
             case.inquiry.handshake_deferred_at_turn = case.current_turn
+            inquiry_handshake_deferred_total.inc()
             logger.warning(
                 f"Same-turn-confirmation guard rejected INQUIRY→INVESTIGATING "
                 f"for case {case.case_id}: LLM emitted "
@@ -5321,6 +5326,14 @@ class MilestoneEngine:
 
         # Change status (Pydantic validation happens here)
         case.status = CaseStatus.INVESTIGATING
+
+        # Outcome telemetry for INV-01: count cases that reached
+        # INVESTIGATING after a prior same-turn-confirmation guard fire.
+        # Divided by inquiry_handshake_deferred_total this gives the
+        # recovery ratio — sustained ratio drops are the signal that
+        # the deferral->recovery path has silently broken.
+        if case.inquiry.handshake_deferred_at_turn is not None:
+            inquiry_handshake_recovered_total.inc()
 
         # Initialize investigation progress
         case.progress = InvestigationProgress()
