@@ -836,6 +836,18 @@ class InquiryData(BaseModel):
         default=None, description="When user confirmed the problem statement"
     )
 
+    handshake_deferred_at_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Turn number on which the same-turn-confirmation guard fired. "
+            "When current_turn == this+1, context_builder injects HANDSHAKE_DEFERRED "
+            "(re-present + ask) instead of NOT_YET_CONFIRMED, and the engine "
+            "deterministically emits confirmation suggestions. Self-clears by "
+            "becoming stale on subsequent turns."
+        ),
+        ge=0,
+    )
+
     # ============================================================
     # Investigation Decision
     # ============================================================

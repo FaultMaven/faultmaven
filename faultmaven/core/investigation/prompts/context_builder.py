@@ -1733,7 +1733,16 @@ def build_investigation_context(
             else:
                 hypothesis_str = ""
 
-    # 10. INQUIRY State (prevents blind re-proposal of already-proposed problem statements)
+    # 10. INQUIRY State — surfaces an unconfirmed proposed_problem_statement
+    # to the LLM in one of two modes:
+    #   NOT_YET_CONFIRMED — default; instructs the LLM not to re-propose the
+    #     same statement and to focus on the user's current message.
+    #   HANDSHAKE_DEFERRED — fires only on the turn immediately following a
+    #     same-turn-confirmation guard fire (see INV-01); instructs the LLM
+    #     to re-present the statement and ask for confirmation explicitly.
+    # The two modes are mutually exclusive and gated on
+    # case.inquiry.handshake_deferred_at_turn (set by _apply_inquiry_updates
+    # in milestone_engine when the guard rejects a same-turn collapse).
     inquiry_state_str = ""
     if case.status == CaseStatus.INQUIRY and case.inquiry:
         inq = case.inquiry
@@ -1744,11 +1753,39 @@ def build_investigation_context(
             )
             inquiry_state_str += f"CONFIRMED: {inq.problem_statement_confirmed}\n"
             if not inq.problem_statement_confirmed:
-                inquiry_state_str += (
-                    "NOT_YET_CONFIRMED: You proposed this problem statement previously. "
-                    "The user has not confirmed it yet. Do NOT re-propose the same statement. "
-                    "Focus on answering the user's current message.\n"
+                handshake_deferred = (
+                    inq.handshake_deferred_at_turn is not None
+                    and inq.handshake_deferred_at_turn == case.current_turn - 1
                 )
+                if handshake_deferred:
+                    # Previous turn: LLM emitted user_confirmed_investigation=True
+                    # the same turn it first wrote proposed_problem_statement.
+                    # The engine deferred the transition to preserve the User-
+                    # Agent Handshake. This turn, the LLM MUST re-present the
+                    # statement and ask for confirmation — overrides the
+                    # default NOT_YET_CONFIRMED "don't re-propose" rule.
+                    # Note: the engine deterministically attaches the canonical
+                    # COOPERATIVE confirmation pair on this turn (see
+                    # _investigation_confirmation_suggestions in milestone_engine),
+                    # so the prompt does not prescribe exact suggestion labels.
+                    inquiry_state_str += (
+                        "HANDSHAKE_DEFERRED: On the previous turn you set "
+                        "user_confirmed_investigation=True the same turn you "
+                        "first wrote proposed_problem_statement. The engine "
+                        "deferred the transition because the user must see "
+                        "the statement before confirming. This turn, RE-"
+                        "PRESENT the statement verbatim — e.g. 'I want to "
+                        "make sure I understand: <statement>. Is that "
+                        "accurate?' Do NOT set user_confirmed_investigation"
+                        "=True this turn — the user has not yet seen the "
+                        "statement.\n"
+                    )
+                else:
+                    inquiry_state_str += (
+                        "NOT_YET_CONFIRMED: You proposed this problem statement previously. "
+                        "The user has not confirmed it yet. Do NOT re-propose the same statement. "
+                        "Focus on answering the user's current message.\n"
+                    )
             inquiry_state_str += "</inquiry_state>"
 
     # Phase 4c — entity highlights block. Pre-fetched by the milestone

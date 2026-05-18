@@ -2689,6 +2689,28 @@ class MilestoneEngine:
                 # the same deterministic confirmation UX.
                 follow_ups = metadata["override_suggestions"]
 
+            # Handshake-deferred recovery turn. The same-turn guard fired
+            # on the previous turn (LLM tried to one-shot the INQUIRY →
+            # INVESTIGATING transition). context_builder injected the
+            # HANDSHAKE_DEFERRED block instructing the LLM to re-present
+            # and ask for confirmation. As a Code-guarded backstop, force
+            # the confirmation suggestions here so the user gets a
+            # deterministic clickable path regardless of LLM compliance.
+            if (
+                case_updated.status == CaseStatus.INQUIRY
+                and case_updated.inquiry
+                and case_updated.inquiry.handshake_deferred_at_turn is not None
+                and case_updated.inquiry.handshake_deferred_at_turn
+                == case_updated.current_turn - 1
+                and not case_updated.inquiry.problem_statement_confirmed
+            ):
+                follow_ups = _investigation_confirmation_suggestions()
+                logger.info(
+                    f"Handshake-deferred recovery turn for case "
+                    f"{case_updated.case_id}: emitting deterministic "
+                    f"confirmation suggestions (turn={case_updated.current_turn})"
+                )
+
             # Closure-ack turn (LLM-driven path): when generation
             # succeeded, suggestions stay minimal — the rendered summary
             # is right above and a regen card next to it would be noise.
@@ -4688,6 +4710,13 @@ class MilestoneEngine:
             # statement first, then confirm on a subsequent turn). Refuse
             # the transition; the agent will re-present the statement on
             # the next turn. Logged so drift is observable in telemetry.
+            #
+            # Set handshake_deferred_at_turn so the next turn's
+            # context_builder switches from NOT_YET_CONFIRMED ("don't re-
+            # propose") to HANDSHAKE_DEFERRED ("re-present and ask"), and
+            # so process_turn deterministically emits confirmation
+            # suggestions regardless of LLM compliance.
+            case.inquiry.handshake_deferred_at_turn = case.current_turn
             logger.warning(
                 f"Same-turn-confirmation guard rejected INQUIRY→INVESTIGATING "
                 f"for case {case.case_id}: LLM emitted "
