@@ -3218,7 +3218,7 @@ async def get_uploaded_file_details(
             # Find hypotheses related to this evidence (junction list)
             related_hypothesis_ids = [
                 hyp.hypothesis_id
-                for hyp in case.hypotheses
+                for hyp in case.hypotheses.values()
                 if any(
                     link.evidence_id == evidence.evidence_id
                     for link in hyp.evidence_links
@@ -3289,7 +3289,7 @@ def _build_evidence_response(case, evidence, case_id: str) -> EvidenceDetailsRes
     )
 
     related_hypotheses = []
-    for hypothesis in case.hypotheses:
+    for hypothesis in case.hypotheses.values():
         for link in hypothesis.evidence_links:
             if link.evidence_id != evidence.evidence_id:
                 continue
