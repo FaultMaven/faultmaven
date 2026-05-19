@@ -725,9 +725,10 @@ class TestMilestoneEngine:
         """Test explicit status_transition intent: INQUIRY → INVESTIGATING via dropdown.
 
         Design: Dropdown = message. The dropdown does NOT bypass the agent.
-        Instead, it injects a pre-composed message and lets the LLM handle
-        the multi-turn problem statement flow. When the LLM sets
-        user_confirmed_investigation=True, the transition fires automatically.
+        It injects a pre-composed message and the LLM handles the multi-turn
+        problem statement flow. Post-slice-2 (INV-19), the case also needs
+        Gate 2 (path_selection.user_confirmed=True) before transitioning,
+        which fires as a separate user click after Gate 1 closes.
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -746,12 +747,19 @@ class TestMilestoneEngine:
         )
         inquiry_case.inquiry.proposed_problem_statement = "Test symptom"
 
-        # Mock LLM response: InquiryResponse with user_confirmed_investigation=True
+        # Turn 1 mock: LLM confirms problem AND emits urgency signals (which
+        # the engine needs to compute the path recommendation).
         mock_response_content = json.dumps(
             {
-                "agent_response": "Confirmed. Starting investigation into the reported issue.",
+                "agent_response": "Confirmed. Recommend root-cause analysis.",
                 "state_updates": {
                     "user_confirmed_investigation": True,
+                    "preliminary_urgency": {
+                        "level": "MEDIUM",
+                        "is_ongoing": False,
+                        "is_incident_report": False,
+                        "impact_assessment": "Historical symptom",
+                    },
                 },
             }
         )
@@ -771,21 +779,39 @@ class TestMilestoneEngine:
 
         updated_case = result["case_updated"]
 
-        # 1. Status should be INVESTIGATING (transition via _check_automatic_transitions)
-        assert updated_case.status == CaseStatus.INVESTIGATING
-
-        # 2. Inquiry data should be updated
+        # Turn 1: Gate 1 closes, path_selection computed, Gate 2 pending.
+        assert updated_case.status == CaseStatus.INQUIRY  # INV-19
         assert updated_case.inquiry.problem_statement_confirmed is True
         assert updated_case.inquiry.decided_to_investigate is True
+        assert updated_case.path_selection is not None
+        assert updated_case.path_selection.user_confirmed is False
 
-        # 3. Status history should record the transition
-        assert len(updated_case.action_history) > 0
-        last_transition = updated_case.action_history[-1]
+        # Should have called LLM (not bypassed)
+        assert mock_llm.generate.called
+
+        # Turn 2: user clicks the path-selection suggestion → Gate 2 closes → transition fires.
+        mock_response_turn2 = json.dumps(
+            {
+                "agent_response": "Starting investigation.",
+                "state_updates": {},
+            }
+        )
+        mock_llm.generate.return_value = mock_response_turn2
+
+        result2 = await engine.process_turn(
+            case=updated_case,
+            user_message="Let's start with root-cause analysis.",
+            intent_type="path_selection",
+            intent_data={"investigation_path": updated_case.path_selection.path.value},
+        )
+
+        final_case = result2["case_updated"]
+        assert final_case.status == CaseStatus.INVESTIGATING
+        assert final_case.path_selection.user_confirmed is True
+        assert len(final_case.action_history) > 0
+        last_transition = final_case.action_history[-1]
         assert last_transition.from_status == CaseStatus.INQUIRY
         assert last_transition.to_status == CaseStatus.INVESTIGATING
-
-        # 4. Should have called LLM (not bypassed)
-        assert mock_llm.generate.called
 
     @pytest.mark.asyncio
     async def test_investigating_dropdown_without_problem_statement_calls_llm(
@@ -1136,7 +1162,11 @@ class TestInquiryConfirmation:
 
     @pytest.mark.asyncio
     async def test_llm_path_takes_priority_over_fallback(self, mock_llm, mock_repo):
-        """When LLM sets user_confirmed_investigation=True, the LLM path fires (not fallback)."""
+        """When LLM sets user_confirmed_investigation=True, Gate 1 closes via
+        the LLM-emitted path (not a regex fallback). Slice 2 adds Gate 2 as
+        a second confirmation; this test verifies Gate 1 fires correctly on
+        the LLM path and that the case is then in the Gate-2-pending state.
+        """
         engine = MilestoneEngine(
             mock_llm,
             mock_repo,
@@ -1153,12 +1183,18 @@ class TestInquiryConfirmation:
         )
         case.inquiry.proposed_problem_statement = "Database connection drops"
 
-        # LLM correctly detects confirmation
+        # LLM correctly detects confirmation and supplies urgency signals
         mock_response_content = json.dumps(
             {
                 "agent_response": "Starting investigation.",
                 "state_updates": {
                     "user_confirmed_investigation": True,
+                    "preliminary_urgency": {
+                        "level": "HIGH",
+                        "is_ongoing": True,
+                        "is_incident_report": True,
+                        "impact_assessment": "Users seeing connection drops",
+                    },
                 },
             }
         )
@@ -1167,8 +1203,13 @@ class TestInquiryConfirmation:
         result = await engine.process_turn(case, "yes, proceed")
 
         updated_case = result["case_updated"]
+        # Gate 1 closed via the LLM path (problem_statement_confirmed=True),
+        # path_selection computed, Gate 2 pending. INV-19 holds — case stays
+        # in INQUIRY until the user clicks the Gate 2 suggestion.
         assert updated_case.inquiry.problem_statement_confirmed is True
-        assert updated_case.status == CaseStatus.INVESTIGATING
+        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.path_selection is not None
+        assert updated_case.path_selection.user_confirmed is False
 
 
 # =============================================================================

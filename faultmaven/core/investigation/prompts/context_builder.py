@@ -1788,6 +1788,53 @@ def build_investigation_context(
                     )
             inquiry_state_str += "</inquiry_state>"
 
+    # Gate 2 path-selection state — surfaces an unconfirmed path
+    # recommendation when Gate 1 has passed but the user has not yet
+    # committed to mitigation-first or root-cause. The engine
+    # deterministically attaches the canonical COOPERATIVE path-selection
+    # suggestion pair when this state is active (see
+    # _path_selection_suggestions in milestone_engine), so the prompt does
+    # not prescribe exact suggestion labels — it instructs the LLM to
+    # surface the recommendation conversationally and wait for the user's
+    # click. See INV-19 (Gate 2 must pass before INQUIRY -> INVESTIGATING).
+    if (
+        case.status == CaseStatus.INQUIRY
+        and case.inquiry
+        and case.inquiry.problem_statement_confirmed
+        and case.path_selection is not None
+        and not case.path_selection.user_confirmed
+    ):
+        ps = case.path_selection
+        recommended_label = (
+            "mitigation-first"
+            if ps.path.value == "mitigation_first"
+            else "root-cause analysis"
+        )
+        alternate_label = (
+            "mitigation-first"
+            if (ps.alternate_path and ps.alternate_path.value == "mitigation_first")
+            else "root-cause analysis"
+        )
+        inquiry_state_str += (
+            "\n<path_selection_state>\n"
+            f"RECOMMENDED_PATH: {ps.path.value}\n"
+            f"AUTO_SELECTED: {ps.auto_selected}\n"
+            f"RATIONALE: {ps.rationale}\n"
+            f"ALTERNATE_PATH: {ps.alternate_path.value if ps.alternate_path else 'none'}\n"
+            "USER_CONFIRMED: False\n"
+            "INSTRUCTION: Gate 1 (problem statement) has passed. Surface the "
+            "investigation-path recommendation conversationally so the user "
+            "can confirm or override before investigation begins. State the "
+            f"recommendation ({recommended_label}) with a short rationale, "
+            f"and mention the alternate ({alternate_label}). Do NOT ask the "
+            "user to type their choice — the engine deterministically "
+            "attaches two COOPERATIVE suggestion buttons. Do NOT set "
+            "user_confirmed_investigation=True again — it is already True. "
+            "The case will not transition to INVESTIGATING until the user "
+            "clicks one of the path-selection suggestions.\n"
+            "</path_selection_state>"
+        )
+
     # Phase 4c — entity highlights block. Pre-fetched by the milestone
     # engine from the Phase 4 ``case_entities`` registry. Empty string
     # when the flag is off, the fetch failed, or the case has no
