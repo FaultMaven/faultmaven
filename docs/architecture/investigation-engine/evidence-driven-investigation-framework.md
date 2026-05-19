@@ -22,7 +22,7 @@ This document defines the investigation architecture for FaultMaven's investigat
 | **Stage model** | 2 core stages (DIAGNOSIS, TREATMENT) with optional MITIGATION detour |
 | **Stage transitions** | Inference-based (user compliance with proposed action implies acceptance) |
 | **Progress tracking** | 7 investigation milestones: 4 gate milestones (drive transitions) + 3 progress indicators (LLM context, non-driving) |
-| **Evidence types** | 6 categories: symptom, causal, mitigation, solution, contextual, rejected |
+| **Evidence types** | 4 claim-attached categories: symptom, causal, mitigation, solution. Contextual material lives on `uploaded_files`; rejection is the absence of an Evidence row. |
 | **Hypothesis constraint** | Required before causal_evidence classification |
 | **Mitigation** | Distinct stage with own prompt, evidence type, and iterative verification |
 | **Treatment failure** | Extended diagnosis within TREATMENT (new evidence required, not reprocessing) |
@@ -200,7 +200,7 @@ preprocessing artifacts and is visible to the agent via the
 structural index. No Evidence row is created until a slice is
 extracted in support of a specific claim.
 
-**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is a **prompt-enforced audit invariant** (no Python validator rejects orphan `causal_evidence`); the canonical specification and rationale live in [Prompt Templates §HYPOTHESIS-EVIDENCE ORDERING](./prompt-templates.md#investigating-template).
+**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is a **prompt-enforced audit invariant** (no Python validator rejects orphan `causal_evidence`) — pinned as [INV-17 in the Invariant Enforcement Matrix](./investigation-lifecycle-logic.md#131-invariant-enforcement-matrix). The runtime prompt-side enforcement lives in `DIAGNOSIS_INSTRUCTIONS` (`templates.py:993`, concatenated into the INVESTIGATION_BASE pipeline).
 
 **Exit conditions** (inference-based — action over words):
 
@@ -658,7 +658,7 @@ INQUIRY → DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT → RESOLVED
 
 ### 7.3 Path Selection
 
-Path selection is system-determined from the `temporal_state × urgency_level` matrix. The three paths (`MITIGATION_FIRST`, `ROOT_CAUSE`, `USER_CHOICE`) determine whether the agent offers mitigation during DIAGNOSIS; actual entry into MITIGATION is inferred from user compliance with the proposed temp fix.
+Path selection is system-determined from the `temporal_state × urgency_level` matrix. `InvestigationPath` is binary (`MITIGATION_FIRST`, `ROOT_CAUSE`) — the path determines whether the agent offers mitigation during DIAGNOSIS; actual entry into MITIGATION is inferred from user compliance with the proposed temp fix. The user accepts or overrides the recommendation via Gate 2 before the path commits.
 
 See **[Investigation Lifecycle Logic §2.1 Path Selection Matrix](./investigation-lifecycle-logic.md#21-path-selection-matrix)** for the canonical matrix (all cells, per-cell rationale, and path semantics).
 
@@ -970,10 +970,12 @@ class EvidenceCategory(str, Enum):
 class InvestigationPath(str, Enum):
     MITIGATION_FIRST = "mitigation_first"
     ROOT_CAUSE = "root_cause"
-    USER_CHOICE = "user_choice"
 
-# Semantics simplified: path determines whether the agent offers mitigation
-# during DIAGNOSIS, not which milestones are available. Path is advisory, not structural.
+# Semantics: path determines whether the agent offers mitigation during
+# DIAGNOSIS, not which milestones are available. Path is advisory, not
+# structural. Gate 2 (a COOPERATIVE suggestion pair shown in INQUIRY) is
+# the user-choice surface — the router always returns one of the two
+# values above with an `alternate_path` the user can switch to via Gate 2.
 ```
 
 ### 10.5 ProposedAction (New)
@@ -1213,10 +1215,10 @@ new.action_attempts = []
 | Proposal tracking | None (free text only) | ProposedAction with action_type, expected_command (Section 10.5) |
 | Action attempt tracking | None | ActionAttempt list covering both solution and mitigation cycles (Section 10.6) |
 | TREATMENT scope | Verify fix only | Verify fix + extended diagnosis when fix fails |
-| Evidence categories | 4 types | 5 types |
+| Evidence categories | 4 types | 4 claim-attached types: symptom, causal, mitigation, solution (contextual material moves to `uploaded_files`; rejection is the absence of an Evidence row) |
 | Prompt stage instructions | 4 templates | 3 templates (TREATMENT includes extended diagnosis) |
 | Mitigation | Path modifier (one-shot) | Distinct stage (iterative until verified) |
-| Path selection | USER_CHOICE in matrix | USER_CHOICE restored for ambiguous urgency/temporal cells |
+| Path selection | USER_CHOICE in matrix | Binary `InvestigationPath` (MITIGATION_FIRST / ROOT_CAUSE); Gate 2 is the user-choice surface, not a separate path |
 | Milestone validation | Consistency check (blocking) | Gate milestones inferred from behavior; progress milestones set by LLM (advisory, non-blocking) |
 | Compliance detection | N/A (explicit confirmation) | Post-LLM, default no-transition when ambiguous (Section 15, decisions 5-6) |
 | "Jump ahead" | Allowed and encouraged | Removed (no sub-stages to jump between) |

@@ -1343,11 +1343,16 @@ def apply_path_guidance(case: Case):
     """
     Path guides agent behavior during DIAGNOSIS.
 
+    InvestigationPath is binary — MITIGATION_FIRST or ROOT_CAUSE. There is
+    no USER_CHOICE path; the router always returns one of the two, and the
+    user accepts or overrides the recommendation via Gate 2 (a COOPERATIVE
+    suggestion pair) before INQUIRY → INVESTIGATING. By the time this
+    function runs, path_selection.user_confirmed is True.
+
     For MITIGATION_FIRST: Agent proactively offers temp fix during DIAGNOSIS.
         Actual entry to MITIGATION stage is inferred from user compliance.
     For ROOT_CAUSE: Agent proceeds with root cause analysis. Mitigation not
         offered unless user requests it.
-    For USER_CHOICE: Agent presents both options and lets user decide.
     """
     if case.path_selection.path == InvestigationPath.MITIGATION_FIRST:
         # Agent prompt includes urgency context and mitigation guidance.
@@ -1358,10 +1363,6 @@ def apply_path_guidance(case: Case):
     elif case.path_selection.path == InvestigationPath.ROOT_CAUSE:
         # Agent proceeds directly to root cause analysis in DIAGNOSIS.
         # No mitigation offered unless user explicitly requests it.
-        pass
-    elif case.path_selection.path == InvestigationPath.USER_CHOICE:
-        # Agent presents both options: "Should I focus on a quick fix first,
-        # or go straight to finding the root cause?"
         pass
 ```
 
@@ -1376,55 +1377,80 @@ Turn N (INVESTIGATING/DIAGNOSIS): Agent proposes action → user complies → in
 
 ### 2.1 Path Selection Matrix
 
-Based on **temporal_state × urgency_level**:
+Based on **temporal_state × urgency_level**. `InvestigationPath` is binary (`MITIGATION_FIRST`, `ROOT_CAUSE`); there is no `USER_CHOICE` path. The user accepts or overrides the recommendation via Gate 2 before the path commits — Gate 2 is the user-choice surface, not a separate path.
 
-| Temporal State | Urgency | Path | Rationale |
+| Temporal State | Urgency | Recommended Path | Rationale |
 |----------------|---------|------|-----------|
-| **Ongoing** | CRITICAL | MITIGATION_FIRST (auto) | Production broken NOW - stop impact, RCA later |
-| **Ongoing** | HIGH | MITIGATION_FIRST (auto) | Significant active impact - stop bleeding first |
-| **Ongoing** | MEDIUM | USER_CHOICE | User decides: quick mitigation or thorough RCA |
-| **Ongoing** | LOW | USER_CHOICE | Minor issue, user decides approach |
-| **Historical** | CRITICAL | USER_CHOICE | Clarify why critical if past issue — user knows whether speed or thoroughness matters more |
-| **Historical** | HIGH | USER_CHOICE | Past issue with high urgency — user decides mitigation-first or RCA |
-| **Historical** | MEDIUM | ROOT_CAUSE (auto) | Standard post-mortem - find root cause |
-| **Historical** | LOW | ROOT_CAUSE (auto) | Thorough investigation - permanent solution |
+| **Ongoing** | CRITICAL | MITIGATION_FIRST (auto) | Production broken NOW — stop impact, RCA later |
+| **Ongoing** | HIGH | MITIGATION_FIRST (auto) | Significant active impact — stop bleeding first |
+| **Ongoing** | MEDIUM | ROOT_CAUSE (auto) | Active but not urgent — afford a thorough investigation |
+| **Ongoing** | LOW | ROOT_CAUSE (auto) | Active but not urgent — afford a thorough investigation |
+| **Historical** | CRITICAL | ROOT_CAUSE (auto) | Past issue — immediate impact has subsided, focus on permanent fix |
+| **Historical** | HIGH | ROOT_CAUSE (auto) | Past issue — immediate impact has subsided, focus on permanent fix |
+| **Historical** | MEDIUM | ROOT_CAUSE (auto) | Standard post-mortem — find root cause |
+| **Historical** | LOW | ROOT_CAUSE (auto) | Thorough investigation — permanent solution |
+| missing signal / UNKNOWN urgency | — | ROOT_CAUSE (default, `auto_selected=False`) | Safe default for non-emergency; user overrides via Gate 2 if active impact isn't captured in the data |
 
 ### 2.2 Path Selection Logic
 
+Implemented in [`faultmaven/modules/case/domain/services/investigation_router.py`](../../../faultmaven/modules/case/domain/services/investigation_router.py). The router returns a `PathSelection` recommendation; the user confirms or overrides via Gate 2 before INQUIRY → INVESTIGATING.
+
 ```python
-def determine_investigation_path(
-    problem_verification: ProblemVerification
-) -> PathSelection:
-    """Determine investigation path after verification complete"""
+def determine_investigation_path(verification: ProblemVerification) -> PathSelection:
+    """Determine investigation path recommendation from the Urgency × Temporal matrix.
 
-    temporal = problem_verification.temporal_state
-    urgency = problem_verification.urgency_level
+    Matrix outcomes (all auto_selected=True unless noted):
+    - ONGOING + CRITICAL/HIGH   -> MITIGATION_FIRST
+    - ONGOING + MEDIUM/LOW      -> ROOT_CAUSE
+    - HISTORICAL + any urgency  -> ROOT_CAUSE
+    - missing/UNKNOWN signals   -> ROOT_CAUSE (auto_selected=False — safe default)
 
-    # AUTO: Ongoing + High Urgency → MITIGATION_FIRST (then RCA)
+    The router never returns USER_CHOICE — Gate 2 is the user-choice surface.
+    """
+    temporal = verification.temporal_state
+    urgency = verification.urgency_level
+
+    # Ambiguous: missing temporal or unknown urgency → ROOT_CAUSE (safe default),
+    # user overrides via Gate 2 if they have context the data doesn't capture.
+    if not temporal or urgency == UrgencyLevel.UNKNOWN:
+        return PathSelection(
+            path=InvestigationPath.ROOT_CAUSE,
+            auto_selected=False,
+            rationale="Urgency or temporal signal missing — defaulting to root-cause "
+                      "analysis. Switch to mitigation-first if you have active impact "
+                      "the data doesn't capture.",
+            alternate_path=InvestigationPath.MITIGATION_FIRST,
+        )
+
+    # AUTO: Ongoing + High/Critical → MITIGATION_FIRST (stop the bleeding first)
     if temporal == TemporalState.ONGOING and urgency in [UrgencyLevel.CRITICAL, UrgencyLevel.HIGH]:
         return PathSelection(
             path=InvestigationPath.MITIGATION_FIRST,
             auto_selected=True,
-            rationale=f"Ongoing {urgency.value} issue requires immediate mitigation, RCA after impact stopped",
-            alternate_path=InvestigationPath.ROOT_CAUSE
+            rationale=f"Ongoing {urgency.value} impact — recommend mitigating first, "
+                      "RCA after stabilization.",
+            alternate_path=InvestigationPath.ROOT_CAUSE,
         )
 
-    # AUTO: Historical + Low/Medium/High Urgency → ROOT_CAUSE (permanent solution)
-    if temporal == TemporalState.HISTORICAL and urgency in [UrgencyLevel.LOW, UrgencyLevel.MEDIUM, UrgencyLevel.HIGH]:
+    # AUTO: Ongoing + Low/Medium → ROOT_CAUSE (active but not urgent)
+    if temporal == TemporalState.ONGOING and urgency in [UrgencyLevel.LOW, UrgencyLevel.MEDIUM]:
         return PathSelection(
             path=InvestigationPath.ROOT_CAUSE,
             auto_selected=True,
-            rationale=f"Historical {urgency.value} issue allows thorough investigation with permanent solution",
-            alternate_path=InvestigationPath.MITIGATION_FIRST
+            rationale=f"Ongoing but {urgency.value} urgency — recommend root-cause "
+                      "analysis for a permanent fix.",
+            alternate_path=InvestigationPath.MITIGATION_FIRST,
         )
 
-    # USER CHOICE: Ambiguous cases - let user decide between paths
-    return PathSelection(
-        path=InvestigationPath.USER_CHOICE,
-        auto_selected=False,
-        rationale=f"Ambiguous case ({temporal.value} + {urgency.value}): User chooses (a) mitigation first or (b) RCA",
-        alternate_path=None
-    )
+    # AUTO: Historical + any urgency → ROOT_CAUSE (immediate impact subsided)
+    if temporal == TemporalState.HISTORICAL:
+        return PathSelection(
+            path=InvestigationPath.ROOT_CAUSE,
+            auto_selected=True,
+            rationale=f"Historical {urgency.value} issue — recommend root-cause analysis "
+                      "since immediate impact has subsided.",
+            alternate_path=InvestigationPath.MITIGATION_FIRST,
+        )
 ```
 
 ### 2.3 Path Impact on Investigation
@@ -1499,7 +1525,7 @@ Direct root cause analysis — no mitigation detour.
 | Mitigation | Agent proactively offers temp fix in DIAGNOSIS | Not offered unless user requests |
 | Stage transitions | Inference-based (user compliance) | Inference-based (user compliance) |
 | Pressure | Reduced early via MITIGATION detour | Full pressure until resolution |
-| Use case | ONGOING + HIGH/CRITICAL | HISTORICAL + LOW/MEDIUM/HIGH |
+| Use case | ONGOING + HIGH/CRITICAL | ONGOING + LOW/MEDIUM; HISTORICAL + any urgency; missing/UNKNOWN signals (safe default) |
 
 ### 2.4 Diagnostic Feasibility (Advisory Signal)
 

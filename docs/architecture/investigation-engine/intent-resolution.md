@@ -280,33 +280,7 @@ if (
 
 ### 6.4 Hypothesis Action Handler
 
-In `milestone_engine.py`, after the `confirmation` handler (line ~1693) and before pattern matching (line ~1703):
-
-```python
-elif intent_type == "hypothesis_action" and intent_data:
-    hypothesis_id = intent_data.get("hypothesis_id")
-    action = intent_data.get("action")
-
-    if hypothesis_id and action:
-        hypothesis = case.hypotheses.get(hypothesis_id)
-        if hypothesis:
-            if action == "refute":
-                self.hypothesis_manager.refute_hypothesis(
-                    hypothesis, case.current_turn, [], user_message or "User refuted"
-                )
-            elif action == "validate":
-                hypothesis.status = HypothesisStatus.VALIDATED
-                hypothesis.likelihood = 1.0
-                hypothesis.last_updated_turn = case.current_turn
-            elif action == "retire":
-                hypothesis.status = HypothesisStatus.RETIRED
-                hypothesis.retirement_reason = user_message or "User retired"
-                hypothesis.last_updated_turn = case.current_turn
-
-            metadata["hypothesis_action_applied"] = True
-
-    # Fall through to LLM processing for acknowledgment
-```
+The handler lives at [`milestone_engine.py:2520`](../../../faultmaven/core/investigation/milestone_engine.py) (`elif intent_type == "hypothesis_action" and intent_data:`). See [§5.1 Dispatch Chain](#51-dispatch-chain) for the four-layer dispatch path and [§5.2 State Transitions Applied by the Engine](#52-state-transitions-applied-by-the-engine) for the per-action state changes (`refute` → `hypothesis_manager.refute_hypothesis(...)`; `validate` → direct assignment with `likelihood = 1.0`; `retire` → direct assignment with `retirement_reason`). After the state change the handler falls through to normal LLM processing so the agent can acknowledge the action in its reply.
 
 ---
 
@@ -393,19 +367,3 @@ After a case reaches terminal state, the agent offers appropriate actions:
 | CLOSED (no summary generated — failed substance check) | No suggestions |
 
 Report viewing is via Dashboard link (in `ResolutionActionsCard`). Runbook generation is evaluated on click via `evaluate_runbook_suggestion` which checks readiness + deduplication. Only RESOLVED cases are eligible for runbook generation.
-
----
-
-## Files Changed
-
-| File | Change |
-|---|---|
-| `faultmaven/core/investigation/intent_resolver.py` | **New** — bounded choice classifier |
-| `faultmaven/modules/case/domain/models.py` | Add `last_suggestions` field to `Case` |
-| `faultmaven/modules/agent/domain/services/investigation_service.py` | Wire intent resolver; store last_suggestions after each turn |
-| `faultmaven/core/investigation/milestone_engine.py` | Add `hypothesis_action` handler; fix resolution readiness gate; deterministic pending_transition handling; post-terminal suggestions |
-| `faultmaven/core/investigation/prompts/context_builder.py` | Add `label` attribute to evidence XML for user-facing references |
-| `faultmaven/core/investigation/prompts/templates.py` | Refine O/A/C as internal scaffold; evidence label referencing rules |
-| `faultmaven/modules/report/domain/services/report_generation_service.py` | Fix hypothesis dict iteration, field names, enum title leakage in reports |
-| `faultmaven-copilot/src/shared/ui/components/ChatInterface.tsx` | Allow text Q&A on terminal cases |
-| `faultmaven-copilot/src/shared/ui/components/UnifiedInputBar.tsx` | Add `disableAttachments` prop |
