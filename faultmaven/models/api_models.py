@@ -14,7 +14,12 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStage
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationPath,
+    InvestigationStage,
+)
 from faultmaven.modules.case.domain.services.case_action_manager import (
     CaseActionManager,
 )
@@ -327,6 +332,10 @@ class IntentType(str, Enum):
     EVIDENCE_REQUEST = "evidence_request"  # Request specific evidence
     CONFIRMATION = "confirmation"  # Yes/No confirmation response
     GREETING = "greeting"  # Heuristic greeting response
+    PATH_SELECTION = (
+        "path_selection"  # Gate 2 — user commits to mitigation-first or root-cause
+    )
+    POST_MITIGATION_CHOICE = "post_mitigation_choice"  # Gate 3 — continue RCA after mitigation (closure path uses STATUS_TRANSITION)
 
 
 class QueryIntent(BaseModel):
@@ -367,6 +376,17 @@ class QueryIntent(BaseModel):
     confirmation_value: Optional[bool] = Field(
         default=None, description="For confirmation: yes/no value"
     )
+    investigation_path: Optional[InvestigationPath] = Field(
+        default=None,
+        description="For path_selection (Gate 2): the path the user chose "
+        "(mitigation_first or root_cause).",
+    )
+    continue_to_rca: Optional[bool] = Field(
+        default=None,
+        description="For post_mitigation_choice (Gate 3): True if the user "
+        "wants to continue with RCA after mitigation. The 'close as "
+        "mitigation sufficient' branch uses STATUS_TRANSITION instead.",
+    )
 
     @model_validator(mode="after")
     def validate_intent_fields(self):
@@ -385,6 +405,16 @@ class QueryIntent(BaseModel):
         elif self.type == IntentType.CONFIRMATION:
             if self.confirmation_value is None:
                 raise ValueError("confirmation_value required for confirmation intent")
+        elif self.type == IntentType.PATH_SELECTION:
+            if self.investigation_path is None:
+                raise ValueError(
+                    "investigation_path required for path_selection intent"
+                )
+        elif self.type == IntentType.POST_MITIGATION_CHOICE:
+            if self.continue_to_rca is None:
+                raise ValueError(
+                    "continue_to_rca required for post_mitigation_choice intent"
+                )
         return self
 
 

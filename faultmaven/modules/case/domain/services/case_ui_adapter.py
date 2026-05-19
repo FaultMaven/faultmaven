@@ -97,7 +97,6 @@ def _get_investigation_strategy_data(case: Case) -> Optional[InvestigationStrate
     approach_map = {
         InvestigationPath.MITIGATION_FIRST: "Mitigation-first - quick fix now, comprehensive RCA after service restored",
         InvestigationPath.ROOT_CAUSE: "Root cause analysis - thorough investigation before permanent solution",
-        InvestigationPath.USER_CHOICE: "User choice - awaiting path selection based on requirements",
     }
 
     # Get path from path_selection if available, otherwise use default
