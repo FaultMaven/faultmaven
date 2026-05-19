@@ -953,6 +953,25 @@ def _score_evidence_for_tier_a(
     if time_window is not None and _coverage_overlaps_window(ev, time_window):
         score += 4
 
+    # Slice 3 — pre-mitigation evidence up-weight. After Gate 3 is open
+    # (mitigation_verified happened on a mitigation-first case), evidence
+    # collected before the mitigation boundary is the RCA-relevant window
+    # because telemetry collected post-mitigation typically shows a
+    # stabilized system that no longer exhibits the root cause's signature.
+    # +5 weight matches/exceeds the time-window bonus so pre-mitigation
+    # diagnostic evidence outranks post-mitigation noise during RCA. Only
+    # fires when path_selection.mitigation_completed_at_turn is set and
+    # the current turn is past that boundary — outside the post-mitigation
+    # window this is a no-op. See INV-21 in investigation-lifecycle-logic.md.
+    ps = case.path_selection
+    if (
+        ps is not None
+        and ps.mitigation_completed_at_turn is not None
+        and case.current_turn > ps.mitigation_completed_at_turn
+        and ev.collected_at_turn <= ps.mitigation_completed_at_turn
+    ):
+        score += 5
+
     return score
 
 
