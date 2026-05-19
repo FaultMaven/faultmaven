@@ -2,7 +2,7 @@
 
 **Document Type:** Component Specification
 **Version:** 1.0
-**Status:** Design — pending implementation alongside v3 runbook template rollout
+**Status:** Phase 1 shipped (evaluator module, predicates, schemas, KB-tool integration). Phase 2 pending: per-turn wiring into the milestone engine.
 
 ## Purpose
 
@@ -151,16 +151,16 @@ Ingestion-time transforms in `kb_toolkit/core/chunker.py`:
 
 ## 7. Implementation Status
 
-Not yet implemented. To land alongside v3 runbook template rollout in a single PR.
+Phase 1 is shipped: the evaluator module, predicate set, response schemas, and KB-tool wiring all exist on `main`. Phase 2 — per-turn integration into the milestone engine — is still pending; until it lands, `IndicatorEvaluator` is callable but the investigation loop does not yet invoke it. Ingestion-side pieces live in the sibling [`faultmaven-kb-toolkit`](https://github.com/FaultMaven/faultmaven-kb-toolkit) repo and are tracked there.
 
-| Component | Location |
-|---|---|
-| Evaluator module | `faultmaven/core/investigation/indicator_evaluator.py` (new) |
-| Predicate implementations (`absent`, `contains`, `exit_code`, `threshold`) | `faultmaven/core/investigation/indicator_evaluator.py` |
-| `CauseChunk` schema on `AnswerFromKB` response | `faultmaven/modules/agent/tools/kb_qa.py` (extend) |
-| `CauseMatchResult` schema | `faultmaven/core/investigation/schemas.py` (extend) |
-| Comment-stripping at ingestion | `kb_toolkit/core/chunker.py` |
-| Per-Cause metadata attachment | `kb_toolkit/core/ingester.py` |
-| Per-turn integration into milestone engine | `faultmaven/core/investigation/milestone_engine.py` |
+| Component | Location | Status |
+|---|---|---|
+| Evaluator module | `faultmaven/core/investigation/indicator_evaluator.py` | Shipped |
+| Predicate implementations (`absent`, `contains`, `exit_code`, `threshold`) | `faultmaven/core/investigation/indicator_evaluator.py` | Shipped |
+| `CauseChunk` / `IndicatorResult` / `CauseMatch` / `CauseMatchResult` schemas | `faultmaven/core/investigation/cause_schemas.py` | Shipped |
+| `CauseChunk` on KB tool response | `faultmaven/modules/agent/tools/kb_qa.py` | Shipped |
+| Comment-stripping at ingestion | `kb_toolkit/core/chunker.py` (sibling repo) | Tracked in kb-toolkit |
+| Per-Cause metadata attachment | `kb_toolkit/core/ingester.py` (sibling repo) | Tracked in kb-toolkit |
+| Per-turn integration into milestone engine | `faultmaven/core/investigation/milestone_engine.py` | Pending |
 
 See [investigation-lifecycle-logic.md §1.4](./investigation-lifecycle-logic.md#14-automatic-milestone-tracking-and-stage-transitions) for where Indicator resolution fires within the per-turn flow.
