@@ -2842,6 +2842,52 @@ class PathSelection(BaseModel):
     )
 
     # ============================================================
+    # User-Confirmation Gates (Gate 2: investigation path)
+    # ============================================================
+    # The router populates PathSelection deterministically from the Urgency x
+    # Temporal matrix, but the path is not committed until the user explicitly
+    # confirms it. user_confirmed=False means Gate 2 is still open — the case
+    # cannot transition INQUIRY -> INVESTIGATING until the user accepts (or
+    # overrides to) the proposed path. See INV-19.
+    user_confirmed: bool = Field(
+        default=False,
+        description="User has confirmed the selected path (Gate 2). "
+        "Required before INQUIRY -> INVESTIGATING transition.",
+    )
+
+    user_confirmed_at_turn: Optional[int] = Field(
+        default=None,
+        description="Turn number when the user confirmed the path.",
+    )
+
+    # ============================================================
+    # Post-Mitigation Continuation (Gate 3: RCA-or-close after mitigation)
+    # ============================================================
+    # Meaningful only when path == MITIGATION_FIRST. Once mitigation_verified
+    # becomes True, the engine sets mitigation_completed_at_turn and surfaces
+    # Gate 3: the user picks "continue with RCA" (sets
+    # rca_after_mitigation_confirmed=True) or closes the case with
+    # closure_reason=mitigation_sufficient. RCA-side milestones cannot
+    # progress on a mitigation-first case until Gate 3 passes. See INV-21.
+    rca_after_mitigation_confirmed: bool = Field(
+        default=False,
+        description="User has confirmed continuing to RCA after mitigation "
+        "verified (Gate 3). Mitigation-first path only.",
+    )
+
+    rca_after_mitigation_confirmed_at_turn: Optional[int] = Field(
+        default=None,
+        description="Turn number when the user confirmed post-mitigation RCA.",
+    )
+
+    mitigation_completed_at_turn: Optional[int] = Field(
+        default=None,
+        description="Turn at which mitigation_verified first became True. "
+        "Boundary for the pre-mitigation evidence window used by the "
+        "context builder on post-mitigation RCA runs.",
+    )
+
+    # ============================================================
     # Decision Inputs
     # ============================================================
     temporal_state: Optional[TemporalState] = Field(
@@ -2856,7 +2902,9 @@ class PathSelection(BaseModel):
     # Configuration
     # ============================================================
     class Config:
-        frozen = True  # Immutable once created
+        frozen = (
+            True  # Immutable once created — use model_copy(update=...) to advance gates
+        )
 
 
 # ============================================================
