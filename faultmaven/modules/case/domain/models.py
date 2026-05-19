@@ -690,10 +690,13 @@ class UrgencyLevel(str, Enum):
     """
     Urgency classification for path routing.
 
-    Used with TemporalState to determine investigation path:
-    - ONGOING + HIGH/CRITICAL -> MITIGATION
-    - HISTORICAL + LOW/MEDIUM -> ROOT_CAUSE
-    - Other combinations -> USER_CHOICE
+    Used with TemporalState to recommend an investigation path:
+    - ONGOING + HIGH/CRITICAL -> MITIGATION_FIRST
+    - All other matched combinations -> ROOT_CAUSE
+    - Missing temporal or UNKNOWN urgency -> ROOT_CAUSE (with auto_selected=False)
+
+    The recommendation is surfaced through Gate 2 for user confirmation
+    before INQUIRY -> INVESTIGATING.
     """
 
     CRITICAL = "critical"
@@ -2700,71 +2703,16 @@ class TurnProgress(BaseModel):
 # ============================================================
 
 
-def determine_investigation_path(
-    temporal_state: "TemporalState", urgency_level: "UrgencyLevel"
-) -> "InvestigationPath":
-    """
-    Determine investigation path from temporal state and urgency.
-
-    Path Selection Matrix:
-    +--------------+-----------------------+------------------------+
-    | Temporal     | Urgency               | Path                   |
-    +--------------+-----------------------+------------------------+
-    | ONGOING      | CRITICAL/HIGH         | MITIGATION_FIRST       |
-    | ONGOING      | MEDIUM                | USER_CHOICE            |
-    | ONGOING      | LOW                   | ROOT_CAUSE             |
-    | HISTORICAL   | any                   | ROOT_CAUSE             |
-    +--------------+-----------------------+------------------------+
-
-    Logic:
-    - ONGOING + HIGH/CRITICAL urgency -> MITIGATION_FIRST
-      * Problem is happening NOW, users affected
-      * Need quick mitigation, then return for RCA
-
-    - HISTORICAL + any urgency -> ROOT_CAUSE
-      * Problem happened before (not ongoing)
-      * No immediate need for temporary fix, do thorough RCA
-
-    - Ambiguous cases -> USER_CHOICE
-      * ONGOING + MEDIUM: Could go either way
-
-    Args:
-        temporal_state: Whether problem is ONGOING or HISTORICAL
-        urgency_level: Urgency classification (CRITICAL/HIGH/MEDIUM/LOW)
-
-    Returns:
-        Investigation path (MITIGATION_FIRST, ROOT_CAUSE, or USER_CHOICE)
-    """
-    # ONGOING problem
-    if temporal_state == TemporalState.ONGOING:
-        if urgency_level in [UrgencyLevel.CRITICAL, UrgencyLevel.HIGH]:
-            # Happening now + urgent -> Quick mitigation first
-            return InvestigationPath.MITIGATION_FIRST
-
-        if urgency_level == UrgencyLevel.MEDIUM:
-            # Happening now but medium urgency -> Let user decide
-            return InvestigationPath.USER_CHOICE
-
-        else:  # LOW or UNKNOWN
-            # Happening now but low urgency -> Can do thorough RCA
-            return InvestigationPath.ROOT_CAUSE
-
-    # HISTORICAL problem — always ROOT_CAUSE regardless of urgency
-    else:  # TemporalState.HISTORICAL
-        return InvestigationPath.ROOT_CAUSE
-
-
 class InvestigationPath(str, Enum):
     """
     Investigation routing strategy (2-stage model with mitigation detour).
 
-    IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
-    LLM provides inputs (temporal_state, urgency_level) during DIAGNOSIS.
-    System calls determine_investigation_path() to select path deterministically.
-
-    Two paths through the 2-stage model:
-    - MITIGATION_FIRST: DIAGNOSIS → MITIGATION (detour) → DIAGNOSIS → TREATMENT
-    - ROOT_CAUSE: DIAGNOSIS → TREATMENT
+    Path is SYSTEM-RECOMMENDED from the (temporal_state x urgency_level) matrix
+    and USER-CONFIRMED via Gate 2. The LLM provides inputs (temporal_state,
+    urgency_level) during inquiry; the router in investigation_router.py
+    produces a deterministic recommendation; the user accepts or overrides
+    via a COOPERATIVE suggestion (Gate 2) before INQUIRY -> INVESTIGATING.
+    LLM does NOT choose the path directly.
     """
 
     MITIGATION_FIRST = "mitigation_first"
@@ -2777,7 +2725,7 @@ class InvestigationPath(str, Enum):
     - DIAGNOSIS: Return for root cause analysis, propose permanent fix
     - TREATMENT: Apply and verify permanent fix
 
-    Use When: ONGOING + HIGH/CRITICAL urgency
+    Recommended When: ONGOING + HIGH/CRITICAL urgency
     - Problem is happening NOW
     - User needs immediate restoration
     - But also wants to prevent recurrence
@@ -2791,17 +2739,8 @@ class InvestigationPath(str, Enum):
     - DIAGNOSIS: Verify symptoms, diagnose root cause, propose fix
     - TREATMENT: Apply and verify permanent fix
 
-    Use When: HISTORICAL + any urgency, or ONGOING + LOW/MEDIUM urgency
-    - Problem happened before, or urgency allows thorough analysis
-    - No immediate need for a temporary fix
-    """
-
-    USER_CHOICE = "user_choice"
-    """
-    Ambiguous case — let user decide.
-
-    Use When: Ambiguous temporal_state x urgency combinations
-    - ONGOING + MEDIUM urgency (might want quick fix or proper fix)
+    Recommended When: HISTORICAL + any urgency, or ONGOING + LOW/MEDIUM urgency.
+    Also the safe default for ambiguous inputs (missing temporal, UNKNOWN urgency).
     """
 
 

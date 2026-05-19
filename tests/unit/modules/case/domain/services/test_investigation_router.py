@@ -92,8 +92,12 @@ class TestRouterAmbiguousFallback:
         assert sel.auto_selected is False
         assert sel.alternate_path == InvestigationPath.MITIGATION_FIRST
 
-    def test_router_never_returns_user_choice(self):
-        """Regression guard: every matrix cell + the missing-signal fallback."""
+    def test_router_only_returns_binary_paths(self):
+        """Regression guard: every matrix cell + the missing-signal fallback
+        produces only the two real paths. The InvestigationPath enum is binary
+        (MITIGATION_FIRST | ROOT_CAUSE) since the slice 1 cleanup removed the
+        old USER_CHOICE third value — this test pins that property in place."""
+        valid_paths = {InvestigationPath.MITIGATION_FIRST, InvestigationPath.ROOT_CAUSE}
         for temporal in [None, TemporalState.ONGOING, TemporalState.HISTORICAL]:
             for urgency in [
                 UrgencyLevel.UNKNOWN,
@@ -104,8 +108,15 @@ class TestRouterAmbiguousFallback:
             ]:
                 sel = determine_investigation_path(_verification(temporal, urgency))
                 assert (
-                    sel.path != InvestigationPath.USER_CHOICE
-                ), f"Router returned USER_CHOICE for temporal={temporal}, urgency={urgency}"
+                    sel.path in valid_paths
+                ), f"Router returned unexpected path {sel.path} for temporal={temporal}, urgency={urgency}"
+
+    def test_investigation_path_enum_is_binary(self):
+        """The enum has exactly two values — no third 'ambiguous' marker."""
+        assert {p.value for p in InvestigationPath} == {
+            "mitigation_first",
+            "root_cause",
+        }
 
 
 class TestPathSelectionGateDefaults:

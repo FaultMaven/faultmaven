@@ -5368,8 +5368,9 @@ class MilestoneEngine:
                         pu.level.value.upper()
                     )  # Convert urgency level to uppercase for severity field
             # Bug fix: Transfer temporal_state from preliminary urgency
-            # Without this, path selection receives Temporal:None and falls
-            # back to USER_CHOICE even when the urgency signals are clear.
+            # Without this, path selection receives Temporal:None and the
+            # router falls back to the ROOT_CAUSE default (auto_selected=False)
+            # rather than matching a definitive matrix row.
             if pu.is_ongoing:
                 verification_kwargs["temporal_state"] = TemporalState.ONGOING
             else:
