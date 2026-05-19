@@ -591,6 +591,143 @@ def _investigation_confirmation_suggestions() -> list:
     ]
 
 
+def _path_selection_suggestions(case: "Case") -> list:
+    """Generate COOPERATIVE follow-up suggestions for Gate 2 (path confirmation).
+
+    Surfaces the router's recommended path alongside its alternate, both as
+    PATH_SELECTION intents. The recommended option appears first and is
+    decorated in its body text so the frontend can emphasize it; both options
+    commit the path on click — the user can either accept the recommendation
+    or override to the alternate.
+
+    The "ask the user" semantic lives entirely in
+    ``path_selection.user_confirmed=False`` — no third enum value, no
+    separate ambiguity flag. This pair of suggestions is the user-facing
+    surface that resolves that pending state. See INV-19.
+    """
+    ps = case.path_selection
+    if ps is None or ps.alternate_path is None:
+        # Defensive: caller should gate on these. Return empty so the engine
+        # doesn't emit malformed suggestions if invariants are violated.
+        return []
+
+    recommended_label = (
+        "Mitigation-first"
+        if ps.path == InvestigationPath.MITIGATION_FIRST
+        else "Root-cause analysis"
+    )
+    alternate_label = (
+        "Mitigation-first"
+        if ps.alternate_path == InvestigationPath.MITIGATION_FIRST
+        else "Root-cause analysis"
+    )
+    recommended_body = (
+        f"Recommended. {ps.rationale}"
+        if ps.auto_selected
+        else f"Default. {ps.rationale}"
+    )
+    alternate_body_descriptions = {
+        InvestigationPath.MITIGATION_FIRST: (
+            "Apply a quick workaround to stop the impact first, then return "
+            "for root-cause analysis after the system is stable."
+        ),
+        InvestigationPath.ROOT_CAUSE: (
+            "Skip mitigation and go straight to root-cause analysis for a "
+            "permanent fix."
+        ),
+    }
+    return [
+        {
+            "label": recommended_label,
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": f"Let's start with {recommended_label.lower()}.",
+            "body": recommended_body,
+            "intent": {
+                "type": "path_selection",
+                "investigation_path": ps.path.value,
+            },
+        },
+        {
+            "label": alternate_label,
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": f"I'd prefer {alternate_label.lower()}.",
+            "body": alternate_body_descriptions[ps.alternate_path],
+            "intent": {
+                "type": "path_selection",
+                "investigation_path": ps.alternate_path.value,
+            },
+        },
+    ]
+
+
+def _compute_inquiry_path_selection(case: "Case") -> None:
+    """Compute case.path_selection from inquiry signals if Gate 1 has passed.
+
+    Called from _apply_inquiry_updates whenever the LLM emits or revises
+    preliminary_urgency. Idempotent — only fires when:
+      - Gate 1 passed (inquiry.problem_statement_confirmed = True)
+      - preliminary_urgency is populated (level + is_ongoing available)
+      - path_selection has not yet been computed (None)
+
+    The mutation watcher in _apply_inquiry_updates handles the
+    revise-after-Gate-2-passed case (INV-20) by clearing path_selection
+    before this function is called, so an idempotency guard on path_selection
+    being None is sufficient here.
+    """
+    if not case.inquiry or not case.inquiry.problem_statement_confirmed:
+        return
+    if case.path_selection is not None:
+        return
+    pu = case.inquiry.preliminary_urgency
+    if pu is None or pu.level is None:
+        return
+
+    temporal = TemporalState.ONGOING if pu.is_ongoing else TemporalState.HISTORICAL
+    severity = pu.level.value.upper() if pu.level != UrgencyLevel.UNKNOWN else "MEDIUM"
+
+    # Build a transient ProblemVerification for the router. The case-level
+    # case.problem_verification is populated lazily in _transition_to_investigating;
+    # constructing one here avoids prematurely materializing case state that the
+    # transition path owns.
+    verification = ProblemVerification(
+        symptom_statement=case.description
+        or case.inquiry.proposed_problem_statement
+        or "Unspecified issue",
+        severity=severity,
+        temporal_state=temporal,
+        urgency_level=pu.level,
+    )
+    case.path_selection = determine_investigation_path(verification)
+    logger.info(
+        f"Computed path recommendation for case {case.case_id}: "
+        f"path={case.path_selection.path.value}, "
+        f"auto_selected={case.path_selection.auto_selected}, "
+        f"rationale={case.path_selection.rationale}"
+    )
+
+
+def _inquiry_path_signals_changed(old_pu: Optional[Any], new_pu: Optional[Any]) -> bool:
+    """Detect whether the inputs that drive path selection have changed.
+
+    INV-20 mutation watcher: when ``preliminary_urgency.level`` or
+    ``preliminary_urgency.is_ongoing`` differ between turns, the path
+    recommendation may no longer match — clear the existing path_selection
+    so it gets re-computed on the next turn and Gate 2 re-fires.
+
+    Mutations to other fields (impact_assessment, etc.) do not invalidate
+    Gate 2 — the router only consumes level + temporal_state.
+    """
+    if old_pu is None and new_pu is None:
+        return False
+    if old_pu is None or new_pu is None:
+        return True
+    return getattr(old_pu, "level", None) != getattr(new_pu, "level", None) or getattr(
+        old_pu, "is_ongoing", None
+    ) != getattr(new_pu, "is_ongoing", None)
+
+
 def _build_resolution_confirmation(case) -> str:
     """Build the resolution confirmation prompt with optional enrichment hints.
 
@@ -2100,29 +2237,86 @@ class MilestoneEngine:
                         f"Received confirmation intent for case {case.case_id} but no proposed problem statement exists"
                     )
                 else:
-                    # Update inquiry state
+                    # Update inquiry state (Gate 1 passes)
                     case.inquiry.problem_statement_confirmed = True
                     case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
                     case.inquiry.decided_to_investigate = True
                     case.inquiry.decision_made_at = datetime.now(UTC)
 
-                    # Transition to INVESTIGATING
-                    await self._transition_to_investigating(case)
-                    case.action_history.append(
-                        CaseAction(
-                            from_status=CaseStatus.INQUIRY,
-                            to_status=CaseStatus.INVESTIGATING,
-                            triggered_at=datetime.now(UTC),
-                            triggered_by=case.user_id,
-                            reason="User confirmed proposed problem statement",
-                        )
-                    )
+                    # Compute path recommendation now that Gate 1 has passed.
+                    # path_selection.user_confirmed is False — Gate 2 fires next.
+                    _compute_inquiry_path_selection(case)
 
                     logger.info(
-                        f"Case {case.case_id} transitioned to INVESTIGATING via confirmation intent"
+                        f"Case {case.case_id}: Gate 1 confirmed via confirmation intent. "
+                        f"path_selection={case.path_selection.path.value if case.path_selection else None} "
+                        f"(awaiting Gate 2 user confirmation before transitioning to INVESTIGATING)"
                     )
 
-                    # Continue to normal LLM flow for investigation kickoff message
+                    # Do NOT transition here — _check_automatic_transitions
+                    # enforces INV-19 (Gate 2 must pass before INQUIRY ->
+                    # INVESTIGATING). Continue to normal LLM flow so the
+                    # agent's response carries the Gate 2 prompt and the
+                    # response builder attaches the deterministic Gate 2
+                    # suggestions.
+
+            elif intent_type == "path_selection":
+                # Gate 2 confirmation. User clicked one of the two path
+                # COOPERATIVE suggestions; intent_data.investigation_path is
+                # either the recommended path or the alternate.
+                logger.info(
+                    f"Explicit path_selection intent for case {case.case_id} "
+                    f"(intent_data={intent_data})"
+                )
+
+                if case.status != CaseStatus.INQUIRY:
+                    logger.warning(
+                        f"Received path_selection intent for case {case.case_id} "
+                        f"but status is {case.status.value}"
+                    )
+                elif not case.path_selection:
+                    logger.warning(
+                        f"Received path_selection intent for case {case.case_id} "
+                        f"but no path recommendation exists (Gate 1 not yet passed?)"
+                    )
+                elif not intent_data or "investigation_path" not in intent_data:
+                    logger.warning(
+                        f"path_selection intent missing investigation_path payload "
+                        f"for case {case.case_id}"
+                    )
+                else:
+                    chosen_path_str = intent_data["investigation_path"]
+                    try:
+                        chosen_path = InvestigationPath(chosen_path_str)
+                    except ValueError:
+                        logger.warning(
+                            f"path_selection intent with unknown path value "
+                            f"{chosen_path_str!r} for case {case.case_id}"
+                        )
+                    else:
+                        ps = case.path_selection
+                        # PathSelection is frozen — build a new instance with
+                        # the user's choice applied. If the user picked the
+                        # alternate, swap path/alternate_path so the data
+                        # model stays internally consistent.
+                        updates_for_path: dict[str, Any] = {
+                            "user_confirmed": True,
+                            "user_confirmed_at_turn": case.current_turn,
+                        }
+                        if chosen_path != ps.path:
+                            updates_for_path["path"] = chosen_path
+                            updates_for_path["alternate_path"] = ps.path
+                            updates_for_path["selected_by"] = case.user_id
+                        case.path_selection = ps.model_copy(update=updates_for_path)
+                        logger.info(
+                            f"Case {case.case_id}: Gate 2 confirmed via "
+                            f"path_selection intent. path={chosen_path.value}, "
+                            f"override={chosen_path != ps.path}"
+                        )
+
+                    # Don't transition here — _check_automatic_transitions
+                    # picks up the state change and fires the transition if
+                    # both gates have now passed.
 
             # ============================================================
             # HYPOTHESIS ACTION - Explicit Intent (Frontend/IntentResolver)
@@ -2713,6 +2907,27 @@ class MilestoneEngine:
                     f"Handshake-deferred recovery turn for case "
                     f"{case_updated.case_id}: emitting deterministic "
                     f"confirmation suggestions (turn={case_updated.current_turn})"
+                )
+
+            # Gate 2 pending: problem statement confirmed but path not yet
+            # user-confirmed. Force the canonical path-selection suggestion
+            # pair so the user has a deterministic clickable path regardless
+            # of LLM compliance with the Gate 2 prompt directive. Same
+            # backstop pattern as INV-01's handshake-deferred recovery and
+            # INV-03's override_suggestions on ProposedTransition. See INV-19.
+            elif (
+                case_updated.status == CaseStatus.INQUIRY
+                and case_updated.inquiry
+                and case_updated.inquiry.problem_statement_confirmed
+                and case_updated.path_selection is not None
+                and not case_updated.path_selection.user_confirmed
+            ):
+                follow_ups = _path_selection_suggestions(case_updated)
+                logger.info(
+                    f"Gate 2 pending for case {case_updated.case_id}: "
+                    f"emitting deterministic path-selection suggestions "
+                    f"(recommended={case_updated.path_selection.path.value}, "
+                    f"turn={case_updated.current_turn})"
                 )
 
             # Closure-ack turn (LLM-driven path): when generation
@@ -4617,6 +4832,11 @@ class MilestoneEngine:
             and case.inquiry.proposed_problem_statement.strip()
         )
 
+        # INV-20 mutation watcher input: snapshot the path-selection signals
+        # BEFORE this turn's updates land, so we can detect changes that
+        # invalidate a previously-confirmed Gate 2.
+        _old_preliminary_urgency = case.inquiry.preliminary_urgency
+
         if updates.proposed_problem_statement:
             case.inquiry.proposed_problem_statement = updates.proposed_problem_statement
 
@@ -4651,6 +4871,27 @@ class MilestoneEngine:
                 impact_assessment=updates.preliminary_urgency.impact_assessment,
                 assessed_at_turn=case.current_turn,  # Use current turn number
             )
+
+        # INV-20: if path-selection signals have changed (level or
+        # is_ongoing), invalidate any existing path_selection so Gate 2
+        # re-fires with the updated recommendation. The mutation watcher is
+        # deterministic and runs every turn — does NOT depend on the LLM
+        # noticing the change. See investigation-gates design (slice 2).
+        if (
+            _inquiry_path_signals_changed(
+                _old_preliminary_urgency, case.inquiry.preliminary_urgency
+            )
+            and case.path_selection is not None
+        ):
+            logger.info(
+                f"Path-selection signals changed for case {case.case_id} "
+                f"(old_level={_old_preliminary_urgency.level if _old_preliminary_urgency else None}, "
+                f"new_level={case.inquiry.preliminary_urgency.level if case.inquiry.preliminary_urgency else None}; "
+                f"old_ongoing={_old_preliminary_urgency.is_ongoing if _old_preliminary_urgency else None}, "
+                f"new_ongoing={case.inquiry.preliminary_urgency.is_ongoing if case.inquiry.preliminary_urgency else None}) "
+                f"— clearing path_selection for re-evaluation (INV-20)"
+            )
+            case.path_selection = None
 
         # STAGE 1: Extract problem statement from LLM (first turn only)
         # Extract problem statement but DON'T auto-confirm yet
@@ -4815,6 +5056,15 @@ class MilestoneEngine:
         # case transitions to INVESTIGATING.
         # See docs/architecture/investigation-engine/
         # evidence-driven-investigation-framework.md §5.
+
+        # Gate 2 setup: compute path_selection now that Gate 1 has passed and
+        # urgency signals are populated. Idempotent — only fires when the
+        # signals are available and path_selection has not already been
+        # computed (or was just cleared by the INV-20 mutation watcher
+        # earlier in this method). The resulting PathSelection has
+        # user_confirmed=False; Gate 2 surfaces it to the user for
+        # confirmation before INQUIRY -> INVESTIGATING can fire (INV-19).
+        _compute_inquiry_path_selection(case)
 
     async def _apply_investigation_updates(
         self,
@@ -5378,11 +5628,32 @@ class MilestoneEngine:
 
         case.problem_verification = ProblemVerification(**verification_kwargs)
 
-        # Determine path selection
-        case.path_selection = determine_investigation_path(case.problem_verification)
-        logger.info(
-            f"Selected investigation path: {case.path_selection.path} (reason: {case.path_selection.rationale})"
-        )
+        # Determine path selection. Normally Gate 2 has already populated
+        # case.path_selection during inquiry (see _compute_inquiry_path_selection
+        # in _apply_inquiry_updates), in which case we preserve the
+        # user-confirmed choice — recomputing here would overwrite
+        # user_confirmed and lose any override the user made via Gate 2.
+        # If path_selection is somehow missing at transition time (e.g.,
+        # tests that bypass inquiry, or a path-selection signal that arrived
+        # too late during inquiry), fall back to computing it now with
+        # user_confirmed=False; the case will then be in a transient state
+        # where Gate 2 is still pending in storage but the case has already
+        # transitioned, which the engine handles defensively elsewhere.
+        if case.path_selection is None:
+            case.path_selection = determine_investigation_path(
+                case.problem_verification
+            )
+            logger.warning(
+                f"Case {case.case_id}: path_selection was None at transition time; "
+                f"recomputed from problem_verification (path={case.path_selection.path.value}, "
+                f"user_confirmed=False). Gate 2 should normally have populated this during inquiry."
+            )
+        else:
+            logger.info(
+                f"Case {case.case_id}: preserving inquiry-confirmed path_selection "
+                f"(path={case.path_selection.path.value}, "
+                f"user_confirmed={case.path_selection.user_confirmed})"
+            )
 
         # Post-010: no retroactive milestone attribution at INQUIRY→
         # INVESTIGATING. INQUIRY no longer creates Evidence rows, so
@@ -5581,12 +5852,21 @@ class MilestoneEngine:
         # docs/architecture/investigation-engine/investigation-lifecycle-logic.md
         # §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path. Confirming the
         # problem statement is mandatory even when a runbook applies cleanly.
+        #
+        # INV-19 (Gate 2): INQUIRY -> INVESTIGATING also requires
+        # path_selection.user_confirmed=True. Gate 1 (problem statement
+        # confirmation) opens the path-selection prompt; Gate 2 commits to
+        # mitigation_first or root_cause. The transition only fires once
+        # both gates have passed.
         if case.status == CaseStatus.INQUIRY:
-            # Check for transition to investigation
-            if case.inquiry.decided_to_investigate or (
+            gate1_passed = case.inquiry.decided_to_investigate or (
                 case.inquiry.problem_statement_confirmed
                 and case.inquiry.problem_confirmation
-            ):
+            )
+            gate2_passed = (
+                case.path_selection is not None and case.path_selection.user_confirmed
+            )
+            if gate1_passed and gate2_passed:
                 await self._transition_to_investigating(case)
                 metadata["status_transitioned"] = True
                 case.action_history.append(
@@ -5594,10 +5874,20 @@ class MilestoneEngine:
                         from_status=old_status,
                         to_status=CaseStatus.INVESTIGATING,
                         triggered_by="system",
-                        reason="Problem confirmed and investigation triggered",
+                        reason="Problem confirmed and investigation path selected",
                     )
                 )
                 return case
+            elif gate1_passed and not gate2_passed:
+                # Gate 1 passed but Gate 2 hasn't — leave the case in INQUIRY
+                # so the engine surfaces the path-selection prompt + Gate 2
+                # COOPERATIVE suggestions on this turn. INV-19 holds.
+                logger.info(
+                    f"Case {case.case_id}: Gate 1 passed but Gate 2 pending "
+                    f"(path_selection={'present' if case.path_selection else 'None'}, "
+                    f"user_confirmed={case.path_selection.user_confirmed if case.path_selection else None}). "
+                    f"Staying in INQUIRY until path is confirmed."
+                )
 
         # 2. Handle ProposedTransition from LLM response (User-Agent Handshake)
         # The LLM proposes a terminal transition; we store it pending.

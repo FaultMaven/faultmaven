@@ -512,11 +512,14 @@ class TestInquiryTransitionLogic:
     async def test_user_confirmation_triggers_transition(
         self, mock_llm, mock_repo, inquiry_case
     ):
-        """Test 10: User confirms problem statement → transition to INVESTIGATING
+        """Test 10: full Gate 1 + Gate 2 flow → transition to INVESTIGATING
 
-        This validates the two-step confirmation flow:
-        Turn 1: Agent presents problem statement (stays INQUIRY)
-        Turn 2: User confirms → LLM sets user_confirmed_investigation=True → transition fires
+        Validates the three-step confirmation flow (slice 2 / INV-19):
+        Turn 1: Agent presents problem statement (stays INQUIRY, Gate 1 open)
+        Turn 2: User confirms problem → Gate 1 closes; engine computes path
+                recommendation; case stays in INQUIRY with Gate 2 open
+        Turn 3: User clicks the path-selection suggestion → Gate 2 closes;
+                transition fires.
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -540,6 +543,7 @@ class TestInquiryTransitionLogic:
                         "is_incident_report": True,
                         "impact_assessment": "All services failing due to database connection timeouts",
                     },
+                    "proposed_problem_statement": "Database connection timeouts affecting all services",
                 },
             }
         )
@@ -555,10 +559,11 @@ class TestInquiryTransitionLogic:
         assert case_after_turn1.status == CaseStatus.INQUIRY
         assert case_after_turn1.inquiry.problem_statement_confirmed is False
 
-        # Turn 2: User confirms → LLM signals confirmation
+        # Turn 2: User confirms → Gate 1 closes; engine computes path
+        # recommendation; stays in INQUIRY with Gate 2 pending.
         mock_response_turn2 = json.dumps(
             {
-                "agent_response": "Confirmed. Starting investigation into database connection timeouts.",
+                "agent_response": "Confirmed. Recommend mitigation-first given the active impact.",
                 "state_updates": {
                     "user_confirmed_investigation": True,
                 },
@@ -571,12 +576,37 @@ class TestInquiryTransitionLogic:
             "Yes, that's correct. Please investigate.",
         )
 
-        # Turn 2: transitions to INVESTIGATING
+        # Turn 2: Gate 1 done, Gate 2 pending — case is still INQUIRY.
         case_after_turn2 = result2["case_updated"]
-        assert case_after_turn2.status == CaseStatus.INVESTIGATING
+        assert case_after_turn2.status == CaseStatus.INQUIRY  # INV-19
         assert case_after_turn2.inquiry.problem_statement_confirmed is True
         assert case_after_turn2.inquiry.decided_to_investigate is True
-        assert result2["metadata"]["status_transitioned"] is True
+        assert case_after_turn2.path_selection is not None
+        assert case_after_turn2.path_selection.user_confirmed is False
+
+        # Turn 3: User clicks the recommended Gate 2 suggestion.
+        mock_response_turn3 = json.dumps(
+            {
+                "agent_response": "Starting mitigation-first investigation.",
+                "state_updates": {},
+            }
+        )
+        mock_llm.generate.return_value = mock_response_turn3
+
+        result3 = await engine.process_turn(
+            case_after_turn2,
+            "Let's start with mitigation-first.",
+            intent_type="path_selection",
+            intent_data={
+                "investigation_path": case_after_turn2.path_selection.path.value,
+            },
+        )
+
+        # Turn 3: Gate 2 closed → transition fires.
+        case_after_turn3 = result3["case_updated"]
+        assert case_after_turn3.status == CaseStatus.INVESTIGATING
+        assert case_after_turn3.path_selection.user_confirmed is True
+        assert result3["metadata"]["status_transitioned"] is True
 
     @pytest.mark.asyncio
     async def test_user_declines_investigation_stays_inquiry(
@@ -768,10 +798,11 @@ class TestInquiryTransitionLogic:
 
         # Turn 2: user confirms; LLM only emits user_confirmed_investigation=True
         # (no new proposed_problem_statement). Statement existed before this
-        # turn → guard passes → transition fires.
+        # turn → INV-01 guard passes → Gate 1 closes. INV-19 still requires
+        # Gate 2, so the case stays in INQUIRY pending the path-selection click.
         mock_response_turn2 = json.dumps(
             {
-                "agent_response": "Confirmed. Investigating.",
+                "agent_response": "Confirmed. Recommend root-cause analysis.",
                 "state_updates": {
                     "user_confirmed_investigation": True,
                 },
@@ -781,8 +812,11 @@ class TestInquiryTransitionLogic:
         result2 = await engine.process_turn(case_after_turn1, "yes")
 
         case_after_turn2 = result2["case_updated"]
-        assert case_after_turn2.status == CaseStatus.INVESTIGATING
+        # INV-01 (Gate 1) passes; INV-19 (Gate 2) is still pending — case stays in INQUIRY.
+        assert case_after_turn2.status == CaseStatus.INQUIRY
         assert case_after_turn2.inquiry.problem_statement_confirmed is True
+        assert case_after_turn2.path_selection is not None
+        assert case_after_turn2.path_selection.user_confirmed is False
         assert case_after_turn2.inquiry.decided_to_investigate is True
 
 
