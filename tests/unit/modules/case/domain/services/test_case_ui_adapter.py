@@ -407,7 +407,10 @@ class TestTransformInvestigating:
 
         assert result.progress.total_evidence == 2
 
-    def test_investigation_strategy_mitigation_first(self):
+    def test_path_selection_mitigation_first_surfaced(self):
+        """The structured path_selection is exposed on the response — clients
+        consume it directly instead of regex-parsing a descriptive string.
+        Replaces the removed test_investigation_strategy_mitigation_first."""
         case = _make_investigating_case()
         case.path_selection = PathSelection(
             path=InvestigationPath.MITIGATION_FIRST,
@@ -417,8 +420,9 @@ class TestTransformInvestigating:
 
         result = transform_case_for_ui(case)
 
-        assert result.investigation_strategy is not None
-        assert "mitigation" in result.investigation_strategy.approach.lower()
+        assert result.path_selection is not None
+        assert result.path_selection.path == InvestigationPath.MITIGATION_FIRST
+        assert result.path_selection.auto_selected is True
 
     def test_progress_transparency_when_stalled(self):
         from datetime import datetime, timezone

@@ -36,7 +36,6 @@ from faultmaven.models.case_ui import (
     InquiryRequestSummary,
     InquiryResponseData,
     InvestigationProgressSummary,
-    InvestigationStrategyData,
     ProblemVerificationData,
     ReportAvailability,
     ResolutionSummary,
@@ -51,7 +50,6 @@ from faultmaven.modules.case.contracts import (
     CaseStatus,
     HypothesisStatus,
     InquiryData,
-    InvestigationPath,
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
     CaseActionManager,
@@ -88,47 +86,6 @@ def transform_case_for_ui(case: Case) -> CaseUIResponse:
 # ============================================================
 # Helper Functions for Data Extraction
 # ============================================================
-
-
-def _get_investigation_strategy_data(case: Case) -> Optional[InvestigationStrategyData]:
-    """Extract investigation strategy from case state."""
-
-    # Map investigation path to descriptive approach
-    approach_map = {
-        InvestigationPath.MITIGATION_FIRST: "Mitigation-first - quick fix now, comprehensive RCA after service restored",
-        InvestigationPath.ROOT_CAUSE: "Root cause analysis - thorough investigation before permanent solution",
-    }
-
-    # Get path from path_selection if available, otherwise use default
-    path = (
-        case.path_selection.path
-        if case.path_selection
-        else InvestigationPath.ROOT_CAUSE
-    )
-    approach = approach_map.get(path, "Standard investigation")
-
-    # Extract next steps from pending milestones
-    next_steps = []
-    pending_milestones = case.progress.pending_milestones[:3]  # Top 3
-
-    if pending_milestones:
-        milestone_steps = {
-            "symptom_verified": "Verify symptom with concrete evidence",
-            "root_cause_identified": "Identify and validate root cause",
-            "solution_proposed": "Propose solution or mitigation",
-            "solution_accepted": "User submitted results of executing solution",
-            "solution_verified": "Verify solution effectiveness",
-            "mitigation_accepted": "User submitted results of executing mitigation",
-            "mitigation_verified": "User confirmed mitigation stabilized the situation",
-        }
-        next_steps = [
-            milestone_steps.get(m, f"Complete {m.replace('_', ' ')}")
-            for m in pending_milestones
-        ]
-
-    return InvestigationStrategyData(
-        approach=approach, next_steps=next_steps if next_steps else None
-    )
 
 
 def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationData]:
@@ -325,6 +282,7 @@ def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
         updated_at=case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
         inquiry=inquiry_data,
+        path_selection=case.path_selection,
         valid_next_states=[
             status.value
             for status in CaseActionManager.get_allowed_transitions(case.status)
@@ -435,8 +393,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         action = milestone_id.replace("_", " ").title()
         next_actions.append(action)
 
-    # Extract investigation strategy and problem verification
-    investigation_strategy_data = _get_investigation_strategy_data(case)
+    # Extract problem verification
     problem_verification_data = _extract_problem_verification(case)
 
     # Progress transparency: compute from turn history (stateless)
@@ -450,6 +407,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         created_at=case.created_at,
         updated_at=case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
+        path_selection=case.path_selection,
         problem_statement=(case.description or None),
         working_conclusion=working_conclusion,
         progress=progress,
@@ -457,7 +415,6 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         latest_evidence=evidence_summaries,
         next_actions=next_actions,
         agent_status=agent_status,
-        investigation_strategy=investigation_strategy_data,
         problem_verification=problem_verification_data,
         progress_transparency=transparency_info,
         valid_next_states=[
@@ -596,6 +553,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         updated_at=case.updated_at,
         resolved_at=case.resolved_at if case.resolved_at else case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
+        path_selection=case.path_selection,
         problem_statement=(case.description or None),
         root_cause=root_cause,
         solution_applied=solution_applied,
