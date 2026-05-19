@@ -1,13 +1,26 @@
-# Investigation Gates — User-Confirmed Decision Points
+# WIP — Investigation Gates Implementation
 
-## Status
+## Purpose of this document
 
-**Design — not yet implemented.** This document supersedes the path-selection
-sections of [investigation-lifecycle-logic.md](investigation-lifecycle-logic.md)
-(specifically §10 path routing and the USER_CHOICE handling in §1283-1394).
+This is a **working specification** for an in-flight redesign of the
+investigation-engine path-selection logic. It captures the agreed design
+and the slice-by-slice implementation plan during build.
 
-Once implemented, the lifecycle doc will be updated to point here for all
-path-related material.
+This document is **not** the canonical reference. The canonical home for
+the case lifecycle, path routing, and the Invariant Enforcement Matrix is
+[`docs/architecture/investigation-engine/investigation-lifecycle-logic.md`](../architecture/investigation-engine/investigation-lifecycle-logic.md).
+As each implementation slice lands, the relevant sections of the lifecycle
+doc get updated directly — new INV rows added to the matrix, new gate
+sections folded into the path-routing description, the router matrix
+revised. Once all slices have shipped, this WIP doc is deleted; its
+content has been absorbed into the lifecycle doc + tests + commit history.
+
+**Status**: design accepted, awaiting implementation.
+
+**Branch for the design discussion**: `design/investigation-gates`.
+
+**Implementation branches**: one feature branch per slice
+(`feat/gates-slice-1-schema`, `feat/gates-slice-2-wiring`, etc.).
 
 ## Motivation
 
@@ -62,7 +75,7 @@ This keeps the three gates visually consistent and avoids competing surfaces.
 
 This is a pre-production redesign. No backward compatibility — existing case
 data is regenerated. See
-[feedback_no_backcompat_pre_data.md](../../../.claude/memory/feedback_no_backcompat_pre_data.md).
+`feedback_no_backcompat_pre_data` (user-memory entry).
 
 ### `InvestigationPath` collapses to binary
 
@@ -85,9 +98,9 @@ router silently defaults ambiguous cases to `ROOT_CAUSE` with no UX
 surface to flag the ambiguity. See *Slice plan* below.
 
 The orphan duplicate `determine_investigation_path` in
-[`models.py:2703`](../../../faultmaven/modules/case/domain/models.py) is
+[`models.py:2703`](../../faultmaven/modules/case/domain/models.py) is
 removed in slice 2 alongside the enum value — only the live resolver in
-[`investigation_router.py`](../../../faultmaven/modules/case/domain/services/investigation_router.py)
+[`investigation_router.py`](../../faultmaven/modules/case/domain/services/investigation_router.py)
 remains.
 
 ### `PathSelection` gains confirmation fields and the mitigation boundary marker
@@ -121,7 +134,7 @@ polluting the `Case` row schema for a path-specific concept.
 ### Storage — no DB migration required
 
 `PathSelection` and `inquiry` are stored as `JsonBlob` columns on the `cases`
-table ([persistence/models.py:633-657](../../../faultmaven/infrastructure/persistence/models.py)).
+table ([persistence/models.py:633-657](../../faultmaven/infrastructure/persistence/models.py)).
 Adding fields to the Pydantic models that serialize into them does **not**
 require an Alembic migration — the field set is owned by the Pydantic schema,
 not the database schema. Slice 1 is therefore migration-free.
@@ -153,7 +166,7 @@ Gate 3's "close as mitigation sufficient" branch does **not** use
 `to_status = CLOSED` and `closure_reason = mitigation_sufficient`. Reusing the
 existing transition machinery preserves the closure-summary generation path
 already documented in
-[closure_summary_redesign.md](../../../.claude/memory/closure_summary_redesign.md).
+`closure_summary_redesign` (user-memory entry).
 
 ## Router behavior (revised)
 
@@ -512,7 +525,7 @@ has moved to `path_selection.user_confirmed=False`.
 ### Slice 3 — Gate 3 (mitigation → RCA loop)
 
 - Detect `mitigation_verified=True` first becoming true; set `path_selection.mitigation_completed_at_turn = current_turn`
-- Emit Gate 3 prompt and two suggestions (`POST_MITIGATION_CHOICE` for continue, `STATUS_TRANSITION` for close). Verified: the close branch reuses the existing closure-summary path — `mitigation_sufficient` is a known closure reason with explicit handling (substance-only gate, warning-tinted UI surface), per [closure_summary_redesign.md](../../../.claude/memory/closure_summary_redesign.md). No new summary logic.
+- Emit Gate 3 prompt and two suggestions (`POST_MITIGATION_CHOICE` for continue, `STATUS_TRANSITION` for close). Verified: the close branch reuses the existing closure-summary path — `mitigation_sufficient` is a known closure reason with explicit handling (substance-only gate, warning-tinted UI surface), per `closure_summary_redesign` (user-memory entry). No new summary logic.
 - Add prompt cue to DIAGNOSIS template for post-mitigation runs: focus on pre-mitigation evidence window
 - Context builder filters/up-weights evidence by `collected_at_turn` vs `path_selection.mitigation_completed_at_turn` when assembling RCA context (see open question #4 for filter-vs-upweight policy)
 - Add the `mitigation_verified` flip-back watcher that clears Gate 3 state — **enforces INV-21**
@@ -560,18 +573,19 @@ moves to `path_selection.user_confirmed=False`.
   `solution_accepted`, `solution_verified`)
 - The closure-reason taxonomy including `mitigation_sufficient`
 - The closure-summary inline-in-chat policy
-  ([closure_summary_redesign.md](../../../.claude/memory/closure_summary_redesign.md))
+  (`closure_summary_redesign` (user-memory entry))
 - Path mutability during INVESTIGATING (already supported)
 - The `ResolutionActionsCard` post-terminal banner as the surface for
   resolved/closed cases
 
 ## References
 
-- [investigation-lifecycle-logic.md](investigation-lifecycle-logic.md) —
-  predecessor doc; sections on path routing are superseded by this document
-- [intent-resolution.md](intent-resolution.md) —
+- [investigation-lifecycle-logic.md](../architecture/investigation-engine/investigation-lifecycle-logic.md) —
+  canonical lifecycle doc; the design content here lands directly in its
+  path-routing section and Invariant Enforcement Matrix as each slice ships
+- [intent-resolution.md](../architecture/investigation-engine/intent-resolution.md) —
   bounded-choice intent matching, which Gate suggestions use
-- [agent-stage-playbook.md](agent-stage-playbook.md) —
+- [agent-stage-playbook.md](../architecture/investigation-engine/agent-stage-playbook.md) —
   stage-gate milestone semantics (mitigation_accepted, mitigation_verified, etc.)
-- [progress-transparency.md](progress-transparency.md) —
+- [progress-transparency.md](../architecture/investigation-engine/progress-transparency.md) —
   unrelated, but the header-design slice 4 interacts with the progress visualization
