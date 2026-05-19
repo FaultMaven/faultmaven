@@ -178,12 +178,62 @@ def _inquiry_response_high_urgency() -> InquiryResponse:
 
 
 def _inquiry_response_user_confirms() -> InquiryResponse:
-    """Inquiry response where user confirmed the problem statement."""
+    """Inquiry response where user confirmed the problem statement (Gate 1).
+
+    Post slice-2 (INV-19) this closes Gate 1 only — the case stays in
+    INQUIRY with Gate 2 pending until the user clicks a path-selection
+    suggestion. See _inquiry_response_gate2_ack for the Gate 2 turn.
+    """
     return InquiryResponse(
-        agent_response=("Confirmed. Starting investigation into API latency spikes."),
+        agent_response=("Confirmed. Recommend a path forward shortly."),
         state_updates=InquiryResponse.InquiryStateUpdate(
             user_confirmed_investigation=True,
         ),
+    )
+
+
+def _inquiry_response_high_urgency_with_confirmation() -> InquiryResponse:
+    """Combined Gate 1 + urgency-signal turn: LLM confirms the user's
+    intent AND emits the urgency signals the engine needs to compute the
+    path recommendation. Used by tests where the dropdown / single-turn
+    flow expects the LLM to do both in one response.
+    """
+    return InquiryResponse(
+        agent_response=(
+            "Confirmed — this is an active production issue. "
+            "Recommending mitigation-first given the ongoing impact."
+        ),
+        state_updates=InquiryResponse.InquiryStateUpdate(
+            user_confirmed_investigation=True,
+            problem_confirmation=ProblemConfirmation(
+                problem_type="slowness",
+                severity_guess="high",
+                preliminary_guidance="Critical API latency spike affecting production",
+            ),
+            preliminary_urgency=PreliminaryUrgency(
+                level="HIGH",
+                is_ongoing=True,
+                is_incident_report=True,
+                impact_assessment="All production traffic affected",
+            ),
+        ),
+    )
+
+
+def _inquiry_response_gate2_ack() -> InquiryResponse:
+    """Inquiry response on the Gate-2-confirmation turn.
+
+    The case is still in INQUIRY when the PATH_SELECTION intent fires
+    (the engine sets path_selection.user_confirmed=True via model_copy
+    but defers the actual transition to _check_automatic_transitions).
+    The LLM is invoked once more before the transition fires; this
+    minimal acknowledgment response covers that turn without changing
+    inquiry state. INV-19 then sees both gates passed and transitions
+    the case to INVESTIGATING.
+    """
+    return InquiryResponse(
+        agent_response="Starting investigation now.",
+        state_updates=InquiryResponse.InquiryStateUpdate(),
     )
 
 
@@ -377,19 +427,24 @@ class TestInvestigationLifecycle:
         """Explicit intent_type='status_transition' routes through normal INQUIRY flow.
 
         Design: Dropdown = message. The dropdown does NOT bypass the agent.
-        Instead, it injects a pre-composed message and lets the LLM handle
-        the multi-turn problem statement flow. When the LLM confirms the
-        user's intent, the transition fires through _check_automatic_transitions.
+        It injects a pre-composed message and lets the LLM handle the
+        multi-turn problem statement flow. Slice 2/INV-19 added Gate 2
+        (path selection) so the transition now requires both Gate 1 (LLM
+        confirms with user_confirmed_investigation + urgency signals) and
+        Gate 2 (user clicks a path-selection suggestion via PATH_SELECTION
+        intent).
         """
         case = _make_inquiry_case(current_turn=3)
         case.inquiry.proposed_problem_statement = "API latency spikes with p99 > 5s"
         await case_repo.save(case)
 
-        # LLM sees the user wants to investigate and confirms (sets user_confirmed_investigation=True)
+        # Turn 1: LLM confirms problem AND emits urgency signals so the
+        # engine can compute the path recommendation. Gate 1 closes;
+        # Gate 2 opens; case stays in INQUIRY.
         with patch.object(
             engine,
             "_generate_structured_output",
-            return_value=_inquiry_response_user_confirms(),
+            return_value=_inquiry_response_high_urgency_with_confirmation(),
         ):
             result = await engine.process_turn(
                 case,
@@ -398,12 +453,35 @@ class TestInvestigationLifecycle:
                 intent_data={"to_status": "investigating", "from_status": "inquiry"},
             )
 
+        after_gate1 = result["case_updated"]
+        assert after_gate1.status == CaseStatus.INQUIRY  # INV-19
+        assert after_gate1.inquiry.problem_statement_confirmed is True
+        assert after_gate1.path_selection is not None
+        assert after_gate1.path_selection.user_confirmed is False
+
+        # Turn 2: user clicks the path-selection suggestion (Gate 2). Both
+        # gates now pass; _check_automatic_transitions fires the transition.
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_inquiry_response_gate2_ack(),
+        ):
+            result = await engine.process_turn(
+                after_gate1,
+                "Let's start.",
+                intent_type="path_selection",
+                intent_data={
+                    "investigation_path": after_gate1.path_selection.path.value
+                },
+            )
+
         updated = result["case_updated"]
         assert updated.status == CaseStatus.INVESTIGATING
         assert updated.description != ""
         assert updated.progress is not None
         assert updated.problem_verification is not None
         assert updated.path_selection is not None
+        assert updated.path_selection.user_confirmed is True
         assert any(
             t.to_status == CaseStatus.INVESTIGATING for t in updated.action_history
         )
@@ -450,13 +528,16 @@ class TestInvestigationLifecycle:
         case = result["case_updated"]
         assert case.status == CaseStatus.INQUIRY
 
-        # === Turn 2: Transition to INVESTIGATING via explicit intent ===
-        # Design: Dropdown routes through normal INQUIRY flow. LLM confirms investigation.
+        # === Turn 2: Gate 1 close via explicit intent (with urgency signals) ===
+        # Dropdown routes through normal INQUIRY flow. LLM confirms +
+        # supplies urgency signals so the engine can compute the path.
+        # Post-INV-19 the case stays in INQUIRY with Gate 2 pending until
+        # the user clicks the path-selection suggestion.
         case.current_turn = 2
         with patch.object(
             engine,
             "_generate_structured_output",
-            return_value=_inquiry_response_user_confirms(),
+            return_value=_inquiry_response_high_urgency_with_confirmation(),
         ):
             result = await engine.process_turn(
                 case,
@@ -465,10 +546,28 @@ class TestInvestigationLifecycle:
                 intent_data={"to_status": "investigating", "from_status": "inquiry"},
             )
         case = result["case_updated"]
+        assert case.status == CaseStatus.INQUIRY  # INV-19: Gate 2 still pending
+        assert case.path_selection is not None
+        assert case.path_selection.user_confirmed is False
+
+        # === Turn 3: User clicks Gate 2 path-selection suggestion → transition fires ===
+        case.current_turn = 3
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_inquiry_response_gate2_ack(),
+        ):
+            result = await engine.process_turn(
+                case,
+                "Start it.",
+                intent_type="path_selection",
+                intent_data={"investigation_path": case.path_selection.path.value},
+            )
+        case = result["case_updated"]
         assert case.status == CaseStatus.INVESTIGATING
 
-        # === Turn 3: Investigation with milestone progress ===
-        case.current_turn = 3
+        # === Turn 4: Investigation with milestone progress ===
+        case.current_turn = 4
         with patch.object(
             engine,
             "_generate_structured_output",
@@ -478,8 +577,8 @@ class TestInvestigationLifecycle:
         case = result["case_updated"]
         assert case.progress.symptom_verified is True
 
-        # === Turn 4: Agent proposes resolution ===
-        case.current_turn = 4
+        # === Turn 5: Agent proposes resolution ===
+        case.current_turn = 5
         with patch.object(
             engine,
             "_generate_structured_output",
@@ -492,8 +591,8 @@ class TestInvestigationLifecycle:
         assert case.pending_transition is not None
         assert case.pending_transition["to_status"] == "resolved"
 
-        # === Turn 5: User confirms resolution via explicit intent ===
-        case.current_turn = 5
+        # === Turn 6: User confirms resolution via explicit intent ===
+        case.current_turn = 6
         result = await engine.process_turn(
             case,
             "yes",
@@ -527,7 +626,8 @@ class TestInvestigationLifecycle:
         assert updated1.inquiry.problem_statement_confirmed is False
         assert updated1.inquiry.decided_to_investigate is False
 
-        # Turn 2: User confirms → transitions to INVESTIGATING
+        # Turn 2: User confirms → Gate 1 closes; engine computes path
+        # recommendation; case stays in INQUIRY with Gate 2 pending.
         with patch.object(
             engine,
             "_generate_structured_output",
@@ -538,9 +638,29 @@ class TestInvestigationLifecycle:
             )
 
         updated2 = result2["case_updated"]
-        assert updated2.status == CaseStatus.INVESTIGATING
+        # INV-19: Gate 1 done but Gate 2 still pending — case stays in INQUIRY.
+        assert updated2.status == CaseStatus.INQUIRY
         assert updated2.inquiry.problem_statement_confirmed is True
         assert updated2.inquiry.decided_to_investigate is True
+        assert updated2.path_selection is not None
+        assert updated2.path_selection.user_confirmed is False
+
+        # Turn 3: User clicks the recommended Gate 2 suggestion → transition fires.
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_inquiry_response_gate2_ack(),
+        ):
+            result3 = await engine.process_turn(
+                updated2,
+                "Let's go with the recommended path.",
+                intent_type="path_selection",
+                intent_data={"investigation_path": updated2.path_selection.path.value},
+            )
+
+        updated3 = result3["case_updated"]
+        assert updated3.status == CaseStatus.INVESTIGATING
+        assert updated3.path_selection.user_confirmed is True
 
     async def test_close_from_inquiry_via_intent(self, engine, case_repo):
         """Close case from INQUIRY via dropdown proposes pending transition."""
@@ -591,22 +711,49 @@ class TestCheckpointing:
     async def test_checkpoint_created_on_transition_to_investigating(
         self, engine, case_repo, checkpoint_service
     ):
-        """Checkpoint created before INQUIRY → INVESTIGATING transition."""
+        """Checkpoint created before INQUIRY → INVESTIGATING transition.
+
+        Post-INV-19 the transition fires on the Gate 2 turn (path-selection
+        click), not on the Gate 1 turn. The checkpoint is created at the
+        same chokepoint (_transition_to_investigating), so the assertion
+        holds — just one turn later in the flow.
+        """
         case = _make_inquiry_case(current_turn=2)
         case.inquiry.proposed_problem_statement = "API latency spike"
         await case_repo.save(case)
 
-        # Design: Dropdown routes through normal INQUIRY flow. LLM confirms investigation.
+        # Turn 1: Gate 1 close + urgency signals via dropdown intent.
         with patch.object(
             engine,
             "_generate_structured_output",
-            return_value=_inquiry_response_user_confirms(),
+            return_value=_inquiry_response_high_urgency_with_confirmation(),
         ):
             result = await engine.process_turn(
                 case,
                 "Investigate this",
                 intent_type="status_transition",
                 intent_data={"to_status": "investigating", "from_status": "inquiry"},
+            )
+
+        after_gate1 = result["case_updated"]
+        assert after_gate1.status == CaseStatus.INQUIRY
+        assert after_gate1.path_selection is not None
+        assert after_gate1.path_selection.user_confirmed is False
+
+        # Turn 2: Gate 2 click → transition fires; checkpoint is created
+        # inside _transition_to_investigating.
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_inquiry_response_gate2_ack(),
+        ):
+            result = await engine.process_turn(
+                after_gate1,
+                "Start it.",
+                intent_type="path_selection",
+                intent_data={
+                    "investigation_path": after_gate1.path_selection.path.value
+                },
             )
 
         assert result["case_updated"].status == CaseStatus.INVESTIGATING
