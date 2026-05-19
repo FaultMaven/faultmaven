@@ -159,29 +159,32 @@ Single token: `1`, `2`, ..., `N`, or `none`.
 
 ## 5. Hypothesis Action Routing
 
-### Current State (Gap)
+`HYPOTHESIS_ACTION` intent flows through four layers, ending in a state change applied **before** the LLM is consulted so the agent sees the updated hypothesis in its context and can acknowledge it.
 
-`HYPOTHESIS_ACTION` intent is:
-- Defined in `QueryIntent` (api_models.py)
-- Dispatched by `investigation_service.py:229`
-- Forwarded by `_handle_hypothesis_action` (investigation_service.py:577-612)
-- **Not handled** in `milestone_engine.py` — falls through to normal LLM processing
+### 5.1 Dispatch Chain
 
-The LLM may talk about refuting/validating a hypothesis in its response, but no actual `hypothesis_manager` method is called. The hypothesis stays in its current state.
+| Layer | Location | Responsibility |
+|---|---|---|
+| Type definition | `api_models.py` `QueryIntent` | Declares `hypothesis_action` as a valid intent type |
+| Service dispatch | [`investigation_service.py:528`](../../../faultmaven/modules/agent/domain/services/investigation_service.py) | Routes typed intent to the per-intent handler |
+| Service handler | [`investigation_service.py:1026`](../../../faultmaven/modules/agent/domain/services/investigation_service.py) (`_handle_hypothesis_action`) | Validates payload shape, forwards to the engine with `intent_data` |
+| Engine handler | [`milestone_engine.py:2520`](../../../faultmaven/core/investigation/milestone_engine.py) (`elif intent_type == "hypothesis_action" and intent_data:`) | Applies the state change on `case.hypotheses[...]` and sets `metadata["hypothesis_action_applied"] = True` |
 
-### Fix
+### 5.2 State Transitions Applied by the Engine
 
-Add a handler in `milestone_engine.py` that:
+The engine handler (`milestone_engine.py:2520–2554`) dispatches on `intent_data["action"]`:
 
-1. Detects `intent_type == "hypothesis_action"` with `intent_data` containing `hypothesis_id` and `action`
-2. Finds the hypothesis in `case.hypotheses`
-3. Calls the appropriate `hypothesis_manager` method:
-   - `action == "validate"` → set status to VALIDATED, update likelihood to 1.0
-   - `action == "refute"` → call `refute_hypothesis()` with user message as reason
-   - `action == "retire"` → set status to RETIRED with reason
-4. Falls through to LLM processing so the agent can acknowledge and continue
+| Action | State change | Mechanism |
+|---|---|---|
+| `refute` | Hypothesis → `REFUTED`, refutation reason recorded | `hypothesis_manager.refute_hypothesis(hypothesis=…, current_turn=…, refuting_evidence_ids=[], reason=user_message or "User refuted")` |
+| `validate` | Hypothesis → `VALIDATED`, `likelihood = 1.0`, `last_updated_turn` bumped | Direct field assignment (no manager method — validation is just a confidence pin) |
+| `retire` | Hypothesis → `RETIRED`, `retirement_reason` recorded, `last_updated_turn` bumped | Direct field assignment |
 
-The handler executes the state change *before* LLM processing, so the LLM sees the updated hypothesis state in its context.
+After the state change the handler **falls through** to normal LLM processing so the agent can acknowledge the action in its reply. The `hypothesis_action_applied` metadata flag lets downstream logging and telemetry distinguish "user explicitly acted on hypothesis" from "agent inferred a status change from prose."
+
+### 5.3 Why "before LLM, not after"
+
+The applied state lives in the case object that the prompt builder reads from on the same turn. If we deferred the state change to after-LLM, the agent would still see the old `ACTIVE` hypothesis on the very turn the user refuted it, and would either re-propose it or contradict the user. Applying first keeps the chat coherent without an extra round-trip.
 
 ---
 
