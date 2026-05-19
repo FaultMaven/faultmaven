@@ -446,6 +446,12 @@ class CaseUIResponse_Investigating(BaseModel):
         description="Allowed status transitions from current state for user-initiated changes",
     )
 
+    problem_statement: Optional[str] = Field(
+        default=None,
+        description="Confirmed problem statement carried over from INQUIRY (sourced from case.description).",
+        max_length=1000,
+    )
+
     # ============================================================
     # Investigation-Specific Fields
     # ============================================================
@@ -532,6 +538,12 @@ class CaseUIResponse_Resolved(BaseModel):
     valid_next_states: List[str] = Field(
         default_factory=list,
         description="Allowed status transitions from current state for user-initiated changes",
+    )
+
+    problem_statement: Optional[str] = Field(
+        default=None,
+        description="Confirmed problem statement carried over from INQUIRY (sourced from case.description).",
+        max_length=1000,
     )
 
     # ============================================================
