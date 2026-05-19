@@ -2069,14 +2069,54 @@ def get_prompt_for_case(
                 focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
                 adaptive_instr = focus_emphasis + DIAGNOSIS_INSTRUCTIONS
                 # Mitigation-first path note applies only during DIAGNOSIS
-                if (
-                    case.path_selection
-                    and case.path_selection.path == "mitigation_first"
-                ):
-                    adaptive_instr = (
-                        "PATH: MITIGATION_FIRST (Prioritize stopping the impact over finding RCA)\n"
-                        + adaptive_instr
-                    )
+                ps = case.path_selection
+                if ps is not None and ps.path == "mitigation_first":
+                    if ps.mitigation_completed_at_turn is None:
+                        # Pre-mitigation DIAGNOSIS — focus on stopping impact.
+                        adaptive_instr = (
+                            "PATH: MITIGATION_FIRST (Prioritize stopping the impact over finding RCA)\n"
+                            + adaptive_instr
+                        )
+                    elif not ps.rca_after_mitigation_confirmed:
+                        # Mitigation verified but the user has not yet
+                        # decided whether to continue with RCA. The engine
+                        # attaches Gate 3 COOPERATIVE suggestions on this
+                        # turn (see _post_mitigation_suggestions); the
+                        # prompt instruction tells the LLM to announce
+                        # mitigation success and surface the choice
+                        # conversationally without re-asking via free text.
+                        adaptive_instr = (
+                            "GATE 3 PENDING: Mitigation was verified at turn "
+                            f"{ps.mitigation_completed_at_turn}. The user "
+                            "has not yet decided whether to continue with "
+                            "root-cause analysis or close as "
+                            "mitigation-sufficient. Briefly acknowledge "
+                            "mitigation success and surface the path "
+                            "decision. Do NOT propose RCA steps or set "
+                            "root_cause_identified — the engine rejects "
+                            "RCA-side milestones until the user confirms "
+                            "(INV-21). Two COOPERATIVE buttons are "
+                            "attached deterministically.\n" + adaptive_instr
+                        )
+                    else:
+                        # Post-mitigation RCA. User confirmed continuation.
+                        # Cue the LLM to focus on the pre-mitigation
+                        # evidence window — the system is currently
+                        # stabilized and live telemetry no longer shows
+                        # the original failure signature.
+                        adaptive_instr = (
+                            "POST-MITIGATION RCA: The mitigation has "
+                            "stabilized the system as of turn "
+                            f"{ps.mitigation_completed_at_turn}. Focus "
+                            "your root-cause analysis on evidence "
+                            "collected BEFORE that turn — it captures "
+                            "the original failure signature. Evidence "
+                            "collected after the mitigation typically "
+                            "shows the stabilized state and is less "
+                            "useful for identifying the root cause. The "
+                            "context builder up-weights pre-mitigation "
+                            "evidence accordingly.\n" + adaptive_instr
+                        )
             elif stage == InvestigationStage.MITIGATION:
                 adaptive_instr = MITIGATION_INSTRUCTIONS
             elif stage == InvestigationStage.TREATMENT:

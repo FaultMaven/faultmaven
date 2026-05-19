@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.lifecycle_metrics import (
+    inquiry_gate2_confirmed_total,
+    inquiry_gate3_reached_total,
+    inquiry_gate3_resolved_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
 )
@@ -211,6 +214,27 @@ def _apply_stage_gate_side_effects(
     # When mitigation_verified is set, both mitigation flags reset so the
     # mitigation path can be re-entered if a future mitigation is needed.
     if "mitigation_verified" in completed_gates:
+        # Gate 3 boundary marker: capture the turn mitigation completed so
+        # later post-mitigation RCA runs can identify the pre-mitigation
+        # evidence window. Set ONCE (idempotent) — re-entry to MITIGATION
+        # preserves the first-completion turn as the canonical boundary.
+        # See INV-21 in investigation-lifecycle-logic.md and slice 3 of
+        # docs/working/WIP-investigation-gates-implementation.md.
+        if (
+            case.path_selection is not None
+            and case.path_selection.mitigation_completed_at_turn is None
+        ):
+            case.path_selection = case.path_selection.model_copy(
+                update={"mitigation_completed_at_turn": case.current_turn}
+            )
+            logger.info(
+                f"Case {case.case_id}: mitigation_completed_at_turn set to "
+                f"{case.current_turn} (Gate 3 boundary)"
+            )
+            # Outcome telemetry: every case that reaches mitigation_verified
+            # on the mitigation-first path passes through Gate 3.
+            inquiry_gate3_reached_total.inc()
+
         # rca_infeasible advisory signal: propose closure as mitigated rather
         # than push RCA on a problem the LLM has flagged as intractable.
         # Reference: investigation-lifecycle-logic.md §2.4.
@@ -660,6 +684,82 @@ def _path_selection_suggestions(case: "Case") -> list:
             },
         },
     ]
+
+
+def _post_mitigation_suggestions() -> list:
+    """Generate COOPERATIVE follow-up suggestions for Gate 3.
+
+    Surfaces the two post-mitigation outcomes:
+      1. Continue with root-cause analysis (POST_MITIGATION_CHOICE intent)
+      2. Close the case as mitigation-sufficient (STATUS_TRANSITION intent
+         to CLOSED with closure_reason=mitigation_sufficient — reuses
+         the existing closure-summary path; the substance gate produces
+         a coherent summary or marks the report as skipped per
+         closure_summary_redesign).
+
+    The close-branch body text mentions the runbook implication so the
+    user understands the trade-off at the click moment: closing as
+    mitigation-sufficient does NOT generate a root-cause runbook (only
+    RESOLVED cases do, per INV-18).
+
+    See INV-21 in investigation-lifecycle-logic.md.
+    """
+    return [
+        {
+            "label": "Continue with root-cause analysis",
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": "Mitigation worked — let's continue with root-cause analysis.",
+            "body": (
+                "Recommended. The system is stable but the underlying cause "
+                "is still unknown — RCA produces a permanent fix and a "
+                "runbook for next time."
+            ),
+            "intent": {
+                "type": "post_mitigation_choice",
+                "continue_to_rca": True,
+            },
+        },
+        {
+            "label": "Mitigation is sufficient, close case",
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": "The mitigation is sufficient — let's close this case.",
+            "body": (
+                "Close the case without further investigation. Note: no "
+                "root-cause runbook will be generated — only a mitigation "
+                "summary."
+            ),
+            "intent": {
+                "type": "status_transition",
+                "to_status": "closed",
+                "closure_reason": "mitigation_sufficient",
+                "user_confirmed": True,
+            },
+        },
+    ]
+
+
+def _gate3_is_pending(case: "Case") -> bool:
+    """Whether Gate 3 (post-mitigation continuation) is open for this case.
+
+    Returns True when:
+      - path == MITIGATION_FIRST
+      - mitigation_completed_at_turn is set (mitigation was verified)
+      - rca_after_mitigation_confirmed is False (user has not yet chosen)
+      - case is still in INVESTIGATING (not yet closed)
+
+    Used by both the deterministic suggestion-emission backstop and the
+    INV-21 milestone guard. See investigation-lifecycle-logic.md INV-21.
+    """
+    if case.status != CaseStatus.INVESTIGATING:
+        return False
+    ps = case.path_selection
+    if ps is None or ps.path != InvestigationPath.MITIGATION_FIRST:
+        return False
+    if ps.mitigation_completed_at_turn is None:
+        return False
+    return not ps.rca_after_mitigation_confirmed
 
 
 def _compute_inquiry_path_selection(case: "Case") -> None:
@@ -1829,7 +1929,34 @@ class MilestoneEngine:
                                 },
                             )
 
+                        # Gate 3 outcome telemetry: capture whether this
+                        # close resolves a pending Gate 3 with
+                        # mitigation_sufficient. Read state BEFORE confirm
+                        # fires (the closure_reason lives on pending_transition;
+                        # path_selection state is unchanged by the confirm call).
+                        _gate3_close = (
+                            case.path_selection is not None
+                            and case.path_selection.path
+                            == InvestigationPath.MITIGATION_FIRST
+                            and case.path_selection.mitigation_completed_at_turn
+                            is not None
+                            and not case.path_selection.rca_after_mitigation_confirmed
+                            and (case.pending_transition or {}).get("closure_reason")
+                            == "mitigation_sufficient"
+                            and (case.pending_transition or {}).get("to_status")
+                            == "closed"
+                        )
+
                         confirm_pending_transition(case, case.user_id)
+
+                        if _gate3_close:
+                            inquiry_gate3_resolved_total.labels(
+                                outcome="closed_mitigation_sufficient"
+                            ).inc()
+                            logger.info(
+                                f"Case {case.case_id}: Gate 3 resolved by "
+                                f"close as mitigation-sufficient."
+                            )
 
                         # Persist the terminal status before generating the
                         # summary — the Report row FKs to case_id.
@@ -2317,6 +2444,73 @@ class MilestoneEngine:
                     # Don't transition here — _check_automatic_transitions
                     # picks up the state change and fires the transition if
                     # both gates have now passed.
+
+                    # Gate 2 outcome telemetry: track whether the router's
+                    # recommendation was accepted as-is or overridden.
+                    inquiry_gate2_confirmed_total.labels(
+                        outcome=(
+                            "override" if chosen_path != ps.path else "recommended"
+                        )
+                    ).inc()
+
+            elif intent_type == "post_mitigation_choice":
+                # Gate 3 confirmation. User clicked the "Continue with RCA"
+                # suggestion (the "close as mitigation-sufficient" branch
+                # uses STATUS_TRANSITION instead — handled above).
+                logger.info(
+                    f"Explicit post_mitigation_choice intent for case "
+                    f"{case.case_id} (intent_data={intent_data})"
+                )
+
+                if case.status != CaseStatus.INVESTIGATING:
+                    logger.warning(
+                        f"Received post_mitigation_choice intent for case "
+                        f"{case.case_id} but status is {case.status.value}"
+                    )
+                elif not _gate3_is_pending(case):
+                    logger.warning(
+                        f"Received post_mitigation_choice intent for case "
+                        f"{case.case_id} but Gate 3 is not pending "
+                        f"(path={case.path_selection.path.value if case.path_selection else None}, "
+                        f"mitigation_completed_at_turn="
+                        f"{case.path_selection.mitigation_completed_at_turn if case.path_selection else None}, "
+                        f"rca_after_mitigation_confirmed="
+                        f"{case.path_selection.rca_after_mitigation_confirmed if case.path_selection else None})"
+                    )
+                elif not intent_data or "continue_to_rca" not in intent_data:
+                    logger.warning(
+                        f"post_mitigation_choice intent missing continue_to_rca "
+                        f"payload for case {case.case_id}"
+                    )
+                else:
+                    continue_to_rca = bool(intent_data["continue_to_rca"])
+                    ps = case.path_selection
+                    if continue_to_rca:
+                        case.path_selection = ps.model_copy(
+                            update={
+                                "rca_after_mitigation_confirmed": True,
+                                "rca_after_mitigation_confirmed_at_turn": case.current_turn,
+                            }
+                        )
+                        inquiry_gate3_resolved_total.labels(
+                            outcome="continued_to_rca"
+                        ).inc()
+                        logger.info(
+                            f"Case {case.case_id}: Gate 3 confirmed — "
+                            f"continuing with RCA. INV-21 guard now allows "
+                            f"root_cause_identified."
+                        )
+                    else:
+                        # continue_to_rca=False is informational only — the
+                        # close branch uses STATUS_TRANSITION (which fires
+                        # the gate3_resolved_total{closed_mitigation_sufficient}
+                        # counter at the transition site). Logging here for
+                        # observability if the frontend ever emits this branch.
+                        logger.info(
+                            f"Case {case.case_id}: post_mitigation_choice "
+                            f"intent with continue_to_rca=False — expected "
+                            f"path is STATUS_TRANSITION to CLOSED."
+                        )
 
             # ============================================================
             # HYPOTHESIS ACTION - Explicit Intent (Frontend/IntentResolver)
@@ -2927,6 +3121,25 @@ class MilestoneEngine:
                     f"Gate 2 pending for case {case_updated.case_id}: "
                     f"emitting deterministic path-selection suggestions "
                     f"(recommended={case_updated.path_selection.path.value}, "
+                    f"turn={case_updated.current_turn})"
+                )
+
+            # Gate 3 pending: mitigation verified on a mitigation-first case
+            # but the user has not yet decided whether to continue with RCA
+            # or close as mitigation-sufficient. Force the canonical Gate 3
+            # suggestion pair. Skipped when the rca_infeasible advisory
+            # already produced override_suggestions earlier in the turn —
+            # rca_infeasible is the LLM-driven shortcut for the same
+            # post-mitigation decision and should not double-emit. See INV-21.
+            elif _gate3_is_pending(case_updated) and not metadata.get(
+                "rca_infeasible_closure_message"
+            ):
+                follow_ups = _post_mitigation_suggestions()
+                logger.info(
+                    f"Gate 3 pending for case {case_updated.case_id}: "
+                    f"emitting deterministic post-mitigation suggestions "
+                    f"(mitigation_completed_at_turn="
+                    f"{case_updated.path_selection.mitigation_completed_at_turn}, "
                     f"turn={case_updated.current_turn})"
                 )
 
@@ -5185,6 +5398,16 @@ class MilestoneEngine:
                 a.status == "pending" for a in case.proposed_actions
             )
 
+            # INV-21: on a mitigation-first case where mitigation has been
+            # verified but the user has not yet confirmed continuing to RCA
+            # (Gate 3 pending), reject RCA-side milestone updates. Prevents
+            # the engine from silently restarting RCA when the user might
+            # have wanted to close as mitigation-sufficient. Stage-gate
+            # mitigation milestones are exempt (a follow-up mitigation
+            # cycle is allowed via the existing re-entry mechanism).
+            gate3_blocks_rca_milestones = _gate3_is_pending(case)
+            rca_side_milestones = {"root_cause_identified"}
+
             for field in milestone_fields:
                 if getattr(m, field, False):
                     # Guard: reject stage-gate milestones if no pending action
@@ -5192,6 +5415,15 @@ class MilestoneEngine:
                         logger.warning(
                             f"Rejected stage-gate milestone '{field}' for case "
                             f"{case.case_id}: no pending ProposedAction exists"
+                        )
+                        continue
+                    # INV-21 guard: reject RCA-side milestones until Gate 3 passes
+                    if gate3_blocks_rca_milestones and field in rca_side_milestones:
+                        logger.warning(
+                            f"INV-21: Rejected RCA-side milestone '{field}' for "
+                            f"case {case.case_id} — mitigation is verified but "
+                            f"the user has not yet chosen to continue with RCA "
+                            f"(Gate 3 pending)."
                         )
                         continue
                     # Only append if transitioning from False to True
