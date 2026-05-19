@@ -115,10 +115,20 @@ class StateUpdates(BaseModel):
 
 class JournalEntryOutput(BaseModel):
     entry_type: Literal["finding", "decision", "user_context", "ruled_out", "blocker", "milestone"]
-    content: str = Field(max_length=200)
+    content: str = Field(description="The distilled insight (max 200 chars)")
     evidence_id: Optional[str] = None
     hypothesis_id: Optional[str] = None
+
+    @field_validator("content")
+    @classmethod
+    def truncate_content(cls, v: str) -> str:
+        """Truncate instead of rejecting — LLMs often exceed the 200 char guideline."""
+        if len(v) > 200:
+            return v[:197] + "..."
+        return v
 ```
+
+> The LLM-facing `JournalEntryOutput` schema truncates over-length content rather than rejecting it, because structured-output rejections from a single chatty turn would corrupt the whole response. The persisted `JournalEntry` domain model in `modules/case/domain/models.py` keeps a strict `max_length=200` — by the time content lands there it has already been normalized.
 
 ### Prompt Injection
 
