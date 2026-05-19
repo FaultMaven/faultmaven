@@ -6,25 +6,30 @@ These capabilities are implemented in the `AgentOrchestrationService` and suppor
 
 ## 1. State Checkpointing
 
-> **Implementation Status: DEFERRED**
->
-> The checkpointing system described below is designed but not yet implemented in code.
-> `CaseCheckpoint` is defined in contracts but not instantiated in the investigation flow.
-> Turn-level state is currently tracked via `TurnProgress` records in `case.turn_history`,
-> which provides partial auditability. Full checkpoint/snapshot/diff functionality is
-> planned for a future release.
+FaultMaven uses a **Turn-Based Checkpointing** system to keep investigation state durable and auditable. The write path is implemented; the read-side surfaces (time travel, semantic diff — see §2) are still deferred.
 
-FaultMaven's design includes a **Turn-Based Checkpointing** system to ensure investigation state is durable, auditable, and restorable.
+### 1.1 Mechanism
 
-### 1.1 Mechanism (Design)
-*   **Trigger**: A checkpoint would be automatically created at the end of every agent execution turn (`turn_complete`).
-*   **Storage**: The full state of the `Case` object would be serialized and stored in the `CaseCheckpoint` table.
-    *   **PostgreSQL**: Uses `JSONB` for efficient querying.
-    *   **SQLite** (Dev): Uses `Text` (JSON string) for compatibility.
-*   **Immutability**: Checkpoints are append-only. Once a turn is completed, its state record is permanent.
+*   **Construction & persistence**: [`checkpoint_service.py:57`](../../../faultmaven/core/investigation/checkpoint_service.py) builds a `CaseCheckpoint` from `case.model_dump()`, computes a SHA-256 hash of the JSON snapshot, and persists via `case_repo.create_checkpoint(...)`.
+*   **Storage**: `CaseCheckpoint` rows live in `case_checkpoints`. PostgreSQL uses `JSONB` for efficient querying; SQLite (dev) uses `Text` for compatibility.
+*   **Immutability**: Checkpoints are append-only. The checkpoint_id is `{case_id}:turn:{current_turn}:{trigger}`, so a given `(case, turn, trigger)` tuple is unique.
 
-### 1.2 Current State
-Turn progress is recorded via `TurnProgress` entries in `case.turn_history`, which captures gate milestones, progress milestones, evidence added, hypotheses generated, and turn outcomes. This provides basic auditability but does not support full state snapshots or time travel.
+### 1.2 Trigger Sites
+
+Checkpoints fire at four sites in the investigation flow. All sites are guarded by `if self.checkpoint_service:` so the engine degrades safely when the service is not wired.
+
+| Site | Trigger | When | Metadata captured |
+|---|---|---|---|
+| [`milestone_engine.py:1923`](../../../faultmaven/core/investigation/milestone_engine.py) | `pre_case_action` | Confirmed case-status transition initiated by the engine's pending_transition path | `from_status`, `to_status` |
+| [`milestone_engine.py:5791`](../../../faultmaven/core/investigation/milestone_engine.py) | `pre_case_action` | Just before INQUIRY → INVESTIGATING transition (Gap #6) | `from_status`, `to_status="investigating"` |
+| [`milestone_engine.py:6065`](../../../faultmaven/core/investigation/milestone_engine.py) | `pre_case_action` | Just before user-confirmed terminal transition (Gap #6) | `from_status`, `to_status` |
+| [`agent_orchestration_service.py:548`](../../../faultmaven/modules/agent/domain/services/agent_orchestration_service.py) | `turn_complete` | Fail-safe snapshot at the end of every successful turn (Step 9b) | none |
+
+The `pre_case_action` snapshots make every state change reversible at the data layer (the prior snapshot is still on disk). The `turn_complete` snapshots give per-turn auditability without depending on the engine's narrower transition paths.
+
+### 1.3 Auditability Today
+
+`TurnProgress` entries in `case.turn_history` still capture per-turn gate/progress milestones, evidence added, hypotheses generated, and turn outcomes — that surface is unchanged and is the primary feed for in-product turn-by-turn UI. Checkpoints sit underneath it as the durable snapshot store; they become observable to the user only when the time-travel surfaces in §2 land.
 
 ## 2. Replay & Debugging (Time Travel)
 
