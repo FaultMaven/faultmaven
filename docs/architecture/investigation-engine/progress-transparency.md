@@ -106,7 +106,7 @@ While in transparent mode, the system also checks for specific agent-internal fa
 |---|---|---|---|
 | **HYPOTHESIS_DEADLOCK** | DIAGNOSIS, TREATMENT | 3+ hypotheses, all INCONCLUSIVE | Retire all inconclusive hypotheses — gives LLM a clean slate |
 | **HYPOTHESIS_ANCHORING** | DIAGNOSIS, TREATMENT | 4+ failed hypotheses in same category | Ban the anchored category and suggest alternatives from `ProgressMonitor.ALL_CATEGORIES` (`code`, `config`, `environment`, `network`, `data`, `database`, `hardware`, `security`, `external`, `human`, `other`) — adds a constraint the LLM doesn't have on its own |
-| **EXHAUSTED** | DIAGNOSIS | 2+ categories explored, 2+ hypotheses refuted, no validated hypothesis, **both** `current_turn ≥ 8` AND `turns_without_progress ≥ 5` | Agent produces structured handoff — summary of findings, what remains uncertain, options for user |
+| **EXHAUSTED** | DIAGNOSIS | 2+ categories explored, 2+ hypotheses refuted, 2+ evidence items, no validated hypothesis, **both** `current_turn ≥ 8` AND `turns_without_progress ≥ 5` | Agent produces structured handoff — summary of findings, what remains uncertain, options for user |
 | **FIX_FAILURE_CYCLE** | MITIGATION, TREATMENT | 2+ accepted proposed actions, verification milestone not set | Agent summarizes what was tried and presents options |
 | **ACTION_LOOP** | All stages | Identical structural output across 5+ consecutive turns | Prompt injection (current); tool blocking (future) |
 
