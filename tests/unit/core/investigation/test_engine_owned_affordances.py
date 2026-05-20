@@ -332,6 +332,7 @@ class TestLLMContract:
         caught by `_log_dropped_fields`).
         """
         import json
+
         from faultmaven.core.investigation.schemas import SuggestedFollowUp
 
         schema_text = json.dumps(SuggestedFollowUp.model_json_schema())
