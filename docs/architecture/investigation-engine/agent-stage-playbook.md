@@ -53,7 +53,7 @@ There are two distinct transition mechanisms:
 | INQUIRY | TERMINAL (CLOSED) | User-Agent Handshake | User declines investigation |
 | DIAGNOSIS | MITIGATION | Inference-based | `mitigation_accepted` — user accepts the proposed temporary fix |
 | DIAGNOSIS | TREATMENT | Inference-based | `solution_accepted` — user acknowledges executing the proposed solution |
-| MITIGATION | DIAGNOSIS | Inference-based | `mitigation_verified` — user confirms mitigation worked; `mitigation_accepted` and `mitigation_verified` reset to False |
+| MITIGATION | DIAGNOSIS | Inference-based | `mitigation_verified` — user confirms mitigation worked; gate milestones are set-once (no reset), and `current_stage` falls through to DIAGNOSIS via its `NOT mitigation_verified` clause |
 | TREATMENT | TERMINAL (RESOLVED) | User-Agent Handshake | `solution_verified` — user confirms the solution resolved the issue |
 | Any INVESTIGATING stage | TERMINAL (CLOSED) | User-Agent Handshake | User escalates or abandons |
 
@@ -72,8 +72,10 @@ INVESTIGATING
   │    ├── → MITIGATION  (inferred: mitigation_accepted)
   │    └── → TREATMENT   (inferred: solution_accepted)
   │
-  ├─ MITIGATION [marker: mitigation_accepted]
-  │    └── → DIAGNOSIS   (inferred: mitigation_verified; markers reset to False)
+  ├─ MITIGATION [marker: mitigation_accepted, exits when mitigation_verified]
+  │    └── → DIAGNOSIS   (inferred: mitigation_verified — gate milestones stay True; the
+  │                        MITIGATION property branch fails its NOT mitigation_verified
+  │                        clause and falls through to DIAGNOSIS for cause-phase work)
   │
   └─ TREATMENT [marker: solution_accepted]
        ├── → TERMINAL/RESOLVED  (handshake: solution_verified)
@@ -88,7 +90,7 @@ TERMINAL — immutable; Q&A only
 
 ### Key Definitions
 
-**Phase marker** — A boolean variable that both gates the transition INTO a phase and identifies the phase while active. The same variable serves both purposes: setting it to True triggers the transition; its True value identifies the active phase. A phase marker is introduced (as False) in the preceding phase and set to True at the transition boundary. When MITIGATION exits back to DIAGNOSIS, `mitigation_accepted` and `mitigation_verified` are both reset to False.
+**Phase marker** — A boolean variable that gates the transition INTO a phase and identifies the phase while active. Phase markers are **set-once monotonic** — once True, they stay True for the rest of the investigation. A phase marker is introduced (as False) in the preceding phase and set to True at the transition boundary. Stage transitions OUT of a phase are computed from the conjunction of markers: e.g., MITIGATION is active when `mitigation_accepted AND NOT mitigation_verified`; once `mitigation_verified` becomes True, that conjunction fails and the case falls through to DIAGNOSIS (post-mitigation cause phase) — no flag reset needed.
 
 **User-Agent Handshake** — The formal two-step confirmation mechanism. The agent proposes a transition by setting `proposed_transition` and presenting exactly two COOPERATIVE suggestions: "Yes" (proceed) and "No" (stay). The transition executes only when the user selects "Yes." This is the only mechanism for INQUIRY→INVESTIGATING, TREATMENT→RESOLVED, and Any→CLOSED.
 
@@ -409,7 +411,7 @@ Apply a temporary fix to reduce immediate impact while root cause analysis is bl
 6. Iterate if ineffective — propose a modified approach, stay in MITIGATION.
 7. Do not form hypotheses or classify `causal_evidence` here.
 
-**`mitigation_verified`** — Set when the user confirms stabilization. Subjective confirmation is sufficient: "it's better", "errors dropped", "seems stable". Specific metric values are not required. On exit, `mitigation_accepted` and `mitigation_verified` are both reset to False before DIAGNOSIS resumes.
+**`mitigation_verified`** — Set when the user confirms stabilization. Subjective confirmation is sufficient: "it's better", "errors dropped", "seems stable". Specific metric values are not required. Set-once: stays True for the rest of the investigation. The case transitions back to DIAGNOSIS via the `current_stage` property's fall-through (MITIGATION branch requires `NOT mitigation_verified`); no flag reset.
 
 **When mitigation stalls:** If multiple attempts have failed and safe options are exhausted, do not continue proposing variants. Offer exactly two COOPERATIVE suggestions: (1) "Accept current state and proceed to root cause" — creates a `mitigation_evidence` record (source_type: text) and sets `mitigation_verified=True` to return to DIAGNOSIS even with partial stabilization; (2) "Escalate to a human expert" — acknowledges the investigation has reached its limit.
 
@@ -417,7 +419,7 @@ Apply a temporary fix to reduce immediate impact while root cause analysis is bl
 
 | To | Mechanism | Condition |
 | -- | --------- | --------- |
-| DIAGNOSIS (Zone 2 or 3) | Inference-based | `mitigation_verified = True` — phase markers reset to False; RCA resumes |
+| DIAGNOSIS (Zone 2 or 3) | Inference-based | `mitigation_verified = True` — set-once; the MITIGATION property branch fails its `NOT mitigation_verified` clause and the case falls through to DIAGNOSIS for cause-phase work. Gate 3 (`path_selection.rca_after_mitigation_confirmed`) blocks RCA-side milestone advances until the user confirms. |
 | TERMINAL (CLOSED) | User-Agent Handshake | User selects escalation from stall-breaker or abandons |
 
 **Anti-Patterns:**

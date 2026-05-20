@@ -39,8 +39,21 @@ logger = logging.getLogger(__name__)
 def derive_closure_reason(case: "Case") -> str:
     """Engine-only derivation of closure_reason from case state.
 
-    Returns one of VALID_CLOSURE_REASONS based on (case.status,
-    progress.mitigation_verified). Called when proposing CLOSED transition.
+    Returns one of VALID_CLOSURE_REASONS based on case lifecycle position:
+
+    - ``inquiry_only`` — case is still in INQUIRY (no investigation started)
+    - ``mitigation_sufficient`` — case is at Gate 3: mitigation was verified
+      and the user has not (yet) chosen to continue with RCA. This is the
+      "closing because the temp fix is good enough" path.
+    - ``closed_after_investigation`` — everything else: investigation
+      attempted, no mitigation reached, OR mitigation reached but user
+      chose to continue to RCA and later abandoned.
+
+    The "at Gate 3" check uses ``path_selection.{mitigation_completed_at_turn,
+    rca_after_mitigation_confirmed}`` rather than ``progress.mitigation_verified``
+    so the answer is stable regardless of which turn this is read on, and so a
+    user who continued to RCA and later abandoned correctly gets
+    ``closed_after_investigation`` rather than ``mitigation_sufficient``.
 
     The LLM never authors closure_reason; it's purely engine-derived from
     structured case state.
@@ -49,8 +62,16 @@ def derive_closure_reason(case: "Case") -> str:
 
     if case.status == CaseStatus.INQUIRY:
         return "inquiry_only"
-    if case.progress and getattr(case.progress, "mitigation_verified", False):
+
+    ps = getattr(case, "path_selection", None)
+    at_gate3 = (
+        ps is not None
+        and ps.mitigation_completed_at_turn is not None
+        and not ps.rca_after_mitigation_confirmed
+    )
+    if at_gate3:
         return "mitigation_sufficient"
+
     return "closed_after_investigation"
 
 

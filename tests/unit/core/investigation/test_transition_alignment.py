@@ -23,7 +23,9 @@ from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    InvestigationPath,
     InvestigationProgress,
+    PathSelection,
     ProblemVerification,
     RootCauseConclusion,
     Solution,
@@ -369,15 +371,29 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
 @pytest.mark.asyncio
 async def test_check_automatic_transitions_closure_reason_mitigation_sufficient():
     """Regression guard for the mitigation-sufficient case: closing a case
-    where mitigation_verified=True must yield closure_reason='mitigation_sufficient'
-    (engine-derived). This gates the runbook-generation suggestion downstream."""
+    at Gate 3 (mitigation verified, user has not chosen to continue with RCA)
+    must yield closure_reason='mitigation_sufficient' (engine-derived). This
+    gates the runbook-generation suggestion downstream.
+
+    ``derive_closure_reason`` keys off ``path_selection.{mitigation_completed_at_turn,
+    rca_after_mitigation_confirmed}``, not ``mitigation_verified``, so the test
+    populates the at-Gate-3 path_selection state directly."""
     engine = MilestoneEngine(
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
+    case.progress.mitigation_accepted = True
     case.progress.mitigation_verified = True
+    case.path_selection = PathSelection(
+        path=InvestigationPath.MITIGATION_FIRST,
+        auto_selected=True,
+        rationale="ongoing critical",
+        user_confirmed=True,
+        mitigation_completed_at_turn=case.current_turn,
+        # rca_after_mitigation_confirmed default False → at Gate 3
+    )
 
     fake_response = MagicMock()
     fake_response.state_updates.proposed_transition = MagicMock(

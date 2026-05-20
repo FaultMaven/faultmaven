@@ -232,7 +232,7 @@ Mitigation is **not assumed to be one-shot**. It is dynamic, interactive, and po
 
 **Exit condition**: User verifies mitigation is effective → post-mitigation behavior depends on `rca_infeasible` (see [Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal)). Default: return to **DIAGNOSIS** for root cause analysis. When `rca_infeasible=True`: agent proposes closure as mitigated (User-Agent Handshake). The user can always override in either direction.
 
-**Re-entry**: After returning to DIAGNOSIS, if a new urgent situation arises, the agent can propose another mitigation. When `mitigation_verified` is set, `_apply_stage_gate_side_effects()` in `milestone_engine.py` resets both `mitigation_accepted` and `mitigation_verified` to `False`, allowing a new MITIGATION detour. The completed mitigation attempt is preserved in the `action_attempts` list for history and audit.
+**No re-entry under forward-only design**: Once `mitigation_verified` is set, the case transitions back to DIAGNOSIS for the rest of the investigation. The mitigation gate milestones (`mitigation_accepted`, `mitigation_verified`) are set-once — the engine does not reset them, and the case does not re-enter MITIGATION on the same investigation. The `current_stage` property correctly falls through to DIAGNOSIS via its `NOT mitigation_verified` clause. If a regression occurs during post-mitigation DIAGNOSIS, the agent handles it as an in-stage action (analogous to extended diagnosis within TREATMENT after a failed fix); if the regression is fundamentally a different problem, the user opens a new linked case. Completed mitigation attempts are preserved in the `action_attempts` list for history and audit.
 
 **Scope**: The agent should NOT pursue root cause analysis during MITIGATION. Focus solely on applying and verifying the temporary fix.
 
@@ -1028,14 +1028,14 @@ proposed_actions: list[ProposedAction] = []
 action_attempts: list[ActionAttempt] = []
 ```
 
-This covers both TREATMENT cycles (solution attempts) and MITIGATION cycles (mitigation attempts). The boolean flags on InvestigationProgress (`mitigation_accepted`, `mitigation_verified`) represent the **current** cycle; the `action_attempts` list provides **history**. When `mitigation_verified` is completed, `_apply_stage_gate_side_effects()` resets both flags to `False` (see §3.3 Re-entry); the completed mitigation attempt remains in the list.
+This covers both TREATMENT cycles (solution attempts) and MITIGATION cycles (mitigation attempts). The boolean flags on InvestigationProgress (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`) are **set-once monotonic** under forward-only design — once True, they stay True for the rest of the investigation. The `action_attempts` list provides per-attempt **history**, which is the right source for cycle-level analytics (multiple attempts within a single MITIGATION or TREATMENT stage).
 
 This is not used for escalation thresholds (escalation is based on capability exhaustion, not a fixed counter). It provides:
 
 - **LLM context**: The agent sees what has been tried (both mitigations and solutions) and can avoid repeating failed approaches
 - **Analytics**: Time-per-cycle, failure categorization, investigation thoroughness, mitigation effectiveness
 - **Progress monitor input**: The progress monitor can use attempt history to detect fix-failure cycles and repeated execution paths (see [Progress Transparency](./progress-transparency.md) repair patterns)
-- **Audit trail**: Complete record of all mitigation and solution actions, even after flag resets
+- **Audit trail**: Complete record of all mitigation and solution actions, indexed per-attempt regardless of which milestone flags are set
 
 ---
 
@@ -1253,7 +1253,7 @@ All open questions from the initial draft have been resolved.
 
 3. **Escalation via capability exhaustion, not a fixed counter.** The agent suggests escalation when it has no more viable options — not after a fixed number of cycles. The principle: do not repeat a task without new input. For genuine external blockers (limited data, hypothesis deadlock, external dependencies), the agent communicates limitations naturally in its responses and suggests escalation. Simple lack of progress (5+ turns) receives a gentle stagnation nudge — a prompt hint, not a mode change. FaultMaven is a copilot that patiently serves the user while keeping the diagnostic thread visible.
 
-4. **MITIGATION is iterative until verified.** Mitigation is not assumed to be one-shot. It is dynamic, interactive, and potentially iterative — multiple attempts may be needed until the user verifies the situation is stabilized. The MITIGATION stage stays active until verified, supporting multiple mitigation actions within a single MITIGATION detour. Re-entry to MITIGATION from DIAGNOSIS (a second detour) is also supported — the mitigation_accepted/mitigation_verified flags reset when returning to DIAGNOSIS, allowing a new mitigation cycle if needed.
+4. **MITIGATION is iterative until verified, then forward-only.** Mitigation is not assumed to be one-shot. It is dynamic, interactive, and potentially iterative — multiple attempts may be needed until the user verifies the situation is stabilized. The MITIGATION stage stays active until verified, supporting multiple mitigation actions within a single MITIGATION detour. Once verified, however, the case transitions forward to post-mitigation DIAGNOSIS for cause-phase work and does not re-enter MITIGATION on the same investigation. Gate milestones are set-once; regressions during post-mitigation DIAGNOSIS are handled as in-stage actions (analogous to TREATMENT failure handling), and a fundamentally different problem is treated as a new linked case rather than a MITIGATION re-entry.
 
 5. **Compliance detection: default to no-transition when ambiguous.** The inference-based transition depends on classifying whether the user's message is compliance with a proposed action. When ambiguous (e.g., "I ran the command but got a different error", "Here are the results, but I'm not sure I did it right"), the system defaults to no-transition and the LLM handles it within the current stage. It is safer to stay in the current stage and let the LLM ask for clarification than to transition incorrectly. The `ProposedAction.expected_command` field (Section 10.5) provides a structured reference point for matching user submissions against the proposed action, improving detection accuracy over free-text inference alone.
 

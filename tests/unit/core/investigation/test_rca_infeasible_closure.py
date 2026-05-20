@@ -20,7 +20,9 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
     InquiryData,
+    InvestigationPath,
     InvestigationProgress,
+    PathSelection,
     ProblemVerification,
 )
 
@@ -32,7 +34,12 @@ def _make_case(
     mitigation_verified: bool = True,
     no_problem_verification: bool = False,
 ) -> Case:
-    """Build a Case with mitigation_verified set and an optional rca_infeasible signal."""
+    """Build a Case with mitigation_verified set and an optional rca_infeasible signal.
+
+    Includes a MITIGATION_FIRST ``path_selection`` so the rca_infeasible
+    closure flow can stamp ``mitigation_completed_at_turn`` and so
+    ``derive_closure_reason`` recognizes the case as at-Gate-3.
+    """
     pv = (
         None
         if no_problem_verification
@@ -57,6 +64,12 @@ def _make_case(
             mitigation_accepted=True,
             mitigation_verified=mitigation_verified,
         ),
+        path_selection=PathSelection(
+            path=InvestigationPath.MITIGATION_FIRST,
+            auto_selected=True,
+            rationale="ongoing critical",
+            user_confirmed=True,
+        ),
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
@@ -69,8 +82,9 @@ def _make_case(
 def test_rca_infeasible_creates_pending_closure():
     """mitigation_verified + rca_infeasible=True → pending_transition to CLOSED.
 
-    closure_reason must be snapshotted as "mitigation_sufficient" because
-    propose_transition runs BEFORE the mitigation flag reset.
+    closure_reason is derived from ``path_selection`` at-Gate-3 state:
+    ``mitigation_completed_at_turn`` is set + ``rca_after_mitigation_confirmed``
+    is False → ``mitigation_sufficient``.
     """
     case = _make_case(rca_infeasible=True, rationale="third-party API outage")
     metadata: dict = {}
@@ -93,13 +107,22 @@ def test_rca_infeasible_creates_pending_closure():
         metadata["rca_infeasible_closure_message"] == case.pending_transition["summary"]
     )
 
-    # Flag reset still runs, so a user decline path will resume RCA.
-    assert case.progress.mitigation_verified is False
-    assert case.progress.mitigation_accepted is False
+    # Mitigation gate flags are set-once under forward-only semantics —
+    # they stay True after the side effect runs. The case's at-Gate-3
+    # status is read from path_selection, not from these flags.
+    assert case.progress.mitigation_verified is True
+    assert case.progress.mitigation_accepted is True
+    # The Gate 3 boundary marker is stamped on path_selection.
+    assert case.path_selection.mitigation_completed_at_turn is not None
 
 
 def test_rca_infeasible_false_does_not_propose_closure():
-    """mitigation_verified + rca_infeasible=False → no pending_transition; flags reset."""
+    """mitigation_verified + rca_infeasible=False → no pending_transition.
+
+    Mitigation gate flags stay True (set-once under forward-only); the
+    Gate 3 boundary marker is stamped on path_selection so the engine can
+    later recognize an at-Gate-3 close as ``mitigation_sufficient``.
+    """
     case = _make_case(rca_infeasible=False)
     metadata: dict = {}
 
@@ -109,8 +132,9 @@ def test_rca_infeasible_false_does_not_propose_closure():
 
     assert case.pending_transition is None
     assert "rca_infeasible_closure_message" not in metadata
-    assert case.progress.mitigation_verified is False
-    assert case.progress.mitigation_accepted is False
+    assert case.progress.mitigation_verified is True
+    assert case.progress.mitigation_accepted is True
+    assert case.path_selection.mitigation_completed_at_turn is not None
 
 
 def test_no_problem_verification_does_not_propose_closure():

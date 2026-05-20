@@ -1619,6 +1619,12 @@ def build_investigation_context(
                         "MILESTONE_TO_SET: solution_accepted (set True when user "
                         "submits results of executing this solution)\n"
                     )
+                # Surface engine-issued downgrade reason if present so the
+                # LLM understands why its intent was rewritten and can
+                # recover on this turn (e.g. by gathering the missing
+                # evidence and re-proposing).
+                if getattr(action, "downgrade_reason", None):
+                    pending_action_str += f"ENGINE_NOTE: {action.downgrade_reason}\n"
                 pending_action_str += "</pending_action>"
                 break
 

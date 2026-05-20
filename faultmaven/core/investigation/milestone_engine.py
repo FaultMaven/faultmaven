@@ -142,6 +142,18 @@ CATEGORY_MILESTONE_MAP = {
 }
 
 
+def _case_has_symptom_evidence(case: Case) -> bool:
+    """Return True if the case has at least one SYMPTOM_EVIDENCE row.
+
+    Backstop for Behavioral Rule 2 applied to MITIGATION ProposedActions:
+    a mitigation must target an observed failure (recorded as
+    SYMPTOM_EVIDENCE), not an unverified user claim. Used at the
+    ProposedAction-creation site to gate MITIGATION → DIAGNOSTIC
+    downgrades. Pure over case state; no side effects.
+    """
+    return any(e.category == EvidenceCategory.SYMPTOM_EVIDENCE for e in case.evidence)
+
+
 def _determine_action_type(
     case: Case, solution_type: SolutionType
 ) -> InvestigationActionType:
@@ -211,14 +223,23 @@ def _apply_stage_gate_side_effects(
             f"type={pending_action.action_type.value})"
         )
 
-    # 3B: Mitigation flag reset for re-entry
-    # When mitigation_verified is set, both mitigation flags reset so the
-    # mitigation path can be re-entered if a future mitigation is needed.
+    # 3B: Mitigation-verified side effects (Gate 3 boundary + optional auto-close)
+    #
+    # The mitigation gate milestones (mitigation_accepted, mitigation_verified)
+    # are set-once under the forward-only design: once True, they stay True.
+    # The case never re-enters MITIGATION on the same investigation — the
+    # stage property correctly falls through to DIAGNOSIS for cause-phase
+    # work once mitigation_verified=True (the MITIGATION branch requires
+    # NOT mitigation_verified, so both flags being True yields DIAGNOSIS).
+    #
+    # Downstream "is this case at Gate 3?" decisions consult
+    # path_selection.{mitigation_completed_at_turn, rca_after_mitigation_confirmed}
+    # rather than relying on the transient flag state of mitigation_verified.
     if "mitigation_verified" in completed_gates:
         # Gate 3 boundary marker: capture the turn mitigation completed so
-        # later post-mitigation RCA runs can identify the pre-mitigation
-        # evidence window. Set ONCE (idempotent) — re-entry to MITIGATION
-        # preserves the first-completion turn as the canonical boundary.
+        # post-mitigation RCA prompts can up-weight pre-mitigation evidence
+        # and so derive_closure_reason can recognize "at Gate 3" closures.
+        # Set ONCE (idempotent via the is-None guard).
         # See INV-21 in investigation-lifecycle-logic.md and slice 3 of
         # docs/working/WIP-investigation-gates-implementation.md.
         if (
@@ -251,9 +272,6 @@ def _apply_stage_gate_side_effects(
                 "The mitigation is verified and stable. "
                 f"Since {rationale}, shall we close this case as mitigated?"
             )
-            # Propose BEFORE the flag reset so derive_closure_reason reads
-            # mitigation_verified=True and snapshots closure_reason as
-            # "mitigation_sufficient" into pending_transition.
             from faultmaven.core.investigation.terminal_transitions import (
                 propose_transition,
             )
@@ -270,15 +288,6 @@ def _apply_stage_gate_side_effects(
                 f"Proposed CLOSED transition for case {case.case_id} "
                 f"(rca_infeasible=True, closure_reason=mitigation_sufficient, "
                 f"rationale: {rationale})"
-            )
-
-        case.progress.mitigation_accepted = False
-        case.progress.mitigation_verified = False
-
-        if not rca_infeasible:
-            logger.info(
-                f"Reset mitigation flags for case {case.case_id} "
-                f"(return to DIAGNOSIS for RCA)"
             )
 
     metadata["compliance_detected"] = True
@@ -5749,6 +5758,7 @@ class MilestoneEngine:
 
                 # Gap 0: Create ProposedAction for compliance detection chain
                 action_type = _determine_action_type(case, s_item.solution_type)
+                downgrade_reason: Optional[str] = None
 
                 # 3C: Hypothesis gate — SOLUTION requires at least one hypothesis.
                 # If no hypotheses exist, downgrade to DIAGNOSTIC to prevent
@@ -5763,12 +5773,61 @@ class MilestoneEngine:
                     )
                     action_type = InvestigationActionType.DIAGNOSTIC
 
+                # 3D: Symptom-evidence gate — MITIGATION requires at least one
+                # SYMPTOM_EVIDENCE row on the case. The mitigation must target
+                # an observed failure, not an unverified user claim. If no
+                # SYMPTOM_EVIDENCE exists, downgrade to DIAGNOSTIC so the
+                # mitigation milestone cannot fire on an ungrounded proposal.
+                # The LLM receives the downgrade_reason in next-turn context
+                # and can recover by gathering symptom data and re-proposing.
+                # See Behavioral Rule 2 (Evidence-Grounded) and
+                # investigation-lifecycle-logic.md §2.3 (MITIGATION_FIRST
+                # minimum-evidence discipline).
+                #
+                # Scope of this gate (what it does NOT do): the action's
+                # ``description`` and ``commands`` are preserved verbatim
+                # below — only ``action_type`` is rewritten. The user sees
+                # the original proposal in the chat and may execute it.
+                # The gate prevents the engine from REGISTERING the
+                # mitigation (firing ``mitigation_accepted`` on the user's
+                # subsequent compliance), not from the mitigation HAPPENING
+                # in the user's environment. If the user runs the action
+                # anyway, the LLM next turn sees both the downgrade_reason
+                # and the user's report; the recovery is to file
+                # retrospective SYMPTOM_EVIDENCE (from pre-mitigation logs
+                # or the user's account of what changed) and then re-propose.
+                # Forward-only semantics: an ungrounded mitigation that
+                # quietly executes does not register; the case stays in
+                # DIAGNOSIS until grounding catches up — which is the
+                # correct outcome under "valid results when possible, no
+                # false progress otherwise."
+                if (
+                    action_type == InvestigationActionType.MITIGATION
+                    and not _case_has_symptom_evidence(case)
+                ):
+                    logger.warning(
+                        f"Downgrading MITIGATION to DIAGNOSTIC for case {case.case_id}: "
+                        f"no SYMPTOM_EVIDENCE exists yet"
+                    )
+                    action_type = InvestigationActionType.DIAGNOSTIC
+                    downgrade_reason = (
+                        "Your previous MITIGATION proposal was downgraded to "
+                        "DIAGNOSTIC because no SYMPTOM_EVIDENCE existed on "
+                        "the case. A mitigation must target an observed "
+                        "failure, not an unverified user claim. Inspect the "
+                        "case data (pod logs / status / metrics / config "
+                        "snapshot), file SYMPTOM_EVIDENCE for what you find, "
+                        "then re-propose the mitigation grounded in that "
+                        "evidence."
+                    )
+
                 proposed_action = ProposedAction(
                     case_id=case.case_id,
                     action_type=action_type,
                     description=s_item.description,
                     commands=s_item.commands or [],
                     proposed_in_turn=case.current_turn,
+                    downgrade_reason=downgrade_reason,
                 )
                 case.proposed_actions.append(proposed_action)
 

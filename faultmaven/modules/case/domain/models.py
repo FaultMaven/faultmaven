@@ -447,16 +447,38 @@ class InvestigationProgress(BaseModel):
         - DIAGNOSIS: Understanding, diagnosing, proposing actions
         - MITIGATION: Applying and verifying temporary fix
         - TREATMENT: Applying permanent fix, verifying resolution
+
+        Forward-only semantics: gate milestones are set-once under the
+        current design. Once ``mitigation_verified=True``, the MITIGATION
+        branch's ``NOT mitigation_verified`` clause fails and the property
+        falls through to DIAGNOSIS — that's the post-mitigation cause-phase
+        DIAGNOSIS. The case does not re-enter MITIGATION on the same
+        investigation.
+
+        DIAGNOSIS is one stage with two phases distinguished by
+        ``symptom_verified``, not by the stage enum:
+        - ``symptom_verified=False`` → symptom-focus phase
+        - ``symptom_verified=True``  → cause-focus phase
+
+        Both MITIGATION_FIRST and ROOT_CAUSE paths traverse both phases.
+        MITIGATION_FIRST inserts the MITIGATION detour between them.
+        Callers needing the phase distinction must consult
+        ``progress.symptom_verified`` (the canonical signal) — the stage
+        enum does not differentiate, by design.
         """
         # TREATMENT: solution_accepted but not yet verified
         if self.solution_accepted and not self.solution_verified:
             return InvestigationStage.TREATMENT
 
-        # MITIGATION: mitigation_accepted but not yet verified
+        # MITIGATION: mitigation_accepted but not yet verified.
+        # Once mitigation_verified=True, this branch fails and the property
+        # falls through to DIAGNOSIS (post-mitigation cause phase).
         if self.mitigation_accepted and not self.mitigation_verified:
             return InvestigationStage.MITIGATION
 
-        # Default: DIAGNOSIS (initial state, or returned from MITIGATION)
+        # Default: DIAGNOSIS. Covers (a) initial symptom phase before any
+        # mitigation, and (b) post-mitigation cause phase. Distinguish via
+        # symptom_verified if needed.
         return InvestigationStage.DIAGNOSIS
 
     @property
@@ -2435,6 +2457,19 @@ class ProposedAction(BaseModel):
     status: str = Field(
         default="pending",
         description="pending | accepted | rejected | superseded",
+    )
+
+    downgrade_reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "If the engine downgraded action_type from the LLM's intent "
+            "(e.g. MITIGATION → DIAGNOSTIC because no SYMPTOM_EVIDENCE "
+            "existed yet), this carries the explanation. Rendered to the "
+            "LLM via context_builder on the next turn so the agent can "
+            "recover (gather the missing evidence and re-propose). None "
+            "when no downgrade occurred."
+        ),
+        max_length=500,
     )
 
     @field_validator("status")

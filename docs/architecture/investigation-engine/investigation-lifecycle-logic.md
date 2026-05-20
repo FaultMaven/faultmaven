@@ -542,7 +542,7 @@ Every load-bearing lifecycle rule has at least one enforcement surface: code, sc
 | INV-18 | Runbook generation is RESOLVED-only. CLOSED cases are not eligible regardless of `closure_reason`. Both the chat-side dispatcher and the API endpoint reject non-RESOLVED cases. | §4.5.1 line 1971 — *"Eligibility: RESOLVED cases only."* | **Code-guarded at two layers** — (1) Engine: `_process_terminal_turn` gates dispatch on `case.status == CaseStatus.RESOLVED`; non-RESOLVED falls through to terminal Q&A. (2) API: `POST /knowledge/convert-from-case` returns HTTP 400 when `case_status != "resolved"` (`conversion_routes.py:511`). | `test_inv18_*` in `test_lifecycle_invariants.py` |
 | INV-19 | INQUIRY → INVESTIGATING also requires `case.path_selection.user_confirmed = True` (Gate 2). The transition gate must verify *both* Gate 1 (problem statement confirmed) and Gate 2 (investigation path confirmed) before status flips. The router populates `path_selection` with `user_confirmed=False` after Gate 1; the user resolves Gate 2 by clicking one of the two COOPERATIVE path suggestions (or by typing path intent). | docs/working/WIP-investigation-gates-implementation.md (slice 2 / Three gates); slice 2 of investigation-gates implementation | **Code-guarded** — `_check_automatic_transitions` requires `case.path_selection is not None and case.path_selection.user_confirmed` in addition to the Gate 1 condition before calling `_transition_to_investigating`. The deterministic Gate 2 suggestion pair is emitted by the response builder whenever Gate 1 has passed but Gate 2 is still open, so the user has a clickable path regardless of LLM compliance with the prompt directive. *Composition seam:* the deterministic Gate 2 suggestion emission and the prompt-side `<path_selection_state>` directive are tied — removing or weakening the prompt block (e.g., reverting to the default `NOT_YET_CONFIRMED` rule with no path-selection instruction) does not break the invariant (buttons still emit, user can still click) but does degrade UX: the user sees path-selection buttons next to a response that doesn't acknowledge them. Audit `context_builder.py:inquiry_state_str` (path-selection sub-block) and `milestone_engine.py:_path_selection_suggestions` together when either changes. | `TestINV19GateTwoTransitionGate` in `tests/unit/core/investigation/test_investigation_gates.py` |
 | INV-20 | Mutating `case.inquiry.preliminary_urgency.level` or `case.inquiry.preliminary_urgency.is_ongoing` after Gate 2 has passed clears `case.path_selection`, forcing re-computation and a fresh Gate 2 next turn. The mutation watcher is deterministic and runs every inquiry turn — does NOT depend on the LLM noticing the change. | docs/working/WIP-investigation-gates-implementation.md (slice 2 / Re-evaluation triggers) | **Code-guarded** — `_apply_inquiry_updates` snapshots the pre-turn `preliminary_urgency` before applying LLM-emitted updates, then compares old/new `(level, is_ongoing)` tuples via `_inquiry_path_signals_changed`. On change, `case.path_selection = None`; the subsequent `_compute_inquiry_path_selection` call recomputes (idempotency guard on `path_selection is None` allows re-population). Mutations to other fields (`impact_assessment`, `is_incident_report`) do NOT invalidate Gate 2 — only signals the router consumes. | `TestINV20MutationWatcher` in `tests/unit/core/investigation/test_investigation_gates.py` |
-| INV-21 | Gate 3 — on a mitigation-first case after `mitigation_verified` first becomes True, RCA-side milestone advances (`root_cause_identified`) are blocked until the user explicitly confirms continuation via the `POST_MITIGATION_CHOICE` intent (`path_selection.rca_after_mitigation_confirmed = True`). The alternative outcome is a `STATUS_TRANSITION` to CLOSED with `closure_reason = mitigation_sufficient`. Either path closes Gate 3; until one fires, RCA cannot silently resume. | docs/working/WIP-investigation-gates-implementation.md (slice 3 / Gate 3) | **Code-guarded at three layers** — (1) `_apply_stage_gate_side_effects` sets `case.path_selection.mitigation_completed_at_turn` the first turn `mitigation_verified` is completed (the durable Gate 3 boundary marker — `mitigation_verified` itself is reset immediately to allow MITIGATION re-entry). (2) `_apply_investigation_updates` checks `_gate3_is_pending(case)` and rejects RCA-side milestone updates with a WARNING log while the gate is open. (3) The response builder forces `_post_mitigation_suggestions()` whenever `_gate3_is_pending(case)` is True and `rca_infeasible` did not already produce override suggestions, so the user has a clickable path regardless of LLM compliance with the GATE 3 PENDING prompt block. *Composition seam:* the deterministic suggestion emission and the prompt-side `GATE 3 PENDING` DIAGNOSIS-template injection are tied — removing the prompt injection does not break the invariant (suggestions still emit) but does degrade UX. Audit `templates.py:DIAGNOSIS dispatcher` and `milestone_engine.py:_post_mitigation_suggestions` together when either changes. *Outcome telemetry:* `faultmaven_inquiry_gate3_reached_total` (gate opens) paired with `faultmaven_inquiry_gate3_resolved_total{outcome}` (user resolved by continuing to RCA or closing as mitigation-sufficient). A growing gap signals stranded post-mitigation cases. | `TestINV21Gate3MilestoneGuard`, `TestPostMitigationSuggestions`, `TestGate3IntentHandler` in `tests/unit/core/investigation/test_investigation_gates_post_mitigation.py` |
+| INV-21 | Gate 3 — on a mitigation-first case after `mitigation_verified` first becomes True, RCA-side milestone advances (`root_cause_identified`) are blocked until the user explicitly confirms continuation via the `POST_MITIGATION_CHOICE` intent (`path_selection.rca_after_mitigation_confirmed = True`). The alternative outcome is a `STATUS_TRANSITION` to CLOSED with `closure_reason = mitigation_sufficient`. Either path closes Gate 3; until one fires, RCA cannot silently resume. | docs/working/WIP-investigation-gates-implementation.md (slice 3 / Gate 3) | **Code-guarded at three layers** — (1) `_apply_stage_gate_side_effects` sets `case.path_selection.mitigation_completed_at_turn` the first turn `mitigation_verified` is completed (the durable Gate 3 boundary marker). Mitigation gate flags are **set-once** under the forward-only design — neither `mitigation_accepted` nor `mitigation_verified` is reset by the engine; the case naturally transitions from MITIGATION back to DIAGNOSIS via the `current_stage` property's fall-through (the MITIGATION branch requires `NOT mitigation_verified`). The "at Gate 3" condition is read from `path_selection.{mitigation_completed_at_turn, rca_after_mitigation_confirmed}`, not from the transient flag state. (2) `_apply_investigation_updates` checks `_gate3_is_pending(case)` and rejects RCA-side milestone updates with a WARNING log while the gate is open. (3) The response builder forces `_post_mitigation_suggestions()` whenever `_gate3_is_pending(case)` is True and `rca_infeasible` did not already produce override suggestions, so the user has a clickable path regardless of LLM compliance with the GATE 3 PENDING prompt block. *Composition seam:* the deterministic suggestion emission and the prompt-side `GATE 3 PENDING` DIAGNOSIS-template injection are tied — removing the prompt injection does not break the invariant (suggestions still emit) but does degrade UX. Audit `templates.py:DIAGNOSIS dispatcher` and `milestone_engine.py:_post_mitigation_suggestions` together when either changes. *Outcome telemetry:* `faultmaven_inquiry_gate3_reached_total` (gate opens) paired with `faultmaven_inquiry_gate3_resolved_total{outcome}` (user resolved by continuing to RCA or closing as mitigation-sufficient). A growing gap signals stranded post-mitigation cases. | `TestINV21Gate3MilestoneGuard`, `TestPostMitigationSuggestions`, `TestGate3IntentHandler` in `tests/unit/core/investigation/test_investigation_gates_post_mitigation.py` |
 
 **Drift notes (as of this writing):**
 
@@ -1463,9 +1463,14 @@ The path determines **whether the agent proactively offers mitigation** during D
 
 MITIGATION is a **distinct stage** — a controlled detour to stabilize the situation before root cause analysis.
 
-- **DIAGNOSIS** (initial)
+- **DIAGNOSIS** (initial — symptom phase)
   - Agent detects urgency from problem verification
-  - Agent proposes a concrete temp fix action (e.g., "Run `kubectl rollout undo deployment/payment-api`")
+  - **Minimum-evidence discipline before mitigation proposal.** Even on MITIGATION_FIRST, the agent must complete symptom-phase grounding before proposing a temp fix. The proposal must be linked to *what is observed failing*, not to the user's report alone. Required signals:
+    - (a) **Symptom confirmation grounded in case evidence** — at least one SYMPTOM_EVIDENCE row attributable to the current incident (pod logs / status / metrics / config snapshot inspected). The user's *claim* alone is not sufficient — it is unverified until confirmed against case data.
+    - (b) **A specific failing component identified from that evidence** — the thing the proposed mitigation targets.
+    - A causal hypothesis is **not** required at this point. Hypothesis formation is cause-phase work that happens in post-mitigation DIAGNOSIS; requiring it here would push the agent toward premature causal commitment. The mitigation links to observed symptoms (SYMPTOM_EVIDENCE), not to a hypothesized cause (CAUSAL_EVIDENCE, which by [INV-17](#13-valid-transitions-summary) cannot exist without a hypothesis anyway).
+  - This rule is the MITIGATION_FIRST application of [Behavioral Rule 2 (Evidence-Grounded)](./agent-behavioral-rules.md#rule-2-evidence-grounded). The path's *"prioritize stopping the impact"* framing is **not** license to skip symptom confirmation — it is license to defer causal-hypothesis work until after stabilization.
+  - Agent proposes a concrete temp fix action (e.g., "Run `kubectl rollout undo deployment/payment-api`") grounded in (a) + (b)
   - If user complies (executes and submits results) → **inferred transition to MITIGATION**
   - If user questions or refuses → stays in DIAGNOSIS, agent refines approach
 
@@ -1946,39 +1951,57 @@ If the user declines and wants RCA anyway, the agent proceeds with DIAGNOSIS as 
 
 Mitigation is not assumed to be one-shot. Within the MITIGATION stage, the agent
 may adjust its approach and propose multiple temp fix attempts until the user
-verifies stabilization.
+verifies stabilization. Each accepted attempt is recorded in `action_attempts`;
+`mitigation_accepted` becomes True on the first accepted attempt and stays True
+across subsequent attempts. The stage exits the moment `mitigation_verified`
+first becomes True.
 
-**Reset mechanism**: When `mitigation_verified` is completed as a gate
-milestone, `_apply_stage_gate_side_effects()` (in `milestone_engine.py`) resets
-both `mitigation_accepted` and `mitigation_verified` to `False`. This happens
-as a side effect of the same function that marks the corresponding
-`ProposedAction` as "accepted" and creates an `ActionAttempt` audit record.
-The completed mitigation is preserved in the `action_attempts` list. The reset
-allows a new MITIGATION detour if a future urgent situation arises.
+**Set-once semantics under forward-only design**: Mitigation gate milestones
+(`mitigation_accepted`, `mitigation_verified`) are set-once — once True, the
+engine does not reset them. The case naturally transitions from MITIGATION
+back to DIAGNOSIS (post-mitigation cause phase) via the `current_stage`
+property's fall-through: the MITIGATION branch requires `NOT mitigation_verified`,
+so both flags being True yields DIAGNOSIS. No re-entry to MITIGATION on the
+same investigation — regressions are handled as in-stage actions within
+post-mitigation DIAGNOSIS (analogous to how TREATMENT failures stay within
+TREATMENT) or as a new linked case.
+
+Engine consumers that need "is this case at Gate 3?" semantics read
+`path_selection.{mitigation_completed_at_turn, rca_after_mitigation_confirmed}`,
+not `mitigation_verified` directly. The boundary marker
+`mitigation_completed_at_turn` is stamped once (idempotent via an `is None`
+guard) when `mitigation_verified` first fires.
 
 #### How the System Distinguishes Outcomes (Retrospectively)
 
-The boolean milestone flags reflect the **current** cycle, not history.
-After the mitigation flag reset, `mitigation_accepted` and `mitigation_verified`
-are both `False`. To determine whether mitigation occurred, query the
+The boolean milestone flags reflect the case's progress as a monotonic record.
+Once a gate milestone is True, it stays True. To determine whether mitigation
+occurred, either read `mitigation_accepted` directly or query the
 `action_attempts` list for entries with `action_type=MITIGATION`.
 
 | Field | Full Path (RESOLVED) | Mitigation-Only (CLOSED) | No Mitigation (RESOLVED) |
 | ----- | ------------------- | ------------------------ | ------------------------ |
-| `mitigation_accepted` | False (reset) | False (reset) | False |
-| `mitigation_verified` | False (reset) | False (reset) | False |
+| `mitigation_accepted` | True | True | False |
+| `mitigation_verified` | True | True | False |
 | `solution_accepted` | True | False | True |
 | `solution_verified` | True | False | True |
 | `root_cause_identified` | True | May be partial | True |
+| `path_selection.mitigation_completed_at_turn` | Set | Set | None |
+| `path_selection.rca_after_mitigation_confirmed` | True | False | N/A |
 | `CaseStatus` | RESOLVED | CLOSED | RESOLVED |
 | `closure_reason` | None | "mitigation_sufficient" | None |
 | `rca_infeasible` | False | True or False | False |
 | `action_attempts` has MITIGATION | Yes | Yes | No |
 | **Knowledge artifact** | **Runbook** | **Closure Summary only** | **Runbook** |
 
-The combination of `CaseStatus`, `closure_reason`, and `action_attempts` history
-provides the full classification. Analytics should query `action_attempts` to
-determine mitigation involvement, not the boolean flags.
+The combination of `CaseStatus`, `closure_reason`, and (where the distinction
+matters) `path_selection.rca_after_mitigation_confirmed` provides the full
+classification. `derive_closure_reason` (in `terminal_transitions.py`) keys
+off the at-Gate-3 condition — `mitigation_completed_at_turn is not None AND
+NOT rca_after_mitigation_confirmed` — to choose `mitigation_sufficient` vs
+`closed_after_investigation`, so a user who continued to RCA and later
+abandoned correctly gets `closed_after_investigation` (not
+`mitigation_sufficient`).
 
 `closure_reason` is `None` for all RESOLVED cases — resolution itself is the
 categorization. Only CLOSED cases carry a `closure_reason` value

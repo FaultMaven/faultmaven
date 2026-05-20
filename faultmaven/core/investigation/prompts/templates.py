@@ -2082,10 +2082,41 @@ def get_prompt_for_case(
                 ps = case.path_selection
                 if ps is not None and ps.path == "mitigation_first":
                     if ps.mitigation_completed_at_turn is None:
-                        # Pre-mitigation DIAGNOSIS — focus on stopping impact.
+                        # Pre-mitigation DIAGNOSIS — focus on stopping impact,
+                        # but symptom-phase grounding is still required. The
+                        # path's framing is permission to defer causal-hypothesis
+                        # work, not permission to skip symptom verification.
+                        # See investigation-lifecycle-logic.md §2.3 (MITIGATION_FIRST
+                        # DIAGNOSIS minimum-evidence discipline) and Behavioral
+                        # Rule 2 (Evidence-Grounded).
                         adaptive_instr = (
-                            "PATH: MITIGATION_FIRST (Prioritize stopping the impact over finding RCA)\n"
-                            + adaptive_instr
+                            "PATH: MITIGATION_FIRST — Prioritize stopping the "
+                            "impact over finding root cause, BUT do not skip "
+                            "symptom-phase grounding.\n"
+                            "\n"
+                            "BEFORE proposing a mitigation, you MUST have:\n"
+                            "  (a) Symptom confirmation grounded in this case's "
+                            "evidence — at least one SYMPTOM_EVIDENCE row "
+                            "attributable to the current incident, drawn from "
+                            "data you have actually inspected (pod logs / "
+                            "status / metrics / config snapshot). The user's "
+                            "claim alone is NOT sufficient — it is "
+                            "unverified until the agent confirms it against "
+                            "case data.\n"
+                            "  (b) A specific failing component identified "
+                            "from that evidence — the thing the proposed "
+                            "mitigation targets.\n"
+                            "\n"
+                            "A causal hypothesis is NOT required at this "
+                            "point — that is cause-phase work for post-"
+                            "mitigation DIAGNOSIS. Link the mitigation to "
+                            "what you observe failing, not to a hypothesized "
+                            "cause.\n"
+                            "\n"
+                            "If you do not yet have (a) and (b), your next "
+                            "action is to request or search for the specific "
+                            "evidence that would establish them — not to "
+                            "propose a mitigation.\n" + adaptive_instr
                         )
                     elif not ps.rca_after_mitigation_confirmed:
                         # Mitigation verified but the user has not yet
