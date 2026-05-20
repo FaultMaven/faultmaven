@@ -968,7 +968,17 @@ You MUST respond with valid JSON matching these fields:
 - **state_updates**:
   - milestones: Map of milestone flags (True where data allows). Set stage-gate milestones
     when you detect user compliance with a pending action (see <pending_action> in context).
-  - outcome: REQUIRED — one of: milestone_completed | data_requested | hypothesis_validated | conversation | blocked
+  - outcome: REQUIRED — exactly one of the eight values below. Pick the
+    most specific one that fits this turn; ``other`` only when none apply.
+      * ``milestone_completed`` — one or more milestones flipped True this turn.
+      * ``data_provided``       — user shared data/evidence (uploaded, pasted).
+      * ``data_requested``      — you asked the user for data; awaiting response.
+      * ``data_not_provided``   — you previously requested data and the user did
+                                  not address the request this turn.
+      * ``hypothesis_tested``   — a hypothesis was validated or refuted this turn.
+      * ``case_resolved``       — solution verified; case is resolvable.
+      * ``conversation``        — normal Q&A, no data requests or milestone changes.
+      * ``other``                — does not fit any of the above.
 """
 
 

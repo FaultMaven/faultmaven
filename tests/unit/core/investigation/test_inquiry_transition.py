@@ -1054,3 +1054,103 @@ class TestHandshakeDeferredRecovery:
             "intent.confirmation_value=True — clicking provides no deterministic "
             "transition path."
         )
+
+
+class TestEngineOwnedGate1OnFirstDetect:
+    """Pins the architectural completion of INV-01: Gate 1 fires on *every*
+    Gate-1-pending turn, not only on the handshake-deferred recovery turn.
+
+    This is the fix shape for the Run 4 (2026-05-19) regression where the LLM
+    silently dropped the optional ``intent`` field, leaving the persona with
+    no clickable confirmation path. Under the old code the engine emitted
+    deterministic confirmation suggestions only after the same-turn-confirmation
+    guard fired; with the engine_owned_affordances consolidator, Gate 1 is
+    code-guarded on every turn that has a proposed_problem_statement awaiting
+    confirmation — same pattern as Gate 2 and Gate 3.
+    """
+
+    @pytest.mark.asyncio
+    async def test_first_detect_turn_emits_deterministic_confirmation_pair(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """LLM proposes a problem statement on turn 1 and emits arbitrary
+        (intent-less) suggestions; engine must replace them with the canonical
+        confirmation pair carrying intent metadata.
+        """
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+        )
+        inquiry_case.current_turn = 1
+
+        # LLM emits a problem statement (Gate 1 pending) plus some intent-less
+        # suggestions of its own. This is exactly the Run 4 shape.
+        llm_response = json.dumps(
+            {
+                "agent_response": (
+                    "I want to make sure I understand: API returning 500s. "
+                    "Is that accurate?"
+                ),
+                "state_updates": {
+                    "problem_confirmation": {
+                        "problem_type": "unavailability",
+                        "severity_guess": "high",
+                        "preliminary_guidance": "API down",
+                    },
+                    "preliminary_urgency": {
+                        "level": "HIGH",
+                        "is_ongoing": True,
+                        "is_incident_report": True,
+                        "impact_assessment": "users seeing errors",
+                    },
+                    "proposed_problem_statement": (
+                        "API returning 500 errors affecting users"
+                    ),
+                    "user_confirmed_investigation": False,
+                },
+                "suggested_follow_ups": [
+                    {
+                        "label": "LLM Suggestion A",
+                        "action_type": "COOPERATIVE",
+                        "cooperative_action": "query_submit",
+                        "payload": "LLM payload A",
+                    },
+                    {
+                        "label": "LLM Suggestion B",
+                        "action_type": "COOPERATIVE",
+                        "cooperative_action": "query_submit",
+                        "payload": "LLM payload B",
+                    },
+                ],
+            }
+        )
+        mock_llm.generate.return_value = llm_response
+
+        result = await engine.process_turn(
+            inquiry_case,
+            "Production API is returning 500s",
+        )
+
+        follow_ups = result["suggested_follow_ups"]
+
+        # Engine-owned: LLM suggestions must NOT have passed through.
+        llm_labels = {f.get("label") for f in follow_ups}
+        assert "LLM Suggestion A" not in llm_labels
+        assert "LLM Suggestion B" not in llm_labels
+
+        # Engine must have substituted the canonical confirmation pair with
+        # intent metadata that hits the deterministic CONFIRMATION routing.
+        positive = next(
+            (
+                f
+                for f in follow_ups
+                if (f.get("intent") or {}).get("type") == "confirmation"
+                and (f.get("intent") or {}).get("confirmation_value") is True
+            ),
+            None,
+        )
+        assert positive is not None, (
+            f"Gate-1-pending first-detect turn did not produce an "
+            f"engine-owned confirmation suggestion. follow_ups={follow_ups}"
+        )

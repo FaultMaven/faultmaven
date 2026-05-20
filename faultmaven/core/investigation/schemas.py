@@ -703,15 +703,15 @@ class SuggestedFollowUp(BaseModel):
         description="Short framework tags guiding what aspects the user should address (e.g., 'symptoms', 'timeline', 'affected services')",
     )
 
-    # Optional intent metadata — when present, the frontend sends this as
-    # the QueryIntent alongside the payload. This bridges COOPERATIVE
-    # suggestions with the deterministic intent routing system, so clicks
-    # on transition confirmations flow through IntentType.CONFIRMATION
-    # instead of plain-text pattern matching.
-    intent: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="QueryIntent metadata to send with payload (e.g., {type: 'confirmation', confirmation_value: true})",
-    )
+    # NOTE: there is no ``intent`` field on this LLM-facing model. Intent
+    # metadata (QueryIntent routing) is owned by the engine, not the LLM —
+    # it is attached deterministically by the response builder via
+    # ``engine_owned_affordances`` when a state-machine gate is pending
+    # (Gate 1 / Gate 2 / Gate 3 / pending_transition). The engine→API
+    # serialization adds ``intent`` to ``SuggestedActionResponse`` at the
+    # boundary; the LLM never sees it. Any LLM that tries to emit an
+    # ``intent`` field will have it surfaced by ``_log_dropped_fields`` as
+    # a top-level dropped key.
 
 
 class BaseInteractionResponse(BaseModel):

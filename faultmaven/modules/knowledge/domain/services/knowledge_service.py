@@ -33,6 +33,9 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+    KB_COLLECTION,
+)
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
 from faultmaven.models.interfaces import (
     IKnowledgeIngester,
@@ -254,7 +257,10 @@ class KnowledgeService:
                         # prevents unintentional cross-tenant reads.
                         effective_filters = filters if filters else {"scope": "global"}
                         results = await self._vector_store.search(
-                            sanitized_query, k=limit, filters=effective_filters
+                            collection_name=KB_COLLECTION,
+                            query=sanitized_query,
+                            k=limit,
+                            where=effective_filters,
                         )
 
                     # Convert to SearchResult models
@@ -524,7 +530,10 @@ class KnowledgeService:
             for concept in key_concepts[:5]:  # Top 5 concepts
                 # Search for related documents
                 search_results = await self._vector_store.search(
-                    concept, k=3, filters={"scope": "global"}
+                    collection_name=KB_COLLECTION,
+                    query=concept,
+                    k=3,
+                    where={"scope": "global"},
                 )
 
                 for result in search_results:
@@ -713,7 +722,10 @@ class KnowledgeService:
 
                     try:
                         results = await self._vector_store.search(
-                            search_query, k=3, filters={"scope": "global"}
+                            collection_name=KB_COLLECTION,
+                            query=search_query,
+                            k=3,
+                            where={"scope": "global"},
                         )
                         for result in results:
                             curated_item = {
@@ -1839,7 +1851,10 @@ class KnowledgeService:
                 }
 
             vector_results = await self._vector_store.search(
-                query, k=limit * 3, filters=scope_filter
+                collection_name=KB_COLLECTION,
+                query=query,
+                k=limit * 3,
+                where=scope_filter,
             )
 
             if similarity_threshold is not None:
@@ -2239,7 +2254,10 @@ class KnowledgeService:
             # User-scoped searches go through search_documents() which builds a
             # full scope filter from the caller's user/team ids.
             search_results = await self._vector_store.search(
-                query, k=limit, filters={"scope": "global"}
+                collection_name=KB_COLLECTION,
+                query=query,
+                k=limit,
+                where={"scope": "global"},
             )
 
             # Convert to retrieval result format

@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.lifecycle_metrics import (
+    engine_owned_affordance_served_total,
     inquiry_gate2_confirmed_total,
     inquiry_gate3_reached_total,
     inquiry_gate3_resolved_total,
@@ -760,6 +761,92 @@ def _gate3_is_pending(case: "Case") -> bool:
     if ps.mitigation_completed_at_turn is None:
         return False
     return not ps.rca_after_mitigation_confirmed
+
+
+def _gate1_is_pending(case: "Case") -> bool:
+    """Whether Gate 1 (problem-statement confirmation) is open for this case.
+
+    Returns True when the LLM has proposed a problem statement and the user
+    has not yet confirmed it. Subsumes the prior handshake-deferred-recovery
+    condition: the same affordance pair is appropriate on every Gate-1-pending
+    turn, not only on the recovery turn after the same-turn guard fires.
+
+    Used by ``engine_owned_affordances`` so the engine emits the canonical
+    confirmation pair deterministically regardless of LLM compliance with the
+    INQUIRY prompt's confirmation-suggestion enumeration. Matches the pattern
+    already established for Gate 2 and Gate 3.
+    """
+    if case.status != CaseStatus.INQUIRY:
+        return False
+    inq = case.inquiry
+    if inq is None:
+        return False
+    if not inq.proposed_problem_statement:
+        return False
+    return not inq.problem_statement_confirmed
+
+
+def _gate2_is_pending(case: "Case") -> bool:
+    """Whether Gate 2 (investigation-path selection) is open for this case.
+
+    Returns True when Gate 1 has closed (problem_statement_confirmed=True)
+    and the router has populated path_selection but the user has not yet
+    accepted or overridden the recommendation. See INV-19.
+    """
+    if case.status != CaseStatus.INQUIRY:
+        return False
+    inq = case.inquiry
+    if inq is None or not inq.problem_statement_confirmed:
+        return False
+    ps = case.path_selection
+    if ps is None:
+        return False
+    return not ps.user_confirmed
+
+
+def engine_owned_affordances(
+    case: "Case", metadata: Optional[dict[str, Any]] = None
+) -> Optional[tuple[str, list]]:
+    """Return ``(gate_name, affordance_list)`` when a state-machine gate is pending.
+
+    The state machine has a small enumerable set of gates: imperative
+    pending_transition (set by ``propose_transition`` via
+    ``metadata['override_suggestions']``), Gate 3 (post-mitigation
+    continuation), Gate 2 (investigation path), Gate 1 (problem-statement
+    confirmation). When any gate is pending, the engine knows the canonical
+    affordance pair; the LLM cannot add value there and shouldn't try.
+
+    Returns ``None`` when no gate is pending — the LLM's own COOPERATIVE /
+    EVIDENCE / FREE_SPEECH suggestions pass through unmodified.
+
+    Gate identifiers (telemetry-stable labels):
+      - ``"disposition"`` — pending_transition / propose_transition override
+      - ``"gate3"`` — post-mitigation continuation
+      - ``"gate2"`` — investigation-path selection
+      - ``"gate1"`` — problem-statement confirmation
+
+    Priority order matches the identifier order above. Gates 1/2/3 are
+    mutually exclusive by case-state construction (each depends on a
+    different combination of inquiry/path_selection flags), so the ordering
+    between them is defensive rather than load-bearing. The disposition
+    branch sits above the gates because pending_transition can fire while a
+    gate is technically open (e.g., user proposes closing during Gate 2).
+    """
+    md = metadata or {}
+
+    if md.get("override_suggestions"):
+        return ("disposition", md["override_suggestions"])
+
+    if _gate3_is_pending(case) and not md.get("rca_infeasible_closure_message"):
+        return ("gate3", _post_mitigation_suggestions())
+
+    if _gate2_is_pending(case):
+        return ("gate2", _path_selection_suggestions(case))
+
+    if _gate1_is_pending(case):
+        return ("gate1", _investigation_confirmation_suggestions())
+
+    return None
 
 
 def _compute_inquiry_path_selection(case: "Case") -> None:
@@ -1710,8 +1797,6 @@ class MilestoneEngine:
                     suggestion["cooperative_action"] = f.cooperative_action
                 if f.hints:
                     suggestion["hints"] = f.hints
-                if f.intent:
-                    suggestion["intent"] = f.intent
                 follow_ups.append(suggestion)
 
         # Attach terminal-Q&A suggestions deterministically. The
@@ -3037,8 +3122,6 @@ class MilestoneEngine:
                         suggestion["cooperative_action"] = f.cooperative_action
                     if f.hints:
                         suggestion["hints"] = f.hints
-                    if f.intent:
-                        suggestion["intent"] = f.intent
                     follow_ups.append(suggestion)
 
             # Persist redaction registry for cross-turn consistency
@@ -3081,66 +3164,32 @@ class MilestoneEngine:
                 # the same deterministic confirmation UX.
                 follow_ups = metadata["override_suggestions"]
 
-            # Handshake-deferred recovery turn. The same-turn guard fired
-            # on the previous turn (LLM tried to one-shot the INQUIRY →
-            # INVESTIGATING transition). context_builder injected the
-            # HANDSHAKE_DEFERRED block instructing the LLM to re-present
-            # and ask for confirmation. As a Code-guarded backstop, force
-            # the confirmation suggestions here so the user gets a
-            # deterministic clickable path regardless of LLM compliance.
-            if (
-                case_updated.status == CaseStatus.INQUIRY
-                and case_updated.inquiry
-                and case_updated.inquiry.handshake_deferred_at_turn is not None
-                and case_updated.inquiry.handshake_deferred_at_turn
-                == case_updated.current_turn - 1
-                and not case_updated.inquiry.problem_statement_confirmed
-            ):
-                follow_ups = _investigation_confirmation_suggestions()
+            # Engine-owned gate affordances. When a state-machine gate is
+            # pending (Gate 1 — problem-statement confirmation; Gate 2 —
+            # investigation path; Gate 3 — post-mitigation continuation;
+            # or a pending_transition disposition handshake), the engine
+            # emits the canonical clickable affordance pair regardless of
+            # LLM compliance with the prompt's suggestion-emission
+            # directives. The consolidator is a single source of truth that
+            # replaced the previously-scattered handshake-deferred / Gate 2
+            # / Gate 3 branches. Gate 1 now fires on every Gate-1-pending
+            # turn (not only the handshake-deferred recovery turn) — the
+            # architectural completion that makes Gate 1 symmetric with
+            # Gate 2 and Gate 3, and removes LLM compliance from the
+            # correctness path. See INV-01, INV-19, INV-21.
+            gate_result = engine_owned_affordances(case_updated, metadata)
+            if gate_result is not None:
+                gate_name, gate_affordances = gate_result
+                follow_ups = gate_affordances
+                engine_owned_affordance_served_total.labels(gate=gate_name).inc()
                 logger.info(
-                    f"Handshake-deferred recovery turn for case "
-                    f"{case_updated.case_id}: emitting deterministic "
-                    f"confirmation suggestions (turn={case_updated.current_turn})"
-                )
-
-            # Gate 2 pending: problem statement confirmed but path not yet
-            # user-confirmed. Force the canonical path-selection suggestion
-            # pair so the user has a deterministic clickable path regardless
-            # of LLM compliance with the Gate 2 prompt directive. Same
-            # backstop pattern as INV-01's handshake-deferred recovery and
-            # INV-03's override_suggestions on ProposedTransition. See INV-19.
-            elif (
-                case_updated.status == CaseStatus.INQUIRY
-                and case_updated.inquiry
-                and case_updated.inquiry.problem_statement_confirmed
-                and case_updated.path_selection is not None
-                and not case_updated.path_selection.user_confirmed
-            ):
-                follow_ups = _path_selection_suggestions(case_updated)
-                logger.info(
-                    f"Gate 2 pending for case {case_updated.case_id}: "
-                    f"emitting deterministic path-selection suggestions "
-                    f"(recommended={case_updated.path_selection.path.value}, "
-                    f"turn={case_updated.current_turn})"
-                )
-
-            # Gate 3 pending: mitigation verified on a mitigation-first case
-            # but the user has not yet decided whether to continue with RCA
-            # or close as mitigation-sufficient. Force the canonical Gate 3
-            # suggestion pair. Skipped when the rca_infeasible advisory
-            # already produced override_suggestions earlier in the turn —
-            # rca_infeasible is the LLM-driven shortcut for the same
-            # post-mitigation decision and should not double-emit. See INV-21.
-            elif _gate3_is_pending(case_updated) and not metadata.get(
-                "rca_infeasible_closure_message"
-            ):
-                follow_ups = _post_mitigation_suggestions()
-                logger.info(
-                    f"Gate 3 pending for case {case_updated.case_id}: "
-                    f"emitting deterministic post-mitigation suggestions "
-                    f"(mitigation_completed_at_turn="
-                    f"{case_updated.path_selection.mitigation_completed_at_turn}, "
-                    f"turn={case_updated.current_turn})"
+                    "engine_owned_affordances_served",
+                    extra={
+                        "case_id": case_updated.case_id,
+                        "turn": case_updated.current_turn,
+                        "gate": gate_name,
+                        "affordance_count": len(gate_affordances),
+                    },
                 )
 
             # Closure-ack turn (LLM-driven path): when generation

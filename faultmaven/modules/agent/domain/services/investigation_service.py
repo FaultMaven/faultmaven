@@ -14,6 +14,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
@@ -325,6 +326,96 @@ class _PreprocessedAttachment:
     attachment_filename: Optional[str] = None
 
 
+# ============================================================
+# Intent dispatch
+# ============================================================
+#
+# The IntentType enum is the contract between the API layer and the
+# investigation pipeline. Each value must have a defined route here, or
+# the system can't promise it can handle requests carrying that intent.
+# Historically the dispatch lived as a scattered ``if / elif / else: raise``
+# chain in ``process_turn``; new enum values could be added (slice 1 of the
+# investigation-gates work did exactly this) without updating the dispatch,
+# and the gap surfaced only at runtime as a 500.
+#
+# The dispatch table below is the single source of truth. The boot check
+# in ``InvestigationService.__init__`` validates completeness against the
+# IntentType enum — a new enum value without an entry here fails service
+# construction, which fails app startup and CI.
+
+
+class _IntentDispatchKind(str, Enum):
+    """How an intent reaches its handler.
+
+    SERVICE — a method on InvestigationService (special-cased: no LLM call,
+              or pre-LLM bookkeeping).
+    ENGINE  — delegated to ``engine.process_turn`` with intent_type +
+              intent_data threaded through; the engine dispatches
+              internally to a per-intent handler.
+    NOT_IMPLEMENTED — the enum value exists in the API contract but the
+              system does not yet handle it. Runtime requests raise
+              ValidationException (422) with a clear "not implemented"
+              message. Use this for known gaps; remove the enum value if
+              the gap is permanent.
+    """
+
+    SERVICE = "service"
+    ENGINE = "engine"
+    NOT_IMPLEMENTED = "not_implemented"
+
+
+_INTENT_DISPATCH: Dict[IntentType, _IntentDispatchKind] = {
+    IntentType.STATUS_TRANSITION: _IntentDispatchKind.SERVICE,
+    IntentType.CONFIRMATION: _IntentDispatchKind.SERVICE,
+    IntentType.HYPOTHESIS_ACTION: _IntentDispatchKind.SERVICE,
+    IntentType.GREETING: _IntentDispatchKind.SERVICE,
+    IntentType.CONVERSATION: _IntentDispatchKind.ENGINE,
+    IntentType.PATH_SELECTION: _IntentDispatchKind.ENGINE,
+    IntentType.POST_MITIGATION_CHOICE: _IntentDispatchKind.ENGINE,
+    # EVIDENCE_REQUEST is in the IntentType enum and has a QueryIntent
+    # validator requiring evidence_id, but neither investigation_service
+    # nor milestone_engine has ever implemented a handler. Marking it
+    # NOT_IMPLEMENTED makes the gap explicit (runtime 422 instead of 500)
+    # and forces a deliberate decision: implement the handler, or remove
+    # the enum value entirely. Pre-production cleanup; do not let this
+    # rot.
+    IntentType.EVIDENCE_REQUEST: _IntentDispatchKind.NOT_IMPLEMENTED,
+}
+
+
+def _validate_intent_dispatch_completeness() -> None:
+    """Validate that every ``IntentType`` enum value has a dispatch route.
+
+    Raises RuntimeError at service construction time (and therefore at app
+    startup and CI) if the dispatch table is incomplete. This converts the
+    silent-runtime-500 failure mode of the prior elif chain into a
+    fail-fast contract: a new enum value cannot ship without a dispatch
+    decision (service handler, engine handler, or explicit not-implemented).
+    """
+    defined = set(IntentType)
+    routed = set(_INTENT_DISPATCH.keys())
+    missing = defined - routed
+    extra = routed - defined
+    if missing or extra:
+        parts = []
+        if missing:
+            parts.append(
+                f"IntentType values without a dispatch entry: "
+                f"{sorted(v.value for v in missing)}"
+            )
+        if extra:
+            parts.append(
+                f"_INTENT_DISPATCH entries that are not IntentType values: "
+                f"{sorted(v.value for v in extra)}"
+            )
+        raise RuntimeError(
+            "InvestigationService intent dispatch is incomplete. "
+            + " ".join(parts)
+            + " Update _INTENT_DISPATCH in investigation_service.py or the "
+            "IntentType enum so the two agree."
+        )
+
+
 class InvestigationService:
     """
     Service for managing investigation turns and milestone progress.
@@ -356,6 +447,10 @@ class InvestigationService:
         self.preprocessing_service = preprocessing_service
         self.file_storage_service = file_storage_service
         self.intent_resolver = IntentResolver(milestone_engine.llm_provider)
+        # Fail-fast: refuse to construct if the intent dispatch table is
+        # missing any IntentType value (or vice-versa). The system cannot
+        # honor the API contract if it can't route every advertised intent.
+        _validate_intent_dispatch_completeness()
 
     @trace("investigation_service_process_turn")
     async def process_turn(
@@ -509,30 +604,70 @@ class InvestigationService:
                             exc_info=True,
                         )
 
-            if intent_type == IntentType.STATUS_TRANSITION:
-                result = await self._handle_status_transition(
-                    case=case,
-                    user_message=query or "",
-                    from_status=intent.from_status if intent else None,
-                    to_status=intent.to_status if intent else None,
-                    user_confirmed=(
-                        (intent.user_confirmed or False) if intent else False
-                    ),
+            # Dispatch on the boot-validated routing table. ``intent_type``
+            # is guaranteed to be present in ``_INTENT_DISPATCH`` because
+            # _validate_intent_dispatch_completeness ran at service
+            # construction and would have refused to start otherwise.
+            dispatch_kind = _INTENT_DISPATCH[intent_type]
+
+            if dispatch_kind == _IntentDispatchKind.NOT_IMPLEMENTED:
+                # Intent value is defined in the IntentType enum (API
+                # contract) but no handler exists in this build. Surface as
+                # 422 with a clear message rather than a 500 — this is a
+                # contract gap, not a server failure.
+                raise ValidationException(
+                    f"Intent type '{intent_type.value}' is defined in the "
+                    "API but not implemented in this build. Either drop the "
+                    "enum value or add a handler in investigation_service.",
+                    {"intent_type": intent_type.value},
                 )
-            elif intent_type == IntentType.CONFIRMATION:
-                result = await self._handle_confirmation(
-                    case=case,
-                    user_message=query or "",
-                    confirmation_value=intent.confirmation_value if intent else None,
-                )
-            elif intent_type == IntentType.HYPOTHESIS_ACTION:
-                result = await self._handle_hypothesis_action(
-                    case=case,
-                    user_message=query or "",
-                    hypothesis_id=intent.hypothesis_id if intent else None,
-                    action=intent.action if intent else None,
-                )
-            elif intent_type == IntentType.CONVERSATION:
+
+            if dispatch_kind == _IntentDispatchKind.SERVICE:
+                # Service-level handlers — special-cased because each does
+                # pre-LLM work (no LLM call, state mutation only, etc.)
+                # and the handler signatures vary.
+                if intent_type == IntentType.STATUS_TRANSITION:
+                    result = await self._handle_status_transition(
+                        case=case,
+                        user_message=query or "",
+                        from_status=intent.from_status if intent else None,
+                        to_status=intent.to_status if intent else None,
+                        user_confirmed=(
+                            (intent.user_confirmed or False) if intent else False
+                        ),
+                    )
+                elif intent_type == IntentType.CONFIRMATION:
+                    result = await self._handle_confirmation(
+                        case=case,
+                        user_message=query or "",
+                        confirmation_value=(
+                            intent.confirmation_value if intent else None
+                        ),
+                    )
+                elif intent_type == IntentType.HYPOTHESIS_ACTION:
+                    result = await self._handle_hypothesis_action(
+                        case=case,
+                        user_message=query or "",
+                        hypothesis_id=intent.hypothesis_id if intent else None,
+                        action=intent.action if intent else None,
+                    )
+                elif intent_type == IntentType.GREETING:
+                    result = await self._handle_greeting(case=case)
+                else:
+                    # Dispatch table claims SERVICE but there's no handler.
+                    # This is a developer error (added entry but not a
+                    # method); a 500 is correct here — the user did
+                    # nothing wrong.
+                    raise ServiceException(
+                        f"Internal: SERVICE-routed intent "
+                        f"'{intent_type.value}' has no handler method. "
+                        "Update the if/elif chain in process_turn."
+                    )
+            elif dispatch_kind == _IntentDispatchKind.ENGINE:
+                # Engine-routed: thread intent_type + intent_data through
+                # to ``engine.process_turn``, which dispatches internally
+                # to the per-intent handler (e.g., path_selection,
+                # post_mitigation_choice handlers in milestone_engine).
                 # Build attachment metadata for the engine. Post-010:
                 # uploads create only an UploadedFile (no auto-Evidence),
                 # so the metadata is sourced directly from those rows.
@@ -551,9 +686,10 @@ class InvestigationService:
                             "s3_uri": uf.storage_ref,
                         }
                     )
-                # DA evidence search is handled inside MilestoneEngine's tool loop.
-                # The same LLM that tracks hypotheses searches evidence directly
-                # during generation — no pre-fetch or separate gathering step needed.
+                # DA evidence search is handled inside MilestoneEngine's
+                # tool loop. The same LLM that tracks hypotheses searches
+                # evidence directly during generation — no pre-fetch or
+                # separate gathering step needed.
 
                 result = await self.engine.process_turn(
                     case=case,
@@ -565,10 +701,15 @@ class InvestigationService:
                         "query_mode": classification.mode.value,
                     },
                 )
-            elif intent_type == IntentType.GREETING:
-                result = await self._handle_greeting(case=case)
             else:
-                raise ValueError(f"Unknown intent type: {intent_type}")
+                # Defensive: _IntentDispatchKind only has three values
+                # and NOT_IMPLEMENTED / SERVICE / ENGINE are all handled
+                # above. A new dispatch kind without a corresponding
+                # branch would land here — developer error, 500.
+                raise ServiceException(
+                    f"Internal: Unknown dispatch kind '{dispatch_kind}' "
+                    f"for intent '{intent_type.value}'."
+                )
 
             # 3. Processing succeeded — extract updated case
             updated_case = result["case_updated"]
@@ -667,9 +808,17 @@ class InvestigationService:
 
             return response
 
-        except (NotFoundError, PermissionDeniedException, StaleCaseException):
-            # StaleCaseException must pass through unwrapped so the
-            # /turns route handler can map it to HTTP 409.
+        except (
+            NotFoundError,
+            PermissionDeniedException,
+            StaleCaseException,
+            ValidationException,
+        ):
+            # NotFoundError → 404, PermissionDeniedException → 403,
+            # StaleCaseException → 409, ValidationException → 422.
+            # All must pass through unwrapped so the FastAPI exception
+            # handlers can map them to the correct HTTP status; wrapping
+            # them in ServiceException would mask the contract error as 500.
             raise
         except Exception as e:
             logger.error(f"Failed to process turn for case {case_id}: {e}")
@@ -979,7 +1128,10 @@ class InvestigationService:
 
         # Validate transition request
         if not to_status:
-            raise ValueError("to_status is required for status_transition intent")
+            raise ValidationException(
+                "to_status is required for status_transition intent",
+                {"field": "to_status"},
+            )
 
         # Delegate to milestone engine with structured intent
         result = await self.engine.process_turn(
@@ -1046,8 +1198,9 @@ class InvestigationService:
         )
 
         if not hypothesis_id or not action:
-            raise ValueError(
-                "hypothesis_id and action required for hypothesis_action intent"
+            raise ValidationException(
+                "hypothesis_id and action required for hypothesis_action intent",
+                {"field": "hypothesis_id" if not hypothesis_id else "action"},
             )
 
         result = await self.engine.process_turn(

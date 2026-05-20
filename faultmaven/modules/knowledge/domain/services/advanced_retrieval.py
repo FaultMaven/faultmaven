@@ -20,6 +20,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.exceptions import KnowledgeBaseException
+from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+    KB_COLLECTION,
+)
 from faultmaven.models import SearchResult
 from faultmaven.models.interfaces import (
     ConversationContext,
@@ -374,9 +377,15 @@ class AdvancedKnowledgeRetrieval:
         max_docs = strategy_config["max_documents"]
 
         try:
-            # Stage 1: Initial semantic search
+            # Stage 1: Initial semantic search. Defaults to global scope —
+            # advanced retrieval is currently invoked only for KB-wide
+            # exploration; pass an explicit scope filter through
+            # RetrievalContext if/when team/user-scoped flows need it.
             initial_results = await self._vector_store.search(
-                enhanced_query, k=min(max_docs, 10)
+                collection_name=KB_COLLECTION,
+                query=enhanced_query,
+                k=min(max_docs, 10),
+                where={"scope": "global"},
             )
 
             # Stage 2: Expand search with related terms if needed
@@ -447,7 +456,10 @@ class AdvancedKnowledgeRetrieval:
             # Search with expanded terms
             expanded_query = f"{query} {' '.join(expanded_terms)}"
             expanded_results = await self._vector_store.search(
-                expanded_query, k=additional_docs_needed
+                collection_name=KB_COLLECTION,
+                query=expanded_query,
+                k=additional_docs_needed,
+                where={"scope": "global"},
             )
 
             # Mark as expanded search

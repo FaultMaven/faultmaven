@@ -90,3 +90,33 @@ inquiry_gate3_resolved_total = Counter(
     "faultmaven_inquiry_gate3_reached_total to detect stranded cases.",
     ["outcome"],
 )
+
+
+# Engine-owned-affordance telemetry. Fires every turn where the response
+# builder substituted the canonical gate-affordance pair for the LLM's own
+# suggestions. The label identifies which gate; collectively the counter
+# answers "are engine-owned affordances actually firing across the gate
+# vocabulary?" — the observability companion to the architectural
+# commitment made in the engine_owned_affordances consolidation (step 2 of
+# the intent-on-suggestions redesign).
+#
+# Healthy-system expectations (rough, subject to scenario mix):
+#   gate1 — fires on the first INQUIRY turn after a problem statement is
+#           proposed, repeats until Gate 1 closes
+#   gate2 — fires on the turn Gate 1 closes, until path is confirmed
+#   gate3 — fires when mitigation_verified completes on mitigation-first
+#   disposition — fires whenever propose_transition emits override_suggestions
+#
+# Failure-mode signal: a sustained zero rate on `gate1` while INQUIRY turn
+# volume is non-zero indicates the consolidator or the Gate 1 predicate has
+# regressed silently. Pair this with the existing recovery-ratio query for
+# a complete INV-01 picture.
+engine_owned_affordance_served_total = Counter(
+    "faultmaven_engine_owned_affordance_served_total",
+    "Engine-owned gate affordances served. Labels: gate "
+    "(gate1 | gate2 | gate3 | disposition). Counts turns where the engine "
+    "substituted the canonical clickable affordance pair for a pending "
+    "state-machine gate, regardless of LLM compliance with the prompt's "
+    "suggestion-emission directives.",
+    ["gate"],
+)

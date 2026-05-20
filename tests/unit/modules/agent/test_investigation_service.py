@@ -413,6 +413,225 @@ class TestInvestigationServiceProcessTurn:
         ), "file upload file_id should use file_ prefix"
 
 
+class TestInvestigationServiceIntentDispatch:
+    """Pins the dispatch wiring for gate-confirmation intents.
+
+    The slice 1 PR (#316) added PATH_SELECTION and POST_MITIGATION_CHOICE
+    to the ``IntentType`` enum; slice 2 / slice 3 added the engine-side
+    handlers; but the investigation_service dispatcher was left without
+    routes for these types, causing them to hit ``raise ValueError("Unknown
+    intent type: ...")`` and surface as 500 to the simulator. Exposed by
+    the post-Fix-2 eval run on 2026-05-20 — every persona Gate 2 click
+    returned 500, which the simulator's api_driver fallback masked by
+    hardcoding ``case_status="investigating"`` in the response stub, making
+    the case appear to oscillate.
+
+    These tests verify the dispatcher routes both new intent types to the
+    engine (which then dispatches internally to the per-gate handler).
+    """
+
+    @pytest.fixture
+    def service(self, mock_milestone_engine, mock_case_repository):
+        return InvestigationService(
+            milestone_engine=mock_milestone_engine,
+            case_repository=mock_case_repository,
+        )
+
+    @pytest.mark.asyncio
+    async def test_path_selection_intent_reaches_engine(
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+    ):
+        """PATH_SELECTION (Gate 2) intent must dispatch to engine.process_turn
+        with the intent_type and investigation_path threaded through."""
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        payload = TurnPayload(
+            query="Let's start with mitigation-first.",
+            intent=QueryIntent(
+                type=IntentType.PATH_SELECTION,
+                investigation_path="mitigation_first",
+            ),
+        )
+
+        # Should NOT raise "Unknown intent type".
+        await service.process_turn(
+            case_id=sample_case.case_id,
+            user_id=sample_user_id,
+            payload=payload,
+        )
+
+        # Engine was called with the intent_type passed through; the
+        # engine's internal dispatcher routes to the path_selection handler.
+        call_kwargs = mock_milestone_engine.process_turn.call_args
+        assert call_kwargs.kwargs.get("intent_type") == "path_selection"
+        intent_data = call_kwargs.kwargs.get("intent_data") or {}
+        assert intent_data.get("investigation_path") == "mitigation_first"
+
+    @pytest.mark.asyncio
+    async def test_post_mitigation_choice_intent_reaches_engine(
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+    ):
+        """POST_MITIGATION_CHOICE (Gate 3) intent must dispatch to engine
+        with the intent_type and continue_to_rca threaded through."""
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        payload = TurnPayload(
+            query="Let's continue with root-cause analysis.",
+            intent=QueryIntent(
+                type=IntentType.POST_MITIGATION_CHOICE,
+                continue_to_rca=True,
+            ),
+        )
+
+        await service.process_turn(
+            case_id=sample_case.case_id,
+            user_id=sample_user_id,
+            payload=payload,
+        )
+
+        call_kwargs = mock_milestone_engine.process_turn.call_args
+        assert call_kwargs.kwargs.get("intent_type") == "post_mitigation_choice"
+        intent_data = call_kwargs.kwargs.get("intent_data") or {}
+        assert intent_data.get("continue_to_rca") is True
+
+    @pytest.mark.parametrize("intent_value", list(IntentType))
+    @pytest.mark.asyncio
+    async def test_every_intent_type_is_routed(
+        self,
+        intent_value,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+    ):
+        """Parametrized exhaustiveness: every ``IntentType`` enum value must
+        either dispatch without "Unknown intent type" error or raise a
+        ValidationException (NOT_IMPLEMENTED). A 500-class ``ServiceException``
+        wrapping an unknown-intent ``ValueError`` is the regression shape we
+        are preventing.
+
+        Adding a new IntentType without a dispatch route would either fail
+        the boot check at service construction OR fall through to an
+        unhandled branch — both surfaces caught here.
+        """
+        from faultmaven.exceptions import ServiceException, ValidationException
+
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        # Build a minimally-valid QueryIntent for each intent value.
+        # Each intent type has its own required-field constraints
+        # (validated by QueryIntent.model_validator); we satisfy them with
+        # stub data so the test focuses on dispatch wiring, not intent
+        # validation.
+        intent_kwargs: dict = {"type": intent_value}
+        if intent_value == IntentType.STATUS_TRANSITION:
+            intent_kwargs["to_status"] = "closed"
+        elif intent_value == IntentType.CONFIRMATION:
+            intent_kwargs["confirmation_value"] = True
+        elif intent_value == IntentType.HYPOTHESIS_ACTION:
+            intent_kwargs["hypothesis_id"] = "hyp_test"
+            intent_kwargs["action"] = "accept"
+        elif intent_value == IntentType.EVIDENCE_REQUEST:
+            intent_kwargs["evidence_id"] = "evid_test"
+        elif intent_value == IntentType.PATH_SELECTION:
+            intent_kwargs["investigation_path"] = "mitigation_first"
+        elif intent_value == IntentType.POST_MITIGATION_CHOICE:
+            intent_kwargs["continue_to_rca"] = True
+
+        payload = TurnPayload(query="test", intent=QueryIntent(**intent_kwargs))
+
+        try:
+            await service.process_turn(
+                case_id=sample_case.case_id,
+                user_id=sample_user_id,
+                payload=payload,
+            )
+        except ValidationException:
+            # NOT_IMPLEMENTED intents (e.g., EVIDENCE_REQUEST) raise this
+            # — 422 to the client, contract gap surfaced honestly.
+            pass
+        except ServiceException as e:
+            # Any ServiceException wrapping "Unknown intent type" is the
+            # regression we are preventing.
+            assert "Unknown intent type" not in str(e), (
+                f"IntentType.{intent_value.name} surfaced as 500 with "
+                f"'Unknown intent type'. Dispatch table is incomplete."
+            )
+
+    def test_boot_check_rejects_incomplete_dispatch_table(
+        self, mock_milestone_engine, mock_case_repository
+    ):
+        """Service construction must fail if any IntentType lacks a dispatch
+        route. Converts the silent-runtime-500 failure mode into a
+        startup-time error caught by CI.
+        """
+        from unittest.mock import patch
+
+        from faultmaven.modules.agent.domain.services import investigation_service
+
+        # Simulate a developer who added a new IntentType without updating
+        # the dispatch table.
+        broken_dispatch = dict(investigation_service._INTENT_DISPATCH)
+        del broken_dispatch[IntentType.CONFIRMATION]
+
+        with patch.object(investigation_service, "_INTENT_DISPATCH", broken_dispatch):
+            with pytest.raises(RuntimeError) as exc_info:
+                InvestigationService(
+                    milestone_engine=mock_milestone_engine,
+                    case_repository=mock_case_repository,
+                )
+        assert "confirmation" in str(exc_info.value)
+        assert "incomplete" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_not_implemented_intent_raises_validation_exception(
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+    ):
+        """Intents marked NOT_IMPLEMENTED in the dispatch table must raise
+        ValidationException (422), not ServiceException (500). EVIDENCE_REQUEST
+        is currently in this state — defined in the enum + QueryIntent
+        validator but with no handler.
+        """
+        from faultmaven.exceptions import ValidationException
+
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        payload = TurnPayload(
+            query="test",
+            intent=QueryIntent(
+                type=IntentType.EVIDENCE_REQUEST, evidence_id="evid_test"
+            ),
+        )
+
+        with pytest.raises(ValidationException) as exc_info:
+            await service.process_turn(
+                case_id=sample_case.case_id,
+                user_id=sample_user_id,
+                payload=payload,
+            )
+        assert "not implemented" in str(exc_info.value).lower()
+
+
 class TestInvestigationServiceGetProgress:
     """Tests for InvestigationService.get_progress()."""
 
