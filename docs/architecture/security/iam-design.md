@@ -259,6 +259,34 @@ Content-Type: application/json
 
 **Response (201 Created):** Same structure as login response.
 
+### Error Responses (Login + Register)
+
+Both endpoints share a common error-response contract sourced from the
+service-layer typed exceptions and dispatched by the global handlers in
+`api/exception_handlers.py`. Each shape maps to a single HTTP status:
+
+| Status | Trigger | Service-layer exception |
+|--------|---------|-------------------------|
+| **401 Unauthorized** | User does not exist (login only) | route-raised `HTTPException(401)` |
+| **404 Not Found** | User-id lookup miss on update flows | `NotFoundError(resource_type="user", resource_id=...)` |
+| **409 Conflict** | Username or email already exists | `ConflictError(resource_type="user", conflict_reason="duplicate_username" \| "duplicate_email")` |
+| **422 Unprocessable Entity** | Invalid username or email format | `ValidationException(...)` |
+| **500 Internal Server Error** | Unforeseen failure | re-wrapped via blanket `except Exception` |
+
+The 409 response carries `resource_type` / `resource_id` /
+`conflict_reason` in the response body so clients can distinguish
+duplicate-username from duplicate-email programmatically without
+parsing the human-readable message.
+
+Routes do **not** catch `ValueError`. Service layers (`DatabaseUserStore`,
+`RedisUserStore`) raise the typed exceptions directly; the global
+handlers translate them. The route's `try/except` block contains a
+`FaultMavenException` pass-through ahead of the blanket `except
+Exception` so typed exceptions reach the handlers instead of being
+re-wrapped as 500. See the
+[Item 3 follow-ups handoff](../../working/HANDOFF-investigation-pipeline-followups-2026-05-20.md)
+for the migration context (Pattern B → Pattern A).
+
 ### Local Mode Security
 
 Even in Local Mode, security best practices apply:
