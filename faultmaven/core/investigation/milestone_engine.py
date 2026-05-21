@@ -2963,52 +2963,6 @@ class MilestoneEngine:
                 if violations:
                     metadata["diagnostic_reasoning_violations"] = violations
 
-            # 3b. Evidence-grounding check (telemetry, not a hard gate).
-            # Scans agent_response for ev_* IDs — the prompt forbids citing
-            # them in prose, so any match is a compliance break; matches that
-            # also don't exist on the case are the fabrication shape flagged
-            # by Run 6 (hallucinated evidence). Symmetric pacing to
-            # validate_diagnostic_reasoning: logs + surfaces in metadata;
-            # does not modify the response. See
-            # evidence_grounding_validator.py for scope rationale (why this
-            # is narrowed to ev_* IDs rather than broader filename / content
-            # fabrication detection).
-            from faultmaven.core.investigation.evidence_grounding_validator import (
-                validate_evidence_grounding,
-            )
-
-            grounding_clean, ungrounded_ids, cited_ids = validate_evidence_grounding(
-                case, response_obj.agent_response
-            )
-            if not grounding_clean:
-                if ungrounded_ids:
-                    logger.warning(
-                        "Evidence grounding: agent_response cites %d unknown ev_* "
-                        "ID(s) not on this case: %s. Possible fabrication.",
-                        len(ungrounded_ids),
-                        ungrounded_ids,
-                        extra={
-                            "case_id": case.case_id,
-                            "turn": case.current_turn,
-                            "ungrounded_evidence_ids": ungrounded_ids,
-                        },
-                    )
-                    metadata["ungrounded_evidence_ids"] = ungrounded_ids
-                if cited_ids:
-                    logger.warning(
-                        "Evidence grounding: agent_response cites %d real ev_* "
-                        "ID(s) %s. Prompt rule says use the evidence label "
-                        "instead — IDs are not user-visible.",
-                        len(cited_ids),
-                        cited_ids,
-                        extra={
-                            "case_id": case.case_id,
-                            "turn": case.current_turn,
-                            "cited_evidence_ids": cited_ids,
-                        },
-                    )
-                    metadata["cited_evidence_ids_in_prose"] = cited_ids
-
             # 4. Apply state from the final accepted response (exactly once)
             case_updated, response_metadata = await self._process_response_structured(
                 case, user_message, response_obj, attachments
@@ -3400,12 +3354,6 @@ class MilestoneEngine:
                     "next_steps": metadata.get("next_steps", []),
                     "self_correction_failed": metadata.get(
                         "self_correction_failed", False
-                    ),
-                    "ungrounded_evidence_ids": metadata.get(
-                        "ungrounded_evidence_ids", []
-                    ),
-                    "cited_evidence_ids_in_prose": metadata.get(
-                        "cited_evidence_ids_in_prose", []
                     ),
                     "timestamp": datetime.now(UTC).isoformat(),
                 },
