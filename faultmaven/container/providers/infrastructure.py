@@ -491,39 +491,33 @@ def create_user_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
         "sqlite" in database_url.lower() or "postgresql" in database_url.lower()
     ):
         try:
-            from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-            from sqlalchemy.orm import sessionmaker
-
             from faultmaven.infrastructure.auth.database_user_store import (
                 DatabaseUserStore,
+            )
+            from faultmaven.infrastructure.persistence.database import (
+                get_session_factory,
             )
             from faultmaven.infrastructure.persistence.user_repository import (
                 PostgreSQLUserRepository,
             )
 
-            # Create database engine and session
-            # Use NullPool for SQLite to avoid connection issues
-            pool_class = None
-            if "sqlite" in database_url.lower():
-                from sqlalchemy.pool import NullPool
-
-                pool_class = NullPool
-
-            engine = create_async_engine(
-                database_url,
-                echo=False,
-                poolclass=pool_class,
-            )
-            session_factory = sessionmaker(
-                engine, class_=AsyncSession, expire_on_commit=False
-            )
+            # Reuse the canonical engine + session_factory from database.py
+            # rather than creating a parallel engine. The canonical engine
+            # is the one disposed in close_database() at lifespan shutdown,
+            # so its sessions get cleaned up properly. The previous parallel-
+            # engine pattern leaked an unclosed AsyncSession on every app
+            # start, surfacing as "non-checked-in connection" SAWarnings on
+            # GC at shutdown.
+            session_factory = get_session_factory(database_url)
             db_session = session_factory()
 
             # Create UserRepository (works with both SQLite and PostgreSQL)
             user_repository = PostgreSQLUserRepository(db_session)
 
-            # Create DatabaseUserStore wrapper
-            store = DatabaseUserStore(user_repository)
+            # Create DatabaseUserStore wrapper. The store now owns the
+            # session and must release it via aclose() at shutdown (wired
+            # in main.py:lifespan).
+            store = DatabaseUserStore(user_repository, db_session=db_session)
             db_type = "SQLite" if "sqlite" in database_url.lower() else "PostgreSQL"
             logger.info(
                 f"✅ User store: Database ({db_type}) - persistent across restarts"
