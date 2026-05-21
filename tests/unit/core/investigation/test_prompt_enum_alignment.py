@@ -21,8 +21,12 @@ context-exhaustion the original (uncorrected) response shipped. See server
 logs for ValidationError occurrences and the broader follow-ups handoff for
 the self-correction cascade design discussion.
 
-These tests pin the contract: any future prompt or enum change has to keep
-both sides in lockstep.
+As of 2026-05-21 (Item 7 refactor), the outcome block in
+``SCHEMA_INSTRUCTIONS`` is auto-generated from ``TurnOutcome.description``
+at module load — there is no second source of truth to drift against.
+These tests stay as regression checks: they catch a future hand-edit that
+hardcodes the prompt block back, and they pin the auto-gen invariant
+(every enum member contributes a line; no extra lines exist).
 """
 
 from __future__ import annotations
@@ -91,4 +95,38 @@ def test_prompt_contains_no_values_outside_enum():
         f"SCHEMA_INSTRUCTIONS teaches outcome values that are not in "
         f"TurnOutcome: {sorted(drifted)}. Update the prompt to use the real "
         f"enum names: {sorted(enum_values)}"
+    )
+
+
+@pytest.mark.parametrize("outcome", list(TurnOutcome), ids=lambda v: v.value)
+def test_prompt_carries_runtime_description_for_each_value(outcome: TurnOutcome):
+    """The auto-gen invariant: the description string stored on each
+    enum member must appear in ``SCHEMA_INSTRUCTIONS``. Catches a future
+    hand-edit that hardcodes the prompt block back (and thereby
+    re-introduces the drift class).
+
+    This is near-tautological today — the block IS generated from
+    ``.description`` — but the test pins the contract so a refactor
+    that switches to manual prompt text fails loudly.
+    """
+    assert outcome.description in SCHEMA_INSTRUCTIONS, (
+        f"TurnOutcome.{outcome.name}.description "
+        f"({outcome.description!r}) is not present in SCHEMA_INSTRUCTIONS. "
+        f"Either the description was changed without regenerating the "
+        f"prompt, or someone replaced the auto-generated block with a "
+        f"hand-written list. Re-source the block from "
+        f"templates._OUTCOME_PROMPT_BLOCK."
+    )
+
+
+def test_turn_outcome_descriptions_are_non_empty_and_distinct():
+    """Each ``TurnOutcome`` value must have a non-empty, distinct
+    description. Empty descriptions degrade the auto-generated prompt;
+    duplicate descriptions make the values ambiguous to the LLM."""
+    descriptions = [o.description for o in TurnOutcome]
+    for o in TurnOutcome:
+        assert o.description, f"TurnOutcome.{o.name} has empty description"
+    assert len(set(descriptions)) == len(descriptions), (
+        f"Duplicate descriptions across TurnOutcome members: "
+        f"{descriptions}. Each value must be distinguishable to the LLM."
     )

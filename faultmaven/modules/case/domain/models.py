@@ -2532,52 +2532,61 @@ class TurnOutcome(str, Enum):
     NOTE: Outcomes are LLM-observable only (what happened this turn).
     Workflow control uses direct metrics (turns_without_progress).
     Outcomes are for analytics and prompt context, not control flow.
+
+    Each member carries an LLM-facing ``description`` accessible at
+    runtime via ``TurnOutcome.MEMBER.description``. The prompt block in
+    ``SCHEMA_INSTRUCTIONS`` is auto-generated from these descriptions so
+    there is no second source of truth to drift against — adding a value
+    here automatically extends the prompt.
+
+    Maintainer-only notes (implementation details that should NOT reach
+    the LLM) live as ``#`` comments next to the value, not in the
+    description string.
     """
 
-    MILESTONE_COMPLETED = "milestone_completed"
-    """
-    One or more milestones completed.
-    Investigation advanced.
-    """
+    description: str  # Type hint for the runtime attribute set in __new__.
 
-    DATA_PROVIDED = "data_provided"
-    """
-    User provided data/evidence this turn.
-    """
+    def __new__(cls, value: str, description: str) -> "TurnOutcome":
+        obj = str.__new__(cls, value)
+        obj._value_ = value
+        obj.description = description
+        return obj
 
-    DATA_REQUESTED = "data_requested"
-    """
-    Agent requested data from user.
-    Awaiting user response.
-    """
-
-    DATA_NOT_PROVIDED = "data_not_provided"
-    """
-    Agent requested data, user did not provide.
-    LLM uses this when user did not address request.
-    System tracks pattern - if 3+ consecutive, triggers degraded mode.
-    """
-
-    HYPOTHESIS_TESTED = "hypothesis_tested"
-    """
-    Hypothesis was tested (validated/refuted).
-    """
-
-    CASE_RESOLVED = "case_resolved"
-    """
-    Solution verified.
-    Case can transition to RESOLVED status (terminal).
-    """
-
-    CONVERSATION = "conversation"
-    """
-    Normal Q&A, no data requests or milestones.
-    """
-
-    OTHER = "other"
-    """
-    Does not fit standard outcomes.
-    """
+    MILESTONE_COMPLETED = (
+        "milestone_completed",
+        "one or more milestones flipped True this turn.",
+    )
+    DATA_PROVIDED = (
+        "data_provided",
+        "user shared data/evidence (uploaded, pasted).",
+    )
+    DATA_REQUESTED = (
+        "data_requested",
+        "you asked the user for data; awaiting response.",
+    )
+    # Maintainer note: system tracks the data_not_provided pattern — 3+
+    # consecutive turns triggers degraded mode (see progress_monitor.py).
+    # Not exposed to the LLM in the description below.
+    DATA_NOT_PROVIDED = (
+        "data_not_provided",
+        "you previously requested data and the user did not address the request this turn.",
+    )
+    HYPOTHESIS_TESTED = (
+        "hypothesis_tested",
+        "a hypothesis was validated or refuted this turn.",
+    )
+    CASE_RESOLVED = (
+        "case_resolved",
+        "solution verified; case is resolvable.",
+    )
+    CONVERSATION = (
+        "conversation",
+        "normal Q&A, no data requests or milestone changes.",
+    )
+    OTHER = (
+        "other",
+        "does not fit any of the above.",
+    )
 
 
 class InvestigationMomentum(str, Enum):
