@@ -24,6 +24,11 @@ from faultmaven.modules.case.contracts import (
 # from TurnOutcome.description so adding an enum value automatically
 # extends the prompt — no second source of truth to drift against.
 # Left-aligned by the longest value name so the descriptions line up.
+#
+# Indentation note: the 6-space prefix matches the bullet indent of the
+# surrounding ``outcome:`` block in SCHEMA_INSTRUCTIONS below. If the
+# surrounding template's indent structure ever changes, update this
+# prefix to match — the alignment is otherwise silently off.
 def _build_outcome_prompt_block() -> str:
     width = max(len(o.value) for o in TurnOutcome)
     return "\n".join(

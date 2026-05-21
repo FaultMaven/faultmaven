@@ -119,6 +119,22 @@ def test_prompt_carries_runtime_description_for_each_value(outcome: TurnOutcome)
     )
 
 
+def test_turn_outcome_str_inheritance_preserved():
+    """The tuple-based __new__ pattern must preserve TurnOutcome's
+    str-inheritance contract so existing consumers (every
+    ``TurnOutcome.X`` reference across the codebase) keep working
+    without changes. Pins the three architectural guarantees:
+
+    - String equality: ``TurnOutcome.MEMBER == "value"`` is True.
+    - Value-based construction: ``TurnOutcome("value")`` resolves to
+      the member (used by Pydantic / JSON-schema deserialization).
+    - ``.value`` returns the underlying string, not the tuple.
+    """
+    assert TurnOutcome.MILESTONE_COMPLETED == "milestone_completed"
+    assert TurnOutcome("milestone_completed") is TurnOutcome.MILESTONE_COMPLETED
+    assert TurnOutcome.MILESTONE_COMPLETED.value == "milestone_completed"
+
+
 def test_turn_outcome_descriptions_are_non_empty_and_distinct():
     """Each ``TurnOutcome`` value must have a non-empty, distinct
     description. Empty descriptions degrade the auto-generated prompt;
