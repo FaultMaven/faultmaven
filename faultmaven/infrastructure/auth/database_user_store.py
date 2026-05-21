@@ -78,6 +78,21 @@ class DatabaseUserStore:
                 # Repository holds the same session via self.db; clear
                 # that reference too so the connection wrapper isn't
                 # kept alive into process teardown.
+                #
+                # Invariant: this is safe ONLY because aclose() runs at
+                # lifespan shutdown, AFTER FastAPI has stopped accepting
+                # requests. Every UserRepository call site uses self.db
+                # (self.db.execute, self.db.commit, ...); a post-shutdown
+                # request path that touched the repository would
+                # AttributeError. By design — there's no graceful-drain
+                # phase. If one is added later, this clear must move to
+                # AFTER drain completes.
+                #
+                # hasattr guard: PostgreSQLUserRepository exposes
+                # .db (the canonical SQLAlchemy-backed repo), but the
+                # UserRepository protocol does not require it. In-memory
+                # or non-SQLAlchemy implementations have no .db to
+                # clear, and this method must be a no-op for them.
                 if hasattr(self.user_repository, "db"):
                     self.user_repository.db = None
 
