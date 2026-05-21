@@ -1232,6 +1232,17 @@ class MilestoneEngine:
     - Repository abstraction for persistence (no direct DB access)
     """
 
+    # Substituted into agent_response when self-correction retry fails
+    # (retry errors or retried prose still fails validation). Avoids
+    # shipping validator-rejected prose to the user while preserving the
+    # response's state_updates so the case still progresses on the
+    # LLM's structured output.
+    _SELF_CORRECTION_FALLBACK_MESSAGE = (
+        "I'm having trouble articulating my reasoning for this turn. "
+        "Could you ask me again, or tell me what specifically you'd "
+        "like me to focus on?"
+    )
+
     def __init__(
         self,
         llm_provider: ILLMProvider,
@@ -2911,21 +2922,36 @@ class MilestoneEngine:
                         response_obj = corrected_response
                         violations = []
                     else:
+                        # Retry's prose still fails validation. Don't ship
+                        # the validator-rejected text — substitute an
+                        # honest fallback message instead. Keep the
+                        # retried response's state_updates (hypotheses,
+                        # evidence categorization, milestones) since
+                        # validation only checks prose form, not the
+                        # structured fields.
                         logger.warning(
                             f"Self-correction retry also failed: {retry_violations}. "
-                            "Proceeding with retried response; violations fed back for next turn."
+                            "Substituting honest fallback message; keeping state_updates."
                         )
-                        # Use the retried response (may be partially improved)
                         response_obj = corrected_response
+                        response_obj.agent_response = (
+                            self._SELF_CORRECTION_FALLBACK_MESSAGE
+                        )
+                        metadata["self_correction_failed"] = True
                         violations = retry_violations
                 except Exception as e:
+                    # Retry itself errored (timeout, context overflow,
+                    # provider failure). Don't ship the original
+                    # uncorrected prose. Substitute the honest fallback;
+                    # keep the original state_updates.
                     logger.warning(
-                        f"Self-correction retry failed: {e}. "
-                        "Proceeding with original response.",
+                        f"Self-correction retry errored: {e}. "
+                        "Substituting honest fallback message; keeping state_updates.",
                         exc_info=True,
                         extra={"case_id": case.case_id, "turn": case.current_turn},
                     )
-                    # Keep original response_obj as-is
+                    response_obj.agent_response = self._SELF_CORRECTION_FALLBACK_MESSAGE
+                    metadata["self_correction_failed"] = True
 
                 # Add remaining violations to metadata for observability (G9+G11 wires them)
                 if violations:
@@ -3320,6 +3346,9 @@ class MilestoneEngine:
                     "outcome": metadata.get("outcome", TurnOutcome.CONVERSATION),
                     "momentum": metadata.get("momentum"),
                     "next_steps": metadata.get("next_steps", []),
+                    "self_correction_failed": metadata.get(
+                        "self_correction_failed", False
+                    ),
                     "timestamp": datetime.now(UTC).isoformat(),
                 },
             }
@@ -3497,33 +3526,38 @@ class MilestoneEngine:
             try:
                 response = await provider.generate(**generate_kwargs)
             except Exception as e:
-                # On the first iteration, a generate failure with tools is likely
-                # a model/provider incompatibility (e.g., DeepSeek on Fireworks
-                # doesn't support OpenAI-compatible tool calling). Raise a
-                # specific exception so the caller can fall back to the non-tool
-                # structured output path.
-                if iteration == 0:
-                    from faultmaven.exceptions import ToolCallingUnsupportedError
+                # Any iteration failure (timeout, provider error, transient
+                # issue) raises ToolCallingUnsupportedError so the caller
+                # (_generate_structured_output) falls back to the non-tool
+                # structured-output path. Iteration 0 typically indicates
+                # provider/model incompatibility; iteration 1+ typically
+                # indicates a provider can't satisfy tool_choice=required
+                # under FaultMaven's schema sizes (e.g., MiniMax M2P7 on
+                # Fireworks hangs when forced to use tools, timing out at
+                # the 180s LLM_PROVIDER_TIMEOUT_OVERRIDES limit). Either
+                # way, the caller's non-tool path is the right recovery —
+                # without this, iter-1+ failures killed the turn entirely
+                # and subsequent turns operated against a hole in
+                # conversation history.
+                from faultmaven.exceptions import ToolCallingUnsupportedError
 
-                    logger.warning(
-                        "Tool loop: first generate with tools failed "
-                        "(provider=%s, model=%s): %s. "
-                        "Raising ToolCallingUnsupportedError for fallback.",
-                        provider_name,
-                        model_info,
-                        e,
-                    )
-                    raise ToolCallingUnsupportedError(
-                        message=(
-                            f"Tool calling failed on first attempt: {e}. "
-                            f"Model may not support function calling."
-                        ),
-                        provider=provider_name,
-                        model=self.da_model,
-                    ) from e
-                # On later iterations the model already succeeded with tools,
-                # so a failure is a transient issue — propagate as-is.
-                raise
+                logger.warning(
+                    "Tool loop: generate failed at iteration %d "
+                    "(provider=%s, model=%s): %s. "
+                    "Raising ToolCallingUnsupportedError for fallback.",
+                    iteration,
+                    provider_name,
+                    model_info,
+                    e,
+                )
+                raise ToolCallingUnsupportedError(
+                    message=(
+                        f"Tool calling failed at iteration {iteration}: {e}. "
+                        f"Falling back to non-tool path."
+                    ),
+                    provider=provider_name,
+                    model=self.da_model,
+                ) from e
 
             # Check for tool calls in response
             if not hasattr(response, "tool_calls") or not response.tool_calls:
