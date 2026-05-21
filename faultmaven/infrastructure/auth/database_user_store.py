@@ -38,17 +38,63 @@ class DatabaseUserStore:
     - PostgreSQL (cloud deployment)
     """
 
-    def __init__(self, user_repository: UserRepository):
+    def __init__(self, user_repository: UserRepository, db_session=None):
         """Initialize database user store
 
         Args:
             user_repository: UserRepository instance (SQLite or PostgreSQL)
+            db_session: Optional AsyncSession owned by this store. When
+                provided, the store releases it via aclose() at shutdown
+                to avoid the "non-checked-in connection" SAWarning that
+                fires when an AsyncSession is GC'd without being closed.
+                Optional for backward-compat with callers that manage
+                session lifecycle themselves.
         """
         self.user_repository = user_repository
+        self._db_session = db_session
 
         # Validation patterns
         self.email_pattern = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
         self.username_pattern = re.compile(r"^([^@]+@[^@]+\.[^@]+|[a-zA-Z0-9._-]+)$")
+
+    async def aclose(self) -> None:
+        """Release the owned AsyncSession, if any.
+
+        Call from lifespan shutdown so SQLAlchemy doesn't see a non-
+        checked-in connection at GC time. No-op when no session was
+        passed to __init__ (caller manages lifecycle).
+
+        Also clears the repository's session reference so the closed
+        session can be GC'd promptly — otherwise the user_repository
+        holds onto self.db until process exit, and SQLAlchemy fires a
+        non-checked-in warning when the AdaptedConnection wrapper is
+        finally GC'd during interpreter teardown.
+        """
+        if self._db_session is not None:
+            try:
+                await self._db_session.close()
+            finally:
+                self._db_session = None
+                # Repository holds the same session via self.db; clear
+                # that reference too so the connection wrapper isn't
+                # kept alive into process teardown.
+                #
+                # Invariant: this is safe ONLY because aclose() runs at
+                # lifespan shutdown, AFTER FastAPI has stopped accepting
+                # requests. Every UserRepository call site uses self.db
+                # (self.db.execute, self.db.commit, ...); a post-shutdown
+                # request path that touched the repository would
+                # AttributeError. By design — there's no graceful-drain
+                # phase. If one is added later, this clear must move to
+                # AFTER drain completes.
+                #
+                # hasattr guard: PostgreSQLUserRepository exposes
+                # .db (the canonical SQLAlchemy-backed repo), but the
+                # UserRepository protocol does not require it. In-memory
+                # or non-SQLAlchemy implementations have no .db to
+                # clear, and this method must be a no-op for them.
+                if hasattr(self.user_repository, "db"):
+                    self.user_repository.db = None
 
     def _user_to_devuser(self, user: User) -> DevUser:
         """Convert User (repository model) to DevUser (auth model)"""
