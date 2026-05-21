@@ -2928,7 +2928,13 @@ class MilestoneEngine:
                         # retried response's state_updates (hypotheses,
                         # evidence categorization, milestones) since
                         # validation only checks prose form, not the
-                        # structured fields.
+                        # structured fields. See
+                        # diagnostic_reasoning_validator.validate_diagnostic_reasoning:
+                        # all checks (_detect_suggestions,
+                        # _references_specific_evidence, _has_causal_reasoning,
+                        # _is_checklist_engineering) operate on
+                        # agent_response only; state_updates is never
+                        # inspected.
                         logger.warning(
                             f"Self-correction retry also failed: {retry_violations}. "
                             "Substituting honest fallback message; keeping state_updates."
