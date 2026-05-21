@@ -16,7 +16,28 @@ from faultmaven.modules.case.contracts import (
     CaseStatus,
     InvestigationProgress,
     InvestigationStage,
+    TurnOutcome,
 )
+
+
+# Auto-generated outcome block for SCHEMA_INSTRUCTIONS. Sourced directly
+# from TurnOutcome.description so adding an enum value automatically
+# extends the prompt — no second source of truth to drift against.
+# Left-aligned by the longest value name so the descriptions line up.
+#
+# Indentation note: the 6-space prefix matches the bullet indent of the
+# surrounding ``outcome:`` block in SCHEMA_INSTRUCTIONS below. If the
+# surrounding template's indent structure ever changes, update this
+# prefix to match — the alignment is otherwise silently off.
+def _build_outcome_prompt_block() -> str:
+    width = max(len(o.value) for o in TurnOutcome)
+    return "\n".join(
+        f"      * ``{o.value}``{' ' * (width - len(o.value))} — {o.description}"
+        for o in TurnOutcome
+    )
+
+
+_OUTCOME_PROMPT_BLOCK = _build_outcome_prompt_block()
 
 # =============================================================================
 # CROSS-PHASE CONSTANTS
@@ -968,18 +989,9 @@ You MUST respond with valid JSON matching these fields:
 - **state_updates**:
   - milestones: Map of milestone flags (True where data allows). Set stage-gate milestones
     when you detect user compliance with a pending action (see <pending_action> in context).
-  - outcome: REQUIRED — exactly one of the eight values below. Pick the
-    most specific one that fits this turn; ``other`` only when none apply.
-      * ``milestone_completed`` — one or more milestones flipped True this turn.
-      * ``data_provided``       — user shared data/evidence (uploaded, pasted).
-      * ``data_requested``      — you asked the user for data; awaiting response.
-      * ``data_not_provided``   — you previously requested data and the user did
-                                  not address the request this turn.
-      * ``hypothesis_tested``   — a hypothesis was validated or refuted this turn.
-      * ``case_resolved``       — solution verified; case is resolvable.
-      * ``conversation``        — normal Q&A, no data requests or milestone changes.
-      * ``other``                — does not fit any of the above.
-"""
+  - outcome: REQUIRED — exactly one of the values below. Pick the most
+    specific one that fits this turn; ``other`` only when none apply.
+""" + _OUTCOME_PROMPT_BLOCK + "\n"
 
 
 DIAGNOSIS_INSTRUCTIONS = (
