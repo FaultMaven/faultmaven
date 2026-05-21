@@ -12,6 +12,7 @@ import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.infrastructure.persistence.user_repository import User, UserRepository
 from faultmaven.modules.auth.domain.models.auth import DevUser
 
@@ -216,19 +217,25 @@ class DatabaseUserStore:
             Created DevUser
 
         Raises:
-            ValueError: If username/email already exists or validation fails
-            Exception: If user creation fails
+            ValidationException: Invalid username or email format.
+            ConflictError: Username or email already exists.
+            Exception: If user creation fails for unforeseen reasons.
         """
         try:
             # Validate inputs
             username = username.strip()
             if not self._validate_username(username):
-                raise ValueError(f"Invalid username format: {username}")
+                raise ValidationException(f"Invalid username format: {username}")
 
             # Check if user already exists
             existing = await self.get_user_by_username(username)
             if existing:
-                raise ValueError(f"User with username '{username}' already exists")
+                raise ConflictError(
+                    f"User with username '{username}' already exists",
+                    resource_type="user",
+                    resource_id=username,
+                    conflict_reason="duplicate_username",
+                )
 
             # Auto-generate email if not provided
             if not email:
@@ -236,12 +243,17 @@ class DatabaseUserStore:
             else:
                 email = email.strip().lower()
                 if not self._validate_email(email):
-                    raise ValueError(f"Invalid email format: {email}")
+                    raise ValidationException(f"Invalid email format: {email}")
 
                 # Check email uniqueness
                 existing_by_email = await self.get_user_by_email(email)
                 if existing_by_email:
-                    raise ValueError(f"User with email '{email}' already exists")
+                    raise ConflictError(
+                        f"User with email '{email}' already exists",
+                        resource_type="user",
+                        resource_id=email,
+                        conflict_reason="duplicate_email",
+                    )
 
             # Auto-generate display name if not provided
             if not display_name:
@@ -297,13 +309,17 @@ class DatabaseUserStore:
             Updated DevUser
 
         Raises:
-            ValueError: If user not found or validation fails
+            NotFoundError: If user not found.
         """
         try:
             # Get existing user from repository
             existing_user = await self.user_repository.get(user.user_id)
             if not existing_user:
-                raise ValueError(f"User {user.user_id} not found")
+                raise NotFoundError(
+                    resource_type="user",
+                    resource_id=user.user_id,
+                    message=f"User {user.user_id} not found",
+                )
 
             # Convert DevUser to User and update
             updated_user = self._devuser_to_user(user)
