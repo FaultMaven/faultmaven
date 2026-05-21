@@ -543,6 +543,51 @@ class TestToolAugmentedGenerate:
         assert "SampleResponse" in messages[-1]["content"]
         assert "tool" in messages[-1]["content"].lower()
 
+    async def test_iter_1_exception_raises_tool_calling_unsupported(self):
+        """When a provider hangs/errors on iteration 1+ (e.g., MiniMax M2P7
+        timing out on tool_choice=required during the forced-schema retry),
+        the loop must raise ToolCallingUnsupportedError so the non-tool
+        fallback fires. Previously iter-1+ exceptions propagated and killed
+        the turn, leaving subsequent turns with a hole in conversation
+        history. See 2026-05-20 Run 7 post-mortem."""
+        from faultmaven.exceptions import ToolCallingUnsupportedError
+
+        # Arrange — iter 0 returns a search tool call (no error). Iter 1
+        # raises a TimeoutError, the actual failure shape observed in Run 7.
+        search_response = _make_tool_call_response(
+            "search_file", {"query": "anything"}, call_id="call_iter0"
+        )
+
+        mock_provider = AsyncMock()
+        mock_provider.generate = AsyncMock(
+            side_effect=[search_response, TimeoutError("Fireworks 180s timeout")]
+        )
+
+        mock_registry = _make_mock_registry()
+        mock_registry.execute_tool.return_value = ToolResult(
+            success=True, data="result"
+        )
+
+        engine = _make_engine(mock_provider=mock_provider, mock_registry=mock_registry)
+        tool_context = MagicMock()
+
+        investigation_tools = [
+            {"type": "function", "function": {"name": "search_file", "parameters": {}}},
+        ]
+
+        # Act & Assert — the TimeoutError on iter 1 must be wrapped, not
+        # propagated. The caller's catch handler will then run the
+        # non-tool fallback path.
+        with pytest.raises(ToolCallingUnsupportedError):
+            await engine._tool_augmented_generate(
+                prompt="Search",
+                schema_model=SampleResponse,
+                investigation_tools=investigation_tools,
+                tool_context=tool_context,
+            )
+        # Sanity: provider was called twice (iter 0 search + iter 1 timeout)
+        assert mock_provider.generate.call_count == 2
+
     async def test_inline_json_with_empty_agent_response_escalates(self):
         """Defensive guard: prose embedding a structurally-valid JSON block
         with an empty `agent_response` must NOT be returned as-is. The schema

@@ -33,15 +33,44 @@ class FireworksProvider(BaseLLMProvider):
         """Get list of supported models"""
         return self.config.models.copy()
 
+    # Models hosted on Fireworks that cannot reliably satisfy
+    # tool_choice=required under FaultMaven's schema sizes.
+    # MiniMax M2P7: forced tool use times out at the 180s Fireworks timeout
+    # (see 2026-05-20 Run 7 post-mortem in handoff docs). Adding here makes
+    # Layer 1 (pre-check) skip the tool-augmented path and go straight to
+    # the non-tool structured-output route for these models.
+    #
+    # When to add a model: only after observing REPEATED Layer 2 timeouts
+    # or tool-calling failures for that model in production (or in
+    # reproducible eval runs). Trust Layer 2 (ToolCallingUnsupportedError
+    # runtime fallback) for one-off or transient incompatibilities — the
+    # denylist is for models with a known, reproducible incompatibility
+    # where paying for the first failure on every turn is wasted work.
+    _TOOL_CALLING_DENYLIST = frozenset(
+        {
+            "accounts/fireworks/models/minimax-m2p7",
+        }
+    )
+
     def supports_tool_calling(self, model: Optional[str] = None) -> bool:
         """Check if the model supports OpenAI-compatible tool calling on Fireworks.
 
-        Returns True for all models. Earlier versions blocked DeepSeek models
-        due to proprietary tool-calling tokens in older versions (V2, R1), but
-        DeepSeek V3+ supports OpenAI-compatible tool calling on Fireworks.
-        Layer 2 runtime fallback (ToolCallingUnsupportedError) catches any
-        models that genuinely can't handle tools.
+        Returns True for most models. Earlier versions blocked DeepSeek
+        models due to proprietary tool-calling tokens in older versions
+        (V2, R1), but DeepSeek V3+ supports OpenAI-compatible tool calling
+        on Fireworks.
+
+        Specific models on the denylist (see ``_TOOL_CALLING_DENYLIST``)
+        return False — they accept the tool-calling API but cannot
+        satisfy ``tool_choice=required`` under FaultMaven's schema sizes
+        within the provider timeout.
+
+        Layer 2 runtime fallback (ToolCallingUnsupportedError) catches
+        any models that genuinely can't handle tools at runtime.
         """
+        effective_model = model or self.config.default_model
+        if effective_model in self._TOOL_CALLING_DENYLIST:
+            return False
         return True
 
     def get_structured_output_capability(

@@ -540,11 +540,20 @@ class ErrorContext:
     def _execute_recovery_strategy(
         self, layer: str, strategy: str, error: Exception
     ) -> RecoveryResult:
-        """Execute a specific recovery strategy."""
-        # This would be implemented with actual recovery logic
-        # For now, return a placeholder result
+        """Execute a specific recovery strategy.
+
+        TODO: This is a placeholder. Strategies return canned results
+        without performing any actual recovery. Until real recovery
+        logic is implemented, log at DEBUG so the message doesn't
+        suggest real work is happening — earlier INFO-level logs
+        misled investigation post-mortems into chasing recovery
+        behavior that didn't exist.
+        """
         logger = logging.getLogger(__name__)
-        logger.info(f"Executing recovery strategy '{strategy}' for layer '{layer}'")
+        logger.debug(
+            f"Recovery strategy '{strategy}' invoked for layer '{layer}' "
+            f"(placeholder — no real recovery performed)"
+        )
 
         # Placeholder implementation - would be replaced with actual strategies
         if strategy == "retry_request":

@@ -473,6 +473,28 @@ class TestFireworksToolCallingSupport:
         provider = FireworksProvider(fireworks_config)
         assert provider.supports_tool_calling(None) is True
 
+    def test_minimax_m2p7_does_not_support_tool_calling(self):
+        """MiniMax M2P7 on Fireworks hangs on tool_choice=required and
+        times out at the LLM_PROVIDER_TIMEOUT_OVERRIDES limit. Denylisted
+        so Layer 1 (pre-check) routes to the non-tool path without
+        wasting an API call. See 2026-05-20 Run 7 post-mortem."""
+        config = ProviderConfig(
+            name="fireworks",
+            api_key="test-key",
+            base_url="https://api.fireworks.ai/inference/v1",
+            models=["accounts/fireworks/models/minimax-m2p7"],
+            default_model="accounts/fireworks/models/minimax-m2p7",
+        )
+        provider = FireworksProvider(config)
+        assert (
+            provider.supports_tool_calling("accounts/fireworks/models/minimax-m2p7")
+            is False
+        )
+        # Default-model resolution (model=None) must also pick up the
+        # denylist — the same denial applies regardless of how the model
+        # is selected.
+        assert provider.supports_tool_calling(None) is False
+
 
 class TestProviderOverrideConsistency:
     """Test consistency across provider override implementations"""
