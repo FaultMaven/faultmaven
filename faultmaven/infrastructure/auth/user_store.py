@@ -158,29 +158,42 @@ class RedisUserStore:
             Created DevUser
 
         Raises:
-            ValueError: If username/email already exists or validation fails
-            Exception: If user creation fails
+            ValidationException: Invalid username or email format.
+            ConflictError: Username or email already exists.
+            Exception: If user creation fails for unforeseen reasons.
         """
+        from faultmaven.exceptions import ConflictError, ValidationException
+
         try:
             # Validate inputs
             username = username.strip()
             if not self._validate_username(username):
-                raise ValueError(
+                raise ValidationException(
                     "Invalid username format (3-50 chars, email address or alphanumeric with ., _, -)"
                 )
 
             if email:
                 email = email.strip().lower()
                 if not self._validate_email(email):
-                    raise ValueError("Invalid email format")
+                    raise ValidationException("Invalid email format")
 
             # Check username uniqueness
             if await self.get_user_by_username(username):
-                raise ValueError(f"Username '{username}' already exists")
+                raise ConflictError(
+                    f"Username '{username}' already exists",
+                    resource_type="user",
+                    resource_id=username,
+                    conflict_reason="duplicate_username",
+                )
 
             # Check email uniqueness
             if email and await self.get_user_by_email(email):
-                raise ValueError(f"Email '{email}' already exists")
+                raise ConflictError(
+                    f"Email '{email}' already exists",
+                    resource_type="user",
+                    resource_id=email,
+                    conflict_reason="duplicate_email",
+                )
 
             # Generate user data
             user_id = str(uuid.uuid4())
@@ -223,7 +236,7 @@ class RedisUserStore:
             logger.info(f"Created user {user_id} with username '{username}'")
             return user
 
-        except ValueError:
+        except (ValidationException, ConflictError):
             raise
         except Exception as e:
             logger.error(f"Failed to create user '{username}': {e}")
@@ -239,23 +252,40 @@ class RedisUserStore:
             Updated DevUser
 
         Raises:
-            ValueError: If user not found or validation fails
-            Exception: If update fails
+            NotFoundError: If user not found.
+            ValidationException: Invalid email format.
+            ConflictError: Email already used by another user.
+            Exception: If update fails for unforeseen reasons.
         """
+        from faultmaven.exceptions import (
+            ConflictError,
+            NotFoundError,
+            ValidationException,
+        )
+
         try:
             # Verify user exists
             existing_user = await self.get_user(user.user_id)
             if not existing_user:
-                raise ValueError(f"User {user.user_id} not found")
+                raise NotFoundError(
+                    resource_type="user",
+                    resource_id=user.user_id,
+                    message=f"User {user.user_id} not found",
+                )
 
             # Validate email if changed
             if user.email != existing_user.email:
                 if not self._validate_email(user.email):
-                    raise ValueError("Invalid email format")
+                    raise ValidationException("Invalid email format")
 
                 # Check email uniqueness
                 if await self.get_user_by_email(user.email):
-                    raise ValueError(f"Email '{user.email}' already exists")
+                    raise ConflictError(
+                        f"Email '{user.email}' already exists",
+                        resource_type="user",
+                        resource_id=user.email,
+                        conflict_reason="duplicate_email",
+                    )
 
             # Update storage
             user_key = self.user_key_pattern.format(user.user_id)
@@ -276,7 +306,9 @@ class RedisUserStore:
             logger.info(f"Updated user {user.user_id}")
             return user
 
-        except ValueError:
+        except (NotFoundError, ValidationException, ConflictError):
+            # Typed service exceptions propagate; the route layer relies on
+            # the global handler to map them to 404/422/409.
             raise
         except Exception as e:
             logger.error(f"Failed to update user {user.user_id}: {e}")

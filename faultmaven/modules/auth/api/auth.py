@@ -42,6 +42,7 @@ from faultmaven.api.v1.auth_dependencies import (
 from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.config.settings import AuthMode, get_settings
 from faultmaven.container import container
+from faultmaven.exceptions import FaultMavenException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.auth.domain.models.api_auth import (
     AuthenticationRequiredError,
@@ -347,20 +348,13 @@ async def local_login(
 
     except HTTPException:
         raise
-    except ValueError as e:
-        # Handle validation errors (e.g., invalid username format)
-        logger.warning(
-            f"Login validation error: {str(e)}",
-            extra={"username": request_body.username, "correlation_id": correlation_id},
-        )
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "validation_error",
-                "message": str(e),
-                "username": request_body.username,
-            },
-        )
+    except FaultMavenException:
+        # Typed service exceptions (ValidationException, ConflictError,
+        # NotFoundError, etc.) propagate to FastAPI's global handlers which
+        # map them to 422/409/404. See api/exception_handlers.py. Without
+        # this pass-through, the blanket `except Exception` below would
+        # swallow them and re-wrap as 500.
+        raise
     except Exception as e:
         logger.error(
             f"Dev login failed: {type(e).__name__}: {str(e)}",
@@ -515,20 +509,11 @@ async def local_register(
 
     except HTTPException:
         raise
-    except ValueError as e:
-        # Handle validation errors (e.g., invalid username/email format)
-        logger.warning(
-            f"Registration validation error: {str(e)}",
-            extra={"username": request_body.username, "correlation_id": correlation_id},
-        )
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "validation_error",
-                "message": str(e),
-                "username": request_body.username,
-            },
-        )
+    except FaultMavenException:
+        # Typed service exceptions (ValidationException, ConflictError,
+        # NotFoundError) propagate to FastAPI's global handlers — see
+        # dev_login above and api/exception_handlers.py for the dispatch.
+        raise
     except Exception as e:
         logger.error(
             f"Dev registration failed: {type(e).__name__}: {str(e)}",
