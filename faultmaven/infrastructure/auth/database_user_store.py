@@ -12,6 +12,7 @@ import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.infrastructure.persistence.user_repository import User, UserRepository
 from faultmaven.modules.auth.domain.models.auth import DevUser
 
@@ -220,8 +221,6 @@ class DatabaseUserStore:
             ConflictError: Username or email already exists.
             Exception: If user creation fails for unforeseen reasons.
         """
-        from faultmaven.exceptions import ConflictError, ValidationException
-
         try:
             # Validate inputs
             username = username.strip()
@@ -312,8 +311,6 @@ class DatabaseUserStore:
         Raises:
             NotFoundError: If user not found.
         """
-        from faultmaven.exceptions import NotFoundError
-
         try:
             # Get existing user from repository
             existing_user = await self.user_repository.get(user.user_id)

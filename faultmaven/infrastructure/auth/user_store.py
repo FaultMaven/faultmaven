@@ -28,6 +28,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, Optional
 
+from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.modules.auth.domain.models.auth import DevUser
 
 if TYPE_CHECKING:
@@ -162,8 +163,6 @@ class RedisUserStore:
             ConflictError: Username or email already exists.
             Exception: If user creation fails for unforeseen reasons.
         """
-        from faultmaven.exceptions import ConflictError, ValidationException
-
         try:
             # Validate inputs
             username = username.strip()
@@ -257,12 +256,6 @@ class RedisUserStore:
             ConflictError: Email already used by another user.
             Exception: If update fails for unforeseen reasons.
         """
-        from faultmaven.exceptions import (
-            ConflictError,
-            NotFoundError,
-            ValidationException,
-        )
-
         try:
             # Verify user exists
             existing_user = await self.get_user(user.user_id)
