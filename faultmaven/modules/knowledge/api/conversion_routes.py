@@ -173,20 +173,12 @@ async def convert_document(
             ConversionErrorCode.NO_FAILURE_MODES: 422,
             ConversionErrorCode.NO_TECHNICAL_CONTENT: 422,
             ConversionErrorCode.ALREADY_A_RUNBOOK: 422,
+            ConversionErrorCode.LLM_PARSE_ERROR: 422,
         }
         status = status_map.get(error_code, 422)
         return JSONResponse(
             status_code=status,
             content={"detail": str(e), "error_code": error_code},
-        )
-
-    except ValueError as e:
-        return JSONResponse(
-            status_code=422,
-            content={
-                "detail": str(e),
-                "error_code": ConversionErrorCode.LLM_PARSE_ERROR,
-            },
         )
 
     except Exception as e:

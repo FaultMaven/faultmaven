@@ -622,7 +622,10 @@ class ConversionService:
             )
         except Exception as e:
             logger.error(f"Failed to parse analysis response: {e}")
-            raise ValueError(f"LLM analysis response could not be parsed: {e}")
+            raise ConversionRejectedError(
+                f"LLM analysis response could not be parsed: {e}",
+                error_code=ConversionErrorCode.LLM_PARSE_ERROR,
+            ) from e
 
     # =========================================================================
     # Conversion Phase

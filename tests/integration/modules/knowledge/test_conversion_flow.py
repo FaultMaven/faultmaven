@@ -813,12 +813,17 @@ class TestConversionEdgeCases:
         assert response.status_code == 500
         assert "failed" in response.json()["detail"].lower()
 
-    async def test_value_error_from_service_returns_422(
+    async def test_llm_parse_error_returns_422_with_structured_code(
         self, app_with_user, mock_conversion_service
     ):
-        """ValueError from the service layer returns 422."""
-        mock_conversion_service.convert_document.side_effect = ValueError(
-            "LLM analysis response could not be parsed"
+        """LLM JSON-parse failure surfaces as
+        ``ConversionRejectedError(LLM_PARSE_ERROR)`` which the route
+        maps to 422 with ``error_code`` in the body — clients branch
+        on the code instead of regex-matching the detail string.
+        """
+        mock_conversion_service.convert_document.side_effect = ConversionRejectedError(
+            "LLM analysis response could not be parsed: unexpected token",
+            error_code=ConversionErrorCode.LLM_PARSE_ERROR,
         )
         async with await _client(app_with_user) as client:
             response = await client.post(
@@ -828,7 +833,9 @@ class TestConversionEdgeCases:
             )
 
         assert response.status_code == 422
-        assert "parsed" in response.json()["detail"].lower()
+        body = response.json()
+        assert "parsed" in body["detail"].lower()
+        assert body["error_code"] == ConversionErrorCode.LLM_PARSE_ERROR
 
     async def test_conversion_service_unavailable_returns_503(self):
         """When conversion_service is not on app.state, returns 503."""
