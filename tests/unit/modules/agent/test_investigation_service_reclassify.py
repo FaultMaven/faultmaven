@@ -14,9 +14,9 @@ import pytest
 
 from faultmaven.core.preprocessing.models import PreprocessingResult, UnifiedDataType
 from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
     NotFoundError,
-    PermissionDeniedException,
-    ValidationException,
 )
 from faultmaven.models.api import DataType
 from faultmaven.modules.agent.domain.services.investigation_service import (
@@ -184,11 +184,12 @@ class TestAuthAndLookup:
             )
 
     @pytest.mark.asyncio
-    async def test_user_not_owner_raises_permission_denied(
+    async def test_user_not_owner_raises_authorization_error(
         self, service, repo_with_case
     ):
+        """Non-owner caller raises AuthorizationError → HTTP 403."""
         _, case = repo_with_case
-        with pytest.raises(PermissionDeniedException):
+        with pytest.raises(AuthorizationError):
             await service.reclassify_evidence(
                 case_id=case.case_id,
                 evidence_id="ev_aaaaaaaaaaaa",
@@ -208,12 +209,15 @@ class TestAuthAndLookup:
             )
 
     @pytest.mark.asyncio
-    async def test_evidence_without_content_ref_raises_validation(
+    async def test_evidence_without_content_ref_raises_conflict(
         self, service, repo_with_case
     ):
-        """Chat-extracted evidence (source_file_id=None, source_type=
-        USER_DESCRIPTION) has no stored raw file — no re-extraction is
-        possible. Must raise ValidationException (endpoint maps to 409)."""
+        """Chat-extracted evidence (source_file_id=None) has no stored
+        raw file — re-extraction is impossible. Raises ConflictError
+        with ``conflict_reason="no_backing_file"`` so clients can
+        branch on the structured field instead of parsing the detail
+        string.
+        """
         _, case = repo_with_case
         case.evidence = [
             _evidence(
@@ -222,13 +226,19 @@ class TestAuthAndLookup:
             )
         ]
         case.uploaded_files = []
-        with pytest.raises(ValidationException):
+        with pytest.raises(ConflictError) as exc:
             await service.reclassify_evidence(
                 case_id=case.case_id,
                 evidence_id="ev_aaaaaaaaaaaa",
                 user_id="user_owner",
                 data_type=DataType.LOGS_AND_ERRORS,
             )
+
+        # Structured metadata is what the HTTP body surfaces — clients
+        # branch on these, not on the detail string.
+        assert exc.value.resource_type == "evidence"
+        assert exc.value.resource_id == "ev_aaaaaaaaaaaa"
+        assert exc.value.conflict_reason == "no_backing_file"
 
 
 class TestHappyPath:

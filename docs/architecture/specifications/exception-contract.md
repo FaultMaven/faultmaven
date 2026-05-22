@@ -6,9 +6,16 @@
 [`faultmaven/exceptions.py`](../../../faultmaven/exceptions.py) and the
 global handlers in
 [`faultmaven/api/exception_handlers.py`](../../../faultmaven/api/exception_handlers.py).
-The auth module conforms; per-module migration of other modules
-(case, knowledge, agent) is in progress under Item 3 of the
-2026-05-20 investigation-pipeline-followups handoff series.
+Migration status under Item 3 of the 2026-05-20
+investigation-pipeline-followups handoff series:
+
+- **Conforming**: auth (PR #331), case/replay (PR #333), case/routes
+  (this PR), agent/routes, knowledge/verify_draft (PR #334).
+- **Remaining**: knowledge/routes (2 sites — `approve_suggestion`,
+  `remediate_pii`).
+- **Out of scope**: knowledge/conversion_routes — has its own
+  `ConversionRejectedError`/`ConversionErrorCode` contract mapping
+  to 413/415/422/503; not a `ValueError → 400` antipattern.
 
 ## Purpose
 
@@ -33,12 +40,19 @@ backs it lives in
 | `ValidationException` | 422 Unprocessable Entity | Client input is malformed (bad format, missing required field, fails business validation). |
 | `ConflictError` | 409 Conflict | Resource state conflict (duplicate username, double-close, attempting an operation incompatible with current state). |
 | `NotFoundError` | 404 Not Found | Resource lookup miss (case/session/user does not exist). |
-| `PermissionDeniedException` | 403 Forbidden | Caller is authenticated but lacks permission for the operation. |
+| `AuthorizationError` | 403 Forbidden | Caller is authenticated but lacks permission for the operation. |
 | `ServiceException` | 500 Internal Server Error | Genuine server failure that the client cannot resolve (database error, wrapped infrastructure failure). |
 
 All five inherit from `FaultMavenException` (base class). The
 `ServiceError` subclass groups `NotFoundError` / `ConflictError` /
-`AuthenticationError` / `AuthorizationError` as a related family.
+`AuthenticationError` / `AuthorizationError` as a related family —
+this is the family the global handlers dispatch by type.
+
+> **Note.** A separate `PermissionDeniedException` exists in
+> `exceptions.py` but inherits from `FaultMavenException` directly,
+> *not* from `ServiceError`. It has **no global handler** and will
+> fall through to FastAPI's default 500 if raised. New code should
+> raise `AuthorizationError` for "caller lacks permission" instead.
 
 ## Structured Metadata
 
@@ -176,7 +190,7 @@ async def local_login(request_body: ...):
         raise  # FastAPI HTTPExceptions pass through unchanged
     except FaultMavenException:
         # Typed service exceptions (ValidationException, ConflictError,
-        # NotFoundError, PermissionDeniedException, ServiceException)
+        # NotFoundError, AuthorizationError, ServiceException)
         # propagate to the global handlers, which map them to
         # 422/409/404/403/500 respectively.
         raise

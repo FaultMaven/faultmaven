@@ -19,10 +19,10 @@ from typing import Any, Dict
 
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
     NotFoundError,
-    PermissionDeniedException,
     ServiceException,
-    ValidationException,
 )
 from faultmaven.models.api import DataType
 from faultmaven.models.interfaces import ToolResult
@@ -147,10 +147,10 @@ class ReclassifyEvidenceTool(AgentTool):
             )
         except NotFoundError as e:
             return ToolResult(success=False, data=None, error=str(e))
-        except PermissionDeniedException as e:
+        except AuthorizationError as e:
             return ToolResult(success=False, data=None, error=str(e))
-        except ValidationException as e:
-            # 409-equivalent — no content_ref, nothing to re-extract.
+        except ConflictError as e:
+            # No backing file — nothing to re-extract.
             return ToolResult(success=False, data=None, error=str(e))
         except ServiceException as e:
             return ToolResult(success=False, data=None, error=str(e))

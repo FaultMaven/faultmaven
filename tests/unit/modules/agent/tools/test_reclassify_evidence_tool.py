@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
     NotFoundError,
-    PermissionDeniedException,
-    ValidationException,
 )
 from faultmaven.models.api import DataType
 from faultmaven.modules.agent.tools.base import ToolContext
@@ -151,8 +151,9 @@ class TestServiceDelegation:
         assert "ev_abc" in result.error
 
     @pytest.mark.asyncio
-    async def test_permission_denied_maps_to_error(self, tool, service):
-        service.reclassify_evidence.side_effect = PermissionDeniedException("nope")
+    async def test_authorization_error_maps_to_error(self, tool, service):
+        """AuthorizationError surfaces as a failed ToolResult."""
+        service.reclassify_evidence.side_effect = AuthorizationError("nope")
         with _enable_flag(True):
             result = await tool.execute_with_context(
                 params={"evidence_id": "ev_abc", "data_type": "logs_and_errors"},
@@ -161,10 +162,15 @@ class TestServiceDelegation:
         assert result.success is False
 
     @pytest.mark.asyncio
-    async def test_no_content_ref_maps_to_error(self, tool, service):
-        """409-equivalent: evidence has no stored raw file, so re-extraction is impossible."""
-        service.reclassify_evidence.side_effect = ValidationException(
-            "Evidence ev_abc has no stored raw file"
+    async def test_no_backing_file_maps_to_error(self, tool, service):
+        """Evidence with no stored raw file → ConflictError → failed
+        ToolResult.
+        """
+        service.reclassify_evidence.side_effect = ConflictError(
+            "Evidence ev_abc has no stored raw file",
+            resource_type="evidence",
+            resource_id="ev_abc",
+            conflict_reason="no_backing_file",
         )
         with _enable_flag(True):
             result = await tool.execute_with_context(
