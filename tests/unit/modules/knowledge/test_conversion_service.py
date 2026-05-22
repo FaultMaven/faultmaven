@@ -23,6 +23,7 @@ import pytest
 
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
+    ConversionErrorCode,
     ConversionStatus,
     FailureModeAnalysis,
     PreprocessingResult,
@@ -411,13 +412,19 @@ class TestAnalysisPhase:
 
     @pytest.mark.asyncio
     async def test_analysis_raises_on_invalid_json(self, service, mock_llm_router):
-        """Invalid JSON from LLM raises ValueError."""
+        """Invalid JSON from LLM raises ConversionRejectedError with
+        ``error_code=LLM_PARSE_ERROR`` so the route handler returns 422
+        with the structured code instead of a generic 500.
+        """
         mock_llm_router.route.return_value = _make_llm_response("not valid json {{{")
 
         with pytest.raises(
-            ValueError, match="LLM analysis response could not be parsed"
-        ):
+            ConversionRejectedError,
+            match="LLM analysis response could not be parsed",
+        ) as exc:
             await service._analyze_document("sample text", "test.md")
+
+        assert exc.value.error_code == ConversionErrorCode.LLM_PARSE_ERROR
 
 
 # =============================================================================
