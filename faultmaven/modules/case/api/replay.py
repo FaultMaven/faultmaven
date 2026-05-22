@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_case_repository
+from faultmaven.exceptions import FaultMavenException
 from faultmaven.models.api import ErrorDetail, ErrorResponse
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.domain.models import Case
@@ -41,16 +42,13 @@ async def get_case_snapshot(
     try:
         # Permission check could be added here (e.g. check if user owns case)
         # For now, relying on obscure ID and internal safeguards
-
         return await replayer.restore_at_turn(case_id, turn_number)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ErrorResponse(
-                schema_version="3.1.0",
-                error=ErrorDetail(code="CHECKPOINT_NOT_FOUND", message=str(e)),
-            ).model_dump(),
-        )
+    except FaultMavenException:
+        # Typed service exceptions (NotFoundError on missing checkpoint, etc.)
+        # propagate to the global handlers in api/exception_handlers.py for
+        # canonical translation (404 / 422 / 409 / etc.). See
+        # docs/architecture/specifications/exception-contract.md.
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -85,14 +83,10 @@ async def diff_case_turns(
     try:
         diff = await replayer.diff_turns(case_id, turn_from, turn_to)
         return diff if diff else {"message": "No differences found"}
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ErrorResponse(
-                schema_version="3.1.0",
-                error=ErrorDetail(code="CHECKPOINT_NOT_FOUND", message=str(e)),
-            ).model_dump(),
-        )
+    except FaultMavenException:
+        # NotFoundError from missing checkpoint propagates to the global
+        # handler (404). See replay handler above for rationale.
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

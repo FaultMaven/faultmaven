@@ -66,12 +66,30 @@ async def test_restore_at_turn_success(replayer, mock_case_repo, sample_case_sna
 
 @pytest.mark.asyncio
 async def test_restore_at_turn_not_found(replayer, mock_case_repo):
+    """Missing checkpoint raises NotFoundError (typed), which the
+    global exception handler maps to HTTP 404.
+
+    Item 3 in the 2026-05-20 investigation-pipeline-followups handoff
+    migrated this from a raw ValueError (which the route used to catch
+    and translate to 404 manually) to the canonical NotFoundError so
+    the same dispatch happens centrally — see
+    docs/architecture/specifications/exception-contract.md.
+    """
+    from faultmaven.exceptions import NotFoundError
+
     # Setup
     mock_case_repo.get_checkpoints.return_value = []
 
     # Execute & Verify
-    with pytest.raises(ValueError, match="Checkpoint for case .* not found"):
+    with pytest.raises(NotFoundError) as exc:
         await replayer.restore_at_turn("case_1", 99)
+
+    # Carries the structured metadata that the JSON response surfaces.
+    assert exc.value.resource_type == "checkpoint"
+    assert exc.value.resource_id == "case_1@turn:99"
+    # Message still includes the available-turns hint so the user can
+    # adjust their request without a second round-trip.
+    assert "Available turns" in str(exc.value)
 
 
 @pytest.mark.asyncio

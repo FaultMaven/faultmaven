@@ -9,6 +9,7 @@ This service is Read-Only and does not modify existing cases.
 
 from typing import Any, Dict, List, Optional, Union
 
+from faultmaven.exceptions import NotFoundError
 from faultmaven.modules.case.domain.models import Case
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
@@ -35,7 +36,9 @@ class CaseReplayer:
             The reconstructed Case object.
 
         Raises:
-            ValueError: If the checkpoint is not found.
+            NotFoundError: If the checkpoint for the requested turn does
+                not exist on this case. The global exception handler in
+                ``api/exception_handlers.py`` maps this to HTTP 404.
         """
         checkpoints = await self.repo.get_checkpoints(case_id)
 
@@ -45,9 +48,14 @@ class CaseReplayer:
         )
 
         if not target_checkpoint:
-            raise ValueError(
-                f"Checkpoint for case {case_id} turn {turn_number} not found. "
-                f"Available turns: {sorted([cp.turn_number for cp in checkpoints])}"
+            available = sorted([cp.turn_number for cp in checkpoints])
+            raise NotFoundError(
+                resource_type="checkpoint",
+                resource_id=f"{case_id}@turn:{turn_number}",
+                message=(
+                    f"Checkpoint for case {case_id} turn {turn_number} not found. "
+                    f"Available turns: {available}"
+                ),
             )
 
         # Reconstruct the case from the snapshot
