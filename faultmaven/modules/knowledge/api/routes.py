@@ -46,6 +46,7 @@ from fastapi import (
 from faultmaven.api.v1.auth_dependencies import get_current_user_optional
 from faultmaven.api.v1.role_dependencies import require_admin
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
+from faultmaven.exceptions import FaultMavenException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
@@ -958,8 +959,13 @@ async def approve_suggestion(
 
     except HTTPException:
         raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except FaultMavenException:
+        # Typed service exceptions (ConflictError for "not ready for
+        # review", etc.) propagate to FastAPI's global handlers which
+        # map them to 409/422/404. See api/exception_handlers.py.
+        # Without this pass-through, the blanket `except Exception`
+        # below would swallow them and re-wrap as 500.
+        raise
     except Exception as e:
         logger.error(f"Failed to approve suggestion {suggestion_id}: {e}")
         raise HTTPException(
@@ -1057,8 +1063,11 @@ async def remediate_pii(
 
     except HTTPException:
         raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except FaultMavenException:
+        # See approve_suggestion above for the rationale — ConflictError
+        # from Suggestion.mark_pii_remediated propagates to the global
+        # 409 handler instead of being collapsed to 400.
+        raise
     except Exception as e:
         logger.error(f"Failed to remediate PII for suggestion {suggestion_id}: {e}")
         raise HTTPException(

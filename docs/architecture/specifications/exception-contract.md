@@ -10,12 +10,21 @@ Migration status under Item 3 of the 2026-05-20
 investigation-pipeline-followups handoff series:
 
 - **Conforming**: auth (PR #331), case/replay (PR #333), case/routes
-  (this PR), agent/routes, knowledge/verify_draft (PR #334).
-- **Remaining**: knowledge/routes (2 sites — `approve_suggestion`,
-  `remediate_pii`).
-- **Out of scope**: knowledge/conversion_routes — has its own
-  `ConversionRejectedError`/`ConversionErrorCode` contract mapping
-  to 413/415/422/503; not a `ValueError → 400` antipattern.
+  (PR #335), agent/routes, knowledge/verify_draft (PR #334),
+  knowledge/routes (`approve_suggestion` and `remediate_pii`, this
+  PR).
+- **Out of scope**: knowledge/conversion_routes keeps its own
+  `ConversionRejectedError`/`ConversionErrorCode` contract mapping to
+  413/415/422/503; the only Pattern-B remnant in that file (an LLM
+  JSON-parse `except ValueError`) was plugged at the service layer in
+  PR #336 so the conversion contract is now fully typed end-to-end.
+
+Item 3 is complete at the route-layer scope. A separate, broader
+sweep would still be needed to convert programmer-error
+`raise ValueError` sites in service-layer code paths that aren't
+caught by routes (they currently leak as 500 via blanket
+`except Exception` blocks) — that's a follow-up initiative, not part
+of Item 3.
 
 ## Purpose
 

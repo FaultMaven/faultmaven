@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, Optional
 
+from faultmaven.exceptions import ConflictError
+
 
 class SuggestionStatus(str, Enum):
     """Status of a knowledge suggestion in the review workflow.
@@ -211,9 +213,20 @@ class KnowledgeSuggestion:
             reviewed_by: User ID of the reviewer
             knowledge_item_id: ID of the created KnowledgeItem
             review_notes: Optional notes from the reviewer
+
+        Raises:
+            ConflictError: PII scan has not completed (or failed) so the
+                suggestion is not eligible for approval. The global
+                handler maps this to HTTP 409 with
+                ``conflict_reason="not_ready_for_review"``.
         """
         if not self.is_ready_for_review():
-            raise ValueError("Suggestion must pass PII scan before approval")
+            raise ConflictError(
+                "Suggestion must pass PII scan before approval",
+                resource_type="suggestion",
+                resource_id=self.suggestion_id,
+                conflict_reason="not_ready_for_review",
+            )
 
         self.status = SuggestionStatus.APPROVED
         self.reviewed_by = reviewed_by
@@ -262,9 +275,19 @@ class KnowledgeSuggestion:
 
         Args:
             remediated_by: User ID who remediated the PII
+
+        Raises:
+            ConflictError: PII scan did not detect PII, so there is
+                nothing to remediate. The global handler maps this to
+                HTTP 409 with ``conflict_reason="no_pii_detected"``.
         """
         if self.pii_scan_status != PIIScanStatus.PII_DETECTED:
-            raise ValueError("Can only remediate if PII was detected")
+            raise ConflictError(
+                "Can only remediate if PII was detected",
+                resource_type="suggestion",
+                resource_id=self.suggestion_id,
+                conflict_reason="no_pii_detected",
+            )
 
         self.pii_scan_status = PIIScanStatus.REMEDIATED
         self.pii_remediated_by = remediated_by
