@@ -678,6 +678,9 @@ class CaseModel(Base):
     evidence = relationship(
         "EvidenceModel", back_populates="case", cascade="all, delete-orphan"
     )
+    evidence_needs = relationship(
+        "EvidenceNeedModel", back_populates="case", cascade="all, delete-orphan"
+    )
     hypotheses = relationship(
         "HypothesisModel", back_populates="case", cascade="all, delete-orphan"
     )
@@ -928,6 +931,161 @@ class EvidenceModel(Base):
         # PG: GIN over the TEXT[] tags column for fast membership queries.
         # SQLite: degrades to a btree on the TEXT column (harmless, unused).
         Index("ix_evidence_tags", "tags", postgresql_using="gin"),
+    )
+
+
+class EvidenceNeedModel(Base):
+    """Demand-side counterpart to evidence rows: verification requirements
+    the investigation has identified.
+
+    Needs live in a flat pool on the case — not anchored to specific
+    hypotheses. ``motivating_hypothesis_ids`` is stored as a JSON list
+    (small, mutated as a unit, never queried by ID across cases) per
+    evidence-needs-design.md §8.7. The hypothesis-evidence relationship
+    proper is recorded through the existing ``hypothesis_evidence``
+    junction at evidence-collection time.
+
+    Lifecycle is LLM-driven (create / update / supersede via
+    ``EvidenceNeedUpdate`` emissions); the engine enforces one
+    deterministic rule (hypothesis-retirement supersession when the
+    motivating list becomes empty AND purpose='causal_verification').
+
+    See: docs/architecture/investigation-engine/evidence-needs-design.md
+    """
+
+    __tablename__ = "evidence_needs"
+
+    need_id = Column(String(36), primary_key=True)
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    case_id = Column(
+        String(36),
+        ForeignKey("cases.case_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Demand-side classification (mirrors NeedPurpose enum).
+    purpose = Column(String(30), nullable=False)
+
+    # Surface-able text + LLM rationale for why this data would help.
+    request_text = Column(String(500), nullable=False)
+    rationale = Column(String(500), nullable=False)
+
+    priority = Column(String(10), nullable=False, server_default="medium")
+    status = Column(String(20), nullable=False, server_default="pending", index=True)
+
+    # JSON list of hypothesis IDs that motivate this need. Empty list
+    # means the need is motivated by the problem statement (symptom
+    # needs). Stored as a blob — the list is small, never indexed, and
+    # mutated as a unit by the engine on hypothesis-retirement events.
+    motivating_hypothesis_ids = Column(JsonBlob, nullable=False, server_default="[]")
+
+    # Required iff status='superseded'; NULL otherwise. Mirrors the
+    # Pydantic model_validator on EvidenceNeed.
+    superseded_reason = Column(String(500), nullable=True)
+
+    created_at_turn = Column(Integer, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    case = relationship("CaseModel", back_populates="evidence_needs")
+    fulfillments = relationship(
+        "EvidenceNeedFulfillmentModel",
+        back_populates="need",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('symptom_verification', 'causal_verification')",
+            name="evidence_needs_purpose_check",
+        ),
+        CheckConstraint(
+            "priority IN ('high', 'medium', 'low')",
+            name="evidence_needs_priority_check",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'partially_met', 'fulfilled', 'superseded')",
+            name="evidence_needs_status_check",
+        ),
+        # superseded_reason required iff status='superseded'. Two-way:
+        # SUPERSEDED requires a reason, non-SUPERSEDED forbids it.
+        CheckConstraint(
+            "(status = 'superseded' AND superseded_reason IS NOT NULL)"
+            " OR (status != 'superseded' AND superseded_reason IS NULL)",
+            name="evidence_needs_superseded_reason_invariant",
+        ),
+        CheckConstraint(
+            "LENGTH(TRIM(request_text)) > 0",
+            name="evidence_needs_request_text_not_empty",
+        ),
+        CheckConstraint(
+            "LENGTH(TRIM(rationale)) > 0",
+            name="evidence_needs_rationale_not_empty",
+        ),
+        CheckConstraint(
+            "created_at_turn >= 0",
+            name="evidence_needs_created_at_turn_nonnegative",
+        ),
+        Index("ix_evidence_needs_case_status", "case_id", "status"),
+        Index("ix_evidence_needs_case_purpose", "case_id", "purpose"),
+    )
+
+
+class EvidenceNeedFulfillmentModel(Base):
+    """Junction: evidence_need ↔ evidence row.
+
+    Records which evidence rows fulfill which needs. Many-to-many:
+    a single need accumulates multiple fulfillments across DIAGNOSIS
+    (presence evidence) and MITIGATION/TREATMENT (absence evidence);
+    a single evidence row can fulfill multiple needs when the same
+    data answers multiple hypotheses (cross-hypothesis sharing per
+    evidence-needs-design.md §5.2).
+    """
+
+    __tablename__ = "evidence_need_fulfillment"
+
+    need_id = Column(
+        String(36),
+        ForeignKey("evidence_needs.need_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    evidence_id = Column(
+        String(36),
+        ForeignKey("evidence.evidence_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    linked_at_turn = Column(Integer, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    need = relationship("EvidenceNeedModel", back_populates="fulfillments")
+
+    __table_args__ = (
+        CheckConstraint(
+            "linked_at_turn >= 0",
+            name="evidence_need_fulfillment_linked_at_turn_nonnegative",
+        ),
+        Index("ix_evidence_need_fulfillment_evidence", "evidence_id"),
     )
 
 

@@ -137,6 +137,24 @@ CATEGORY_MILESTONE_MAP = {
         # Solution evidence verifies permanent fix effectiveness
         # solution_verified is a stage-gate milestone (set via User-Agent Handshake)
     ],
+    EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE: [
+        # Symptom-absence evidence verifies a fix at the symptom level.
+        # Contributes to BOTH mitigation_verified (workaround masks
+        # symptom — sufficient on its own) AND solution_verified
+        # (defense in depth alongside causal absence, since a fixed
+        # cause without symptom recovery means downstream debris).
+        "mitigation_verified",
+        "solution_verified",
+    ],
+    EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE: [
+        # Causal-absence evidence verifies a fix at the cause level —
+        # distinct from symptom absence (a workaround can mask symptoms
+        # without removing the cause). The map is used for attribution
+        # (intersection with milestones the LLM completed this turn),
+        # not auto-advancement — gate milestones stay LLM-set via the
+        # compliance-detection / handshake mechanism.
+        "solution_verified",
+    ],
     # Baseline/environmental data lives on ``uploaded_files``, not Evidence;
     # Evidence rows are only created when the agent extracts a
     # claim-relevant slice.

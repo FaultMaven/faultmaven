@@ -153,14 +153,24 @@ class TestPostDropCategories:
     must not exist — protects against drift if someone reinstates them.
     """
 
-    def test_evidence_category_has_only_four_values(self):
-        """4 categories survive: symptom/causal/mitigation/solution."""
+    def test_evidence_category_values(self):
+        """The full set of EvidenceCategory values.
+
+        Post-013, the absence-of-symptom and absence-of-cause categories
+        joined the presumption-evidence model (see
+        evidence-needs-design.md §4.3). The legacy stage-named
+        ``mitigation_evidence`` / ``solution_evidence`` are still
+        present pending the Phase 5 prompt cutover, after which they
+        will be removed in favor of the absence categories alone.
+        """
         values = {c.value for c in EvidenceCategory}
         assert values == {
             "symptom_evidence",
             "causal_evidence",
             "mitigation_evidence",
             "solution_evidence",
+            "symptom_absence_evidence",
+            "causal_absence_evidence",
         }
 
     def test_no_contextual_evidence_category(self):
