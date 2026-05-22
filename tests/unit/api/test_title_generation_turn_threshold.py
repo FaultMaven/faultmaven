@@ -1,10 +1,17 @@
-"""Tests for turn-based threshold in title generation endpoint"""
+"""Tests for turn-based threshold in title generation endpoint.
+
+The threshold gate raises ``ValidationException`` (mapped to HTTP 422
+by the global handler in ``api/exception_handlers.py`` — see
+``docs/architecture/specifications/exception-contract.md``). Tests
+assert on the raised type and ``str(exc)`` rather than a wrapped HTTP
+response shape; HTTP translation happens at the app boundary.
+"""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
 
+from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.llm.providers.base import LLMResponse
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes import generate_case_title
@@ -81,7 +88,7 @@ class TestTurnThreshold:
             ]
         )
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(ValidationException) as exc_info:
             await generate_case_title(
                 case_id="case_123",
                 request=mock_request,
@@ -92,10 +99,8 @@ class TestTurnThreshold:
                 current_user=mock_user,
             )
 
-        assert exc_info.value.status_code == 422
-        assert "INSUFFICIENT_TURNS" in str(exc_info.value.detail)
-        assert "Need at least 5 conversation turns" in str(exc_info.value.detail)
-        assert "currently 3 turns" in str(exc_info.value.detail)
+        assert "Need at least 5 conversation turns" in str(exc_info.value)
+        assert "currently 3 turns" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_exactly_5_turns_passes_threshold(
@@ -150,8 +155,10 @@ class TestTurnThreshold:
 
         mock_case_service.update_case = AsyncMock(return_value=True)
 
-        # Should not raise HTTPException with INSUFFICIENT_TURNS
-        # (may raise other exceptions from title generation, but not threshold check)
+        # Threshold should pass — turn count meets minimum. Title
+        # generation itself may still fail downstream (e.g. LLM/fallback
+        # both fail → ValidationException with a different message), but
+        # the failure must NOT be the turn-threshold one.
         try:
             result = await generate_case_title(
                 case_id="case_123",
@@ -169,10 +176,11 @@ class TestTurnThreshold:
                 result.title != "Case-240101-1"
             ), "Title should be updated from generic"
             assert len(result.title) > 0, "Title should not be empty"
-        except HTTPException as e:
-            # If it fails, make sure it's NOT due to turn threshold
-            assert "INSUFFICIENT_TURNS" not in str(e.detail)
-            # Other failures (like title generation failures) are acceptable for this test
+        except Exception as e:  # noqa: BLE001
+            # Downstream failures (other 422s, persistence verification
+            # 500s, etc.) are acceptable for this test — the only
+            # forbidden outcome is the turn-threshold message.
+            assert "conversation turns" not in str(e)
 
     @pytest.mark.asyncio
     async def test_more_than_5_turns_passes_threshold(
@@ -212,7 +220,9 @@ class TestTurnThreshold:
 
         mock_case_service.update_case = AsyncMock(return_value=True)
 
-        # Should not raise HTTPException with INSUFFICIENT_TURNS
+        # Threshold should pass — turn count well above minimum.
+        # Downstream 422 (LLM/fallback failure) is acceptable; the
+        # turn-threshold-specific message must not appear.
         try:
             result = await generate_case_title(
                 case_id="case_123",
@@ -230,9 +240,10 @@ class TestTurnThreshold:
                 result.title != "Case-240101-1"
             ), "Title should be updated from generic"
             assert len(result.title) > 0, "Title should not be empty"
-        except HTTPException as e:
-            # If it fails, make sure it's NOT due to turn threshold
-            assert "INSUFFICIENT_TURNS" not in str(e.detail)
+        except Exception as e:  # noqa: BLE001
+            # Downstream failures are acceptable for this test — the
+            # only forbidden outcome is the turn-threshold message.
+            assert "conversation turns" not in str(e)
 
     @pytest.mark.asyncio
     async def test_only_counts_user_role_messages(
@@ -256,7 +267,7 @@ class TestTurnThreshold:
             ]
         )
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(ValidationException) as exc_info:
             await generate_case_title(
                 case_id="case_123",
                 request=mock_request,
@@ -267,8 +278,7 @@ class TestTurnThreshold:
                 current_user=mock_user,
             )
 
-        assert exc_info.value.status_code == 422
-        assert "currently 3 turns" in str(exc_info.value.detail)
+        assert "currently 3 turns" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_no_messages_returns_422(
@@ -279,7 +289,7 @@ class TestTurnThreshold:
         mock_case_service.get_case = AsyncMock(return_value=mock_case)
         mock_case_service.repository.get_messages = AsyncMock(return_value=[])
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(ValidationException) as exc_info:
             await generate_case_title(
                 case_id="case_123",
                 request=mock_request,
@@ -290,8 +300,7 @@ class TestTurnThreshold:
                 current_user=mock_user,
             )
 
-        assert exc_info.value.status_code == 422
-        assert "currently 0 turns" in str(exc_info.value.detail)
+        assert "currently 0 turns" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_get_messages_exception_treats_as_zero_turns(
@@ -304,7 +313,7 @@ class TestTurnThreshold:
             side_effect=Exception("Database error")
         )
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(ValidationException) as exc_info:
             await generate_case_title(
                 case_id="case_123",
                 request=mock_request,
@@ -315,8 +324,7 @@ class TestTurnThreshold:
                 current_user=mock_user,
             )
 
-        assert exc_info.value.status_code == 422
-        assert "currently 0 turns" in str(exc_info.value.detail)
+        assert "currently 0 turns" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_error_message_includes_current_count(
@@ -335,7 +343,7 @@ class TestTurnThreshold:
             ]
         )
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(ValidationException) as exc_info:
             await generate_case_title(
                 case_id="case_123",
                 request=mock_request,
@@ -346,7 +354,7 @@ class TestTurnThreshold:
                 current_user=mock_user,
             )
 
-        detail = str(exc_info.value.detail)
+        detail = str(exc_info.value)
         assert "Need at least 5" in detail
         assert "currently 2 turns" in detail
         assert "Continue discussing your issue" in detail

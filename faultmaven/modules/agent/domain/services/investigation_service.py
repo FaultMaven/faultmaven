@@ -22,6 +22,8 @@ from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
 from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
@@ -1415,18 +1417,23 @@ class InvestigationService:
             updates land on the backing UploadedFile in the same case.
 
         Raises:
-            NotFoundError: case or evidence not found.
-            PermissionDeniedException: user does not own the case.
-            ValidationException: evidence has no backing file —
+            NotFoundError: case or evidence not found. Mapped to HTTP 404
+                by the global exception handler.
+            AuthorizationError: user does not own the case. Mapped to
+                HTTP 403.
+            ConflictError: evidence has no backing file —
                 reclassification requires stored raw bytes to re-extract.
+                Mapped to HTTP 409 with
+                ``conflict_reason="no_backing_file"`` in the body so
+                callers can branch programmatically.
             ServiceException: any other failure (storage fetch,
-                preprocessing).
+                preprocessing). Mapped to HTTP 500.
         """
         case = await self.repository.get(case_id)
         if not case:
             raise NotFoundError("Case", case_id)
         if case.user_id != user_id:
-            raise PermissionDeniedException(
+            raise AuthorizationError(
                 f"User {user_id} not authorized for case {case_id}"
             )
 
@@ -1442,11 +1449,14 @@ class InvestigationService:
         file_meta = case.find_uploaded_file(evidence.source_file_id)
         storage_ref = file_meta.storage_ref if file_meta else None
         if not storage_ref:
-            raise ValidationException(
+            raise ConflictError(
                 f"Evidence {evidence_id} has no stored raw file — "
                 "reclassification requires re-running the extractor "
                 "over the original content, which is not available for "
-                "evidence that was created without file storage."
+                "evidence that was created without file storage.",
+                resource_type="evidence",
+                resource_id=evidence_id,
+                conflict_reason="no_backing_file",
             )
         if not self.file_storage_service:
             raise ServiceException(

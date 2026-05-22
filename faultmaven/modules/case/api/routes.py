@@ -59,6 +59,7 @@ from faultmaven.api.v1.dependencies import (
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.exceptions import (
     AuthorizationError,
+    FaultMavenException,
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
@@ -1116,10 +1117,12 @@ async def generate_case_title(
 
     **Returns:**
     - 200: TitleResponse with X-Correlation-ID header
-    - 422: ErrorResponse with code INSUFFICIENT_CONTEXT and X-Correlation-ID header
-
-    **Description:** Returns 422 when insufficient meaningful context; clients SHOULD keep
-    existing title unchanged and may retry later.
+    - 422: ValidationException body — see ``api/exception_handlers.py``
+      and ``docs/architecture/specifications/exception-contract.md``.
+      Raised when there is insufficient meaningful context to generate
+      a title (pre-LLM length gate, or LLM + fallback both fail).
+      Clients SHOULD keep the existing title unchanged and may retry
+      later.
     """
     case_service = check_case_service_available(case_service)
     correlation_id = str(uuid.uuid4())
@@ -1225,17 +1228,11 @@ async def generate_case_title(
                     "threshold": MIN_TURNS_FOR_TITLE_GENERATION,
                 },
             )
-            error_response = ErrorResponse(
-                schema_version="3.1.0",
-                error=ErrorDetail(
-                    code="INSUFFICIENT_TURNS",
-                    message=f"Need at least {MIN_TURNS_FOR_TITLE_GENERATION} conversation turns to generate a meaningful title. Continue discussing your issue (currently {user_turn_count} turns), then try again.",
-                ),
-            )
-            raise HTTPException(
-                status_code=422,
-                detail=error_response.model_dump(),
-                headers={"x-correlation-id": correlation_id},
+            raise ValidationException(
+                f"Need at least {MIN_TURNS_FOR_TITLE_GENERATION} conversation "
+                f"turns to generate a meaningful title. Continue discussing "
+                f"your issue (currently {user_turn_count} turns), then try "
+                f"again."
             )
 
         # Get conversation context for LLM prompt
@@ -1285,17 +1282,11 @@ async def generate_case_title(
                     "threshold": MIN_CONTENT_LENGTH_FOR_TITLE,
                 },
             )
-            error_response = ErrorResponse(
-                schema_version="3.1.0",
-                error=ErrorDetail(
-                    code="INSUFFICIENT_CONTEXT",
-                    message=f"Need at least {MIN_CONTENT_LENGTH_FOR_TITLE} characters of conversation content to generate a meaningful title (currently {len(user_message_content)} characters). Continue discussing your issue, then try again.",
-                ),
-            )
-            raise HTTPException(
-                status_code=422,
-                detail=error_response.model_dump(),
-                headers={"x-correlation-id": correlation_id},
+            raise ValidationException(
+                f"Need at least {MIN_CONTENT_LENGTH_FOR_TITLE} characters of "
+                f"conversation content to generate a meaningful title "
+                f"(currently {len(user_message_content)} characters). "
+                f"Continue discussing your issue, then try again."
             )
 
         # Generate title using LLM with fallback logic
@@ -1306,18 +1297,8 @@ async def generate_case_title(
                 context_text, case, max_words, hint, user_message_content, llm_provider
             )
         except ValueError:
-            # LLM and fallback failed - keep 422 on "no meaningful" after post-processing
-            error_response = ErrorResponse(
-                schema_version="3.1.0",
-                error=ErrorDetail(
-                    code="INSUFFICIENT_CONTEXT",
-                    message="Cannot generate meaningful title from available context",
-                ),
-            )
-            raise HTTPException(
-                status_code=422,
-                detail=error_response.model_dump(),
-                headers={"x-correlation-id": correlation_id},
+            raise ValidationException(
+                "Cannot generate meaningful title from available context"
             )
 
         # Persist the generated title to database (Approach 1: Generate AND persist)
@@ -1411,6 +1392,13 @@ async def generate_case_title(
         if "x-correlation-id" not in (he.headers or {}):
             he.headers = he.headers or {}
             he.headers["x-correlation-id"] = correlation_id
+        raise
+    except FaultMavenException:
+        # Typed service exceptions (ValidationException, ConflictError,
+        # NotFoundError, etc.) propagate to FastAPI's global handlers which
+        # map them to 422/409/404. See api/exception_handlers.py. Without
+        # this pass-through, the blanket `except Exception` below would
+        # swallow them and re-wrap as 500.
         raise
     except Exception as e:
         logger.error(
@@ -2434,53 +2422,41 @@ async def reclassify_evidence(
     Gated by ``FAULTMAVEN_RECLASSIFY_ENABLED``. Returns 404 when the
     flag is off so the endpoint is invisible in production by default.
 
-    Error responses:
+    Error responses (dispatched by ``api/exception_handlers.py``):
 
-    - ``404`` — feature disabled, case not found, or evidence not in case.
-    - ``409`` — evidence has no ``content_ref`` (can't re-extract).
-    - ``400`` — invalid ``data_type`` string, or missing ``data_type``.
+    - ``404`` — feature disabled, case not found, or evidence not in case
+      (``NotFoundError``).
+    - ``409`` — evidence has no backing file (``ConflictError`` with
+      ``conflict_reason="no_backing_file"``).
+    - ``403`` — caller does not own the case (``AuthorizationError``).
+    - ``422`` — invalid or missing ``data_type`` (``ValidationException``).
+    - ``500`` — storage/preprocessing failure (``ServiceException``).
     """
     from faultmaven.config.settings import get_settings
 
     settings = get_settings()
     if not settings.preprocessing.reclassify_enabled:
-        raise HTTPException(
-            status_code=404,
-            detail="Reclassification endpoint is not enabled",
-        )
+        raise NotFoundError(message="Reclassification endpoint is not enabled")
 
     data_type_raw = body.get("data_type") if isinstance(body, dict) else None
     if not data_type_raw or not isinstance(data_type_raw, str):
-        raise HTTPException(
-            status_code=400,
-            detail="Request body must include 'data_type' (string)",
-        )
+        raise ValidationException("Request body must include 'data_type' (string)")
 
     try:
         data_type = DataType(data_type_raw)
     except ValueError:
         valid = ", ".join(t.value for t in DataType)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown data_type '{data_type_raw}'. Valid: {valid}",
+        raise ValidationException(
+            f"Unknown data_type '{data_type_raw}'. Valid: {valid}"
         )
 
-    try:
-        updated_evidence = await investigation_service.reclassify_evidence(
-            case_id=case_id,
-            evidence_id=evidence_id,
-            user_id=current_user.user_id,
-            data_type=data_type,
-            trigger="api",
-        )
-    except NotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except PermissionDeniedException as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except ValidationException as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except ServiceException as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    updated_evidence = await investigation_service.reclassify_evidence(
+        case_id=case_id,
+        evidence_id=evidence_id,
+        user_id=current_user.user_id,
+        data_type=data_type,
+        trigger="api",
+    )
 
     return {
         "evidence_id": updated_evidence.evidence_id,
