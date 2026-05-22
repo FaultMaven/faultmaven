@@ -284,8 +284,9 @@ handlers translate them. The route's `try/except` block contains a
 `FaultMavenException` pass-through ahead of the blanket `except
 Exception` so typed exceptions reach the handlers instead of being
 re-wrapped as 500. See the
-[Item 3 follow-ups handoff](../../working/HANDOFF-investigation-pipeline-followups-2026-05-20.md)
-for the migration context (Pattern B → Pattern A).
+[service exception contract specification](../specifications/exception-contract.md)
+for the full mapping, route pattern, and the legacy anti-pattern
+this contract replaces.
 
 ### Local Mode Security
 

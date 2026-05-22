@@ -515,130 +515,28 @@ class CaseService:
 
 ### Principle
 
-> **"Service layers raise typed exceptions carrying resource metadata.
-> The API layer translates them to HTTP status codes via global handlers.
-> Routes do not catch raw `ValueError` and translate to ad-hoc HTTP codes."**
+> **"Services raise typed domain exceptions. Infrastructure errors are wrapped in domain terms. The API layer translates domain exceptions to HTTP responses centrally."**
 
-### Centralized Exception Hierarchy
+### Shared Exception Hierarchy
 
 FaultMaven uses a single shared exception hierarchy in
-[`faultmaven/exceptions.py`](../../../faultmaven/exceptions.py). The
-canonical service-layer exception classes are:
-
-| Exception | HTTP status | Use case |
-|-----------|-------------|----------|
-| `ValidationException` | 422 Unprocessable Entity | Client input is malformed (bad format, missing fields) |
-| `ConflictError` | 409 Conflict | Resource state conflict (duplicate username, double-close) |
-| `NotFoundError` | 404 Not Found | Resource lookup miss |
-| `PermissionDeniedException` | 403 Forbidden | Caller lacks permission |
-| `ServiceException` | 500 Internal Server Error | Genuine server failure |
-
-`ConflictError` and `NotFoundError` accept structured fields
-(`resource_type`, `resource_id`, plus a `conflict_reason` on
-`ConflictError`) so the response body carries actionable detail
-without forcing the client to parse human-readable messages.
-
-### Service-Layer Usage
+[`faultmaven/exceptions.py`](../../../faultmaven/exceptions.py) rather
+than per-module parallel hierarchies. Services raise these types
+directly; modules do not define duplicate `CaseError` / `KnowledgeError`
+class trees.
 
 ```python
-# infrastructure/auth/database_user_store.py
-from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
-
-async def create_user(self, username: str, email: str) -> DevUser:
-    if not self._validate_username(username):
-        raise ValidationException(f"Invalid username format: {username}")
-    if await self.get_user_by_username(username):
-        raise ConflictError(
-            f"User with username '{username}' already exists",
-            resource_type="user",
-            resource_id=username,
-            conflict_reason="duplicate_username",
-        )
-    # ...
-
-async def update_user(self, user: DevUser) -> DevUser:
-    existing = await self.user_repository.get(user.user_id)
-    if not existing:
-        raise NotFoundError(
-            resource_type="user",
-            resource_id=user.user_id,
-            message=f"User {user.user_id} not found",
-        )
-    # ...
+# faultmaven/exceptions.py (excerpt)
+class FaultMavenException(Exception): ...
+class ServiceError(FaultMavenException): ...
+class NotFoundError(ServiceError): ...        # 404
+class ConflictError(ServiceError): ...        # 409
+class ValidationException(FaultMavenException): ...    # 422
+class PermissionDeniedException(FaultMavenException): ...  # 403
+class ServiceException(FaultMavenException): ...        # 500
 ```
-
-### API Layer Translation (Global Handlers)
-
-Routes do **not** catch these exceptions individually. They are
-dispatched globally in
-[`api/exception_handlers.py`](../../../faultmaven/api/exception_handlers.py):
-
-```python
-# api/exception_handlers.py
-@app.exception_handler(ValidationException)
-async def validation_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=422,
-        content={"error": "Validation Error", "detail": str(exc)},
-    )
-
-@app.exception_handler(ConflictError)
-async def conflict_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=409,
-        content={
-            "error": "Conflict",
-            "detail": str(exc),
-            "resource_type": exc.resource_type,
-            "resource_id": exc.resource_id,
-            "conflict_reason": exc.conflict_reason,
-        },
-    )
-
-@app.exception_handler(NotFoundError)
-async def not_found_handler(request, exc):
-    return JSONResponse(status_code=404, content={...})
-```
-
-### Route Pattern
-
-A route's `try/except` block should NOT catch raw `ValueError` or
-manually translate to `HTTPException(400)`. Instead, let typed
-exceptions propagate to the global handlers. When the route also
-has a blanket `except Exception` (for the genuine-server-failure
-→ 500 case), insert a `FaultMavenException` pass-through
-ahead of it so typed exceptions are not swallowed and re-wrapped
-as 500:
-
-```python
-# modules/auth/api/auth.py
-try:
-    return await user_store.create_user(username=request.username, email=request.email)
-except HTTPException:
-    raise
-except FaultMavenException:
-    # ValidationException / ConflictError / NotFoundError → global handlers.
-    # Without this pass-through, the blanket below would swallow them.
-    raise
-except Exception as e:
-    logger.error(f"Unexpected error: {e}", exc_info=True)
-    raise HTTPException(status_code=500, detail="...")
-```
-
-### Anti-Pattern: `except ValueError → HTTPException(400)`
-
-The legacy Pattern B — services raise `ValueError`, routes catch and
-return 400 — collapsed three semantically distinct errors (validation,
-conflict, not-found) into one status code, and risked 500 leakage when
-a route forgot the `except` block. The Pattern A above replaces it
-across the codebase per Item 3 of the
-[2026-05-20 investigation-pipeline-followups handoff](../../working/HANDOFF-investigation-pipeline-followups-2026-05-20.md).
 
 ### Wrapping Infrastructure Errors
-
-Infrastructure-level exceptions (e.g., `DatabaseError` from SQLAlchemy)
-should still be wrapped at the service boundary so service callers see
-domain terms, not implementation details:
 
 ```python
 # modules/case/infrastructure/repository.py
@@ -646,11 +544,23 @@ async def get_case(self, case_id: str) -> Case:
     try:
         result = await self.db.fetch_one(...)
     except DatabaseError as e:
+        # Wrap infrastructure error in domain terms
         raise ServiceException(f"Failed to retrieve case: {e}") from e
     if not result:
         raise NotFoundError(resource_type="case", resource_id=case_id)
     return Case.from_row(result)
 ```
+
+### API Layer Translation
+
+Translation is centralized in
+[`api/exception_handlers.py`](../../../faultmaven/api/exception_handlers.py)
+— each domain exception type is registered once with FastAPI and maps
+to a known HTTP shape across every route. Routes do not catch and
+translate domain exceptions individually. See the [exception
+contract specification](../specifications/exception-contract.md) for
+the full status-code mapping, response-body shapes, and the
+recommended route pattern.
 
 ---
 
