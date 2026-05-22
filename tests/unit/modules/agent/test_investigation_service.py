@@ -148,6 +148,72 @@ class TestInvestigationServiceProcessTurn:
         ), f"User message '{sample_turn_payload.query}' not found in saved messages"
 
     @pytest.mark.asyncio
+    async def test_process_turn_persists_engine_metadata_on_assistant_message(
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+        sample_turn_payload,
+    ):
+        """Regression: rich turn metadata emitted by the engine must
+        propagate to the persisted assistant message.
+
+        Before fix: investigation_service hardcoded ``metadata={}`` on the
+        assistant message, dropping the engine's ``self_correction_failed``
+        and ``diagnostic_reasoning_violations`` fields entirely. This made
+        post-hoc diagnosis of self-correction failures impossible — every
+        production message persisted with empty metadata.
+        """
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        # Engine signals a failed self-correction with concrete violation strings.
+        engine_metadata = {
+            "milestones_completed": ["symptom_verified"],
+            "progress_made": False,
+            "self_correction_failed": True,
+            "diagnostic_reasoning_violations": [
+                "Missing causal reasoning - must explain HOW X causes Y",
+                "Not grounded in case evidence",
+            ],
+        }
+        mock_milestone_engine.process_turn = AsyncMock(
+            return_value={
+                "case_updated": sample_case,
+                "agent_response": "fallback message text",
+                "metadata": engine_metadata,
+            }
+        )
+
+        await service.process_turn(
+            case_id=sample_case.case_id,
+            user_id=sample_user_id,
+            payload=sample_turn_payload,
+        )
+
+        saved_case = await mock_case_repository.get(sample_case.case_id)
+        assistant_messages = [
+            m for m in saved_case.messages if m.get("role") == "assistant"
+        ]
+        assert assistant_messages, "expected at least one assistant message"
+        persisted = assistant_messages[-1].get("metadata") or {}
+
+        # The two fields that were lost before the fix.
+        assert persisted.get("self_correction_failed") is True, (
+            "self_correction_failed must propagate to assistant message metadata "
+            "for downstream diagnosis"
+        )
+        assert persisted.get("diagnostic_reasoning_violations") == [
+            "Missing causal reasoning - must explain HOW X causes Y",
+            "Not grounded in case evidence",
+        ], (
+            "diagnostic_reasoning_violations must propagate verbatim so a DB "
+            "query can identify which validator check failed on each turn"
+        )
+
+    @pytest.mark.asyncio
     async def test_process_turn_saves_agent_response(
         self,
         service,

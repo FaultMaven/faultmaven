@@ -3355,6 +3355,9 @@ class MilestoneEngine:
                     "self_correction_failed": metadata.get(
                         "self_correction_failed", False
                     ),
+                    "diagnostic_reasoning_violations": metadata.get(
+                        "diagnostic_reasoning_violations", []
+                    ),
                     "timestamp": datetime.now(UTC).isoformat(),
                 },
             }
