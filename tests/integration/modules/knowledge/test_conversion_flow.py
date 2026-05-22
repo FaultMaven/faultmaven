@@ -186,10 +186,30 @@ def mock_conversion_service():
 
 
 def _build_app(mock_service, user):
-    """Build a minimal FastAPI app with conversion routes and overridden deps."""
+    """Build a minimal FastAPI app with conversion routes and overridden deps.
+
+    Registers the production exception handlers via
+    ``get_exception_handlers()`` so typed service exceptions
+    (NotFoundError / ConflictError / ValidationException) translate to
+    404 / 409 / 422 in the integration tests, matching production
+    behavior. Without this, the typed exceptions propagate uncaught
+    past FastAPI's dispatch chain and surface as raw 500-shaped
+    transport errors — exactly the failure mode that broke PR #334's
+    CI (the new typed-exception assertions saw uncaught exceptions
+    instead of the expected status codes).
+    """
+    from faultmaven.api.exception_handlers import get_exception_handlers
+
     app = FastAPI()
     app.include_router(conversion_router, prefix="/api/v1")
     app.state.conversion_service = mock_service
+
+    # Register the same exception handlers main.py installs so typed
+    # service exceptions get translated by the same dispatch the
+    # production app uses. Drift between the two would mean integration
+    # tests don't exercise the real handler chain.
+    for exc_type, handler in get_exception_handlers().items():
+        app.add_exception_handler(exc_type, handler)
 
     # Override auth and service dependencies
     app.dependency_overrides[_require_auth] = lambda: user
@@ -695,18 +715,86 @@ class TestDeleteDraft:
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestConversionEdgeCases:
-    async def test_verify_draft_not_found_or_not_passing_returns_400(
+    async def test_verify_draft_missing_returns_404(
         self, app_with_user, mock_conversion_service
     ):
-        """Verify returns 400 when draft is not found or validation not passed."""
-        mock_conversion_service.verify_draft.side_effect = ValueError("Draft not found")
+        """Missing draft maps to 404 via NotFoundError -> global handler.
+
+        Refactored from the legacy ValueError -> 400 contract under Item 3
+        (PR #334). The service now raises NotFoundError with structured
+        resource_type / resource_id; the global handler in
+        api/exception_handlers.py translates to 404.
+        """
+        from faultmaven.exceptions import NotFoundError
+
+        mock_conversion_service.verify_draft.side_effect = NotFoundError(
+            resource_type="draft",
+            resource_id="draft_fail",
+            message="Draft not found",
+        )
         async with await _client(app_with_user) as client:
             response = await client.post(
                 f"{API_PREFIX}/conversions/conv_abc123/drafts/draft_fail/verify",
             )
 
-        assert response.status_code == 400
-        assert "not found" in response.json()["detail"].lower()
+        assert response.status_code == 404
+        body = response.json()
+        assert "not found" in body["detail"].lower()
+        # Structured metadata reaches clients so they can branch on
+        # which resource was missing (conversion_job vs draft) without
+        # parsing the detail string.
+        assert body["resource_type"] == "draft"
+        assert body["resource_id"] == "draft_fail"
+
+    async def test_verify_draft_already_verified_returns_409(
+        self, app_with_user, mock_conversion_service
+    ):
+        """Trying to verify an already-verified draft maps to 409 via
+        the global conflict_exception_handler. Structured metadata
+        (``resource_type``, ``resource_id``, ``conflict_reason``) is
+        surfaced in the response body so clients can branch on the
+        conflict shape programmatically — see exception_handlers.py and
+        docs/architecture/specifications/exception-contract.md.
+        """
+        from faultmaven.exceptions import ConflictError
+
+        mock_conversion_service.verify_draft.side_effect = ConflictError(
+            "This runbook has already been verified and ingested",
+            resource_type="draft",
+            resource_id="draft_dup",
+            conflict_reason="already_verified",
+        )
+        async with await _client(app_with_user) as client:
+            response = await client.post(
+                f"{API_PREFIX}/conversions/conv_abc123/drafts/draft_dup/verify",
+            )
+
+        assert response.status_code == 409
+        body = response.json()
+        assert "already been verified" in body["detail"].lower()
+        # Structured metadata reaches clients — they can branch on
+        # `conflict_reason` rather than parsing the detail string.
+        assert body["resource_type"] == "draft"
+        assert body["resource_id"] == "draft_dup"
+        assert body["conflict_reason"] == "already_verified"
+
+    async def test_verify_draft_validation_failed_returns_422(
+        self, app_with_user, mock_conversion_service
+    ):
+        """A draft whose runbook-validator failed maps to 422 (the schema
+        is invalid; the client should fix the draft before re-verifying)."""
+        from faultmaven.exceptions import ValidationException
+
+        mock_conversion_service.verify_draft.side_effect = ValidationException(
+            "Draft has validation errors that must be fixed before verification"
+        )
+        async with await _client(app_with_user) as client:
+            response = await client.post(
+                f"{API_PREFIX}/conversions/conv_abc123/drafts/draft_invalid/verify",
+            )
+
+        assert response.status_code == 422
+        assert "validation" in response.json()["detail"].lower()
 
     async def test_service_internal_error_returns_500(
         self, app_with_user, mock_conversion_service

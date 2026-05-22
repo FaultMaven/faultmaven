@@ -20,6 +20,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
@@ -1295,7 +1296,11 @@ class ConversionService:
             )
             job = job_result.scalar_one_or_none()
             if not job:
-                raise ValueError("Conversion job not found")
+                raise NotFoundError(
+                    resource_type="conversion_job",
+                    resource_id=conversion_id,
+                    message="Conversion job not found",
+                )
 
             draft_result = await session.execute(
                 select(ConversionDraftModel).where(
@@ -1305,16 +1310,35 @@ class ConversionService:
             )
             dm = draft_result.scalar_one_or_none()
             if not dm:
-                raise ValueError("Draft not found")
+                raise NotFoundError(
+                    resource_type="draft",
+                    resource_id=draft_id,
+                    message="Draft not found",
+                )
             if dm.status == DraftStatus.VERIFIED.value:
-                raise ValueError("This runbook has already been verified and ingested")
+                raise ConflictError(
+                    "This runbook has already been verified and ingested",
+                    resource_type="draft",
+                    resource_id=draft_id,
+                    conflict_reason="already_verified",
+                )
             if dm.status == DraftStatus.DISCARDED.value:
-                raise ValueError("This draft has been discarded")
+                raise ConflictError(
+                    "This draft has been discarded",
+                    resource_type="draft",
+                    resource_id=draft_id,
+                    conflict_reason="discarded",
+                )
             if dm.status != DraftStatus.DRAFT.value:
-                raise ValueError(f"Draft is in unexpected state: {dm.status}")
+                raise ConflictError(
+                    f"Draft is in unexpected state: {dm.status}",
+                    resource_type="draft",
+                    resource_id=draft_id,
+                    conflict_reason="unexpected_state",
+                )
 
             if not dm.validation_passed:
-                raise ValueError(
+                raise ValidationException(
                     "Draft has validation errors that must be fixed before verification"
                 )
 

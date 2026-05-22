@@ -85,6 +85,46 @@ class TestNotFoundExceptionHandler:
             body = response.body.decode()
             assert resource_type in body
 
+    @pytest.mark.asyncio
+    async def test_surfaces_structured_metadata(self, mock_request):
+        """Handler must surface resource_type + resource_id in the
+        response body so clients branch on them instead of parsing
+        the human-readable detail string.
+
+        Spec: docs/architecture/specifications/exception-contract.md
+        """
+        import json
+
+        exc = NotFoundError(
+            resource_type="conversion_job",
+            resource_id="conv_abc123",
+            message="Conversion job not found",
+        )
+        response = await not_found_exception_handler(mock_request, exc)
+        body = json.loads(response.body)
+        assert body["resource_type"] == "conversion_job"
+        assert body["resource_id"] == "conv_abc123"
+        assert body["error"] == "Not Found"
+        assert body["status_code"] == 404
+
+    @pytest.mark.asyncio
+    async def test_omits_metadata_when_absent(self, mock_request):
+        """When NotFoundError is raised without resource_type /
+        resource_id, the fields are absent (not null) — keeps the
+        response shape minimal for callers using only the message
+        constructor."""
+        import json
+
+        exc = NotFoundError(message="Document not found in knowledge base")
+        response = await not_found_exception_handler(mock_request, exc)
+        body = json.loads(response.body)
+        assert "resource_type" not in body
+        assert "resource_id" not in body
+        # Core fields still present.
+        assert body["error"] == "Not Found"
+        assert body["status_code"] == 404
+        assert "Document not found" in body["detail"]
+
 
 # ============================================================
 # AuthorizationError Handler Tests
@@ -221,6 +261,49 @@ class TestConflictExceptionHandler:
         response = await conflict_exception_handler(mock_request, exc)
         body = response.body.decode()
         assert "already closed" in body
+
+    @pytest.mark.asyncio
+    async def test_surfaces_structured_metadata(self, mock_request):
+        """Handler must surface resource_type, resource_id, AND
+        conflict_reason in the response body. Clients distinguish
+        conflict shapes (duplicate_username vs duplicate_email vs
+        already_verified, etc.) by branching on conflict_reason rather
+        than regex-matching the message.
+
+        Spec: docs/architecture/specifications/exception-contract.md
+        """
+        import json
+
+        exc = ConflictError(
+            "User with username 'alice' already exists",
+            resource_type="user",
+            resource_id="alice",
+            conflict_reason="duplicate_username",
+        )
+        response = await conflict_exception_handler(mock_request, exc)
+        body = json.loads(response.body)
+        assert body["resource_type"] == "user"
+        assert body["resource_id"] == "alice"
+        assert body["conflict_reason"] == "duplicate_username"
+        assert body["error"] == "Conflict"
+        assert body["status_code"] == 409
+
+    @pytest.mark.asyncio
+    async def test_omits_metadata_when_absent(self, mock_request):
+        """When ConflictError is raised with only a message, the
+        structured fields are absent (not null) in the response.
+        Keeps the shape minimal for legacy raises that haven't been
+        migrated to the structured constructor yet."""
+        import json
+
+        exc = ConflictError("Resource already exists")
+        response = await conflict_exception_handler(mock_request, exc)
+        body = json.loads(response.body)
+        assert "resource_type" not in body
+        assert "resource_id" not in body
+        assert "conflict_reason" not in body
+        assert body["error"] == "Conflict"
+        assert body["status_code"] == 409
 
 
 # ============================================================

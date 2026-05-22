@@ -1,15 +1,20 @@
-"""API Exception Handlers (TASK-014)
+"""API Exception Handlers
 
 Purpose: FastAPI exception handlers for translating service exceptions to HTTP responses.
 
 This module provides exception handlers for:
 - NotFoundError → 404 Not Found
 - AuthorizationError → 403 Forbidden
-- ValidationException → 400 Bad Request
+- ValidationException → 422 Unprocessable Entity
 - ConflictError → 409 Conflict
 - ServiceError → 500 Internal Server Error
 
-Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
+NotFoundError and ConflictError surface their structured metadata
+(``resource_type``, ``resource_id``, and ``conflict_reason`` on
+ConflictError) in the response body when present. Clients should
+branch on those fields rather than parsing the ``detail`` string.
+
+Specification: docs/architecture/specifications/exception-contract.md
 """
 
 import logging
@@ -35,14 +40,20 @@ async def not_found_exception_handler(
 ) -> JSONResponse:
     """Handle NotFoundError.
 
-    Translates NotFoundError to HTTP 404 Not Found response.
+    Translates NotFoundError to HTTP 404 Not Found response. The
+    structured ``resource_type`` and ``resource_id`` fields carried on
+    the exception are surfaced in the response body so clients can
+    branch on the missing-resource kind without parsing the
+    human-readable ``detail`` string.
 
     Args:
         request: FastAPI request object
         exc: NotFoundError exception
 
     Returns:
-        JSONResponse with 404 status and error details
+        JSONResponse with 404 status, detail, and structured metadata.
+        ``resource_type`` / ``resource_id`` are omitted (not null) when
+        the exception was raised without them.
     """
     logger.warning(
         "Resource not found: %s %s - %s",
@@ -51,14 +62,19 @@ async def not_found_exception_handler(
         str(exc),
     )
 
-    return JSONResponse(
-        status_code=status.HTTP_404_NOT_FOUND,
-        content={
-            "error": "Not Found",
-            "detail": str(exc),
-            "status_code": 404,
-        },
-    )
+    body = {
+        "error": "Not Found",
+        "detail": str(exc),
+        "status_code": 404,
+    }
+    # Omit-when-absent: keeps the response shape minimal for callers
+    # raising NotFoundError(message=...) without the structured fields.
+    if exc.resource_type is not None:
+        body["resource_type"] = exc.resource_type
+    if exc.resource_id is not None:
+        body["resource_id"] = exc.resource_id
+
+    return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content=body)
 
 
 async def authorization_exception_handler(
@@ -131,14 +147,21 @@ async def conflict_exception_handler(
 ) -> JSONResponse:
     """Handle ConflictError.
 
-    Translates ConflictError to HTTP 409 Conflict response.
+    Translates ConflictError to HTTP 409 Conflict response. The
+    structured ``resource_type`` / ``resource_id`` / ``conflict_reason``
+    fields carried on the exception are surfaced in the response body so
+    clients can distinguish conflict shapes (e.g. ``duplicate_username``
+    vs ``duplicate_email`` vs ``already_verified``) programmatically
+    without parsing the ``detail`` string.
 
     Args:
         request: FastAPI request object
         exc: ConflictError exception
 
     Returns:
-        JSONResponse with 409 status and error details
+        JSONResponse with 409 status, detail, and structured metadata.
+        Fields are omitted (not null) when the exception was raised
+        without them.
     """
     logger.warning(
         "Conflict error: %s %s - %s",
@@ -147,14 +170,19 @@ async def conflict_exception_handler(
         str(exc),
     )
 
-    return JSONResponse(
-        status_code=status.HTTP_409_CONFLICT,
-        content={
-            "error": "Conflict",
-            "detail": str(exc),
-            "status_code": 409,
-        },
-    )
+    body = {
+        "error": "Conflict",
+        "detail": str(exc),
+        "status_code": 409,
+    }
+    if exc.resource_type is not None:
+        body["resource_type"] = exc.resource_type
+    if exc.resource_id is not None:
+        body["resource_id"] = exc.resource_id
+    if exc.conflict_reason is not None:
+        body["conflict_reason"] = exc.conflict_reason
+
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=body)
 
 
 async def service_error_handler(

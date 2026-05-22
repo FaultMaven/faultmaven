@@ -352,22 +352,26 @@ async def verify_draft(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
-    """Promote draft to verified status and trigger ingestion into ChromaDB."""
-    try:
-        result = await service.verify_draft(
-            conversion_id=conversion_id,
-            draft_id=draft_id,
-            user_id=current_user.user_id,
-            username=current_user.username,
+    """Promote draft to verified status and trigger ingestion into ChromaDB.
+
+    Service-layer typed exceptions (NotFoundError, ConflictError,
+    ValidationException) propagate to the global handlers in
+    api/exception_handlers.py for canonical translation to 404 / 409 /
+    422 respectively. The route no longer catches ValueError; see
+    docs/architecture/specifications/exception-contract.md.
+    """
+    result = await service.verify_draft(
+        conversion_id=conversion_id,
+        draft_id=draft_id,
+        user_id=current_user.user_id,
+        username=current_user.username,
+    )
+    if not result:
+        raise HTTPException(
+            status_code=500,
+            detail="Verification completed but no response returned",
         )
-        if not result:
-            raise HTTPException(
-                status_code=500,
-                detail="Verification completed but no response returned",
-            )
-        return result.model_dump()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return result.model_dump()
 
 
 # =============================================================================

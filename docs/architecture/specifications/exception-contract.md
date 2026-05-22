@@ -102,39 +102,63 @@ Global handlers in
 are registered once at app startup. Routes do not need to catch
 these exceptions individually.
 
+Every response body contains at minimum:
+
+```json
+{"error": "<class label>", "detail": "<message>", "status_code": <int>}
+```
+
+`NotFoundError` and `ConflictError` additionally surface their
+structured metadata **when present** on the exception instance.
+Fields are **omitted** (not `null`) when absent, so the response
+stays minimal for callers that raise with only a message:
+
 ```python
+@app.exception_handler(NotFoundError)
+async def not_found_handler(request, exc):
+    body = {"error": "Not Found", "detail": str(exc), "status_code": 404}
+    if exc.resource_type is not None:
+        body["resource_type"] = exc.resource_type
+    if exc.resource_id is not None:
+        body["resource_id"] = exc.resource_id
+    return JSONResponse(status_code=404, content=body)
+
+@app.exception_handler(ConflictError)
+async def conflict_exception_handler(request, exc):
+    body = {"error": "Conflict", "detail": str(exc), "status_code": 409}
+    if exc.resource_type is not None:
+        body["resource_type"] = exc.resource_type
+    if exc.resource_id is not None:
+        body["resource_id"] = exc.resource_id
+    if exc.conflict_reason is not None:
+        body["conflict_reason"] = exc.conflict_reason
+    return JSONResponse(status_code=409, content=body)
+
 @app.exception_handler(ValidationException)
 async def validation_exception_handler(request, exc):
     return JSONResponse(
         status_code=422,
-        content={"error": "Validation Error", "detail": str(exc)},
-    )
-
-@app.exception_handler(ConflictError)
-async def conflict_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=409,
-        content={
-            "error": "Conflict",
-            "detail": str(exc),
-            "resource_type": exc.resource_type,
-            "resource_id": exc.resource_id,
-            "conflict_reason": exc.conflict_reason,
-        },
-    )
-
-@app.exception_handler(NotFoundError)
-async def not_found_handler(request, exc):
-    return JSONResponse(
-        status_code=404,
-        content={
-            "error": "Not Found",
-            "detail": str(exc),
-            "resource_type": exc.resource_type,
-            "resource_id": exc.resource_id,
-        },
+        content={"error": "Validation Error", "detail": str(exc), "status_code": 422},
     )
 ```
+
+**Example `ConflictError` response body:**
+
+```json
+{
+  "error": "Conflict",
+  "detail": "User with username 'alice' already exists",
+  "status_code": 409,
+  "resource_type": "user",
+  "resource_id": "alice",
+  "conflict_reason": "duplicate_username"
+}
+```
+
+Clients should branch on `conflict_reason` / `resource_type` rather
+than regex-matching `detail` — those are the stable machine-readable
+keys. The `detail` string is human-facing and may be edited freely
+without bumping the contract.
 
 ## Route Pattern
 
@@ -171,9 +195,22 @@ blanket would swallow typed exceptions before FastAPI's global
 dispatcher saw them and the response would be 500 regardless of the
 intended status.
 
-If a route does not need a blanket `except Exception`, omit both —
-the typed exceptions propagate to the global handlers without any
-route-side `try/except` at all.
+### When to use the full `try/except` vs. no wrapper at all
+
+Both shapes are valid depending on route needs:
+
+- **Use the full `try/except` with the `FaultMavenException`
+  pass-through when** the route needs a route-specific 500 envelope
+  (e.g., a domain-specific `error_code`) or a route-specific log
+  message on unhandled errors. Pattern from auth `local_login` (PR
+  #331) and case `replay` endpoints (PR #333).
+- **Omit `try/except` entirely when** the route doesn't need either.
+  Typed exceptions propagate to global handlers; unhandled
+  exceptions go to FastAPI's default 500 (which still logs the
+  traceback). Pattern from knowledge `verify_draft` (PR #334).
+
+The choice is per-route. Use the simpler "no wrapper" form unless
+there's a specific reason to add the envelope/logging layer.
 
 ## Legacy Anti-Pattern (Pattern B)
 
