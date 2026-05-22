@@ -1362,8 +1362,8 @@ class TestAgentSystemPrompts:
                 agent_type in AGENT_SYSTEM_PROMPTS
             ), f"Missing prompt for {agent_type}"
 
-    def test_investigator_prompt_contains_ooda(self):
-        """Test that investigator prompt mentions OODA methodology."""
+    def test_investigator_prompt_contains_investigate(self):
+        """Test that investigator prompt mentions investigation methodology."""
         prompt = AGENT_SYSTEM_PROMPTS[AgentType.INVESTIGATOR]
         assert "investigat" in prompt.lower()
 

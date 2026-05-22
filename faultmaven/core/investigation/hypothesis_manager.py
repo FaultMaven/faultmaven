@@ -484,7 +484,7 @@ class HypothesisManager:
 
         Args:
             hypotheses: List of all hypotheses
-            current_iteration: Current OODA iteration number
+            current_iteration: Current investigation iteration number
 
         Returns:
             Tuple of (is_anchored, reason, affected_hypothesis_ids)

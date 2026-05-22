@@ -90,8 +90,6 @@ PRESETS: Dict[str, PresetDefinition] = {
             "ENABLE_DETAILED_TRACING": "false",
             # Session - relaxed timeouts for development
             "SESSION_TIMEOUT_MINUTES": "60",
-            # OODA - light investigation for faster iteration
-            "DEFAULT_OODA_INTENSITY": "light",
         },
         required_overrides={
             # Provider-specific required keys
@@ -141,8 +139,6 @@ PRESETS: Dict[str, PresetDefinition] = {
             "ENABLE_DETAILED_TRACING": "false",
             # Session
             "SESSION_TIMEOUT_MINUTES": "30",
-            # OODA
-            "DEFAULT_OODA_INTENSITY": "medium",
         },
         required_overrides={
             "openai": {"OPENAI_API_KEY"},
@@ -191,8 +187,6 @@ PRESETS: Dict[str, PresetDefinition] = {
             "ENABLE_DETAILED_TRACING": "true",
             # Session - standard timeouts
             "SESSION_TIMEOUT_MINUTES": "30",
-            # OODA - full investigation for thorough analysis
-            "DEFAULT_OODA_INTENSITY": "full",
         },
         required_overrides={
             "openai": {"OPENAI_API_KEY"},

@@ -367,7 +367,7 @@ class LLMSettings(BaseSettings):
         validation_alias="LLM_PHASE_RESPONSE_MAX_TOKENS",
         ge=500,
         le=4096,
-        description="Maximum tokens for phase handler and tool responses (OODA structure needs 400-1500 tokens)",
+        description="Maximum tokens for phase handler and tool responses",
     )
 
     @field_validator("max_tokens")
@@ -1299,147 +1299,6 @@ class EmbeddingSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
-class OODASettings(BaseSettings):
-    """OODA Investigation Framework configuration (v3.2.0)
-
-    Controls the behavior of the OODA (Observe-Orient-Decide-Act) investigation
-    framework including engagement modes, phase management, and memory hierarchy.
-
-    Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
-    """
-
-    # Investigation Strategy
-    default_strategy: str = Field(
-        default="active_incident",
-        validation_alias="DEFAULT_INVESTIGATION_STRATEGY",
-        description="active_incident (fast, 70% confidence) or post_mortem (thorough, 85% confidence)",
-    )
-
-    default_intensity: str = Field(
-        default="medium",
-        validation_alias="DEFAULT_OODA_INTENSITY",
-        description="OODA cycle intensity: light (1-2 iterations), medium (2-4), full (3-6)",
-    )
-
-    # Memory Management (4-Tier Hierarchical System)
-    hot_memory_tokens: int = Field(
-        default=500,
-        description="Hot tier: last 2 iterations, full fidelity",
-    )
-
-    warm_memory_tokens: int = Field(
-        default=300,
-        description="Warm tier: iterations 3-5, LLM-summarized",
-    )
-
-    cold_memory_tokens: int = Field(
-        default=100,
-        description="Cold tier: older iterations, key facts only",
-    )
-
-    persistent_memory_tokens: int = Field(
-        default=100,
-        description="Persistent tier: always accessible insights",
-    )
-
-    # Phase Control
-    enable_phase_skip: bool = Field(
-        default=True,
-        description="Allow skipping phases in active incident strategy",
-    )
-
-    min_confidence_to_advance: float = Field(
-        default=0.70,
-        ge=0.0,
-        le=1.0,
-        description="Minimum confidence required to advance to next phase",
-    )
-
-    stall_detection_iterations: int = Field(
-        default=3,
-        ge=2,
-        description="Number of iterations without progress before marking as stalled",
-    )
-
-    # Consultant Mode Settings
-    problem_signal_threshold: str = Field(
-        default="moderate",
-        description="Threshold to offer investigation: weak|moderate|strong",
-    )
-
-    max_consultant_turns: int = Field(
-        default=5,
-        ge=1,
-        description="Max turns in Consultant mode before suggesting Lead Investigator",
-    )
-
-    # Context Management (merged from ConversationThresholds)
-    max_clarifications: int = Field(
-        default=3,
-        ge=0,
-        description="Maximum clarifying-question turns before suggesting escalation/progress",
-    )
-    max_conversation_turns: int = Field(default=20)
-    max_conversation_tokens: int = Field(default=4000)
-
-    @field_validator("warm_memory_tokens")
-    @classmethod
-    def validate_memory_hierarchy_warm(cls, v, info):
-        """Ensure WARM <= HOT for memory hierarchy"""
-        values = info.data
-        hot = values.get("hot_memory_tokens", 500)
-
-        if v > hot:
-            raise ValueError(
-                f"WARM_MEMORY_TOKENS ({v}) cannot exceed HOT_MEMORY_TOKENS ({hot}). "
-                f"Memory quality degrades from hot to cold."
-            )
-        return v
-
-    @field_validator("cold_memory_tokens")
-    @classmethod
-    def validate_memory_hierarchy_cold(cls, v, info):
-        """Ensure COLD <= WARM for memory hierarchy"""
-        values = info.data
-        warm = values.get("warm_memory_tokens", 300)
-
-        if v > warm:
-            raise ValueError(
-                f"COLD_MEMORY_TOKENS ({v}) cannot exceed WARM_MEMORY_TOKENS ({warm}). "
-                f"Memory quality degrades from hot to cold."
-            )
-
-        if v <= 0:
-            raise ValueError(f"COLD_MEMORY_TOKENS must be > 0, got {v}")
-
-        return v
-
-    @field_validator("persistent_memory_tokens")
-    @classmethod
-    def validate_persistent_memory(cls, v, info):
-        """Validate persistent memory is reasonable"""
-        if v <= 0:
-            raise ValueError(f"PERSISTENT_MEMORY_TOKENS must be > 0, got {v}")
-        return v
-
-    def model_post_init(self, __context):
-        """Validate total memory budget after all fields loaded"""
-        total = (
-            self.hot_memory_tokens
-            + self.warm_memory_tokens
-            + self.cold_memory_tokens
-            + self.persistent_memory_tokens
-        )
-
-        if total > 5000:
-            raise ValueError(
-                f"Total OODA memory ({total} tokens) exceeds reasonable budget (5000 tokens). "
-                f"Consider reducing individual memory tier allocations."
-            )
-
-    model_config = {"env_prefix": "", "extra": "ignore"}
-
-
 class FeatureSettings(BaseSettings):
     """Feature flags and toggles"""
 
@@ -1450,7 +1309,6 @@ class FeatureSettings(BaseSettings):
     # Token-Aware Context Management
     enable_token_aware_context: bool = Field(default=True)
     enable_conversation_summarization: bool = Field(default=True)
-    # Note: Token budgets and thresholds live under settings.ooda
 
     # Job Runner Configuration
     job_runner_type: str = Field(
@@ -2148,9 +2006,6 @@ class FaultMavenSettings(BaseSettings):
     protection: ProtectionSettings = Field(default_factory=ProtectionSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
-
-    # OODA Framework v3.2.0
-    ooda: OODASettings = Field(default_factory=OODASettings)
 
     model_config = {
         "env_file": ".env",

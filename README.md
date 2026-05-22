@@ -320,7 +320,7 @@ FaultMaven is a monolithic application with clean **Vertical Slice Architecture*
 
 | Module | Description |
 |--------|-------------|
-| `agent` | Investigation orchestration, AI tools, OODA framework |
+| `agent` | Investigation orchestration, AI tools |
 | `auth` | Users, sessions, organizations, teams, RBAC |
 | `case` | Investigation cases and lifecycle management |
 | `evidence` | File uploads, metadata, storage adapters |

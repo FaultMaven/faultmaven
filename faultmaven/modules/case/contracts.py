@@ -33,7 +33,6 @@ if TYPE_CHECKING:
 # ============================================================
 
 # Investigation models from Agent module (shared for investigation coordination)
-# Removed deprecated OODA models
 
 
 # Case-owned Agent Execution models (Case module owns agent audit data per module-organization-design.md)
@@ -379,6 +378,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     EscalationType,
     Evidence,
     EvidenceCategory,
+    EvidenceNeed,
     EvidenceSourceType,
     EvidenceStance,
     GeneratedDocument,
@@ -397,6 +397,9 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     JournalEntry,
     KnowledgeMatch,
     KnowledgeResolution,
+    NeedPriority,
+    NeedPurpose,
+    NeedStatus,
     PathSelection,
     PreliminaryUrgency,
     ProblemVerification,
@@ -462,8 +465,12 @@ __all__ = [
     "EscalationType",
     "Evidence",
     "EvidenceCategory",
+    "EvidenceNeed",
     "EvidenceSourceType",
     "EvidenceStance",
+    "NeedPriority",
+    "NeedPurpose",
+    "NeedStatus",
     "GeneratedDocument",
     "Hypothesis",
     "HypothesisCategory",

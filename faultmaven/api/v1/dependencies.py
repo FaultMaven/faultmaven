@@ -49,12 +49,6 @@ async def get_session_service(request: Request):
     return request.app.state.session_service
 
 
-# OLD OODA AgentService - REMOVED (use InvestigationService instead)
-# async def get_agent_service() -> AgentService:
-#     """Get AgentService instance from container"""
-#     return container.get_agent_service()
-
-
 async def get_preprocessing_service(request: Request) -> PreprocessingService:
     """Get PreprocessingService instance from app.state (Composition Root)"""
     preprocessing_service = request.app.state.preprocessing_service
