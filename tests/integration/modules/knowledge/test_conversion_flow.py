@@ -186,10 +186,30 @@ def mock_conversion_service():
 
 
 def _build_app(mock_service, user):
-    """Build a minimal FastAPI app with conversion routes and overridden deps."""
+    """Build a minimal FastAPI app with conversion routes and overridden deps.
+
+    Registers the production exception handlers via
+    ``get_exception_handlers()`` so typed service exceptions
+    (NotFoundError / ConflictError / ValidationException) translate to
+    404 / 409 / 422 in the integration tests, matching production
+    behavior. Without this, the typed exceptions propagate uncaught
+    past FastAPI's dispatch chain and surface as raw 500-shaped
+    transport errors — exactly the failure mode that broke PR #334's
+    CI (the new typed-exception assertions saw uncaught exceptions
+    instead of the expected status codes).
+    """
+    from faultmaven.api.exception_handlers import get_exception_handlers
+
     app = FastAPI()
     app.include_router(conversion_router, prefix="/api/v1")
     app.state.conversion_service = mock_service
+
+    # Register the same exception handlers main.py installs so typed
+    # service exceptions get translated by the same dispatch the
+    # production app uses. Drift between the two would mean integration
+    # tests don't exercise the real handler chain.
+    for exc_type, handler in get_exception_handlers().items():
+        app.add_exception_handler(exc_type, handler)
 
     # Override auth and service dependencies
     app.dependency_overrides[_require_auth] = lambda: user
@@ -718,21 +738,23 @@ class TestConversionEdgeCases:
             )
 
         assert response.status_code == 404
-        assert "not found" in response.json()["detail"].lower()
+        body = response.json()
+        assert "not found" in body["detail"].lower()
+        # Structured metadata reaches clients so they can branch on
+        # which resource was missing (conversion_job vs draft) without
+        # parsing the detail string.
+        assert body["resource_type"] == "draft"
+        assert body["resource_id"] == "draft_fail"
 
     async def test_verify_draft_already_verified_returns_409(
         self, app_with_user, mock_conversion_service
     ):
         """Trying to verify an already-verified draft maps to 409 via
-        the global conflict_exception_handler.
-
-        Note: the structured ``conflict_reason`` field is carried on the
-        ConflictError instance for logging / future surfacing, but the
-        current conflict_exception_handler (api/exception_handlers.py)
-        does NOT include it in the response body. If clients need
-        machine-readable distinction between duplicate-username vs
-        already-verified, the handler must be updated to surface the
-        metadata — tracked as a separate follow-up to the Item 3 series.
+        the global conflict_exception_handler. Structured metadata
+        (``resource_type``, ``resource_id``, ``conflict_reason``) is
+        surfaced in the response body so clients can branch on the
+        conflict shape programmatically — see exception_handlers.py and
+        docs/architecture/specifications/exception-contract.md.
         """
         from faultmaven.exceptions import ConflictError
 
@@ -748,10 +770,13 @@ class TestConversionEdgeCases:
             )
 
         assert response.status_code == 409
-        # The error string surfaces in the response so a user-facing
-        # client can still display it; structured fields stay internal
-        # until the handler is updated to render them.
-        assert "already been verified" in response.json()["detail"].lower()
+        body = response.json()
+        assert "already been verified" in body["detail"].lower()
+        # Structured metadata reaches clients — they can branch on
+        # `conflict_reason` rather than parsing the detail string.
+        assert body["resource_type"] == "draft"
+        assert body["resource_id"] == "draft_dup"
+        assert body["conflict_reason"] == "already_verified"
 
     async def test_verify_draft_validation_failed_returns_422(
         self, app_with_user, mock_conversion_service
