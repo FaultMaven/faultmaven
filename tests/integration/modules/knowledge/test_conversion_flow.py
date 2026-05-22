@@ -695,18 +695,81 @@ class TestDeleteDraft:
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestConversionEdgeCases:
-    async def test_verify_draft_not_found_or_not_passing_returns_400(
+    async def test_verify_draft_missing_returns_404(
         self, app_with_user, mock_conversion_service
     ):
-        """Verify returns 400 when draft is not found or validation not passed."""
-        mock_conversion_service.verify_draft.side_effect = ValueError("Draft not found")
+        """Missing draft maps to 404 via NotFoundError -> global handler.
+
+        Refactored from the legacy ValueError -> 400 contract under Item 3
+        (PR #334). The service now raises NotFoundError with structured
+        resource_type / resource_id; the global handler in
+        api/exception_handlers.py translates to 404.
+        """
+        from faultmaven.exceptions import NotFoundError
+
+        mock_conversion_service.verify_draft.side_effect = NotFoundError(
+            resource_type="draft",
+            resource_id="draft_fail",
+            message="Draft not found",
+        )
         async with await _client(app_with_user) as client:
             response = await client.post(
                 f"{API_PREFIX}/conversions/conv_abc123/drafts/draft_fail/verify",
             )
 
-        assert response.status_code == 400
+        assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
+
+    async def test_verify_draft_already_verified_returns_409(
+        self, app_with_user, mock_conversion_service
+    ):
+        """Trying to verify an already-verified draft maps to 409 via
+        the global conflict_exception_handler.
+
+        Note: the structured ``conflict_reason`` field is carried on the
+        ConflictError instance for logging / future surfacing, but the
+        current conflict_exception_handler (api/exception_handlers.py)
+        does NOT include it in the response body. If clients need
+        machine-readable distinction between duplicate-username vs
+        already-verified, the handler must be updated to surface the
+        metadata — tracked as a separate follow-up to the Item 3 series.
+        """
+        from faultmaven.exceptions import ConflictError
+
+        mock_conversion_service.verify_draft.side_effect = ConflictError(
+            "This runbook has already been verified and ingested",
+            resource_type="draft",
+            resource_id="draft_dup",
+            conflict_reason="already_verified",
+        )
+        async with await _client(app_with_user) as client:
+            response = await client.post(
+                f"{API_PREFIX}/conversions/conv_abc123/drafts/draft_dup/verify",
+            )
+
+        assert response.status_code == 409
+        # The error string surfaces in the response so a user-facing
+        # client can still display it; structured fields stay internal
+        # until the handler is updated to render them.
+        assert "already been verified" in response.json()["detail"].lower()
+
+    async def test_verify_draft_validation_failed_returns_422(
+        self, app_with_user, mock_conversion_service
+    ):
+        """A draft whose runbook-validator failed maps to 422 (the schema
+        is invalid; the client should fix the draft before re-verifying)."""
+        from faultmaven.exceptions import ValidationException
+
+        mock_conversion_service.verify_draft.side_effect = ValidationException(
+            "Draft has validation errors that must be fixed before verification"
+        )
+        async with await _client(app_with_user) as client:
+            response = await client.post(
+                f"{API_PREFIX}/conversions/conv_abc123/drafts/draft_invalid/verify",
+            )
+
+        assert response.status_code == 422
+        assert "validation" in response.json()["detail"].lower()
 
     async def test_service_internal_error_returns_500(
         self, app_with_user, mock_conversion_service
