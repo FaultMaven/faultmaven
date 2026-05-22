@@ -11,8 +11,8 @@ investigation-pipeline-followups handoff series:
 
 - **Conforming**: auth (PR #331), case/replay (PR #333), case/routes
   (PR #335), agent/routes, knowledge/verify_draft (PR #334),
-  knowledge/routes (`approve_suggestion` and `remediate_pii`, this
-  PR).
+  knowledge/routes (`approve_suggestion` and `remediate_pii`,
+  PR #337).
 - **Out of scope**: knowledge/conversion_routes keeps its own
   `ConversionRejectedError`/`ConversionErrorCode` contract mapping to
   413/415/422/503; the only Pattern-B remnant in that file (an LLM
