@@ -335,7 +335,7 @@ and what you are setting aside as noise.
 
 **Prescribed behavior**: On substantive turns, the agent's first sentence addresses the operational content directly. Evidence engagement is selective (what matters for active hypotheses) rather than comprehensive (what's there).
 
-**Enforcement (prompt-layer)**: Internal scaffold — the thinking is structured, the output is natural prose. The prompt above is the entire enforcement mechanism; capable LLMs comply.
+**Enforcement (prompt-layer)**: Internal scaffold — the thinking is structured, the output is natural prose. The prompt above is the entire enforcement mechanism.
 
 **Observability hook (not wired)**: A post-hoc check could measure whether the first sentence answers a direct question vs. mirrors it back. If implemented, it belongs in [Post-Generation Validators](#post-generation-validators-separate-from-behavioral-rules), not in this rule.
 
@@ -368,7 +368,7 @@ explicitly. The latest turn is not the only input.
 
 **Prescribed behavior**: On diagnostic turns, the response references prior-case context at least once when such context exists — an earlier piece of evidence, a user-stated constraint, a refuted hypothesis, or a journal entry. Recency is not authority.
 
-**Enforcement (prompt-layer)**: The prompt above is the entire enforcement mechanism. Capable LLMs comply when the context block contains prior evidence, refuted hypotheses, or journal entries to refer to.
+**Enforcement (prompt-layer)**: The prompt above is the entire enforcement mechanism. The rule is operative only when the context block contains prior evidence, refuted hypotheses, or journal entries to integrate — there is nothing to reference otherwise.
 
 **Observability hook (not wired)**: A post-hoc check could measure whether diagnostic responses reference prior-case content when such content exists; the journal and hypothesis state give measurable targets. If implemented, it belongs in [Post-Generation Validators](#post-generation-validators-separate-from-behavioral-rules), not in this rule.
 
@@ -530,7 +530,7 @@ Validator failure triggers a single self-correction retry with the violations fe
 
 ### Why this is NOT enforcement of Rule 2
 
-Rule 2 (Evidence-Grounded) is a **prompt-layer prescription**: the prompt tells the LLM what to do, and capable LLMs comply. The validator is a **post-hoc heuristic match** on the rendered string. It has no access to the LLM's reasoning, its own gate for "is this a diagnostic response" is itself a heuristic that can misfire, and it cannot distinguish correct non-application of Rule 2 from violation of Rule 2.
+Rule 2 (Evidence-Grounded) is a **prompt-layer prescription**: the prompt tells the LLM what to do. The validator is a **post-hoc heuristic match** on the rendered string. It has no access to the LLM's reasoning, its own gate for "is this a diagnostic response" is itself a heuristic that can misfire, and it cannot distinguish correct non-application of Rule 2 from violation of Rule 2.
 
 ### Defensible roles for a post-hoc check
 
