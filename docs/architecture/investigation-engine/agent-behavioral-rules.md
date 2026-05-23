@@ -22,7 +22,7 @@ Every rule in this document must pass four tests:
 3. **Implementable prompt injection** — the exact text that goes into the prompt can be written unambiguously
 4. **Prescriptive, not corrective** — a rule tells the LLM what to do via prompt injection *before* generation. Mechanisms that police LLM output *after* generation belong elsewhere.
 
-> *On principle #4*: post-generation mechanisms (regex validators, semantic checks, schema coercion) have different failure modes and remediation paths than prompt-layer rules — conflating them obscures both. They are documented in [Post-Generation Validators](#post-generation-validators-separate-from-behavioral-rules), not here.
+> Post-generation mechanisms (regex validators, semantic checks, schema coercion) belong in [Post-Generation Validators](#post-generation-validators-separate-from-behavioral-rules) — conflating them with prompt-layer rules obscures both layers.
 
 Rules that fail this test belong elsewhere:
 
@@ -126,7 +126,7 @@ The three-step framework is an internal reasoning scaffold, not an output format
 
 **Evidence referencing**: Each evidence item in the LLM context carries a `label` attribute (filename, description, or data type). The agent MUST reference evidence by its label in responses (e.g., "in the nginx error log"), never by internal `ev_` IDs which are meaningless to users. IDs are only for internal schema fields (`evidence_analyzed`, `milestone_justifications`).
 
-**Note on enforcement layers**: Rule 2 is a *prompt-layer* prescription — the prompt injection above tells the LLM what to do, and capable LLMs comply. A separate `diagnostic_reasoning_validator.py` runs *post-generation* and applies heuristic checks to the rendered response. It is documented in the [Post-Generation Validators](#post-generation-validators-separate-from-behavioral-rules) section below, not here, because it is a distinct architectural layer with different trade-offs. Whether it should exist as a blocking mechanism is an open architectural question — see the Post-Generation Validators section below for the discussion.
+**Note on enforcement layers**: Rule 2 is a *prompt-layer* prescription — the prompt above tells the LLM what to do. A separate `diagnostic_reasoning_validator.py` runs *post-generation* and applies heuristic checks; it is a distinct architectural layer, documented under [Post-Generation Validators](#post-generation-validators-separate-from-behavioral-rules), where its open architectural status is also discussed.
 
 ---
 
@@ -514,7 +514,7 @@ See [Orchestration Capabilities §5](./orchestration-capabilities.md#5-orchestra
 
 ## Post-Generation Validators (Separate from Behavioral Rules)
 
-This section documents an existing post-generation validator (`diagnostic_reasoning_validator.py`) that runs *after* the LLM produces a response, applies heuristic checks, and — under some configurations — substitutes the response with a fallback message. It is documented here, not under any Rule, because it is a distinct architectural layer with distinct failure modes. **Whether it should continue to exist as a blocking mechanism is an open architectural question.** The honest framing below is meant to support that decision rather than retroactively justify the validator.
+This section documents an existing post-generation validator (`diagnostic_reasoning_validator.py`) that runs *after* the LLM produces a response, applies heuristic checks, and substitutes the response with a fallback message when checks fail. It is documented here, not under any Rule, because it is a distinct architectural layer with distinct failure modes. **Whether it should continue to exist as a blocking mechanism is an open architectural question.**
 
 ### What the validator does
 
@@ -526,11 +526,11 @@ This section documents an existing post-generation validator (`diagnostic_reason
 4. **Anti-patterns** — does the response contain checklist-engineering or generic-best-practice phrasing?
 5. **Case specificity** — does the response use the specific entities, services, or symptoms from the case?
 
-Validator failure triggers a single self-correction retry with the violations fed back to the LLM. If the retry response also fails validation, or if the retry call itself errors (timeout, schema rejection, provider failure), `_SELF_CORRECTION_FALLBACK_MESSAGE` is substituted for the LLM output. Structured `state_updates` from the failing turn are preserved — the case still advances on the LLM's hypotheses, evidence categorization, and milestone settings even when the prose is replaced.
+Validator failure triggers a single self-correction retry with the violations fed back to the LLM. If the retry response also fails validation, or if the retry call itself errors (timeout, schema rejection, provider failure), `_SELF_CORRECTION_FALLBACK_MESSAGE` is substituted for the LLM output. Structured `state_updates` from the failing turn are preserved — the case advances on hypotheses, evidence categorization, and milestones regardless of prose substitution.
 
 ### Why this is NOT enforcement of Rule 2
 
-Rule 2 (Evidence-Grounded) is a **prompt-layer prescription**: the prompt tells the LLM what to do, and capable LLMs comply. The validator is a **post-hoc heuristic match** on the rendered string — it has no access to the LLM's reasoning, its own classifier for "is this a diagnostic response that requires evidence grounding" is itself a heuristic that can misfire, and it cannot distinguish "the LLM correctly chose not to apply Rule 2 here" from "the LLM violated Rule 2."
+Rule 2 (Evidence-Grounded) is a **prompt-layer prescription**: the prompt tells the LLM what to do, and capable LLMs comply. The validator is a **post-hoc heuristic match** on the rendered string. It has no access to the LLM's reasoning, its own gate for "is this a diagnostic response" is itself a heuristic that can misfire, and it cannot distinguish correct non-application of Rule 2 from violation of Rule 2.
 
 ### Defensible roles for a post-hoc check
 
@@ -543,7 +543,7 @@ The current implementation fits neither role: it runs by default on all turns an
 
 ### Failure modes the current implementation produces
 
-- **Heuristic misclassification within INVESTIGATING**: the validator's own classifier for "is this a diagnostic response" misfires on non-diagnostic turns within INVESTIGATING (acknowledgments, clarifications, knowledge-query answers, terminal Q&A). When it misfires, the response gets substituted with a fallback message that *looks like* Rule 2 enforcement to downstream readers. (Surfaced by an internal simulator run where the heuristic misclassified non-diagnostic turns inside INVESTIGATING as suggestion-bearing.)
+- **Heuristic misclassification within INVESTIGATING**: the validator's own classifier for "is this a diagnostic response" misfires on non-diagnostic turns within INVESTIGATING (acknowledgments of user pushback, status observations, mitigation-success confirmations). When it misfires, the response gets substituted with a fallback message that *looks like* Rule 2 enforcement to downstream readers. (Surfaced by an internal simulator run where the heuristic misclassified non-diagnostic turns inside INVESTIGATING as suggestion-bearing.)
 - **Failure-mode collapse on retry errors**: validator-rejected prose, validator-rejected-retry prose, and retry-call exceptions all produce the same `_SELF_CORRECTION_FALLBACK_MESSAGE`. From the user's seat, a transport failure is indistinguishable from a model-quality failure. (Observed on case `a8a3ebb5514b` turns 7–8.)
 - **Tuning treadmill**: the validator has accumulated a tuning history (commits `dcf2448b`, `ead3a507`, `3b26855e`, `456dceb1`, `71f4605e`, `3e94214e`, `128eaba5`, `ebeada64`) where each fix targets a specific failure mode of the previous fix. A quality-control layer that requires per-LLM-version maintenance to keep up with surface-phrasing changes is typically signaling that the locus of quality control belongs elsewhere — either upstream in the prompt or downstream in the evaluation pipeline.
 - **Observability gap**: when a fallback substitution fires, the user sees the fallback message rather than the LLM output, but the trace/log captures only the substitution event — making it harder to retrospectively assess whether the original LLM response was actually bad or the validator misfired.
@@ -554,7 +554,7 @@ The current implementation fits neither role: it runs by default on all turns an
 The design choices on the table:
 
 - **Remove entirely** — Rule 2 compliance is addressed solely at the prompt and model-selection layers.
-- **Shadow mode** — log validator scores per turn but never substitute and never retry; collect per-model/per-stage compliance data to inform a later decision. Distinct from observability-only-with-opt-in below because it requires no pre-classification of any model.
+- **Shadow mode** — log validator scores per turn; never substitute, never retry. Collects per-model/per-stage compliance data to inform a later decision without committing to any model-capability classification.
 - **Downgrade to observability-only** — log score, never substitute by default; substitution moved behind an opt-in flag for known-uncapable models.
 - **Make it stage-aware and gated** — keep the substitute-on-failure mechanism but ensure it fires only on DIAGNOSIS turns where Rule 2 actually applies.
 
