@@ -301,12 +301,43 @@ class TestHasCausalReasoning:
             "this explains why",
             "this is why",
             "the reason is",
+            # Additions (2026-05-23) — conservative idioms that widen
+            # coverage of semantically-causal English without inviting
+            # trivial false-accept on negation. The "false-accept
+            # regression guards" below pin the bounds.
+            "due to",
+            "caused by",
+            "the root cause of",
+            "explains the",
+            "resulting from",
         ],
     )
     def test_detects_each_causal_indicator(self, indicator):
         """Each causal indicator should be detected."""
         response = f"The memory leak {indicator} the connection pool exhaustion."
         assert _has_causal_reasoning(response) is True
+
+    @pytest.mark.unit
+    def test_root_cause_is_unknown_not_accepted_as_causal(self):
+        """Regression guard: do NOT accept "the root cause is unknown" /
+        "the root cause is something we need to investigate" as causal
+        reasoning. The validator keyword list intentionally omits the
+        bare phrase "the root cause is" because it trivially collocates
+        with negation/uncertainty markers. Without this guard, the
+        widening done above could silently regress into false-accept.
+
+        If a future contributor adds "the root cause is" to the indicator
+        list, this test catches the resulting false-positive."""
+        responses_that_should_NOT_pass = [
+            "We have multiple symptoms but the root cause is unknown.",
+            "The root cause is something we need to investigate.",
+            "The root cause is still unclear at this point.",
+            "Honestly, the root cause is anyone's guess right now.",
+        ]
+        for response in responses_that_should_NOT_pass:
+            assert (
+                _has_causal_reasoning(response) is False
+            ), f"non-causal response wrongly classified as causal: {response!r}"
 
     @pytest.mark.unit
     def test_case_insensitive_detection(self):
@@ -363,9 +394,40 @@ class TestIsChecklistEngineering:
         assert _is_checklist_engineering(response) is True
 
     @pytest.mark.unit
-    def test_numbered_list_with_three_items(self):
-        """Numbered list with 3+ items should be detected."""
+    def test_numbered_list_with_three_items_NOT_detected(self):
+        """Regression for 2026-05-23 threshold tuning: a 3-item numbered
+        list is NOT checklist engineering on its own. The previous
+        threshold (3+) over-fired on legitimate diagnostic enumerations
+        like "1. Pod A OOMKilled. 2. Pod B OOMKilled. 3. Pod C OOMKilled."
+        Threshold now matches the bullet-list threshold (5+). Explicit
+        intent phrases ("try these N things", "try the following:") still
+        fire regardless of list length."""
         response = "1. Check the logs\n 2. Restart the service\n 3. Verify the fix"
+        assert _is_checklist_engineering(response) is False
+
+    @pytest.mark.unit
+    def test_numbered_list_with_five_items_DETECTED(self):
+        """Floor regression: a 5+ item action list with no causal
+        language is still checklist engineering. Without this guard, the
+        threshold tuning above could be silently widened further and
+        the validator would stop catching real checklist behavior."""
+        response = (
+            "Here is what to do:\n"
+            "1. Check the logs\n"
+            "2. Restart the service\n"
+            "3. Verify the fix\n"
+            "4. Re-run the integration test\n"
+            "5. Deploy"
+        )
+        assert _is_checklist_engineering(response) is True
+
+    @pytest.mark.unit
+    def test_explicit_phrase_fires_even_with_few_items(self):
+        """Belt-and-suspenders: ``try these 10 things`` fires the
+        explicit-phrase pattern regardless of how few or many list items
+        follow. Tightening the numbered-list threshold did not weaken
+        the explicit-intent detection."""
+        response = "try these 10 things to fix it: 1. foo 2. bar"
         assert _is_checklist_engineering(response) is True
 
     @pytest.mark.unit
@@ -839,7 +901,10 @@ class TestReferencesPriorContext:
             current_turn=5,
             evidence=[_stub_evidence(collected_at_turn=5, filename="fresh.log")],
         )
-        response = "Looking at fresh.log, I see the pattern. " + "x " * 200
+        # Padding sized to clear the Rule 8 length threshold (raised
+        # 300 → 600 chars on 2026-05-23) so the response is long enough
+        # to be subject to the prior-context check rather than exempted.
+        response = "Looking at fresh.log, I see the pattern. " + "x " * 350
         assert _references_prior_context(response, case) is False
 
     @pytest.mark.unit
@@ -864,12 +929,88 @@ class TestReferencesPriorContext:
             current_turn=5,
             evidence=[_stub_evidence(collected_at_turn=1, filename="alpha.log")],
         )
-        # Response is long and discusses something unrelated to the prior evidence
+        # Response is long (cleared the Rule 8 length threshold — raised
+        # 300 → 600 chars on 2026-05-23) and discusses something
+        # unrelated to the prior evidence.
         response = (
             "The current issue appears to be in the memory allocation pattern. "
-            "Nothing references the earlier investigation trail. " + "x " * 200
+            "Nothing references the earlier investigation trail. " + "x " * 350
         )
         assert _references_prior_context(response, case) is False
+
+    @pytest.mark.unit
+    def test_focused_treatment_response_under_new_threshold_exempt(self):
+        """2026-05-23 Rule 8 threshold tuning (300 → 600 chars).
+
+        A focused Treatment-stage response that proposes a specific fix
+        ("apply this kubectl patch — set CACHE_TYPE=redis and
+        CACHE_MAX_ENTRIES=0") doesn't naturally need to recap prior
+        case history. The previous 300-char threshold over-fired on
+        these focused responses; the new 600-char floor exempts them
+        while still catching long generic responses that ignore
+        case context.
+
+        This test pins the new threshold's intent: a ~500-char focused
+        Treatment response is exempt. The companion test below pins
+        the upper end: a >600-char response that still ignores prior
+        context is correctly flagged.
+
+        Note: this tuning is the most speculative of the three made in
+        this PR. If a re-run with the new
+        self_correction_rejected_*_response metadata shows Rule 8
+        still over-firing on focused responses, the right next step is
+        a stage-aware exemption (Treatment-stage skip) rather than
+        further widening this global threshold.
+        """
+        case = _stub_case(
+            current_turn=10,
+            evidence=[_stub_evidence(collected_at_turn=1, filename="symptoms.log")],
+        )
+        # ~500 chars — focused fix recommendation with no prior-context
+        # references. Pre-fix: this was flagged. Post-fix: exempt.
+        treatment_response = (
+            "Apply this kubectl patch to bound the in-memory cache: "
+            "`kubectl patch deployment api-server -n production -p '"
+            '{"spec":{"template":{"spec":{"containers":[{"name":"api-server",'
+            '"env":[{"name":"CACHE_TYPE","value":"redis"},'
+            '{"name":"CACHE_MAX_ENTRIES","value":"0"}]}]}}}}\'`. '
+            "This switches the cache to the external Redis instance and "
+            "disables in-process bounded growth."
+        )
+        # Sanity: response is in the band that the new threshold protects.
+        assert 300 < len(treatment_response) < 600, (
+            f"test invariant: response length {len(treatment_response)} "
+            "must be between old (300) and new (600) thresholds"
+        )
+        assert (
+            _references_prior_context(treatment_response, case, min_length=600) is True
+        ), "focused Treatment response under new threshold must be exempt"
+
+    @pytest.mark.unit
+    def test_long_response_still_flagged_when_ignoring_prior_context(self):
+        """Ceiling regression for the threshold tuning: a long (>600
+        char) response that nevertheless ignores prior case context
+        is still correctly flagged. The threshold tuning is meant to
+        spare focused fix recommendations, not to silently weaken the
+        check for genuinely recency-biased long responses."""
+        case = _stub_case(
+            current_turn=10,
+            evidence=[_stub_evidence(collected_at_turn=1, filename="alpha.log")],
+        )
+        # >600 chars, no reference to alpha.log or any prior context
+        long_unrelated = (
+            "The current issue appears to be a memory allocation pattern "
+            "that I'd like to dig into. There are several angles worth "
+            "exploring here, including the GC tuning and the heap sizing. "
+            "I'd want to look at the JVM flags first, then trace through "
+            "the allocation hotspots. Once we have that, the next step "
+            "would be to correlate with the load test data and confirm "
+            "the hypothesis. " + "x " * 200
+        )
+        assert len(long_unrelated) >= 600
+        assert (
+            _references_prior_context(long_unrelated, case, min_length=600) is False
+        ), "long response ignoring prior context must still be flagged"
 
 
 # ============================================================
@@ -957,6 +1098,81 @@ class TestValidateDiagnosticReasoning:
             investigating_case, response, contains_suggestion=False
         )
         assert is_valid is True
+
+    @pytest.mark.unit
+    def test_rule8_call_site_uses_tuned_threshold_constant(self, investigating_case):
+        """End-to-end regression for the call-site wiring (2026-05-23):
+        ``validate_diagnostic_reasoning`` previously hard-coded
+        ``min_length=300`` at its call to ``_references_prior_context``,
+        bypassing the ``_RULE8_MIN_RESPONSE_CHARS`` constant entirely.
+        That meant the threshold tuning in the previous commit had no
+        production effect.
+
+        Pin the contract: when the case has substantial prior context
+        and the response is in the band that the new threshold protects
+        (>old 300, <new 600), Rule 8 must NOT fire. Without this test,
+        a future contributor could re-introduce the hard-coded 300 and
+        only the helper-level unit tests would catch it (since they pass
+        ``min_length`` explicitly)."""
+        from datetime import UTC, datetime
+
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+        )
+
+        # Give the case enough prior evidence to trip
+        # _has_sufficient_prior_context (3+ items). Use USER_DESCRIPTION
+        # so we don't have to wire fake UploadedFile rows (the source-
+        # invariant only requires source_file_id for non-USER_DESCRIPTION
+        # source types).
+        def _ev(i):
+            return Evidence(
+                evidence_id=f"ev_{'a' * 11}{i}",
+                summary=f"Prior evidence item {i}",
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_file_id=None,
+                collected_at=datetime.now(UTC),
+                collected_by="user_123",
+                collected_at_turn=1,
+                primary_purpose="test",
+            )
+
+        investigating_case.evidence = [_ev(0), _ev(1), _ev(2)]
+        investigating_case.current_turn = 10
+
+        # ~500 chars: focused fix recommendation. Contains a suggestion
+        # keyword ("try") so the validator does run the strict checks,
+        # plus enough specificity markers + causal idiom to pass the
+        # other checks — leaving Rule 8 as the only candidate violation.
+        response = (
+            "Try this kubectl patch to bound the in-memory cache: "
+            "`kubectl patch deployment api-server -n production -p '"
+            '{"spec":{"template":{"spec":{"containers":[{"name":"api-server",'
+            '"env":[{"name":"CACHE_TYPE","value":"redis"}]}]}}}}\''
+            "` at 14:30 UTC because the cache pre-warms to 341MB of the "
+            "384MB heap, causing OOMKilled crashes at the deployment of "
+            "version v2.14.0."
+        )
+        assert (
+            300 < len(response) < 600
+        ), f"test invariant: len={len(response)} must be in tuning band"
+
+        is_valid, violations = validate_diagnostic_reasoning(
+            investigating_case, response
+        )
+
+        # No Rule 8 violation in the result. Other violations (e.g. about
+        # specific-evidence categories) may or may not fire depending on
+        # the response — we assert only on the Rule 8 one to keep the
+        # test focused on the call-site wiring.
+        rule8_violations = [v for v in violations if "Rule 8" in v]
+        assert rule8_violations == [], (
+            "Rule 8 must not fire on a sub-600-char focused response after "
+            f"the threshold tuning. Violations seen: {violations}"
+        )
         assert violations == []
 
     @pytest.mark.unit

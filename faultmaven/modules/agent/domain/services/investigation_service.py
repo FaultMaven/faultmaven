@@ -743,7 +743,7 @@ class InvestigationService:
                 "created_at": to_json_compatible(datetime.now(timezone.utc)),
                 "author_id": None,
                 "token_count": None,
-                "metadata": {},
+                "metadata": result.get("metadata", {}),
             }
             updated_case.messages.append(agent_message)
             updated_case.message_count += 1

@@ -148,6 +148,184 @@ class TestInvestigationServiceProcessTurn:
         ), f"User message '{sample_turn_payload.query}' not found in saved messages"
 
     @pytest.mark.asyncio
+    async def test_process_turn_persists_engine_metadata_on_assistant_message(
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+        sample_turn_payload,
+    ):
+        """Regression: rich turn metadata emitted by the engine must
+        propagate to the persisted assistant message.
+
+        Before fix: investigation_service hardcoded ``metadata={}`` on the
+        assistant message, dropping the engine's ``self_correction_failed``
+        and ``diagnostic_reasoning_violations`` fields entirely. This made
+        post-hoc diagnosis of self-correction failures impossible — every
+        production message persisted with empty metadata.
+        """
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        # Engine signals a failed self-correction with concrete violation strings.
+        engine_metadata = {
+            "milestones_completed": ["symptom_verified"],
+            "progress_made": False,
+            "self_correction_failed": True,
+            "diagnostic_reasoning_violations": [
+                "Missing causal reasoning - must explain HOW X causes Y",
+                "Not grounded in case evidence",
+            ],
+        }
+        mock_milestone_engine.process_turn = AsyncMock(
+            return_value={
+                "case_updated": sample_case,
+                "agent_response": "fallback message text",
+                "metadata": engine_metadata,
+            }
+        )
+
+        await service.process_turn(
+            case_id=sample_case.case_id,
+            user_id=sample_user_id,
+            payload=sample_turn_payload,
+        )
+
+        saved_case = await mock_case_repository.get(sample_case.case_id)
+        assistant_messages = [
+            m for m in saved_case.messages if m.get("role") == "assistant"
+        ]
+        assert assistant_messages, "expected at least one assistant message"
+        persisted = assistant_messages[-1].get("metadata") or {}
+
+        # The two fields that were lost before the fix.
+        assert persisted.get("self_correction_failed") is True, (
+            "self_correction_failed must propagate to assistant message metadata "
+            "for downstream diagnosis"
+        )
+        assert persisted.get("diagnostic_reasoning_violations") == [
+            "Missing causal reasoning - must explain HOW X causes Y",
+            "Not grounded in case evidence",
+        ], (
+            "diagnostic_reasoning_violations must propagate verbatim so a DB "
+            "query can identify which validator check failed on each turn"
+        )
+
+    @pytest.mark.asyncio
+    async def test_rejected_response_text_propagates_when_self_correction_fired(
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+        sample_turn_payload,
+    ):
+        """Validator-tuning observability (2026-05-23): when the engine
+        reports a failed self-correction, the LLM's original rejected
+        response text must propagate to the assistant message metadata
+        too — not just the violation strings. Without the text, every
+        future validator-tuning investigation hits the same wall ("we
+        know which check fired but not what triggered it")."""
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        engine_metadata = {
+            "self_correction_failed": True,
+            "diagnostic_reasoning_violations": [
+                "PROHIBITED: Checklist engineering detected"
+            ],
+            "self_correction_rejected_original_response": (
+                "Try these 5 things: 1. Restart the pod 2. Increase memory "
+                "3. Check the logs 4. Redeploy 5. Call support"
+            ),
+            "self_correction_rejected_retry_response": (
+                "Try these 3 things instead: 1. Increase memory 2. Redeploy "
+                "3. Verify"
+            ),
+        }
+        mock_milestone_engine.process_turn = AsyncMock(
+            return_value={
+                "case_updated": sample_case,
+                "agent_response": "fallback message text",
+                "metadata": engine_metadata,
+            }
+        )
+
+        await service.process_turn(
+            case_id=sample_case.case_id,
+            user_id=sample_user_id,
+            payload=sample_turn_payload,
+        )
+
+        saved_case = await mock_case_repository.get(sample_case.case_id)
+        persisted = [m for m in saved_case.messages if m.get("role") == "assistant"][
+            -1
+        ].get("metadata") or {}
+
+        # Original rejected text must be queryable from the DB so the
+        # next validator-tuning pass can correlate violation strings with
+        # the offending response text.
+        assert (
+            persisted.get("self_correction_rejected_original_response")
+            == engine_metadata["self_correction_rejected_original_response"]
+        )
+        assert (
+            persisted.get("self_correction_rejected_retry_response")
+            == engine_metadata["self_correction_rejected_retry_response"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_rejected_response_field_absent_on_clean_turn(
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+        sample_turn_payload,
+    ):
+        """Don't pollute clean-turn metadata: when self-correction did
+        not fire (validator passed on first attempt), the rejected-text
+        fields must be ABSENT from the persisted metadata, not present
+        with empty string / null. A reviewer skimming the DB for failed
+        turns should be able to filter on `WHERE
+        self_correction_rejected_original_response IS NOT NULL`."""
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        engine_metadata = {
+            "milestones_completed": [],
+            "progress_made": True,
+            "self_correction_failed": False,
+            "diagnostic_reasoning_violations": [],
+            # No rejected-response fields here.
+        }
+        mock_milestone_engine.process_turn = AsyncMock(
+            return_value={
+                "case_updated": sample_case,
+                "agent_response": "good agent response",
+                "metadata": engine_metadata,
+            }
+        )
+
+        await service.process_turn(
+            case_id=sample_case.case_id,
+            user_id=sample_user_id,
+            payload=sample_turn_payload,
+        )
+
+        saved_case = await mock_case_repository.get(sample_case.case_id)
+        persisted = [m for m in saved_case.messages if m.get("role") == "assistant"][
+            -1
+        ].get("metadata") or {}
+
+        assert "self_correction_rejected_original_response" not in persisted
+        assert "self_correction_rejected_retry_response" not in persisted
+
+    @pytest.mark.asyncio
     async def test_process_turn_saves_agent_response(
         self,
         service,

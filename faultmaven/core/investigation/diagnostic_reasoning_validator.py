@@ -75,10 +75,13 @@ def validate_diagnostic_reasoning(
 
     # Rule 8 (Full-Context Reasoning) — counter to recency bias. Only fires
     # when the case has substantial prior context AND the response is long
-    # enough to plausibly reference it.
+    # enough to plausibly reference it. The length floor lives in
+    # _RULE8_MIN_RESPONSE_CHARS so tuning happens in one place; this call
+    # site relies on the helper's default rather than hard-coding the
+    # number again.
     lacks_prior_context = _has_sufficient_prior_context(
         case
-    ) and not _references_prior_context(agent_response, case, min_length=300)
+    ) and not _references_prior_context(agent_response, case)
 
     if not has_specific_evidence:
         violations.append(
@@ -257,7 +260,21 @@ def _references_specific_evidence(response: str, case: Case) -> bool:
 
 
 def _has_causal_reasoning(response: str) -> bool:
-    """Check for causal reasoning (HOW X causes Y)."""
+    """Check for causal reasoning (HOW X causes Y).
+
+    Substring-match heuristic against an enumerated keyword list. False
+    positives are possible (e.g. "the root cause is unknown" trivially
+    matches "the root cause is" without doing causal reasoning) — see
+    the false-acceptance regression tests in
+    ``test_diagnostic_reasoning_validator.py`` which pin the trade-offs
+    for each idiom currently in the list.
+
+    The list grows conservatively: each addition must be a phrase that
+    is unambiguously causal in the vast majority of contexts. Idioms
+    that frequently collocate with negation/uncertainty (e.g. a bare
+    "the root cause is" → "is unknown") stay out to keep false-accept
+    risk bounded.
+    """
     response_lower = response.lower()
 
     causal_indicators = [
@@ -270,21 +287,41 @@ def _has_causal_reasoning(response: str) -> bool:
         "this explains why",
         "this is why",
         "the reason is",
+        # Additions (2026-05-23): widen coverage of semantically-causal
+        # idioms the original list missed. Each is conservative — picked
+        # specifically so a naive substring match does not trivially
+        # accept negated forms.
+        "due to",
+        "caused by",
+        "the root cause of",  # NOT "the root cause is" — too easy to
+        # accept "the root cause is unknown" as causal.
+        "explains the",
+        "resulting from",
     ]
 
     return any(indicator in response_lower for indicator in causal_indicators)
 
 
 def _is_checklist_engineering(response: str) -> bool:
-    """Detect prohibited checklist pattern."""
+    """Detect prohibited checklist pattern.
+
+    Numbered-list and bullet-list thresholds are deliberately aligned
+    (both 5+ items) — the previous asymmetry (numbered=3, bullet=5) had
+    no principled justification and over-fired on legitimate diagnostic
+    enumerations like "1. Pod A OOMKilled. 2. Pod B OOMKilled.
+    3. Pod C OOMKilled." Action-shaped checklists ("try these N things")
+    are still caught by the explicit-phrase patterns regardless of
+    list length.
+    """
     response_lower = response.lower()
 
-    # Detect "try these N things" pattern
+    # Detect "try these N things" pattern. These explicit phrases catch
+    # checklist intent independent of how many items follow.
     checklist_patterns = [
         r"try these \d+ things",
         r"here are \d+ things",
         r"try the following:",
-        r"\d+\.\s.*\n\s*\d+\.\s.*\n\s*\d+\.",  # Numbered list with 3+ items
+        r"\d+\.\s.*\n\s*\d+\.\s.*\n\s*\d+\.\s.*\n\s*\d+\.\s.*\n\s*\d+\.",  # 5+ numbered items
     ]
 
     for pattern in checklist_patterns:
@@ -348,7 +385,16 @@ def _lacks_case_specificity(response: str, case: Case) -> bool:
 _RULE8_MIN_EVIDENCE_ITEMS: int = 3
 _RULE8_MIN_REFUTED_HYPOTHESES: int = 2
 _RULE8_MIN_JOURNAL_ENTRIES: int = 2
-_RULE8_MIN_RESPONSE_CHARS: int = 300
+# Response-length minimum for the Rule 8 prior-context check. Raised
+# from 300 → 600 (2026-05-23) because a focused 300-char Treatment-
+# stage response ("apply this kubectl patch — CACHE_TYPE=redis,
+# CACHE_MAX_ENTRIES=0") doesn't naturally need to recap prior context,
+# and the previous threshold over-fired on those responses. Speculative
+# — the right shape may turn out to be stage-aware (Treatment exempt)
+# rather than a global threshold; this is the minimum-change first cut.
+# Re-tune if a re-run with the new self_correction_rejected_*_response
+# metadata shows Rule 8 still firing on focused fix-shaped responses.
+_RULE8_MIN_RESPONSE_CHARS: int = 600
 _RULE8_HYPOTHESIS_KEYWORD_MATCH: int = 2  # of keywords from the statement
 
 
