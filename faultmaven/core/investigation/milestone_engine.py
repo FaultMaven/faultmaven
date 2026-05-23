@@ -4419,9 +4419,22 @@ class MilestoneEngine:
             root_defs=schema_dict.get("$defs"),
         )
 
-        # Validate with Pydantic
-        content = json.dumps(content_obj)
-        parsed = schema_model.model_validate_json(content)
+        # Tolerant validation: strip strippable invalid fields so LLM
+        # shape deviations on Optional / default-having fields degrade
+        # gracefully instead of failing the turn. See
+        # tolerant_validation.py for rationale + policy. Required fields
+        # without defaults still hard-fail.
+        from faultmaven.core.investigation.tolerant_validation import (
+            tolerant_validate,
+        )
+
+        parsed, schema_drops = tolerant_validate(content_obj, schema_model)
+        if schema_drops:
+            logger.warning(
+                f"tolerant_validate (tool-call path) stripped {len(schema_drops)} "
+                f"field(s) from {schema_model.__name__}: "
+                f"{[d['loc'] for d in schema_drops]}"
+            )
 
         # Dropped-field detection: compare what the LLM emitted to what the
         # schema accepted. Any key the LLM put in the dict that isn't a
@@ -5005,10 +5018,31 @@ class MilestoneEngine:
                     content_obj, schema_dict, root_defs=schema_dict.get("$defs")
                 )
 
-                # Convert back to JSON string for Pydantic validation
-                content = json.dumps(content_obj)
+                # Tolerant validation: strip strippable invalid fields
+                # (per Postel's law applied to LLM contracts) so that
+                # LLM-produced shape deviations on Optional / default-having
+                # fields degrade gracefully instead of failing the turn.
+                # Required fields without defaults still hard-fail. See
+                # tolerant_validation.py for the conservative strippability
+                # policy and the architectural rationale.
+                #
+                # Observability is via logger.warning per drop event.
+                # Metadata-propagation of drop records (so case_messages.metadata
+                # carries them) is a follow-up that would require threading
+                # additional state through the closure; out of scope for
+                # this change.
+                from faultmaven.core.investigation.tolerant_validation import (
+                    tolerant_validate,
+                )
 
-                return schema_model.model_validate_json(content)
+                parsed_obj, schema_drops = tolerant_validate(content_obj, schema_model)
+                if schema_drops:
+                    logger.warning(
+                        f"tolerant_validate stripped {len(schema_drops)} field(s) "
+                        f"from {schema_model.__name__}: "
+                        f"{[d['loc'] for d in schema_drops]}"
+                    )
+                return parsed_obj
             except Exception as validation_error:
                 # If JSON validation fails due to truncation, increase max_tokens for retry
                 error_str = str(validation_error).lower()
