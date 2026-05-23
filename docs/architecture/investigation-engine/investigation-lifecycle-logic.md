@@ -1792,7 +1792,7 @@ def determine_turn_outcome(case: Case, progress_made: bool) -> TurnOutcome:
 
 ### 3.3 Diagnostic Reasoning Requirements
 
-The agent must demonstrate context-specific diagnostic reasoning — grounded in this case's evidence — before suggesting any action, mitigation, or hypothesis during INVESTIGATING. The reasoning structure (OBSERVATION → ANALYSIS → CONCLUSION), prohibited/required patterns, worked BAD/GOOD examples, and post-generation validator enforcement are canonical in:
+The agent must demonstrate context-specific diagnostic reasoning — grounded in this case's evidence — before suggesting any action, mitigation, or hypothesis during INVESTIGATING. The reasoning structure (OBSERVATION → ANALYSIS → CONCLUSION), prohibited/required patterns, and worked BAD/GOOD examples are canonical in:
 
 See **[Agent Behavioral Rules — Rule 2: Evidence-Grounded](./agent-behavioral-rules.md#rule-2-evidence-grounded)**.
 
