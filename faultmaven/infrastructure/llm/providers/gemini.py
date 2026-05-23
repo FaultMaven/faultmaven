@@ -7,6 +7,7 @@ capabilities for text and image processing.
 
 import asyncio
 import json
+import re
 import time
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -42,24 +43,33 @@ class GeminiProvider(BaseLLMProvider):
         """
         Determine structured output capability for Gemini models.
 
-        Gemini models have version-based structured output support:
-        - STRICT: Gemini 2.0 and 1.5 (supports controlled generation)
-        - BEST_EFFORT: Gemini 1.0 (prompt-based JSON generation)
+        Gemini's "controlled generation" (decoder-enforced schema via
+        ``generation_config.response_schema``) is supported on 1.5 and
+        all subsequent major versions. Only 1.0 was prompt-based only.
+
+        The previous allow-list ("2.0 in model OR 1.5 in model") missed
+        Gemini 2.5 and any future 3.x release, causing them to fall
+        through to BEST_EFFORT and emit schema-invalid output (Run 18
+        Variants D and E on gemini-2.5-pro). The pattern below matches
+        ``gemini-1.5-*``, ``gemini-2.<n>-*``, ``gemini-3.<n>-*``, etc.
+        — any major version >= 1.5.
 
         Args:
             model: Model name to check (uses default if None)
 
         Returns:
-            StructuredOutputCapability: STRICT for 2.0/1.5, BEST_EFFORT for 1.0
+            StructuredOutputCapability: STRICT for 1.5+, BEST_EFFORT for 1.0
         """
         effective_model = self.get_effective_model(model)
         model_lower = effective_model.lower()
 
-        # Gemini 2.0 and 1.5 support STRICT mode (controlled generation)
-        if "2.0" in model_lower or "1.5" in model_lower:
+        # Match Gemini 1.5 OR any major version 2 and up (2.0, 2.5, 3.0, ...).
+        # Tightened to require "gemini-" prefix to avoid false positives from
+        # incidental "1.5" / "2.x" substrings elsewhere in the model string.
+        if re.search(r"gemini-(?:1\.5|[2-9]\.\d+|\d{2,}\.\d+)", model_lower):
             return StructuredOutputCapability.STRICT
 
-        # Gemini 1.0 uses BEST_EFFORT (prompt-based)
+        # Gemini 1.0 (and any unrecognized model string) uses BEST_EFFORT
         return StructuredOutputCapability.BEST_EFFORT
 
     async def generate(

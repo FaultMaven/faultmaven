@@ -94,6 +94,44 @@ class TestOpenAIProviderOverride:
         capability = provider.get_structured_output_capability(None)
         assert capability == StructuredOutputCapability.STRICT
 
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4.5",
+            "gpt-5",
+            "gpt-5.4",  # the operator-config example that surfaced this gap
+            "gpt-5-mini",
+            "chatgpt-4o-latest",
+            "o1",
+            "o1-preview",
+            "o3",
+            "o3-mini",
+        ],
+    )
+    def test_modern_models_return_strict_after_2026_05_audit(self, model_name):
+        """Regression for the 2026-05-23 capability-detection audit.
+
+        The previous allow-list missed gpt-4.1, gpt-4.5, gpt-5.x, chatgpt-4o-latest,
+        and the o1/o3 reasoning models — meaning recent operator configs (e.g.
+        OPENAI_MODEL=GPT-5.4 in the .env) silently downgraded to FUNCTION_CALLING
+        instead of STRICT. After the audit, all of these match the indicator
+        list and return STRICT.
+        """
+        config = ProviderConfig(
+            name="openai",
+            api_key="test-key",
+            base_url="https://api.openai.com/v1",
+            models=[model_name],
+            default_model=model_name,
+        )
+        provider = OpenAIProvider(config)
+        assert (
+            provider.get_structured_output_capability(model_name)
+            == StructuredOutputCapability.STRICT
+        ), f"{model_name!r} should map to STRICT after the audit"
+
 
 class TestAnthropicProviderOverride:
     """Test Anthropic provider capability detection override"""
@@ -254,6 +292,63 @@ class TestGeminiProviderOverride:
 
         capability = provider.get_structured_output_capability("gemini-1.0-pro")
         assert capability == StructuredOutputCapability.BEST_EFFORT
+
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "gemini-2.5-pro",  # The model that surfaced this gap in Run 18
+            "gemini-2.5-flash",
+            "gemini-1.5-pro-002",
+            "gemini-3.0-pro",  # Future-proofing
+            "gemini-3.5-flash",  # Future-proofing
+            "gemini-10.0-pro",  # Generic-version-tail future-proofing
+        ],
+    )
+    def test_modern_gemini_returns_strict_after_2026_05_audit(self, model_name):
+        """Regression for the 2026-05-23 capability-detection audit.
+
+        The previous matcher (``'2.0' in model OR '1.5' in model``) missed
+        Gemini 2.5 and any future 3.x release. Gemini 2.5 Pro was the
+        model in use during Run 18 and emitted Variants D and E because
+        it fell through to BEST_EFFORT (no decoder-level schema enforcement).
+        The replacement regex matches 1.5 and any major version >= 2.x.
+        """
+        config = ProviderConfig(
+            name="openai",
+            api_key="test-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            models=[model_name],
+            default_model=model_name,
+        )
+        provider = GeminiProvider(config)
+        assert (
+            provider.get_structured_output_capability(model_name)
+            == StructuredOutputCapability.STRICT
+        ), f"{model_name!r} should map to STRICT after the audit"
+
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "gemini-1.0-pro",  # Should stay BEST_EFFORT
+            "gemini-pro",  # Versionless string — conservative default
+            "gemini-1.4-pro",  # Pre-1.5 (hypothetical; doesn't exist but pattern catches)
+        ],
+    )
+    def test_pre_1_5_or_unversioned_gemini_stays_best_effort(self, model_name):
+        """The regex must NOT match 1.0, 1.4, or versionless 'gemini-pro'.
+        These either lack STRICT support or are too ambiguous to assume it."""
+        config = ProviderConfig(
+            name="openai",
+            api_key="test-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            models=[model_name],
+            default_model=model_name,
+        )
+        provider = GeminiProvider(config)
+        assert (
+            provider.get_structured_output_capability(model_name)
+            == StructuredOutputCapability.BEST_EFFORT
+        ), f"{model_name!r} should stay BEST_EFFORT"
 
 
 class TestCohereProviderOverride:

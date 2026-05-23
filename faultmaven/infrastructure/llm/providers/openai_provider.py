@@ -39,9 +39,16 @@ class OpenAIProvider(BaseLLMProvider):
         """
         Determine structured output capability for OpenAI models.
 
-        OpenAI provides different levels of structured output support:
-        - STRICT: Modern models with json_schema support (gpt-4o, gpt-4-turbo, etc.)
-        - FUNCTION_CALLING: Legacy models with function calling but not strict json_schema
+        OpenAI's "structured outputs" feature (``response_format.type=json_schema``
+        with ``strict: true``) is supported on gpt-4o and gpt-4o-mini from
+        2024-08-06 onward, and on all subsequent gpt-4.x / gpt-5.x / o1 / o3
+        releases. Older models (gpt-3.5-turbo, gpt-4 legacy) fall back to
+        FUNCTION_CALLING.
+
+        The previous allow-list missed several modern model families
+        (gpt-4.1, gpt-5.x, chatgpt-4o-latest, o1/o3 reasoning models),
+        meaning recent operator configs (e.g. ``OPENAI_MODEL=GPT-5.4``)
+        silently downgraded to FUNCTION_CALLING instead of STRICT.
 
         Args:
             model: Model name to check (uses default if None)
@@ -52,19 +59,26 @@ class OpenAIProvider(BaseLLMProvider):
         effective_model = self.get_effective_model(model)
         model_lower = effective_model.lower()
 
-        # Modern models with strict json_schema support (response_format.type = "json_schema")
-        # These support the strict parameter for guaranteed schema compliance
+        # Modern models with strict json_schema support
+        # (response_format.type = "json_schema", strict=True).
+        # Order: most-specific first to avoid false-positive prefix matches.
         strict_indicators = [
-            "gpt-4o",  # GPT-4 Omni models
-            "gpt-4-turbo",  # GPT-4 Turbo models
-            "gpt-4-2024",  # GPT-4 2024+ models
-            "gpt-3.5-turbo-0125",  # GPT-3.5 Turbo with structured output
+            "gpt-3.5-turbo-0125",  # GPT-3.5 Turbo with structured output (legacy carve-out)
+            "gpt-4o",  # All GPT-4 Omni variants (gpt-4o, gpt-4o-mini, ...)
+            "gpt-4-turbo",  # GPT-4 Turbo
+            "gpt-4-2024",  # GPT-4 with 2024 date suffix
+            "gpt-4.1",  # GPT-4.1 family
+            "gpt-4.5",  # GPT-4.5 family
+            "gpt-5",  # All GPT-5.x — matches "gpt-5", "gpt-5.4", "gpt-5-mini", ...
+            "chatgpt-4o",  # chatgpt-4o-latest
+            "o1",  # OpenAI o1 reasoning models
+            "o3",  # OpenAI o3 reasoning models
         ]
 
         if any(indicator in model_lower for indicator in strict_indicators):
             return StructuredOutputCapability.STRICT
 
-        # All other OpenAI models support function calling as fallback
+        # Older OpenAI models support function calling as fallback
         return StructuredOutputCapability.FUNCTION_CALLING
 
     async def generate(
