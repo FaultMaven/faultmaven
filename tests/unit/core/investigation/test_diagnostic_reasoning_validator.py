@@ -1114,12 +1114,13 @@ class TestValidateDiagnosticReasoning:
         a future contributor could re-introduce the hard-coded 300 and
         only the helper-level unit tests would catch it (since they pass
         ``min_length`` explicitly)."""
+        from datetime import UTC, datetime
+
         from faultmaven.modules.case.contracts import (
             Evidence,
             EvidenceCategory,
             EvidenceSourceType,
         )
-        from datetime import datetime, UTC
 
         # Give the case enough prior evidence to trip
         # _has_sufficient_prior_context (3+ items). Use USER_DESCRIPTION
