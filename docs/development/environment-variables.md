@@ -142,8 +142,6 @@ PATTERN_TEMPLATE_MAX_TOKENS=300         # Default: 300
 # Classification Thresholds
 PATTERN_CONFIDENCE_THRESHOLD=0.7        # Default: 0.7
 CONFIDENCE_OVERRIDE_THRESHOLD=0.4       # Default: 0.4
-SELF_CORRECTION_MIN_CONFIDENCE=0.4      # Default: 0.4
-SELF_CORRECTION_MAX_CONFIDENCE=0.7      # Default: 0.7
 ```
 
 ### In code:
@@ -386,8 +384,6 @@ OPENAI_API_KEY=sk-prod-key-...  # Different key!
 | `PATTERN_TEMPLATE_MAX_TOKENS` | int | 300 | Max tokens for pattern templates |
 | `PATTERN_CONFIDENCE_THRESHOLD` | float | 0.7 | Trigger LLM when pattern confidence < this |
 | `CONFIDENCE_OVERRIDE_THRESHOLD` | float | 0.4 | Force clarification when confidence < this |
-| `SELF_CORRECTION_MIN_CONFIDENCE` | float | 0.4 | Lower bound for self-correction prompt |
-| `SELF_CORRECTION_MAX_CONFIDENCE` | float | 0.7 | Upper bound for self-correction prompt |
 
 ## Related Documentation
 
@@ -409,8 +405,6 @@ All environment variables for the ConversationThresholds system:
 | `PATTERN_TEMPLATE_MAX_TOKENS` | int | 300 | Max tokens for pattern templates |
 | `PATTERN_CONFIDENCE_THRESHOLD` | float | 0.7 | Trigger LLM when pattern confidence < this |
 | `CONFIDENCE_OVERRIDE_THRESHOLD` | float | 0.4 | Force clarification when confidence < this |
-| `SELF_CORRECTION_MIN_CONFIDENCE` | float | 0.4 | Lower bound for self-correction prompt |
-| `SELF_CORRECTION_MAX_CONFIDENCE` | float | 0.7 | Upper bound for self-correction prompt |
 
 ### Status
 

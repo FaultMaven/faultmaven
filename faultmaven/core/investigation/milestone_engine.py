@@ -1232,17 +1232,6 @@ class MilestoneEngine:
     - Repository abstraction for persistence (no direct DB access)
     """
 
-    # Substituted into agent_response when self-correction retry fails
-    # (retry errors or retried prose still fails validation). Avoids
-    # shipping validator-rejected prose to the user while preserving the
-    # response's state_updates so the case still progresses on the
-    # LLM's structured output.
-    _SELF_CORRECTION_FALLBACK_MESSAGE = (
-        "I'm having trouble articulating my reasoning for this turn. "
-        "Could you ask me again, or tell me what specifically you'd "
-        "like me to focus on?"
-    )
-
     def __init__(
         self,
         llm_provider: ILLMProvider,
@@ -2817,168 +2806,6 @@ class MilestoneEngine:
                 f"Turn {case.current_turn} response type: {type(response_obj).__name__}"
             )
 
-            # 3. Validate reasoning BEFORE applying state (design: error-handling §3.2)
-            # This prevents duplicate state mutations if self-correction retry is needed.
-            #
-            # EXCEPTION: Knowledge queries skip diagnostic reasoning validation
-            # entirely. These are general knowledge questions (e.g., "What is Opik?")
-            # that don't reference case evidence and cannot satisfy the
-            # OBSERVATION/ANALYSIS format requirement. Validating them would
-            # always trigger a false-positive retry.
-            is_knowledge_turn = query_mode == "knowledge_query"
-
-            from faultmaven.core.investigation.diagnostic_reasoning_validator import (
-                validate_diagnostic_reasoning,
-            )
-
-            if is_knowledge_turn:
-                is_valid_reasoning = True
-                violations = []
-                logger.info("Knowledge query: skipping diagnostic reasoning validation")
-            else:
-                is_valid_reasoning, violations = validate_diagnostic_reasoning(
-                    case=case,
-                    agent_response=response_obj.agent_response,
-                    contains_suggestion=None,  # Auto-detect
-                )
-
-            # For DA turns (tool-augmented), "Missing causal reasoning" is a
-            # false positive on factual lookups (e.g., "What usernames did X try?").
-            # Downgrade it from retry-triggering to warning-only so we don't waste
-            # a 5-7s retry that can never satisfy the check. Other violations
-            # (checklist, generic advice, missing observation) still trigger retry.
-            _CAUSAL_VIOLATION = "Missing causal reasoning"
-            is_da_turn = query_mode == "directed_analysis"
-            if not is_valid_reasoning and is_da_turn:
-                causal_violations = [v for v in violations if _CAUSAL_VIOLATION in v]
-                retry_violations_list = [
-                    v for v in violations if _CAUSAL_VIOLATION not in v
-                ]
-
-                if causal_violations and not retry_violations_list:
-                    # ONLY causal reasoning is missing — this is likely a factual lookup.
-                    # Skip retry, log as warning, feed back to next turn.
-                    logger.info(
-                        f"DA turn: downgrading causal reasoning violation to warning "
-                        f"(no retry). Violations: {causal_violations}"
-                    )
-                    metadata["diagnostic_reasoning_violations"] = causal_violations
-                    is_valid_reasoning = True  # Skip retry block
-                    violations = []
-                elif causal_violations and retry_violations_list:
-                    # Other violations exist too — retry for those, but remove causal
-                    # from the retry prompt since it can't be satisfied for factual lookups.
-                    violations = retry_violations_list
-                    logger.info(
-                        f"DA turn: removed causal reasoning from retry violations "
-                        f"(remaining: {retry_violations_list})"
-                    )
-
-            if not is_valid_reasoning:
-                logger.warning(
-                    f"Diagnostic reasoning validation failed: {violations}. "
-                    "Attempting self-correction retry."
-                )
-
-                # Observability: capture the LLM's original (pre-retry) response
-                # text so validator-tuning investigations can pinpoint which
-                # response triggered which check. Without this, only the check
-                # *name* is queryable from the DB — the offending text is gone
-                # the moment the retry / fallback overwrites response_obj.
-                metadata["self_correction_rejected_original_response"] = (
-                    response_obj.agent_response
-                )
-
-                # Self-correction: retry once with violation feedback.
-                # Include the original response so the retry LLM has the search
-                # data found during the DA tool loop (which isn't re-run here).
-                try:
-                    correction_feedback = (
-                        "\n\n[SYSTEM CORRECTION REQUIRED]\n"
-                        "Your previous response failed diagnostic reasoning validation. "
-                        "You MUST fix these issues:\n"
-                        + "\n".join(f"- {v}" for v in violations)
-                        + "\n\nHere is your previous response to rewrite:\n"
-                        + response_obj.agent_response
-                        + "\n\nRewrite the agent_response to address ALL violations above. "
-                        "Ground your reasoning in specific evidence (cite at least 2 types "
-                        "of data — timestamps like HH:MM, error messages, IPs/usernames, "
-                        "or metrics/counts — directly from the search results above) and "
-                        "explain WHY using causal language like 'because', 'therefore', "
-                        "'this indicates'. Reference evidence by filename or description, "
-                        "never by ev_ IDs. "
-                        "Keep all state_updates from your previous response unchanged."
-                    )
-                    corrected_prompt = prompt + correction_feedback
-                    corrected_response = await self._generate_structured_output(
-                        corrected_prompt,
-                        schema_model,
-                        redaction_ctx=redaction_ctx,
-                        case=case,
-                    )
-
-                    # Re-validate the corrected response
-                    is_valid_retry, retry_violations = validate_diagnostic_reasoning(
-                        case=case,
-                        agent_response=corrected_response.agent_response,
-                        contains_suggestion=None,
-                    )
-
-                    if is_valid_retry:
-                        logger.info(
-                            "Self-correction succeeded: retried response passes validation."
-                        )
-                        response_obj = corrected_response
-                        violations = []
-                    else:
-                        # Retry's prose still fails validation. Don't ship
-                        # the validator-rejected text — substitute an
-                        # honest fallback message instead. Keep the
-                        # retried response's state_updates (hypotheses,
-                        # evidence categorization, milestones) since
-                        # validation only checks prose form, not the
-                        # structured fields. See
-                        # diagnostic_reasoning_validator.validate_diagnostic_reasoning:
-                        # all checks (_detect_suggestions,
-                        # _references_specific_evidence, _has_causal_reasoning,
-                        # _is_checklist_engineering) operate on
-                        # agent_response only; state_updates is never
-                        # inspected.
-                        logger.warning(
-                            f"Self-correction retry also failed: {retry_violations}. "
-                            "Substituting honest fallback message; keeping state_updates."
-                        )
-                        # Companion observability: capture the retry's
-                        # rejected text too. If the retry hit a *different*
-                        # check than the original, that's a useful signal
-                        # for tuning the corrective prompt itself.
-                        metadata["self_correction_rejected_retry_response"] = (
-                            corrected_response.agent_response
-                        )
-                        response_obj = corrected_response
-                        response_obj.agent_response = (
-                            self._SELF_CORRECTION_FALLBACK_MESSAGE
-                        )
-                        metadata["self_correction_failed"] = True
-                        violations = retry_violations
-                except Exception as e:
-                    # Retry itself errored (timeout, context overflow,
-                    # provider failure). Don't ship the original
-                    # uncorrected prose. Substitute the honest fallback;
-                    # keep the original state_updates.
-                    logger.warning(
-                        f"Self-correction retry errored: {e}. "
-                        "Substituting honest fallback message; keeping state_updates.",
-                        exc_info=True,
-                        extra={"case_id": case.case_id, "turn": case.current_turn},
-                    )
-                    response_obj.agent_response = self._SELF_CORRECTION_FALLBACK_MESSAGE
-                    metadata["self_correction_failed"] = True
-
-                # Add remaining violations to metadata for observability (G9+G11 wires them)
-                if violations:
-                    metadata["diagnostic_reasoning_violations"] = violations
-
             # 4. Apply state from the final accepted response (exactly once)
             case_updated, response_metadata = await self._process_response_structured(
                 case, user_message, response_obj, attachments
@@ -3088,28 +2915,19 @@ class MilestoneEngine:
                     log_msg += f", repair: {progress_result.repair_type.value}"
                 logger.info(log_msg)
 
-            # Step 5.9b: Wire validation errors into system_feedback (G9 + G11)
-            # Diagnostic reasoning violations and reasoning validation errors
-            # must propagate to the next turn so the LLM can self-correct.
-            feedback_parts = []
-            if metadata.get("diagnostic_reasoning_violations"):
-                violations = metadata["diagnostic_reasoning_violations"]
-                feedback_parts.append(
-                    f"DIAGNOSTIC REASONING ISSUES: {'; '.join(violations)}. "
-                    "Provide case-specific reasoning with evidence references."
-                )
+            # Step 5.9b: Wire reasoning_validation_errors into system_feedback.
+            # This is the reasoning-first validator — a structural check that
+            # required milestone justifications are present. Rule 2 (Evidence-
+            # Grounded) compliance is enforced only at the prompt layer; there
+            # is no post-generation diagnostic-reasoning validator.
             if metadata.get("reasoning_validation_errors"):
                 errors = metadata["reasoning_validation_errors"]
-                feedback_parts.append(
+                current_feedback = metadata.get("system_feedback", "") or ""
+                metadata["system_feedback"] = (
+                    f"{current_feedback}\n"
                     f"REASONING VALIDATION: {'; '.join(errors)}. "
                     "Provide internal_reasoning with milestone_justifications."
-                )
-            if feedback_parts:
-                current_feedback = metadata.get("system_feedback", "") or ""
-                new_feedback = "\n".join(feedback_parts)
-                metadata["system_feedback"] = (
-                    f"{current_feedback}\n{new_feedback}".strip()
-                )
+                ).strip()
 
             # Step 6: Record turn progress
             turn_record = self._create_turn_record(
@@ -3368,35 +3186,6 @@ class MilestoneEngine:
                     "outcome": metadata.get("outcome", TurnOutcome.CONVERSATION),
                     "momentum": metadata.get("momentum"),
                     "next_steps": metadata.get("next_steps", []),
-                    "self_correction_failed": metadata.get(
-                        "self_correction_failed", False
-                    ),
-                    "diagnostic_reasoning_violations": metadata.get(
-                        "diagnostic_reasoning_violations", []
-                    ),
-                    # Rejected response text is only present when self-
-                    # correction fired. Absent on clean turns (validator
-                    # passed first time) so the field doesn't pollute
-                    # otherwise-quiet rows. Use ``.get`` with no default
-                    # and a conditional include to preserve that contract.
-                    **(
-                        {
-                            "self_correction_rejected_original_response": metadata[
-                                "self_correction_rejected_original_response"
-                            ]
-                        }
-                        if "self_correction_rejected_original_response" in metadata
-                        else {}
-                    ),
-                    **(
-                        {
-                            "self_correction_rejected_retry_response": metadata[
-                                "self_correction_rejected_retry_response"
-                            ]
-                        }
-                        if "self_correction_rejected_retry_response" in metadata
-                        else {}
-                    ),
                     "timestamp": datetime.now(UTC).isoformat(),
                 },
             }

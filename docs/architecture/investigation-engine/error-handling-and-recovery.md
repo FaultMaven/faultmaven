@@ -24,9 +24,8 @@ This document defines error handling and recovery strategies for the FaultMaven 
 2. [LLM Error Handling](#2-llm-error-handling)
 3. [Response Parsing Errors](#3-response-parsing-errors)
    - 3.1 [Graceful Parsing with Fallback](#31-graceful-parsing-with-fallback)
-   - 3.2 [Reasoning Validation with Self-Correction](#32-reasoning-validation-with-self-correction)
-   - 3.3 [System Feedback Loop](#33-system-feedback-loop)
-   - 3.4 [Defensive Schema Coercion](#34-defensive-schema-coercion)
+   - 3.2 [System Feedback Loop](#32-system-feedback-loop)
+   - 3.3 [Defensive Schema Coercion](#33-defensive-schema-coercion)
 4. [State Validation](#4-state-validation)
 5. [Progress Transparency](#5-progress-transparency)
 6. [Recovery Strategies](#6-recovery-strategies)
@@ -306,94 +305,21 @@ class ResponseParser:
         )
 ```
 
-### 3.2 Reasoning Validation with Self-Correction
-
-When the LLM produces a structurally valid response but omits required reasoning justifications for milestone completions, the engine uses a **self-correction retry loop** rather than crashing the turn with a 500 error.
-
-```python
-# Self-correction flow (milestone_engine.py):
-is_valid, violations = validate_diagnostic_reasoning(case, agent_response, contains_suggestion)
-if not is_valid:
-    # Build correction prompt with specific violations AND original response
-    correction_feedback = (
-        "\n\n[SYSTEM CORRECTION REQUIRED]\n"
-        "Your previous response failed diagnostic reasoning validation. "
-        "You MUST fix these issues:\n"
-        + "\n".join(f"- {v}" for v in violations)
-        + "\n\nHere is your previous response to rewrite:\n"
-        + response_obj.agent_response
-        + "\n\nRewrite the agent_response to address ALL violations above. "
-        "Structure it as: OBSERVATION (cite specific data from at least 2 "
-        "categories — timestamps like HH:MM, error messages, IPs/usernames, "
-        "or metrics/counts — directly from the search results above) then "
-        "ANALYSIS (explain WHY using causal language like 'because', "
-        "'therefore', 'this indicates'). "
-        "Keep all state_updates from your previous response unchanged."
-    )
-    corrected_prompt = original_prompt + correction_feedback
-
-    # Retry once with violation feedback
-    corrected_response = await generate_structured_output(corrected_prompt, schema)
-
-    # Re-validate
-    is_valid_retry, retry_violations = validate_reasoning(corrected_response)
-    if is_valid_retry:
-        response_obj = corrected_response
-    else:
-        # Proceed with corrected response anyway (may be partially improved)
-        response_obj = corrected_response
-        metadata["diagnostic_reasoning_violations"] = retry_violations
-```
-
-**Key behaviors:**
-- Maximum 1 self-correction retry per turn (prevents infinite loops)
-- The correction prompt includes the **original agent_response** so the LLM can rewrite it without losing context (the retry does not re-run investigation tools, so search results are only available if the original response is provided)
-- If retry also fails, the retried response is used (may be partially improved)
-- Remaining violations are wired to `system_feedback` so the next turn's LLM context includes the correction instructions
-- Never crashes the turn with a 500 error for reasoning validation failures
-
-#### DA Causal Reasoning Downgrade
-
-For **Directed Analysis** turns that answer factual lookup questions (e.g., "What usernames did IP X try?"), the causal reasoning check is inherently unsatisfiable — the answer is a list of facts, not a causal chain. When causal reasoning is the **sole** violation on a DA turn, the validator downgrades it to a warning instead of triggering a self-correction retry:
-
-```python
-_CAUSAL_VIOLATION = "Missing causal reasoning"
-is_da_turn = query_mode == "directed_analysis"
-
-if not is_valid_reasoning and is_da_turn:
-    causal_violations = [v for v in violations if _CAUSAL_VIOLATION in v]
-    retry_violations_list = [v for v in violations if _CAUSAL_VIOLATION not in v]
-    if causal_violations and not retry_violations_list:
-        # Sole violation is causal reasoning — downgrade to warning
-        logger.info("DA turn: downgrading causal reasoning violation to warning")
-        metadata["diagnostic_reasoning_violations"] = causal_violations
-        is_valid_reasoning = True
-        violations = []
-    elif causal_violations and retry_violations_list:
-        # Other violations exist — retry without causal reasoning requirement
-        violations = retry_violations_list
-```
-
-This prevents unnecessary retries on factual DA lookups while still enforcing all other diagnostic reasoning requirements.
-
-#### Knowledge Query Bypass
-
-**Knowledge queries** (`query_mode == "knowledge_query"`) skip diagnostic reasoning validation entirely. These are general technical questions (e.g., "What is Opik?", "How does Redis clustering work?") that are answered from the LLM's built-in knowledge without case evidence. The OBSERVATION + ANALYSIS structure and evidence-grounding requirements are inapplicable — there is no case data to observe or cite. The query classifier's 3-gate detection (knowledge phrase match + no hard entities + no case references) ensures only genuinely non-case questions take this path.
-
-### 3.3 System Feedback Loop
+### 3.2 System Feedback Loop
 
 Validation errors from multiple sources are merged into `system_feedback` on the turn record, which `build_investigation_context()` includes in the next turn's prompt:
 
 | Source | Feedback Key | Content |
 |--------|-------------|---------|
-| Diagnostic reasoning validator | `diagnostic_reasoning_violations` | Case-specific reasoning issues |
 | Reasoning-first validator | `reasoning_validation_errors` | Missing milestone justifications |
 | Progress monitor | `breakout_prompt_injection` | Transparency guidance + repair-pattern injection (e.g., "try different category" on anchoring) |
 | State validator | `validation_repairs` | Automatic state corrections applied |
 
 This ensures the LLM receives corrective instructions for the next turn even when the current turn's issues are non-fatal.
 
-### 3.4 Defensive Schema Coercion
+Rule 2 (Evidence-Grounded) compliance is enforced solely at the prompt layer; there is no post-generation diagnostic-reasoning validator. See [agent-behavioral-rules.md § Post-Generation Validators (Historical Case Study)](./agent-behavioral-rules.md#post-generation-validators-historical-case-study) for the architectural reasoning behind the earlier removal.
+
+### 3.3 Defensive Schema Coercion
 
 Some LLMs (notably Fireworks/DeepSeek V3) return shapes that would otherwise fail Pydantic validation with a hard 500: required fields omitted, object fields returned as JSON-encoded strings, or `null` where an object is expected. The response schemas (`faultmaven/core/investigation/schemas.py`) carry narrow `mode="before"` validators / Optional-with-default fields so these LLM quirks degrade to safe defaults instead of crashing the turn:
 
@@ -403,7 +329,7 @@ Some LLMs (notably Fireworks/DeepSeek V3) return shapes that would otherwise fai
 | `BaseInteractionResponse.suggested_follow_ups` | `field_validator(mode="before")` parses a JSON string into a list, returning `None` on parse failure | Suggestions are advisory UI affordances; a malformed list shouldn't fail the entire turn. |
 | `state_updates` (top-level) | Coerced to `{}` when the LLM returns `null` or an unparseable string (see `milestone_engine.py` JSON repair passes) | Allows Pydantic field defaults to fire when the LLM truncates output mid-object. |
 
-The rule: defensive coercion is reserved for fields where the server has an authoritative or safe-default value. Fields whose values genuinely come from the LLM (`agent_response`, `evidence_to_add` entries, milestone justifications) stay strict — they cannot be quietly defaulted without losing fidelity, so they remain required and either retry via the self-correction loop (§3.2) or surface as a validation error.
+The rule: defensive coercion is reserved for fields where the server has an authoritative or safe-default value. Fields whose values genuinely come from the LLM (`agent_response`, `evidence_to_add` entries, milestone justifications) stay strict — they cannot be quietly defaulted without losing fidelity, so they remain required and surface as a validation error when missing.
 
 ---
 
@@ -945,23 +871,21 @@ This error handling framework provides:
 
 3. **Graceful parsing fallback** - Extract meaningful responses even when JSON parsing fails
 
-4. **Reasoning self-correction** - Feed validation errors back to LLM for retry before failing
+4. **System feedback loop** - Wire structural validation errors and breakout prompts to next-turn context
 
-5. **System feedback loop** - Wire validation errors, reasoning issues, and breakout prompts to next-turn context
+5. **Evidence-driven state validation** - Ensure gate milestone and progress milestone consistency
 
-6. **Evidence-driven state validation** - Ensure gate milestone and progress milestone consistency
+6. **Progress monitoring** - Identify when investigation is stalled and surface pending-milestone guidance (includes repair patterns for anchoring, deadlock, action loops, fix-failure cycles, and exhaustion). See [Progress Transparency](./progress-transparency.md).
 
-7. **Progress monitoring** - Identify when investigation is stalled and surface pending-milestone guidance (includes repair patterns for anchoring, deadlock, action loops, fix-failure cycles, and exhaustion). See [Progress Transparency](./progress-transparency.md).
+7. **Recovery strategies** - Memory compression, hypothesis simplification, fallback prompts
 
-8. **Recovery strategies** - Memory compression, hypothesis simplification, fallback prompts
+8. **Error context propagation** - Comprehensive error tracking for debugging
 
-9. **Error context propagation** - Comprehensive error tracking for debugging
-
-10. **Concurrency protection** - Per-case asyncio locks prevent state corruption from concurrent turns
+9. **Concurrency protection** - Per-case asyncio locks prevent state corruption from concurrent turns
 
 **Integration Points**:
 
-- `MilestoneEngine.process_turn()` - Per-case lock, calls StateValidator, ProgressMonitor, stage-gate side effects, and self-correction retry
+- `MilestoneEngine.process_turn()` - Per-case lock, calls StateValidator, ProgressMonitor, and stage-gate side effects
 - `LLMProvider.generate()` - Uses LLMErrorHandler for retry logic
 - `ResponseParser.parse()` - Handles parsing failures gracefully
 - `build_investigation_context()` - Consumes system_feedback from previous turn for LLM context

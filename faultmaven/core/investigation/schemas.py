@@ -327,10 +327,14 @@ class EvidenceToAdd(BaseModel):
     def validate_category(cls, v):
         """Strict category validation.
 
-        Unrecognized categories raise ``ValidationError``; the milestone
-        engine's self-correction loop reprompts the LLM with the error.
-        Valid values: ``symptom_evidence`` / ``causal_evidence`` /
-        ``mitigation_evidence`` / ``solution_evidence``.
+        Unrecognized categories raise ``ValidationError``. The error is
+        not classified as retryable by ``LLMErrorHandler`` (it doesn't
+        match the auth / token-limit / 5xx / transient patterns), so it
+        fails the turn rather than retrying — the LLM picking the wrong
+        enum value won't succeed on a blind re-call without prompt
+        changes anyway. Valid values: ``symptom_evidence`` /
+        ``causal_evidence`` / ``mitigation_evidence`` /
+        ``solution_evidence``.
         """
         if isinstance(v, str):
             return EvidenceCategory(v)
