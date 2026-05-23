@@ -75,10 +75,13 @@ def validate_diagnostic_reasoning(
 
     # Rule 8 (Full-Context Reasoning) — counter to recency bias. Only fires
     # when the case has substantial prior context AND the response is long
-    # enough to plausibly reference it.
+    # enough to plausibly reference it. The length floor lives in
+    # _RULE8_MIN_RESPONSE_CHARS so tuning happens in one place; this call
+    # site relies on the helper's default rather than hard-coding the
+    # number again.
     lacks_prior_context = _has_sufficient_prior_context(
         case
-    ) and not _references_prior_context(agent_response, case, min_length=300)
+    ) and not _references_prior_context(agent_response, case)
 
     if not has_specific_evidence:
         violations.append(

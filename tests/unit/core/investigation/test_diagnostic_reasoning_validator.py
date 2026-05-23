@@ -1098,6 +1098,80 @@ class TestValidateDiagnosticReasoning:
             investigating_case, response, contains_suggestion=False
         )
         assert is_valid is True
+
+    @pytest.mark.unit
+    def test_rule8_call_site_uses_tuned_threshold_constant(self, investigating_case):
+        """End-to-end regression for the call-site wiring (2026-05-23):
+        ``validate_diagnostic_reasoning`` previously hard-coded
+        ``min_length=300`` at its call to ``_references_prior_context``,
+        bypassing the ``_RULE8_MIN_RESPONSE_CHARS`` constant entirely.
+        That meant the threshold tuning in the previous commit had no
+        production effect.
+
+        Pin the contract: when the case has substantial prior context
+        and the response is in the band that the new threshold protects
+        (>old 300, <new 600), Rule 8 must NOT fire. Without this test,
+        a future contributor could re-introduce the hard-coded 300 and
+        only the helper-level unit tests would catch it (since they pass
+        ``min_length`` explicitly)."""
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+        )
+        from datetime import datetime, UTC
+
+        # Give the case enough prior evidence to trip
+        # _has_sufficient_prior_context (3+ items). Use USER_DESCRIPTION
+        # so we don't have to wire fake UploadedFile rows (the source-
+        # invariant only requires source_file_id for non-USER_DESCRIPTION
+        # source types).
+        def _ev(i):
+            return Evidence(
+                evidence_id=f"ev_{'a' * 11}{i}",
+                summary=f"Prior evidence item {i}",
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                source_file_id=None,
+                collected_at=datetime.now(UTC),
+                collected_by="user_123",
+                collected_at_turn=1,
+                primary_purpose="test",
+            )
+
+        investigating_case.evidence = [_ev(0), _ev(1), _ev(2)]
+        investigating_case.current_turn = 10
+
+        # ~500 chars: focused fix recommendation. Contains a suggestion
+        # keyword ("try") so the validator does run the strict checks,
+        # plus enough specificity markers + causal idiom to pass the
+        # other checks — leaving Rule 8 as the only candidate violation.
+        response = (
+            "Try this kubectl patch to bound the in-memory cache: "
+            "`kubectl patch deployment api-server -n production -p '"
+            '{"spec":{"template":{"spec":{"containers":[{"name":"api-server",'
+            '"env":[{"name":"CACHE_TYPE","value":"redis"}]}]}}}}\''
+            "` at 14:30 UTC because the cache pre-warms to 341MB of the "
+            "384MB heap, causing OOMKilled crashes at the deployment of "
+            "version v2.14.0."
+        )
+        assert (
+            300 < len(response) < 600
+        ), f"test invariant: len={len(response)} must be in tuning band"
+
+        is_valid, violations = validate_diagnostic_reasoning(
+            investigating_case, response
+        )
+
+        # No Rule 8 violation in the result. Other violations (e.g. about
+        # specific-evidence categories) may or may not fire depending on
+        # the response — we assert only on the Rule 8 one to keep the
+        # test focused on the call-site wiring.
+        rule8_violations = [v for v in violations if "Rule 8" in v]
+        assert rule8_violations == [], (
+            "Rule 8 must not fire on a sub-600-char focused response after "
+            f"the threshold tuning. Violations seen: {violations}"
+        )
         assert violations == []
 
     @pytest.mark.unit
