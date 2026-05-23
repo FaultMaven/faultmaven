@@ -1256,6 +1256,85 @@ def _build_evidence_context(
         result += entry
         total_chars += len(entry)
 
+    # Tier D — pending uploads not yet promoted to Evidence.
+    #
+    # Without this, files uploaded after the first Evidence row exists
+    # become invisible to the LLM in the loops above (which enumerate
+    # only Evidence rows). The LLM then can't emit ``evidence_to_add``
+    # for the new file because it has no content to react to — the
+    # chicken-and-egg that surfaces as "I don't have direct access to
+    # the file contents". Same rendering as the INQUIRY-phase fallback
+    # at the top of this function; the INQUIRY path was already correct
+    # for the empty-Evidence case, this section generalizes it to the
+    # non-empty case.
+    #
+    # Architectural note (see commit message): the post-010 strict
+    # evidence model relies on LLM compliance with ``evidence_to_add``
+    # to keep UploadedFile and Evidence in sync. This fix patches the
+    # immediate symptom; if cross-provider compliance proves unreliable,
+    # the layer-3 fix is engine-side auto-promotion of UploadedFile to
+    # Evidence stubs.
+    if hasattr(case, "uploaded_files") and case.uploaded_files:
+        referenced_file_ids = {
+            str(ev.source_file_id)
+            for ev in case.evidence
+            if ev.source_file_id is not None
+        }
+        # Newest uploads first: on budget exhaustion the current-turn file
+        # (what the user is asking about) wins over older orphans.
+        orphan_files = sorted(
+            (
+                uf
+                for uf in case.uploaded_files
+                if uf.file_id is not None
+                and str(uf.file_id) not in referenced_file_ids
+                and uf.structural_index
+                and len(uf.structural_index) > 10
+            ),
+            key=lambda uf: (uf.uploaded_at_turn or 0, str(uf.file_id)),
+            reverse=True,
+        )
+        for uf in orphan_files:
+            file_extract, search_map, file_meta = _parse_extract(
+                uf.structural_index or ""
+            )
+            file_id_attr = f' file_id="{uf.file_id}"' if uf.file_id else ""
+            filename_attr = f' filename="{uf.filename}"' if uf.filename else ""
+            data_type_attr = f' data_type="{uf.data_type}"' if uf.data_type else ""
+            entry = (
+                f"  <uploaded_file{file_id_attr}{filename_attr}"
+                f'{data_type_attr} searchable="true">\n'
+            )
+            if file_extract.strip():
+                truncation_note = ""
+                if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
+                    remaining_chars = (
+                        len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
+                    )
+                    file_extract = file_extract[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
+                    truncation_note = (
+                        f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. "
+                        "Use search_file with the file_id above for specific lookups.]"
+                    )
+                entry += "    <file_extract>\n"
+                if uf.filename:
+                    entry += f"[Source: {uf.filename}]\n"
+                entry += file_extract
+                entry += truncation_note
+                entry += "\n    </file_extract>\n"
+            if search_map and search_map.strip():
+                entry += f"    <search_map>\n{search_map}\n    </search_map>\n"
+            if file_meta:
+                meta_lines = _format_file_meta(file_meta)
+                entry += f"    <file_meta>{meta_lines}</file_meta>\n"
+            entry += "  </uploaded_file>\n"
+
+            # Budget enforcement — drop oldest orphans first when exhausted.
+            if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
+                break
+            result += entry
+            total_chars += len(entry)
+
     result += "</evidence_collected>"
     return result
 
