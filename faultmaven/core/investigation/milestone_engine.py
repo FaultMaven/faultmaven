@@ -3571,6 +3571,27 @@ class MilestoneEngine:
             if self.da_model and self.da_provider:
                 generate_kwargs["model"] = self.da_model
 
+            # Tier 2 — apply STRUCTURED_OUTPUT_PROVIDER override on the
+            # tool-augmented path too. Tool-call iterations land Pydantic
+            # schemas back through schema_model.model_validate_json (see
+            # _parse_schema_tool_call), so the same routing rationale
+            # applies: force the LLM call onto a known-STRICT provider
+            # when the operator has configured one. The override is only
+            # applied when no da_model is set (DA gets first dibs).
+            if not (self.da_model and self.da_provider):
+                try:
+                    from faultmaven.config.settings import get_settings
+
+                    _settings = get_settings()
+                    _override_provider = _settings.llm.structured_output_provider
+                    if _override_provider is not None:
+                        generate_kwargs["provider_override"] = _override_provider.value
+                        _override_model = _settings.llm.get_structured_output_model()
+                        if _override_model:
+                            generate_kwargs["model"] = _override_model
+                except Exception:
+                    pass
+
             try:
                 response = await provider.generate(**generate_kwargs)
             except Exception as e:
@@ -4913,6 +4934,31 @@ class MilestoneEngine:
                 "temperature": 0.2,  # Lower temperature for structured output
                 "case_id": case.case_id if case is not None else None,
             }
+
+            # Tier 2 — route schema-bound calls to STRUCTURED_OUTPUT_PROVIDER
+            # when set, so operators running a weak-structured-output
+            # CHAT_PROVIDER can keep that provider for chat/synthesis but
+            # force schema-bound calls onto a known-STRICT provider.
+            # Companion to the capability-routing fix (Tier 1):
+            # capability detection only helps if the call also LANDS on the
+            # provider that has the capability.
+            try:
+                from faultmaven.config.settings import get_settings
+
+                _settings = get_settings()
+                _override_provider = _settings.llm.structured_output_provider
+                if _override_provider is not None:
+                    generate_params["provider_override"] = _override_provider.value
+                    # When override is set, also resolve the override
+                    # provider's preferred model so we don't accidentally
+                    # send CHAT_PROVIDER's model name to a different provider.
+                    _override_model = _settings.llm.get_structured_output_model()
+                    if _override_model:
+                        generate_params["model"] = _override_model
+            except Exception:
+                # Settings unavailable (rare; test setup) — proceed with
+                # the default routing rather than failing the turn.
+                pass
 
             logger.debug(
                 f"Structured output generation attempt with max_tokens={current_max_tokens}"

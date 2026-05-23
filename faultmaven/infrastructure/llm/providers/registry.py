@@ -642,6 +642,7 @@ class ProviderRegistry:
         max_tokens: int = 1000,
         temperature: float = 0.7,
         confidence_threshold: float = 0.8,
+        provider_override: Optional[str] = None,
         **kwargs,
     ) -> LLMResponse:
         """Route request through health-aware fallback chain.
@@ -657,6 +658,15 @@ class ProviderRegistry:
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             confidence_threshold: Minimum confidence threshold
+            provider_override: When set, route exclusively through this
+                provider (by name) instead of the CHAT_PROVIDER fallback
+                chain. Used by callers that need capability-specific
+                routing (e.g. structured-output calls forced through a
+                known-STRICT-capable provider via
+                ``STRUCTURED_OUTPUT_PROVIDER``). If the named provider is
+                not initialized in the registry (no API key configured),
+                falls back to the normal fallback chain so a misconfigured
+                override doesn't break the whole investigation.
             **kwargs: Additional parameters
 
         Returns:
@@ -680,8 +690,26 @@ class ProviderRegistry:
         # retry logic and must see the raw response to decide what to do.
         skip_confidence_check = bool(kwargs.get("tools"))
 
-        # Get health-aware routing order
-        routing_order = self._get_routing_order()
+        # Determine routing order. provider_override (when set AND that
+        # provider is initialized) bypasses the normal fallback chain so
+        # capability-specific calls land deterministically on the
+        # requested provider — no silent drift to CHAT_PROVIDER if the
+        # override target is healthy.
+        if provider_override and provider_override in self._providers:
+            routing_order = [provider_override]
+            self.logger.info(
+                f"🎯 Provider override: routing this call exclusively through "
+                f"'{provider_override}' (no fallback chain)"
+            )
+        else:
+            if provider_override:
+                self.logger.warning(
+                    f"⚠️ Provider override '{provider_override}' requested but "
+                    f"not initialized (no API key?) — falling back to normal "
+                    f"routing chain"
+                )
+            # Get health-aware routing order
+            routing_order = self._get_routing_order()
 
         if not routing_order:
             # All providers unhealthy — force retry primary as last resort
