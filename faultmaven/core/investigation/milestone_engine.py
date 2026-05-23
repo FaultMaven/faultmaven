@@ -2880,6 +2880,15 @@ class MilestoneEngine:
                     "Attempting self-correction retry."
                 )
 
+                # Observability: capture the LLM's original (pre-retry) response
+                # text so validator-tuning investigations can pinpoint which
+                # response triggered which check. Without this, only the check
+                # *name* is queryable from the DB — the offending text is gone
+                # the moment the retry / fallback overwrites response_obj.
+                metadata["self_correction_rejected_original_response"] = (
+                    response_obj.agent_response
+                )
+
                 # Self-correction: retry once with violation feedback.
                 # Include the original response so the retry LLM has the search
                 # data found during the DA tool loop (which isn't re-run here).
@@ -2938,6 +2947,13 @@ class MilestoneEngine:
                         logger.warning(
                             f"Self-correction retry also failed: {retry_violations}. "
                             "Substituting honest fallback message; keeping state_updates."
+                        )
+                        # Companion observability: capture the retry's
+                        # rejected text too. If the retry hit a *different*
+                        # check than the original, that's a useful signal
+                        # for tuning the corrective prompt itself.
+                        metadata["self_correction_rejected_retry_response"] = (
+                            corrected_response.agent_response
                         )
                         response_obj = corrected_response
                         response_obj.agent_response = (
@@ -3357,6 +3373,29 @@ class MilestoneEngine:
                     ),
                     "diagnostic_reasoning_violations": metadata.get(
                         "diagnostic_reasoning_violations", []
+                    ),
+                    # Rejected response text is only present when self-
+                    # correction fired. Absent on clean turns (validator
+                    # passed first time) so the field doesn't pollute
+                    # otherwise-quiet rows. Use ``.get`` with no default
+                    # and a conditional include to preserve that contract.
+                    **(
+                        {
+                            "self_correction_rejected_original_response": metadata[
+                                "self_correction_rejected_original_response"
+                            ]
+                        }
+                        if "self_correction_rejected_original_response" in metadata
+                        else {}
+                    ),
+                    **(
+                        {
+                            "self_correction_rejected_retry_response": metadata[
+                                "self_correction_rejected_retry_response"
+                            ]
+                        }
+                        if "self_correction_rejected_retry_response" in metadata
+                        else {}
                     ),
                     "timestamp": datetime.now(UTC).isoformat(),
                 },

@@ -301,12 +301,43 @@ class TestHasCausalReasoning:
             "this explains why",
             "this is why",
             "the reason is",
+            # Additions (2026-05-23) — conservative idioms that widen
+            # coverage of semantically-causal English without inviting
+            # trivial false-accept on negation. The "false-accept
+            # regression guards" below pin the bounds.
+            "due to",
+            "caused by",
+            "the root cause of",
+            "explains the",
+            "resulting from",
         ],
     )
     def test_detects_each_causal_indicator(self, indicator):
         """Each causal indicator should be detected."""
         response = f"The memory leak {indicator} the connection pool exhaustion."
         assert _has_causal_reasoning(response) is True
+
+    @pytest.mark.unit
+    def test_root_cause_is_unknown_not_accepted_as_causal(self):
+        """Regression guard: do NOT accept "the root cause is unknown" /
+        "the root cause is something we need to investigate" as causal
+        reasoning. The validator keyword list intentionally omits the
+        bare phrase "the root cause is" because it trivially collocates
+        with negation/uncertainty markers. Without this guard, the
+        widening done above could silently regress into false-accept.
+
+        If a future contributor adds "the root cause is" to the indicator
+        list, this test catches the resulting false-positive."""
+        responses_that_should_NOT_pass = [
+            "We have multiple symptoms but the root cause is unknown.",
+            "The root cause is something we need to investigate.",
+            "The root cause is still unclear at this point.",
+            "Honestly, the root cause is anyone's guess right now.",
+        ]
+        for response in responses_that_should_NOT_pass:
+            assert (
+                _has_causal_reasoning(response) is False
+            ), f"non-causal response wrongly classified as causal: {response!r}"
 
     @pytest.mark.unit
     def test_case_insensitive_detection(self):
@@ -363,9 +394,40 @@ class TestIsChecklistEngineering:
         assert _is_checklist_engineering(response) is True
 
     @pytest.mark.unit
-    def test_numbered_list_with_three_items(self):
-        """Numbered list with 3+ items should be detected."""
+    def test_numbered_list_with_three_items_NOT_detected(self):
+        """Regression for 2026-05-23 threshold tuning: a 3-item numbered
+        list is NOT checklist engineering on its own. The previous
+        threshold (3+) over-fired on legitimate diagnostic enumerations
+        like "1. Pod A OOMKilled. 2. Pod B OOMKilled. 3. Pod C OOMKilled."
+        Threshold now matches the bullet-list threshold (5+). Explicit
+        intent phrases ("try these N things", "try the following:") still
+        fire regardless of list length."""
         response = "1. Check the logs\n 2. Restart the service\n 3. Verify the fix"
+        assert _is_checklist_engineering(response) is False
+
+    @pytest.mark.unit
+    def test_numbered_list_with_five_items_DETECTED(self):
+        """Floor regression: a 5+ item action list with no causal
+        language is still checklist engineering. Without this guard, the
+        threshold tuning above could be silently widened further and
+        the validator would stop catching real checklist behavior."""
+        response = (
+            "Here is what to do:\n"
+            "1. Check the logs\n"
+            "2. Restart the service\n"
+            "3. Verify the fix\n"
+            "4. Re-run the integration test\n"
+            "5. Deploy"
+        )
+        assert _is_checklist_engineering(response) is True
+
+    @pytest.mark.unit
+    def test_explicit_phrase_fires_even_with_few_items(self):
+        """Belt-and-suspenders: ``try these 10 things`` fires the
+        explicit-phrase pattern regardless of how few or many list items
+        follow. Tightening the numbered-list threshold did not weaken
+        the explicit-intent detection."""
+        response = "try these 10 things to fix it: 1. foo 2. bar"
         assert _is_checklist_engineering(response) is True
 
     @pytest.mark.unit
