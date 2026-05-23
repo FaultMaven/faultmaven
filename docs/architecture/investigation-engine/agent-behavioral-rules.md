@@ -15,11 +15,12 @@ This document defines the behavioral policy for the FaultMaven agent at the prom
 
 ## Design Principles
 
-Every rule in this document must pass three tests:
+Every rule in this document must pass four tests:
 
 1. **Prescribed behavior** — what the agent must do (or must not do), stated concretely
 2. **Mechanical enforceability** — the rule constrains output structure, vocabulary, or routing
 3. **Implementable prompt injection** — the exact text that goes into the prompt can be written unambiguously
+4. **Prescriptive, not corrective** — a rule tells the LLM what to do via prompt injection *before* generation. Mechanisms that observe LLM output *after* generation and try to police it (regex validators, semantic checks, schema coercion, etc.) are a separate architectural category. They go in the [Post-Generation Validators](#post-generation-validators-separate-from-behavioral-rules) section, not here. The distinction matters because prompt-layer rules and post-hoc validators have different failure modes and different remediation paths — conflating them obscures both.
 
 Rules that fail this test belong elsewhere:
 
@@ -41,7 +42,7 @@ Rules that fail this test belong elsewhere:
 | 5 | [Work With What You Get](#rule-5-work-with-what-you-get) | INVESTIGATING | INVESTIGATION_BASE | Behavior table + one-ask-per-turn principle |
 | 6 | [Knowledge First](#rule-6-knowledge-first) | INQUIRY + INVESTIGATING + DA | Three injection points | Structural: KB lookup as default over independent diagnosis |
 | 7 | [Signal Extraction](#rule-7-signal-extraction) | Substantive turns | INQUIRY + INVESTIGATION_BASE | Internal scaffold: operational content identified before response |
-| 8 | [Full-Context Reasoning](#rule-8-full-context-reasoning) | Diagnostic turns | INVESTIGATION_BASE | Validator: response references prior-case context when drawing conclusions |
+| 8 | [Full-Context Reasoning](#rule-8-full-context-reasoning) | Diagnostic turns | INVESTIGATION_BASE | Prompt-layer prescription: response must reference prior-case context when drawing conclusions |
 
 **Rules 1–3, 6** govern **what the agent does** (effectiveness).
 **Rules 4–5** govern **how the agent handles adversity** (resilience).
@@ -121,23 +122,9 @@ The three-step framework is an internal reasoning scaffold, not an output format
 
 **Why this is the strongest rule**: The internal reasoning scaffold forces the LLM to anchor every claim in evidence before reaching a conclusion, making hallucination structurally visible even when the output is conversational prose.
 
-**Mechanical enforcement via Diagnostic Reasoning Validator**: Rule 2 is enforced post-generation by `diagnostic_reasoning_validator.py`, which runs five signal checks on LLM responses. The specific strings and categories listed below are **illustrative examples**, not a prescriptive contract — the validator's regex lists and heuristics evolve over time as calibration improves. Consult `diagnostic_reasoning_validator.py` directly for the authoritative current behavior.
-
-1. **Evidence grounding** — detects conversational references to evidence (example markers: "the log shows", "based on", "looking at", "I can see", "evidence shows", and similar). The goal is to detect grounded responses whether they use structured section headers or natural prose.
-2. **Causal reasoning** — detects language linking cause to effect (example markers: "causes", "leads to", "because", "therefore", "this suggests"). Purpose: verify conclusions explain *why*, not just *what*.
-3. **Specific evidence references** — checks that at least 2 of 4 signal categories are present: timestamps, quantitative measures, specific identifiers, and error text. What qualifies as each signal is a heuristic the validator tunes (e.g., the ID check accepts hashes, version strings, and deployment labels; the timestamp check accepts HH:MM, YYYY-MM-DD, and relative forms). Examples in the code show the shape, not the exhaustive list.
-4. **Anti-patterns** — flags checklist engineering (many bullets of "try these N things") and generic best practices ("implement monitoring", "follow best practices") that are disconnected from case evidence.
-5. **Case specificity** — a short response (<300 chars) that neither echoes a keyword from the case's symptom statement nor cites the case ID is flagged as generic. The length gate exists so full-length responses that synthesize case detail are not falsely flagged.
-
-When violations are detected, a self-correction retry feeds the specific violations back to the LLM for one rewrite attempt. See [Error Handling §3.2](./error-handling-and-recovery.md#32-reasoning-validation-with-self-correction).
-
 **Evidence referencing**: Each evidence item in the LLM context carries a `label` attribute (filename, description, or data type). The agent MUST reference evidence by its label in responses (e.g., "in the nginx error log"), never by internal `ev_` IDs which are meaningless to users. IDs are only for internal schema fields (`evidence_analyzed`, `milestone_justifications`).
 
-**DA turn exception**: For Directed Analysis turns answering factual lookups, causal reasoning is downgraded to a warning when it is the sole violation (factual answers like "these 3 usernames attempted login" are not causal chains).
-
-**INQUIRY bypass**: The validator short-circuits entirely when `case.status == INQUIRY`. Pre-investigation turns answer user questions and gather context; they are not expected to produce observation-analysis-conclusion reasoning. This matches Rule 2's scope (INVESTIGATING) at the enforcement layer.
-
-**Graduated validator enforcement**: The forced structure applies when the agent makes diagnostic claims, proposes actions, or advances hypotheses. The validator should not trigger self-correction on responses that are confirmations, clarifications of previous analysis, or acknowledgments of user input. This graduation is implemented in the validator, not the prompt — the LLM always aims for the structure, but the validator tolerates its absence in non-diagnostic responses.
+**Note on enforcement layers**: Rule 2 is a *prompt-layer* prescription — the prompt injection above tells the LLM what to do, and capable LLMs comply. A separate `diagnostic_reasoning_validator.py` runs *post-generation* and applies heuristic checks to the rendered response; it is documented in the [Post-Generation Validators](#post-generation-validators-separate-from-behavioral-rules) section, not here, because it is a distinct architectural layer with different trade-offs (brittle to LLM evolution, phase-blind by default, whack-a-mole tuning). Whether that validator should exist as a blocking mechanism is an open architectural question — see the new section for the discussion.
 
 ---
 
@@ -346,7 +333,9 @@ and what you are setting aside as noise.
 
 **Prescribed behavior**: On substantive turns, the agent's first sentence addresses the operational content directly. Evidence engagement is selective (what matters for active hypotheses) rather than comprehensive (what's there).
 
-**Enforcement**: Internal scaffold — the thinking is structured, the output is natural prose. Validator check: when the user asks a direct question, the first sentence answers it rather than summarizing the question back.
+**Enforcement (prompt-layer)**: Internal scaffold — the thinking is structured, the output is natural prose. The prompt above is the entire enforcement mechanism; capable LLMs comply.
+
+**Observability (separate from the rule)**: A fitness signal — "when the user asks a direct question, the first sentence answers it rather than summarizing the question back" — could be measured post-generation as a quality indicator. This is *not* part of the rule and is not currently wired up as a blocking check. If implemented, it would belong in the [Post-Generation Validators](#post-generation-validators-separate-from-behavioral-rules) section, not here.
 
 **Why it matters**: Mirror-responses waste turns and erode user trust — users hearing their own words paraphrased read it as the agent stalling. Evidence paraphrasing wastes context budget on content the user already uploaded and pushes the decision-relevant signal further from the response.
 
@@ -377,7 +366,9 @@ explicitly. The latest turn is not the only input.
 
 **Prescribed behavior**: On diagnostic turns, the response references prior-case context at least once when such context exists — an earlier piece of evidence, a user-stated constraint, a refuted hypothesis, or a journal entry. Recency is not authority.
 
-**Enforcement**: Validator check for diagnostic turns — response must reference prior-case content when it is present in context. The investigation journal and hypothesis state provide measurable reference targets.
+**Enforcement (prompt-layer)**: The prompt above is the entire enforcement mechanism. The instruction to "consider the full investigation state" and to "name the connection explicitly" is what shapes the LLM's behavior; capable LLMs comply when the context block actually contains prior evidence, refuted hypotheses, or journal entries to refer to.
+
+**Observability (separate from the rule)**: A post-generation check — "diagnostic responses reference prior-case content when such content exists in context" — could be measured as a fitness signal. The investigation journal and hypothesis state provide measurable reference targets. This is *not* part of the rule and is not currently wired up as a blocking check. If implemented, it would belong in the [Post-Generation Validators](#post-generation-validators-separate-from-behavioral-rules) section, not here.
 
 **Why it matters**: Recency bias is the LLM's strongest default failure in multi-turn conversations. Without counter-pressure, the agent re-proposes refuted hypotheses, re-asks for data already provided, and re-opens closed questions. Each of these wastes a turn and signals to the user that the agent isn't tracking the investigation.
 
@@ -519,9 +510,66 @@ See [Orchestration Capabilities §5](./orchestration-capabilities.md#5-orchestra
 
 ---
 
+## Post-Generation Validators (Separate from Behavioral Rules)
+
+This section documents an existing post-generation validator (`diagnostic_reasoning_validator.py`) that runs *after* the LLM produces a response, applies heuristic checks, and — under some configurations — substitutes the response with a fallback message. It is documented here, not under any Rule, because it is a distinct architectural layer with distinct failure modes. **Whether it should continue to exist as a blocking mechanism is an open architectural question.** The honest framing below is meant to support that decision rather than retroactively justify the validator.
+
+### What the validator does
+
+`diagnostic_reasoning_validator.py` runs five regex/keyword-based checks on the rendered `agent_response` string after generation:
+
+1. **Evidence grounding** — does the response cite specific evidence labels?
+2. **Causal reasoning** — does it use "because" / "due to" / "caused by" language linking observations to conclusions?
+3. **Specific evidence** — does the response reference at least 2 of 4 evidence categories (file/log, metric, timestamp, entity)?
+4. **Anti-patterns** — does the response contain checklist-engineering or generic-best-practice phrasing?
+5. **Case specificity** — does the response use the specific entities, services, or symptoms from the case?
+
+On failure of one or more checks, the validator can substitute the LLM output with `_SELF_CORRECTION_FALLBACK_MESSAGE` and/or trigger a self-correction retry.
+
+### Why this is NOT enforcement of Rule 2
+
+Rule 2 (Evidence-Grounded) is a **prompt-layer prescription**: the prompt tells the LLM what to do, and capable LLMs comply. The validator is a **post-hoc heuristic match** on the rendered string — it has no access to the LLM's reasoning, no knowledge of whether the current turn is a diagnostic turn (vs. acknowledgment, clarification, or knowledge query), and no way to distinguish "the LLM correctly chose not to apply Rule 2 here" from "the LLM violated Rule 2."
+
+Conflating the two has produced real failure modes in the codebase:
+
+- **Phase-blindness**: the validator fires on non-DIAGNOSIS responses (e.g., INQUIRY clarifications, knowledge-query answers, terminal Q&A) where Rule 2 does not apply, then substitutes the response with a fallback message that *looks like* Rule 2 enforcement to downstream readers. (Surfaced by Run 20A.)
+- **Whack-a-mole tuning**: each new LLM model produces new surface phrasings; the regex set gets extended; the regex set drifts further from the actual rule intent.
+- **Brittle to LLM evolution**: capable models that fully comply with Rule 2 still fail the heuristic match when they use synonyms ("the data shows" instead of "because") or different evidence-citation styles.
+
+### Architectural cost
+
+The validator has accumulated a tuning history (commits `dcf2448b`, `ead3a507`, `3b26855e`, `456dceb1`, `71f4605e`, `3e94214e`, `128eaba5`, `ebeada64`) where each fix targets a specific failure mode of the previous fix. This is the signature of a layer that is solving the wrong problem — when a quality control mechanism requires per-LLM-version maintenance, the locus of quality control is in the wrong place.
+
+The validator also creates an observability problem: when a fallback substitution fires, the user sees the fallback message rather than the LLM output, but the trace/log captures only the substitution event — making it harder to retrospectively assess whether the original LLM response was actually bad or whether the validator misfired.
+
+### Why it might still exist
+
+There are two defensible roles for a post-generation check, and they are different from "enforcement":
+
+1. **Observability / fitness signal**: log a per-turn quality score without substituting the response. This lets the team see Rule 2 compliance trends over time, by model, by stage — without imposing a brittle gate that frequently overrides better LLM judgment.
+2. **Last-resort safety net for genuinely uncapable models**: if a deployment routes Rule-2-critical turns to a model that demonstrably cannot follow the prompt (e.g., a tiny local model used for cost reasons), a phase-aware validator with a fallback substitution could be a deliberate, opt-in safety net — not the default.
+
+Neither role justifies the current implementation, which runs by default on all turns and substitutes on failure.
+
+### Open architectural question
+
+The remaining design decisions are:
+
+- **Should the validator be removed entirely**, and Rule 2 compliance be addressed solely at the prompt and model-selection layers?
+- **Should it be downgraded to observability-only** (log score, never substitute), with substitution moved behind an opt-in flag for known-uncapable models?
+- **Should it be made phase-aware** so it never fires outside DIAGNOSIS turns?
+
+These are not "fix the validator" questions. They are "where in this system does quality control belong, and what is it controlling for?" questions. This document deliberately does not answer them — the answer requires a decision about deployment posture (cloud vs. self-hosted, capable models vs. local models, observability tolerance vs. blocking-gate tolerance) that is not a behavioral-rules concern.
+
+The investigation lifecycle spec ([investigation-lifecycle-logic.md §11.x](./investigation-lifecycle-logic.md)) currently calls for "post-generation validator enforcement" of Rule 2. That language predates this disentanglement and should be revisited as part of resolving the question above.
+
+---
+
 ## What Is NOT a Behavioral Rule
 
 **Stage-specific prompt routing** is system architecture, not an LLM instruction. The Python logic in `get_prompt_for_case()` selects which template to serve based on investigation stage (DIAGNOSIS, MITIGATION, TREATMENT). Telling the LLM "you receive different prompts based on stage" is meta-information it cannot act on — the stage-specific prompt *is* the enforcement. This routing is documented in [Prompt Templates](./prompt-templates.md) and [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md).
+
+**Post-generation validators** (regex checks, keyword matchers, semantic scoring on the rendered response, schema coercion) are not behavioral rules. A behavioral rule is a prescription injected into the prompt *before* generation; a post-generation validator is a heuristic check applied *after* generation. They have different failure modes (prompt rules fail by being ambiguous or ignored; validators fail by being brittle, phase-blind, or whack-a-mole-tuned) and different remediation paths. The existing `diagnostic_reasoning_validator.py` is documented in the [Post-Generation Validators](#post-generation-validators-separate-from-behavioral-rules) section above, including the open question of whether it should remain a blocking mechanism.
 
 **Goal direction and progress drive** are not prompt-layer concerns. The agent's job at the prompt layer is to follow these rules and read inputs well. Stall detection, pending milestone surfacing, and structured handoff when investigation exhausts its angles are handled by the progress transparency system at the orchestration layer — see [Progress Transparency](./progress-transparency.md) and `faultmaven/core/investigation/progress_monitor.py`.
 
