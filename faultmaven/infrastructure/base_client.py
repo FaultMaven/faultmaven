@@ -201,7 +201,9 @@ class BaseExternalClient(ABC):
         Raises:
             CircuitBreakerError: If circuit breaker is open
             TimeoutError: If operation times out
-            RuntimeError: If external call fails after retries
+            Original exception raised by ``call_func`` on final failure
+            (e.g. ``LLMException``). Re-raised unwrapped so callers retain
+            access to typed metadata like ``status_code`` and ``retryable``.
 
         Example:
             >>> async def redis_get(key: str) -> str:
@@ -505,9 +507,7 @@ class BaseExternalClient(ABC):
                             },
                         )
 
-                        raise RuntimeError(
-                            f"External call to {self.service_name}.{operation_name} failed after {retries + 1} attempts: {str(call_error)}"
-                        ) from call_error
+                        raise
 
         # Should not reach here, but just in case
         raise RuntimeError(
@@ -782,9 +782,7 @@ class BaseExternalClient(ABC):
                             },
                         )
 
-                        raise RuntimeError(
-                            f"External call to {self.service_name}.{operation_name} failed after {retries + 1} attempts: {str(call_error)}"
-                        ) from call_error
+                        raise
 
         # Should not reach here, but just in case
         raise RuntimeError(

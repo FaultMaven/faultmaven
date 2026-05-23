@@ -43,7 +43,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
 )
-from faultmaven.core.investigation.llm_error_handler import ErrorAction, LLMErrorHandler
+from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler
 from faultmaven.core.investigation.progress_monitor import (
     ProgressMonitor,
 )

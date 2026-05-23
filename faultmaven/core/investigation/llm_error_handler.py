@@ -8,11 +8,7 @@ Design Reference:
 
 Usage:
     handler = LLMErrorHandler()
-    result = await handler.with_retry(
-        llm_call_coroutine,
-        case=case,
-        on_failure=fallback_action
-    )
+    result, error = await handler.with_retry(llm_call_coroutine)
 """
 
 import asyncio
@@ -20,6 +16,8 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
+
+from faultmaven.exceptions import LLMException
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +28,6 @@ class ErrorAction(str, Enum):
     """Actions to take after error handling."""
 
     RETRY = "retry"
-    USE_FALLBACK_PROMPT = "use_fallback_prompt"
     COMPRESS_MEMORY = "compress_memory"
     ESCALATE = "escalate"
     FAIL = "fail"
@@ -45,18 +42,26 @@ class RetryConfig:
     max_delay_seconds: float = 30.0
     exponential_base: float = 2.0
 
-    # Error message patterns that indicate retryable errors
+    # Error message patterns that indicate retryable errors. Used as a fallback
+    # when the exception is not an LLMException (which carries authoritative
+    # retryable/status_code metadata). All 5xx codes are listed explicitly
+    # because partial matching ("50") would catch unrelated numbers.
     retryable_patterns: Tuple[str, ...] = (
         "rate limit",
         "over capacity",
+        "500",
+        "502",
         "503",
+        "504",
         "429",
+        "bad gateway",
+        "gateway timeout",
         "timeout",
         "connection",
         "temporary",
         "overloaded",
-        "truncated",  # Added for MAX_TOKENS truncation detection
-        "finishreason=max_tokens",  # Gemini-specific truncation
+        "truncated",
+        "finishreason=max_tokens",
     )
 
 
@@ -68,7 +73,6 @@ class ErrorResult:
     message: str
     error_code: Optional[str] = None
     retry_count: int = 0
-    should_use_fallback: bool = False
 
 
 class LLMErrorHandler:
@@ -87,7 +91,20 @@ class LLMErrorHandler:
         self._error_counts: dict[str, int] = {}
 
     def is_retryable_error(self, error: Exception) -> bool:
-        """Check if error is retryable based on error message patterns."""
+        """Check if error is retryable.
+
+        Prefers the authoritative `LLMException.retryable` flag (set from
+        `status_code` per the 4xx/5xx contract in `faultmaven.exceptions`),
+        walking `__cause__` for cases where a typed exception is the cause
+        of a generic wrapper. Falls back to string-pattern matching for
+        non-LLM errors.
+        """
+        cursor: Optional[BaseException] = error
+        while cursor is not None:
+            if isinstance(cursor, LLMException):
+                return cursor.retryable
+            cursor = cursor.__cause__
+
         error_str = str(error).lower()
         return any(pattern in error_str for pattern in self.config.retryable_patterns)
 
@@ -179,7 +196,6 @@ class LLMErrorHandler:
                 action=ErrorAction.COMPRESS_MEMORY,
                 message="Context too large. Compressing conversation history...",
                 error_code="TOKEN_LIMIT",
-                should_use_fallback=True,
             )
 
         # Check for retryable errors
@@ -204,25 +220,14 @@ class LLMErrorHandler:
                 retry_count=retry_count + 1,
             )
 
-        # Unknown error - try fallback first, then fail
-        # Log full error details for debugging
+        # Unknown error — fail fast and surface details for diagnostics.
         logger.error(
             f"Unknown LLM error (retry {retry_count}): {type(error).__name__}: {str(error)}",
             exc_info=True,
         )
 
-        # Include error details in user-facing message for better diagnostics
         error_preview = str(error)[:200]
         error_type = type(error).__name__
-
-        if retry_count == 0:
-            return ErrorResult(
-                action=ErrorAction.USE_FALLBACK_PROMPT,
-                message=f"Unexpected error from LLM provider ({error_type}): {error_preview}. Trying simplified prompt...",
-                error_code="UNKNOWN_ERROR",
-                should_use_fallback=True,
-                retry_count=1,
-            )
 
         return ErrorResult(
             action=ErrorAction.FAIL,
@@ -234,14 +239,12 @@ class LLMErrorHandler:
     async def with_retry(
         self,
         operation: Callable[[], Awaitable[T]],
-        on_fallback: Optional[Callable[[], Awaitable[T]]] = None,
     ) -> Tuple[Optional[T], Optional[ErrorResult]]:
         """
-        Execute operation with automatic retry and fallback.
+        Execute operation with automatic retry on transient errors.
 
         Args:
             operation: Async operation to execute
-            on_fallback: Optional fallback operation if main fails
 
         Returns:
             Tuple of (result, error_result) where result is None if all attempts failed
@@ -260,19 +263,6 @@ class LLMErrorHandler:
                 if error_result.action == ErrorAction.RETRY:
                     retry_count = error_result.retry_count
                     continue
-
-                elif (
-                    error_result.action == ErrorAction.USE_FALLBACK_PROMPT
-                    and on_fallback
-                ):
-                    logger.info("Attempting fallback operation...")
-                    try:
-                        result = await on_fallback()
-                        return result, error_result
-                    except Exception as fallback_error:
-                        logger.warning(f"Fallback also failed: {fallback_error}")
-                        retry_count += 1
-                        continue
 
                 else:
                     # Non-retryable error
