@@ -382,7 +382,16 @@ def _lacks_case_specificity(response: str, case: Case) -> bool:
 _RULE8_MIN_EVIDENCE_ITEMS: int = 3
 _RULE8_MIN_REFUTED_HYPOTHESES: int = 2
 _RULE8_MIN_JOURNAL_ENTRIES: int = 2
-_RULE8_MIN_RESPONSE_CHARS: int = 300
+# Response-length minimum for the Rule 8 prior-context check. Raised
+# from 300 → 600 (2026-05-23) because a focused 300-char Treatment-
+# stage response ("apply this kubectl patch — CACHE_TYPE=redis,
+# CACHE_MAX_ENTRIES=0") doesn't naturally need to recap prior context,
+# and the previous threshold over-fired on those responses. Speculative
+# — the right shape may turn out to be stage-aware (Treatment exempt)
+# rather than a global threshold; this is the minimum-change first cut.
+# Re-tune if a re-run with the new self_correction_rejected_*_response
+# metadata shows Rule 8 still firing on focused fix-shaped responses.
+_RULE8_MIN_RESPONSE_CHARS: int = 600
 _RULE8_HYPOTHESIS_KEYWORD_MATCH: int = 2  # of keywords from the statement
 
 

@@ -901,7 +901,10 @@ class TestReferencesPriorContext:
             current_turn=5,
             evidence=[_stub_evidence(collected_at_turn=5, filename="fresh.log")],
         )
-        response = "Looking at fresh.log, I see the pattern. " + "x " * 200
+        # Padding sized to clear the Rule 8 length threshold (raised
+        # 300 → 600 chars on 2026-05-23) so the response is long enough
+        # to be subject to the prior-context check rather than exempted.
+        response = "Looking at fresh.log, I see the pattern. " + "x " * 350
         assert _references_prior_context(response, case) is False
 
     @pytest.mark.unit
@@ -926,12 +929,88 @@ class TestReferencesPriorContext:
             current_turn=5,
             evidence=[_stub_evidence(collected_at_turn=1, filename="alpha.log")],
         )
-        # Response is long and discusses something unrelated to the prior evidence
+        # Response is long (cleared the Rule 8 length threshold — raised
+        # 300 → 600 chars on 2026-05-23) and discusses something
+        # unrelated to the prior evidence.
         response = (
             "The current issue appears to be in the memory allocation pattern. "
-            "Nothing references the earlier investigation trail. " + "x " * 200
+            "Nothing references the earlier investigation trail. " + "x " * 350
         )
         assert _references_prior_context(response, case) is False
+
+    @pytest.mark.unit
+    def test_focused_treatment_response_under_new_threshold_exempt(self):
+        """2026-05-23 Rule 8 threshold tuning (300 → 600 chars).
+
+        A focused Treatment-stage response that proposes a specific fix
+        ("apply this kubectl patch — set CACHE_TYPE=redis and
+        CACHE_MAX_ENTRIES=0") doesn't naturally need to recap prior
+        case history. The previous 300-char threshold over-fired on
+        these focused responses; the new 600-char floor exempts them
+        while still catching long generic responses that ignore
+        case context.
+
+        This test pins the new threshold's intent: a ~500-char focused
+        Treatment response is exempt. The companion test below pins
+        the upper end: a >600-char response that still ignores prior
+        context is correctly flagged.
+
+        Note: this tuning is the most speculative of the three made in
+        this PR. If a re-run with the new
+        self_correction_rejected_*_response metadata shows Rule 8
+        still over-firing on focused responses, the right next step is
+        a stage-aware exemption (Treatment-stage skip) rather than
+        further widening this global threshold.
+        """
+        case = _stub_case(
+            current_turn=10,
+            evidence=[_stub_evidence(collected_at_turn=1, filename="symptoms.log")],
+        )
+        # ~500 chars — focused fix recommendation with no prior-context
+        # references. Pre-fix: this was flagged. Post-fix: exempt.
+        treatment_response = (
+            "Apply this kubectl patch to bound the in-memory cache: "
+            "`kubectl patch deployment api-server -n production -p '"
+            '{"spec":{"template":{"spec":{"containers":[{"name":"api-server",'
+            '"env":[{"name":"CACHE_TYPE","value":"redis"},'
+            '{"name":"CACHE_MAX_ENTRIES","value":"0"}]}]}}}}\'`. '
+            "This switches the cache to the external Redis instance and "
+            "disables in-process bounded growth."
+        )
+        # Sanity: response is in the band that the new threshold protects.
+        assert 300 < len(treatment_response) < 600, (
+            f"test invariant: response length {len(treatment_response)} "
+            "must be between old (300) and new (600) thresholds"
+        )
+        assert (
+            _references_prior_context(treatment_response, case, min_length=600) is True
+        ), "focused Treatment response under new threshold must be exempt"
+
+    @pytest.mark.unit
+    def test_long_response_still_flagged_when_ignoring_prior_context(self):
+        """Ceiling regression for the threshold tuning: a long (>600
+        char) response that nevertheless ignores prior case context
+        is still correctly flagged. The threshold tuning is meant to
+        spare focused fix recommendations, not to silently weaken the
+        check for genuinely recency-biased long responses."""
+        case = _stub_case(
+            current_turn=10,
+            evidence=[_stub_evidence(collected_at_turn=1, filename="alpha.log")],
+        )
+        # >600 chars, no reference to alpha.log or any prior context
+        long_unrelated = (
+            "The current issue appears to be a memory allocation pattern "
+            "that I'd like to dig into. There are several angles worth "
+            "exploring here, including the GC tuning and the heap sizing. "
+            "I'd want to look at the JVM flags first, then trace through "
+            "the allocation hotspots. Once we have that, the next step "
+            "would be to correlate with the load test data and confirm "
+            "the hypothesis. " + "x " * 200
+        )
+        assert len(long_unrelated) >= 600
+        assert (
+            _references_prior_context(long_unrelated, case, min_length=600) is False
+        ), "long response ignoring prior context must still be flagged"
 
 
 # ============================================================
