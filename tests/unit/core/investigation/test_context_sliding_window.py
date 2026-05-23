@@ -535,6 +535,194 @@ class TestTierC:
 
 
 # ============================================================
+# Tier D — orphan uploads (uploaded_files not yet promoted to Evidence)
+# ============================================================
+
+
+class TestTierDOrphanUploads:
+    """Tier D surfaces uploaded files that don't have an Evidence row yet.
+
+    Regression: before this fix, ``_build_evidence_context`` only surfaced
+    file content via the Evidence list. Once at least one Evidence row
+    existed, the function took the non-empty-evidence path and ignored
+    any pending uploads — files uploaded in later turns became invisible
+    until something else created Evidence for them. The LLM then could
+    not emit ``evidence_to_add`` for the pending file (no content to
+    react to), producing the user-visible "I don't have direct access
+    to the file contents" symptom.
+    """
+
+    _PENDING_INDEX = (
+        '{"v":1,"file_extract":"PENDING: deployment.yaml shows JAVA_OPTS=-Xmx384m",'
+        '"search_map":"[search: heap] 3 matches",'
+        '"file_meta":{"line_count":42,"top_error":null}}'
+    )
+
+    def _pending_file(
+        self,
+        file_id: str = "file_aaaaaaaa0001",
+        filename: str = "deployment.yaml",
+        uploaded_at_turn: int = 7,
+        structural_index: str | None = None,
+    ) -> UploadedFile:
+        return UploadedFile(
+            file_id=file_id,
+            filename=filename,
+            size_bytes=1353,
+            content_type="text/plain",
+            uploaded_at_turn=uploaded_at_turn,
+            uploaded_at=datetime.now(UTC),
+            uploaded_by="user_123",
+            data_type="text",
+            structural_index=(
+                structural_index
+                if structural_index is not None
+                else self._PENDING_INDEX
+            ),
+        )
+
+    def test_pending_upload_surfaces_when_evidence_exists(self):
+        """Existing Evidence + a pending UploadedFile not referenced by any
+        Evidence row → context contains the pending file's <uploaded_file>
+        block so the LLM can see its content and create Evidence from it."""
+        ev = _make_evidence(
+            source_file_id="file_aabbccdd1122",
+            summary="Earlier file-backed evidence",
+            extract="Earlier file's structural index payload",
+        )
+        case = _make_case_with_evidence([ev])
+        case.uploaded_files.append(self._pending_file())
+
+        result = _build_evidence_context(case)
+
+        assert "<uploaded_file" in result
+        assert 'file_id="file_aaaaaaaa0001"' in result
+        assert "PENDING: deployment.yaml shows JAVA_OPTS" in result
+        assert "[Source: deployment.yaml]" in result
+        # The pending block must be marked searchable so the LLM knows it
+        # can pass the file_id to search_file.
+        assert 'searchable="true"' in result
+
+    def test_dedup_does_not_emit_orphan_block_for_already_referenced_file(
+        self,
+    ):
+        """Regression guard: a file referenced by an existing Evidence row
+        must NOT appear in the Tier D orphan section — it's already
+        surfaced via Tier A/B. No double-render."""
+        file_id = "file_aabbccdd1122"
+        ev = _make_evidence(
+            source_file_id=file_id,
+            summary="File-backed evidence",
+            extract="Existing structural index",
+        )
+        case = _make_case_with_evidence([ev])
+        # case.uploaded_files already contains the file synthesized by
+        # _make_case_with_evidence with this same file_id. The Tier D
+        # section must skip it because Evidence already references it.
+
+        result = _build_evidence_context(case)
+
+        # The file_id should appear exactly once — on the <evidence> block,
+        # not also on a duplicate <uploaded_file> block.
+        assert result.count(f'file_id="{file_id}"') == 1
+        # No <uploaded_file> tag at all in this scenario.
+        assert "<uploaded_file" not in result
+
+    def test_orphan_visible_when_evidence_has_source_file_id_none(self):
+        """source_file_id=None on Evidence (e.g., USER_DESCRIPTION rows
+        from chat-extracted analysis) must NOT be treated as covering
+        any uploaded file. A pending upload remains orphan-visible even
+        when the case has such Evidence rows — None ≠ any real file_id.
+
+        Empirically observed: in case_ba5b472f2438 turn 8, FM created an
+        Evidence row with source_file_id=None analyzing the user's text;
+        the actual turn-8 file upload stayed orphan and was never seen."""
+        text_ev = _make_evidence(
+            source_file_id=None,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            summary="User described what they saw",
+            extract="User's verbatim description",
+        )
+        case = _make_case_with_evidence([text_ev])
+        case.uploaded_files.append(self._pending_file())
+
+        result = _build_evidence_context(case)
+
+        assert 'file_id="file_aaaaaaaa0001"' in result, (
+            "Pending upload must remain orphan-visible when the only "
+            "Evidence rows have source_file_id=None"
+        )
+        assert "PENDING: deployment.yaml" in result
+
+    def test_token_budget_drops_oldest_orphans_first(self):
+        """Multiple orphans with total content exceeding the budget →
+        rendering respects EVIDENCE_CONTEXT_MAX_TOTAL_CHARS. Policy:
+        newest uploads win (most-recent-first iteration), so older
+        orphans get dropped when the budget is exhausted. This matches
+        chat-flow intuition: the file the user just submitted matters
+        more than orphans from earlier turns."""
+        # Build an existing Evidence row so we're on Path 2 (non-empty
+        # evidence) — that's the path the new Tier D section lives on.
+        ev = _make_evidence(
+            source_file_id="file_aabbccdd1122",
+            summary="Existing evidence",
+            extract="Some existing content",
+        )
+        # Use a payload comfortably below the per-item cap so the per-item
+        # truncation isn't what shrinks the test, then squeeze the TOTAL
+        # budget down so 3 orphans can't all fit. This pins the dropped-
+        # oldest-first policy at known thresholds rather than relying on
+        # default constants that might be retuned later.
+        per_item_payload = "X" * 2000
+        index_blob = (
+            '{"v":1,"file_extract":"' + per_item_payload + '",'
+            '"search_map":null,"file_meta":{}}'
+        )
+        # 3 orphans × ~2000 chars + overhead ≈ 6500+; cap budget at 5000
+        # so exactly one orphan fits with room left, two definitely don't.
+        squeezed_budget = 5000
+
+        oldest = self._pending_file(
+            file_id="file_bbbbbbbb0001",
+            filename="older.txt",
+            uploaded_at_turn=5,
+            structural_index=index_blob,
+        )
+        middle = self._pending_file(
+            file_id="file_cccccccc0002",
+            filename="middle.txt",
+            uploaded_at_turn=8,
+            structural_index=index_blob,
+        )
+        newest = self._pending_file(
+            file_id="file_dddddddd0003",
+            filename="newest.txt",
+            uploaded_at_turn=11,
+            structural_index=index_blob,
+        )
+
+        case = _make_case_with_evidence([ev])
+        case.uploaded_files.extend([oldest, middle, newest])
+
+        with patch(
+            "faultmaven.core.investigation.prompts.context_builder."
+            "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
+            squeezed_budget,
+        ):
+            result = _build_evidence_context(case)
+
+        # Newest must be present (highest priority).
+        assert 'file_id="file_dddddddd0003"' in result, (
+            "newest orphan must survive budget enforcement; "
+            f"result len={len(result)}"
+        )
+        # Oldest must be dropped under the squeezed budget.
+        assert (
+            'file_id="file_bbbbbbbb0001"' not in result
+        ), "oldest orphan must be dropped first when budget exhausted"
+
+
+# ============================================================
 # Mixed Forms
 # ============================================================
 
