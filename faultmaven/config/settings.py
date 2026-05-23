@@ -166,6 +166,16 @@ class LLMSettings(BaseSettings):
     code_provider: Optional[LLMProvider] = Field(default=None)
     da_provider: Optional[LLMProvider] = Field(default=None)
     knowledge_provider: Optional[LLMProvider] = Field(default=None)
+    # Force structured-output investigation calls (Pydantic-schema generation
+    # in milestone_engine) through a known-STRICT-capable provider regardless
+    # of CHAT_PROVIDER. Companion to the capability-routing fix
+    # (PR fix/structured-output-capability-routing): operators running a
+    # weak-structured-output CHAT_PROVIDER (Fireworks/MiniMax, Local Ollama,
+    # etc.) can route just the schema-bound calls to e.g. gemini-2.5-pro or
+    # gpt-4o without changing their default chat provider. Cheap providers
+    # still handle synthesis / chat / classification where strict schema
+    # enforcement isn't needed.
+    structured_output_provider: Optional[LLMProvider] = Field(default=None)
 
     # API Keys (SecretStr for security)
     openai_api_key: Optional[SecretStr] = Field(
@@ -471,6 +481,22 @@ class LLMSettings(BaseSettings):
         """Get model for knowledge provider using task-specific configuration"""
         provider = self.get_knowledge_provider()
         return self._get_model_for_provider_and_task(provider, "knowledge")
+
+    def get_structured_output_provider(self) -> LLMProvider:
+        """Get provider for schema-bound investigation calls.
+
+        Returns the explicit ``STRUCTURED_OUTPUT_PROVIDER`` override if set
+        (lets operators route schema-bound calls to a known-STRICT-capable
+        provider while keeping a cheaper CHAT_PROVIDER for everything else),
+        otherwise falls back to the chat provider — preserving current
+        behavior when the override is unset.
+        """
+        return self.structured_output_provider or self.provider
+
+    def get_structured_output_model(self) -> str:
+        """Get model for the structured-output provider using task-specific configuration."""
+        provider = self.get_structured_output_provider()
+        return self._get_model_for_provider_and_task(provider, "structured_output")
 
     def _get_model_for_provider_and_task(self, provider: LLMProvider, task: str) -> str:
         """Get model for a provider and task.

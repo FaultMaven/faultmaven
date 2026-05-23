@@ -131,6 +131,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         response_format: Optional[Dict[str, Any]] = None,
         messages: Optional[List[Dict[str, Any]]] = None,
         case_id: Optional[str] = None,
+        provider_override: Optional[str] = None,
     ) -> LLMResponse:
         """
         Route request through the centralized provider registry
@@ -194,6 +195,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 response_format=response_format,
                 messages=sanitized_messages,
                 confidence_threshold=self.confidence_threshold,
+                provider_override=provider_override,
                 timeout=self._resolve_timeout(),  # Provider-aware ceiling
                 retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
                 retry_delay=1.0,
@@ -319,6 +321,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         response_format = kwargs.get("response_format")
         messages = kwargs.get("messages")
         case_id = kwargs.get("case_id")
+        provider_override = kwargs.get("provider_override")
 
         # Call existing route method with all the robust functionality
         response = await self.route(
@@ -332,6 +335,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             response_format=response_format,
             messages=messages,
             case_id=case_id,
+            provider_override=provider_override,
         )
 
         # Return the full LLMResponse (milestone_engine expects this)
