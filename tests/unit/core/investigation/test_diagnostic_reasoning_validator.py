@@ -279,6 +279,144 @@ class TestReferencesSpecificEvidence:
         response = "The issue started 2 hours ago and the request failed."
         assert _references_specific_evidence(response, investigating_case) is True
 
+    # ====================================================================
+    # Tier 3 (2026-05-23) validator-tuning iteration 2 — expanded
+    # specificity categories for system-admin / Kubernetes vocabulary
+    # that the original web-service-tuned heuristic missed. Empirical
+    # data: Run 19 case_a8a3ebb5514b T7/T8 fallbacks where the LLM gave
+    # clearly grounded responses (citing pod names, config keys, memory
+    # sizes, OOM status) but the heuristic rejected them.
+    # ====================================================================
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "memory_size",
+        ["384MB", "512Mi", "1Gi", "10 GB", "768Mi", "2GB"],
+    )
+    def test_memory_sizes_count_as_metrics(self, investigating_case, memory_size):
+        """K8s/JVM memory citations like '384MB', '1Gi' are specific
+        evidence. Combined with another category (e.g. 'deployment'),
+        they should pass."""
+        response = (
+            f"The deployment limits memory to {memory_size} but the JVM "
+            f"heap exceeds it."
+        )
+        assert _references_specific_evidence(response, investigating_case) is True
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "config_kv",
+        [
+            "CACHE_MAX_ENTRIES=500000",
+            "JAVA_OPTS=-Xmx384m",
+            "REDIS_HOST=cache.local",
+            "ENABLE_FEATURE_X=true",
+        ],
+    )
+    def test_screaming_snake_config_pairs_count_as_ids(
+        self, investigating_case, config_kv
+    ):
+        """SCREAMING_SNAKE_CASE=value patterns name real config values
+        from the case. Verified by combining with an error-detail
+        signal so the response hits 2 of 4 categories — proving the
+        config-pair pattern contributes to the has_ids count."""
+        # has_error_details: "timeout"; has_ids: the config-kv pair
+        response = (
+            f"The application is configured with {config_kv}; the "
+            "service is hitting timeout under load."
+        )
+        assert _references_specific_evidence(response, investigating_case) is True
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "k8s_keyword",
+        ["OOMKilled", "CrashLoopBackOff", "ImagePullBackOff", "out of memory"],
+    )
+    def test_k8s_status_keywords_count_as_error_details(
+        self, investigating_case, k8s_keyword
+    ):
+        """K8s status words are real case state, not generic advice."""
+        response = (
+            f"The pod state shows {k8s_keyword} on the deployment, "
+            "indicating the container's resource limit was exceeded."
+        )
+        assert _references_specific_evidence(response, investigating_case) is True
+
+    @pytest.mark.unit
+    def test_two_plus_backticked_identifiers_count_as_ids(self, investigating_case):
+        """2+ backticked code references signal the LLM is citing real
+        named entities from the case (pods, services, commands).
+        Combined with an error-detail signal for the 2-of-4 count."""
+        # 3 backticked spans + "failed" (has_error_details)
+        response = (
+            "The `kubectl get pods` output shows the `cache-redis` and "
+            "`api-server` pods failed to start."
+        )
+        assert _references_specific_evidence(response, investigating_case) is True
+
+    @pytest.mark.unit
+    def test_single_long_backtick_alone_does_not_pass(self, investigating_case):
+        """One backticked span on its own (even a long one) is NOT
+        enough on the has_ids axis — it needs 2+. Combined with no
+        other category, must fail. Guards against widening the rule
+        to count single inline code references as grounding."""
+        response = (
+            "Run `kubectl get pods -n production` to see the status, "
+            "then assess what needs to happen next."
+        )
+        # 1 backtick span + no other category → fails
+        assert _references_specific_evidence(response, investigating_case) is False
+
+    @pytest.mark.unit
+    def test_run_19_t7_rejected_response_now_passes(self, investigating_case):
+        """Regression for Run 19 T7. The original response was rejected
+        by the validator as 'Not grounded in case evidence' even though
+        it cites the kubectl output, names two specific pods (cache-redis,
+        api-server), and references OOMKilled — clearly grounded."""
+        response = (
+            "You are absolutely right to ask for the specific evidence. "
+            "Here is the evidence I used: 1. Your statement: you said "
+            '"We have Redis available that\'s not being used." '
+            "2. Pod Listing: The `kubectl get pods` output shows two "
+            "`cache-redis` pods running and healthy in the production "
+            "namespace. My reasoning was that since the OOMKilled errors "
+            "are caused by an in-memory cache and a dedicated Redis "
+            "service is running, the `api-server` was likely designed "
+            "with the option to use this external cache."
+        )
+        assert _references_specific_evidence(response, investigating_case) is True, (
+            "Run 19 T7 grounded response must pass the post-Tier-3 "
+            "validator — citing pod names, K8s status, and prior user "
+            "statements is real grounding"
+        )
+
+    @pytest.mark.unit
+    def test_run_19_t8_rejected_response_now_passes(self, investigating_case):
+        """Regression for Run 19 T8. Cites CACHE_MAX_ENTRIES=500000,
+        384MB JVM limit, OOM — clearly grounded but rejected by the
+        pre-Tier-3 heuristic."""
+        response = (
+            "Your information that the deployment is using an in-memory "
+            "cache with `CACHE_MAX_ENTRIES=500000` is the final piece of "
+            "the puzzle. It directly explains why the pods are running "
+            "out of memory. The api-server pods are crashing because the "
+            "in-memory cache is configured to hold 500,000 entries, "
+            "which consumes more memory than the 384MB JVM limit allows."
+        )
+        assert _references_specific_evidence(response, investigating_case) is True
+
+    @pytest.mark.unit
+    def test_generic_advice_without_specifics_still_fails(self, investigating_case):
+        """Regression guard: the expanded categories must NOT widen the
+        rule enough to accept generic advice that names no real case
+        artifacts."""
+        response = (
+            "I recommend you check the logs and investigate. The system "
+            "may have issues that need attention. Consider restarting "
+            "the service or reviewing the configuration."
+        )
+        assert _references_specific_evidence(response, investigating_case) is False
+
 
 # ============================================================
 # Tests for _has_causal_reasoning()

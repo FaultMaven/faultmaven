@@ -218,7 +218,27 @@ def _detect_suggestions(response: str) -> bool:
 
 
 def _references_specific_evidence(response: str, case: Case) -> bool:
-    """Check if response references specific case evidence."""
+    """Check if response references specific case evidence.
+
+    Four orthogonal categories of "specific" markers; the response must
+    hit at least 2 to count as grounded. The original list was tuned for
+    web-service log analysis (timestamps + percentages + commit hashes
+    + error messages). Expanded 2026-05-23 (Tier 3 validator-tuning
+    iteration 2) with system-admin / Kubernetes vocabulary that Run 19
+    showed was being missed:
+
+      - memory/storage sizes (384MB, 1Gi, 512Mi) → has_metrics
+      - config-key=value pairs (CACHE_MAX_ENTRIES=500000) → has_ids
+      - K8s status / OOM keywords (OOMKilled, CrashLoopBackOff,
+        out of memory) → has_error_details
+
+    Each addition is provably-specific (low false-positive risk):
+    a response that says "CACHE_MAX_ENTRIES=500000" is naming a real
+    config value from the case; a response that says "384MB JVM heap"
+    is citing a real size; a response that says "OOMKilled" is naming
+    a real Kubernetes status. None of these naturally appear in
+    generic ungrounded prose.
+    """
     response_lower = response.lower()
 
     # Check for timestamps
@@ -230,27 +250,62 @@ def _references_specific_evidence(response: str, case: Case) -> bool:
         or "hours ago" in response_lower
     )
 
-    # Check for metrics/percentages
+    # Check for metrics/percentages — including memory/storage sizes
+    # which were missing from the original list. K8s/container memory
+    # is virtually always cited as MB/Mi/Gi/GiB; missing this category
+    # caused Run 19 T8's "384MB JVM limit" mention to not count as
+    # specific evidence.
     has_metrics = (
         bool(re.search(r"\d+%", response))
         or bool(re.search(r"\d+\.\d+", response))
+        # Memory/storage sizes: "384MB", "512Mi", "1Gi", "10GB", "1GiB"…
+        # Matches digit + (K|M|G) + (i|B) optionally followed by B.
+        # Excludes bare "1K"/"1M"/"1G" (requires i or B suffix) to keep
+        # false-positive risk low. Case-insensitive; allows one space.
+        or bool(re.search(r"\b\d+\s?(?:[KMG][iB]|[KMG]iB)\b", response, re.IGNORECASE))
         or "error rate" in response_lower
         or "latency" in response_lower
     )
 
-    # Check for specific IDs (deployment, commit, etc.)
+    # Check for specific IDs — including SCREAMING_SNAKE_CASE config-key
+    # patterns and multi-backtick code references. A response that names
+    # "CACHE_MAX_ENTRIES=500000" or wraps 2+ named entities in backticks
+    # (`kubectl get pods`, `cache-redis`, `api-server`) is citing real
+    # case context, not handwaving.
+    backtick_spans = re.findall(r"`[^`]{3,}`", response)
     has_ids = (
         bool(re.search(r"[a-f0-9]{7,40}", response))
+        # Config-key=value: matches "CACHE_MAX_ENTRIES=500000",
+        # "JAVA_OPTS=-Xmx384m", etc. Requires UPPER_CASE_KEY (4+
+        # chars), equals, and a non-whitespace value. SCREAMING_SNAKE
+        # is rare in non-evidence prose so false-positive risk is low.
+        or bool(re.search(r"\b[A-Z][A-Z0-9_]{3,}\s*=\s*\S+", response))
+        # 2+ backticked code identifiers (each 3+ chars) — typical of
+        # LLM responses citing specific named pods, services, commands,
+        # files from the case. Generic prose rarely backticks multiple
+        # named entities; advice like "run `ls`" stays 1-span and
+        # doesn't trigger.
+        or len(backtick_spans) >= 2
         or "deployment" in response_lower
         or "version" in response_lower
     )
 
-    # Check for error messages or log excerpts
+    # Check for error messages or log excerpts — including K8s-specific
+    # status words (OOMKilled, CrashLoopBackOff) and common OOM phrasing
+    # ("out of memory") that the original list missed.
     has_error_details = (
         "error:" in response_lower
         or "exception:" in response_lower
         or "timeout" in response_lower
         or "failed" in response_lower
+        # K8s status keywords — naming any of these is citing real
+        # case state, not generic advice.
+        or "oomkilled" in response_lower
+        or "crashloopbackoff" in response_lower
+        or "imagepullbackoff" in response_lower
+        # Common OOM phrasings the LLM uses when paraphrasing pod state
+        or "out of memory" in response_lower
+        or "out of heap" in response_lower
     )
 
     # At least 2 of these should be present for specificity
