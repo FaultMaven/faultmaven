@@ -114,24 +114,46 @@ class InternalReasoning(BaseModel):
 
     evidence_analyzed: Optional[List[str]] = Field(
         default_factory=list,
-        description="Evidence IDs that were considered in this turn",
+        description=(
+            "List of evidence ID strings considered this turn. Each list "
+            "element MUST be a plain string (e.g. 'ev_abc123'), NOT an "
+            "object or wrapped in any structure. "
+            'Example: ["ev_abc123", "ev_def456"]'
+        ),
     )
     conclusions: Optional[List[ReasoningConclusion]] = Field(
         default_factory=list,
-        description="Step-by-step reasoning from evidence to conclusions",
+        description=(
+            "Step-by-step reasoning items. Each list element MUST be a "
+            "structured object with three fields: observation (str — what "
+            "was seen in the evidence), inference (str — what it implies "
+            "about the problem), confidence (float 0.0-1.0). "
+            "DO NOT return strings or prose paragraphs as list elements — "
+            "each item must be an object with all three fields populated. "
+            'Example: [{"observation": "Pod restart count is 47", '
+            '"inference": "Indicates a crashloop pattern", '
+            '"confidence": 0.9}]'
+        ),
     )
     milestone_justifications: Dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "MANDATORY: For EVERY milestone set to True in milestones, provide a justification here. "
+            "MANDATORY: For EVERY milestone set to True in milestones, "
+            "provide a justification here. The value is a string citing "
+            "specific evidence IDs (NOT an object). "
             "Format: {milestone_name: 'justification citing specific evidence IDs'}. "
             "Example: {'symptom_verified': 'Connection errors confirmed per ev_abc123'}. "
-            "DO NOT leave empty {} when completing milestones - validation will reject."
+            "DO NOT leave empty {} when completing milestones — validation will reject."
         ),
     )
     uncertainties: Optional[List[str]] = Field(
         default_factory=list,
-        description="What remains unclear or uncertain after this analysis",
+        description=(
+            "List of plain strings describing what remains unclear after "
+            "this analysis. Each element MUST be a string, NOT an object. "
+            'Example: ["Whether the deploy actually rolled out", '
+            '"Whether CACHE_TYPE was set in the new ReplicaSet"]'
+        ),
     )
 
 
