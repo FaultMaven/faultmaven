@@ -55,6 +55,42 @@ class TestErrorClassification:
         error = Exception("Invalid JSON format in response")
         assert handler.is_retryable_error(error) is False
 
+    def test_retryable_502_bad_gateway(self, handler):
+        """502 Bad Gateway (string-pattern path) should be retryable."""
+        error = Exception("Upstream returned 502 Bad Gateway")
+        assert handler.is_retryable_error(error) is True
+
+    def test_llm_exception_5xx_is_retryable_authoritative(self, handler):
+        """LLMException with 5xx status must be retryable via typed metadata,
+        not the string-pattern fallback."""
+        from faultmaven.exceptions import LLMException
+
+        error = LLMException("opaque body", status_code=502)
+        assert handler.is_retryable_error(error) is True
+
+    def test_llm_exception_4xx_is_not_retryable_authoritative(self, handler):
+        """LLMException with 4xx status must be non-retryable even if its
+        message happens to contain a retryable-looking word."""
+        from faultmaven.exceptions import LLMException
+
+        # Message includes "timeout" — string-pattern would say retryable.
+        # The typed flag must win.
+        error = LLMException("400 bad request: timeout field invalid", status_code=400)
+        assert handler.is_retryable_error(error) is False
+
+    def test_retryable_walks_cause_chain(self, handler):
+        """When a generic wrapper exception has a typed LLMException cause,
+        retryability is taken from the cause."""
+        from faultmaven.exceptions import LLMException
+
+        try:
+            try:
+                raise LLMException("upstream 502", status_code=502)
+            except LLMException as inner:
+                raise RuntimeError("outer wrapper") from inner
+        except RuntimeError as outer:
+            assert handler.is_retryable_error(outer) is True
+
     def test_auth_error_detection(self, handler):
         """Auth errors should be detected."""
         error = Exception("API key is invalid or expired")
@@ -113,7 +149,7 @@ class TestErrorHandling:
         result = await handler.handle_error(error)
 
         assert result.action == ErrorAction.COMPRESS_MEMORY
-        assert result.should_use_fallback is True
+        assert result.error_code == "TOKEN_LIMIT"
 
     @pytest.mark.asyncio
     async def test_retryable_error_retries(self, fast_handler):
@@ -166,17 +202,18 @@ class TestWithRetry:
         assert call_count == 2
 
     @pytest.mark.asyncio
-    async def test_fallback_on_failure(self, fast_handler):
-        """Fallback should be called when main fails."""
+    async def test_unknown_error_fails_fast(self, fast_handler):
+        """Unknown (non-retryable) errors should fail immediately, not retry."""
         main_op = AsyncMock(side_effect=Exception("Unknown error"))
-        fallback_op = AsyncMock(return_value="fallback_result")
 
-        result, error = await fast_handler.with_retry(
-            operation=main_op, on_fallback=fallback_op
-        )
+        result, error = await fast_handler.with_retry(operation=main_op)
 
-        assert result == "fallback_result"
-        fallback_op.assert_called_once()
+        assert result is None
+        assert error is not None
+        assert error.action == ErrorAction.FAIL
+        assert error.error_code == "UNKNOWN_ERROR"
+        # Must not retry — unknown errors are surfaced immediately.
+        main_op.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_max_retries_exhausted(self, fast_handler):
