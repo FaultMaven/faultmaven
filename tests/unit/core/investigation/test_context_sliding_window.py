@@ -1306,3 +1306,258 @@ class TestPageCaptureRerankingIntegration:
         # Target section should survive truncation because it's promoted to top
         assert "Target Section" in result
         assert "CPU usage: 95%" in result
+
+
+# ============================================================
+# Evidence-context signaling for hallucinated-freshness mitigation
+# (PR follow-up to test scenario that exposed agent re-citing prior
+# evidence as if fresh, missing duplicate uploads, and citing
+# information-free pasted-content filenames)
+# ============================================================
+
+
+class TestFreshThisTurnAttribute:
+    """``fresh_this_turn="true"`` partitions current-turn evidence from
+    prior context so the LLM has a positional signal to distinguish
+    data the user just provided from data being re-cited."""
+
+    def test_evidence_collected_at_current_turn_gets_fresh_marker(self):
+        ev_old = _make_evidence(
+            summary="Earlier evidence",
+            collected_at_turn=3,
+            source_file_id="file_0a0a0a0a0a01",
+        )
+        ev_new = _make_evidence(
+            summary="Just-uploaded evidence",
+            collected_at_turn=7,
+            source_file_id="file_0b0b0b0b0b02",
+        )
+        case = _make_case_with_evidence([ev_old, ev_new])
+        case.current_turn = 7
+        result = _build_evidence_context(case)
+
+        # Each evidence row appears once; only the current-turn one
+        # carries the fresh marker.
+        old_line = next(
+            line for line in result.splitlines() if ev_old.evidence_id in line
+        )
+        new_line = next(
+            line for line in result.splitlines() if ev_new.evidence_id in line
+        )
+        assert 'fresh_this_turn="true"' not in old_line
+        assert 'fresh_this_turn="true"' in new_line
+
+    def test_no_evidence_carries_fresh_when_current_turn_is_zero(self):
+        # current_turn=0 (default) and collected_at_turn=1 — nothing is fresh
+        # because Case was constructed without advancing the turn counter.
+        ev = _make_evidence(collected_at_turn=1)
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case)
+        assert 'fresh_this_turn="true"' not in result
+
+    def test_orphan_uploaded_file_fresh_marker(self):
+        """Tier D orphan upload (no Evidence row yet) gets the marker when
+        it landed on the current turn."""
+        existing_ev = _make_evidence(
+            summary="Older evidence",
+            collected_at_turn=1,
+            source_file_id="file_0c0c0c0c0c03",
+        )
+        case = _make_case_with_evidence([existing_ev])
+        case.current_turn = 4
+        case.uploaded_files.append(
+            UploadedFile(
+                file_id="file_0d0d0d0d0d04",
+                filename="just-uploaded.log",
+                size_bytes=200,
+                content_type="text/plain",
+                uploaded_at_turn=4,
+                uploaded_at=datetime.now(UTC),
+                uploaded_by="user_123",
+                data_type="logs",
+                structural_index="ERROR: fresh content",
+            )
+        )
+        result = _build_evidence_context(case)
+        # The orphan render is on a separate <uploaded_file> line — find
+        # the one with the orphan's file_id and assert the marker is there.
+        orphan_line = next(
+            line for line in result.splitlines() if "file_0d0d0d0d0d04" in line
+        )
+        assert 'fresh_this_turn="true"' in orphan_line
+
+
+class TestIdenticalToPriorUploadAttribute:
+    """``identical_to_prior_upload_at_turn="N"`` marks byte-equal re-uploads
+    so the LLM can notice e.g. 'the same config has been submitted three
+    times — the apply isn't taking effect'. First occurrence never carries
+    the marker."""
+
+    def _file(
+        self,
+        file_id: str,
+        content_hash: str,
+        uploaded_at_turn: int,
+        **overrides,
+    ) -> UploadedFile:
+        defaults = dict(
+            filename=f"{file_id}.yaml",
+            size_bytes=100,
+            content_type="text/yaml",
+            uploaded_at=datetime.now(UTC),
+            uploaded_by="user_123",
+            data_type="configuration",
+            structural_index='{"v":1,"file_extract":"apiVersion: v1"}',
+        )
+        defaults.update(overrides)
+        return UploadedFile(
+            file_id=file_id,
+            content_hash=content_hash,
+            uploaded_at_turn=uploaded_at_turn,
+            **defaults,
+        )
+
+    def test_re_upload_marked_with_first_turn(self):
+        """T4 first upload, T8 re-upload of same bytes → T8 carries the
+        marker pointing at T4, T4 does not."""
+        case = _make_case_with_evidence([])
+        case.uploaded_files = [
+            self._file("file_aaaaaaaaaaaa", "hash_aaaa", 4),
+            self._file("file_bbbbbbbbbbbb", "hash_aaaa", 8),
+        ]
+        case.current_turn = 8
+        result = _build_evidence_context(case)
+
+        t4_line = next(
+            line for line in result.splitlines() if "file_aaaaaaaaaaaa" in line
+        )
+        t8_line = next(
+            line for line in result.splitlines() if "file_bbbbbbbbbbbb" in line
+        )
+        assert "identical_to_prior_upload_at_turn" not in t4_line
+        assert 'identical_to_prior_upload_at_turn="4"' in t8_line
+
+    def test_distinct_content_no_marker(self):
+        """Different content_hash → neither gets the marker."""
+        case = _make_case_with_evidence([])
+        case.uploaded_files = [
+            self._file("file_cccccccccccc", "hash_aaa", 1),
+            self._file("file_dddddddddddd", "hash_bbb", 2),
+        ]
+        case.current_turn = 2
+        result = _build_evidence_context(case)
+        assert "identical_to_prior_upload_at_turn" not in result
+
+    def test_no_hash_no_marker(self):
+        """Files without content_hash (e.g., streamed) never get the marker."""
+        case = _make_case_with_evidence([])
+        case.uploaded_files = [
+            self._file("file_eeeeeeeeeeee", "", 1),
+            self._file("file_ffffffffffff", "", 2),
+        ]
+        case.current_turn = 2
+        result = _build_evidence_context(case)
+        assert "identical_to_prior_upload_at_turn" not in result
+
+
+class TestSemanticLabelForPastedContent:
+    """``_evidence_label`` synthesizes a semantic label from data_type +
+    summary when the filename is the auto-generated pasted-content pattern.
+    Real filenames pass through unchanged."""
+
+    def test_pasted_content_label_uses_data_type_and_summary(self):
+        file_id = "file_0e0e0e0e0e05"
+        ev = _make_evidence(
+            summary="DestinationRule yaml configuring outlier detection",
+            extract="apiVersion: networking.istio.io/v1beta1",
+            source_file_id=file_id,
+            source_type=EvidenceSourceType.CONFIGURATION,
+        )
+        case = _make_case_with_evidence([ev])
+        # Replace the synthesized upload row with a pasted-content one.
+        case.uploaded_files = [
+            UploadedFile(
+                file_id=file_id,
+                filename="pasted-content-20260524T043237Z.txt",
+                size_bytes=128,
+                uploaded_at_turn=1,
+                uploaded_at=datetime.now(UTC),
+                uploaded_by="user_123",
+                data_type="configuration",
+                summary=(
+                    "DestinationRule for user-service with outlier detection. "
+                    "First sentence ends here."
+                ),
+                structural_index="apiVersion: networking.istio.io/v1beta1",
+            )
+        ]
+        result = _build_evidence_context(case)
+        # Label uses semantic content, not the timestamped filename.
+        assert "configuration: DestinationRule" in result
+        # The raw filename is still present on the filename attribute, but
+        # not as the label.
+        ev_line = next(line for line in result.splitlines() if ev.evidence_id in line)
+        assert (
+            'label="configuration: DestinationRule'
+            in ev_line[: ev_line.find('filename="')]
+        )
+
+    def test_real_filename_passes_through(self):
+        file_id = "file_0f0f0f0f0f06"
+        ev = _make_evidence(source_file_id=file_id, source_type=EvidenceSourceType.LOGS)
+        case = _make_case_with_evidence([ev])
+        case.uploaded_files = [
+            UploadedFile(
+                file_id=file_id,
+                filename="nginx-error.log",
+                size_bytes=128,
+                uploaded_at_turn=1,
+                uploaded_at=datetime.now(UTC),
+                uploaded_by="user_123",
+                data_type="logs",
+                summary="nginx 502 errors",
+                structural_index="ERROR: upstream timed out",
+            )
+        ]
+        result = _build_evidence_context(case)
+        assert 'label="nginx-error.log"' in result
+
+    def test_pasted_content_no_summary_falls_back_to_data_type(self):
+        file_id = "file_1010101010aa"
+        ev = _make_evidence(
+            source_file_id=file_id, source_type=EvidenceSourceType.CONFIGURATION
+        )
+        case = _make_case_with_evidence([ev])
+        case.uploaded_files = [
+            UploadedFile(
+                file_id=file_id,
+                filename="pasted-content-20260524T043237Z.txt",
+                size_bytes=128,
+                uploaded_at_turn=1,
+                uploaded_at=datetime.now(UTC),
+                uploaded_by="user_123",
+                data_type="logs",
+                summary=None,
+                structural_index="ERROR: 500 internal",
+            )
+        ]
+        result = _build_evidence_context(case)
+        assert 'label="logs (pasted)"' in result
+
+
+class TestRule5NewDataClaimedButNotAttached:
+    """Rule 5 has a behavior row covering the case where the user implies
+    new data ('latest logs', 'just ran') but no fresh attachment arrived
+    this turn. The prompt must instruct the agent to ask for the file
+    rather than fabricate analysis of prior-turn evidence."""
+
+    def test_investigation_base_includes_new_data_claim_rule(self):
+        from faultmaven.core.investigation.prompts.templates import INVESTIGATION_BASE
+
+        # The trigger language and the prohibition both appear in the
+        # WORK WITH WHAT YOU GET block. We assert both halves so a future
+        # well-meaning rewrite of one without the other gets caught.
+        assert 'fresh_this_turn="true"' in INVESTIGATION_BASE
+        assert "create new evidence_to_add rows from prior-turn files" in (
+            INVESTIGATION_BASE
+        )

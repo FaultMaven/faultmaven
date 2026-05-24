@@ -975,16 +975,112 @@ def _score_evidence_for_tier_a(
     return score
 
 
-def _evidence_label(ev, file_lookup: dict) -> str:
+# Pasted content gets an auto-generated timestamped filename at ingestion
+# (see UploadedFile.upload_source). The filename itself carries no semantic
+# signal, so when the LLM cites it ("see pasted-content-20260524T043237.txt")
+# the reference is information-free. _displayable_filename synthesizes a
+# label from data_type + summary head for these cases.
+_PASTED_CONTENT_FILENAME = re.compile(r"^pasted-content-\d{8}T\d{6}Z?\.txt$")
+
+
+def _displayable_filename(uf) -> str:
+    """Return a human-readable filename label for an uploaded file.
+
+    For pasted content with an auto-generated timestamped filename, synthesize
+    a semantic label from the file's ``data_type`` and ``summary`` head (both
+    populated by the Tier 0/1 preprocessor at ingestion). For real filenames,
+    return them unchanged.
+    """
+    if uf is None or not uf.filename:
+        return ""
+    if not _PASTED_CONTENT_FILENAME.match(uf.filename):
+        return uf.filename
+    dtype = (uf.data_type or "data").replace("_", " ")
+    summary = (uf.summary or "").strip()
+    if summary:
+        # First sentence (up to 60 chars) — keeps the label citation-friendly.
+        snippet = summary.split(".")[0][:60].strip()
+        return f"{dtype}: {snippet}"
+    return f"{dtype} (pasted)"
+
+
+def _build_hash_first_seen(case) -> Dict[str, int]:
+    """Map each ``content_hash`` to the earliest turn it appeared on.
+
+    Used to detect identical re-uploads — when the same byte-equal file is
+    submitted across multiple turns, the second-and-later occurrences carry
+    an ``identical_to_prior_upload_at_turn`` attribute pointing at the first
+    occurrence. Returns an empty dict if the case has no uploaded files or
+    no hashes are populated.
+    """
+    seen: Dict[str, int] = {}
+    if not hasattr(case, "uploaded_files") or not case.uploaded_files:
+        return seen
+    for uf in case.uploaded_files:
+        if not uf.content_hash or uf.uploaded_at_turn is None:
+            continue
+        existing = seen.get(uf.content_hash)
+        if existing is None or uf.uploaded_at_turn < existing:
+            seen[uf.content_hash] = uf.uploaded_at_turn
+    return seen
+
+
+def _identical_to_prior_attr(uf, hash_first_seen: Dict[str, int]) -> str:
+    """XML attribute marking a re-uploaded byte-identical file.
+
+    Returns ``' identical_to_prior_upload_at_turn="N"'`` when this file's
+    ``content_hash`` was first seen on an earlier turn (N), empty otherwise.
+    The first occurrence of any hash never carries the marker — only
+    subsequent identical re-uploads do. Gives the LLM a precise signal
+    that the user re-submitted the same content, useful for noticing
+    e.g. "the same config has been submitted three times — the apply
+    isn't taking effect".
+    """
+    if uf is None or not uf.content_hash or uf.uploaded_at_turn is None:
+        return ""
+    first = hash_first_seen.get(uf.content_hash)
+    if first is None or first >= uf.uploaded_at_turn:
+        return ""
+    return f' identical_to_prior_upload_at_turn="{first}"'
+
+
+def _fresh_this_turn_attr(item_turn: Optional[int], current_turn: int) -> str:
+    """XML attribute marker for items collected/uploaded this turn.
+
+    Returns ``' fresh_this_turn="true"'`` when the item's turn matches the
+    current turn, empty string otherwise. The asymmetric encoding (attribute
+    present only for fresh items) keeps the prior-context items visually
+    quieter in long evidence blocks and gives the LLM a positional signal
+    to distinguish data the user just provided from data being re-cited
+    from history.
+    """
+    if item_turn is None:
+        return ""
+    if item_turn == current_turn:
+        return ' fresh_this_turn="true"'
+    return ""
+
+
+def _evidence_label(ev, file_lookup: dict, case=None) -> str:
     """Build a short user-facing label for evidence.
 
     Used in the XML ``label`` attribute so the LLM can reference evidence
     by a human-readable name (e.g., "nginx-error.log") instead of the
     internal ``ev_`` ID.  The label is chosen from the best available
     source in priority order: filename → source_type → fallback.
+
+    When ``case`` is provided and the evidence's source file is pasted
+    content with a timestamped auto-filename, the label is synthesized
+    from the file's ``data_type`` and ``summary`` (see
+    ``_displayable_filename``).
     """
-    # 1. Filename from uploaded files lookup
+    # 1. Filename from uploaded files lookup (synthesized label for pasted
+    #    content when case is available)
     if ev.source_file_id and str(ev.source_file_id) in file_lookup:
+        if case is not None:
+            uf = case.find_uploaded_file(ev.source_file_id)
+            if uf is not None:
+                return _displayable_filename(uf)
         return file_lookup[str(ev.source_file_id)]
     # 2. Source type as readable label (handles USER_DESCRIPTION for
     #    chat-extracted evidence and LOGS / METRICS / etc. for files
@@ -1017,6 +1113,13 @@ def _build_evidence_context(
     Token budget: ~4000 tokens dedicated. Worst case: 3 Tier A items x 4000
     chars = 12,000 chars (~3000 tokens).
     """
+    # Build the hash → first-seen-turn map once for the whole render. Used
+    # to surface ``identical_to_prior_upload_at_turn`` on re-uploaded
+    # byte-identical files. Cheap (single pass over uploaded_files) and
+    # shared across the INQUIRY fallback, Tier A/B file-backed evidence,
+    # and Tier D orphan rendering below.
+    hash_first_seen = _build_hash_first_seen(case)
+
     if not case.evidence:
         # Post-010 strict evidence model: during INQUIRY, files are stored on
         # uploaded_files (not promoted to Evidence until INVESTIGATING). Surface
@@ -1044,9 +1147,14 @@ def _build_evidence_context(
                     data_type_attr = (
                         f' data_type="{uf.data_type}"' if uf.data_type else ""
                     )
+                    fresh_attr = _fresh_this_turn_attr(
+                        uf.uploaded_at_turn, case.current_turn
+                    )
+                    duplicate_attr = _identical_to_prior_attr(uf, hash_first_seen)
                     result += (
                         f"  <uploaded_file{file_id_attr}{filename_attr}"
-                        f'{data_type_attr} searchable="true">\n'
+                        f"{data_type_attr}{fresh_attr}{duplicate_attr}"
+                        f' searchable="true">\n'
                     )
                     if file_extract.strip():
                         truncation_note = ""
@@ -1172,7 +1280,7 @@ def _build_evidence_context(
         data_type_attr = (
             f' data_type="{ev.source_type.value}"' if ev.source_type else ""
         )
-        label = _evidence_label(ev, file_lookup)
+        label = _evidence_label(ev, file_lookup, case)
         label_attr = f' label="{label}"'
         filename_attr = ""
         file_id_attr = ""
@@ -1185,7 +1293,9 @@ def _build_evidence_context(
         is_searchable = ev.source_file_id is not None and ev_file_meta is not None
         searchable_attr = ' searchable="true"' if is_searchable else ""
         confidence_attr, confidence_advisory = _confidence_marker(ev)
-        result += f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}>\n'
+        fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
+        duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
+        result += f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}{fresh_attr}{duplicate_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
         if file_extract.strip():
             role_attr = (
@@ -1218,7 +1328,7 @@ def _build_evidence_context(
 
     # Tier B: Older data evidence (summary only)
     for ev in tier_b:
-        label = _evidence_label(ev, file_lookup)
+        label = _evidence_label(ev, file_lookup, case)
         label_attr = f' label="{label}"'
         filename_attr = ""
         file_id_attr = ""
@@ -1229,7 +1339,9 @@ def _build_evidence_context(
         is_searchable = ev.source_file_id is not None and ev_file_meta is not None
         searchable_attr = ' searchable="true"' if is_searchable else ""
         confidence_attr, _ = _confidence_marker(ev)
-        entry = f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{filename_attr}{searchable_attr}{confidence_attr}>'
+        fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
+        duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
+        entry = f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{filename_attr}{searchable_attr}{confidence_attr}{fresh_attr}{duplicate_attr}>'
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
         if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
             break
@@ -1242,13 +1354,14 @@ def _build_evidence_context(
     # evidence it carries the actual system-output slice the user typed
     # in (the summary alone would lose that detail).
     for ev in text_evidence[-5:]:  # Cap at 5 most recent items
-        label = _evidence_label(ev, file_lookup)
+        label = _evidence_label(ev, file_lookup, case)
         label_attr = f' label="{label}"'
+        fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
         quote_block = ""
         if ev.extract and ev.extract.strip():
             quote_block = f"<verbatim_quote>{ev.extract.strip()}</verbatim_quote>"
         entry = (
-            f'  <evidence id="{ev.evidence_id}"{label_attr}>'
+            f'  <evidence id="{ev.evidence_id}"{label_attr}{fresh_attr}>'
             f"<summary>{ev.summary}</summary>{quote_block}</evidence>\n"
         )
         if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
@@ -1301,9 +1414,12 @@ def _build_evidence_context(
             file_id_attr = f' file_id="{uf.file_id}"' if uf.file_id else ""
             filename_attr = f' filename="{uf.filename}"' if uf.filename else ""
             data_type_attr = f' data_type="{uf.data_type}"' if uf.data_type else ""
+            fresh_attr = _fresh_this_turn_attr(uf.uploaded_at_turn, case.current_turn)
+            duplicate_attr = _identical_to_prior_attr(uf, hash_first_seen)
             entry = (
                 f"  <uploaded_file{file_id_attr}{filename_attr}"
-                f'{data_type_attr} searchable="true">\n'
+                f"{data_type_attr}{fresh_attr}{duplicate_attr}"
+                f' searchable="true">\n'
             )
             if file_extract.strip():
                 truncation_note = ""
