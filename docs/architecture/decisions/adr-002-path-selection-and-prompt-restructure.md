@@ -326,6 +326,7 @@ Three PRs in logical order. Each is independently shippable and testable.
 | `test_gate3_pending_block_at_gate3` | MITIGATION_FIRST + mitigation_verified + RCA not confirmed → Gate-3 block in prompt |
 | `test_gate2_pending_reminder_in_inquiry_prompt` | INQUIRY + Gate 1 passed + Gate 2 not committed → reminder block in prompt |
 | `test_no_gate2_reminder_when_gate1_not_passed` | Gate 1 not passed → no Gate 2 reminder (premature) |
+| `test_no_gate2_reminder_when_path_committed` | Gate 2 click happened → reminder block absent from subsequent prompts (prevents agent re-asking after user has picked) |
 
 ### Integration tests
 
@@ -336,12 +337,20 @@ Reuse existing lifecycle-invariant test infrastructure. Key invariants to re-ver
 
 ### Real test scenarios
 
-After all three PRs merge, run istio-503-upstream scenario. Pass criteria:
-- T1: engine asks path question; T2+ if persona provides data without picking, agent re-asks rather than engaging in hypothesis work
-- After Gate 2 click on MITIGATION_FIRST: agent focuses on stopping impact only
-- After mitigation_verified: Gate 3 surfaces correctly
+#### After PR #2 (hard pass criteria)
+
+Run istio-503-upstream scenario. **PR #2 does not pass without all of:**
+
+- Agent doesn't formulate hypotheses pre-mitigation on MITIGATION_FIRST cases
+- Conversation history stays focused on symptom + failing component until path-appropriate
 - Case reaches terminal state in ≤ 15 turns (Run 24 baseline)
-- No 504 cascade (confusion loop eliminated → context stays small → turns fit in 120s budget)
+- **No 504 cascade.** The confusion-loop elimination is the load-bearing mechanism for 504-cascade prevention; if 504s still fire after PR #2 lands, the structural fix didn't fully work. This is a hard gate, not an "expected outcome."
+
+If 504s persist despite the prompt restructure landing cleanly, that's the trigger for the separate investigation flagged in [Consequences §What we explicitly defer](#what-we-explicitly-defer) — but PR #2 doesn't merge with 504s still firing.
+
+#### After PR #3
+
+Verify on a scenario where the persona provides data without clicking Gate 2 — agent re-asks the path question prominently rather than engaging with the data.
 
 ---
 
@@ -354,6 +363,7 @@ After all three PRs merge, run istio-503-upstream scenario. Pass criteria:
 | **Just strengthen the mitigation-first prefix to be prohibitive (single line change)** | Treats the symptom, not the structural problem. Leaves the contradictory-signal architecture in place. Future prompt edits could re-introduce the conflict. Path-conditional dispatch is the right structural answer. |
 | **Auto-default path on Gate 1 confirmation if user provides data without clicking** | Either default-to-RCA or default-to-mitigation has wrong-case scenarios (user might have already mitigated elsewhere; signal-based default isn't safe). Explicit user input via Gate 2 is the right design; we strengthen its enforcement in Decision 4 rather than bypass it. |
 | **Keep `user_confirmed` field as audit trail** | After Decision 2, the field is structurally redundant — `path_selection` existence implies commitment. The `selected_by` and `selected_at` fields already capture audit information. Keeping `user_confirmed` adds schema bloat without information. |
+| **Keep auto-compute at Gate 1 but hide the result behind a shadow field until Gate 2 commits** | Doesn't eliminate the "computed-but-not-confirmed" intermediate state — just hides it. Still requires mutation watchers to clear the shadow when `preliminary_urgency` changes. Still requires UI/context-builder code to know whether to read the shadow or the committed field. The complexity moves rather than disappears. The on-demand recommendation in Decision 2 has the same UX outcome (button labels show the recommendation) with no shadow state to maintain. |
 | **Ship all 4 decisions as one PR** | Larger surface, harder to review, riskier per change. PR #1's invariant change is foundational; PR #2 can rely on it cleanly. Splitting also lets each verification milestone (especially PR #2's real-scenario run) generate empirical evidence before subsequent work. |
 
 ---
