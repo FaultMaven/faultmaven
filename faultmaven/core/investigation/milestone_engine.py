@@ -142,6 +142,67 @@ CATEGORY_MILESTONE_MAP = {
 }
 
 
+def filter_stale_source_evidence(
+    evidence_items: list,
+    uploaded_files: list,
+    current_turn: int,
+) -> tuple[list, list[dict]]:
+    """Soft-reject evidence_to_add rows that recycle a prior-turn file as fresh.
+
+    Rule: an evidence row whose ``source_file_id`` points at a file
+    uploaded in an EARLIER turn must declare ``re_analysis_reason``;
+    otherwise it is silently presenting old data as if it were a fresh
+    finding (the Run 23 T9 bug — see
+    ``project_fm_evidence_recycling_bug.md``). The user-visible failure
+    mode: "here are the latest logs" with no attachment → agent creates
+    new Evidence row pointing at most recent historical log file → prose
+    frames stale data as fresh.
+
+    Returns ``(valid_items, stale_rejections)``. Stale rejections are
+    dropped — the turn still completes with the remaining valid items.
+    Other state updates (hypotheses, milestones, freshly-sourced
+    evidence) apply normally. The rejection list is exposed via the
+    turn metadata so observability can track frequency without blocking
+    the user.
+
+    Conservative defaults:
+    - ``source_file_id is None`` → never rejected (USER_DESCRIPTION case)
+    - ``source_file_id`` not found in ``uploaded_files`` → never rejected
+      (this validator only checks freshness; other validators handle
+      nonexistent file_ids)
+    - ``re_analysis_reason`` is a non-empty string → accepted regardless
+      of turn (LLM has acknowledged the re-analysis)
+    """
+    uploaded_turns = {
+        f.file_id: f.uploaded_at_turn
+        for f in (uploaded_files or [])
+        if getattr(f, "file_id", None)
+        and getattr(f, "uploaded_at_turn", None) is not None
+    }
+    valid: list = []
+    rejections: list[dict] = []
+    for ev_item in evidence_items:
+        sfid = getattr(ev_item, "source_file_id", None)
+        reason = getattr(ev_item, "re_analysis_reason", None)
+        if (
+            sfid
+            and sfid in uploaded_turns
+            and uploaded_turns[sfid] != current_turn
+            and not reason
+        ):
+            rejections.append(
+                {
+                    "source_file_id": sfid,
+                    "file_uploaded_at_turn": uploaded_turns[sfid],
+                    "current_turn": current_turn,
+                    "rejected_summary": (ev_item.summary or "")[:120],
+                }
+            )
+            continue
+        valid.append(ev_item)
+    return valid, rejections
+
+
 def _case_has_symptom_evidence(case: Case) -> bool:
     """Return True if the case has at least one SYMPTOM_EVIDENCE row.
 
@@ -5506,7 +5567,29 @@ class MilestoneEngine:
             # through unchanged — no turn-file fallback, because that
             # would silently mis-attribute a chat-extracted USER_DESCRIPTION
             # quote to whatever file happens to be in the same turn.
-            for ev_item in updates.evidence_to_add:
+
+            # Evidence-freshness guard (2026-05-24): see
+            # filter_stale_source_evidence() docstring for rationale.
+            valid_evidence_items, stale_rejections = filter_stale_source_evidence(
+                updates.evidence_to_add,
+                uploaded_files=case.uploaded_files or [],
+                current_turn=case.current_turn,
+            )
+            if stale_rejections:
+                metadata["stale_evidence_rejections"] = stale_rejections
+                for r in stale_rejections:
+                    logger.warning(
+                        "Rejected stale-evidence row: source_file_id=%s "
+                        "uploaded at turn %d but evidence is being recorded "
+                        "on turn %d with no re_analysis_reason. Dropped "
+                        "summary: %r",
+                        r["source_file_id"],
+                        r["file_uploaded_at_turn"],
+                        r["current_turn"],
+                        r["rejected_summary"],
+                    )
+
+            for ev_item in valid_evidence_items:
                 # Infer milestone attribution (Tier 2 + Tier 3)
                 # Tier 2: System infers from category + milestones completed this turn
                 # Tier 3: LLM can override via advances_milestones field

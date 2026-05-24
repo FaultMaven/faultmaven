@@ -322,6 +322,25 @@ class EvidenceToAdd(BaseModel):
         ),
     )
 
+    re_analysis_reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "OPTIONAL: One-sentence justification when this evidence row "
+            "references a file (source_file_id) that was uploaded in an "
+            "EARLIER turn rather than this turn's submission. Required "
+            "ONLY in the prior-turn case; leave empty when source_file_id "
+            "points at a file uploaded this turn. Examples of valid "
+            "reasons: 'Re-examining T7 logs alongside T13 logs to compare "
+            "pre- and post-mitigation behavior'; 'Cross-referencing T5 "
+            "config against T9 user claim'. The system rejects evidence "
+            "rows with a prior-turn source_file_id and no re_analysis_reason "
+            "to prevent recycling old data as if it were fresh. If the "
+            "user references new data ('latest logs', 'fresh output') but "
+            "did not attach a file this turn, ask them to provide it — do "
+            "NOT point at a prior-turn file."
+        ),
+    )
+
     @field_validator("category", mode="before")
     @classmethod
     def validate_category(cls, v):

@@ -807,6 +807,27 @@ Example — user pasted a verbatim error in their chat message:
 Example - No new findings from analysis:
   evidence_to_add: []  # Empty - no new evidence discovered
 
+EVIDENCE FRESHNESS — DO NOT recycle prior-turn files as if they were fresh:
+When the user references new data ("here are the latest logs", "the new
+config", "fresh output") but no file is attached this turn (you'll see
+no <evidence file_id="..."> from the current turn), DO NOT create an
+evidence_to_add row pointing at a file from an earlier turn. Two correct
+responses:
+  1. If you genuinely need to re-examine prior-turn evidence (e.g.,
+     comparing pre- and post-mitigation logs), set source_file_id AND
+     populate re_analysis_reason with a one-sentence justification.
+     Example:
+       source_file_id: "file_abc123"        # from earlier turn
+       re_analysis_reason: "Comparing T7 pre-mitigation log against
+                            user's new claim of resolution"
+  2. If the user said "here are the latest logs" but you see no new
+     attachment, ASK the user to provide the actual data. Do not point
+     at a prior-turn file as a substitute — that misrepresents stale
+     data as fresh and the system rejects it.
+The system rejects evidence_to_add rows that reference a prior-turn
+source_file_id without re_analysis_reason (logged as
+stale_evidence_rejections).
+
 EVIDENCE SUMMARY QUALITY:
 Summaries are the long-term memory for evidence — they persist after the
 structural index is evicted from context. Be SPECIFIC:
