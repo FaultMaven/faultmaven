@@ -2007,3 +2007,221 @@ class TestTerminalTransitionPendingActionCleanup:
         assert case.proposed_actions[1].status == "accepted"  # cleaned up
         assert len(case.action_attempts) == 1
         assert case.action_attempts[0].action_id == case.proposed_actions[1].action_id
+
+
+# =============================================================================
+# Tests: needs_info-followup pivot proposes CLOSED (loop-breaker fix)
+# Surfaced 2026-05-24 in Run 25 (case_e766aa6b658f T12-T17): when readiness
+# fails on a follow-up evaluation, the engine used to emit a close-suggestion
+# message but never propose the close transition itself — so the user's
+# "yes" had nothing to confirm, producing a 5-turn stuck loop. The fix:
+# both SUGGEST_CLOSE and NEEDS_INFO-second-pass branches now propose CLOSED
+# alongside the message, mirroring the dropdown path's behavior.
+# =============================================================================
+
+
+class TestNeedsInfoFollowupProposesClose:
+    """Verifies the needs_info-followup path proposes a CLOSED transition
+    in both pivot branches (SUGGEST_CLOSE and NEEDS_INFO second-pass),
+    so subsequent user confirmations actually fire instead of looping."""
+
+    def _make_engine(self):
+        mock_llm = MockLLMProvider()
+        mock_llm.generate = AsyncMock()
+        mock_repo = MagicMock()
+        mock_repo.save = AsyncMock(side_effect=lambda c: c)
+        return MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+        )
+
+    def _make_case_with_pending_resolve_needs_info(self):
+        """Case in INVESTIGATING with a pending RESOLVED transition
+        marked needs_info=True (the state the followup path re-evaluates)."""
+        case = Case(
+            case_id="case_aabbccdd1122",
+            title="Test Case",
+            status=CaseStatus.INVESTIGATING,
+            user_id="user_123",
+            organization_id="org_123",
+            description="Test",
+            problem_verification=ProblemVerification(
+                symptom_statement="Issue ongoing",
+                severity="HIGH",
+                temporal_state="ongoing",
+                urgency_level="high",
+            ),
+            inquiry=InquiryData(
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+                proposed_problem_statement="Issue ongoing",
+            ),
+        )
+        case.pending_transition = {
+            "to_status": "resolved",
+            "summary": "Awaiting user-provided detail",
+            "needs_info": True,
+            "evidence_ids": [],
+            "proposed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return case
+
+    @pytest.mark.asyncio
+    async def test_suggest_close_branch_proposes_close(self):
+        """Re-evaluation returns SUGGEST_CLOSE → engine proposes CLOSED so
+        the user's next confirmation fires. Pre-fix this branch only emitted
+        the close suggestions without a pending transition to confirm."""
+        engine = self._make_engine()
+        case = self._make_case_with_pending_resolve_needs_info()
+        # No root_cause, no solutions, no evidence → SUGGEST_CLOSE on
+        # re-eval (critical_missing >= 2 AND not has_evidence).
+        metadata = {}
+        await engine._check_automatic_transitions(case, metadata, user_message="ok")
+
+        assert case.pending_transition is not None
+        assert case.pending_transition["to_status"] == "closed"
+        # closure_reason is auto-derived; no mitigation path → closed_after_investigation
+        assert case.pending_transition["closure_reason"] == "closed_after_investigation"
+        assert metadata.get("resolution_suggest_close") is True
+        assert metadata.get("transition_proposed_this_turn") is True
+
+    @pytest.mark.asyncio
+    async def test_needs_info_second_pass_proposes_close(self):
+        """Re-evaluation returns NEEDS_INFO (root cause present, solution
+        missing, evidence present) → engine proposes CLOSED on second ask
+        with the hardcoded close-suggestion message."""
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+            RootCauseConclusion,
+        )
+
+        engine = self._make_engine()
+        case = self._make_case_with_pending_resolve_needs_info()
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Misconfigured connection pool",
+            confidence_level="verified",
+            likelihood=0.9,
+            mechanism="Pool timeout too short",
+        )
+        case.evidence.append(
+            Evidence(
+                evidence_id="ev_001122334455",
+                summary="Test",
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id="file_aabbccdd1122",
+                primary_purpose="Test",
+                collected_by="user_123",
+                collected_at_turn=1,
+                collected_at=datetime.now(timezone.utc),
+            )
+        )
+        # case.solutions stays empty → readiness verdict is NEEDS_INFO
+        # (one critical missing — "solution")
+        metadata = {}
+        await engine._check_automatic_transitions(case, metadata, user_message="ok")
+
+        assert case.pending_transition is not None
+        assert case.pending_transition["to_status"] == "closed"
+        assert case.pending_transition["closure_reason"] == "closed_after_investigation"
+        assert metadata.get("resolution_suggest_close") is True
+        assert metadata.get("transition_proposed_this_turn") is True
+        # The hardcoded second-ask message is what the user sees
+        assert (
+            "Without a documented solution" in metadata["resolution_readiness_message"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_ready_branch_unchanged(self):
+        """Control: if re-eval is READY, the path clears needs_info and
+        keeps the pending RESOLVED — must not have been broken by the
+        SUGGEST_CLOSE/NEEDS_INFO branch changes."""
+        engine = self._make_engine()
+        case = self._make_case_with_pending_resolve_needs_info()
+        _make_resolution_ready(case)  # adds root_cause + Solution row
+        # Also need evidence to fully satisfy readiness
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+        )
+
+        case.evidence.append(
+            Evidence(
+                evidence_id="ev_001122334455",
+                summary="Test",
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id="file_aabbccdd1122",
+                primary_purpose="Test",
+                collected_by="user_123",
+                collected_at_turn=1,
+                collected_at=datetime.now(timezone.utc),
+            )
+        )
+        metadata = {}
+        await engine._check_automatic_transitions(case, metadata, user_message="ok")
+
+        # Pending transition stays as RESOLVED, needs_info cleared
+        assert case.pending_transition is not None
+        assert case.pending_transition["to_status"] == "resolved"
+        assert case.pending_transition.get("needs_info") is False
+        assert metadata.get("resolution_ready_for_confirmation") is True
+        # The propose-close path did NOT fire
+        assert metadata.get("resolution_suggest_close") is not True
+
+    @pytest.mark.asyncio
+    async def test_closure_reason_mitigation_sufficient_on_gate3(self):
+        """When the case is at Gate 3 (mitigation_first path, mitigation
+        verified, RCA not yet committed), the auto-derived closure_reason
+        is 'mitigation_sufficient' rather than 'closed_after_investigation'."""
+        from faultmaven.modules.case.contracts import (
+            InvestigationPath,
+            PathSelection,
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+            RootCauseConclusion,
+        )
+
+        engine = self._make_engine()
+        case = self._make_case_with_pending_resolve_needs_info()
+        case.path_selection = PathSelection(
+            path=InvestigationPath.MITIGATION_FIRST,
+            auto_selected=True,
+            rationale="ongoing + high",
+            user_confirmed=True,
+            user_confirmed_at_turn=2,
+            mitigation_completed_at_turn=5,
+            rca_after_mitigation_confirmed=False,  # Gate 3 still open
+        )
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Misconfigured connection pool",
+            confidence_level="verified",
+            likelihood=0.9,
+            mechanism="Pool timeout too short",
+        )
+        case.evidence.append(
+            Evidence(
+                evidence_id="ev_001122334455",
+                summary="Test",
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id="file_aabbccdd1122",
+                primary_purpose="Test",
+                collected_by="user_123",
+                collected_at_turn=1,
+                collected_at=datetime.now(timezone.utc),
+            )
+        )
+        # No Solution row → readiness verdict NEEDS_INFO
+        metadata = {}
+        await engine._check_automatic_transitions(case, metadata, user_message="ok")
+
+        assert case.pending_transition is not None
+        assert case.pending_transition["to_status"] == "closed"
+        # Gate 3 open → closure_reason is mitigation_sufficient
+        assert case.pending_transition["closure_reason"] == "mitigation_sufficient"

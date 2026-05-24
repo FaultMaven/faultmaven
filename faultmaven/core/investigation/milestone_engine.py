@@ -6037,6 +6037,7 @@ class MilestoneEngine:
                 from faultmaven.core.investigation.terminal_transitions import (
                     assess_resolution_readiness,
                     cancel_pending_transition,
+                    propose_transition,
                 )
 
                 readiness = assess_resolution_readiness(case)
@@ -6050,30 +6051,52 @@ class MilestoneEngine:
                         f"requirements met — presenting confirmation"
                     )
                 elif readiness.verdict == readiness.SUGGEST_CLOSE:
-                    # Still fundamentally lacking — suggest Close instead
+                    # Still fundamentally lacking — pivot to CLOSED. Propose
+                    # the close transition (not just emit a suggestion) so
+                    # the user's next positive confirmation actually fires.
+                    # The earlier code only emitted the message and the
+                    # close suggestions, with no pending transition for
+                    # those suggestions to confirm — producing the stuck
+                    # loop documented in project-resolution-gate-stuck-loop.
+                    # closure_reason auto-derives via derive_closure_reason().
                     cancel_pending_transition(case)
+                    propose_transition(
+                        case=case,
+                        to_status="closed",
+                        summary=readiness.message,
+                    )
+                    metadata["transition_proposed_this_turn"] = True
                     metadata["resolution_suggest_close"] = True
                     metadata["resolution_readiness_message"] = readiness.message
                     logger.info(
                         f"Case {case.case_id}: needs_info not satisfied, "
-                        f"suggesting Close instead (missing: {readiness.missing})"
+                        f"proposing Close (missing: {readiness.missing})"
                     )
                 else:
-                    # NEEDS_INFO still — user was already asked once and
-                    # didn't (or couldn't) provide the missing info.
-                    # Don't loop asking again. Pivot to suggest Close.
+                    # NEEDS_INFO still — user was asked once, didn't (or
+                    # couldn't) provide. Don't loop asking again. Propose
+                    # CLOSE so the user's next positive confirmation fires
+                    # — the loop's root cause was emitting a close-
+                    # suggestion with no pending transition to confirm.
                     cancel_pending_transition(case)
-                    metadata["resolution_suggest_close"] = True
-                    metadata["resolution_readiness_message"] = (
+                    close_message = (
                         "I understand you don't have additional details. "
                         "Without a documented solution, I can't mark this "
                         "as **resolved**.\n\n"
                         "You can **close** the case instead — this preserves "
                         "the root cause analysis and investigation history."
                     )
+                    propose_transition(
+                        case=case,
+                        to_status="closed",
+                        summary=close_message,
+                    )
+                    metadata["transition_proposed_this_turn"] = True
+                    metadata["resolution_suggest_close"] = True
+                    metadata["resolution_readiness_message"] = close_message
                     logger.info(
                         f"Case {case.case_id}: needs_info not satisfied after "
-                        f"second ask, pivoting to suggest Close "
+                        f"second ask, proposing Close "
                         f"(missing: {readiness.missing})"
                     )
             else:
