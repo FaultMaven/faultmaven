@@ -447,10 +447,18 @@ class HypothesisEvidenceLinkToAdd(BaseModel):
     """Link evidence to a hypothesis."""
 
     hypothesis_id_ref: str = Field(
-        description="Hypothesis ID or 'new_index_N' if created this turn"
+        description=(
+            "Hypothesis ID string (format: hyp_xxxxxxxxxxxx) or "
+            "'new_index_N' if created this turn. MUST be a string — "
+            "do not emit a bare integer."
+        )
     )
     evidence_id_ref: str = Field(
-        description="Evidence ID or 'new_index_N' if created this turn"
+        description=(
+            "Evidence ID string (format: ev_xxxxxxxxxxxx) or "
+            "'new_index_N' if created this turn. MUST be a string — "
+            "do not emit a bare integer."
+        )
     )
     stance: EvidenceStance
     reasoning: str
@@ -460,6 +468,31 @@ class HypothesisEvidenceLinkToAdd(BaseModel):
         le=1.0,
         description="Confidence in the stance assessment (0.0-1.0)",
     )
+
+    @field_validator("hypothesis_id_ref", "evidence_id_ref", mode="before")
+    @classmethod
+    def _coerce_bare_int_to_new_index(cls, v):
+        """Coerce bare integers to ``new_index_N`` form.
+
+        Gemini's function-calling tool spec is looser on type enforcement
+        than its response_schema mode — bare integers can slip through
+        where the schema declares ``str``. The schema description names
+        two valid string forms (existing ID or ``new_index_N``); a bare
+        integer ``N`` almost certainly means "the Nth new item this turn"
+        because existing IDs always have ``hyp_xxxxxxxxxxxx`` /
+        ``ev_xxxxxxxxxxxx`` prefixes. Coerce at the boundary so a 500
+        becomes a normal new-index reference; downstream resolution will
+        either find or fail-soft as it would for any new_index lookup.
+
+        Note: this is a tactical patch for a specific shape failure
+        variant (int-where-string on ID-ref fields). The strategic fix
+        — tightening Gemini's function-calling schema enforcement so
+        it rejects the wrong type at decode time — is tracked separately
+        (see PR description).
+        """
+        if isinstance(v, int) and not isinstance(v, bool):
+            return f"new_index_{v}"
+        return v
 
 
 class JournalEntryOutput(BaseModel):
