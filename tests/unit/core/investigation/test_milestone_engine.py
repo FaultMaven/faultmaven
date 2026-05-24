@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -138,7 +138,7 @@ class TestMilestoneEngine:
                 content_ref="test.log",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
                 source_type=EvidenceSourceType.USER_DESCRIPTION,
-                collected_at=datetime.now(timezone.utc),
+                collected_at=datetime.now(UTC),
                 collected_by="user_123",
                 primary_purpose="Testing",
                 preprocessed_content="Log content",
@@ -286,7 +286,7 @@ class TestMilestoneEngine:
                 content_ref="test.log",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
                 source_type=EvidenceSourceType.USER_DESCRIPTION,
-                collected_at=datetime.now(timezone.utc),
+                collected_at=datetime.now(UTC),
                 collected_by="user_123",
                 primary_purpose="Testing",
                 preprocessed_content="Log content",
@@ -2063,7 +2063,7 @@ class TestNeedsInfoFollowupProposesClose:
             "summary": "Awaiting user-provided detail",
             "needs_info": True,
             "evidence_ids": [],
-            "proposed_at": datetime.now(timezone.utc).isoformat(),
+            "proposed_at": datetime.now(UTC).isoformat(),
         }
         return case
 
@@ -2116,7 +2116,7 @@ class TestNeedsInfoFollowupProposesClose:
                 primary_purpose="Test",
                 collected_by="user_123",
                 collected_at_turn=1,
-                collected_at=datetime.now(timezone.utc),
+                collected_at=datetime.now(UTC),
             )
         )
         # case.solutions stays empty → readiness verdict is NEEDS_INFO
@@ -2159,7 +2159,7 @@ class TestNeedsInfoFollowupProposesClose:
                 primary_purpose="Test",
                 collected_by="user_123",
                 collected_at_turn=1,
-                collected_at=datetime.now(timezone.utc),
+                collected_at=datetime.now(UTC),
             )
         )
         metadata = {}
@@ -2179,11 +2179,11 @@ class TestNeedsInfoFollowupProposesClose:
         verified, RCA not yet committed), the auto-derived closure_reason
         is 'mitigation_sufficient' rather than 'closed_after_investigation'."""
         from faultmaven.modules.case.contracts import (
-            InvestigationPath,
-            PathSelection,
             Evidence,
             EvidenceCategory,
             EvidenceSourceType,
+            InvestigationPath,
+            PathSelection,
             RootCauseConclusion,
         )
 
@@ -2214,7 +2214,7 @@ class TestNeedsInfoFollowupProposesClose:
                 primary_purpose="Test",
                 collected_by="user_123",
                 collected_at_turn=1,
-                collected_at=datetime.now(timezone.utc),
+                collected_at=datetime.now(UTC),
             )
         )
         # No Solution row → readiness verdict NEEDS_INFO
