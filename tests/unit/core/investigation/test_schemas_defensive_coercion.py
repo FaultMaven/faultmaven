@@ -26,12 +26,13 @@ import pytest
 from pydantic import ValidationError
 
 from faultmaven.core.investigation.schemas import (
+    HypothesisEvidenceLinkToAdd,
     InvestigationResponse_Diagnosis,
     InvestigationResponse_General,
     InvestigationResponse_Mitigation,
     InvestigationResponse_Treatment,
 )
-from faultmaven.modules.case.contracts import TurnOutcome
+from faultmaven.modules.case.contracts import EvidenceStance, TurnOutcome
 
 # ============================================================
 # Helpers
@@ -152,3 +153,82 @@ class TestSuggestedFollowUpsCoercion:
         """Baseline: field is Optional with default=None — absence is fine."""
         parsed = InvestigationResponse_General.model_validate(_minimal_payload())
         assert parsed.suggested_follow_ups is None
+
+
+# ============================================================
+# HypothesisEvidenceLinkToAdd — int-where-string coercion
+# (Variant E in the shape-failures backlog; observed on Gemini 2.5 Pro
+# function-calling at turn 12 of case_8a8ca15a4f03, 2026-05-24)
+# ============================================================
+
+
+def _link_payload(**overrides):
+    """Minimum payload for a HypothesisEvidenceLinkToAdd row."""
+    base = {
+        "hypothesis_id_ref": "hyp_aaaaaaaaaaaa",
+        "evidence_id_ref": "ev_bbbbbbbbbbbb",
+        "stance": EvidenceStance.SUPPORTS,
+        "reasoning": "ev shows hypothesis matches symptom",
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.unit
+class TestHypothesisEvidenceLinkIntCoercion:
+    """Bare integers on ``hypothesis_id_ref`` / ``evidence_id_ref`` get
+    coerced to ``new_index_N`` form. Production observation: Gemini 2.5
+    Pro's function-calling tool spec lets ``hypothesis_id_ref: 1``
+    through despite the schema declaring ``str``. Pydantic would
+    otherwise raise and 500 the whole turn."""
+
+    def test_existing_string_id_passes_through(self):
+        link = HypothesisEvidenceLinkToAdd.model_validate(_link_payload())
+        assert link.hypothesis_id_ref == "hyp_aaaaaaaaaaaa"
+        assert link.evidence_id_ref == "ev_bbbbbbbbbbbb"
+
+    def test_new_index_string_passes_through(self):
+        link = HypothesisEvidenceLinkToAdd.model_validate(
+            _link_payload(
+                hypothesis_id_ref="new_index_2",
+                evidence_id_ref="new_index_3",
+            )
+        )
+        assert link.hypothesis_id_ref == "new_index_2"
+        assert link.evidence_id_ref == "new_index_3"
+
+    def test_bare_int_on_hypothesis_ref_coerced(self):
+        """Production failure: LLM emitted ``1`` instead of ``new_index_1``."""
+        link = HypothesisEvidenceLinkToAdd.model_validate(
+            _link_payload(hypothesis_id_ref=1)
+        )
+        assert link.hypothesis_id_ref == "new_index_1"
+
+    def test_bare_int_on_evidence_ref_coerced(self):
+        link = HypothesisEvidenceLinkToAdd.model_validate(
+            _link_payload(evidence_id_ref=2)
+        )
+        assert link.evidence_id_ref == "new_index_2"
+
+    def test_both_refs_coerced_independently(self):
+        link = HypothesisEvidenceLinkToAdd.model_validate(
+            _link_payload(hypothesis_id_ref=1, evidence_id_ref=7)
+        )
+        assert link.hypothesis_id_ref == "new_index_1"
+        assert link.evidence_id_ref == "new_index_7"
+
+    def test_bool_is_not_coerced(self):
+        """``isinstance(True, int)`` is True in Python — must not coerce
+        booleans to ``new_index_True``. Pydantic should raise instead."""
+        with pytest.raises(ValidationError):
+            HypothesisEvidenceLinkToAdd.model_validate(
+                _link_payload(hypothesis_id_ref=True)
+            )
+
+    def test_float_not_coerced(self):
+        """Only bare ``int`` is rescued. Floats remain a type error so the
+        validator doesn't accidentally swallow malformed numeric inputs."""
+        with pytest.raises(ValidationError):
+            HypothesisEvidenceLinkToAdd.model_validate(
+                _link_payload(hypothesis_id_ref=1.5)
+            )
