@@ -16,7 +16,9 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
     InquiryData,
+    InvestigationPath,
     InvestigationStage,
+    PathSelection,
     ProblemVerification,
 )
 
@@ -67,6 +69,9 @@ def mock_repo():
 
 @pytest.fixture
 def base_case():
+    # Post-INV-19: any INVESTIGATING case must carry a committed
+    # path_selection (existence == Gate 2 commit). The engine surfaces a
+    # RuntimeError on milestone progression if this is missing.
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
@@ -85,6 +90,13 @@ def base_case():
             decided_to_investigate=True,
             thread_id="thread_123",
             proposed_problem_statement="Test symptom",
+        ),
+        path_selection=PathSelection(
+            path=InvestigationPath.MITIGATION_FIRST,
+            auto_selected=True,
+            rationale="ongoing high impact",
+            alternate_path=InvestigationPath.ROOT_CAUSE,
+            selected_by="user_123",
         ),
     )
 
@@ -726,9 +738,12 @@ class TestMilestoneEngine:
 
         Design: Dropdown = message. The dropdown does NOT bypass the agent.
         It injects a pre-composed message and the LLM handles the multi-turn
-        problem statement flow. Post-slice-2 (INV-19), the case also needs
-        Gate 2 (path_selection.user_confirmed=True) before transitioning,
-        which fires as a separate user click after Gate 1 closes.
+        problem statement flow. Post-INV-19, the case also needs Gate 2
+        (case.path_selection != None — existence == Gate 2 commit) before
+        transitioning, which fires as a separate user click after Gate 1
+        closes. Path_selection is never written during INQUIRY; the Gate 2
+        recommendation is computed on-demand and rendered into the
+        affordance pair.
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -779,17 +794,18 @@ class TestMilestoneEngine:
 
         updated_case = result["case_updated"]
 
-        # Turn 1: Gate 1 closes, path_selection computed, Gate 2 pending.
+        # Turn 1: Gate 1 closes, path_selection NOT yet written (recommendation
+        # is rendered on-demand into the affordance pair), Gate 2 pending.
         assert updated_case.status == CaseStatus.INQUIRY  # INV-19
         assert updated_case.inquiry.problem_statement_confirmed is True
         assert updated_case.inquiry.decided_to_investigate is True
-        assert updated_case.path_selection is not None
-        assert updated_case.path_selection.user_confirmed is False
+        assert updated_case.path_selection is None
 
         # Should have called LLM (not bypassed)
         assert mock_llm.generate.called
 
-        # Turn 2: user clicks the path-selection suggestion → Gate 2 closes → transition fires.
+        # Turn 2: user clicks the path-selection suggestion → Gate 2 closes
+        # (creates case.path_selection) → transition fires.
         mock_response_turn2 = json.dumps(
             {
                 "agent_response": "Starting investigation.",
@@ -802,12 +818,12 @@ class TestMilestoneEngine:
             case=updated_case,
             user_message="Let's start with root-cause analysis.",
             intent_type="path_selection",
-            intent_data={"investigation_path": updated_case.path_selection.path.value},
+            intent_data={"investigation_path": "root_cause"},
         )
 
         final_case = result2["case_updated"]
         assert final_case.status == CaseStatus.INVESTIGATING
-        assert final_case.path_selection.user_confirmed is True
+        assert final_case.path_selection is not None  # Gate 2 committed
         assert len(final_case.action_history) > 0
         last_transition = final_case.action_history[-1]
         assert last_transition.from_status == CaseStatus.INQUIRY
@@ -1203,13 +1219,13 @@ class TestInquiryConfirmation:
         result = await engine.process_turn(case, "yes, proceed")
 
         updated_case = result["case_updated"]
-        # Gate 1 closed via the LLM path (problem_statement_confirmed=True),
-        # path_selection computed, Gate 2 pending. INV-19 holds — case stays
-        # in INQUIRY until the user clicks the Gate 2 suggestion.
+        # Gate 1 closed via the LLM path (problem_statement_confirmed=True);
+        # Gate 2 pending — case.path_selection stays None until the user
+        # clicks the Gate 2 suggestion (existence == commit). INV-19 holds —
+        # case stays in INQUIRY until Gate 2 is committed.
         assert updated_case.inquiry.problem_statement_confirmed is True
         assert updated_case.status == CaseStatus.INQUIRY
-        assert updated_case.path_selection is not None
-        assert updated_case.path_selection.user_confirmed is False
+        assert updated_case.path_selection is None
 
 
 # =============================================================================
@@ -2193,8 +2209,7 @@ class TestNeedsInfoFollowupProposesClose:
             path=InvestigationPath.MITIGATION_FIRST,
             auto_selected=True,
             rationale="ongoing + high",
-            user_confirmed=True,
-            user_confirmed_at_turn=2,
+            selected_by="u1",  # path existence = Gate 2 committed
             mitigation_completed_at_turn=5,
             rca_after_mitigation_confirmed=False,  # Gate 3 still open
         )

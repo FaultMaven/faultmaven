@@ -402,11 +402,12 @@ class CaseUIResponse_Inquiry(BaseModel):
     path_selection: Optional[PathSelection] = Field(
         default=None,
         description=(
-            "Investigation path recommendation + user-confirmation state. "
-            "Populated after Gate 1 (problem statement confirmation) once "
-            "urgency signals are available; Gate 2 is open when "
-            "user_confirmed is False. Frontend renders the Gate 2 chip / "
-            "path-aware progress dots based on this object."
+            "Investigation path commitment. INQUIRY-stage cases have "
+            "``path_selection=None`` until the user clicks a Gate 2 button "
+            "(MITIGATION_FIRST or ROOT_CAUSE) — existence of this field IS "
+            "the Gate 2 commit. The recommendation that powers the Gate 2 "
+            "chip is computed on-demand by the engine and rendered into the "
+            "affordance pair; it is not stored on the case."
         ),
     )
 
@@ -458,11 +459,12 @@ class CaseUIResponse_Investigating(BaseModel):
     path_selection: Optional[PathSelection] = Field(
         default=None,
         description=(
-            "Investigation path commitment + Gate-3 state. user_confirmed "
-            "is always True for INVESTIGATING (Gate 2 must pass before "
-            "transition). mitigation_completed_at_turn is set after "
-            "mitigation_verified; rca_after_mitigation_confirmed drives "
-            "Gate 3 prompts on the mitigation-first path."
+            "Investigation path commitment + Gate-3 state. Always non-None "
+            "for INVESTIGATING (Gate 2 must pass before transition); the "
+            "field's existence is the commit signal. "
+            "mitigation_completed_at_turn is set after mitigation_verified; "
+            "rca_after_mitigation_confirmed drives Gate 3 prompts on the "
+            "mitigation-first path."
         ),
     )
 

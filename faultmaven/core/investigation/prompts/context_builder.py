@@ -2017,43 +2017,51 @@ def build_investigation_context(
     # not prescribe exact suggestion labels — it instructs the LLM to
     # surface the recommendation conversationally and wait for the user's
     # click. See INV-19 (Gate 2 must pass before INQUIRY -> INVESTIGATING).
+    # Gate 2 pending: Gate 1 passed but user hasn't committed a path.
+    # case.path_selection is None at this point (committed only at Gate 2
+    # click). Recommendation is computed on-demand for the prompt
+    # context, matching what the COOPERATIVE buttons surface.
     if (
         case.status == CaseStatus.INQUIRY
         and case.inquiry
         and case.inquiry.problem_statement_confirmed
-        and case.path_selection is not None
-        and not case.path_selection.user_confirmed
+        and case.path_selection is None
     ):
-        ps = case.path_selection
-        recommended_label = (
-            "mitigation-first"
-            if ps.path.value == "mitigation_first"
-            else "root-cause analysis"
+        from faultmaven.modules.case.domain.services.investigation_router import (
+            recommend_investigation_path_for_case,
         )
-        alternate_label = (
-            "mitigation-first"
-            if (ps.alternate_path and ps.alternate_path.value == "mitigation_first")
-            else "root-cause analysis"
-        )
-        inquiry_state_str += (
-            "\n<path_selection_state>\n"
-            f"RECOMMENDED_PATH: {ps.path.value}\n"
-            f"AUTO_SELECTED: {ps.auto_selected}\n"
-            f"RATIONALE: {ps.rationale}\n"
-            f"ALTERNATE_PATH: {ps.alternate_path.value if ps.alternate_path else 'none'}\n"
-            "USER_CONFIRMED: False\n"
-            "INSTRUCTION: Gate 1 (problem statement) has passed. Surface the "
-            "investigation-path recommendation conversationally so the user "
-            "can confirm or override before investigation begins. State the "
-            f"recommendation ({recommended_label}) with a short rationale, "
-            f"and mention the alternate ({alternate_label}). Do NOT ask the "
-            "user to type their choice — the engine deterministically "
-            "attaches two COOPERATIVE suggestion buttons. Do NOT set "
-            "user_confirmed_investigation=True again — it is already True. "
-            "The case will not transition to INVESTIGATING until the user "
-            "clicks one of the path-selection suggestions.\n"
-            "</path_selection_state>"
-        )
+
+        ps = recommend_investigation_path_for_case(case)
+        if ps is not None and ps.alternate_path is not None:
+            recommended_label = (
+                "mitigation-first"
+                if ps.path.value == "mitigation_first"
+                else "root-cause analysis"
+            )
+            alternate_label = (
+                "mitigation-first"
+                if ps.alternate_path.value == "mitigation_first"
+                else "root-cause analysis"
+            )
+            inquiry_state_str += (
+                "\n<path_selection_state>\n"
+                f"RECOMMENDED_PATH: {ps.path.value}\n"
+                f"AUTO_SELECTED: {ps.auto_selected}\n"
+                f"RATIONALE: {ps.rationale}\n"
+                f"ALTERNATE_PATH: {ps.alternate_path.value}\n"
+                "GATE_2_STATUS: pending (user has not committed a path yet)\n"
+                "INSTRUCTION: Gate 1 (problem statement) has passed. Surface the "
+                "investigation-path recommendation conversationally so the user "
+                "can confirm or override before investigation begins. State the "
+                f"recommendation ({recommended_label}) with a short rationale, "
+                f"and mention the alternate ({alternate_label}). Do NOT ask the "
+                "user to type their choice — the engine deterministically "
+                "attaches two COOPERATIVE suggestion buttons. Do NOT set "
+                "user_confirmed_investigation=True again — it is already True. "
+                "The case will not transition to INVESTIGATING until the user "
+                "clicks one of the path-selection suggestions.\n"
+                "</path_selection_state>"
+            )
 
     # Phase 4c — entity highlights block. Pre-fetched by the milestone
     # engine from the Phase 4 ``case_entities`` registry. Empty string

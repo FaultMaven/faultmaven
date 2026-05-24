@@ -120,19 +120,10 @@ class TestRouterAmbiguousFallback:
 
 
 class TestPathSelectionGateDefaults:
-    """The router populates the recommendation; Gate 2 confirmation is left for the user.
-
-    All PathSelection instances the router emits must have user_confirmed=False
-    so the engine can detect 'recommendation pending confirmation' state.
-    """
-
-    def test_router_output_is_not_yet_user_confirmed(self):
-        """Every router-emitted PathSelection should default to user_confirmed=False."""
-        sel = determine_investigation_path(
-            _verification(TemporalState.ONGOING, UrgencyLevel.CRITICAL)
-        )
-        assert sel.user_confirmed is False
-        assert sel.user_confirmed_at_turn is None
+    """The router produces a recommendation PathSelection. Gate 2 commit
+    semantics (path_selection existence == user committed) live on the engine
+    side; this class only pins Gate 3 field defaults and direct-construction
+    sanity for tests."""
 
     def test_gate3_fields_default_to_unconfirmed(self):
         """Gate 3 fields default to None/False; only set after mitigation_verified."""
@@ -144,18 +135,15 @@ class TestPathSelectionGateDefaults:
         assert sel.mitigation_completed_at_turn is None
 
     def test_path_selection_can_be_constructed_with_gate_fields(self):
-        """Direct construction (used in tests + future slice 2 wiring)."""
+        """Direct construction (used in tests + Gate 3 wiring)."""
         ps = PathSelection(
             path=InvestigationPath.MITIGATION_FIRST,
             auto_selected=True,
             rationale="test",
-            user_confirmed=True,
-            user_confirmed_at_turn=5,
+            selected_by="u1",
             rca_after_mitigation_confirmed=True,
             rca_after_mitigation_confirmed_at_turn=12,
             mitigation_completed_at_turn=10,
         )
-        assert ps.user_confirmed is True
-        assert ps.user_confirmed_at_turn == 5
         assert ps.rca_after_mitigation_confirmed is True
         assert ps.mitigation_completed_at_turn == 10

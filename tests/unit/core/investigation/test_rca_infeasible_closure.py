@@ -68,7 +68,7 @@ def _make_case(
             path=InvestigationPath.MITIGATION_FIRST,
             auto_selected=True,
             rationale="ongoing critical",
-            user_confirmed=True,
+            selected_by="u1",
         ),
         inquiry=InquiryData(
             problem_statement_confirmed=True,

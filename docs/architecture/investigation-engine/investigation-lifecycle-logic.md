@@ -540,8 +540,8 @@ Every load-bearing lifecycle rule has at least one enforcement surface: code, sc
 | INV-16 | The LLM is the **sole authority** for milestone advancement. `validate_milestone_claims` in the evidence processor is read-only — it returns validation results but never writes to `case.progress.*`. Milestone state changes flow ONLY from the LLM's structured output through the milestone engine. | §3.1 *Issue A* (keyword-discovery dual pathway removed) | **Code-guarded by construction** — `validate_milestone_claims` returns `List[MilestoneValidationResult]` and contains no `case.progress.<field> =` assignments. Static-source guard pins this so any future regression (a refactor reintroducing a write inside the evidence processor) breaks the test. | `test_inv16_*` in `test_lifecycle_invariants.py` |
 | INV-17 | An LLM must not classify evidence as `causal_evidence` unless at least one hypothesis exists on the case — causal claims presuppose a hypothesis to attach to. | §4.3 line 1801 (bolded "**Constraint**") | **Prompt-only** — the canonical ban lives in `DIAGNOSIS_INSTRUCTIONS` (`templates.py:993`: *"Never classify evidence as causal_evidence without a corresponding hypothesis…"*), which is concatenated into the INVESTIGATION_BASE pipeline at `:2070` / `:2125`. The same rule is restated as a SAFETY RULE in the `FALLBACK_INVESTIGATION_TEMPLATE` (`templates.py:1886`) for the degraded-prompt path. No Pydantic validator on `EvidenceToAdd` rejects this combination; removing both prompt lines removes the invariant entirely. | `test_inv17_*` in `test_lifecycle_invariants.py` |
 | INV-18 | Runbook generation is RESOLVED-only. CLOSED cases are not eligible regardless of `closure_reason`. Both the chat-side dispatcher and the API endpoint reject non-RESOLVED cases. | §4.5.1 line 1971 — *"Eligibility: RESOLVED cases only."* | **Code-guarded at two layers** — (1) Engine: `_process_terminal_turn` gates dispatch on `case.status == CaseStatus.RESOLVED`; non-RESOLVED falls through to terminal Q&A. (2) API: `POST /knowledge/convert-from-case` returns HTTP 400 when `case_status != "resolved"` (`conversion_routes.py:511`). | `test_inv18_*` in `test_lifecycle_invariants.py` |
-| INV-19 | INQUIRY → INVESTIGATING also requires `case.path_selection.user_confirmed = True` (Gate 2). The transition gate must verify *both* Gate 1 (problem statement confirmed) and Gate 2 (investigation path confirmed) before status flips. The router populates `path_selection` with `user_confirmed=False` after Gate 1; the user resolves Gate 2 by clicking one of the two COOPERATIVE path suggestions (or by typing path intent). | docs/working/WIP-investigation-gates-implementation.md (slice 2 / Three gates); slice 2 of investigation-gates implementation | **Code-guarded** — `_check_automatic_transitions` requires `case.path_selection is not None and case.path_selection.user_confirmed` in addition to the Gate 1 condition before calling `_transition_to_investigating`. The deterministic Gate 2 suggestion pair is emitted by the response builder whenever Gate 1 has passed but Gate 2 is still open, so the user has a clickable path regardless of LLM compliance with the prompt directive. *Composition seam:* the deterministic Gate 2 suggestion emission and the prompt-side `<path_selection_state>` directive are tied — removing or weakening the prompt block (e.g., reverting to the default `NOT_YET_CONFIRMED` rule with no path-selection instruction) does not break the invariant (buttons still emit, user can still click) but does degrade UX: the user sees path-selection buttons next to a response that doesn't acknowledge them. Audit `context_builder.py:inquiry_state_str` (path-selection sub-block) and `milestone_engine.py:_path_selection_suggestions` together when either changes. | `TestINV19GateTwoTransitionGate` in `tests/unit/core/investigation/test_investigation_gates.py` |
-| INV-20 | Mutating `case.inquiry.preliminary_urgency.level` or `case.inquiry.preliminary_urgency.is_ongoing` after Gate 2 has passed clears `case.path_selection`, forcing re-computation and a fresh Gate 2 next turn. The mutation watcher is deterministic and runs every inquiry turn — does NOT depend on the LLM noticing the change. | docs/working/WIP-investigation-gates-implementation.md (slice 2 / Re-evaluation triggers) | **Code-guarded** — `_apply_inquiry_updates` snapshots the pre-turn `preliminary_urgency` before applying LLM-emitted updates, then compares old/new `(level, is_ongoing)` tuples via `_inquiry_path_signals_changed`. On change, `case.path_selection = None`; the subsequent `_compute_inquiry_path_selection` call recomputes (idempotency guard on `path_selection is None` allows re-population). Mutations to other fields (`impact_assessment`, `is_incident_report`) do NOT invalidate Gate 2 — only signals the router consumes. | `TestINV20MutationWatcher` in `tests/unit/core/investigation/test_investigation_gates.py` |
+| INV-19 | INQUIRY → INVESTIGATING also requires `case.path_selection is not None` (Gate 2). Existence of `case.path_selection` IS the Gate 2 commit — the field is only written by the Gate 2 click handler in `milestone_engine` and never auto-populated during INQUIRY. The transition gate must verify *both* Gate 1 (problem statement confirmed) and Gate 2 (`path_selection` set) before status flips. The recommendation that powers the Gate 2 affordance pair is computed on-demand by `recommend_investigation_path_for_case` (in `modules/case/domain/services/investigation_router.py`) at suggestion-render and prompt-context-build time; it is NOT stored on the case. The user resolves Gate 2 by clicking one of the two COOPERATIVE path suggestions (or by typing a `PATH_SELECTION` intent). | docs/working/WIP-investigation-gates-implementation.md (slice 2 / Three gates); path-selection commit-timing refactor (2026-05-23) | **Code-guarded at two layers** — (1) `_check_automatic_transitions` requires `case.path_selection is not None` in addition to the Gate 1 condition before calling `_transition_to_investigating`. (2) `_apply_investigation_updates` raises a `RuntimeError` if the engine ever reaches an INVESTIGATING milestone progression with `path_selection is None` — surfacing the invariant violation loudly rather than silently auto-creating a path. The deterministic Gate 2 suggestion pair is emitted by the response builder whenever Gate 1 has passed but Gate 2 is still open, so the user has a clickable path regardless of LLM compliance with the prompt directive. *Composition seam:* the deterministic Gate 2 suggestion emission and the prompt-side `<path_selection_state>` directive are tied — removing or weakening the prompt block does not break the invariant (buttons still emit, user can still click) but does degrade UX. Audit `context_builder.py:inquiry_state_str` (path-selection sub-block) and `milestone_engine.py:_path_selection_suggestions` together when either changes. | `TestINV19PathSelectionAsCommitSignal` and `TestGate2IsPending` in `tests/unit/core/investigation/test_investigation_gates.py`; `TestEngineOwnedAffordances::test_gate2_pending_returns_path_selection_pair` in `tests/unit/core/investigation/test_engine_owned_affordances.py` |
+| ~~INV-20~~ | **REMOVED (2026-05-23).** The mutation watcher that cleared `case.path_selection` on urgency-signal change was deleted in the path-selection commit-timing refactor. Under the new design `case.path_selection` is never written during INQUIRY at all (Gate 2 click is the sole creation site), so urgency-signal mutations *before* Gate 2 simply re-flow through the on-demand recommendation helper on the next render. After Gate 2 commits, the case has already transitioned to INVESTIGATING and `case.path_selection` is now immutable commitment — urgency-signal changes at that point are out of scope for Gate 2 re-evaluation. The watcher's purpose collapsed when the field stopped being pre-computed. | — | n/a (removed) | n/a (removed) |
 | INV-21 | Gate 3 — on a mitigation-first case after `mitigation_verified` first becomes True, RCA-side milestone advances (`root_cause_identified`) are blocked until the user explicitly confirms continuation via the `POST_MITIGATION_CHOICE` intent (`path_selection.rca_after_mitigation_confirmed = True`). The alternative outcome is a `STATUS_TRANSITION` to CLOSED with `closure_reason = mitigation_sufficient`. Either path closes Gate 3; until one fires, RCA cannot silently resume. | docs/working/WIP-investigation-gates-implementation.md (slice 3 / Gate 3) | **Code-guarded at three layers** — (1) `_apply_stage_gate_side_effects` sets `case.path_selection.mitigation_completed_at_turn` the first turn `mitigation_verified` is completed (the durable Gate 3 boundary marker). Mitigation gate flags are **set-once** under the forward-only design — neither `mitigation_accepted` nor `mitigation_verified` is reset by the engine; the case naturally transitions from MITIGATION back to DIAGNOSIS via the `current_stage` property's fall-through (the MITIGATION branch requires `NOT mitigation_verified`). The "at Gate 3" condition is read from `path_selection.{mitigation_completed_at_turn, rca_after_mitigation_confirmed}`, not from the transient flag state. (2) `_apply_investigation_updates` checks `_gate3_is_pending(case)` and rejects RCA-side milestone updates with a WARNING log while the gate is open. (3) The response builder forces `_post_mitigation_suggestions()` whenever `_gate3_is_pending(case)` is True and `rca_infeasible` did not already produce override suggestions, so the user has a clickable path regardless of LLM compliance with the GATE 3 PENDING prompt block. *Composition seam:* the deterministic suggestion emission and the prompt-side `GATE 3 PENDING` DIAGNOSIS-template injection are tied — removing the prompt injection does not break the invariant (suggestions still emit) but does degrade UX. Audit `templates.py:DIAGNOSIS dispatcher` and `milestone_engine.py:_post_mitigation_suggestions` together when either changes. *Outcome telemetry:* `faultmaven_inquiry_gate3_reached_total` (gate opens) paired with `faultmaven_inquiry_gate3_resolved_total{outcome}` (user resolved by continuing to RCA or closing as mitigation-sufficient). A growing gap signals stranded post-mitigation cases. | `TestINV21Gate3MilestoneGuard`, `TestPostMitigationSuggestions`, `TestGate3IntentHandler` in `tests/unit/core/investigation/test_investigation_gates_post_mitigation.py` |
 
 **Drift notes (as of this writing):**
@@ -729,7 +729,7 @@ State updates occur at specific points within a turn to ensure consistency:
 | `symptom_verified` | Progress indicator | After evidence processing | LLM sets in structured output when symptoms confirmed |
 | `root_cause_identified` | Progress indicator | After hypothesis validation | LLM sets when hypothesis validated with high confidence |
 | `solution_proposed` | Progress indicator | After LLM proposes action | Set when ProposedAction with action_type=SOLUTION is created |
-| `path_selection` | — | When `symptom_verified` milestone completes (single trigger point) | Automatic from problem verification data. Reverted if milestone validation invalidates `symptom_verified`. |
+| `path_selection` | — | On Gate 2 click during INQUIRY (sole creation site) | User-driven via `PATH_SELECTION` intent. Recommendation is computed on-demand by `recommend_investigation_path_for_case`; the field is never written before Gate 2 commit (existence == commit). |
 | `mitigation_accepted` | Gate milestone | LLM structured output | User acknowledges executing proposed temp fix |
 | `mitigation_verified` | Gate milestone | LLM structured output | User confirms mitigation worked (subjective confirmation sufficient) → return to DIAGNOSIS |
 | `solution_accepted` | Gate milestone | LLM structured output | User acknowledges executing proposed solution |
@@ -1308,26 +1308,48 @@ If CRITICAL/HIGH + ONGOING detected, agent offers:
 
 This accelerates path selection without waiting for full verification.
 
-#### Phase 2: Formal Path Selection (INVESTIGATING Status)
+#### Phase 2: Formal Path Selection (Gate 2 Commit, still in INQUIRY)
 
-**When**: First turn AFTER `symptom_verified = True`
+**When**: On the Gate 2 click during INQUIRY — *before* the INQUIRY → INVESTIGATING transition fires.
 
-**Purpose**: Determine investigation path based on verified urgency
+**Purpose**: Commit the user's investigation-path choice. Path-selection commit is a precondition for the status transition, not a downstream INVESTIGATING-side event.
 
-**Output**: `case.path_selection` (used for routing)
+**Output**: `case.path_selection` (existence == Gate 2 commit; used for routing in INVESTIGATING)
 
 ```python
-def select_investigation_path(case: Case) -> PathSelection:
-    """
-    Formal path selection after symptom verification complete.
+# Pure recommendation helper — does NOT mutate the case.
+# Lives in modules/case/domain/services/investigation_router.py.
+def recommend_investigation_path_for_case(case: Case) -> Optional[PathSelection]:
+    """Compute the Gate 2 recommendation on demand.
 
-    Called: Automatically when symptom_verified transitions False → True
-    Precondition: case.problem_verification with temporal_state and urgency_level set
-    """
-    if not case.progress.symptom_verified:
-        raise InvalidStateError("Cannot select path before symptom verification")
+    Called from two places, both read-only:
+      1. _path_selection_suggestions  — to render the Gate 2 affordance pair
+      2. context_builder              — to inject <path_selection_state> into the LLM prompt
 
-    return determine_investigation_path(case.problem_verification)
+    Returns None if Gate 1 hasn't passed or preliminary_urgency isn't populated.
+    """
+    if not case.inquiry or not case.inquiry.problem_statement_confirmed:
+        return None
+    pu = case.inquiry.preliminary_urgency
+    if pu is None or pu.level is None:
+        return None
+    verification = ProblemVerification(...)  # transient, not persisted
+    return determine_investigation_path(verification)
+
+
+# Gate 2 click handler in milestone_engine — the SOLE creation site for
+# case.path_selection. Existence on the case IS the Gate 2 commit signal.
+def _handle_path_selection_intent(case: Case, chosen_path: InvestigationPath):
+    recommendation = recommend_investigation_path_for_case(case)
+    case.path_selection = PathSelection(
+        path=chosen_path,
+        auto_selected=(recommendation and recommendation.path == chosen_path),
+        rationale=...,
+        alternate_path=...,
+        selected_by=case.user_id,
+    )
+    # _check_automatic_transitions immediately sees Gate 1 + Gate 2 both
+    # closed and fires INQUIRY → INVESTIGATING on this same turn.
 ```
 
 #### Phase 3: Path-Guided Agent Behavior (INVESTIGATING Status)
@@ -1347,7 +1369,9 @@ def apply_path_guidance(case: Case):
     no USER_CHOICE path; the router always returns one of the two, and the
     user accepts or overrides the recommendation via Gate 2 (a COOPERATIVE
     suggestion pair) before INQUIRY → INVESTIGATING. By the time this
-    function runs, path_selection.user_confirmed is True.
+    function runs, case.path_selection is guaranteed non-None (its existence
+    IS the Gate 2 commit signal — INV-19 enforces this at the transition
+    and at INVESTIGATING-side milestone progression).
 
     For MITIGATION_FIRST: Agent proactively offers temp fix during DIAGNOSIS.
         Actual entry to MITIGATION stage is inferred from user compliance.
@@ -1369,9 +1393,10 @@ def apply_path_guidance(case: Case):
 **Timeline Diagram**:
 
 ```
-Turn 1 (INQUIRY):     preliminary_urgency assessed → Early hint provided
-Turn 2 (INQUIRY→INVESTIGATING): Case action → enters DIAGNOSIS stage
-Turn 3 (INVESTIGATING/DIAGNOSIS): symptom_verified set → path_selection determined → agent behavior guided by path
+Turn 1 (INQUIRY):     proposed_problem_statement emitted; preliminary_urgency assessed
+Turn 2 (INQUIRY):     Gate 1 (user confirms problem statement) closes; Gate 2 opens — recommendation rendered on-demand into the COOPERATIVE suggestion pair
+Turn 3 (INQUIRY→INVESTIGATING): Gate 2 click — case.path_selection created → both gates closed → status transitions; case enters DIAGNOSIS stage with the chosen path already committed
+Turn 4+ (INVESTIGATING/DIAGNOSIS): symptom_verified set; agent behavior guided by the already-committed path
 Turn N (INVESTIGATING/DIAGNOSIS): Agent proposes action → user complies → inferred transition to MITIGATION or TREATMENT
 ```
 

@@ -2825,23 +2825,15 @@ class PathSelection(BaseModel):
     )
 
     # ============================================================
-    # User-Confirmation Gates (Gate 2: investigation path)
+    # Gate 2 (investigation path) commit semantic
     # ============================================================
-    # The router populates PathSelection deterministically from the Urgency x
-    # Temporal matrix, but the path is not committed until the user explicitly
-    # confirms it. user_confirmed=False means Gate 2 is still open — the case
-    # cannot transition INQUIRY -> INVESTIGATING until the user accepts (or
-    # overrides to) the proposed path. See INV-19.
-    user_confirmed: bool = Field(
-        default=False,
-        description="User has confirmed the selected path (Gate 2). "
-        "Required before INQUIRY -> INVESTIGATING transition.",
-    )
-
-    user_confirmed_at_turn: Optional[int] = Field(
-        default=None,
-        description="Turn number when the user confirmed the path.",
-    )
+    # The existence of this PathSelection row IS the commitment — it is
+    # created exclusively by the Gate 2 click handler in milestone_engine,
+    # never auto-computed pre-commit. Recommendation is computed on-demand
+    # at button-render time via ``recommend_investigation_path_for_case``;
+    # only the user's click materializes a PathSelection on the case.
+    # ``selected_at`` and ``selected_by`` (above) carry the audit trail.
+    # See INV-19.
 
     # ============================================================
     # Post-Mitigation Continuation (Gate 3: RCA-or-close after mitigation)

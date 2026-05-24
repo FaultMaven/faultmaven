@@ -20,6 +20,8 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceSourceType,
     InquiryData,
+    InvestigationPath,
+    PathSelection,
     ProblemVerification,
 )
 
@@ -63,6 +65,8 @@ def mock_repo():
 
 @pytest.fixture
 def base_case():
+    # Post-INV-19: any INVESTIGATING case must have path_selection set
+    # (Gate 2 commit). The engine enforces this with a RuntimeError.
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
@@ -82,68 +86,25 @@ def base_case():
             thread_id="thread_123",
             proposed_problem_statement="Test symptom",
         ),
+        path_selection=PathSelection(
+            path=InvestigationPath.MITIGATION_FIRST,
+            auto_selected=True,
+            rationale="ongoing high impact",
+            alternate_path=InvestigationPath.ROOT_CAUSE,
+            selected_by="user_123",
+        ),
     )
 
 
-@pytest.mark.asyncio
-async def test_path_selection_triggered_after_verification(
-    mock_llm, mock_repo, base_case
-):
-    """Test Bug #3: Path selection triggers only after symptom verification"""
-    engine = MilestoneEngine(
-        mock_llm,
-        mock_repo,
-        investigation_tools=MagicMock(),
-    )
-
-    # Setup: Case has None path_selection
-    base_case.path_selection = None
-    base_case.progress.symptom_verified = False
-
-    # Add existing evidence for validation
-    base_case.evidence.append(
-        Evidence(
-            evidence_id="ev_001122334455",
-            summary="s",
-            content_ref="r",
-            category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
-            collected_at=datetime.now(),
-            collected_by="u",
-            collected_at_turn=0,
-            source_file_id=None,
-            primary_purpose="Test validation",
-            preprocessed_content="Raw stuff",
-            content_size_bytes=100,
-            preprocessing_method="manual",
-        )
-    )
-
-    # Mock response: Complete symptom_verified
-    mock_response = json.dumps(
-        {
-            "agent_response": "Verified.",
-            "internal_reasoning": {
-                "evidence_analyzed": ["ev_001122334455"],
-                "conclusions": [],
-                "milestone_justifications": {"symptom_verified": "done"},
-            },
-            "state_updates": {
-                "milestones": {"symptom_verified": True},
-                "outcome": "milestone_completed",
-            },
-        }
-    )
-    mock_llm.generate.return_value = mock_response
-
-    result = await engine.process_turn(base_case, "Verify symptom")
-    case = result["case_updated"]
-
-    # Verify path selection triggered
-    assert case.path_selection is not None
-    assert (
-        case.path_selection.path == "mitigation_first"
-    )  # ongoing + high -> mitigation
+# NOTE: The original Bug #3 test "path_selection triggered after symptom
+# verification" exercised the legacy mutation watcher that auto-computed
+# case.path_selection mid-INVESTIGATING when symptom_verified completed.
+# That behavior is gone — path_selection can ONLY be created by the Gate 2
+# click handler during INQUIRY. By INVESTIGATING, INV-19 requires
+# path_selection to already be non-None (enforced as a RuntimeError in
+# milestone_engine). The Gate 2 commit-timing semantics are pinned in
+# tests/unit/core/investigation/test_investigation_gates.py
+# (TestINV19PathSelectionAsCommitSignal).
 
 
 @pytest.mark.asyncio

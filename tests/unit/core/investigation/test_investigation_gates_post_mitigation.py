@@ -63,8 +63,7 @@ def _make_mitigation_first_case(
         auto_selected=True,
         rationale="Ongoing high-urgency impact",
         alternate_path=InvestigationPath.ROOT_CAUSE,
-        user_confirmed=True,  # Gate 2 already closed (Gate 3 is what we're testing)
-        user_confirmed_at_turn=2,
+        selected_by="u1",  # path existence = Gate 2 committed (Gate 3 is what we're testing)
         mitigation_completed_at_turn=mitigation_completed_at_turn,
         rca_after_mitigation_confirmed=rca_after_mitigation_confirmed,
     )
