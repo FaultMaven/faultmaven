@@ -1151,13 +1151,29 @@ def _runbook_suggestion() -> dict:
     }
 
 
-def _regenerate_resolution_summary_suggestion() -> dict:
+def _remaining_suffix(remaining: int) -> str:
+    """Format the regen-count suffix shown in the suggestion label."""
+    return f" ({remaining} left)"
+
+
+def _regenerate_resolution_summary_suggestion(remaining: int) -> Optional[dict]:
+    """Regenerate-resolution-summary COOPERATIVE suggestion.
+
+    Returns None when ``remaining <= 0`` so the caller can drop the
+    affordance from the list entirely — the user has exhausted the
+    per-type regeneration cap (MAX_REGENERATIONS).
+    """
+    if remaining <= 0:
+        return None
     return {
-        "label": "Regenerate resolution summary",
+        "label": f"Regenerate resolution summary{_remaining_suffix(remaining)}",
         "action_type": "COOPERATIVE",
         "cooperative_action": "query_submit",
         "payload": REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
-        "body": "Re-create the resolution report.",
+        "body": (
+            f"Re-create the resolution report. "
+            f"{remaining} regeneration{'s' if remaining != 1 else ''} remaining."
+        ),
     }
 
 
@@ -1172,7 +1188,7 @@ def _resolved_ack_suggestions() -> list:
     return [_runbook_suggestion()]
 
 
-def _select_ack_follow_ups(case, summary_failed: bool) -> list:
+def _select_ack_follow_ups(case, summary_failed: bool, remaining: int) -> list:
     """Choose follow-up suggestions for the closure-acknowledgment turn.
 
     Success path: minimal suggestions per ``_resolved_ack_suggestions`` /
@@ -1185,35 +1201,46 @@ def _select_ack_follow_ups(case, summary_failed: bool) -> list:
     Generation reaches the failure branch only when generation was
     attempted (so the substance gate has already PASSED for CLOSED),
     which means ``_closed_suggestions`` will return a non-empty list with
-    the regen affordance. The "noise next to inline summary" rationale
-    doesn't apply when there's no inline summary — only a failure note.
+    the regen affordance — assuming the regen cap has not yet been hit.
+    The "noise next to inline summary" rationale doesn't apply when
+    there's no inline summary — only a failure note.
+
+    ``remaining`` is the per-type regeneration count remaining
+    (precomputed by the caller). Drives both the label suffix and the
+    "hide when exhausted" gate inside the per-type suggestion builders.
     """
     if summary_failed:
         if case.status == CaseStatus.RESOLVED:
-            return _resolved_suggestions()
+            return _resolved_suggestions(remaining)
         if case.status == CaseStatus.CLOSED:
-            return _closed_suggestions(case)
+            return _closed_suggestions(case, remaining)
         return []
     if case.status == CaseStatus.RESOLVED:
         return _resolved_ack_suggestions()
     return []
 
 
-def _resolved_suggestions() -> list:
+def _resolved_suggestions(remaining: int) -> list:
     """Suggestions for terminal Q&A turns on a RESOLVED case.
 
     Both the regen affordance and the runbook affordance are offered.
     The regen path serves as the chat-side recovery if initial generation
     failed and as a way to iterate; the runbook path is the forward
     action. Symmetric with ``_closed_suggestions`` for CLOSED cases.
+
+    The regen affordance is dropped silently when ``remaining <= 0`` so
+    the user does not see a button they cannot use. The runbook
+    affordance is independent of the regen cap.
     """
-    return [
-        _regenerate_resolution_summary_suggestion(),
-        _runbook_suggestion(),
-    ]
+    suggestions: list = []
+    regen = _regenerate_resolution_summary_suggestion(remaining)
+    if regen is not None:
+        suggestions.append(regen)
+    suggestions.append(_runbook_suggestion())
+    return suggestions
 
 
-def _closed_suggestions(case) -> list:
+def _closed_suggestions(case, remaining: int) -> list:
     """Suggestions offered on terminal Q&A turns for a CLOSED case.
 
     Returned only on subsequent terminal Q&A turns — NOT on the
@@ -1221,12 +1248,14 @@ def _closed_suggestions(case) -> list:
     summary inline; offering "Regenerate" beside the freshly-generated
     summary is noise). Callers must respect that.
 
-    The regenerate affordance is offered when the substance gate would
-    PASS — independent of whether the Report row currently exists. This
-    handles two cases with one rule: a successful initial generation (user
-    wants a re-roll) and a failed initial generation (user wants to retry).
-    For low-substance closures (gate FAIL), nothing is offered — there is
-    nothing summarizable.
+    The regenerate affordance is offered when:
+      1. The substance gate PASSES (closure summary is something the
+         engine would actually generate), AND
+      2. ``remaining > 0`` (the per-type regen cap has not been hit).
+
+    The substance gate handles "is there anything to summarize?"; the
+    remaining count handles "has the user used up their regen budget?".
+    Both gates must pass for the affordance to render.
 
     Runbooks are intentionally not offered for CLOSED cases — they require
     a confirmed root cause + verified solution, which RESOLVED implies and
@@ -1238,13 +1267,19 @@ def _closed_suggestions(case) -> list:
 
     if not should_generate_terminal_summary(case):
         return []
+    if remaining <= 0:
+        return []
     return [
         {
-            "label": "Regenerate closure summary",
+            "label": f"Regenerate closure summary{_remaining_suffix(remaining)}",
             "action_type": "COOPERATIVE",
             "cooperative_action": "query_submit",
             "payload": REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
-            "body": "Re-create the closure report. View the current report in the Dashboard.",
+            "body": (
+                f"Re-create the closure report. "
+                f"{remaining} regeneration{'s' if remaining != 1 else ''} remaining. "
+                f"View the current report in the Dashboard."
+            ),
         },
     ]
 
@@ -1346,6 +1381,41 @@ class MilestoneEngine:
         self._inflight_vectorize: dict[str, asyncio.Task] = {}
 
         logger.info("MilestoneEngine initialized with structured output engine")
+
+    async def _remaining_regens_for(self, case: "Case") -> int:
+        """How many regenerations the user has left for this case's
+        canonical terminal summary (RESOLUTION_SUMMARY for RESOLVED,
+        CLOSURE_SUMMARY for CLOSED).
+
+        Drives both the label suffix on the regen affordance and the
+        "hide when exhausted" gate. Returns ``MAX_REGENERATIONS`` (the
+        cap) when the repository or report service is unavailable
+        (test/degraded paths) — preserves the legacy behaviour of always
+        showing the affordance when the count cannot be checked.
+
+        Counted from the persisted ``reports`` table (each generation
+        writes a new row). See ICaseRepository.count_reports.
+        """
+        from faultmaven.modules.case.contracts import ReportType
+
+        if self.report_service is None or self.repository is None:
+            return getattr(self.report_service, "MAX_REGENERATIONS", 5)
+        if case.status == CaseStatus.RESOLVED:
+            report_type = ReportType.RESOLUTION_SUMMARY
+        elif case.status == CaseStatus.CLOSED:
+            report_type = ReportType.CLOSURE_SUMMARY
+        else:
+            # Non-terminal cases have no regen affordance at all; the
+            # value is unused by callers but keep it self-consistent.
+            return getattr(self.report_service, "MAX_REGENERATIONS", 5)
+        try:
+            count = await self.repository.count_reports(case.case_id, report_type)
+        except Exception:
+            # Best-effort: if counting fails, don't strand the user
+            # without an affordance. Fall back to the cap.
+            return getattr(self.report_service, "MAX_REGENERATIONS", 5)
+        max_regens = getattr(self.report_service, "MAX_REGENERATIONS", 5)
+        return max(0, max_regens - count)
 
     async def _auto_generate_report(self, case: "Case") -> tuple[str | None, bool]:
         """Synchronous auto-generation of terminal summary.
@@ -1565,10 +1635,13 @@ class MilestoneEngine:
             )
 
         # Re-offer the regen affordance — the user may want to iterate.
+        # The "remaining" count comes from the DB and reflects the row
+        # just written, so it correctly decrements turn-over-turn.
+        remaining = await self._remaining_regens_for(case)
         follow_ups = (
-            _resolved_suggestions()
+            _resolved_suggestions(remaining)
             if case.status == CaseStatus.RESOLVED
-            else _closed_suggestions(case)
+            else _closed_suggestions(case, remaining)
         )
 
         return {
@@ -1668,7 +1741,8 @@ class MilestoneEngine:
             # on the summary while the background runbook conversion runs,
             # or retry the runbook if the background task fails (the
             # completion notification will tell them so).
-            follow_ups = _resolved_suggestions()
+            remaining = await self._remaining_regens_for(case)
+            follow_ups = _resolved_suggestions(remaining)
         except Exception as e:
             logger.warning(
                 f"Failed to initiate runbook creation for case {case.case_id}: {e}",
@@ -1860,9 +1934,11 @@ class MilestoneEngine:
         #     mirrors CLOSED's offering; runbook is the forward action
         #     RESOLVED enables.
         if case.status == CaseStatus.CLOSED:
-            follow_ups = follow_ups + _closed_suggestions(case)
+            remaining = await self._remaining_regens_for(case)
+            follow_ups = follow_ups + _closed_suggestions(case, remaining)
         elif case.status == CaseStatus.RESOLVED:
-            follow_ups = follow_ups + _resolved_suggestions()
+            remaining = await self._remaining_regens_for(case)
+            follow_ups = follow_ups + _resolved_suggestions(remaining)
 
         return {
             "agent_response": response_obj.agent_response,
@@ -2124,7 +2200,10 @@ class MilestoneEngine:
                         # user can retry immediately — the "noise next
                         # to inline summary" rationale doesn't apply
                         # when there's no summary inline.
-                        follow_ups = _select_ack_follow_ups(case, summary_failed)
+                        remaining = await self._remaining_regens_for(case)
+                        follow_ups = _select_ack_follow_ups(
+                            case, summary_failed, remaining
+                        )
 
                         return {
                             "agent_response": agent_response,
@@ -2339,10 +2418,11 @@ class MilestoneEngine:
                         self._record_deterministic_turn(case, user_message or "", _resp)
                         await self.repository.save(case)
 
+                        remaining = await self._remaining_regens_for(case)
                         return {
                             "agent_response": _resp,
                             "suggested_follow_ups": _select_ack_follow_ups(
-                                case, summary_failed
+                                case, summary_failed, remaining
                             ),
                             "case_updated": case,
                             "metadata": {
@@ -3147,7 +3227,10 @@ class MilestoneEngine:
                 CaseStatus.RESOLVED,
                 CaseStatus.CLOSED,
             ):
-                follow_ups = _select_ack_follow_ups(case_updated, summary_failed)
+                remaining = await self._remaining_regens_for(case_updated)
+                follow_ups = _select_ack_follow_ups(
+                    case_updated, summary_failed, remaining
+                )
 
             # Append the synthesized summary (or skip / failure note) so it
             # appears in chat at the moment of generation. Update the

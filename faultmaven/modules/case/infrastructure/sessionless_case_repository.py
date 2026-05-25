@@ -372,6 +372,16 @@ class SessionlessCaseRepository(CaseRepository):
                 case_id, report_type, include_history, only_current
             )
 
+    async def count_reports(
+        self,
+        case_id: str,
+        report_type: Optional["ReportType"] = None,
+    ) -> int:
+        """Count persisted reports for a case (all versions)."""
+        async with get_db_session() as session:
+            repo = get_repository_for_session(session)
+            return await repo.count_reports(case_id, report_type)
+
     async def update_report(self, report: "CaseReport") -> "CaseReport":
         """Update an existing report."""
         async with get_db_session() as session:

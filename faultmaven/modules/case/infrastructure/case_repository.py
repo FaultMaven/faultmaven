@@ -592,6 +592,30 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
+    async def count_reports(
+        self,
+        case_id: str,
+        report_type: Optional["ReportType"] = None,
+    ) -> int:
+        """
+        Count persisted reports for a case, optionally filtered by type.
+
+        Counts ALL rows (every regeneration adds a new row), not just the
+        current one — this is the metric the regeneration cap enforces.
+
+        Args:
+            case_id: Case identifier
+            report_type: Optional filter by report type
+
+        Returns:
+            Total number of report rows matching the filter
+
+        Raises:
+            RepositoryException: If query fails
+        """
+        pass
+
+    @abstractmethod
     async def update_report(self, report: "CaseReport") -> "CaseReport":
         """
         Update an existing report.
@@ -1200,6 +1224,17 @@ class InMemoryCaseRepository(CaseRepository):
         reports.sort(key=lambda r: (r.report_type.value, r.version), reverse=True)
 
         return reports
+
+    async def count_reports(
+        self,
+        case_id: str,
+        report_type: Optional["ReportType"] = None,
+    ) -> int:
+        """Count persisted reports for a case (all versions)."""
+        reports = [r for r in self._reports.values() if r.case_id == case_id]
+        if report_type:
+            reports = [r for r in reports if r.report_type == report_type]
+        return len(reports)
 
     async def update_report(self, report: "CaseReport") -> "CaseReport":
         """Update report in memory."""

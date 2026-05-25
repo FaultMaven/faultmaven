@@ -2882,6 +2882,22 @@ class SQLiteCaseRepository(CaseRepository):
 
         return self._row_to_report(row)
 
+    async def count_reports(
+        self,
+        case_id: str,
+        report_type: Optional["ReportType"] = None,
+    ) -> int:
+        """Count persisted reports for a case (all versions, not only current)."""
+        conditions = ["case_id = :case_id"]
+        params: dict[str, Any] = {"case_id": case_id}
+        if report_type:
+            conditions.append("report_type = :report_type")
+            params["report_type"] = report_type.value
+        query = text(f"SELECT COUNT(*) FROM reports WHERE {' AND '.join(conditions)}")
+        result = await self.db.execute(query, params)
+        row = result.fetchone()
+        return int(row[0]) if row else 0
+
     async def get_reports(
         self,
         case_id: str,

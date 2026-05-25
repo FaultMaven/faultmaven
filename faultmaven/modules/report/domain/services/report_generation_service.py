@@ -94,14 +94,22 @@ class ReportGenerationService:
         # Validate case state
         self._validate_case_for_report_generation(case)
 
-        # Check regeneration limit (fields may not exist on older Case models)
-        report_gen_count = getattr(case, "report_generation_count", 0)
-        max_regenerations = getattr(case, "max_report_regenerations", 5)
-        if report_gen_count >= max_regenerations:
-            raise ValidationException(
-                "regeneration_limit_exceeded",
-                f"Maximum {max_regenerations} regenerations allowed",
-            )
+        # Cap check is now per-report-type and derived from the persisted
+        # row count (every regen writes a new row). The previous
+        # ``case.report_generation_count`` field never existed on the Case
+        # model, so the cap was silently never enforced. See
+        # ICaseRepository.count_reports.
+        if self.case_repository:
+            for report_type in report_types:
+                count = await self.case_repository.count_reports(
+                    case.case_id, report_type
+                )
+                if count >= self.MAX_REGENERATIONS:
+                    raise ValidationException(
+                        "regeneration_limit_exceeded",
+                        f"Maximum {self.MAX_REGENERATIONS} versions of "
+                        f"{report_type.value} reached for this case",
+                    )
 
         logger.info(
             f"Generating {len(report_types)} reports for case",
@@ -175,10 +183,22 @@ class ReportGenerationService:
                 "report_generation_failed", "Failed to generate any reports"
             )
 
-        # Calculate remaining regenerations
-        report_gen_count = getattr(case, "report_generation_count", 0)
-        max_regenerations = getattr(case, "max_report_regenerations", 5)
-        remaining = max(0, max_regenerations - (report_gen_count + 1))
+        # Calculate remaining regenerations from the persisted row count
+        # AFTER this call's writes. Reported per-report-type would be
+        # more accurate, but the response carries a single integer — use
+        # the MAX (rosiest) remaining across the types we just wrote, so
+        # we don't falsely zero out the UI affordance when there are
+        # still slots on another type.
+        remaining = self.MAX_REGENERATIONS
+        if self.case_repository:
+            type_remainings = []
+            for report in reports:
+                count = await self.case_repository.count_reports(
+                    case.case_id, report.report_type
+                )
+                type_remainings.append(max(0, self.MAX_REGENERATIONS - count))
+            if type_remainings:
+                remaining = max(type_remainings)
 
         return ReportGenerationResponse(
             case_id=case.case_id, reports=reports, remaining_regenerations=remaining
@@ -220,6 +240,17 @@ class ReportGenerationService:
 
         generation_time_ms = int((time.time() - start_time) * 1000)
 
+        # Version = (existing-row count for this type) + 1. Each
+        # regeneration writes a new row, so this naturally increments
+        # 1 → 2 → 3 → ... up to MAX_REGENERATIONS. Falls back to 1 when
+        # the repo is unavailable (test paths).
+        version = 1
+        if self.case_repository:
+            existing_count = await self.case_repository.count_reports(
+                case.case_id, report_type
+            )
+            version = existing_count + 1
+
         now = datetime.now(timezone.utc)
         generated_at_str = to_json_compatible(now)
         return CaseReport(
@@ -233,7 +264,7 @@ class ReportGenerationService:
             updated_at=None,  # Will be set by repository.add_report to generated_at (for new reports)
             generation_time_ms=generation_time_ms,
             is_current=True,
-            version=getattr(case, "report_generation_count", 0) + 1,
+            version=version,
             linked_to_closure=False,
             auto_generated=auto_generated,
             metadata=None,

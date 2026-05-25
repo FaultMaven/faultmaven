@@ -1492,7 +1492,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         """
         from faultmaven.core.investigation.milestone_engine import _resolved_suggestions
 
-        suggestions = _resolved_suggestions()
+        suggestions = _resolved_suggestions(remaining=5)
         labels = [s["label"] for s in suggestions]
 
         assert any("regenerate" in label.lower() for label in labels), (
@@ -1516,7 +1516,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         object.__setattr__(case, "status", CaseStatus.CLOSED)
 
         # No evidence / hypotheses / milestones → gate FAIL → no suggestions
-        assert _closed_suggestions(case) == [], (
+        assert _closed_suggestions(case, remaining=5) == [], (
             "INV-13 violation: _closed_suggestions returns non-empty for "
             "a CLOSED case with no substance — the substance gate should "
             "block regen in this case."
@@ -1526,7 +1526,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         # returns non-empty → substance gate PASS → regen offered
         case.progress.symptom_verified = True
 
-        suggestions = _closed_suggestions(case)
+        suggestions = _closed_suggestions(case, remaining=5)
         assert suggestions, "CLOSED + substance must yield the regen suggestion"
         labels = [s["label"] for s in suggestions]
         assert any("regenerate" in label.lower() for label in labels)
@@ -1548,7 +1548,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         )
 
         ack = _resolved_ack_suggestions()
-        qa = _resolved_suggestions()
+        qa = _resolved_suggestions(remaining=5)
 
         assert ack != qa, (
             "INV-13 violation: closure-ack and terminal-Q&A return the "
