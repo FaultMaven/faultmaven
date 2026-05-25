@@ -1403,17 +1403,17 @@ class MilestoneEngine:
             return None, False
 
         try:
-            reports = await self.report_service.generate_reports(case, [report_type])
+            # generate_reports returns ReportGenerationResponse; its
+            # .reports field is the list of newly-persisted CaseReports.
+            response = await self.report_service.generate_reports(case, [report_type])
             logger.info(
                 f"Auto-generated {report_type.value} for case {case.case_id}",
                 extra={"case_id": case.case_id, "report_type": report_type.value},
             )
             # Pull the rendered markdown content from the freshly-generated
             # report so it can be embedded in the closure-turn reply.
-            if reports:
-                content = getattr(reports[0], "content", None) or getattr(
-                    reports[0], "markdown_content", None
-                )
+            if response.reports:
+                content = response.reports[0].content
                 if content:
                     return content, False
             return None, False
@@ -1541,13 +1541,10 @@ class MilestoneEngine:
             }
 
         try:
-            reports = await self.report_service.generate_reports(case, [report_type])
-            if reports:
-                content = getattr(reports[0], "content", None) or getattr(
-                    reports[0], "markdown_content", None
-                )
-            else:
-                content = None
+            # generate_reports returns ReportGenerationResponse; its
+            # .reports field is the list of newly-persisted CaseReports.
+            response = await self.report_service.generate_reports(case, [report_type])
+            content = response.reports[0].content if response.reports else None
             agent_response = (
                 content
                 if content
