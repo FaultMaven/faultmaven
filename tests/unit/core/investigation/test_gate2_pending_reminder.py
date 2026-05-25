@@ -1,0 +1,229 @@
+"""Tests for the Gate 2 PENDING — REINFORCEMENT prompt block.
+
+Pins the prompt-layer reinforcement that fires when Gate 1 has passed
+but Gate 2 has not committed. The reminder:
+
+- Forbids structured INVESTIGATION-stage emission while Gate 2 is open
+  (no ``hypotheses_to_add`` / no ``causal_evidence`` / no
+  ``solutions_to_add``)
+- Tells the LLM how to handle the data-without-pick failure mode
+  (acknowledge briefly THEN re-assert the path question)
+
+The fire condition is narrow: INQUIRY status + Gate 1 closed +
+path_selection is None + preliminary_urgency populated (so the
+recommendation helper returns non-None). Tests pin firing in that
+exact shape and non-firing on every other.
+
+Engine-side backstop (``_path_selection_suggestions``) is independent
+and unchanged — the reminder is prompt-layer reinforcement of the
+existing affordance pair (see INV-19).
+"""
+
+from __future__ import annotations
+
+from faultmaven.core.investigation.prompts.context_builder import (
+    _GATE2_PENDING_REMINDER,
+    build_investigation_context,
+)
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseStatus,
+    InquiryData,
+    InvestigationPath,
+    PathSelection,
+    UrgencyLevel,
+)
+from faultmaven.modules.case.domain.models import (
+    PreliminaryUrgency,
+    ProblemConfirmation,
+)
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+def _inquiry_case(
+    *,
+    problem_statement_confirmed: bool,
+    has_preliminary_urgency: bool = True,
+    path_selection: PathSelection | None = None,
+) -> Case:
+    """Build an INQUIRY-stage case with controllable Gate 1/2 inputs.
+
+    Default shape (no overrides) is Gate 1 passed + Gate 2 pending +
+    urgency populated — i.e., the case the reminder should fire on.
+    """
+    inquiry = InquiryData(
+        proposed_problem_statement="Production API returning 503s",
+        problem_statement_confirmed=problem_statement_confirmed,
+        problem_confirmation=ProblemConfirmation(
+            problem_type="unavailability",
+            severity_guess="high",
+            preliminary_guidance="503s on /api/checkout",
+        ),
+    )
+    if has_preliminary_urgency:
+        inquiry.preliminary_urgency = PreliminaryUrgency(
+            level=UrgencyLevel.CRITICAL,
+            is_ongoing=True,
+            is_incident_report=True,
+            impact_assessment="prod outage",
+            assessed_at_turn=1,
+        )
+    case = Case(
+        user_id="u1",
+        organization_id="o1",
+        title="Test",
+        description="Production API returning 503s",
+        inquiry=inquiry,
+    )
+    if path_selection is not None:
+        case.path_selection = path_selection
+    return case
+
+
+def _committed_path() -> PathSelection:
+    """A committed Gate 2 selection."""
+    return PathSelection(
+        path=InvestigationPath.MITIGATION_FIRST,
+        auto_selected=True,
+        rationale="Ongoing critical impact",
+        alternate_path=InvestigationPath.ROOT_CAUSE,
+        selected_by="u1",
+    )
+
+
+def _rendered(case: Case) -> str:
+    """Render the context and flatten all values into a single string
+    so reminder presence/absence can be checked regardless of which ctx
+    key the block lands in (currently ``inquiry_state``).
+    """
+    ctx = build_investigation_context(case, user_message="hello")
+    return "\n".join(str(v) for v in ctx.values())
+
+
+# ---------------------------------------------------------------------------
+# Reminder content invariants
+# ---------------------------------------------------------------------------
+
+
+class TestReminderContent:
+    """The reminder's content covers the two pieces the original
+    ``<path_selection_state>`` block didn't pin: structured-emission
+    constraints + data-without-pick behavior. Failure here means the
+    block has been weakened or rewritten in a way that loses the
+    structural guardrails."""
+
+    def test_block_forbids_hypotheses_emission(self):
+        normalized = " ".join(_GATE2_PENDING_REMINDER.split())
+        assert "DO NOT emit ``hypotheses_to_add``" in normalized
+
+    def test_block_forbids_causal_evidence_classification(self):
+        normalized = " ".join(_GATE2_PENDING_REMINDER.split())
+        assert "causal_evidence" in normalized
+        assert "DO NOT classify any evidence as ``causal_evidence``" in normalized
+
+    def test_block_forbids_solutions_emission(self):
+        normalized = " ".join(_GATE2_PENDING_REMINDER.split())
+        assert "DO NOT emit ``solutions_to_add``" in normalized
+
+    def test_block_addresses_data_without_pick_scenario(self):
+        """The data-without-pick scenario is the Run-26 failure mode.
+        The reminder must tell the LLM to acknowledge briefly then
+        re-assert the path question — not engage with the data."""
+        normalized = " ".join(_GATE2_PENDING_REMINDER.split())
+        # Acknowledge briefly
+        assert "ONE short sentence" in normalized
+        # Re-assert the path question
+        assert "re-assert the path question prominently" in normalized
+
+    def test_block_acknowledges_engine_backstop(self):
+        """The reminder references the deterministic button pair so the
+        LLM knows it doesn't need to invent typed-choice instructions.
+        Tied to ``_path_selection_suggestions`` in milestone_engine."""
+        normalized = " ".join(_GATE2_PENDING_REMINDER.split())
+        assert "COOPERATIVE buttons remain attached" in normalized
+
+
+# ---------------------------------------------------------------------------
+# Conditional injection — the reminder must fire only in the Gate-2-pending shape
+# ---------------------------------------------------------------------------
+
+
+class TestConditionalInjection:
+    """The reminder fires only when Gate 1 has closed AND Gate 2 is
+    pending AND urgency signals are populated (otherwise the
+    recommendation helper returns None and the entire
+    ``<path_selection_state>`` block is suppressed).
+    """
+
+    def test_reminder_present_when_gate1_passed_and_gate2_pending(self):
+        case = _inquiry_case(
+            problem_statement_confirmed=True,
+            path_selection=None,
+        )
+        rendered = _rendered(case)
+        # The reminder header is a stable marker.
+        assert "GATE 2 PENDING — REINFORCEMENT:" in rendered
+        # And the full structured-emission ban is reachable in the prompt.
+        normalized = " ".join(rendered.split())
+        assert "DO NOT emit ``hypotheses_to_add``" in normalized
+
+    def test_reminder_absent_when_gate1_not_passed(self):
+        """Before the user confirms the problem statement, Gate 2
+        doesn't apply — and the surrounding ``<path_selection_state>``
+        block doesn't render. Reminder must not fire.
+
+        Prevents premature firing that would tell the LLM "don't form
+        hypotheses" before the user has even confirmed the problem.
+        """
+        case = _inquiry_case(
+            problem_statement_confirmed=False,
+            path_selection=None,
+        )
+        rendered = _rendered(case)
+        assert "GATE 2 PENDING — REINFORCEMENT:" not in rendered
+
+    def test_reminder_absent_when_path_committed(self):
+        """Once the user has clicked a Gate 2 button (path_selection
+        is not None), Gate 2 has closed. Continuing to inject the
+        reminder would tell the LLM to keep re-asking — exactly the
+        kind of stale-instruction drift the test guards against.
+        """
+        case = _inquiry_case(
+            problem_statement_confirmed=True,
+            path_selection=_committed_path(),
+        )
+        rendered = _rendered(case)
+        assert "GATE 2 PENDING — REINFORCEMENT:" not in rendered
+
+    def test_reminder_absent_when_preliminary_urgency_missing(self):
+        """Without preliminary_urgency the recommendation helper
+        returns None and the entire ``<path_selection_state>`` block
+        is suppressed. The reminder is part of that block and must
+        not appear standalone — keeping the prompt content coupled to
+        a renderable recommendation.
+        """
+        case = _inquiry_case(
+            problem_statement_confirmed=True,
+            has_preliminary_urgency=False,
+            path_selection=None,
+        )
+        rendered = _rendered(case)
+        assert "GATE 2 PENDING — REINFORCEMENT:" not in rendered
+
+    def test_reminder_absent_outside_inquiry_status(self):
+        """If the case somehow lands in INVESTIGATING with the
+        Gate-2-pending shape (post-INV-19 this shouldn't happen, but
+        the dispatch is a different path), the reminder must not fire
+        — INVESTIGATING-stage prompts have their own dispatch."""
+        case = _inquiry_case(
+            problem_statement_confirmed=True,
+            path_selection=_committed_path(),
+        )
+        # Bypass the cross-field validator to simulate the broken state.
+        object.__setattr__(case, "status", CaseStatus.INVESTIGATING)
+        object.__setattr__(case.inquiry, "decided_to_investigate", True)
+        rendered = _rendered(case)
+        assert "GATE 2 PENDING — REINFORCEMENT:" not in rendered

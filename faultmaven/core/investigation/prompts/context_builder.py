@@ -43,6 +43,54 @@ from faultmaven.modules.case.domain.services.investigation_router import (
     recommend_investigation_path_for_case,
 )
 
+# Prompt-layer reinforcement appended to the <path_selection_state> block
+# below when Gate 2 is pending. Augments the existing instruction with
+# two pieces the original wording didn't pin:
+#
+#   (a) Structured-emission constraints: while Gate 2 is pending, the
+#       LLM must not emit hypotheses_to_add, classify evidence as any
+#       category, or emit solutions_to_add. The case is still in
+#       INQUIRY; investigation-stage writes are out of scope until the
+#       user picks a path.
+#
+#   (b) Behavior when the user provides data without picking: the
+#       observed failure mode is the user submitting telemetry and the
+#       LLM engaging with it, letting the path question fade into
+#       conversation noise. The reminder tells the LLM to acknowledge
+#       briefly THEN re-assert the path question prominently — keeping
+#       Gate 2 in the user's working memory until they click.
+#
+# Engine-side backstop is unchanged: ``_path_selection_suggestions`` in
+# milestone_engine still emits the two COOPERATIVE buttons every turn
+# until Gate 2 commits, so the user always has a clickable path
+# regardless of LLM compliance. This reminder is the prompt-layer
+# reinforcement called out in INV-19.
+#
+# Lives here (not templates.py) because templates.py already imports
+# context_builder; the reverse direction would create a cycle. Single-
+# consumer constant; tests import it from this module.
+_GATE2_PENDING_REMINDER = """\
+GATE 2 PENDING — REINFORCEMENT:
+
+Until ``case.path_selection`` is committed, you are still in INQUIRY.
+Investigation-stage writes are out of scope:
+- DO NOT emit ``hypotheses_to_add``.
+- DO NOT classify any evidence as ``causal_evidence`` (or any other
+  category — no evidence records are created during INQUIRY).
+- DO NOT emit ``solutions_to_add``. No mitigation or solution proposal
+  is appropriate until the path is picked.
+
+If the user provides data this turn without picking a path, acknowledge
+what they shared in ONE short sentence — do not analyze it, do not
+search it, do not categorize it — then re-assert the path question
+prominently. Example: "Thanks, I see the log excerpt. Before we dig in,
+which path makes sense here — mitigation-first to stop the impact, or
+root-cause analysis?"
+
+The two COOPERATIVE buttons remain attached to your response
+automatically; the user clicks one to resolve Gate 2.
+"""
+
 
 # =============================================================================
 # Evidence Context Sliding Window Configuration
@@ -2054,7 +2102,7 @@ def build_investigation_context(
                 "user_confirmed_investigation=True again — it is already True. "
                 "The case will not transition to INVESTIGATING until the user "
                 "clicks one of the path-selection suggestions.\n"
-                "</path_selection_state>"
+                "\n" + _GATE2_PENDING_REMINDER + "</path_selection_state>"
             )
 
     # Phase 4c — entity highlights block. Pre-fetched by the milestone
