@@ -1098,6 +1098,76 @@ class TestMilestoneEngine:
         assert not mock_llm.generate.called
 
 
+class TestGate2SetOnceSemantic:
+    """Pin the behavioral promise: once ``case.path_selection`` is committed,
+    a subsequent ``path_selection`` intent is silently ignored — the committed
+    path is NOT overwritten. This is the only enforcement of "click once"
+    semantics; without this test, a future maintainer could rewrite the
+    warning-log path in ``milestone_engine`` to apply the re-commit, silently
+    changing the semantic. Companion to INV-19 (existence == commit) pinned
+    in test_investigation_gates.py::TestINV19PathSelectionAsCommitSignal.
+    """
+
+    @pytest.mark.asyncio
+    async def test_gate2_re_commitment_is_ignored_after_first_click(
+        self, mock_llm, mock_repo
+    ):
+        """A second path_selection intent on a case with a committed
+        path_selection must NOT overwrite the first commit. The handler logs
+        a warning and skips; the case retains the original path.
+        """
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+        )
+
+        # Construct an INQUIRY case past Gate 1 with a path_selection ALREADY
+        # committed (e.g., user clicked Gate 2 on a prior turn).
+        original_commit = PathSelection(
+            path=InvestigationPath.ROOT_CAUSE,
+            auto_selected=True,
+            rationale="historical low urgency",
+            alternate_path=InvestigationPath.MITIGATION_FIRST,
+            selected_by="user_123",
+        )
+        case = Case(
+            case_id="case_aaaaaaaaaaab",
+            title="Re-commit test",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="Test description",
+            inquiry=InquiryData(
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+                thread_id="thread_123",
+                proposed_problem_statement="Test symptom",
+            ),
+            path_selection=original_commit,
+        )
+        original_selected_at = case.path_selection.selected_at
+
+        mock_llm.generate.return_value = json.dumps(
+            {"agent_response": "noop", "state_updates": {}}
+        )
+
+        # Fire a second path_selection intent picking the OTHER path.
+        result = await engine.process_turn(
+            case=case,
+            user_message="Actually let's do mitigation-first.",
+            intent_type="path_selection",
+            intent_data={"investigation_path": "mitigation_first"},
+        )
+
+        updated = result["case_updated"]
+
+        # The original commit must survive — neither path nor metadata flipped.
+        assert updated.path_selection is not None
+        assert updated.path_selection.path == InvestigationPath.ROOT_CAUSE
+        assert updated.path_selection.selected_at == original_selected_at
+
+
 class TestInquiryConfirmation:
     """Test that INQUIRY→INVESTIGATING transition relies on the LLM setting
     user_confirmed_investigation=True. No mechanical keyword fallback."""

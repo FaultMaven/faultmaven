@@ -142,7 +142,13 @@ def mock_case_service():
     """Create a mock case service for tests."""
     from unittest.mock import AsyncMock, MagicMock
 
-    from faultmaven.modules.case.contracts import Case, CaseStatus
+    from faultmaven.modules.case.contracts import (
+        Case,
+        CaseStatus,
+        InquiryData,
+        InvestigationPath,
+        PathSelection,
+    )
 
     service = AsyncMock()
 
@@ -170,7 +176,13 @@ def mock_case_service():
 
     # Mock get_case to return the case (with evidence if it exists)
     async def get_case_mock(case_id, user_id):
-        # Return the stored case if it exists, otherwise create a new one
+        # Return the stored case if it exists, otherwise create a new one.
+        # Note: INVESTIGATING cases require both Gate 1 (problem statement
+        # confirmed + decided_to_investigate) and Gate 2 (path_selection
+        # committed — existence == commit, see INV-19) to construct. Any
+        # downstream helper that builds INVESTIGATING-stage cases must follow
+        # the same pattern, or both the Pydantic cross-field validators and
+        # the engine's runtime INV-19 guard will trip.
         if case_id in created_cases:
             return created_cases[case_id]
         else:
@@ -183,6 +195,18 @@ def mock_case_service():
                 status=CaseStatus.INVESTIGATING,
                 current_turn=1,
                 message_count=1,
+                inquiry=InquiryData(
+                    problem_statement_confirmed=True,
+                    decided_to_investigate=True,
+                    proposed_problem_statement="Test Description",
+                ),
+                path_selection=PathSelection(
+                    path=InvestigationPath.ROOT_CAUSE,
+                    auto_selected=True,
+                    rationale="default test recommendation",
+                    alternate_path=InvestigationPath.MITIGATION_FIRST,
+                    selected_by=user_id,
+                ),
             )
             created_cases[case_id] = case
             return case
