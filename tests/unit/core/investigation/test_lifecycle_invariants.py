@@ -1999,3 +1999,177 @@ class TestINV19_InquiryTemplateOffersNoPathChoice:
             "'Investigate (Root Cause First)' button. Path choice belongs "
             "in INVESTIGATING after symptom_verified, not INQUIRY."
         )
+
+
+# ============================================================================
+# INV-22: proposed_transition emissions are validated against the action
+# graph (ALLOWED_ACTIONS). The LLM cannot emit a to_status that isn't a
+# valid edge from case.status — protects against LLM hallucination of
+# invalid transitions (e.g., to_status="resolved" from INQUIRY, which is
+# not a valid edge — INQUIRY can only go to INVESTIGATING or CLOSED).
+#
+# The prompt (INQUIRY_TEMPLATE) tells the LLM which edges exist and
+# explicitly names INQUIRY → RESOLVED as a non-edge; this engine guard is
+# the safety net for prompt non-compliance. Reject + write system_feedback
+# for next-turn correction; do not pivot or convert the emission.
+# ============================================================================
+
+
+@pytest.mark.unit
+class TestINV22_ProposedTransitionAgainstActionGraph:
+    """INV-22: every ``proposed_transition`` emission is checked against
+    ``ALLOWED_ACTIONS[case.status]`` before downstream processing. Invalid
+    edges are rejected with ``system_feedback``; downstream pivot logic
+    (e.g., SUGGEST_CLOSE) never sees an invalid emission.
+
+    Motivating failure mode: LLM in INQUIRY emits
+    ``proposed_transition.to_status="resolved"`` after misreading user
+    enthusiasm as a resolution claim. Without this guard the engine's
+    SUGGEST_CLOSE pivot converts the bad emission into a CLOSED proposal
+    and the next user message closes the case with no investigation —
+    silently violating the design rule that closure requires user intent.
+    """
+
+    @staticmethod
+    def _response_obj_with_proposed(to_status: str):
+        """Lightweight stand-in for an LLM response with a
+        ``state_updates.proposed_transition``. The engine only reads
+        ``response_obj.state_updates.proposed_transition.to_status``."""
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            state_updates=SimpleNamespace(
+                proposed_transition=SimpleNamespace(to_status=to_status)
+            )
+        )
+
+    @staticmethod
+    def _make_inquiry_case() -> Case:
+        """Minimal INQUIRY case for emission-validation tests."""
+        case = Case(
+            case_id="case_aaaaaa220001",
+            title="INV-22 inquiry test",
+            status=CaseStatus.INQUIRY,
+            user_id="user_test",
+            organization_id="org_test",
+            description="Test inquiry description",
+            inquiry=InquiryData(thread_id="thread_test"),
+        )
+        case.inquiry.proposed_problem_statement = "Test inquiry problem"
+        return case
+
+    # --- Prompt-side documentation of the invalid edge ---
+
+    def test_inquiry_template_documents_invalid_resolved_edge(self):
+        """INQUIRY_TEMPLATE must explicitly name INQUIRY → RESOLVED as
+        a non-edge. Omission is not prohibition for an LLM — the
+        prompt has to say so."""
+        from faultmaven.core.investigation.prompts import templates as tmpl
+
+        assert "INQUIRY → RESOLVED (NOT a valid edge" in tmpl.INQUIRY_TEMPLATE, (
+            "INV-22 prompt guard removed: INQUIRY_TEMPLATE no longer "
+            "explicitly forbids INQUIRY → RESOLVED. Omission ≠ "
+            "prohibition for an LLM; the rule must be stated."
+        )
+
+    # --- Engine-side enforcement ---
+
+    @pytest.mark.asyncio
+    async def test_engine_rejects_resolved_proposed_transition_from_inquiry(self):
+        """The motivating failure mode: LLM in INQUIRY emits
+        ``proposed_transition.to_status="resolved"``. The engine
+        rejects it, no pending transition is set, no pivot to CLOSED
+        happens. The case stays in INQUIRY."""
+        repo = MagicMock()
+        repo.save = AsyncMock(side_effect=lambda c: c)
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+
+        case = self._make_inquiry_case()
+        metadata = {"response_obj": self._response_obj_with_proposed("resolved")}
+
+        result = await engine._check_automatic_transitions(case, metadata)
+
+        # No pending transition was set — the rejection happened BEFORE
+        # propose_transition could run.
+        assert result.pending_transition is None, (
+            "INV-22 violation: invalid proposed_transition from INQUIRY "
+            "produced a pending_transition. The engine must reject "
+            "to_status='resolved' from INQUIRY (not a valid edge) "
+            "instead of pivoting to CLOSED via SUGGEST_CLOSE."
+        )
+        assert result.status == CaseStatus.INQUIRY
+
+        feedback = metadata.get("system_feedback") or ""
+        assert "INVALID TRANSITION ERROR" in feedback
+        assert "'resolved'" in feedback
+        assert "'inquiry'" in feedback
+
+    @pytest.mark.asyncio
+    async def test_engine_records_validation_repair_on_rejection(self):
+        """The rejection is also surfaced in ``validation_repairs``
+        alongside the system_feedback, for telemetry / debugging."""
+        repo = MagicMock()
+        repo.save = AsyncMock(side_effect=lambda c: c)
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+
+        case = self._make_inquiry_case()
+        metadata = {"response_obj": self._response_obj_with_proposed("resolved")}
+
+        await engine._check_automatic_transitions(case, metadata)
+
+        repairs = metadata.get("validation_repairs", [])
+        assert any("Rejected proposed_transition" in r for r in repairs), (
+            "INV-22: rejection must be recorded in validation_repairs for "
+            "observability. Found: " + repr(repairs)
+        )
+
+    @pytest.mark.asyncio
+    async def test_engine_accepts_valid_closed_from_inquiry(self):
+        """Negative pin: ``to_status="closed"`` from INQUIRY IS a valid
+        edge (the only valid proposed_transition from INQUIRY). The
+        guard must not over-reach and block legitimate emissions."""
+        repo = MagicMock()
+        repo.save = AsyncMock(side_effect=lambda c: c)
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+
+        case = self._make_inquiry_case()
+        metadata = {"response_obj": self._response_obj_with_proposed("closed")}
+
+        result = await engine._check_automatic_transitions(case, metadata)
+
+        # Valid edge → pending transition WAS set.
+        assert result.pending_transition is not None, (
+            "INV-22 over-reach: valid to_status='closed' from INQUIRY "
+            "was rejected. The guard should only reject invalid edges."
+        )
+        assert result.pending_transition["to_status"] == "closed"
+        # No rejection feedback for a valid emission.
+        assert "INVALID TRANSITION ERROR" not in (metadata.get("system_feedback") or "")
+
+    @pytest.mark.asyncio
+    async def test_engine_accepts_valid_resolved_from_investigating(self):
+        """Negative pin: ``to_status="resolved"`` from INVESTIGATING IS
+        a valid edge. The guard is status-specific; the same to_status
+        that's invalid from INQUIRY is valid from INVESTIGATING. Pins
+        that the guard reads ``ALLOWED_ACTIONS[case.status]``, not a
+        hard-coded blocklist."""
+        repo = MagicMock()
+        repo.save = AsyncMock(side_effect=lambda c: c)
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+
+        case = _make_investigating_case()
+        metadata = {"response_obj": self._response_obj_with_proposed("resolved")}
+
+        result = await engine._check_automatic_transitions(case, metadata)
+
+        # No INVALID TRANSITION ERROR — the validation passed; whatever
+        # happens downstream (SUGGEST_CLOSE pivot, NEEDS_INFO, or READY
+        # → propose) is the existing per-status processing, not this
+        # invariant's concern.
+        feedback = metadata.get("system_feedback") or ""
+        assert "INVALID TRANSITION ERROR" not in feedback, (
+            "INV-22 over-reach: valid to_status='resolved' from "
+            "INVESTIGATING was flagged as invalid. The guard must "
+            "consult ALLOWED_ACTIONS per current case.status, not "
+            "reject 'resolved' universally."
+        )

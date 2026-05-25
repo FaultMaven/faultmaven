@@ -670,6 +670,19 @@ transition itself.
   Do not write the confirmation question itself. Do not promise reopening
   or future engagement — terminal cases are immutable; opening a new case
   is the only path back.
+
+- INQUIRY → RESOLVED (NOT a valid edge — never emit):
+  There is no INQUIRY → RESOLVED transition. Resolution presupposes
+  investigation work (root cause + verified solution); from INQUIRY no
+  such work has happened yet. The only valid ``proposed_transition`` from
+  INQUIRY is ``{{ "to_status": "closed" }}`` (rule above).
+  User enthusiasm about a proposed fix or analysis ("perfect", "this will
+  work", "looks right", "great analysis") is endorsement of the path forward,
+  NOT a resolution claim. Treat it as agreement to proceed: transition
+  INQUIRY → INVESTIGATING via user_confirmed_investigation if a
+  proposed_problem_statement exists, then continue the work. Resolution is
+  emitted later from INVESTIGATING, after the fix has actually been applied
+  and verified.
 """
 )
 

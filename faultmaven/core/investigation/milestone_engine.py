@@ -6383,7 +6383,56 @@ class MilestoneEngine:
                     assess_resolution_readiness,
                     propose_transition,
                 )
+                from faultmaven.modules.case.domain.services.case_action_manager import (
+                    ALLOWED_ACTIONS,
+                )
 
+                # Structural validation against the action graph: the LLM
+                # cannot emit a ``proposed_transition`` whose ``to_status``
+                # is not a valid edge from the current ``case.status`` per
+                # ``ALLOWED_ACTIONS``. The prompt instructs the LLM on
+                # which edges exist; this is the safety net for prompt
+                # non-compliance (e.g., an LLM emitting ``to_status="resolved"``
+                # from INQUIRY, which is not a valid edge — INQUIRY can
+                # only transition to INVESTIGATING or CLOSED). Rejecting
+                # here prevents downstream pivot logic from accepting an
+                # invalid emission and quietly converting it into a
+                # different transition the user never intended.
+                valid_targets = {s.value for s in ALLOWED_ACTIONS.get(case.status, [])}
+                if proposed.to_status not in valid_targets:
+                    logger.warning(
+                        f"Rejected proposed_transition for case {case.case_id}: "
+                        f"to_status={proposed.to_status!r} is not a valid edge "
+                        f"from {case.status.value!r}. "
+                        f"Valid targets: {sorted(valid_targets)}."
+                    )
+                    current_feedback = metadata.get("system_feedback") or ""
+                    valid_list = (
+                        ", ".join(f"{t!r}" for t in sorted(valid_targets))
+                        or "(none — case is terminal)"
+                    )
+                    metadata["system_feedback"] = (
+                        f"{current_feedback}\n"
+                        "INVALID TRANSITION ERROR: You emitted "
+                        f"``proposed_transition.to_status={proposed.to_status!r}`` "
+                        f"from case.status={case.status.value!r}, which is "
+                        f"not a valid edge in the case action graph. "
+                        f"Valid targets from {case.status.value!r}: "
+                        f"{valid_list}. "
+                        "Per the lifecycle: from INQUIRY only CLOSED is a "
+                        "valid proposed_transition (resolution requires "
+                        "investigation work first — there is no "
+                        "INQUIRY → RESOLVED edge). Do not re-emit this "
+                        "transition; emit only valid edges."
+                    ).strip()
+                    metadata.setdefault("validation_repairs", []).append(
+                        f"Rejected proposed_transition.to_status="
+                        f"{proposed.to_status!r} from {case.status.value!r}"
+                    )
+                    # Skip downstream proposal processing.
+                    proposed = None
+
+            if proposed:
                 # The LLM emits only to_status (and optional evidence_ids).
                 # Engine handles everything else: closure_reason is derived
                 # inside propose_transition; summary is built programmatically
