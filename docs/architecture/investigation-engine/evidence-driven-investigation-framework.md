@@ -200,7 +200,7 @@ preprocessing artifacts and is visible to the agent via the
 structural index. No Evidence row is created until a slice is
 extracted in support of a specific claim.
 
-**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is a **prompt-enforced audit invariant** (no Python validator rejects orphan `causal_evidence`) — pinned as [INV-17 in the Invariant Enforcement Matrix](./investigation-lifecycle-logic.md#131-invariant-enforcement-matrix). The runtime prompt-side enforcement lives in `DIAGNOSIS_INSTRUCTIONS` (`templates.py:993`, concatenated into the INVESTIGATION_BASE pipeline).
+**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is a **prompt-enforced audit invariant** (no Python validator rejects orphan `causal_evidence`) — pinned as [INV-17 in the Invariant Enforcement Matrix](./investigation-lifecycle-logic.md#131-invariant-enforcement-matrix). The runtime prompt-side enforcement lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (in `templates.py`), composed into `_RCA_DIAGNOSIS_BLOCK` and reached by ROOT_CAUSE and MITIGATION_FIRST post-Gate-3 cases. Pre-mitigation MITIGATION_FIRST cases see `_SYMPTOM_VALIDATION_BLOCK` instead, which explicitly forbids both `hypotheses_to_add` and `causal_evidence` emission — preserving INV-17 through the no-hypothesis-no-causal-evidence chain.
 
 **Exit conditions** (inference-based — action over words):
 
@@ -744,14 +744,15 @@ The 4 stage instruction sets (SYMPTOM_VERIFICATION, HYPOTHESIS_FORMULATION, HYPO
 
 | New Instruction | Replaces | Focus |
 |-----------------|----------|-------|
-| **DIAGNOSIS_INSTRUCTIONS** | SYMPTOM_VERIFICATION + HYPOTHESIS_FORMULATION + HYPOTHESIS_VALIDATION | Understand, diagnose, propose solution |
+| **DIAGNOSIS prompt** (path-conditional via `_select_diagnosis_block`) | SYMPTOM_VERIFICATION + HYPOTHESIS_FORMULATION + HYPOTHESIS_VALIDATION | Understand, diagnose, propose solution |
 | **MITIGATION_INSTRUCTIONS** | (new) | Apply temp fix, verify, return to diagnosis |
 | **TREATMENT_INSTRUCTIONS** | SOLUTION (expanded) | Verify fix, extended diagnosis if fix fails, resolve |
 
 ### 8.3 Stage Dispatch
 
 ```python
-# Replaces computed stage lookup in get_prompt_for_case()
+# In get_prompt_for_case(), DIAGNOSIS dispatches path-conditionally;
+# other stages use stage-specific constants directly.
 def get_stage_instructions(case: Case) -> str:
     stage = case.current_stage  # DIAGNOSIS, MITIGATION, or TREATMENT
 
@@ -760,7 +761,10 @@ def get_stage_instructions(case: Case) -> str:
     elif stage == InvestigationStage.MITIGATION:
         return MITIGATION_INSTRUCTIONS
     else:
-        return DIAGNOSIS_INSTRUCTIONS
+        # Path-conditional dispatch — see _select_diagnosis_block in templates.py.
+        # Returns _SYMPTOM_VALIDATION_BLOCK for pre-mitigation MITIGATION_FIRST
+        # cases (no hypothesis mandate), _RCA_DIAGNOSIS_BLOCK otherwise.
+        return _select_diagnosis_block(case)
 ```
 
 ### 8.4 DIAGNOSIS Prompt Objectives
@@ -1163,7 +1167,7 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 
 ### 13.2 Implementation Sequence
 
-1. **Add new stage instructions** (DONE) — DIAGNOSIS_INSTRUCTIONS, MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS added to templates.py
+1. **Add new stage instructions** (DONE) — `_RCA_DIAGNOSIS_BLOCK`, `_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`, `MITIGATION_INSTRUCTIONS`, `TREATMENT_INSTRUCTIONS` in templates.py. The DIAGNOSIS-stage prompt is selected path-conditionally by `_select_diagnosis_block(case)`.
 2. **Update InvestigationStage enum** — Add DIAGNOSIS, MITIGATION, TREATMENT values
 3. **Update InvestigationProgress model** — Gate milestones + retained progress milestones
 4. **Add ProposedAction model** — action_type, expected_command, description (Section 10.5)
