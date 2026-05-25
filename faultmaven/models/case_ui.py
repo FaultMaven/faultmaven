@@ -399,6 +399,21 @@ class CaseUIResponse_Inquiry(BaseModel):
         description="Allowed status transitions from current state for user-initiated changes",
     )
 
+    disposition_eligibility: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Per-disposition eligibility for UI affordance gating. "
+            "Shape: ``{'resolved': str, 'closed': str}`` where each value "
+            "is one of ``ready`` / ``needs_info`` / ``not_eligible``. "
+            "Frontend uses this to hide or warn on Resolve / Close "
+            "menu items based on actual case content (e.g., hide "
+            "Resolve until the case has root cause + solution). "
+            "Different from ``valid_next_states`` — that field is the "
+            "structural action graph (which edges exist), this field "
+            "is the content-readiness layer on top."
+        ),
+    )
+
     path_selection: Optional[PathSelection] = Field(
         default=None,
         description=(
@@ -446,6 +461,21 @@ class CaseUIResponse_Investigating(BaseModel):
     valid_next_states: List[str] = Field(
         default_factory=list,
         description="Allowed status transitions from current state for user-initiated changes",
+    )
+
+    disposition_eligibility: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Per-disposition eligibility for UI affordance gating. "
+            "Shape: ``{'resolved': str, 'closed': str}`` where each value "
+            "is one of ``ready`` / ``needs_info`` / ``not_eligible``. "
+            "Frontend uses this to hide or warn on Resolve / Close "
+            "menu items based on actual case content (e.g., hide "
+            "Resolve until the case has root cause + solution). "
+            "Different from ``valid_next_states`` — that field is the "
+            "structural action graph (which edges exist), this field "
+            "is the content-readiness layer on top."
+        ),
     )
 
     problem_statement: Optional[str] = Field(
@@ -544,6 +574,21 @@ class CaseUIResponse_Resolved(BaseModel):
     valid_next_states: List[str] = Field(
         default_factory=list,
         description="Allowed status transitions from current state for user-initiated changes",
+    )
+
+    disposition_eligibility: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Per-disposition eligibility for UI affordance gating. "
+            "Shape: ``{'resolved': str, 'closed': str}`` where each value "
+            "is one of ``ready`` / ``needs_info`` / ``not_eligible``. "
+            "Frontend uses this to hide or warn on Resolve / Close "
+            "menu items based on actual case content (e.g., hide "
+            "Resolve until the case has root cause + solution). "
+            "Different from ``valid_next_states`` — that field is the "
+            "structural action graph (which edges exist), this field "
+            "is the content-readiness layer on top."
+        ),
     )
 
     problem_statement: Optional[str] = Field(

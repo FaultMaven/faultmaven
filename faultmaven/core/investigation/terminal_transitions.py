@@ -75,6 +75,113 @@ def derive_closure_reason(case: "Case") -> str:
     return "closed_after_investigation"
 
 
+# ============================================================
+# DISPOSITION ELIGIBILITY (denormalized read view)
+# ============================================================
+
+# Per-disposition eligibility verdicts surfaced to the frontend so the
+# UI can gate the case-action dropdown affordances (Resolve / Close) on
+# actual case state, not just the structural action graph. The values
+# mirror what ``assess_resolution_readiness`` and
+# ``assess_closure_readiness`` already compute at action time; this
+# helper produces a stable per-disposition shape suitable for read-time
+# consumption and listed queries.
+#
+# Values:
+#   "ready"        — disposition is a valid action and case content
+#                    supports it without follow-up prompts.
+#   "needs_info"   — disposition is a valid action but case content is
+#                    partial; the user will see a "we need X" prompt
+#                    before the transition fires. (Resolve only.)
+#   "not_eligible" — disposition is not a valid edge from the current
+#                    status, OR readiness verdict redirects to the other
+#                    disposition entirely (e.g., SUGGEST_CLOSE pivots
+#                    resolve→close, so "resolved" is not_eligible).
+
+DISPOSITION_ELIGIBILITY_READY = "ready"
+DISPOSITION_ELIGIBILITY_NEEDS_INFO = "needs_info"
+DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE = "not_eligible"
+
+
+def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
+    """Compute the per-disposition eligibility view for the given case.
+
+    Pure derivation — no mutation, no DB access. Returns a dict with
+    fixed keys ``"resolved"`` and ``"closed"`` whose values are one of
+    ``ready`` / ``needs_info`` / ``not_eligible``.
+
+    Maintained at write time via the single chokepoint in
+    ``CaseRepository.save()`` (pattern P3). All reads then trust the
+    persisted ``case.disposition_eligibility`` column. The derivation
+    here is the only place that maps readiness verdicts → eligibility
+    labels — keep it in sync with ``assess_resolution_readiness`` and
+    ``assess_closure_readiness`` outputs.
+
+    Semantics by current status:
+
+    - INQUIRY: only CLOSED is a valid edge per ``ALLOWED_ACTIONS``
+      (resolution requires investigation work). Returns
+      ``{"resolved": "not_eligible", "closed": "ready"}``.
+
+    - INVESTIGATING: both edges are valid. Resolved eligibility derives
+      from ``assess_resolution_readiness``; closed eligibility is
+      always ``ready`` (any INVESTIGATING case can be closed) unless
+      ``assess_closure_readiness`` says SUGGEST_RESOLVE (case has root
+      cause + solution → closing would discard attribution; the
+      eligibility label warns via ``needs_info``).
+
+    - Terminal (RESOLVED / CLOSED): no further actions. Returns all
+      ``not_eligible``.
+
+    The label vocabulary deliberately reuses the resolution-side
+    ``needs_info`` term on the close side for the SUGGEST_RESOLVE case
+    so the frontend has a single 3-value enum to render.
+    """
+    from faultmaven.modules.case.domain.models import CaseStatus
+
+    if case.status == CaseStatus.INQUIRY:
+        return {
+            "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
+            "closed": DISPOSITION_ELIGIBILITY_READY,
+        }
+
+    if case.status != CaseStatus.INVESTIGATING:
+        # Terminal — no further dispositions.
+        return {
+            "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
+            "closed": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
+        }
+
+    # INVESTIGATING — map readiness verdicts to eligibility labels.
+    resolution = assess_resolution_readiness(case)
+    if resolution.verdict == ResolutionReadiness.READY:
+        resolved_eligibility = DISPOSITION_ELIGIBILITY_READY
+    elif resolution.verdict == ResolutionReadiness.NEEDS_INFO:
+        resolved_eligibility = DISPOSITION_ELIGIBILITY_NEEDS_INFO
+    else:  # SUGGEST_CLOSE
+        # Resolved-readiness says the case is too thin for resolution;
+        # closing is the right disposition. Frontend should not offer
+        # Resolved on a SUGGEST_CLOSE case.
+        resolved_eligibility = DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE
+
+    closure = assess_closure_readiness(case)
+    if closure.verdict == ClosureReadiness.SUGGEST_RESOLVE:
+        # Case qualifies for resolved; closing would discard the
+        # resolution attribution. Surface as ``needs_info`` so the
+        # frontend can warn the user before they click Close.
+        closed_eligibility = DISPOSITION_ELIGIBILITY_NEEDS_INFO
+    else:
+        # HAS_SUBSTANCE or TRIVIAL — closing is always ready as a
+        # valid action; the confirmation prompt carries the summary
+        # or the minimal-data warning.
+        closed_eligibility = DISPOSITION_ELIGIBILITY_READY
+
+    return {
+        "resolved": resolved_eligibility,
+        "closed": closed_eligibility,
+    }
+
+
 def propose_transition(
     case: Case,
     to_status: str,

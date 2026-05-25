@@ -646,6 +646,13 @@ class CaseModel(Base):
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
+    # Denormalized per-disposition eligibility view (JSON text), maintained
+    # at CaseRepository.save() chokepoint via derive_disposition_eligibility.
+    # Shape: {"resolved": "ready|needs_info|not_eligible",
+    #         "closed":   "ready|needs_info|not_eligible"}
+    # Read by the UI adapter to gate dropdown affordances on case content.
+    disposition_eligibility = Column(Text, nullable=True)
+
     # JSON blobs for complex domain objects (not query targets)
     inquiry = Column(JsonBlob, nullable=False, server_default="{}")
     problem_verification = Column(JsonBlob, nullable=True)
