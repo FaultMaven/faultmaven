@@ -242,7 +242,7 @@ class TestAckTurnFollowUpsOnFailure:
         case = MagicMock()
         case.status = CaseStatus.RESOLVED
 
-        follow_ups = _select_ack_follow_ups(case, summary_failed=False)
+        follow_ups = _select_ack_follow_ups(case, summary_failed=False, remaining=5)
         assert follow_ups == _resolved_ack_suggestions()
 
     def test_success_closed_returns_empty(self):
@@ -253,7 +253,7 @@ class TestAckTurnFollowUpsOnFailure:
         case = MagicMock()
         case.status = CaseStatus.CLOSED
 
-        follow_ups = _select_ack_follow_ups(case, summary_failed=False)
+        follow_ups = _select_ack_follow_ups(case, summary_failed=False, remaining=5)
         assert follow_ups == []
 
     def test_failure_resolved_includes_regen_and_runbook(self):
@@ -266,8 +266,8 @@ class TestAckTurnFollowUpsOnFailure:
         case = MagicMock()
         case.status = CaseStatus.RESOLVED
 
-        follow_ups = _select_ack_follow_ups(case, summary_failed=True)
-        assert follow_ups == _resolved_suggestions()
+        follow_ups = _select_ack_follow_ups(case, summary_failed=True, remaining=5)
+        assert follow_ups == _resolved_suggestions(remaining=5)
         labels = [s["label"] for s in follow_ups]
         assert any("regenerate" in label.lower() for label in labels)
 
@@ -288,7 +288,7 @@ class TestAckTurnFollowUpsOnFailure:
         case.evidence = []
         case.hypotheses = {}
 
-        follow_ups = _select_ack_follow_ups(case, summary_failed=True)
+        follow_ups = _select_ack_follow_ups(case, summary_failed=True, remaining=5)
         assert follow_ups, (
             "Failed CLOSED summary on a substantive case must offer regen — "
             "no inline summary means the 'noise' rationale doesn't apply."
@@ -325,7 +325,11 @@ class TestRunbookCreationFollowUps:
 
         result = await engine._handle_runbook_creation(case, metadata={})
 
-        assert result["suggested_follow_ups"] == _resolved_suggestions()
+        # remaining=5 because the mock_repo's count_reports returns 0 by
+        # default (MagicMock default), so MAX - 0 = 5.
+        assert result["suggested_follow_ups"] == _resolved_suggestions(
+            remaining=await engine._remaining_regens_for(case)
+        )
 
     @pytest.mark.asyncio
     async def test_not_ready_branch_returns_empty(self, mock_llm, mock_repo):

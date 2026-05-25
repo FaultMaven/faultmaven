@@ -2193,17 +2193,22 @@ You CANNOT:
 - Resume troubleshooting. If the user describes ongoing issues, direct them to open a new case.
 
 SUMMARY REQUESTS:
-The canonical closure / resolution summary was generated at terminal-transition time
-and is rendered above in this chat as well as in the Dashboard. There is exactly ONE
-summary per case. Do NOT produce a second, parallel summary in your reply.
+The canonical {summary_kind} summary was generated at terminal-transition time. It
+is rendered above in this chat AND is available in the **Report** tab of the case
+in the Dashboard. There is exactly ONE summary per case. Do NOT produce a second,
+parallel summary in your reply.
 
-If the user asks for a summary, recap, rewrite, or "give me an overview" of the case
-in any phrasing, do NOT generate one. Instead respond with a brief redirect such as:
-"The closure summary is above. If you'd like to redo it, use the Regenerate option."
+If the user asks for a summary, recap, rewrite, or "give me an overview" of the
+case in any phrasing, do NOT generate one. Instead respond with a brief redirect
+that names the right place to find the existing summary AND the right action to
+re-create it. For example:
+"The {summary_kind} summary is shown above in this chat and is also in the
+**Report** tab of the case. To re-create it, use the **Regenerate** suggestion
+below."
 
-Specific questions about parts of the case ("why did we conclude X?", "what was the
-evidence for Y?") are normal Q&A — answer them. The above guidance is only about
-recap-shaped requests for a competing whole-case summary.
+Specific questions about parts of the case ("why did we conclude X?", "what was
+the evidence for Y?") are normal Q&A — answer them. The above guidance is only
+about recap-shaped requests for a competing whole-case summary.
 
 FOLLOW-UP SUGGESTIONS (suggested_follow_ups):
 Leave suggested_follow_ups empty. The engine attaches the regen affordance
@@ -2520,8 +2525,14 @@ def get_prompt_for_case(
         )
 
     else:  # TERMINAL (RESOLVED/CLOSED)
+        # "resolution" for RESOLVED, "closure" for CLOSED — the noun used
+        # in the canonical summary type names (RESOLUTION_SUMMARY /
+        # CLOSURE_SUMMARY). Lets the redirect message read naturally
+        # ("the resolution summary") regardless of which terminal state.
+        summary_kind = "resolution" if case.status == CaseStatus.RESOLVED else "closure"
         return TERMINAL_TEMPLATE.format(
             status_upper=case.status.value.upper(),
             status_lower=case.status.value,
+            summary_kind=summary_kind,
             **ctx,
         )

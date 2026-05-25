@@ -233,6 +233,21 @@ class ICaseRepository(Protocol):
         """Get reports for a case with optional filtering."""
         ...
 
+    async def count_reports(
+        self,
+        case_id: str,
+        report_type: Optional[ReportType] = None,
+    ) -> int:
+        """Count persisted reports for a case, optionally filtered by type.
+
+        Counts ALL rows (every regeneration adds a new row), not just the
+        current one — this is the metric the regeneration cap enforces.
+        Used by ReportGenerationService to gate further regenerations and
+        by the milestone engine to compute the "N regenerations remaining"
+        label on the regen affordance.
+        """
+        ...
+
     async def update_report(self, report: CaseReport) -> CaseReport:
         """Update an existing report."""
         ...
