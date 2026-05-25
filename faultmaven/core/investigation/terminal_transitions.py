@@ -419,24 +419,58 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
 class ClosureReadiness:
     """Assessment of what was accomplished during an investigation before closing.
 
-    Two verdicts:
+    Three verdicts:
     - HAS_SUBSTANCE: Investigation produced meaningful work worth summarizing.
     - TRIVIAL: Investigation had minimal substance (quick close, no real work done).
+    - SUGGEST_RESOLVE: Case has root cause AND solution on record — qualifies for
+      RESOLVED status. Closing would discard resolution attribution; pivot to
+      proposing RESOLVED instead.
+
+    SUGGEST_RESOLVE is the symmetric counterpart of
+    ``ResolutionReadiness.SUGGEST_CLOSE``. Together they reconcile loose
+    user terminology ("close" vs "resolve") with case content when the two
+    don't match: a resolve request on a thin case pivots to close; a close
+    request on a fully-investigated case pivots to resolve.
     """
 
     HAS_SUBSTANCE = "has_substance"
     TRIVIAL = "trivial"
+    SUGGEST_RESOLVE = "suggest_resolve"
 
     def __init__(self, verdict: str, message: str):
         self.verdict = verdict
         self.message = message
 
 
-def assess_closure_readiness(case: "Case") -> ClosureReadiness:
-    """Summarize what was accomplished during investigation for the CLOSED confirmation prompt.
+def _solution_display_titles(solutions: list) -> list[str]:
+    """Render solution titles for user-facing summaries.
 
-    Uses the same data points as should_generate_terminal_summary() but presents
-    them as a user-facing summary rather than a boolean gate.
+    Falls back to "Solution N" (1-indexed by list position) when a
+    solution lacks a title, instead of the literal string "Untitled".
+    Avoids "Solution: My fix, Untitled, Untitled" for multi-solution
+    cases where titles are sparse — the indexed fallback keeps each
+    entry distinguishable.
+    """
+    return [
+        getattr(s, "title", None) or f"Solution {i + 1}"
+        for i, s in enumerate(solutions)
+    ]
+
+
+def assess_closure_readiness(case: "Case") -> ClosureReadiness:
+    """Summarize what was accomplished during investigation, or pivot to RESOLVED
+    if the case actually qualifies for resolution.
+
+    Verdict logic:
+    - SUGGEST_RESOLVE — case has root cause + solution. Closing would lose
+      resolution attribution; engine pivots to propose RESOLVED instead.
+      Symmetric to ResolutionReadiness.SUGGEST_CLOSE.
+    - TRIVIAL — case has minimal investigation data (no evidence, no
+      hypotheses, no milestones, no root cause, no solutions).
+    - HAS_SUBSTANCE — investigation produced meaningful work (but the
+      "resolution-grade" combination of root cause + solution isn't
+      present). Closing is the right disposition; the message summarizes
+      what was accomplished for the user-facing confirmation prompt.
 
     The actual CLOSURE_SUMMARY report is generated only after user confirms.
 
@@ -444,7 +478,7 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
         case: Case being assessed for closure
 
     Returns:
-        ClosureReadiness with verdict and user-facing summary message
+        ClosureReadiness with verdict and user-facing message
     """
     evidence_count = len(case.evidence) if case.evidence else 0
     hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
@@ -456,6 +490,25 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
         and getattr(case.root_cause_conclusion, "root_cause", None)
     )
     has_solutions = bool(case.solutions and len(case.solutions) > 0)
+
+    # SUGGEST_RESOLVE — the case is "resolution-grade" (matches the minimum
+    # criteria assess_resolution_readiness uses for READY). Closing would
+    # discard the resolution attribution. Engine pivots; user still confirms.
+    # Symmetric to ResolutionReadiness.SUGGEST_CLOSE.
+    if has_root_cause and has_solutions:
+        rc = getattr(case.root_cause_conclusion, "root_cause", "")
+        sol_titles = _solution_display_titles(case.solutions)
+        return ClosureReadiness(
+            verdict=ClosureReadiness.SUGGEST_RESOLVE,
+            message=(
+                "This case has a documented root cause and solution — it "
+                "qualifies for **resolved** status rather than closed. "
+                "Closing it would discard the resolution attribution.\n\n"
+                f"- **Root cause**: {rc}\n"
+                f"- **Solution**: {', '.join(sol_titles)}\n\n"
+                "Would you like to mark it **resolved** instead?"
+            ),
+        )
 
     # Build summary parts
     parts = []
@@ -471,7 +524,7 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
         rc = getattr(case.root_cause_conclusion, "root_cause", "")
         parts.append(f"- **Root cause identified**: {rc}")
     if has_solutions:
-        sol_titles = [getattr(s, "title", "Untitled") for s in case.solutions]
+        sol_titles = _solution_display_titles(case.solutions)
         parts.append(f"- **Solutions on record**: {', '.join(sol_titles)}")
 
     if not parts:

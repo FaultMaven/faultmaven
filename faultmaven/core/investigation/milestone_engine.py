@@ -2256,11 +2256,44 @@ class MilestoneEngine:
                             f"Cannot transition to CLOSED from {case.status.value}"
                         )
 
-                    # Use closure readiness for a meaningful summary
+                    # Use closure readiness for a meaningful summary, and
+                    # pivot to RESOLVED if the case has root cause + solution
+                    # on record (SUGGEST_RESOLVE — symmetric to the LLM-emit
+                    # path's SUGGEST_CLOSE pivot for the opposite direction).
                     closure = assess_closure_readiness(case)
-                    # closure_reason derived inside propose_transition from
-                    # case state — engine handles the enum; caller never
-                    # specifies it.
+                    if closure.verdict == closure.SUGGEST_RESOLVE:
+                        # closure_reason auto-derives to None inside
+                        # propose_transition for RESOLVED — resolution itself
+                        # is the categorization. The user still confirms via
+                        # the resolution confirmation pair.
+                        propose_transition(
+                            case=case,
+                            to_status="resolved",
+                            summary=closure.message,
+                        )
+                        logger.info(
+                            f"User dropdown-requested CLOSED for case "
+                            f"{case.case_id} but verdict=SUGGEST_RESOLVE "
+                            f"(case has root cause + solution); pivoting "
+                            f"to RESOLVED."
+                        )
+                        self._record_deterministic_turn(
+                            case, user_message or "", closure.message
+                        )
+                        await self.repository.save(case)
+                        return {
+                            "agent_response": closure.message,
+                            "suggested_follow_ups": _resolution_confirmation_suggestions(),
+                            "case_updated": case,
+                            "metadata": {
+                                "turn_number": case.current_turn,
+                                "milestones_completed": [],
+                                "progress_made": False,
+                            },
+                        }
+
+                    # Standard close — closure_reason derived inside
+                    # propose_transition from case state.
                     propose_transition(
                         case=case,
                         to_status="closed",
@@ -6447,6 +6480,11 @@ class MilestoneEngine:
                 #                   response builder overrides agent_response
                 #                   with the readiness message
                 #   READY         → propose RESOLVED with confirmation prompt
+                # When the LLM proposes CLOSED, symmetric pivot:
+                #   SUGGEST_RESOLVE → pivot to RESOLVED (case has root cause
+                #                     + solution; closing would discard the
+                #                     resolution attribution)
+                #   HAS_SUBSTANCE / TRIVIAL → propose CLOSED with summary
                 effective_to_status = proposed.to_status
                 needs_info_message: str | None = None
 
@@ -6471,7 +6509,17 @@ class MilestoneEngine:
                     else:
                         summary = _build_resolution_confirmation(case)
                 else:  # closed
-                    summary = assess_closure_readiness(case).message
+                    closure = assess_closure_readiness(case)
+                    if closure.verdict == closure.SUGGEST_RESOLVE:
+                        effective_to_status = "resolved"
+                        summary = closure.message
+                        logger.info(
+                            f"Agent proposed CLOSED but case {case.case_id} "
+                            f"verdict=SUGGEST_RESOLVE (case has root cause "
+                            f"+ solution); pivoting to RESOLVED."
+                        )
+                    else:
+                        summary = closure.message
 
                 propose_transition(
                     case=case,

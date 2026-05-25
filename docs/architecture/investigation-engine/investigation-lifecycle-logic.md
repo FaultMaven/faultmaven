@@ -331,6 +331,8 @@ chance to see what was accomplished before committing to an irreversible action.
 
 **SUGGEST_CLOSE pivot for RESOLVED:** When resolution readiness returns `SUGGEST_CLOSE` (no root cause, no solution, no evidence), both the UI-dropdown path and the LLM-emit path immediately pivot the pending proposal to CLOSED and present the close confirmation pair. The user sees the close prompt rather than a resolve prompt.
 
+**SUGGEST_RESOLVE pivot for CLOSED (symmetric):** When closure readiness returns `SUGGEST_RESOLVE` (case has root cause + solution on record), both the UI-dropdown path and the LLM-emit path pivot the pending proposal to RESOLVED and present the resolve confirmation pair. Closing a resolution-grade case would discard the resolution attribution; the pivot reconciles loose user terminology ("close" vs "resolve") against actual case content. This is the close-side counterpart of the RESOLVED → SUGGEST_CLOSE pivot above — together they form a symmetric strategy: a thin case requested as resolved pivots to close; a rich case requested as closed pivots to resolve.
+
 **needs_info flag for RESOLVED:** When resolution readiness returns `NEEDS_INFO`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, the system re-evaluates readiness via `assess_resolution_readiness()`:
 - **READY** → clears `needs_info`, overrides LLM response with confirmation prompt
 - **Still not ready** → cancels pending transition, suggests Close instead (no re-ask loop — the user was already asked once and couldn't provide the info)
@@ -1022,6 +1024,24 @@ What will happen:
 ```
 
 **INVESTIGATING → CLOSED**
+
+Before presenting the confirmation, the system runs `assess_closure_readiness(case)` which checks for resolution-grade content. Three outcomes:
+
+- **SUGGEST_RESOLVE** — Case has root cause + solution on record (resolution-grade). Both the UI-dropdown branch and the LLM-emit branch pivot the pending proposal to RESOLVED and emit the resolve confirmation pair. Closing would discard resolution attribution; the engine reconciles intent against case content. Symmetric to `ResolutionReadiness.SUGGEST_CLOSE`.
+- **HAS_SUBSTANCE** — Case has investigation work (evidence / hypotheses / partial findings) but is missing one of root cause / solution. Closing is the right disposition; the engine surfaces a summary of what was accomplished.
+- **TRIVIAL** — Case has no investigation data. The engine confirms close with a minimal-data warning.
+
+```python
+closure = assess_closure_readiness(case)
+
+if closure.verdict == "suggest_resolve":
+    # Pivot: propose RESOLVED instead of CLOSED, emit resolve confirmation pair
+    propose_transition(case=case, to_status="resolved", summary=closure.message)
+    return closure.message  # "Case qualifies for resolved — mark resolved instead?"
+
+# HAS_SUBSTANCE / TRIVIAL — propose CLOSED with the summary message
+propose_transition(case=case, to_status="closed", summary=closure.message)
+```
 
 ```python
 # Agent confirms closure with consequences

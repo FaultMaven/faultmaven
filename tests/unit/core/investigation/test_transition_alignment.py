@@ -220,6 +220,49 @@ async def test_ui_dropdown_resolve_pivots_to_close_when_thin():
 
 
 @pytest.mark.asyncio
+async def test_ui_dropdown_close_pivots_to_resolve_when_resolution_grade():
+    """Symmetric to ``test_ui_dropdown_resolve_pivots_to_close_when_thin``.
+    User clicks Close from INVESTIGATING but the case has root cause +
+    solution on record — engine pivots to propose RESOLVED instead and
+    emits the canonical RESOLVE pair, so the user's confirm click
+    actually preserves resolution attribution rather than discarding it.
+
+    This handles the close-side of the loose-terminology pivot strategy:
+    users use "close" and "resolve" interchangeably as "conclude the
+    case"; the engine reconciles intent against case content."""
+    engine = MilestoneEngine(
+        MagicMock(),
+        _make_repo(),
+        investigation_tools=MagicMock(),
+    )
+    case = _make_investigating_case()
+    case.progress.symptom_verified = True
+    _fill_for_resolution_ready(case)  # root cause + solution → resolution-grade
+
+    result = await engine.process_turn(
+        case=case,
+        user_message="Close this case.",
+        intent_type="status_transition",
+        intent_data={
+            "from_status": "investigating",
+            "to_status": "closed",
+            "user_confirmed": True,
+        },
+    )
+    pending = result["case_updated"].pending_transition
+    assert pending is not None
+    assert pending["to_status"] == "resolved", (
+        "Dropdown SUGGEST_RESOLVE pivot did not fire: the user clicked "
+        "Close but the case has root cause + solution. Engine should "
+        "have pivoted to propose RESOLVED so the user's confirm "
+        "preserves resolution attribution."
+    )
+    # closure_reason is None for RESOLVED (resolution itself is the categorization)
+    assert pending.get("closure_reason") is None
+    _assert_canonical_confirm_pair(result["suggested_follow_ups"], "resolved")
+
+
+@pytest.mark.asyncio
 async def test_ui_dropdown_resolve_needs_info_keeps_resolve_pair():
     """NEEDS_INFO branch: case has evidence (one of the four readiness checks)
     but is missing root cause / solution. Engine keeps the resolve intent so a
@@ -444,6 +487,45 @@ async def test_llm_emit_resolved_pivots_to_close_when_thin():
     # the response builder distinguishes the two paths.
     assert not metadata.get("resolution_needs_info_first_pass")
     _assert_canonical_confirm_pair(metadata["override_suggestions"], "close")
+
+
+@pytest.mark.asyncio
+async def test_llm_emit_closed_pivots_to_resolved_when_resolution_grade():
+    """Symmetric to ``test_llm_emit_resolved_pivots_to_close_when_thin``.
+    LLM proposes CLOSED on a case that has root cause + solution. Engine
+    must pivot to RESOLVED, propose resolved, and override suggestions
+    with the resolve pair so the user's confirm click preserves
+    resolution attribution rather than discarding it."""
+    engine = MilestoneEngine(
+        MagicMock(),
+        _make_repo(),
+        investigation_tools=MagicMock(),
+    )
+    case = _make_investigating_case()
+    case.progress.symptom_verified = True
+    _fill_for_resolution_ready(case)  # root cause + solution → resolution-grade
+
+    fake_response = MagicMock()
+    fake_response.state_updates.proposed_transition = MagicMock(
+        to_status="closed",
+        evidence_ids=[],
+    )
+    metadata: dict = {"response_obj": fake_response}
+
+    await engine._check_automatic_transitions(
+        case=case, metadata=metadata, user_message="Let's close this."
+    )
+
+    assert case.pending_transition is not None
+    assert case.pending_transition["to_status"] == "resolved", (
+        "LLM-emit SUGGEST_RESOLVE pivot did not fire: the agent proposed "
+        "CLOSED but the case has root cause + solution. Engine should "
+        "have pivoted to propose RESOLVED so the user's confirm preserves "
+        "resolution attribution."
+    )
+    # closure_reason is None for RESOLVED
+    assert case.pending_transition.get("closure_reason") is None
+    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved")
 
 
 @pytest.mark.asyncio
