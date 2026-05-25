@@ -19,6 +19,7 @@ from faultmaven.core.investigation.prompts.templates import (
     _GATE3_PENDING_BLOCK,
     _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK,
     _POST_MITIGATION_RCA_PREFIX,
+    _PRE_PATH_DIAGNOSIS_BLOCK,
     _RCA_DIAGNOSIS_BLOCK,
     _SYMPTOM_VALIDATION_BLOCK,
     _select_diagnosis_block,
@@ -237,22 +238,24 @@ class TestDispatcher:
         assert _RCA_DIAGNOSIS_BLOCK in result
         assert "HYPOTHESIS-EVIDENCE ORDERING" in result
 
-    def test_path_selection_none_falls_back_to_symptom_validation(self):
-        """Post-INV-19 an INVESTIGATING case always has path_selection,
-        but the dispatcher must still degrade safely if state is
-        somehow broken — falling back to the strictest block
-        (symptom validation, no hypothesis emission).
+    def test_path_selection_none_routes_to_pre_path_block(self):
+        """Post-redesign, INVESTIGATING + path_selection=None is the
+        expected pre-Gate-2 state (not a defensive edge case). The
+        dispatcher routes to ``_PRE_PATH_DIAGNOSIS_BLOCK`` which forbids
+        hypothesis emission so the LLM can complete symptom validation
+        before the user commits a path.
         """
         case = _make_case(path=None)
         result = _select_diagnosis_block(case)
-        assert result == _SYMPTOM_VALIDATION_BLOCK
+        assert result == _PRE_PATH_DIAGNOSIS_BLOCK
         assert "HYPOTHESIS-EVIDENCE ORDERING" not in result
+        assert "PRE-PATH SYMPTOM VALIDATION" in result
 
-    def test_unknown_path_enum_value_falls_back_to_symptom_validation(self):
+    def test_unknown_path_enum_value_falls_back_to_pre_path_block(self):
         """If ``InvestigationPath`` ever grows a third value and the
         dispatcher isn't updated, the unknown branch must NOT silently
         emit ``_RCA_DIAGNOSIS_BLOCK``. The fallback is the strictest
-        block (symptom validation, no hypothesis mandate).
+        block (pre-path, no hypothesis mandate, no solution emission).
 
         Constructed by patching ``case.path_selection.path`` to a
         sentinel that isn't equal to either current enum value, which
@@ -277,7 +280,7 @@ class TestDispatcher:
         object.__setattr__(case.path_selection, "path", _UnknownPath())
 
         result = _select_diagnosis_block(case)
-        assert result == _SYMPTOM_VALIDATION_BLOCK
+        assert result == _PRE_PATH_DIAGNOSIS_BLOCK
         assert "HYPOTHESIS-EVIDENCE ORDERING" not in result
 
     def test_focus_emphasis_zone2_text_absent_from_pre_mitigation_dispatch(self):

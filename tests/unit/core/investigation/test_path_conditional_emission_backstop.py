@@ -33,6 +33,7 @@ import pytest
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
     _is_pre_mitigation_mitigation_first,
+    _is_pre_path_investigating,
     _path_conditional_emission_restriction,
 )
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -174,6 +175,19 @@ def _root_cause_case() -> Case:
     return case
 
 
+def _pre_path_case(*, symptom_verified: bool = True) -> Case:
+    """INVESTIGATING case before the user clicks a Gate 2 path button —
+    ``case.path_selection is None``. Post-redesign Gate 2 fires inside
+    INVESTIGATING after ``symptom_verified``; this fixture defaults to
+    that state so the predicate / restriction tests can pin the
+    enforcement shape.
+    """
+    case = _mitigation_first_case()
+    case.path_selection = None
+    case.progress.symptom_verified = symptom_verified
+    return case
+
+
 def _llm_response(
     *,
     hypotheses: list[dict] | None = None,
@@ -249,6 +263,35 @@ class TestStatePredicates:
         ``_RCA_DIAGNOSIS_BLOCK`` which contains the hypothesis mandate."""
         case = _root_cause_case()
         assert _path_conditional_emission_restriction(case) is None
+
+    def test_pre_path_predicate_true_when_investigating_with_no_path(self):
+        case = _pre_path_case()
+        assert _is_pre_path_investigating(case) is True
+
+    def test_pre_path_predicate_false_when_path_committed(self):
+        case = _mitigation_first_case()
+        assert _is_pre_path_investigating(case) is False
+
+    def test_pre_path_predicate_false_in_inquiry(self):
+        """The pre-path predicate is INVESTIGATING-scoped; INQUIRY cases
+        without path_selection are pre-Gate-1, not pre-Gate-2."""
+        case = _pre_path_case()
+        case.status = CaseStatus.INQUIRY
+        assert _is_pre_path_investigating(case) is False
+
+    def test_restriction_label_pre_path(self):
+        case = _pre_path_case()
+        assert _path_conditional_emission_restriction(case) == "pre_path_investigating"
+
+    def test_pre_path_takes_priority_over_other_labels(self):
+        """When path_selection is None the case can't be
+        pre_mitigation_mitigation_first or gate3_pending (both require a
+        committed path), so the pre_path label is the only one that can
+        fire. Pin the priority anyway so a future predicate refactor
+        can't silently shift the routing."""
+        case = _pre_path_case()
+        # Even if some other state is plausibly evaluable, pre_path wins.
+        assert _path_conditional_emission_restriction(case) == "pre_path_investigating"
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +431,36 @@ class TestHypothesesRejection:
 
         assert len(updated.hypotheses) == 1
 
+    @pytest.mark.asyncio
+    async def test_pre_path_rejects_hypothesis_emission(self, mock_llm, mock_repo):
+        """Pre-path (Gate 2 not yet committed) is the third restricted
+        state. Hypotheses must be rejected categorically — a path has
+        not been chosen, so no diagnostic discipline (mitigation-first
+        vs root-cause-first) applies. See INV-19."""
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        case = _pre_path_case()
+
+        mock_llm.generate.return_value = _llm_response(
+            hypotheses=[
+                {
+                    "statement": "Premature pre-path hypothesis",
+                    "category": "config",
+                    "likelihood": 0.6,
+                    "rationale": "Test rationale",
+                }
+            ]
+        )
+
+        result = await engine.process_turn(case, "test")
+        updated = result["case_updated"]
+
+        assert len(updated.hypotheses) == 0
+        feedback = updated.turn_history[-1].system_feedback or ""
+        assert "PATH-CONDITIONAL EMISSION ERROR" in feedback
+        # The feedback must name the pre-path block specifically so the
+        # LLM knows it's the no-path state, not the pre-mitigation one.
+        assert "_PRE_PATH_DIAGNOSIS_BLOCK" in feedback
+
 
 # ---------------------------------------------------------------------------
 # causal_evidence — partial-accept in restricted states
@@ -485,6 +558,43 @@ class TestCausalEvidenceRejection:
         assert "PATH-CONDITIONAL EMISSION ERROR" in feedback
         assert "causal_evidence" in feedback
         assert "INV-17" in feedback  # cites the hypothesis-presupposes constraint
+
+    @pytest.mark.asyncio
+    async def test_pre_path_drops_causal_evidence(self, mock_llm, mock_repo):
+        """Pre-path state extends the same causal_evidence ban: no path
+        has been committed, so causal_evidence (which presupposes a
+        hypothesis — INV-17) is out of scope regardless of which path
+        the user eventually picks. Partial-accept still applies."""
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        case = _pre_path_case()
+        evidence_before = len(case.evidence)
+
+        mock_llm.generate.return_value = _llm_response(
+            evidence=[
+                {
+                    "summary": "Pre-path causal evidence",
+                    "category": "causal_evidence",
+                    "source_type": "user_description",
+                    "extract": "test",
+                },
+                {
+                    "summary": "Pre-path symptom evidence (allowed)",
+                    "category": "symptom_evidence",
+                    "source_type": "user_description",
+                    "extract": "test symptom",
+                },
+            ]
+        )
+
+        result = await engine.process_turn(case, "test")
+        updated = result["case_updated"]
+
+        # Only the symptom_evidence landed — causal_evidence was dropped.
+        assert len(updated.evidence) == evidence_before + 1
+        new_ev = updated.evidence[-1]
+        assert new_ev.category.value == "symptom_evidence"
+        feedback = updated.turn_history[-1].system_feedback or ""
+        assert "_PRE_PATH_DIAGNOSIS_BLOCK" in feedback
 
     @pytest.mark.asyncio
     async def test_gate3_pending_drops_causal_evidence(self, mock_llm, mock_repo):
@@ -618,6 +728,26 @@ class TestRootCauseIdentifiedRejection:
         assert "_GATE3_PENDING_BLOCK" in feedback
 
     @pytest.mark.asyncio
+    async def test_pre_path_rejects_root_cause_identified(self, mock_llm, mock_repo):
+        """Pre-path state extends the same RCA-side milestone ban: a
+        path has not been chosen, so root-cause attribution is premature
+        regardless of which path the user eventually picks."""
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        case = _pre_path_case()
+
+        mock_llm.generate.return_value = _llm_response(
+            milestones={"root_cause_identified": True},
+        )
+
+        result = await engine.process_turn(case, "test")
+        updated = result["case_updated"]
+
+        assert updated.progress.root_cause_identified is False
+        feedback = updated.turn_history[-1].system_feedback or ""
+        assert "PATH-CONDITIONAL MILESTONE ERROR" in feedback
+        assert "_PRE_PATH_DIAGNOSIS_BLOCK" in feedback
+
+    @pytest.mark.asyncio
     async def test_root_cause_path_does_not_fire_path_conditional_rejection(
         self, mock_llm, mock_repo
     ):
@@ -657,6 +787,98 @@ class TestRootCauseIdentifiedRejection:
         # still revert the milestone for unrelated reasons; that's not
         # what this test guards.)
         assert "PATH-CONDITIONAL MILESTONE ERROR" not in feedback
+
+
+# ---------------------------------------------------------------------------
+# solutions_to_add — pre-path-only rejection
+# ---------------------------------------------------------------------------
+
+
+class TestSolutionsRejectedInPrePath:
+    """``solutions_to_add`` is rejected only in the pre-path state. The
+    other restricted states (pre_mitigation_mitigation_first,
+    gate3_pending) DO allow solution emission — mitigation discovery
+    inside MITIGATION_FIRST, post-mitigation acknowledgement at Gate 3.
+    The pre-path ban is narrower because the path is not yet committed
+    so neither mitigation nor solution discipline applies.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pre_path_rejects_solutions_emission(self, mock_llm, mock_repo):
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        case = _pre_path_case()
+        solutions_before = len(case.solutions)
+
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "ok",
+                "internal_reasoning": {
+                    "evidence_analyzed": ["ev_existing"],
+                    "conclusions": [],
+                    "milestone_justifications": {},
+                },
+                "state_updates": {
+                    "outcome": "milestone_completed",
+                    "solutions_to_add": [
+                        {
+                            "solution_type": "workaround",
+                            "description": "Premature mitigation proposal",
+                            "commands": ["echo restart"],
+                            "risks": "none",
+                            "estimated_impact": "low",
+                        }
+                    ],
+                },
+            }
+        )
+
+        result = await engine.process_turn(case, "test")
+        updated = result["case_updated"]
+
+        # No solution landed on the case.
+        assert len(updated.solutions) == solutions_before
+        feedback = updated.turn_history[-1].system_feedback or ""
+        assert "PATH-CONDITIONAL EMISSION ERROR" in feedback
+        assert "solutions_to_add" in feedback
+
+    @pytest.mark.asyncio
+    async def test_pre_mitigation_allows_solutions_emission(self, mock_llm, mock_repo):
+        """In ``pre_mitigation_mitigation_first`` the LLM is expected to
+        propose a workaround solution — that's the whole point of the
+        mitigation-first path. The pre-path solution ban must NOT leak
+        into this state."""
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        case = _mitigation_first_case(mitigation_completed_at_turn=None)
+        solutions_before = len(case.solutions)
+
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "ok",
+                "internal_reasoning": {
+                    "evidence_analyzed": ["ev_existing"],
+                    "conclusions": [],
+                    "milestone_justifications": {},
+                },
+                "state_updates": {
+                    "outcome": "milestone_completed",
+                    "solutions_to_add": [
+                        {
+                            "solution_type": "workaround",
+                            "description": "Legitimate mitigation",
+                            "commands": ["echo restart"],
+                            "risks": "none",
+                            "estimated_impact": "low",
+                        }
+                    ],
+                },
+            }
+        )
+
+        result = await engine.process_turn(case, "test")
+        updated = result["case_updated"]
+
+        # The solution landed; the pre-path ban did not leak here.
+        assert len(updated.solutions) == solutions_before + 1
 
 
 # ---------------------------------------------------------------------------

@@ -77,12 +77,24 @@ def _inquiry_case(
 def _investigating_case(
     *,
     path_selection: PathSelection | None = None,
+    symptom_verified: bool = False,
 ) -> Case:
-    """INVESTIGATING-stage case (Gate 1 + Gate 2 closed); used for Gate 3 tests."""
+    """INVESTIGATING-stage case. Post-redesign, ``path_selection`` is
+    written by the Gate 2 click handler in INVESTIGATING (not INQUIRY),
+    so it's optional here — pass None to construct a pre-path case."""
+    from faultmaven.modules.case.contracts import InvestigationProgress
+
     inquiry = InquiryData(
         proposed_problem_statement="Production API is returning 500s",
         problem_statement_confirmed=True,
         decided_to_investigate=True,
+        preliminary_urgency=PreliminaryUrgency(
+            level=UrgencyLevel.CRITICAL,
+            is_ongoing=True,
+            is_incident_report=True,
+            impact_assessment="prod outage",
+            assessed_at_turn=1,
+        ),
     )
     case = Case(
         user_id="u1",
@@ -91,6 +103,7 @@ def _investigating_case(
         status=CaseStatus.INVESTIGATING,
         description="Production API is returning 500s",
         inquiry=inquiry,
+        progress=InvestigationProgress(symptom_verified=symptom_verified),
     )
     if path_selection is not None:
         case.path_selection = path_selection
@@ -153,31 +166,43 @@ class TestGate1Predicate:
 
 
 class TestGate2Predicate:
-    """Gate 2 is pending when Gate 1 has passed and ``case.path_selection``
-    has not yet been committed. After the path-selection commit-timing
-    refactor, existence of path_selection IS the commit — there is no
-    separate user_confirmed flag."""
+    """Gate 2 is pending when the case is INVESTIGATING with
+    ``symptom_verified=True`` and ``path_selection`` not yet
+    committed. Post-redesign, the gate fires after symptom verification
+    rather than at INQUIRY → INVESTIGATING transition — the path
+    choice is data-grounded, not based on user-claimed urgency."""
 
-    def test_pending_when_gate1_passed_and_no_path_committed(self):
-        """Path uncommitted (None) during INQUIRY with Gate 1 passed → Gate 2 pending."""
-        case = _inquiry_case(
-            problem_statement_confirmed=True,
+    def test_pending_when_symptom_verified_and_no_path_committed(self):
+        """INVESTIGATING + symptom_verified + path_selection=None → Gate 2 pending."""
+        case = _investigating_case(
             path_selection=None,
+            symptom_verified=True,
         )
         assert _gate2_is_pending(case) is True
 
-    def test_not_pending_when_gate1_not_passed(self):
-        case = _inquiry_case(
-            problem_statement_confirmed=False,
+    def test_not_pending_when_symptom_not_yet_verified(self):
+        """Pre-symptom_verified, Gate 2 is not yet open — the agent's
+        job is still symptom validation."""
+        case = _investigating_case(
             path_selection=None,
+            symptom_verified=False,
         )
         assert _gate2_is_pending(case) is False
 
     def test_not_pending_when_path_committed(self):
         """Path_selection existence means user has clicked Gate 2; gate closed."""
+        case = _investigating_case(
+            path_selection=_root_cause_path(),
+            symptom_verified=True,
+        )
+        assert _gate2_is_pending(case) is False
+
+    def test_not_pending_in_inquiry(self):
+        """Pre-redesign Gate 2 fired in INQUIRY; post-redesign it does not.
+        Pre-symptom verification of any kind happens after the transition."""
         case = _inquiry_case(
             problem_statement_confirmed=True,
-            path_selection=_root_cause_path(),
+            path_selection=None,
         )
         assert _gate2_is_pending(case) is False
 
@@ -223,9 +248,9 @@ class TestEngineOwnedAffordances:
         )
 
     def test_gate2_pending_returns_path_selection_pair(self):
-        case = _inquiry_case(
-            problem_statement_confirmed=True,
-            path_selection=None,  # Gate 2 pending = path not yet committed
+        case = _investigating_case(
+            path_selection=None,
+            symptom_verified=True,  # Gate 2 fires after symptom_verified
         )
         result = engine_owned_affordances(case)
         assert result is not None
@@ -287,10 +312,12 @@ class TestEngineOwnedAffordances:
         assert result is None
 
     def test_gate2_takes_priority_over_gate1_after_gate1_passes(self):
-        """Gate 1 is closed but Gate 2 still open: only Gate 2's pair fires."""
-        case = _inquiry_case(
-            problem_statement_confirmed=True,
-            path_selection=None,  # Gate 2 pending = path not yet committed
+        """Gate 1 is closed (case has transitioned to INVESTIGATING)
+        and Gate 2 is now pending after symptom_verified: only Gate 2's
+        pair fires."""
+        case = _investigating_case(
+            path_selection=None,
+            symptom_verified=True,
         )
         result = engine_owned_affordances(case)
         assert result is not None
@@ -298,8 +325,8 @@ class TestEngineOwnedAffordances:
         assert gate == "gate2"
         intent_types = {s["intent"]["type"] for s in affordances}
         assert intent_types == {"path_selection"}
-        # Sanity: gate1 predicate itself reports False so the affordance
-        # selection cannot accidentally fall through to gate1's pair.
+        # Sanity: gate1 predicate itself reports False — case is in
+        # INVESTIGATING, not INQUIRY.
         assert _gate1_is_pending(case) is False
 
 

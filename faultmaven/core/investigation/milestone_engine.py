@@ -792,25 +792,46 @@ def _is_pre_mitigation_mitigation_first(case: "Case") -> bool:
     return ps.mitigation_completed_at_turn is None
 
 
+def _is_pre_path_investigating(case: "Case") -> bool:
+    """Whether the case is in INVESTIGATING with Gate 2 not yet committed.
+
+    Post-redesign Gate 2 commits inside INVESTIGATING after
+    ``symptom_verified``; until the user clicks a path button,
+    ``case.path_selection is None`` and the LLM is in pre-path mode.
+    The dispatcher routes this state to ``_PRE_PATH_DIAGNOSIS_BLOCK``,
+    which forbids hypothesis/causal_evidence/solution emission. The
+    engine backstop mirrors that prompt-side ban.
+    """
+    if case.status != CaseStatus.INVESTIGATING:
+        return False
+    return case.path_selection is None
+
+
 def _path_conditional_emission_restriction(case: "Case") -> Optional[str]:
     """Return a state label when the case is in a state where the
-    prompt forbids RCA-side structured emissions (``hypotheses_to_add``
-    and ``causal_evidence``), else ``None``.
+    prompt forbids RCA-side structured emissions (``hypotheses_to_add``,
+    ``causal_evidence``, and — for pre-path — ``solutions_to_add``),
+    else ``None``.
 
-    States covered (both apply on MITIGATION_FIRST cases only):
+    States covered:
+      - ``"pre_path_investigating"`` — INVESTIGATING + no path commit.
+        ``_PRE_PATH_DIAGNOSIS_BLOCK`` is rendered. Additionally forbids
+        ``solutions_to_add`` because mitigation/solution proposals only
+        belong inside a committed path.
       - ``"pre_mitigation_mitigation_first"`` —
         ``_SYMPTOM_VALIDATION_BLOCK`` is the rendered dispatch block.
       - ``"gate3_pending"`` — ``_GATE3_PENDING_BLOCK`` is rendered.
 
-    The two states share the same forbidden-emission list because both
-    blocks issue identical "DO NOT emit ``hypotheses_to_add`` / DO NOT
-    classify causal_evidence" directives in their prompt text. The
-    engine backstop mirrors that prompt-side ban so a non-compliant
-    LLM cannot corrupt the case with persistent invalid records.
+    All three states share the same RCA-side emission ban; the
+    pre-path state adds the solution ban. The engine backstop mirrors
+    the prompt-side bans so a non-compliant LLM cannot corrupt the
+    case with persistent invalid records.
 
     Returns the label so callers can build state-specific system_feedback
     that names which prompt block the LLM violated.
     """
+    if _is_pre_path_investigating(case):
+        return "pre_path_investigating"
     if _is_pre_mitigation_mitigation_first(case):
         return "pre_mitigation_mitigation_first"
     if _gate3_is_pending(case):
@@ -844,17 +865,20 @@ def _gate1_is_pending(case: "Case") -> bool:
 def _gate2_is_pending(case: "Case") -> bool:
     """Whether Gate 2 (investigation-path selection) is open for this case.
 
-    Returns True when Gate 1 has closed (problem_statement_confirmed=True)
+    Returns True when the case has transitioned into INVESTIGATING,
+    ``symptom_verified`` is True (the data-grounded urgency is established),
     and the user has not yet committed a path (``case.path_selection`` is
-    None). The path-selection commit happens exclusively at the Gate 2
-    click handler — recommendation is computed on-demand at button-render
+    None). The path choice is made on verified urgency, not on user-claimed
+    urgency at INQUIRY — see INV-19.
+
+    The path-selection commit happens exclusively at the Gate 2 click
+    handler; the recommendation is computed on-demand at button-render
     time via ``recommend_investigation_path_for_case`` rather than stored
-    pre-commit. See INV-19.
+    pre-commit.
     """
-    if case.status != CaseStatus.INQUIRY:
+    if case.status != CaseStatus.INVESTIGATING:
         return False
-    inq = case.inquiry
-    if inq is None or not inq.problem_statement_confirmed:
+    if not getattr(case.progress, "symptom_verified", False):
         return False
     return case.path_selection is None
 
@@ -1479,11 +1503,12 @@ class MilestoneEngine:
 
         try:
             reports = await self.report_service.generate_reports(case, [report_type])
-            content = None
             if reports:
                 content = getattr(reports[0], "content", None) or getattr(
                     reports[0], "markdown_content", None
                 )
+            else:
+                content = None
             agent_response = (
                 content
                 if content
@@ -2447,15 +2472,14 @@ class MilestoneEngine:
 
                     logger.info(
                         f"Case {case.case_id}: Gate 1 confirmed via confirmation intent "
-                        f"(awaiting Gate 2 path selection before transitioning to INVESTIGATING)"
+                        f"(transitioning to INVESTIGATING; Gate 2 path selection fires "
+                        f"later, after symptom_verified)"
                     )
 
                     # Do NOT transition here — _check_automatic_transitions
-                    # enforces INV-19 (Gate 2 must pass before INQUIRY ->
-                    # INVESTIGATING). Continue to normal LLM flow so the
-                    # agent's response carries the Gate 2 prompt and the
-                    # response builder attaches the deterministic Gate 2
-                    # suggestions.
+                    # fires INQUIRY -> INVESTIGATING on Gate 1 alone (INV-19,
+                    # post-redesign). Gate 2 opens inside INVESTIGATING after
+                    # the agent sets symptom_verified=True.
 
             elif intent_type == "path_selection":
                 # Gate 2 commit. User clicked one of the two path COOPERATIVE
@@ -2469,10 +2493,15 @@ class MilestoneEngine:
                     f"(intent_data={intent_data})"
                 )
 
-                if case.status != CaseStatus.INQUIRY:
+                if case.status != CaseStatus.INVESTIGATING:
                     logger.warning(
                         f"Received path_selection intent for case {case.case_id} "
                         f"but status is {case.status.value}"
+                    )
+                elif not getattr(case.progress, "symptom_verified", False):
+                    logger.warning(
+                        f"Received path_selection intent for case {case.case_id} "
+                        f"but symptom_verified is False — Gate 2 has not yet opened"
                     )
                 elif case.path_selection is not None:
                     logger.warning(
@@ -5382,19 +5411,24 @@ class MilestoneEngine:
                         path_restricted_state is not None
                         and field in rca_side_milestones
                     ):
-                        block_name = (
-                            "_SYMPTOM_VALIDATION_BLOCK"
-                            if path_restricted_state
-                            == "pre_mitigation_mitigation_first"
-                            else "_GATE3_PENDING_BLOCK"
+                        block_name = {
+                            "pre_path_investigating": "_PRE_PATH_DIAGNOSIS_BLOCK",
+                            "pre_mitigation_mitigation_first": "_SYMPTOM_VALIDATION_BLOCK",
+                            "gate3_pending": "_GATE3_PENDING_BLOCK",
+                        }[path_restricted_state]
+                        deferral_reason = (
+                            "Root-cause work is deferred until the user "
+                            "commits an investigation path (Gate 2)."
+                            if path_restricted_state == "pre_path_investigating"
+                            else "Root-cause work is deferred until the user "
+                            "opts to continue past Gate 3 (MITIGATION_FIRST path)."
                         )
                         logger.warning(
                             f"Rejected RCA-side milestone '{field}' for case "
                             f"{case.case_id}: forbidden in state "
                             f"'{path_restricted_state}' (the {block_name} "
                             f"prompt directive forbids setting RCA-side "
-                            f"milestones; RCA is deferred to post-Gate-3 on "
-                            f"the MITIGATION_FIRST path)."
+                            f"milestones in this state)."
                         )
                         current_feedback = metadata.get("system_feedback") or ""
                         metadata["system_feedback"] = (
@@ -5402,11 +5436,9 @@ class MilestoneEngine:
                             "PATH-CONDITIONAL MILESTONE ERROR: You set "
                             f"``{field}=True`` in a state where the "
                             f"{block_name} prompt directive forbids "
-                            "RCA-side milestones. Root-cause work is "
-                            "deferred until the user opts to continue "
-                            "past Gate 3 (MITIGATION_FIRST path). Do not "
+                            f"RCA-side milestones. {deferral_reason} Do not "
                             f"re-emit ``{field}=True`` until the case "
-                            "reaches post-Gate-3 state."
+                            "reaches a state where RCA is in scope."
                         ).strip()
                         metadata.setdefault("validation_repairs", []).append(
                             f"Rejected {field} in {path_restricted_state} state"
@@ -5573,10 +5605,17 @@ class MilestoneEngine:
                     restricted_state is not None
                     and ev_item.category == EvidenceCategory.CAUSAL_EVIDENCE
                 ):
-                    block_name = (
-                        "_SYMPTOM_VALIDATION_BLOCK"
-                        if restricted_state == "pre_mitigation_mitigation_first"
-                        else "_GATE3_PENDING_BLOCK"
+                    block_name = {
+                        "pre_path_investigating": "_PRE_PATH_DIAGNOSIS_BLOCK",
+                        "pre_mitigation_mitigation_first": "_SYMPTOM_VALIDATION_BLOCK",
+                        "gate3_pending": "_GATE3_PENDING_BLOCK",
+                    }[restricted_state]
+                    deferral_clause = (
+                        "Causal evidence is deferred until the user commits "
+                        "an investigation path (Gate 2)."
+                        if restricted_state == "pre_path_investigating"
+                        else "RCA work — including causal evidence — is "
+                        "deferred until the user opts to continue past Gate 3."
                     )
                     logger.warning(
                         f"Rejected causal_evidence emission for case "
@@ -5593,12 +5632,9 @@ class MilestoneEngine:
                         f"the {block_name} prompt directive explicitly "
                         "forbids this category. Causal claims presuppose "
                         "a hypothesis to attach to (INV-17), and "
-                        "hypothesis formation is gated on this path. "
+                        "hypothesis formation is gated in this state. "
                         "Use ``symptom_evidence`` (verifying the problem) "
-                        "or ``mitigation_evidence`` (the mitigation's "
-                        "effect) instead. RCA work — including causal "
-                        "evidence — is deferred until the user opts to "
-                        "continue past Gate 3."
+                        f"instead. {deferral_clause}"
                     ).strip()
                     metadata.setdefault("validation_repairs", []).append(
                         f"Rejected causal_evidence in {restricted_state} state"
@@ -5689,10 +5725,17 @@ class MilestoneEngine:
             # hypothesis emission to preserve.
             restricted_state = _path_conditional_emission_restriction(case)
             if restricted_state is not None:
-                block_name = (
-                    "_SYMPTOM_VALIDATION_BLOCK"
-                    if restricted_state == "pre_mitigation_mitigation_first"
-                    else "_GATE3_PENDING_BLOCK"
+                block_name = {
+                    "pre_path_investigating": "_PRE_PATH_DIAGNOSIS_BLOCK",
+                    "pre_mitigation_mitigation_first": "_SYMPTOM_VALIDATION_BLOCK",
+                    "gate3_pending": "_GATE3_PENDING_BLOCK",
+                }[restricted_state]
+                deferral_clause = (
+                    "Hypothesis formation is gated until the user commits "
+                    "an investigation path (Gate 2)."
+                    if restricted_state == "pre_path_investigating"
+                    else "Hypothesis formation is gated until the user opts "
+                    "to continue past Gate 3 (MITIGATION_FIRST path)."
                 )
                 count = len(updates.hypotheses_to_add)
                 logger.warning(
@@ -5708,12 +5751,11 @@ class MilestoneEngine:
                     "PATH-CONDITIONAL EMISSION ERROR: You emitted "
                     f"``hypotheses_to_add`` ({count} record(s)) in a state "
                     f"where the {block_name} prompt directive forbids "
-                    "structured hypothesis emission. Hypothesis formation "
-                    "is gated until the user opts to continue past Gate 3 "
-                    "(MITIGATION_FIRST path). You may discuss possible "
-                    "causes in prose — conversational hypothesizing is "
-                    "allowed — but do not re-emit ``hypotheses_to_add`` "
-                    "until the case reaches post-Gate-3 state."
+                    f"structured hypothesis emission. {deferral_clause} "
+                    "You may discuss possible causes in prose — "
+                    "conversational hypothesizing is allowed — but do not "
+                    "re-emit ``hypotheses_to_add`` until the case reaches "
+                    "a state where hypothesis work is in scope."
                 ).strip()
                 metadata.setdefault("validation_repairs", []).append(
                     f"Rejected hypotheses_to_add ({count} record(s)) "
@@ -5793,6 +5835,45 @@ class MilestoneEngine:
                 )
 
         # 5. Solutions
+        if hasattr(updates, "solutions_to_add") and updates.solutions_to_add:
+            # Path-conditional emission backstop (pre-path only):
+            # ``_PRE_PATH_DIAGNOSIS_BLOCK`` explicitly forbids
+            # ``solutions_to_add`` because mitigation/solution proposals
+            # only belong inside a committed path. Reject-all semantics:
+            # the prompt categorically bans solution emission in this
+            # state, so there's no "good" subset to preserve. The other
+            # restricted states (pre_mitigation_mitigation_first,
+            # gate3_pending) DO allow solution emission for mitigation
+            # discovery / acknowledgement, so the ban applies only to
+            # ``pre_path_investigating``.
+            if _is_pre_path_investigating(case):
+                count = len(updates.solutions_to_add)
+                logger.warning(
+                    f"Rejected solutions_to_add emission ({count} record(s)) "
+                    f"for case {case.case_id}: forbidden in state "
+                    f"'pre_path_investigating' (the _PRE_PATH_DIAGNOSIS_BLOCK "
+                    f"prompt directive explicitly bans structured solution "
+                    f"emission)."
+                )
+                current_feedback = metadata.get("system_feedback") or ""
+                metadata["system_feedback"] = (
+                    f"{current_feedback}\n"
+                    "PATH-CONDITIONAL EMISSION ERROR: You emitted "
+                    f"``solutions_to_add`` ({count} record(s)) before the "
+                    "user committed an investigation path (Gate 2). "
+                    "Mitigation and solution proposals only belong inside "
+                    "a committed path. Complete symptom validation first "
+                    "(set ``symptom_verified=True``), then the user picks "
+                    "mitigation-first vs root-cause-first; structured "
+                    "solution emission becomes available inside the chosen "
+                    "path."
+                ).strip()
+                metadata.setdefault("validation_repairs", []).append(
+                    f"Rejected solutions_to_add ({count} record(s)) "
+                    f"in pre_path_investigating state"
+                )
+                updates.solutions_to_add = []
+
         if hasattr(updates, "solutions_to_add") and updates.solutions_to_add:
             for s_item in updates.solutions_to_add:
                 sol = Solution(
@@ -6019,22 +6100,22 @@ class MilestoneEngine:
 
         case.problem_verification = ProblemVerification(**verification_kwargs)
 
-        # INV-19: case.path_selection MUST be set before this transition.
-        # The Gate 2 click handler is the sole creation site; if we reach
-        # _transition_to_investigating without path_selection, INV-19 has
-        # been violated upstream. Raise loudly rather than silently
-        # auto-creating an unconfirmed path.
-        if case.path_selection is None:
+        # INV-19 (post-redesign): the INQUIRY → INVESTIGATING transition
+        # carries Gate 1 only. ``case.path_selection`` MUST be None at this
+        # point — Gate 2 commits the path later, inside INVESTIGATING, after
+        # ``symptom_verified``. Reaching this transition with a committed
+        # path means upstream code has set it prematurely (the click handler
+        # is the sole writer and only fires once Gate 2 opens).
+        if case.path_selection is not None:
             raise RuntimeError(
-                f"INV-19 violation: case {case.case_id} attempted "
-                f"INQUIRY -> INVESTIGATING transition without committed "
-                f"path_selection. Gate 2 click must commit path_selection "
-                f"before the transition can fire."
+                f"INV-19 violation: case {case.case_id} entered "
+                f"INQUIRY -> INVESTIGATING with path_selection already "
+                f"committed. Path selection must happen inside "
+                f"INVESTIGATING after symptom_verified."
             )
         logger.info(
-            f"Case {case.case_id}: transitioning with path_selection "
-            f"(path={case.path_selection.path.value}, "
-            f"auto_selected={case.path_selection.auto_selected})"
+            f"Case {case.case_id}: transitioning to INVESTIGATING "
+            f"(path_selection deferred to Gate 2 in INVESTIGATING)"
         )
 
         # Post-010: no retroactive milestone attribution at INQUIRY→
@@ -6258,16 +6339,17 @@ class MilestoneEngine:
         # §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path. Confirming the
         # problem statement is mandatory even when a runbook applies cleanly.
         #
-        # INV-19: requires both Gate 1 (problem statement confirmation) and
-        # Gate 2 (path_selection committed — existence on the case IS the
-        # commit, the field is written only by the Gate 2 click handler).
+        # INV-19: INQUIRY → INVESTIGATING requires Gate 1 only (problem
+        # statement confirmation). Gate 2 (path selection) is no longer a
+        # transition gate — it fires later, inside INVESTIGATING, after
+        # ``symptom_verified`` so the path choice is grounded in verified
+        # urgency from real data rather than user-claimed urgency at INQUIRY.
         if case.status == CaseStatus.INQUIRY:
             gate1_passed = case.inquiry.decided_to_investigate or (
                 case.inquiry.problem_statement_confirmed
                 and case.inquiry.problem_confirmation
             )
-            gate2_passed = case.path_selection is not None
-            if gate1_passed and gate2_passed:
+            if gate1_passed:
                 await self._transition_to_investigating(case)
                 metadata["status_transitioned"] = True
                 case.action_history.append(
@@ -6275,19 +6357,10 @@ class MilestoneEngine:
                         from_status=old_status,
                         to_status=CaseStatus.INVESTIGATING,
                         triggered_by="system",
-                        reason="Problem confirmed and investigation path selected",
+                        reason="Problem statement confirmed",
                     )
                 )
                 return case
-            elif gate1_passed and not gate2_passed:
-                # Gate 1 passed but Gate 2 hasn't — leave the case in INQUIRY
-                # so the engine surfaces the path-selection prompt + Gate 2
-                # COOPERATIVE suggestions on this turn. INV-19 holds.
-                logger.info(
-                    f"Case {case.case_id}: Gate 1 passed but Gate 2 pending "
-                    f"(path_selection not committed). "
-                    f"Staying in INQUIRY until path is confirmed."
-                )
 
         # 2. Handle ProposedTransition from LLM response (User-Agent Handshake)
         # The LLM proposes a terminal transition; we store it pending.

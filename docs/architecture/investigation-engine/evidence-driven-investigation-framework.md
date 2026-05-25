@@ -977,9 +977,11 @@ class InvestigationPath(str, Enum):
 
 # Semantics: path determines whether the agent offers mitigation during
 # DIAGNOSIS, not which milestones are available. Path is advisory, not
-# structural. Gate 2 (a COOPERATIVE suggestion pair shown in INQUIRY) is
-# the user-choice surface — the router always returns one of the two
-# values above with an `alternate_path` the user can switch to via Gate 2.
+# structural. Gate 2 (a COOPERATIVE suggestion pair shown inside
+# INVESTIGATING after `symptom_verified=True`) is the user-choice surface —
+# the router always returns one of the two values above with an
+# `alternate_path` the user can switch to via Gate 2. The path choice
+# is grounded in verified data (not on user-claimed urgency at INQUIRY).
 ```
 
 ### 10.5 ProposedAction (New)
