@@ -2102,7 +2102,7 @@ def build_investigation_context(
                 "user_confirmed_investigation=True again — it is already True. "
                 "The case will not transition to INVESTIGATING until the user "
                 "clicks one of the path-selection suggestions.\n"
-                "\n" + _GATE2_PENDING_REMINDER + "</path_selection_state>"
+                f"\n{_GATE2_PENDING_REMINDER}</path_selection_state>"
             )
 
     # Phase 4c — entity highlights block. Pre-fetched by the milestone

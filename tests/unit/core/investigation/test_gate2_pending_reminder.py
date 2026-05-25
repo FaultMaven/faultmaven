@@ -129,9 +129,10 @@ class TestReminderContent:
         assert "DO NOT emit ``solutions_to_add``" in normalized
 
     def test_block_addresses_data_without_pick_scenario(self):
-        """The data-without-pick scenario is the Run-26 failure mode.
-        The reminder must tell the LLM to acknowledge briefly then
-        re-assert the path question — not engage with the data."""
+        """When the user provides data without picking a path, the
+        reminder must tell the LLM to acknowledge briefly then re-assert
+        the path question — not engage with the data and let the path
+        question fade into conversation noise."""
         normalized = " ".join(_GATE2_PENDING_REMINDER.split())
         # Acknowledge briefly
         assert "ONE short sentence" in normalized
