@@ -1,21 +1,14 @@
-"""Tests for Gate 2 (path-selection) semantics after the path-selection
-commit-timing refactor.
+"""Tests for Gate 2 (path-selection) semantics.
 
-Pins the post-refactor invariants:
+Pins three invariants:
 
 - INV-19: INQUIRY -> INVESTIGATING requires ``case.path_selection`` to exist
   (existence IS the commit signal — the path is created exclusively at the
   Gate 2 click handler).
 - ``case.path_selection`` is None during INQUIRY until the user clicks a
-  Gate 2 COOPERATIVE button. No auto-compute pre-commit, no mutation
-  watchers.
-- Recommendation is computed on-demand at button-render time via
+  Gate 2 COOPERATIVE button.
+- The Gate 2 recommendation is computed on-demand at button-render time via
   ``recommend_investigation_path_for_case`` — pure helper, no mutation.
-
-Historical note: this file used to test ``_compute_inquiry_path_selection``,
-``_inquiry_path_signals_changed`` (INV-20 mutation watcher), and the
-``user_confirmed`` field. All three are removed in the path-selection
-commit-timing refactor; tests recomposed accordingly.
 """
 
 from __future__ import annotations

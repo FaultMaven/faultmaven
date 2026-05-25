@@ -96,17 +96,6 @@ def base_case():
     )
 
 
-# NOTE: The original Bug #3 test "path_selection triggered after symptom
-# verification" exercised the legacy mutation watcher that auto-computed
-# case.path_selection mid-INVESTIGATING when symptom_verified completed.
-# That behavior is gone — path_selection can ONLY be created by the Gate 2
-# click handler during INQUIRY. By INVESTIGATING, INV-19 requires
-# path_selection to already be non-None (enforced as a RuntimeError in
-# milestone_engine). The Gate 2 commit-timing semantics are pinned in
-# tests/unit/core/investigation/test_investigation_gates.py
-# (TestINV19PathSelectionAsCommitSignal).
-
-
 @pytest.mark.asyncio
 async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
     """Test Bug #4: Evidence added in same turn as milestone is linked"""

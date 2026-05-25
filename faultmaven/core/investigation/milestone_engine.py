@@ -2394,13 +2394,8 @@ class MilestoneEngine:
                         f"Received confirmation intent for case {case.case_id} but no proposed problem statement exists"
                     )
                 else:
-                    # Update inquiry state (Gate 1 passes). Per the
-                    # "INQUIRY is minimal" principle, this is the ONLY
-                    # state change at Gate 1 confirmation — no path
-                    # auto-compute, no path_selection write. The Gate 2
-                    # COOPERATIVE buttons (rendered with on-demand
-                    # recommendation) handle path selection; the user's
-                    # click is what commits path_selection.
+                    # Gate 1 commit. Path selection is owned by Gate 2 — see
+                    # the path_selection intent branch below.
                     case.inquiry.problem_statement_confirmed = True
                     case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
                     case.inquiry.decided_to_investigate = True
@@ -5021,13 +5016,6 @@ class MilestoneEngine:
                 assessed_at_turn=case.current_turn,  # Use current turn number
             )
 
-        # Note: the former INV-20 mutation watcher (clear path_selection
-        # when preliminary_urgency changed) is removed. After the path-
-        # selection commit-timing refactor, path_selection no longer exists
-        # pre-Gate-2 — there is nothing to invalidate. The on-demand
-        # recommendation at button-render time always reflects current
-        # preliminary_urgency.
-
         # STAGE 1: Extract problem statement from LLM (first turn only)
         # Extract problem statement but DON'T auto-confirm yet
         if updates.problem_confirmation and not case.inquiry.proposed_problem_statement:
@@ -5191,12 +5179,6 @@ class MilestoneEngine:
         # case transitions to INVESTIGATING.
         # See docs/architecture/investigation-engine/
         # evidence-driven-investigation-framework.md §5.
-
-        # Gate 2 setup is now on-demand at button-render time
-        # (see _path_selection_suggestions). No path_selection write
-        # happens during INQUIRY — the user's Gate 2 click is what
-        # commits the path. INV-19 enforces path_selection existence
-        # before INQUIRY -> INVESTIGATING transition.
 
     async def _apply_investigation_updates(
         self,
@@ -5522,15 +5504,6 @@ class MilestoneEngine:
                     metadata.setdefault("milestone_validation_warnings", []).extend(
                         result.warnings
                     )
-                    # Note: a former path_selection-revert clause fired here
-                    # when symptom_verified was reverted, because under the
-                    # old design path_selection was auto-computed in INQUIRY
-                    # when symptom_verified completed. After the path-selection
-                    # commit-timing refactor, path_selection is committed by
-                    # the user's Gate 2 click (during INQUIRY) — independent
-                    # of any INVESTIGATING-phase milestone state. Reverting
-                    # symptom_verified does not retroactively un-commit the
-                    # user's path choice.
 
         # 3. Add/Update Hypotheses
         if hasattr(updates, "hypotheses_to_add") and updates.hypotheses_to_add:
@@ -6072,20 +6045,14 @@ class MilestoneEngine:
         # §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path. Confirming the
         # problem statement is mandatory even when a runbook applies cleanly.
         #
-        # INV-19 (Gate 2): INQUIRY -> INVESTIGATING also requires
-        # case.path_selection to be set. Existence == Gate 2 commit (the
-        # field is only written by the Gate 2 click handler). Gate 1
-        # (problem statement confirmation) opens the path-selection prompt;
-        # Gate 2 commits to mitigation_first or root_cause. The transition
-        # only fires once both gates have passed.
+        # INV-19: requires both Gate 1 (problem statement confirmation) and
+        # Gate 2 (path_selection committed — existence on the case IS the
+        # commit, the field is written only by the Gate 2 click handler).
         if case.status == CaseStatus.INQUIRY:
             gate1_passed = case.inquiry.decided_to_investigate or (
                 case.inquiry.problem_statement_confirmed
                 and case.inquiry.problem_confirmation
             )
-            # Gate 2 commit semantic: ``path_selection is not None`` means
-            # the user clicked a Gate 2 button (the sole creation site).
-            # See INV-19.
             gate2_passed = case.path_selection is not None
             if gate1_passed and gate2_passed:
                 await self._transition_to_investigating(case)
