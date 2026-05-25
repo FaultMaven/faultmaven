@@ -2,11 +2,12 @@
 
 Pins three invariants:
 
-- INV-19: INQUIRY -> INVESTIGATING requires ``case.path_selection`` to exist
-  (existence IS the commit signal — the path is created exclusively at the
-  Gate 2 click handler).
-- ``case.path_selection`` is None during INQUIRY until the user clicks a
-  Gate 2 COOPERATIVE button.
+- INV-19 (post-redesign): Gate 2 fires inside INVESTIGATING after the agent
+  sets ``symptom_verified=True``. ``case.path_selection`` existence IS the
+  commit signal — the field is written exclusively at the Gate 2 click
+  handler, never during INQUIRY, never before symptom_verified.
+- INQUIRY → INVESTIGATING fires on Gate 1 alone (problem_statement_confirmed);
+  Gate 2 is not a transition gate.
 - The Gate 2 recommendation is computed on-demand at button-render time via
   ``recommend_investigation_path_for_case`` — pure helper, no mutation.
 """

@@ -48,10 +48,10 @@ from faultmaven.modules.case.domain.services.investigation_router import (
 # state block's INSTRUCTION paragraph didn't cover:
 #
 #   (a) Structured-emission constraints: while Gate 2 is pending, the
-#       LLM must not emit hypotheses_to_add, classify evidence as any
-#       category, or emit solutions_to_add. The case is still in
-#       INQUIRY; investigation-stage writes are out of scope until the
-#       user picks a path.
+#       LLM must not emit ``hypotheses_to_add``, classify evidence as
+#       ``causal_evidence``, or emit ``solutions_to_add``. Post-redesign
+#       the case is in INVESTIGATING (Gate 1 has closed) but no path
+#       has been committed; deeper investigation writes are gated.
 #
 #   (b) Behavior when the user provides data without picking: tell the
 #       LLM to acknowledge briefly THEN re-assert the path question.
@@ -64,11 +64,13 @@ from faultmaven.modules.case.domain.services.investigation_router import (
 # (RECOMMENDED_PATH:, AUTO_SELECTED:, RATIONALE:), the reminder is
 # imperative.
 #
-# Engine-side backstop is unchanged: ``_path_selection_suggestions`` in
-# milestone_engine still emits the two COOPERATIVE buttons every turn
-# until Gate 2 commits, so the user always has a clickable path
-# regardless of LLM compliance. This reminder is the prompt-layer
-# reinforcement called out in INV-19.
+# Engine-side backstop is structurally enforced: ``_is_pre_path_investigating``
+# →  ``_path_conditional_emission_restriction`` rejects the three forbidden
+# emissions and writes ``system_feedback`` for next-turn correction.
+# ``_path_selection_suggestions`` continues to emit the deterministic
+# two-button pair every turn until the user clicks. The reminder is the
+# prompt-layer reinforcement called out in INV-19; the structural ban is
+# the load-bearing guarantee.
 #
 # Lives in context_builder (not templates.py) because templates.py
 # already imports context_builder; the reverse direction would create

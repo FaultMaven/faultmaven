@@ -82,10 +82,11 @@ def _make_investigating_case(**overrides) -> Case:
 
     Pydantic validates INVESTIGATING requires confirmed problem statement
     and investigation commitment at construction time, so we pass a
-    pre-configured InquiryData in the constructor. Post-INV-19, an
-    INVESTIGATING case also requires a committed ``path_selection``
-    (existence == Gate 2 commit); the engine surfaces a RuntimeError on
-    milestone progression otherwise.
+    pre-configured InquiryData in the constructor. This fixture defaults
+    to a fully-pathed case (Gate 2 already committed) — tests exercising
+    pre-path behavior should override ``path_selection=None`` explicitly.
+    Post-INV-19 redesign, the pre-path window (INVESTIGATING with
+    ``path_selection=None``) is a legitimate state.
     """
     description = overrides.pop(
         "description",

@@ -839,6 +839,39 @@ def _path_conditional_emission_restriction(case: "Case") -> Optional[str]:
     return None
 
 
+# Single source of truth for state-label → prompt-block-name mapping used
+# by the three engine-side backstop sites
+# (``_apply_investigation_updates`` rejects hypotheses_to_add /
+# causal_evidence / RCA-side milestones). Keeps the three error messages
+# in sync with the predicate's state vocabulary — a future fourth state
+# is added in exactly one place.
+_RESTRICTED_STATE_BLOCK_NAMES: dict[str, str] = {
+    "pre_path_investigating": "_PRE_PATH_DIAGNOSIS_BLOCK",
+    "pre_mitigation_mitigation_first": "_SYMPTOM_VALIDATION_BLOCK",
+    "gate3_pending": "_GATE3_PENDING_BLOCK",
+}
+
+
+def _restricted_state_deferral_clause(restricted_state: str, *, work: str) -> str:
+    """Build a state-specific "when does this become allowed again" clause.
+
+    ``work`` is a noun phrase naming what's deferred ("Hypothesis formation",
+    "Causal evidence", "Root-cause work"). Pre-path and the two mitigation-
+    path restricted states unblock at different gates (Gate 2 click vs
+    Gate 3 click), so the clause differs by state. Centralized here so
+    the three backstop sites stay phrased consistently.
+    """
+    if restricted_state == "pre_path_investigating":
+        return (
+            f"{work} is deferred until the user commits an investigation "
+            f"path (Gate 2)."
+        )
+    return (
+        f"{work} is deferred until the user opts to continue past Gate 3 "
+        f"(MITIGATION_FIRST path)."
+    )
+
+
 def _gate1_is_pending(case: "Case") -> bool:
     """Whether Gate 1 (problem-statement confirmation) is open for this case.
 
@@ -5411,17 +5444,11 @@ class MilestoneEngine:
                         path_restricted_state is not None
                         and field in rca_side_milestones
                     ):
-                        block_name = {
-                            "pre_path_investigating": "_PRE_PATH_DIAGNOSIS_BLOCK",
-                            "pre_mitigation_mitigation_first": "_SYMPTOM_VALIDATION_BLOCK",
-                            "gate3_pending": "_GATE3_PENDING_BLOCK",
-                        }[path_restricted_state]
-                        deferral_reason = (
-                            "Root-cause work is deferred until the user "
-                            "commits an investigation path (Gate 2)."
-                            if path_restricted_state == "pre_path_investigating"
-                            else "Root-cause work is deferred until the user "
-                            "opts to continue past Gate 3 (MITIGATION_FIRST path)."
+                        block_name = _RESTRICTED_STATE_BLOCK_NAMES[
+                            path_restricted_state
+                        ]
+                        deferral_clause = _restricted_state_deferral_clause(
+                            path_restricted_state, work="Root-cause work"
                         )
                         logger.warning(
                             f"Rejected RCA-side milestone '{field}' for case "
@@ -5436,7 +5463,7 @@ class MilestoneEngine:
                             "PATH-CONDITIONAL MILESTONE ERROR: You set "
                             f"``{field}=True`` in a state where the "
                             f"{block_name} prompt directive forbids "
-                            f"RCA-side milestones. {deferral_reason} Do not "
+                            f"RCA-side milestones. {deferral_clause} Do not "
                             f"re-emit ``{field}=True`` until the case "
                             "reaches a state where RCA is in scope."
                         ).strip()
@@ -5597,17 +5624,9 @@ class MilestoneEngine:
                     restricted_state is not None
                     and ev_item.category == EvidenceCategory.CAUSAL_EVIDENCE
                 ):
-                    block_name = {
-                        "pre_path_investigating": "_PRE_PATH_DIAGNOSIS_BLOCK",
-                        "pre_mitigation_mitigation_first": "_SYMPTOM_VALIDATION_BLOCK",
-                        "gate3_pending": "_GATE3_PENDING_BLOCK",
-                    }[restricted_state]
-                    deferral_clause = (
-                        "Causal evidence is deferred until the user commits "
-                        "an investigation path (Gate 2)."
-                        if restricted_state == "pre_path_investigating"
-                        else "RCA work — including causal evidence — is "
-                        "deferred until the user opts to continue past Gate 3."
+                    block_name = _RESTRICTED_STATE_BLOCK_NAMES[restricted_state]
+                    deferral_clause = _restricted_state_deferral_clause(
+                        restricted_state, work="Causal evidence"
                     )
                     logger.warning(
                         f"Rejected causal_evidence emission for case "
@@ -5717,17 +5736,9 @@ class MilestoneEngine:
             # hypothesis emission to preserve.
             restricted_state = _path_conditional_emission_restriction(case)
             if restricted_state is not None:
-                block_name = {
-                    "pre_path_investigating": "_PRE_PATH_DIAGNOSIS_BLOCK",
-                    "pre_mitigation_mitigation_first": "_SYMPTOM_VALIDATION_BLOCK",
-                    "gate3_pending": "_GATE3_PENDING_BLOCK",
-                }[restricted_state]
-                deferral_clause = (
-                    "Hypothesis formation is gated until the user commits "
-                    "an investigation path (Gate 2)."
-                    if restricted_state == "pre_path_investigating"
-                    else "Hypothesis formation is gated until the user opts "
-                    "to continue past Gate 3 (MITIGATION_FIRST path)."
+                block_name = _RESTRICTED_STATE_BLOCK_NAMES[restricted_state]
+                deferral_clause = _restricted_state_deferral_clause(
+                    restricted_state, work="Hypothesis formation"
                 )
                 count = len(updates.hypotheses_to_add)
                 logger.warning(

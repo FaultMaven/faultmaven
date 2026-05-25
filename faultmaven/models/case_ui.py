@@ -402,12 +402,13 @@ class CaseUIResponse_Inquiry(BaseModel):
     path_selection: Optional[PathSelection] = Field(
         default=None,
         description=(
-            "Investigation path commitment. INQUIRY-stage cases have "
-            "``path_selection=None`` until the user clicks a Gate 2 button "
-            "(MITIGATION_FIRST or ROOT_CAUSE) — existence of this field IS "
-            "the Gate 2 commit. The recommendation that powers the Gate 2 "
-            "chip is computed on-demand by the engine and rendered into the "
-            "affordance pair; it is not stored on the case."
+            "Investigation path commitment. Post-INV-19 redesign Gate 2 "
+            "fires inside INVESTIGATING after ``symptom_verified=True``, "
+            "so INQUIRY-stage cases ALWAYS have ``path_selection=None`` — "
+            "the field is never written during INQUIRY. Existence of this "
+            "field IS the Gate 2 commit; the recommendation that powers "
+            "the Gate 2 chip is computed on-demand by the engine and "
+            "rendered into the affordance pair, never stored on the case."
         ),
     )
 

@@ -69,9 +69,12 @@ def mock_repo():
 
 @pytest.fixture
 def base_case():
-    # Post-INV-19: any INVESTIGATING case must carry a committed
-    # path_selection (existence == Gate 2 commit). The engine surfaces a
-    # RuntimeError on milestone progression if this is missing.
+    # Fully-pathed INVESTIGATING case (Gate 2 already committed) so tests
+    # exercising post-path behavior don't need to walk the pre-path
+    # window themselves. Post-INV-19 redesign, an INVESTIGATING case CAN
+    # legitimately have ``path_selection=None`` — that's the pre-path
+    # window between INQUIRY transition and Gate 2 click. Tests that
+    # need that shape construct it explicitly.
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
