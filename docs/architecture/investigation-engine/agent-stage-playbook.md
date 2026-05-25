@@ -567,7 +567,7 @@ Stage instructions are injected as `{adaptive_instructions}` in `INVESTIGATION_B
 
 #### Path-conditional DIAGNOSIS dispatch
 
-`_select_diagnosis_block(case)` chooses the DIAGNOSIS prompt content based on `case.path_selection`. The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is physically contained inside `_RCA_DIAGNOSIS_BLOCK` exclusively — pre-mitigation MITIGATION_FIRST cases never see it, eliminating the conflicting-signal problem (Run 26 root cause).
+`_select_diagnosis_block(case)` chooses the DIAGNOSIS prompt content based on `case.path_selection`. The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is physically contained inside `_RCA_DIAGNOSIS_BLOCK` exclusively — pre-mitigation MITIGATION_FIRST cases never see it. This isolation is the structural fix for the conflicting-signal problem (the prompt cannot mandate hypothesis creation on a path where the engine forbids it).
 
 | `case.path_selection` state | Block selected | Includes hypothesis mandate? |
 | --------------------------- | -------------- | ---------------------------- |

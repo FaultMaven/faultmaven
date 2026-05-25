@@ -1,10 +1,11 @@
 """Path-conditional DIAGNOSIS-prompt assembly tests.
 
-Pins the structural fix for the Run 26 deletion-confusion loop: the
-hypothesis-creation mandate must appear ONLY in ``_RCA_DIAGNOSIS_BLOCK``,
-never in the pre-mitigation MITIGATION_FIRST prompt.
+Pins the structural invariant: the hypothesis-creation mandate must
+appear ONLY in ``_RCA_DIAGNOSIS_BLOCK``, never in the pre-mitigation
+MITIGATION_FIRST prompt. Block isolation is what prevents the
+conflicting-signal problem on MITIGATION_FIRST cases (the engine and
+prompt agree the LLM may not formulate hypotheses pre-mitigation).
 
-The block isolation is what eliminates the conflicting-signal problem.
 If a future maintainer reintroduces the hypothesis mandate into a
 shared sub-block or into ``_SYMPTOM_VALIDATION_BLOCK``, these tests
 fail.
@@ -32,7 +33,7 @@ from faultmaven.modules.case.contracts import (
 )
 
 # ---------------------------------------------------------------------------
-# Block isolation — load-bearing invariant for PR #2
+# Block isolation — the load-bearing invariant
 # ---------------------------------------------------------------------------
 
 

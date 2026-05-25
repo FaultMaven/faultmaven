@@ -14,6 +14,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
+    InvestigationPath,
     InvestigationProgress,
     InvestigationStage,
     TurnOutcome,
@@ -1055,11 +1056,10 @@ If production or customers are actively affected:
 """
 
 # RCA-only: the "MUST create hypothesis before causal_evidence" mandate.
-# Pinned as the load-bearing isolation point for the path-conditional
-# dispatch — this block appears ONLY inside _RCA_DIAGNOSIS_BLOCK. Pre-
-# mitigation MITIGATION_FIRST prompts must never include it (Run 26 root
-# cause; see investigation-lifecycle-logic.md INV-17 and the prompt-
-# restructure rationale in the DRAFT).
+# Load-bearing isolation point for the path-conditional dispatch — this
+# block appears ONLY inside _RCA_DIAGNOSIS_BLOCK. Pre-mitigation
+# MITIGATION_FIRST prompts must never include it, or the conflicting-
+# signal problem returns. See INV-17 in investigation-lifecycle-logic.md.
 _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK = """\
 **HYPOTHESIS-EVIDENCE ORDERING (Non-Negotiable):**
 When evidence reveals a cause, follow this exact sequence — all in ONE turn if justified:
@@ -2253,8 +2253,9 @@ def _select_diagnosis_block(case: Case) -> str:
     (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``) appears ONLY inside
     ``_RCA_DIAGNOSIS_BLOCK``; pre-mitigation MITIGATION_FIRST cases
     receive ``_SYMPTOM_VALIDATION_BLOCK``, which has no hypothesis
-    mandate by construction. This eliminates the conflicting-signal
-    problem that produced the Run 26 deletion-confusion loop.
+    mandate by construction. This isolation is the structural fix
+    for the conflicting-signal problem (see INV-17 enforcement notes
+    in investigation-lifecycle-logic.md).
 
     Routing:
       - path_selection is None (defensive; post-INV-19 shouldn't happen)
@@ -2280,8 +2281,6 @@ def _select_diagnosis_block(case: Case) -> str:
 
     if ps is None:
         return _SYMPTOM_VALIDATION_BLOCK
-
-    from faultmaven.modules.case.contracts import InvestigationPath
 
     if ps.path == InvestigationPath.ROOT_CAUSE:
         focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
