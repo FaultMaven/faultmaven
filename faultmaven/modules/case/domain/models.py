@@ -2754,11 +2754,16 @@ class InvestigationPath(str, Enum):
     Path is SYSTEM-RECOMMENDED from the (temporal_state x urgency_level) matrix
     and USER-CONFIRMED via Gate 2. The LLM provides inputs (temporal_state,
     urgency_level) during inquiry; the router in investigation_router.py
-    produces a deterministic recommendation; the user accepts or overrides
-    via a COOPERATIVE suggestion (Gate 2). Post-INV-19 redesign, Gate 2
-    fires inside INVESTIGATING after the agent sets ``symptom_verified=True``,
-    so the override happens with verified-data context in view rather than
-    on user-claimed urgency at INQUIRY. LLM does NOT choose the path directly.
+    produces a deterministic recommendation from those user-stated inputs;
+    the user accepts or overrides via a COOPERATIVE suggestion (Gate 2).
+    Post-INV-19 redesign, Gate 2 fires inside INVESTIGATING after the agent
+    sets ``symptom_verified=True``, so the user's accept/override decision
+    happens with the agent's symptom-validation work visible in the
+    transcript. The recommendation algorithm itself is unchanged — it
+    still reads ``case.inquiry.preliminary_urgency``; what the timing
+    move changed is the *override context the user sees*. Making the
+    recommendation evidence-derived is deferred follow-up. LLM does NOT
+    choose the path directly.
     """
 
     MITIGATION_FIRST = "mitigation_first"

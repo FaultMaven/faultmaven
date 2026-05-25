@@ -899,15 +899,21 @@ def _gate2_is_pending(case: "Case") -> bool:
     """Whether Gate 2 (investigation-path selection) is open for this case.
 
     Returns True when the case has transitioned into INVESTIGATING,
-    ``symptom_verified`` is True (the data-grounded urgency is established),
-    and the user has not yet committed a path (``case.path_selection`` is
-    None). The path choice is made on verified urgency, not on user-claimed
-    urgency at INQUIRY — see INV-19.
+    ``symptom_verified`` is True (the agent's symptom-validation work
+    is in the transcript), and the user has not yet committed a path
+    (``case.path_selection`` is None). The user's path commit happens
+    after they have transcript-visible evidence of what the agent saw
+    in the data, so they can override the recommendation with that
+    context — see INV-19.
 
     The path-selection commit happens exclusively at the Gate 2 click
     handler; the recommendation is computed on-demand at button-render
     time via ``recommend_investigation_path_for_case`` rather than stored
-    pre-commit.
+    pre-commit. Note: that helper still reads only
+    ``case.inquiry.preliminary_urgency`` — the recommendation algorithm
+    is user-claim-based; what this gate's timing changes is the
+    *override context the user sees*, not the algorithm itself. Making
+    the recommendation itself evidence-derived is deferred follow-up.
     """
     if case.status != CaseStatus.INVESTIGATING:
         return False
@@ -6345,8 +6351,10 @@ class MilestoneEngine:
         # INV-19: INQUIRY → INVESTIGATING requires Gate 1 only (problem
         # statement confirmation). Gate 2 (path selection) is no longer a
         # transition gate — it fires later, inside INVESTIGATING, after
-        # ``symptom_verified`` so the path choice is grounded in verified
-        # urgency from real data rather than user-claimed urgency at INQUIRY.
+        # ``symptom_verified`` so the user sees the agent's data-inspection
+        # work in the transcript before committing. (The recommendation
+        # itself is still computed from user-claimed urgency; making the
+        # recommendation evidence-derived is deferred follow-up.)
         if case.status == CaseStatus.INQUIRY:
             gate1_passed = case.inquiry.decided_to_investigate or (
                 case.inquiry.problem_statement_confirmed

@@ -2070,10 +2070,14 @@ def build_investigation_context(
             inquiry_state_str += "</inquiry_state>"
 
     # Gate 2 pending (post-redesign): fires in INVESTIGATING after the
-    # agent has set ``symptom_verified=True`` and before the user clicks a
-    # path-selection button (``case.path_selection is None``). The path
-    # choice is data-grounded — based on verified urgency from real
-    # observations rather than user-claimed urgency at INQUIRY (see INV-19).
+    # agent has set ``symptom_verified=True`` and before the user clicks
+    # a path-selection button (``case.path_selection is None``). The user
+    # now has transcript-visible evidence of what the agent saw in the
+    # data, so they can override the recommendation with that context
+    # in view rather than acting on their own INQUIRY urgency claim (see
+    # INV-19). The recommendation algorithm itself is still
+    # ``preliminary_urgency``-based — what changed is *when* the user
+    # commits, not *how* the system computes the suggested path.
     #
     # Recommendation is computed on-demand here, matching what the
     # deterministic COOPERATIVE suggestion pair surfaces

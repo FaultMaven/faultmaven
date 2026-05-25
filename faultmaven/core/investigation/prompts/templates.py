@@ -561,12 +561,11 @@ TURN WHERE YOU FIRST DETECT A PROBLEM (user_confirmed_investigation=False):
   (evidence requests, diagnostic commands). Offer only the confirmation
   suggestions: "Yes, let's investigate" / "Not yet."
   The path choice (mitigation-first vs root-cause-first) happens later,
-  inside INVESTIGATING, after symptom_verified — so the path can be
-  grounded in verified data rather than the user's pre-investigation
-  urgency claim. Do NOT split confirmation into per-path buttons at
-  INQUIRY. (No "It resolved it" option from INQUIRY either — v3 routes
-  runbook offers through INVESTIGATING; resolution confirmation happens
-  there.)
+  inside INVESTIGATING, after symptom_verified — so the user can see
+  your symptom-validation work in the transcript before committing to a
+  path. Do NOT split confirmation into per-path buttons at INQUIRY. (No
+  "It resolved it" option from INQUIRY either — v3 routes runbook offers
+  through INVESTIGATING; resolution confirmation happens there.)
 
 USER CORRECTS OR REFINES THE PROBLEM STATEMENT:
 If the user modifies or corrects the proposed statement:
@@ -587,9 +586,9 @@ TURN WHERE USER CONFIRMS (user_confirmed_investigation=True):
   (we held it back during INQUIRY per v3) — see the DIAGNOSIS template's
   KNOWLEDGE & RUNBOOK AUTHORITY section for Cause-attribution behaviour.
 - Do not ask the user to choose a path here — the path choice happens
-  later in INVESTIGATING (Gate 2) after symptom_verified, so it can be
-  grounded in verified data rather than the user's pre-investigation
-  urgency claim.
+  later in INVESTIGATING (Gate 2) after symptom_verified, so the user
+  has transcript-visible evidence of what the data shows before
+  committing.
 
 USER DECIDES NOT TO INVESTIGATE:
 If the user declines or closes the inquiry:
@@ -1644,8 +1643,13 @@ The full RCA-diagnostic flow applies below.
 # INVESTIGATING but the user has not yet committed an investigation path
 # (``case.path_selection is None``). Post-redesign Gate 2 fires inside
 # INVESTIGATING after ``symptom_verified``, so this block carries the
-# agent through symptom validation FIRST and prepares the ground for a
-# data-grounded path choice.
+# agent through symptom validation FIRST. The user clicks Gate 2 only
+# after seeing the agent's symptom-validation work in the transcript —
+# this gives the user transcript-visible context to override the
+# recommendation, even though the recommendation algorithm itself
+# (``recommend_investigation_path_for_case``) still reads only
+# ``case.inquiry.preliminary_urgency``. Migrating the recommendation
+# itself to be evidence-derived is deferred follow-up.
 #
 # Hypothesis and RCA work are out of scope here: a path has not been
 # chosen, so neither MITIGATION_FIRST nor ROOT_CAUSE discipline applies.
@@ -1672,11 +1676,14 @@ Zones 2 (hypothesis formation) and 3 (solution) are gated behind the
 user's Gate 2 path choice.
 
 **OBJECTIVE:**
-Verify the user's symptom claim against case evidence and assess
-data-grounded urgency. When you have inspected real data and confirmed
-the symptom, set ``symptom_verified=True`` — this opens Gate 2 so the
-user can choose mitigation-first vs root-cause-first based on what the
-data actually shows, not on what they claimed at INQUIRY.
+Verify the user's symptom claim against case evidence. When you have
+inspected real data and confirmed the symptom, set
+``symptom_verified=True`` — this opens Gate 2 so the user can pick
+mitigation-first vs root-cause-first with your symptom-validation work
+visible in the transcript. The system's recommendation is still based
+on the user's INQUIRY-stated urgency; your job is to make sure the
+user has transcript-visible evidence in view when they decide whether
+to follow that recommendation or override it.
 
 **BEFORE SETTING ``symptom_verified=True``, YOU MUST HAVE:**
 

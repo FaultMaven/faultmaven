@@ -980,8 +980,12 @@ class InvestigationPath(str, Enum):
 # structural. Gate 2 (a COOPERATIVE suggestion pair shown inside
 # INVESTIGATING after `symptom_verified=True`) is the user-choice surface —
 # the router always returns one of the two values above with an
-# `alternate_path` the user can switch to via Gate 2. The path choice
-# is grounded in verified data (not on user-claimed urgency at INQUIRY).
+# `alternate_path` the user can switch to via Gate 2. The user clicks
+# Gate 2 with the agent's symptom-validation work visible in the
+# transcript, so they have context to override the recommendation. The
+# recommendation algorithm itself still reads `case.inquiry.preliminary_urgency`
+# (user-claimed at INQUIRY); making it evidence-derived is deferred
+# follow-up.
 ```
 
 ### 10.5 ProposedAction (New)
