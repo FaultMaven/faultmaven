@@ -29,6 +29,7 @@ from faultmaven.modules.case.contracts import (
     CaseReport,
     CaseStatus,
     ICaseRepository,
+    InvestigationPath,
     ReportGenerationRequest,
     ReportGenerationResponse,
     ReportStatus,
@@ -238,6 +239,129 @@ class ReportGenerationService:
             metadata=None,
         )
 
+    # ============================================================
+    # Shared formatters
+    # ============================================================
+
+    _PATH_LABELS = {
+        InvestigationPath.ROOT_CAUSE: "Root Cause (DIAGNOSIS → TREATMENT)",
+        InvestigationPath.MITIGATION_FIRST: (
+            "Mitigation First (DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT)"
+        ),
+    }
+
+    _CLOSURE_REASON_LABELS = {
+        "inquiry_only": "Inquiry only — no investigation started",
+        "closed_after_investigation": (
+            "Closed after investigation — root cause not confirmed"
+        ),
+        "mitigation_sufficient": (
+            "Mitigation sufficient — no further root-cause analysis pursued"
+        ),
+    }
+
+    def _format_investigation_path_section(self, case: Case) -> Optional[str]:
+        """Render the '## Investigation Path' section from case.path_selection.
+
+        Returns None when no path was selected (e.g. case closed before
+        Gate 2) so the caller can skip the section entirely rather than
+        emit an empty heading.
+
+        Each line is its own paragraph (joined with blank lines) so
+        react-markdown renders them with visible separation rather than
+        collapsing them into a single run of text.
+        """
+        ps = case.path_selection
+        if ps is None:
+            return None
+
+        path_label = self._PATH_LABELS.get(ps.path, ps.path.value)
+        paragraphs: List[str] = [
+            "## Investigation Path",
+            f"**{path_label}**",
+        ]
+        if ps.rationale:
+            paragraphs.append(ps.rationale)
+        paragraphs.append(
+            "_Auto-selected by the system._"
+            if ps.auto_selected
+            else "_Chosen by the user._"
+        )
+
+        if ps.path == InvestigationPath.MITIGATION_FIRST:
+            if ps.rca_after_mitigation_confirmed:
+                paragraphs.append(
+                    "_Post-mitigation: user continued to root-cause analysis._"
+                )
+            elif ps.mitigation_completed_at_turn is not None:
+                paragraphs.append(
+                    "_Post-mitigation: case did not continue to root-cause analysis._"
+                )
+
+        # Trailing newline so the caller's "\n".join produces \n\n
+        # between this section and the next heading.
+        return "\n\n".join(paragraphs) + "\n"
+
+    def _format_closure_reason_label(self, reason: Optional[str]) -> str:
+        """Map a closure_reason enum string to a human label."""
+        if not reason:
+            return "Not specified"
+        return self._CLOSURE_REASON_LABELS.get(reason, reason)
+
+    def _list_hypotheses(self, case: Case) -> List[Any]:
+        """case.hypotheses is Dict[str, Hypothesis] — iterate values, not keys."""
+        if isinstance(case.hypotheses, dict):
+            return list(case.hypotheses.values())
+        return list(case.hypotheses or [])
+
+    def _evidence_citation_line(self, case: Case, ev: Any) -> str:
+        """Format a single Evidence row as a citation bullet.
+
+        ``category``, ``summary``, and ``source_type`` are required fields
+        on the Pydantic Evidence model, so direct attribute access is
+        safe. ``source_file_id`` is Optional (NULL for chat-extracted
+        evidence) and ``case.find_uploaded_file`` is None-safe by design.
+        """
+        category_label = ev.category.value.replace("_", " ")
+        summary = ev.summary
+        file_meta = case.find_uploaded_file(ev.source_file_id)
+        if file_meta is not None:
+            source = f" — _{file_meta.filename}_"
+        else:
+            source = f" — _{ev.source_type.value}_"
+        return f"- **[{category_label}]** {summary}{source}"
+
+    def _format_solution_block(self, sol: Any, index: int) -> List[str]:
+        """Render a single Solution as a list of paragraph-level lines.
+
+        Each returned string is intended to become its own paragraph
+        when the surrounding ``"\\n".join`` produces ``\\n\\n`` between
+        them (every string ends with ``\\n``). Used by both the
+        resolution summary's "Solution Applied" section and the closure
+        summary's "Mitigation Status" section — the rendering is
+        identical; only the surrounding heading differs.
+        """
+        sol_title = getattr(sol, "title", f"Solution {index}")
+        # Defensive: occasional upstream rows leak the raw enum repr
+        # ("SolutionType.CODE_FIX") into the title field. Substitute the
+        # prettified solution_type label until that pipeline is fixed.
+        if "SolutionType." in sol_title:
+            sol_type = getattr(sol, "solution_type", None)
+            sol_title = (
+                sol_type.value.replace("_", " ").title()
+                if hasattr(sol_type, "value")
+                else f"Solution {index}"
+            )
+        sol_desc = getattr(sol, "longterm_fix", None) or getattr(
+            sol, "immediate_action", None
+        )
+        lines = [f"**{index}. {sol_title}**\n"]
+        if sol_desc:
+            lines.append(f"{sol_desc}\n")
+        if getattr(sol, "verification_method", None):
+            lines.append(f"_Verified by: {sol.verification_method}_\n")
+        return lines
+
     async def _generate_resolution_summary(
         self, case: Case, context: Dict[str, Any]
     ) -> str:
@@ -245,12 +369,16 @@ class ReportGenerationService:
 
         Content structure per investigation-lifecycle-logic.md §1.7.4:
         - Problem Statement
-        - Root Cause
+        - Investigation Path (from case.path_selection)
+        - Root Cause (with mechanism if available)
         - Solution Applied
-        - Confirming Evidence
+        - Confirming Evidence (citation list, not a count)
+        - Hypotheses Considered (grouped by status)
         - Timeline
-        - Milestones Reached
-        - Investigation Path
+
+        Milestone listing is intentionally omitted — the Issue tab
+        already displays milestone chips with the same data, so the
+        report should narrate rather than re-enumerate.
         """
         title = case.title or "Untitled Case"
         description = case.description or "No description provided."
@@ -259,40 +387,37 @@ class ReportGenerationService:
             to_json_compatible(case.resolved_at) if case.resolved_at else "Unknown"
         )
         duration = context.get("duration", "Unknown")
-        solutions = case.solutions if case.solutions else []
-        # case.hypotheses is Dict[str, Hypothesis] — iterate values, not keys
-        hypotheses = (
-            list(case.hypotheses.values())
-            if isinstance(case.hypotheses, dict)
-            else (case.hypotheses or [])
-        )
-        evidence_items = case.evidence if case.evidence else []
-        milestones = (
-            case.progress.completed_milestones
-            if hasattr(case, "progress") and case.progress
-            else []
-        )
+        solutions = case.solutions or []
+        hypotheses = self._list_hypotheses(case)
+        evidence_items = case.evidence or []
 
         parts = [
             f"# Resolution Summary: {title}\n",
-            f"## Problem Statement\n",
+            "## Problem Statement\n",
             f"{description}\n",
         ]
 
-        # Root Cause — from root_cause_conclusion, working_conclusion, or validated hypotheses
-        root_cause_text = None
-        if case.root_cause_conclusion and getattr(
-            case.root_cause_conclusion, "root_cause", None
-        ):
-            root_cause_text = case.root_cause_conclusion.root_cause
-        elif case.working_conclusion and getattr(
-            case.working_conclusion, "statement", None
-        ):
-            root_cause_text = case.working_conclusion.statement
+        # Investigation Path — surface the actual path_selection
+        path_section = self._format_investigation_path_section(case)
+        if path_section:
+            parts.append(path_section)
 
-        if root_cause_text:
+        # Root Cause — prefer the authoritative root_cause_conclusion,
+        # fall back to validated hypotheses only when no conclusion exists.
+        rcc = case.root_cause_conclusion
+        if rcc and rcc.root_cause:
             parts.append("## Root Cause\n")
-            parts.append(f"{root_cause_text}\n")
+            parts.append(f"{rcc.root_cause}\n")
+            if getattr(rcc, "mechanism", None):
+                parts.append(f"**How it produced the symptom:** {rcc.mechanism}\n")
+            if getattr(rcc, "contributing_factors", None):
+                # Trailing \n on the bold label so the join produces a
+                # blank line before the list — CommonMark requires this
+                # for the bullets to render as a proper list.
+                parts.append("**Contributing factors:**\n")
+                for cf in rcc.contributing_factors:
+                    parts.append(f"- {cf}")
+                parts.append("")
         else:
             validated = [
                 h
@@ -303,44 +428,94 @@ class ReportGenerationService:
             ]
             if validated:
                 parts.append("## Root Cause\n")
+                parts.append("_Identified via validated hypothesis._\n")
                 for h in validated:
-                    h_statement = getattr(h, "statement", "") or getattr(h, "title", "")
-                    h_desc = getattr(h, "description", "") or getattr(
-                        h, "reasoning", ""
-                    )
-                    parts.append(f"**{h_statement}**")
-                    if h_desc:
-                        parts.append(f"{h_desc}")
-                parts.append("")
+                    parts.append(f"**{h.statement}**\n")
+                    if getattr(h, "rationale", None):
+                        parts.append(f"{h.rationale}\n")
+                # Last line already ends with \n; no extra separator needed.
 
-        # Solution Applied
+        # Solution Applied — same renderer as closure's Mitigation Status.
         if solutions:
             parts.append("## Solution Applied\n")
             for i, sol in enumerate(solutions, 1):
-                sol_title = getattr(sol, "title", f"Solution {i}")
-                # Skip titles containing raw enum references
-                if "SolutionType." in sol_title:
-                    sol_type = getattr(sol, "solution_type", None)
-                    type_label = (
-                        sol_type.value.replace("_", " ").title()
-                        if hasattr(sol_type, "value")
-                        else f"Solution {i}"
-                    )
-                    sol_title = type_label
-                sol_longterm = getattr(sol, "longterm_fix", None)
-                sol_immediate = getattr(sol, "immediate_action", None)
-                sol_desc = sol_longterm or sol_immediate or ""
-                parts.append(f"**{i}. {sol_title}**")
-                if sol_desc:
-                    parts.append(f"{sol_desc}")
+                parts.extend(self._format_solution_block(sol, i))
+            # _format_solution_block's last line ends with \n; no extra separator needed.
+
+        # Confirming Evidence — cite the evidence that grounded the conclusion,
+        # not a bare count. Prefer the explicit evidence_basis on the
+        # root cause conclusion; otherwise show evidence tagged with the
+        # claim-anchored categories that prove cause or solution.
+        cited_ids: List[str] = []
+        if rcc and getattr(rcc, "evidence_basis", None):
+            cited_ids = list(rcc.evidence_basis)
+
+        if cited_ids:
+            ev_by_id = {getattr(ev, "evidence_id", ""): ev for ev in evidence_items}
+            cited = [ev_by_id[i] for i in cited_ids if i in ev_by_id]
+        else:
+            cited = [
+                ev
+                for ev in evidence_items
+                if hasattr(getattr(ev, "category", None), "value")
+                and ev.category.value in ("causal_evidence", "solution_evidence")
+            ]
+
+        if cited:
+            parts.append("## Confirming Evidence\n")
+            for ev in cited:
+                parts.append(self._evidence_citation_line(case, ev))
+            # Note any remaining evidence not cited here.
+            remaining = max(0, len(evidence_items) - len(cited))
+            if remaining > 0:
+                parts.append(
+                    f"\n_{remaining} additional evidence item"
+                    f"{'s' if remaining != 1 else ''} collected during "
+                    f"investigation (see the Evidence tab)._"
+                )
             parts.append("")
 
-        # Confirming Evidence
-        if evidence_items:
-            parts.append("## Confirming Evidence\n")
-            parts.append(
-                f"{len(evidence_items)} evidence item{'s' if len(evidence_items) != 1 else ''} collected during investigation.\n"
-            )
+        # Hypotheses Considered — what the prior section was actually showing,
+        # now correctly named. Group by status so the reader sees the
+        # validate/refute reasoning at a glance.
+        if hypotheses:
+            parts.append("## Hypotheses Considered\n")
+            buckets: Dict[str, List[Any]] = {
+                "validated": [],
+                "refuted": [],
+                "inconclusive": [],
+                "other": [],
+            }
+            for h in hypotheses:
+                status = h.status.value if hasattr(h.status, "value") else str(h.status)
+                if status in buckets:
+                    buckets[status].append(h)
+                else:
+                    buckets["other"].append(h)
+
+            bucket_order = [
+                ("validated", "Validated"),
+                ("refuted", "Refuted"),
+                ("inconclusive", "Inconclusive"),
+                ("other", "Other"),
+            ]
+            for key, label in bucket_order:
+                if not buckets[key]:
+                    continue
+                # Trailing \n on the bold label so the join produces a
+                # blank line before the list (required by CommonMark for
+                # the bullets to render as a list).
+                parts.append(f"**{label}:**\n")
+                for h in buckets[key]:
+                    confidence = getattr(h, "likelihood", 0)
+                    line = f"- {h.statement} _(confidence: {confidence:.0%})_"
+                    if key == "refuted" and getattr(h, "refutation_reason", None):
+                        # Two trailing spaces before \n produce a hard
+                        # line break within the same list item.
+                        line += f"  \n  Refuted by: {h.refutation_reason}"
+                    parts.append(line)
+                parts.append("")
+            # Trailing empty already appended per-group; no extra needed here.
 
         # Timeline
         parts.append("## Timeline\n")
@@ -348,30 +523,6 @@ class ReportGenerationService:
         parts.append(f"- **Resolved:** {resolved}")
         parts.append(f"- **Duration:** {duration}")
         parts.append(f"- **Turns:** {getattr(case, 'current_turn', 0)}\n")
-
-        # Milestones Reached
-        if milestones:
-            parts.append("## Milestones Reached\n")
-            for m in milestones:
-                parts.append(f"- {m.replace('_', ' ').title()}")
-            parts.append("")
-
-        # Investigation Summary
-        if hypotheses:
-            parts.append("## Investigation Path\n")
-            for h in hypotheses:
-                h_statement = getattr(h, "statement", "") or getattr(h, "title", "")
-                h_status = getattr(h, "status", "")
-                h_likelihood = getattr(h, "likelihood", 0) or getattr(
-                    h, "confidence", 0
-                )
-                status_str = (
-                    h_status.value if hasattr(h_status, "value") else str(h_status)
-                )
-                parts.append(
-                    f"- **{h_statement}** — {status_str} (confidence: {h_likelihood:.0%})"
-                )
-            parts.append("")
 
         return "\n".join(parts)
 
@@ -382,29 +533,24 @@ class ReportGenerationService:
 
         Content structure per investigation-lifecycle-logic.md §1.7.4:
         - Problem Statement
-        - Investigation State
-        - Approaches Attempted
-        - Closure Reason
-        - Leading Hypotheses
-        - Mitigation Status
+        - Investigation Path (from case.path_selection)
+        - Investigation State (milestone/evidence/hypothesis counts)
+        - Closure Reason (with human label)
+        - Leading Hypotheses (top 5 by confidence)
+        - Mitigation Status (mitigation-first path only)
         - Timeline
-        - Recommendation
+        - Recommendation (for closed_after_investigation only)
         """
         title = case.title or "Untitled Case"
         description = case.description or "No description provided."
         created = to_json_compatible(case.created_at) if case.created_at else "Unknown"
         closed = to_json_compatible(case.closed_at) if case.closed_at else "Unknown"
         duration = context.get("duration", "Unknown")
-        closure_reason = getattr(case, "closure_reason", None) or "Not specified"
+        closure_reason_raw = getattr(case, "closure_reason", None)
 
-        # case.hypotheses is Dict[str, Hypothesis] — iterate values, not keys
-        hypotheses = (
-            list(case.hypotheses.values())
-            if isinstance(case.hypotheses, dict)
-            else (case.hypotheses or [])
-        )
-        evidence_items = case.evidence if case.evidence else []
-        solutions = case.solutions if case.solutions else []
+        hypotheses = self._list_hypotheses(case)
+        evidence_items = case.evidence or []
+        solutions = case.solutions or []
         milestones = (
             case.progress.completed_milestones
             if hasattr(case, "progress") and case.progress
@@ -413,28 +559,37 @@ class ReportGenerationService:
 
         parts = [
             f"# Closure Summary: {title}\n",
-            f"## Problem Statement\n",
+            "## Problem Statement\n",
             f"{description}\n",
         ]
+
+        # Investigation Path — same as resolution; especially informative
+        # for closures (shows whether mitigation-first was chosen).
+        path_section = self._format_investigation_path_section(case)
+        if path_section:
+            parts.append(path_section)
 
         # Investigation State — how far diagnosis progressed
         parts.append("## Investigation State\n")
         if milestones:
             parts.append(
-                f"{len(milestones)} milestone{'s' if len(milestones) != 1 else ''} reached: "
+                f"{len(milestones)} milestone"
+                f"{'s' if len(milestones) != 1 else ''} reached: "
                 + ", ".join(m.replace("_", " ") for m in milestones)
                 + "."
             )
         else:
             parts.append("No investigation milestones were reached.")
+        evidence_noun = "item" if len(evidence_items) == 1 else "items"
+        hypothesis_noun = "hypothesis" if len(hypotheses) == 1 else "hypotheses"
         parts.append(
-            f"\n{len(evidence_items)} evidence item{'s' if len(evidence_items) != 1 else ''} collected. "
-            f"{len(hypotheses)} hypothesis{'es' if len(hypotheses) != 1 else ''} explored.\n"
+            f"\n{len(evidence_items)} evidence {evidence_noun} collected. "
+            f"{len(hypotheses)} {hypothesis_noun} explored.\n"
         )
 
-        # Closure Reason
+        # Closure Reason — human label, not raw enum
         parts.append("## Closure Reason\n")
-        parts.append(f"{closure_reason}\n")
+        parts.append(f"{self._format_closure_reason_label(closure_reason_raw)}\n")
 
         # Leading Hypotheses — top hypotheses at time of closure
         if hypotheses:
@@ -444,37 +599,28 @@ class ReportGenerationService:
                 key=lambda h: getattr(h, "likelihood", 0),
                 reverse=True,
             )
-            for h in sorted_hyps[:5]:  # Top 5
-                h_statement = getattr(h, "statement", "") or getattr(h, "title", "")
-                h_status = getattr(h, "status", "")
-                h_likelihood = getattr(h, "likelihood", 0)
+            for h in sorted_hyps[:5]:
                 status_str = (
-                    h_status.value if hasattr(h_status, "value") else str(h_status)
+                    h.status.value if hasattr(h.status, "value") else str(h.status)
                 )
                 parts.append(
-                    f"- **{h_statement}** — {status_str} (confidence: {h_likelihood:.0%})"
+                    f"- **{h.statement}** — {status_str} "
+                    f"(confidence: {getattr(h, 'likelihood', 0):.0%})"
                 )
             parts.append("")
 
-        # Mitigation Status
-        if solutions:
+        # Mitigation Status — only meaningful when the path actually
+        # routed through mitigation. For inquiry_only and
+        # closed_after_investigation, this section would mislead.
+        path_is_mitigation = (
+            case.path_selection is not None
+            and case.path_selection.path == InvestigationPath.MITIGATION_FIRST
+        )
+        if solutions and path_is_mitigation:
             parts.append("## Mitigation Status\n")
             for i, sol in enumerate(solutions, 1):
-                sol_title = getattr(sol, "title", f"Solution {i}")
-                if "SolutionType." in sol_title:
-                    sol_type = getattr(sol, "solution_type", None)
-                    sol_title = (
-                        sol_type.value.replace("_", " ").title()
-                        if hasattr(sol_type, "value")
-                        else f"Solution {i}"
-                    )
-                sol_longterm = getattr(sol, "longterm_fix", None)
-                sol_immediate = getattr(sol, "immediate_action", None)
-                sol_desc = sol_longterm or sol_immediate or ""
-                parts.append(f"**{i}. {sol_title}**")
-                if sol_desc:
-                    parts.append(f"{sol_desc}")
-            parts.append("")
+                parts.extend(self._format_solution_block(sol, i))
+            # _format_solution_block's last line ends with \n; no extra separator needed.
 
         # Timeline
         parts.append("## Timeline\n")
@@ -483,25 +629,22 @@ class ReportGenerationService:
         parts.append(f"- **Duration:** {duration}")
         parts.append(f"- **Turns:** {getattr(case, 'current_turn', 0)}\n")
 
-        # Recommendation — especially for escalated cases
-        if closure_reason.lower() in ("escalated", "abandoned"):
+        # Recommendation — fires when investigation ran but didn't conclude.
+        # The prior "escalated"/"abandoned" guard was dead code: those
+        # values are not in VALID_CLOSURE_REASONS.
+        if closure_reason_raw == "closed_after_investigation":
             parts.append("## Recommendation\n")
             if hypotheses:
-                top_hyp = sorted(
-                    hypotheses,
-                    key=lambda h: getattr(h, "likelihood", 0),
-                    reverse=True,
-                )[0]
-                top_statement = getattr(top_hyp, "statement", "") or getattr(
-                    top_hyp, "title", "Unknown"
-                )
+                top_hyp = max(hypotheses, key=lambda h: getattr(h, "likelihood", 0))
                 parts.append(
-                    f"The most promising lead at time of closure was: **{top_statement}**. "
-                    f"A follow-up investigation should start there.\n"
+                    f"The most promising lead at time of closure was: "
+                    f"**{top_hyp.statement}**. A follow-up investigation "
+                    f"should start there.\n"
                 )
             else:
                 parts.append(
-                    "No hypotheses were formulated. A fresh investigation may be needed.\n"
+                    "No hypotheses were formulated. A fresh investigation "
+                    "may be needed.\n"
                 )
 
         return "\n".join(parts)
