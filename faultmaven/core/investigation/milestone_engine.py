@@ -5274,7 +5274,17 @@ class MilestoneEngine:
         if updates.milestones:
             m = updates.milestones
             p = case.progress
-            # Only set to True (never revert)
+            # Only set to True (never revert).
+            #
+            # LOAD-BEARING ORDER: ``mitigation_accepted`` MUST come before
+            # ``mitigation_verified``. The ordering-rejection guard below
+            # relies on this iteration order so that when the LLM emits
+            # both milestones in one response, ``mitigation_accepted``
+            # is applied first and the prerequisite check for
+            # ``mitigation_verified`` then passes. Reordering this list
+            # (alphabetical sort, regrouping) would silently shift the
+            # same-turn case onto the rejection path. See the ordering
+            # guard inside the loop below.
             milestone_fields = [
                 # Progress indicators (LLM context, non-stage-driving)
                 "symptom_verified",
@@ -5350,13 +5360,14 @@ class MilestoneEngine:
                             "MILESTONE ORDER ERROR: You set "
                             "mitigation_verified=True without first setting "
                             "mitigation_accepted=True. Verification "
-                            "presupposes acceptance — the user must have "
-                            "accepted the mitigation before its effect can be "
-                            "verified. Set BOTH milestones in the same "
-                            "response if the mitigation was both accepted and "
-                            "verified this turn, OR set "
-                            "mitigation_accepted=True first and verify on a "
-                            "follow-up turn after the user confirms."
+                            "presupposes acceptance — set "
+                            "mitigation_accepted=True (based on the user's "
+                            "confirmation signals) before "
+                            "mitigation_verified=True. Set BOTH milestones "
+                            "in the same response if both happened this "
+                            "turn, OR set mitigation_accepted=True first "
+                            "and verify on a follow-up turn after the user "
+                            "confirms."
                         ).strip()
                         metadata.setdefault("validation_repairs", []).append(
                             "Rejected mitigation_verified "
