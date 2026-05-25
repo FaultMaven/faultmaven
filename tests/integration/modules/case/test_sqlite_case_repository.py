@@ -94,6 +94,8 @@ async def create_test_schema(session: AsyncSession):
             documentation TEXT,
             progress TEXT,
             metadata TEXT,
+            -- Migration 013: denormalized per-disposition eligibility (JSON text).
+            disposition_eligibility TEXT,
             is_archived INTEGER NOT NULL DEFAULT 0,
             archived_at TIMESTAMP,
             -- OCC token (2026-04-24 hierarchy consolidation).
