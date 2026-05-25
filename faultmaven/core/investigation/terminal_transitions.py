@@ -87,19 +87,42 @@ def derive_closure_reason(case: "Case") -> str:
 # helper produces a stable per-disposition shape suitable for read-time
 # consumption and listed queries.
 #
+# Each value carries a single, disposition-independent semantic so the
+# frontend can render copy / icon / tooltip per-value without needing to
+# branch on which disposition it's looking at.
+#
 # Values:
-#   "ready"        — disposition is a valid action and case content
-#                    supports it without follow-up prompts.
-#   "needs_info"   — disposition is a valid action but case content is
-#                    partial; the user will see a "we need X" prompt
-#                    before the transition fires. (Resolve only.)
-#   "not_eligible" — disposition is not a valid edge from the current
-#                    status, OR readiness verdict redirects to the other
-#                    disposition entirely (e.g., SUGGEST_CLOSE pivots
-#                    resolve→close, so "resolved" is not_eligible).
+#   "ready"
+#       Disposition is a valid action and case content supports it
+#       without follow-up prompts. Frontend should render the
+#       affordance enabled with the default "click to confirm" UX.
+#
+#   "needs_info"
+#       Disposition is a valid action but the case is partial. The
+#       user must provide MORE information (root cause / solution)
+#       before the transition can complete. UX: prompt the user to
+#       ADD data. Currently only applies to the Resolve side.
+#
+#   "suggests_alternative"
+#       Disposition is a valid action but the system recommends the
+#       OTHER disposition based on case content. UX: warn the user
+#       and offer the alternative; if they confirm anyway, proceed.
+#       Currently only applies to the Close side (when the case has
+#       root cause + solution → resolving is recommended; closing
+#       would discard attribution). Different UX from "needs_info":
+#       the user isn't asked to add data, they're asked to RE-DIRECT
+#       to a different action.
+#
+#   "not_eligible"
+#       Disposition is not a valid edge from the current status, OR
+#       readiness verdict says this disposition shouldn't be offered
+#       at all (e.g., SUGGEST_CLOSE pivots resolve→close, so
+#       "resolved" is not_eligible). Frontend should hide the
+#       affordance entirely.
 
 DISPOSITION_ELIGIBILITY_READY = "ready"
 DISPOSITION_ELIGIBILITY_NEEDS_INFO = "needs_info"
+DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE = "suggests_alternative"
 DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE = "not_eligible"
 
 
@@ -108,7 +131,8 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
 
     Pure derivation — no mutation, no DB access. Returns a dict with
     fixed keys ``"resolved"`` and ``"closed"`` whose values are one of
-    ``ready`` / ``needs_info`` / ``not_eligible``.
+    ``ready`` / ``needs_info`` / ``suggests_alternative`` /
+    ``not_eligible``.
 
     Maintained at write time via the single chokepoint in
     ``CaseRepository.save()`` (pattern P3). All reads then trust the
@@ -117,6 +141,14 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
     labels — keep it in sync with ``assess_resolution_readiness`` and
     ``assess_closure_readiness`` outputs.
 
+    Each eligibility value carries a single, disposition-independent
+    semantic (see module-level constant docs above) so the frontend
+    can render copy / icon / tooltip per value without having to
+    branch on which disposition column it's looking at. ``needs_info``
+    means "add data"; ``suggests_alternative`` means "consider the
+    other action". The two are deliberately distinct because they
+    drive different UX patterns.
+
     Semantics by current status:
 
     - INQUIRY: only CLOSED is a valid edge per ``ALLOWED_ACTIONS``
@@ -124,18 +156,16 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
       ``{"resolved": "not_eligible", "closed": "ready"}``.
 
     - INVESTIGATING: both edges are valid. Resolved eligibility derives
-      from ``assess_resolution_readiness``; closed eligibility is
-      always ``ready`` (any INVESTIGATING case can be closed) unless
-      ``assess_closure_readiness`` says SUGGEST_RESOLVE (case has root
-      cause + solution → closing would discard attribution; the
-      eligibility label warns via ``needs_info``).
+      from ``assess_resolution_readiness`` (READY → ready,
+      NEEDS_INFO → needs_info, SUGGEST_CLOSE → not_eligible).
+      Closed eligibility is ``ready`` by default; if
+      ``assess_closure_readiness`` returns SUGGEST_RESOLVE (case has
+      root cause + solution), closed → ``suggests_alternative`` so
+      the frontend can warn the user that resolving would preserve
+      attribution.
 
     - Terminal (RESOLVED / CLOSED): no further actions. Returns all
       ``not_eligible``.
-
-    The label vocabulary deliberately reuses the resolution-side
-    ``needs_info`` term on the close side for the SUGGEST_RESOLVE case
-    so the frontend has a single 3-value enum to render.
     """
     from faultmaven.modules.case.domain.models import CaseStatus
 
@@ -157,6 +187,7 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
     if resolution.verdict == ResolutionReadiness.READY:
         resolved_eligibility = DISPOSITION_ELIGIBILITY_READY
     elif resolution.verdict == ResolutionReadiness.NEEDS_INFO:
+        # Case is partial; user needs to ADD data before resolving.
         resolved_eligibility = DISPOSITION_ELIGIBILITY_NEEDS_INFO
     else:  # SUGGEST_CLOSE
         # Resolved-readiness says the case is too thin for resolution;
@@ -167,9 +198,11 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
     closure = assess_closure_readiness(case)
     if closure.verdict == ClosureReadiness.SUGGEST_RESOLVE:
         # Case qualifies for resolved; closing would discard the
-        # resolution attribution. Surface as ``needs_info`` so the
-        # frontend can warn the user before they click Close.
-        closed_eligibility = DISPOSITION_ELIGIBILITY_NEEDS_INFO
+        # resolution attribution. Surface as ``suggests_alternative``
+        # so the frontend can warn the user and offer the resolve
+        # path instead — distinct UX from ``needs_info`` which asks
+        # the user to add data.
+        closed_eligibility = DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
     else:
         # HAS_SUBSTANCE or TRIVIAL — closing is always ready as a
         # valid action; the confirmation prompt carries the summary

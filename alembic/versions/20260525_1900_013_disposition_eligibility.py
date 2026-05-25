@@ -47,6 +47,7 @@ depends_on: Union[str, Sequence[str], None] = None
 _NOT_ELIGIBLE = "not_eligible"
 _READY = "ready"
 _NEEDS_INFO = "needs_info"
+_SUGGESTS_ALTERNATIVE = "suggests_alternative"
 
 
 def _derive_for_inquiry() -> dict[str, str]:
@@ -88,8 +89,9 @@ def _derive_for_investigating_from_row(row) -> dict[str, str]:
     has_solutions = bool(solution_count_row and solution_count_row[0] > 0)
 
     if has_root_cause and has_solutions:
-        # Resolution-ready + close path warns via needs_info (SUGGEST_RESOLVE).
-        return {"resolved": _READY, "closed": _NEEDS_INFO}
+        # Resolution-ready: close-side flips to suggests_alternative
+        # (SUGGEST_RESOLVE pivot — distinct UX from needs_info).
+        return {"resolved": _READY, "closed": _SUGGESTS_ALTERNATIVE}
 
     # Otherwise the readiness branch is one of:
     #   READY (impossible without both fields above — guarded by READY check)

@@ -28,6 +28,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     DISPOSITION_ELIGIBILITY_NEEDS_INFO,
     DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
     DISPOSITION_ELIGIBILITY_READY,
+    DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE,
     derive_disposition_eligibility,
 )
 from faultmaven.modules.case.contracts import (
@@ -170,14 +171,15 @@ class TestDeriveDispositionEligibility:
     def test_investigating_resolution_ready_returns_ready_for_resolved(self):
         """INVESTIGATING + root cause + solution: resolution-readiness =
         READY → resolved eligibility = ready. Close eligibility flips
-        to needs_info (SUGGEST_RESOLVE warns that closing would discard
-        attribution)."""
+        to suggests_alternative (SUGGEST_RESOLVE warns that closing
+        would discard attribution and recommends resolving instead —
+        distinct from needs_info which asks the user to add data)."""
         case = _make_investigating_case()
         _attach_root_cause(case)
         _attach_solution(case)
         result = derive_disposition_eligibility(case)
         assert result["resolved"] == DISPOSITION_ELIGIBILITY_READY
-        assert result["closed"] == DISPOSITION_ELIGIBILITY_NEEDS_INFO
+        assert result["closed"] == DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
 
     def test_terminal_resolved_is_not_eligible_for_anything(self):
         """RESOLVED case is terminal — no further dispositions."""
@@ -257,9 +259,12 @@ class TestRepositorySaveChokepoint:
         await repo.save(case)
 
         assert case.disposition_eligibility["resolved"] == DISPOSITION_ELIGIBILITY_READY
-        # And close flips to needs_info (SUGGEST_RESOLVE warning).
+        # And close flips to suggests_alternative (SUGGEST_RESOLVE
+        # warning — distinct from needs_info; the user is asked to
+        # consider resolving, not to add data).
         assert (
-            case.disposition_eligibility["closed"] == DISPOSITION_ELIGIBILITY_NEEDS_INFO
+            case.disposition_eligibility["closed"]
+            == DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
         )
 
     async def test_eligibility_overwritten_even_if_caller_set_a_stale_value(self):
@@ -318,7 +323,7 @@ class TestUIAdapterExposesEligibility:
         case = _make_investigating_case()
         case.disposition_eligibility = {
             "resolved": DISPOSITION_ELIGIBILITY_READY,
-            "closed": DISPOSITION_ELIGIBILITY_NEEDS_INFO,
+            "closed": DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE,
         }
 
         ui = transform_case_for_ui(case)
@@ -375,7 +380,58 @@ class TestLifecycleIntegration:
         _attach_solution(case)
         await repo.save(case)
         assert case.disposition_eligibility["resolved"] == DISPOSITION_ELIGIBILITY_READY
-        # Close warns now — SUGGEST_RESOLVE.
+        # Close warns now — SUGGEST_RESOLVE → suggests_alternative.
         assert (
-            case.disposition_eligibility["closed"] == DISPOSITION_ELIGIBILITY_NEEDS_INFO
+            case.disposition_eligibility["closed"]
+            == DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
         )
+
+
+# ---------------------------------------------------------------------------
+# 5. needs_info vs suggests_alternative — disjoint semantics pin
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestEligibilityValuesAreSemanticallyDisjoint:
+    """``needs_info`` (add data) and ``suggests_alternative`` (consider
+    the other action) are distinct UX patterns — frontend renders them
+    differently. A previous design merged them into a single
+    ``needs_info`` value for "backend compactness"; this test pins the
+    split so a future refactor can't silently re-merge them and
+    re-overload one label across two different UX patterns.
+    """
+
+    def test_needs_info_and_suggests_alternative_are_distinct_constants(self):
+        assert (
+            DISPOSITION_ELIGIBILITY_NEEDS_INFO
+            != DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
+        )
+
+    def test_partial_resolution_uses_needs_info_not_alternative(self):
+        """Partial-resolution case: user must ADD data (root cause /
+        solution) — that's the ``needs_info`` semantic, not
+        ``suggests_alternative``."""
+        case = _make_investigating_case()
+        _attach_evidence(case)
+        _attach_root_cause(case)
+        # No solution → NEEDS_INFO from assess_resolution_readiness.
+
+        result = derive_disposition_eligibility(case)
+
+        assert result["resolved"] == DISPOSITION_ELIGIBILITY_NEEDS_INFO
+        assert result["resolved"] != DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
+
+    def test_resolution_grade_close_uses_suggests_alternative_not_needs_info(self):
+        """Resolution-grade case clicked-to-close: user should be told
+        to CONSIDER the alternative (resolve) — that's the
+        ``suggests_alternative`` semantic, not ``needs_info``. No data
+        is missing; the disposition itself is what's questioned."""
+        case = _make_investigating_case()
+        _attach_root_cause(case)
+        _attach_solution(case)
+
+        result = derive_disposition_eligibility(case)
+
+        assert result["closed"] == DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
+        assert result["closed"] != DISPOSITION_ELIGIBILITY_NEEDS_INFO
