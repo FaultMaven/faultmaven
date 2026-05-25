@@ -200,3 +200,92 @@ class TestTrivialVerdict:
 
         assert readiness.verdict == ClosureReadiness.TRIVIAL
         assert "minimal investigation data" in readiness.message
+
+
+# ---------------------------------------------------------------------------
+# Multi-solution display — title-fallback discrimination
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestSolutionTitleFallback:
+    """When a case has multiple solutions and some lack titles, the
+    user-facing message must keep each entry distinguishable. Earlier
+    behavior used the literal string "Untitled" for every titleless
+    entry, producing confusing output like
+    "Solution: My fix, Untitled, Untitled". The fallback now uses
+    "Solution N" (1-indexed) so the user can still tell entries apart.
+
+    Note: ``Solution.title`` is a required ``str`` field (min_length=1),
+    so titleless solutions cannot be constructed via the normal Pydantic
+    path. The fallback in ``_solution_display_titles`` only fires under
+    schema bypass (``model_construct``) or future schema relaxation.
+    These tests use ``model_construct`` to exercise the defensive code
+    — the indexed fallback is preferable to the literal "Untitled" even
+    if the scenario is rare in practice.
+    """
+
+    def test_titleless_solutions_use_indexed_fallback_not_literal_untitled(self):
+        """SUGGEST_RESOLVE path: case with root cause + multiple solutions
+        where some are titleless (via Pydantic bypass). The message must
+        not contain the literal "Untitled"; titleless entries render as
+        "Solution 2", "Solution 3"."""
+        case = _make_investigating_case()
+        _attach_root_cause(case)
+        # First solution titled normally; next two bypass validation to
+        # simulate the schema-bypass / future-relaxation scenario.
+        case.solutions.append(
+            Solution(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title="Bump connection pool to 100",
+                longterm_fix="Apply DestinationRule update",
+            )
+        )
+        case.solutions.append(
+            Solution.model_construct(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title=None,
+            )
+        )
+        case.solutions.append(
+            Solution.model_construct(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title=None,
+            )
+        )
+
+        readiness = assess_closure_readiness(case)
+
+        assert readiness.verdict == ClosureReadiness.SUGGEST_RESOLVE
+        # Titled solution is preserved.
+        assert "Bump connection pool to 100" in readiness.message
+        # Titleless solutions render with indexed fallback, not "Untitled".
+        assert "Untitled" not in readiness.message
+        assert "Solution 2" in readiness.message
+        assert "Solution 3" in readiness.message
+
+    def test_titleless_solutions_in_has_substance_path(self):
+        """Same fallback applies in the HAS_SUBSTANCE branch (case has
+        solution but no root cause) — symmetry across both paths that
+        consume solution titles."""
+        case = _make_investigating_case()
+        # Two solutions, both titleless via bypass. No root cause → HAS_SUBSTANCE.
+        case.solutions.append(
+            Solution.model_construct(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title=None,
+            )
+        )
+        case.solutions.append(
+            Solution.model_construct(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title=None,
+            )
+        )
+
+        readiness = assess_closure_readiness(case)
+
+        assert readiness.verdict == ClosureReadiness.HAS_SUBSTANCE
+        assert "Untitled" not in readiness.message
+        assert "Solution 1" in readiness.message
+        assert "Solution 2" in readiness.message

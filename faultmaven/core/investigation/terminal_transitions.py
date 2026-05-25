@@ -442,6 +442,21 @@ class ClosureReadiness:
         self.message = message
 
 
+def _solution_display_titles(solutions: list) -> list[str]:
+    """Render solution titles for user-facing summaries.
+
+    Falls back to "Solution N" (1-indexed by list position) when a
+    solution lacks a title, instead of the literal string "Untitled".
+    Avoids "Solution: My fix, Untitled, Untitled" for multi-solution
+    cases where titles are sparse — the indexed fallback keeps each
+    entry distinguishable.
+    """
+    return [
+        getattr(s, "title", None) or f"Solution {i + 1}"
+        for i, s in enumerate(solutions)
+    ]
+
+
 def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     """Summarize what was accomplished during investigation, or pivot to RESOLVED
     if the case actually qualifies for resolution.
@@ -482,7 +497,7 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     # Symmetric to ResolutionReadiness.SUGGEST_CLOSE.
     if has_root_cause and has_solutions:
         rc = getattr(case.root_cause_conclusion, "root_cause", "")
-        sol_titles = [getattr(s, "title", "Untitled") for s in case.solutions]
+        sol_titles = _solution_display_titles(case.solutions)
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
             message=(
@@ -509,7 +524,7 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
         rc = getattr(case.root_cause_conclusion, "root_cause", "")
         parts.append(f"- **Root cause identified**: {rc}")
     if has_solutions:
-        sol_titles = [getattr(s, "title", "Untitled") for s in case.solutions]
+        sol_titles = _solution_display_titles(case.solutions)
         parts.append(f"- **Solutions on record**: {', '.join(sol_titles)}")
 
     if not parts:
