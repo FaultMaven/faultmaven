@@ -17,9 +17,6 @@ from faultmaven.core.investigation.milestone_engine import (
     _gate2_is_pending,
     _path_selection_suggestions,
 )
-from faultmaven.modules.case.domain.services.investigation_router import (
-    recommend_investigation_path_for_case,
-)
 from faultmaven.modules.case.contracts import CaseStatus
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -29,6 +26,9 @@ from faultmaven.modules.case.domain.models import (
     PreliminaryUrgency,
     ProblemConfirmation,
     UrgencyLevel,
+)
+from faultmaven.modules.case.domain.services.investigation_router import (
+    recommend_investigation_path_for_case,
 )
 
 # ---------------------------------------------------------------------------
