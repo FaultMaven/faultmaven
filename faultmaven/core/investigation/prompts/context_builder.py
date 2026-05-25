@@ -2081,7 +2081,7 @@ def build_investigation_context(
     gate2_state_str = ""
     if (
         case.status == CaseStatus.INVESTIGATING
-        and getattr(case.progress, "symptom_verified", False)
+        and case.progress.symptom_verified
         and case.path_selection is None
     ):
         ps = recommend_investigation_path_for_case(case)

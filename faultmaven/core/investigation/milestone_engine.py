@@ -878,7 +878,7 @@ def _gate2_is_pending(case: "Case") -> bool:
     """
     if case.status != CaseStatus.INVESTIGATING:
         return False
-    if not getattr(case.progress, "symptom_verified", False):
+    if not case.progress.symptom_verified:
         return False
     return case.path_selection is None
 
@@ -2498,7 +2498,7 @@ class MilestoneEngine:
                         f"Received path_selection intent for case {case.case_id} "
                         f"but status is {case.status.value}"
                     )
-                elif not getattr(case.progress, "symptom_verified", False):
+                elif not case.progress.symptom_verified:
                     logger.warning(
                         f"Received path_selection intent for case {case.case_id} "
                         f"but symptom_verified is False — Gate 2 has not yet opened"

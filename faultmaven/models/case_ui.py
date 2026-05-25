@@ -459,12 +459,15 @@ class CaseUIResponse_Investigating(BaseModel):
     path_selection: Optional[PathSelection] = Field(
         default=None,
         description=(
-            "Investigation path commitment + Gate-3 state. Always non-None "
-            "for INVESTIGATING (Gate 2 must pass before transition); the "
-            "field's existence is the commit signal. "
-            "mitigation_completed_at_turn is set after mitigation_verified; "
-            "rca_after_mitigation_confirmed drives Gate 3 prompts on the "
-            "mitigation-first path."
+            "Investigation path commitment + Gate-3 state. Post-INV-19 "
+            "redesign Gate 2 fires INSIDE INVESTIGATING after "
+            "``symptom_verified=True``, so this field is ``None`` during "
+            "the pre-path window (INVESTIGATING + symptom_verified=False, "
+            "and the brief INVESTIGATING + symptom_verified=True window "
+            "before the user clicks a Gate 2 button). Existence of this "
+            "field IS the commit signal. mitigation_completed_at_turn is "
+            "set after mitigation_verified; rca_after_mitigation_confirmed "
+            "drives Gate 3 prompts on the mitigation-first path."
         ),
     )
 
