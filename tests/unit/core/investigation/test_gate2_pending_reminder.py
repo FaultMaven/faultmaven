@@ -205,10 +205,10 @@ class TestConditionalInjection:
 
     def test_reminder_absent_when_preliminary_urgency_missing(self):
         """Without preliminary_urgency the recommendation helper
-        returns None and the entire ``<path_selection_state>`` block
-        is suppressed. The reminder is part of that block's
-        co-emission path and must not appear standalone — keeping the
-        prompt content coupled to a renderable recommendation.
+        returns None. Both ``<path_selection_state>`` and the reminder
+        are gated on the same helper — when it returns None, neither
+        block renders. Keeps prompt content coupled to a renderable
+        recommendation.
         """
         case = _inquiry_case(
             problem_statement_confirmed=True,
@@ -219,22 +219,18 @@ class TestConditionalInjection:
         assert self._REMINDER_OPEN_TAG not in rendered
 
     def test_reminder_absent_outside_inquiry_status(self):
-        """Pins the status gate IN ISOLATION: path_selection is None
-        (which alone would fire the reminder during INQUIRY), but the
-        case is in INVESTIGATING. The reminder must still suppress —
-        the status check is the failsafe that keeps INQUIRY-stage
-        instructions out of INVESTIGATING-stage prompts (where the
-        dispatch is path-conditional via ``_select_diagnosis_block``).
-
-        Earlier this test passed for the wrong reason: it set
-        path_selection=committed AND mutated status, but the path-
-        commit gate already suppressed the reminder before the status
-        check mattered. Using path_selection=None forces the status
-        check to be the sole gate that fires.
+        """Pins the status gate IN ISOLATION. Fixture uses
+        ``path_selection=None`` (which alone would fire the reminder
+        during INQUIRY), then mutates status to INVESTIGATING. With
+        only the status check standing between the case and the
+        reminder, this exercises the status gate as the sole
+        suppressor — preventing INQUIRY-stage instructions from
+        leaking into INVESTIGATING-stage prompts (where dispatch is
+        path-conditional via ``_select_diagnosis_block``).
         """
         case = _inquiry_case(
             problem_statement_confirmed=True,
-            path_selection=None,  # would normally fire the reminder
+            path_selection=None,  # would otherwise fire the reminder
         )
         # Bypass cross-field validators to simulate the broken state
         # (INVESTIGATING-status case without path_selection — INV-19
@@ -243,5 +239,5 @@ class TestConditionalInjection:
         object.__setattr__(case, "status", CaseStatus.INVESTIGATING)
         object.__setattr__(case.inquiry, "decided_to_investigate", True)
         rendered = _rendered(case)
-        # Absent because status != INQUIRY, NOT because path is committed.
+        # Absent because status != INQUIRY, not because path is committed.
         assert self._REMINDER_OPEN_TAG not in rendered
