@@ -554,3 +554,179 @@ class TestCausalEvidenceRejection:
         updated = result["case_updated"]
 
         assert len(updated.evidence) == evidence_before + 1
+
+
+# ---------------------------------------------------------------------------
+# root_cause_identified milestone — rejected in restricted states
+# ---------------------------------------------------------------------------
+
+
+class TestRootCauseIdentifiedRejection:
+    """``root_cause_identified`` is an RCA-side milestone. Both
+    ``_SYMPTOM_VALIDATION_BLOCK`` and ``_GATE3_PENDING_BLOCK`` forbid
+    setting it. The pre-PR INV-21 guard covered the Gate-3-pending
+    case only; this generalization extends the same enforcement to
+    pre-mitigation MITIGATION_FIRST (where the prompt's
+    ``DO NOT set root_cause_identified`` directive was previously
+    prompt-only).
+    """
+
+    @pytest.mark.asyncio
+    async def test_pre_mitigation_rejects_root_cause_identified(
+        self, mock_llm, mock_repo
+    ):
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        case = _mitigation_first_case(mitigation_completed_at_turn=None)
+
+        mock_llm.generate.return_value = _llm_response(
+            milestones={"root_cause_identified": True},
+        )
+
+        result = await engine.process_turn(case, "test")
+        updated = result["case_updated"]
+
+        # The milestone was rejected — flag stays False
+        assert updated.progress.root_cause_identified is False
+        # And system_feedback names the violation
+        feedback = updated.turn_history[-1].system_feedback or ""
+        assert "PATH-CONDITIONAL MILESTONE ERROR" in feedback
+        assert "root_cause_identified" in feedback
+        assert "_SYMPTOM_VALIDATION_BLOCK" in feedback
+
+    @pytest.mark.asyncio
+    async def test_gate3_pending_rejects_root_cause_identified(
+        self, mock_llm, mock_repo
+    ):
+        """Same rejection in Gate-3-pending state — was INV-21's
+        original coverage, still works under the generalized predicate."""
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        case = _mitigation_first_case(
+            mitigation_completed_at_turn=5,
+            rca_after_mitigation_confirmed=False,
+        )
+
+        mock_llm.generate.return_value = _llm_response(
+            milestones={"root_cause_identified": True},
+        )
+
+        result = await engine.process_turn(case, "test")
+        updated = result["case_updated"]
+
+        assert updated.progress.root_cause_identified is False
+        feedback = updated.turn_history[-1].system_feedback or ""
+        assert "PATH-CONDITIONAL MILESTONE ERROR" in feedback
+        assert "_GATE3_PENDING_BLOCK" in feedback
+
+    @pytest.mark.asyncio
+    async def test_root_cause_path_does_not_fire_path_conditional_rejection(
+        self, mock_llm, mock_repo
+    ):
+        """ROOT_CAUSE path is unrestricted — the path-conditional
+        milestone rejection must NOT fire. (Whether the milestone
+        ultimately persists depends on downstream
+        ``validate_milestone_claims`` evidence-citation checks, which
+        are orthogonal to this backstop. The test pins only that THIS
+        backstop didn't reject — no PATH-CONDITIONAL MILESTONE ERROR
+        in system_feedback.)"""
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        case = _root_cause_case()
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "ok",
+                "internal_reasoning": {
+                    "evidence_analyzed": ["ev_existing"],
+                    "conclusions": [],
+                    "milestone_justifications": {"root_cause_identified": "auto"},
+                },
+                "state_updates": {
+                    "milestones": {
+                        "root_cause_identified": True,
+                        "root_cause_likelihood": 0.8,
+                        "root_cause_method": "direct_analysis",
+                    },
+                    "outcome": "milestone_completed",
+                },
+            }
+        )
+
+        result = await engine.process_turn(case, "test")
+        feedback = result["case_updated"].turn_history[-1].system_feedback or ""
+
+        # The backstop did not reject the milestone — no path-conditional
+        # error message in system_feedback. (Downstream validators may
+        # still revert the milestone for unrelated reasons; that's not
+        # what this test guards.)
+        assert "PATH-CONDITIONAL MILESTONE ERROR" not in feedback
+
+
+# ---------------------------------------------------------------------------
+# Combined emissions — both rejections fire AND accumulate in system_feedback
+# ---------------------------------------------------------------------------
+
+
+class TestCombinedEmissionsRejected:
+    """When the LLM emits multiple forbidden things in one response,
+    each rejection fires independently AND each error message accumulates
+    in ``system_feedback``. Without this test, a future refactor that
+    uses assignment (``=``) instead of append (``+=``-via-concat) on
+    ``metadata["system_feedback"]`` would silently overwrite one error
+    with another, and no test would catch it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_hypothesis_and_causal_evidence_both_rejected_with_both_feedbacks(
+        self, mock_llm, mock_repo
+    ):
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        case = _mitigation_first_case(mitigation_completed_at_turn=None)
+        evidence_before = len(case.evidence)
+
+        # The LLM emits all three: 1 forbidden hypothesis, 1 forbidden
+        # causal_evidence, 1 allowed symptom_evidence.
+        mock_llm.generate.return_value = _llm_response(
+            hypotheses=[
+                {
+                    "statement": "Forbidden hypothesis",
+                    "category": "config",
+                    "likelihood": 0.6,
+                    "rationale": "test",
+                }
+            ],
+            evidence=[
+                {
+                    "summary": "Forbidden causal evidence",
+                    "category": "causal_evidence",
+                    "source_type": "user_description",
+                    "extract": "test cause",
+                },
+                {
+                    "summary": "Allowed symptom evidence",
+                    "category": "symptom_evidence",
+                    "source_type": "user_description",
+                    "extract": "test symptom",
+                },
+            ],
+        )
+
+        result = await engine.process_turn(case, "test")
+        updated = result["case_updated"]
+
+        # Hypothesis dropped (REJECT-ALL).
+        assert len(updated.hypotheses) == 0
+        # Only the symptom_evidence landed (PARTIAL-ACCEPT).
+        assert len(updated.evidence) == evidence_before + 1
+        from faultmaven.modules.case.contracts import EvidenceCategory
+
+        assert updated.evidence[-1].category == EvidenceCategory.SYMPTOM_EVIDENCE
+
+        # Both error messages must appear in system_feedback — proves
+        # that the per-site appends accumulate cumulatively rather
+        # than the later site overwriting the earlier one.
+        feedback = updated.turn_history[-1].system_feedback or ""
+        # The evidence rejection cites causal_evidence
+        assert "causal_evidence" in feedback
+        # The hypothesis rejection cites hypotheses_to_add
+        assert "hypotheses_to_add" in feedback
+        # Both should carry the PATH-CONDITIONAL EMISSION ERROR marker
+        # (one occurrence per rejection)
+        assert feedback.count("PATH-CONDITIONAL EMISSION ERROR") == 2

@@ -5353,14 +5353,17 @@ class MilestoneEngine:
                 a.status == "pending" for a in case.proposed_actions
             )
 
-            # INV-21: on a mitigation-first case where mitigation has been
-            # verified but the user has not yet confirmed continuing to RCA
-            # (Gate 3 pending), reject RCA-side milestone updates. Prevents
-            # the engine from silently restarting RCA when the user might
-            # have wanted to close as mitigation-sufficient. Stage-gate
-            # mitigation milestones are exempt (a follow-up mitigation
-            # cycle is allowed via the existing re-entry mechanism).
-            gate3_blocks_rca_milestones = _gate3_is_pending(case)
+            # Path-conditional RCA-milestone restriction. Both
+            # ``_SYMPTOM_VALIDATION_BLOCK`` (pre-mitigation MITIGATION_FIRST)
+            # and ``_GATE3_PENDING_BLOCK`` (Gate 3 pending) explicitly
+            # forbid setting RCA-side milestones — RCA work is deferred to
+            # post-Gate-3 on the MITIGATION_FIRST path. Single predicate
+            # covers both states (INV-21 was Gate-3-specific; this extends
+            # the same enforcement to pre-mitigation, where the LLM
+            # disregarding _SYMPTOM_VALIDATION_BLOCK's "DO NOT set
+            # root_cause_identified" directive would otherwise corrupt the
+            # case with a premature root-cause attribution).
+            path_restricted_state = _path_conditional_emission_restriction(case)
             rca_side_milestones = {"root_cause_identified"}
 
             for field in milestone_fields:
@@ -5372,13 +5375,41 @@ class MilestoneEngine:
                             f"{case.case_id}: no pending ProposedAction exists"
                         )
                         continue
-                    # INV-21 guard: reject RCA-side milestones until Gate 3 passes
-                    if gate3_blocks_rca_milestones and field in rca_side_milestones:
+                    # Path-conditional RCA-milestone guard (covers INV-21
+                    # Gate-3-pending case + the pre-mitigation
+                    # MITIGATION_FIRST case under the same predicate).
+                    if (
+                        path_restricted_state is not None
+                        and field in rca_side_milestones
+                    ):
+                        block_name = (
+                            "_SYMPTOM_VALIDATION_BLOCK"
+                            if path_restricted_state
+                            == "pre_mitigation_mitigation_first"
+                            else "_GATE3_PENDING_BLOCK"
+                        )
                         logger.warning(
-                            f"INV-21: Rejected RCA-side milestone '{field}' for "
-                            f"case {case.case_id} — mitigation is verified but "
-                            f"the user has not yet chosen to continue with RCA "
-                            f"(Gate 3 pending)."
+                            f"Rejected RCA-side milestone '{field}' for case "
+                            f"{case.case_id}: forbidden in state "
+                            f"'{path_restricted_state}' (the {block_name} "
+                            f"prompt directive forbids setting RCA-side "
+                            f"milestones; RCA is deferred to post-Gate-3 on "
+                            f"the MITIGATION_FIRST path)."
+                        )
+                        current_feedback = metadata.get("system_feedback") or ""
+                        metadata["system_feedback"] = (
+                            f"{current_feedback}\n"
+                            "PATH-CONDITIONAL MILESTONE ERROR: You set "
+                            f"``{field}=True`` in a state where the "
+                            f"{block_name} prompt directive forbids "
+                            "RCA-side milestones. Root-cause work is "
+                            "deferred until the user opts to continue "
+                            "past Gate 3 (MITIGATION_FIRST path). Do not "
+                            f"re-emit ``{field}=True`` until the case "
+                            "reaches post-Gate-3 state."
+                        ).strip()
+                        metadata.setdefault("validation_repairs", []).append(
+                            f"Rejected {field} in {path_restricted_state} state"
                         )
                         continue
                     # Stage-gate ordering guard: reject ``mitigation_verified``
