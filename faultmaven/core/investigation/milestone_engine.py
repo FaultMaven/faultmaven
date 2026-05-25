@@ -5486,21 +5486,13 @@ class MilestoneEngine:
                         setattr(p, field, True)
                         metadata["milestones_completed"].append(field)
 
-            # Invariant: case is in INVESTIGATING, therefore Gate 2 has
-            # committed path_selection (INV-19 enforces this at the
-            # transition). If we somehow reach this code with
-            # path_selection=None, that's an invariant violation worth
-            # surfacing loudly rather than silently auto-creating one.
-            if (
-                "symptom_verified" in metadata["milestones_completed"]
-                and case.path_selection is None
-            ):
-                raise RuntimeError(
-                    f"INV-19 violation: case {case.case_id} is in "
-                    f"INVESTIGATING with symptom_verified milestone but "
-                    f"path_selection is None. Gate 2 should have committed "
-                    f"path_selection before the transition."
-                )
+            # Post-INV-19 redesign: Gate 2 fires INSIDE INVESTIGATING after
+            # symptom_verified. The state (status=INVESTIGATING,
+            # symptom_verified=True, path_selection=None) is the
+            # Gate-2-pending shape — expected, not an invariant violation.
+            # The dispatcher routes this state to _PRE_PATH_DIAGNOSIS_BLOCK
+            # and the engine-side backstop in _path_conditional_emission_restriction
+            # keeps RCA-side emissions from corrupting the case.
 
             if m.root_cause_likelihood is not None:
                 p.root_cause_likelihood = m.root_cause_likelihood
