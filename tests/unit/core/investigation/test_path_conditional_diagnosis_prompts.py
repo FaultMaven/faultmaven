@@ -247,6 +247,64 @@ class TestDispatcher:
         assert result == _SYMPTOM_VALIDATION_BLOCK
         assert "HYPOTHESIS-EVIDENCE ORDERING" not in result
 
+    def test_unknown_path_enum_value_falls_back_to_symptom_validation(self):
+        """If ``InvestigationPath`` ever grows a third value and the
+        dispatcher isn't updated, the unknown branch must NOT silently
+        emit ``_RCA_DIAGNOSIS_BLOCK``. The fallback is the strictest
+        block (symptom validation, no hypothesis mandate).
+
+        Constructed by patching ``case.path_selection.path`` to a
+        sentinel that isn't equal to either current enum value, which
+        is exactly what an unhandled future enum value would look like
+        at runtime.
+        """
+
+        class _UnknownPath:
+            """Sentinel that isn't equal to any ``InvestigationPath``
+            value. Mimics what a freshly-added enum entry would look
+            like to the existing dispatcher branches."""
+
+            value = "future_path"
+
+            def __eq__(self, other):
+                return False
+
+            def __hash__(self):
+                return id(self)
+
+        case = _make_case(path=InvestigationPath.ROOT_CAUSE)
+        object.__setattr__(case.path_selection, "path", _UnknownPath())
+
+        result = _select_diagnosis_block(case)
+        assert result == _SYMPTOM_VALIDATION_BLOCK
+        assert "HYPOTHESIS-EVIDENCE ORDERING" not in result
+
+    def test_focus_emphasis_zone2_text_absent_from_pre_mitigation_dispatch(self):
+        """``_get_diagnosis_focus_emphasis`` Zone 2 emphasis says
+        "focus on hypotheses explaining the root cause" — exactly what
+        a pre-mitigation MITIGATION_FIRST agent must NOT do. The
+        dispatcher omits ``focus_emphasis`` on non-RCA branches; this
+        test pins that omission so a future refactor that re-adds
+        ``focus_emphasis + _SYMPTOM_VALIDATION_BLOCK`` would be caught.
+        """
+        case = _make_case(
+            path=InvestigationPath.MITIGATION_FIRST,
+            mitigation_completed_at_turn=None,
+        )
+        # Force the Zone-2 state: symptom verified but root cause not yet.
+        # If focus_emphasis were prepended, Zone 2's "hypothesis" framing
+        # would leak in.
+        case.progress.symptom_verified = True
+
+        result = _select_diagnosis_block(case)
+
+        # The Zone-2 emphasis carries the specific phrase
+        # "hypotheses explaining the root cause" — the exact framing
+        # that would mislead a pre-mitigation LLM.
+        assert "hypotheses explaining the root cause" not in result
+        # And the Zone-2 emphasis header itself must not appear.
+        assert "INVESTIGATION PROGRESS: Root cause analysis" not in result
+
 
 # ---------------------------------------------------------------------------
 # end-to-end via get_prompt_for_case — proves the dispatcher reaches the

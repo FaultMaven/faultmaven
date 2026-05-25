@@ -185,7 +185,7 @@ You are an ADVISOR who helps users troubleshoot. You:
 )
 
 # File-selection default — used in _EVIDENCE_GROUNDING_BLOCK, INVESTIGATION_BASE's
-# EVIDENCE FROM ATTACHMENTS preamble, and DIAGNOSIS_INSTRUCTIONS's SEARCH STRATEGY
+# EVIDENCE FROM ATTACHMENTS preamble, and _RCA_DIAGNOSIS_BLOCK's SEARCH STRATEGY
 # file-selection rule. One canonical rule + trigger list across all three sites
 # eliminates the drift risk that previously left the hypothesis-driven trigger
 # missing from two of the three.
@@ -1479,14 +1479,6 @@ problem and identifies what's needed next is a valuable outcome.
 # pre-mitigation cases must not formulate causal hypotheses or classify
 # causal_evidence. RCA work is deferred to post-Gate-3 (where
 # _RCA_DIAGNOSIS_BLOCK fires).
-#
-# This block is the structural fix for the Run 26 deletion-confusion
-# loop: prior to the path-conditional restructure, MITIGATION_FIRST
-# cases received the universal DIAGNOSIS_INSTRUCTIONS with its "MUST
-# create hypothesis" mandate, plus a permissive prefix saying
-# "hypothesis not required." The LLM resolved the contradiction by
-# following the imperative mandate — RCA-style behavior on cases that
-# should have stayed in symptom-validation mode.
 # =============================================================================
 _SYMPTOM_VALIDATION_BLOCK = (
     """
@@ -1540,7 +1532,7 @@ You MAY discuss possible causes in prose — that helps the user understand
 why the mitigation targets what it targets. The constraint is on
 STRUCTURED hypothesis emission, not on conversational reasoning.
 
-**SEARCH STRATEGY (symptom verification only):**
+**SEARCH STRATEGY (symptom verification + mitigation discovery):**
 
 - ``search_file`` (keyword/regex) — when a specific symptom string or
   pattern is known. Default symptom terms: ``error``, ``exception``,
@@ -1548,9 +1540,16 @@ STRUCTURED hypothesis emission, not on conversational reasoning.
   for HTTP status codes use regex ``[45][0-9]{2}``.
 - ``case_evidence_qa`` — semantic query when the concept is clear but
   the exact text is not.
-- Do NOT call ``kb_qa`` here — it returns procedural diagnostic
-  knowledge (mitigation steps for known causes) which is post-Gate-3
-  territory. Save it for RCA work after the user opts in.
+- ``kb_qa`` — look up known mitigation procedures for the symptom.
+  Runbooks expose per-Cause **Mitigation:** fields; matching the
+  symptom signature to a Cause can surface a ready-to-apply
+  stabilization step. Use the **Mitigation:** field to propose the
+  fix; do NOT emit ``hypotheses_to_add`` from the Cause's
+  **Statement:** / **Mechanism:** here — structured hypothesis
+  emission from a runbook Cause is RCA-side work, deferred to
+  post-Gate-3. If no runbook matches, fall back to first-principles
+  mitigation based on the failing component you identified from
+  case evidence.
 
 Use uploaded-file ``<search_map>`` hints first — they are generated from
 actual file content and are the most reliable starting point.
