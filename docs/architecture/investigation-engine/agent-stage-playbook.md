@@ -31,7 +31,7 @@ A **phase** is a distinct operational mode of the investigation. Each phase has 
 | `case.status` | Phase Marker | Phase Name | Prompt Assembly |
 | ------------- | ------------ | ---------- | --------------- |
 | `INQUIRY` | *(none — starting phase)* | INQUIRY | `INQUIRY_TEMPLATE` |
-| `INVESTIGATING` | `problem_statement_confirmed = True` | DIAGNOSIS | `INVESTIGATION_BASE` + `DIAGNOSIS_INSTRUCTIONS` |
+| `INVESTIGATING` | `problem_statement_confirmed = True` | DIAGNOSIS | `INVESTIGATION_BASE` + path-conditional block (see §5 *Path-conditional DIAGNOSIS dispatch*) |
 | `INVESTIGATING` | `mitigation_accepted = True` | MITIGATION | `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS` |
 | `INVESTIGATING` | `solution_accepted = True` | TREATMENT | `INVESTIGATION_BASE` + `TREATMENT_INSTRUCTIONS` |
 | `RESOLVED` | *(none — `case.status` is authoritative)* | TERMINAL | `TERMINAL_TEMPLATE` |
@@ -106,7 +106,7 @@ The GPS map. At any turn the agent reads this table to know where the investigat
 | ----- | ------ | - | -------- | ---- | ------------- | ---------- | - |
 | INQUIRY | `INQUIRY_TEMPLATE` | — | — | — | Starting phase — no gate to enter | — | [INQUIRY](#inquiry-phase) |
 | | | G | `problem_statement_confirmed` | Gate | User confirms problem statement | COOPERATIVE → INVESTIGATING | [INQUIRY](#inquiry-phase) |
-| DIAGNOSIS | `DIAGNOSIS_INSTRUCTIONS` | 1 | `symptom_verified` | Diagnostic | User submits symptom evidence | EVIDENCE | [Zone 1](#zone-1-symptom-verification) |
+| DIAGNOSIS | path-conditional (`_RCA_DIAGNOSIS_BLOCK` or `_SYMPTOM_VALIDATION_BLOCK`) | 1 | `symptom_verified` | Diagnostic | User submits symptom evidence | EVIDENCE | [Zone 1](#zone-1-symptom-verification) |
 | | | 8 | Hypothesis state | Analytical | Row 1 true — agent reasons from context + KB | — | [Zone 2](#zone-2-root-cause-analysis) |
 | | | 2 | `root_cause_identified` | Diagnostic | User submits causal evidence | EVIDENCE | [Zone 2](#zone-2-root-cause-analysis) |
 | | | 3 | `solution_proposed` | Action | Row 2 true — agent reasons to fix | — | [Zone 3](#zone-3-solution-proposal) |
@@ -205,9 +205,9 @@ Establish a shared understanding of the problem before investigation begins. The
 ### DIAGNOSIS Stage
 
 **Phase marker:** `problem_statement_confirmed = True`  
-**Prompt assembly:** `INVESTIGATION_BASE` + `_get_diagnosis_focus_emphasis()` + `DIAGNOSIS_INSTRUCTIONS`
+**Prompt assembly:** `INVESTIGATION_BASE` + `_select_diagnosis_block(case)` — path-conditional dispatch that selects either `_SYMPTOM_VALIDATION_BLOCK` (pre-mitigation MITIGATION_FIRST) or `_RCA_DIAGNOSIS_BLOCK` (ROOT_CAUSE, or MITIGATION_FIRST post-Gate-3), with `_GATE3_PENDING_BLOCK` as a self-contained variant during the Gate 3 hand-off. See §5 *Path-conditional DIAGNOSIS dispatch* for the full routing table.
 
-DIAGNOSIS has three internal zones. Zone membership is determined by the diagnostic variables; the agent reads the current state and applies the corresponding zone duties.
+DIAGNOSIS has three internal zones. Zone membership is determined by the diagnostic variables; the agent reads the current state and applies the corresponding zone duties. The MITIGATION_FIRST path's pre-mitigation segment is restricted to Zone 1 (symptom verification) — Zone 2 (hypothesis formation) is gated behind Gate 3 and only fires after the user opts to continue with RCA.
 
 ---
 
@@ -534,8 +534,10 @@ There is no single complete prompt. Each turn assembles a prompt from a fixed ou
 | Stage / Mode | Outer shell | Behavioral blocks embedded | Stage instruction block | Evidence grounding | Diagnostic reasoning |
 | --- | --- | --- | --- | --- | --- |
 | INQUIRY | `INQUIRY_TEMPLATE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | (built into shell) | ✗ | ✗ |
-| DIAGNOSIS | `INVESTIGATION_BASE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | `focus_emphasis()` + `DIAGNOSIS_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
-| DIAGNOSIS (mitigation-first path) | `INVESTIGATION_BASE` | same | `MITIGATION_FIRST prefix` + `focus_emphasis()` + `DIAGNOSIS_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| DIAGNOSIS (ROOT_CAUSE path) | `INVESTIGATION_BASE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| DIAGNOSIS (MITIGATION_FIRST, pre-mitigation) | `INVESTIGATION_BASE` | same | `_SYMPTOM_VALIDATION_BLOCK` (no hypothesis mandate; `focus_emphasis()` omitted — RCA-flavored emphasis would mislead) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| DIAGNOSIS (MITIGATION_FIRST, Gate 3 pending) | `INVESTIGATION_BASE` | same | `_GATE3_PENDING_BLOCK` (self-contained; no RCA block underneath) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| DIAGNOSIS (MITIGATION_FIRST, post-Gate-3) | `INVESTIGATION_BASE` | same | `_POST_MITIGATION_RCA_PREFIX` + `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
 | MITIGATION | `INVESTIGATION_BASE` | same | `MITIGATION_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
 | TREATMENT | `INVESTIGATION_BASE` | same | `TREATMENT_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
 | Knowledge query (mode bypass) | `INVESTIGATION_BASE` | same | `KNOWLEDGE_QUERY_INSTRUCTIONS` | ✗ (suppressed) | ✗ (suppressed) |
@@ -557,13 +559,29 @@ Stage instructions are injected as `{adaptive_instructions}` in `INVESTIGATION_B
 | Stage | Instruction block | Note |
 | ----- | ----------------- | ---- |
 | INQUIRY | `INQUIRY_TEMPLATE` (YOUR TASK section) | Self-contained shell |
-| DIAGNOSIS | `_get_diagnosis_focus_emphasis(progress)` + `DIAGNOSIS_INSTRUCTIONS` | Emphasis prepended at assembly time |
+| DIAGNOSIS | `_select_diagnosis_block(case)` | Path-conditional dispatch (see below) |
 | MITIGATION | `MITIGATION_INSTRUCTIONS` | Injected as `{adaptive_instructions}` |
 | TREATMENT | `TREATMENT_INSTRUCTIONS` | Injected as `{adaptive_instructions}` |
 | TERMINAL | `TERMINAL_TEMPLATE` | Self-contained shell |
 | Knowledge query | `KNOWLEDGE_QUERY_INSTRUCTIONS` | Replaces stage dispatch entirely |
 
-`_get_diagnosis_focus_emphasis()` maps the three DIAGNOSIS zones plus the pending state to a contextual status signal prepended to `DIAGNOSIS_INSTRUCTIONS`:
+#### Path-conditional DIAGNOSIS dispatch
+
+`_select_diagnosis_block(case)` chooses the DIAGNOSIS prompt content based on `case.path_selection`. The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is physically contained inside `_RCA_DIAGNOSIS_BLOCK` exclusively — pre-mitigation MITIGATION_FIRST cases never see it, eliminating the conflicting-signal problem (Run 26 root cause).
+
+| `case.path_selection` state | Block selected | Includes hypothesis mandate? |
+| --------------------------- | -------------- | ---------------------------- |
+| ROOT_CAUSE | `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` | ✓ |
+| MITIGATION_FIRST, pre-mitigation (`mitigation_completed_at_turn is None`) | `_SYMPTOM_VALIDATION_BLOCK` (symptom validation only; explicitly forbids `hypotheses_to_add` and `causal_evidence` emission) | ✗ |
+| MITIGATION_FIRST, Gate 3 pending (mitigation verified, user hasn't chosen continue-vs-close) | `_GATE3_PENDING_BLOCK` (self-contained; the LLM is gated this turn — no RCA block underneath) | ✗ |
+| MITIGATION_FIRST, post-Gate-3 (user opted to continue RCA) | `_POST_MITIGATION_RCA_PREFIX` + `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` | ✓ |
+| `None` (defensive — post-INV-19 shouldn't happen) | `_SYMPTOM_VALIDATION_BLOCK` | ✗ |
+
+Both `_SYMPTOM_VALIDATION_BLOCK` and `_RCA_DIAGNOSIS_BLOCK` compose from shared sub-blocks (`_DIAGNOSIS_ZONES_PREAMBLE`, `_EVIDENCE_REQUEST_FORMAT_BLOCK`, `_URGENCY_RECOGNITION_BLOCK`) so changes to shared concerns propagate to both consumers. RCA-only sub-blocks (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`, KB-runbook authority, RCA progression, decision tree, refinement, stall handoff) live inside `_RCA_DIAGNOSIS_BLOCK` only.
+
+`_get_diagnosis_focus_emphasis()` is included on RCA-side branches (ROOT_CAUSE, MITIGATION_FIRST post-Gate-3) but omitted from `_SYMPTOM_VALIDATION_BLOCK` and `_GATE3_PENDING_BLOCK` — Zone 2's "focus on hypotheses for root cause" would mislead pre-mitigation or gate-pending LLMs.
+
+`_get_diagnosis_focus_emphasis()` maps the three DIAGNOSIS zones plus the pending state to a contextual status signal prepended to the RCA block:
 
 | Zone | Condition | Emphasis |
 | ---- | --------- | -------- |

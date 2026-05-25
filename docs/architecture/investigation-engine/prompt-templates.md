@@ -39,7 +39,7 @@ To prevent drift between templates that share behavior, the module defines sever
 | `_DATA_CITATION_RULE` | "Cite actual values from the structural index" specificity rule | INQUIRY TRIAGE SUMMARY + INVESTIGATION_BASE WORKING WITH EVIDENCE DATA |
 | `_FOLLOW_UP_SUGGESTIONS_BLOCK` | COOPERATIVE / EVIDENCE / FREE_SPEECH suggestion definitions | INQUIRY + INVESTIGATION_BASE |
 | `_AMBIGUITY_FIRST_RULE` | State-change ambiguity rule (require explicit directive) | INQUIRY + TREATMENT_INSTRUCTIONS |
-| `_FILE_SELECTION_DEFAULT` | "Default search target: the file uploaded this turn" rule | `_EVIDENCE_GROUNDING_BLOCK` + DIAGNOSIS_INSTRUCTIONS SEARCH STRATEGY |
+| `_FILE_SELECTION_DEFAULT` | "Default search target: the file uploaded this turn" rule | `_EVIDENCE_GROUNDING_BLOCK` + `_RCA_DIAGNOSIS_BLOCK` SEARCH STRATEGY |
 | `_EVIDENCE_GROUNDING_BLOCK` | Anti-hallucination hard constraints, USING EVIDENCE DATA by question type, 4-step procedure, EXAMPLES | INVESTIGATION_BASE via `{evidence_grounding}` placeholder |
 | `_DIAGNOSTIC_REASONING_BLOCK` | OBSERVATION → ANALYSIS → CONCLUSION + confidence calibration + no premature resolution + PROHIBITED PATTERNS | INVESTIGATION_BASE via `{diagnostic_reasoning}` placeholder |
 
@@ -127,15 +127,19 @@ Items 6–9 form a progression: user **can't** → user **contradicts** → user
 
 ### 3.2 Adaptive instructions
 
-The `{adaptive_instructions}` placeholder is filled by one of five instruction strings depending on stage and mode:
+The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(case)` on DIAGNOSIS turns (path-conditional dispatch) and by stage-specific constants elsewhere:
 
 | Stage / mode | Adaptive instructions |
 | --- | --- |
-| DIAGNOSIS | `_get_diagnosis_focus_emphasis(progress)` + `DIAGNOSIS_INSTRUCTIONS` |
-| DIAGNOSIS (mitigation-first path) | `"PATH: MITIGATION_FIRST..."` + `_get_diagnosis_focus_emphasis(progress)` + `DIAGNOSIS_INSTRUCTIONS` |
+| DIAGNOSIS (ROOT_CAUSE) | `_get_diagnosis_focus_emphasis(progress)` + `_RCA_DIAGNOSIS_BLOCK` |
+| DIAGNOSIS (MITIGATION_FIRST, pre-mitigation) | `_SYMPTOM_VALIDATION_BLOCK` (hypothesis emission explicitly forbidden; `focus_emphasis` omitted) |
+| DIAGNOSIS (MITIGATION_FIRST, Gate 3 pending) | `_GATE3_PENDING_BLOCK` (self-contained — the LLM is gated this turn) |
+| DIAGNOSIS (MITIGATION_FIRST, post-Gate-3) | `_POST_MITIGATION_RCA_PREFIX` + `_get_diagnosis_focus_emphasis(progress)` + `_RCA_DIAGNOSIS_BLOCK` |
 | MITIGATION | `MITIGATION_INSTRUCTIONS` |
 | TREATMENT | `TREATMENT_INSTRUCTIONS` |
 | Knowledge query | `KNOWLEDGE_QUERY_INSTRUCTIONS` |
+
+`_RCA_DIAGNOSIS_BLOCK` and `_SYMPTOM_VALIDATION_BLOCK` are both composed from a shared vocabulary of sub-blocks (`_DIAGNOSIS_ZONES_PREAMBLE`, `_EVIDENCE_REQUEST_FORMAT_BLOCK`, `_URGENCY_RECOGNITION_BLOCK`). The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is contained inside `_RCA_DIAGNOSIS_BLOCK` exclusively — pre-mitigation MITIGATION_FIRST cases never see it. See `agent-stage-playbook.md` §5 *Path-conditional DIAGNOSIS dispatch* for the full routing rationale.
 
 `_get_diagnosis_focus_emphasis(progress)` prepends a Zone-aware progress signal:
 
@@ -200,7 +204,7 @@ The current design prioritizes signal density over example coverage in shared bl
 
 - **`_EVIDENCE_GROUNDING_BLOCK` USING EVIDENCE DATA section** is condensed — 6 question types (characterization / retrieval / count / temporal / file-internal identifier) with one-line rules each, rather than per-type runbooks. Three load-bearing caveats are preserved verbatim: `search_file` returns max 20 results by default; the IP auth breakdown table vs. "Distinct IPs" line-occurrence distinction; and the "internal/undocumented identifier" callout.
 - **CONCISENESS** is a single sentence rather than a bullet list — the bullet list version ironically diluted its own message.
-- **DIAGNOSIS_INSTRUCTIONS retains its own `FOLLOW-UP AFTER USER ACTIONS` block** (Zone 1/2-scoped with Zone 3 exclusion). The general `FOLLOW-UP REQUIREMENTS` block that previously appeared in `INVESTIGATION_BASE` was removed because each stage handles result-verification in its own playbook (MITIGATION's *Track Mitigation Progress*, TREATMENT's *Verify Result*). The KEY PRINCIPLES `CHECK BACK ON SUGGESTED ACTIONS` bullet covers the cross-stage gap where the user's reply doesn't reference a prior diagnostic suggestion.
+- **`_RCA_DIAGNOSIS_BLOCK` retains its own `FOLLOW-UP AFTER USER ACTIONS` block** (Zone 1/2-scoped with Zone 3 exclusion). The general `FOLLOW-UP REQUIREMENTS` block that previously appeared in `INVESTIGATION_BASE` was removed because each stage handles result-verification in its own playbook (MITIGATION's *Track Mitigation Progress*, TREATMENT's *Verify Result*). The KEY PRINCIPLES `CHECK BACK ON SUGGESTED ACTIONS` bullet covers the cross-stage gap where the user's reply doesn't reference a prior diagnostic suggestion.
 
 ---
 
