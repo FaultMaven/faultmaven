@@ -567,19 +567,20 @@ Stage instructions are injected as `{adaptive_instructions}` in `INVESTIGATION_B
 
 #### Path-conditional DIAGNOSIS dispatch
 
-`_select_diagnosis_block(case)` chooses the DIAGNOSIS prompt content based on `case.path_selection`. The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is physically contained inside `_RCA_DIAGNOSIS_BLOCK` exclusively — pre-mitigation MITIGATION_FIRST cases never see it. This isolation is the structural fix for the conflicting-signal problem (the prompt cannot mandate hypothesis creation on a path where the engine forbids it).
+`_select_diagnosis_block(case)` chooses the DIAGNOSIS prompt content based on `case.path_selection`. The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is physically contained inside `_RCA_DIAGNOSIS_BLOCK` exclusively — pre-path and pre-mitigation cases never see it. This isolation is the structural fix for the conflicting-signal problem (the prompt cannot mandate hypothesis creation on a path where the engine forbids it).
 
 | `case.path_selection` state | Block selected | Includes hypothesis mandate? |
 | --------------------------- | -------------- | ---------------------------- |
+| `None` (Gate 2 not yet committed — INVESTIGATING + pre-`symptom_verified` or awaiting Gate 2 click) | `_PRE_PATH_DIAGNOSIS_BLOCK` (symptom validation only; forbids `hypotheses_to_add`, `causal_evidence`, AND `solutions_to_add` emission) | ✗ |
 | ROOT_CAUSE | `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` | ✓ |
-| MITIGATION_FIRST, pre-mitigation (`mitigation_completed_at_turn is None`) | `_SYMPTOM_VALIDATION_BLOCK` (symptom validation only; explicitly forbids `hypotheses_to_add` and `causal_evidence` emission) | ✗ |
+| MITIGATION_FIRST, pre-mitigation (`mitigation_completed_at_turn is None`) | `_SYMPTOM_VALIDATION_BLOCK` (symptom validation only; forbids `hypotheses_to_add` and `causal_evidence` — solutions are allowed for mitigation discovery) | ✗ |
 | MITIGATION_FIRST, Gate 3 pending (mitigation verified, user hasn't chosen continue-vs-close) | `_GATE3_PENDING_BLOCK` (self-contained; the LLM is gated this turn — no RCA block underneath) | ✗ |
 | MITIGATION_FIRST, post-Gate-3 (user opted to continue RCA) | `_POST_MITIGATION_RCA_PREFIX` + `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` | ✓ |
-| `None` (defensive — post-INV-19 shouldn't happen) | `_SYMPTOM_VALIDATION_BLOCK` | ✗ |
+| Unknown enum value (defensive fallback) | `_PRE_PATH_DIAGNOSIS_BLOCK` (strictest stance) | ✗ |
 
-Both `_SYMPTOM_VALIDATION_BLOCK` and `_RCA_DIAGNOSIS_BLOCK` compose from shared sub-blocks (`_DIAGNOSIS_ZONES_PREAMBLE`, `_EVIDENCE_REQUEST_FORMAT_BLOCK`, `_URGENCY_RECOGNITION_BLOCK`) so changes to shared concerns propagate to both consumers. RCA-only sub-blocks (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`, KB-runbook authority, RCA progression, decision tree, refinement, stall handoff) live inside `_RCA_DIAGNOSIS_BLOCK` only.
+All three symptom-validation-style blocks (`_PRE_PATH_DIAGNOSIS_BLOCK`, `_SYMPTOM_VALIDATION_BLOCK`, `_RCA_DIAGNOSIS_BLOCK`) compose from the shared sub-blocks (`_DIAGNOSIS_ZONES_PREAMBLE`, `_EVIDENCE_REQUEST_FORMAT_BLOCK`, `_URGENCY_RECOGNITION_BLOCK`) so changes to shared concerns propagate to all consumers. RCA-only sub-blocks (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`, KB-runbook authority, RCA progression, decision tree, refinement, stall handoff) live inside `_RCA_DIAGNOSIS_BLOCK` only.
 
-`_get_diagnosis_focus_emphasis()` is included on RCA-side branches (ROOT_CAUSE, MITIGATION_FIRST post-Gate-3) but omitted from `_SYMPTOM_VALIDATION_BLOCK` and `_GATE3_PENDING_BLOCK` — Zone 2's "focus on hypotheses for root cause" would mislead pre-mitigation or gate-pending LLMs.
+`_get_diagnosis_focus_emphasis()` is included on RCA-side branches (ROOT_CAUSE, MITIGATION_FIRST post-Gate-3) but omitted from `_PRE_PATH_DIAGNOSIS_BLOCK`, `_SYMPTOM_VALIDATION_BLOCK`, and `_GATE3_PENDING_BLOCK` — Zone 2's "focus on hypotheses for root cause" would mislead pre-path, pre-mitigation, or gate-pending LLMs.
 
 `_get_diagnosis_focus_emphasis()` maps the three DIAGNOSIS zones plus the pending state to a contextual status signal prepended to the RCA block:
 

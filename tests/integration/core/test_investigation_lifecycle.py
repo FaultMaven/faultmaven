@@ -82,10 +82,11 @@ def _make_investigating_case(**overrides) -> Case:
 
     Pydantic validates INVESTIGATING requires confirmed problem statement
     and investigation commitment at construction time, so we pass a
-    pre-configured InquiryData in the constructor. Post-INV-19, an
-    INVESTIGATING case also requires a committed ``path_selection``
-    (existence == Gate 2 commit); the engine surfaces a RuntimeError on
-    milestone progression otherwise.
+    pre-configured InquiryData in the constructor. This fixture defaults
+    to a fully-pathed case (Gate 2 already committed) — tests exercising
+    pre-path behavior should override ``path_selection=None`` explicitly.
+    Post-INV-19 redesign, the pre-path window (INVESTIGATING with
+    ``path_selection=None``) is a legitimate state.
     """
     description = overrides.pop(
         "description",
@@ -192,12 +193,12 @@ def _inquiry_response_high_urgency() -> InquiryResponse:
 def _inquiry_response_user_confirms() -> InquiryResponse:
     """Inquiry response where user confirmed the problem statement (Gate 1).
 
-    Post slice-2 (INV-19) this closes Gate 1 only — the case stays in
-    INQUIRY with Gate 2 pending until the user clicks a path-selection
-    suggestion. See _inquiry_response_gate2_ack for the Gate 2 turn.
+    Post-INV-19 redesign Gate 1 alone fires the INQUIRY → INVESTIGATING
+    transition. Gate 2 (path selection) opens later, inside INVESTIGATING,
+    after the agent sets ``symptom_verified=True``.
     """
     return InquiryResponse(
-        agent_response=("Confirmed. Recommend a path forward shortly."),
+        agent_response=("Confirmed. Starting investigation."),
         state_updates=InquiryResponse.InquiryStateUpdate(
             user_confirmed_investigation=True,
         ),
@@ -232,20 +233,24 @@ def _inquiry_response_high_urgency_with_confirmation() -> InquiryResponse:
     )
 
 
-def _inquiry_response_gate2_ack() -> InquiryResponse:
-    """Inquiry response on the Gate-2-confirmation turn.
+def _gate2_click_diagnosis_ack() -> InvestigationResponse_Diagnosis:
+    """Diagnosis response on the Gate-2-click turn.
 
-    The case is still in INQUIRY when the PATH_SELECTION intent fires
-    (the engine creates case.path_selection — its existence is the Gate 2
-    commit signal — and defers the actual transition to
-    _check_automatic_transitions). The LLM is invoked once more before the
-    transition fires; this minimal acknowledgment response covers that turn
-    without changing inquiry state. INV-19 then sees both gates passed and
-    transitions the case to INVESTIGATING.
+    Post-INV-19 redesign Gate 2 fires inside INVESTIGATING after
+    ``symptom_verified=True``. The click handler creates
+    ``case.path_selection``; the LLM is invoked once more on that turn
+    with the INVESTIGATING/Diagnosis schema. Minimal acknowledgement
+    response — no new milestones, no new evidence.
     """
-    return InquiryResponse(
-        agent_response="Starting investigation now.",
-        state_updates=InquiryResponse.InquiryStateUpdate(),
+    return InvestigationResponse_Diagnosis(
+        agent_response="Proceeding with the chosen path.",
+        internal_reasoning=InternalReasoning(
+            evidence_analyzed=[],
+            milestone_justifications={},
+        ),
+        state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
+            outcome=TurnOutcome.CONVERSATION,
+        ),
     )
 
 
@@ -440,19 +445,19 @@ class TestInvestigationLifecycle:
 
         Design: Dropdown = message. The dropdown does NOT bypass the agent.
         It injects a pre-composed message and lets the LLM handle the
-        multi-turn problem statement flow. Slice 2/INV-19 added Gate 2
-        (path selection) so the transition now requires both Gate 1 (LLM
-        confirms with user_confirmed_investigation + urgency signals) and
-        Gate 2 (user clicks a path-selection suggestion via PATH_SELECTION
-        intent).
+        multi-turn problem statement flow. Post-INV-19 redesign, Gate 1
+        alone fires the INQUIRY → INVESTIGATING transition; Gate 2 (path
+        selection) opens later, inside INVESTIGATING, after the agent
+        sets ``symptom_verified=True`` from real evidence.
         """
         case = _make_inquiry_case(current_turn=3)
         case.inquiry.proposed_problem_statement = "API latency spikes with p99 > 5s"
         await case_repo.save(case)
 
         # Turn 1: LLM confirms problem AND emits urgency signals so the
-        # engine can compute the path recommendation. Gate 1 closes;
-        # Gate 2 opens; case stays in INQUIRY.
+        # engine can compute the path recommendation later. Gate 1 closes;
+        # case transitions immediately to INVESTIGATING. path_selection
+        # stays None (Gate 2 hasn't opened yet — symptom_verified is False).
         with patch.object(
             engine,
             "_generate_structured_output",
@@ -466,22 +471,37 @@ class TestInvestigationLifecycle:
             )
 
         after_gate1 = result["case_updated"]
-        assert after_gate1.status == CaseStatus.INQUIRY  # INV-19
+        assert after_gate1.status == CaseStatus.INVESTIGATING
         assert after_gate1.inquiry.problem_statement_confirmed is True
-        # path_selection stays None during INQUIRY — Gate 2 commit creates it.
         assert after_gate1.path_selection is None
+        assert after_gate1.progress.symptom_verified is False
 
-        # Turn 2: user clicks the path-selection suggestion (Gate 2). Both
-        # gates now pass; _check_automatic_transitions fires the transition.
-        # The intent carries the chosen path explicitly (recommendation is
-        # rendered on-demand into the affordance, not stored on the case).
+        # Turn 2: agent verifies the symptom from real evidence. symptom_verified
+        # flips to True; Gate 2 opens. path_selection still None.
         with patch.object(
             engine,
             "_generate_structured_output",
-            return_value=_inquiry_response_gate2_ack(),
+            return_value=_investigation_verification_response(),
         ):
             result = await engine.process_turn(
-                after_gate1,
+                after_gate1, "Here are the metrics: p99=5200ms"
+            )
+
+        after_verify = result["case_updated"]
+        assert after_verify.status == CaseStatus.INVESTIGATING
+        assert after_verify.progress.symptom_verified is True
+        assert after_verify.path_selection is None
+
+        # Turn 3: user clicks the path-selection suggestion (Gate 2). The
+        # click handler creates case.path_selection. The recommendation is
+        # rendered on-demand into the affordance, not stored on the case.
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_gate2_click_diagnosis_ack(),
+        ):
+            result = await engine.process_turn(
+                after_verify,
                 "Let's start.",
                 intent_type="path_selection",
                 intent_data={"investigation_path": "mitigation_first"},
@@ -541,10 +561,10 @@ class TestInvestigationLifecycle:
 
         # === Turn 2: Gate 1 close via explicit intent (with urgency signals) ===
         # Dropdown routes through normal INQUIRY flow. LLM confirms +
-        # supplies urgency signals; the engine renders the Gate 2
-        # recommendation on-demand into the affordance pair (no auto-write
-        # to case.path_selection). Post-INV-19 the case stays in INQUIRY with
-        # Gate 2 pending until the user clicks a path-selection suggestion.
+        # supplies urgency signals (urgency feeds the Gate 2 recommendation
+        # later). Post-INV-19 redesign Gate 1 alone fires the transition;
+        # the case enters INVESTIGATING with path_selection=None and
+        # symptom_verified=False (Gate 2 not yet open).
         case.current_turn = 2
         with patch.object(
             engine,
@@ -558,15 +578,28 @@ class TestInvestigationLifecycle:
                 intent_data={"to_status": "investigating", "from_status": "inquiry"},
             )
         case = result["case_updated"]
-        assert case.status == CaseStatus.INQUIRY  # INV-19: Gate 2 still pending
+        assert case.status == CaseStatus.INVESTIGATING
         assert case.path_selection is None
+        assert case.progress.symptom_verified is False
 
-        # === Turn 3: User clicks Gate 2 path-selection suggestion → transition fires ===
+        # === Turn 3: Agent verifies symptom from real evidence → Gate 2 opens ===
         case.current_turn = 3
         with patch.object(
             engine,
             "_generate_structured_output",
-            return_value=_inquiry_response_gate2_ack(),
+            return_value=_investigation_verification_response(),
+        ):
+            result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
+        case = result["case_updated"]
+        assert case.progress.symptom_verified is True
+        assert case.path_selection is None  # Gate 2 open, not yet clicked
+
+        # === Turn 4: User clicks Gate 2 path-selection suggestion → path commits ===
+        case.current_turn = 4
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_gate2_click_diagnosis_ack(),
         ):
             result = await engine.process_turn(
                 case,
@@ -576,17 +609,7 @@ class TestInvestigationLifecycle:
             )
         case = result["case_updated"]
         assert case.status == CaseStatus.INVESTIGATING
-
-        # === Turn 4: Investigation with milestone progress ===
-        case.current_turn = 4
-        with patch.object(
-            engine,
-            "_generate_structured_output",
-            return_value=_investigation_verification_response(),
-        ):
-            result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
-        case = result["case_updated"]
-        assert case.progress.symptom_verified is True
+        assert case.path_selection is not None
 
         # === Turn 5: Agent proposes resolution ===
         case.current_turn = 5
@@ -620,7 +643,12 @@ class TestInvestigationLifecycle:
         assert persisted.status == CaseStatus.RESOLVED
 
     async def test_high_urgency_stays_inquiry_until_confirmed(self, engine, case_repo):
-        """HIGH urgency + ongoing stays INQUIRY → user confirms → transitions to INVESTIGATING."""
+        """HIGH urgency + ongoing stays INQUIRY → user confirms → transitions to INVESTIGATING.
+
+        Post-INV-19 redesign: Gate 1 alone fires the INQUIRY → INVESTIGATING
+        transition. Gate 2 (path selection) opens later, inside INVESTIGATING,
+        after the agent sets ``symptom_verified=True``.
+        """
         case = _make_inquiry_case(current_turn=1)
         await case_repo.save(case)
 
@@ -637,9 +665,9 @@ class TestInvestigationLifecycle:
         assert updated1.inquiry.problem_statement_confirmed is False
         assert updated1.inquiry.decided_to_investigate is False
 
-        # Turn 2: User confirms → Gate 1 closes; case stays in INQUIRY with
-        # Gate 2 pending. case.path_selection is NOT written during INQUIRY —
-        # the recommendation is rendered on-demand into the affordance pair.
+        # Turn 2: User confirms → Gate 1 closes → case transitions immediately
+        # to INVESTIGATING. path_selection is still None (Gate 2 hasn't
+        # opened — symptom_verified is False).
         with patch.object(
             engine,
             "_generate_structured_output",
@@ -650,28 +678,128 @@ class TestInvestigationLifecycle:
             )
 
         updated2 = result2["case_updated"]
-        # INV-19: Gate 1 done but Gate 2 still pending — case stays in INQUIRY.
-        assert updated2.status == CaseStatus.INQUIRY
+        assert updated2.status == CaseStatus.INVESTIGATING
         assert updated2.inquiry.problem_statement_confirmed is True
         assert updated2.inquiry.decided_to_investigate is True
         assert updated2.path_selection is None
+        assert updated2.progress.symptom_verified is False
 
-        # Turn 3: User clicks the recommended Gate 2 suggestion → transition fires.
+        # Turn 3: Agent verifies symptom from real evidence → Gate 2 opens.
         with patch.object(
             engine,
             "_generate_structured_output",
-            return_value=_inquiry_response_gate2_ack(),
+            return_value=_investigation_verification_response(),
         ):
             result3 = await engine.process_turn(
-                updated2,
+                updated2, "Here are the metrics: p99=5200ms"
+            )
+
+        updated3 = result3["case_updated"]
+        assert updated3.progress.symptom_verified is True
+        assert updated3.path_selection is None  # Gate 2 open, not yet clicked
+
+        # Turn 4: User clicks the recommended Gate 2 suggestion → path commits.
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_gate2_click_diagnosis_ack(),
+        ):
+            result4 = await engine.process_turn(
+                updated3,
                 "Let's go with the recommended path.",
                 intent_type="path_selection",
                 intent_data={"investigation_path": "mitigation_first"},
             )
 
-        updated3 = result3["case_updated"]
-        assert updated3.status == CaseStatus.INVESTIGATING
-        assert updated3.path_selection is not None  # Gate 2 committed
+        updated4 = result4["case_updated"]
+        assert updated4.status == CaseStatus.INVESTIGATING
+        assert updated4.path_selection is not None  # Gate 2 committed
+
+    async def test_post_redesign_gate2_end_to_end_walk(self, engine, case_repo):
+        """End-to-end walk through the post-INV-19 Gate-2-in-INVESTIGATING flow.
+
+        Companion to the predicate-isolation unit tests in
+        ``tests/unit/core/investigation/``: those pin each handler in
+        isolation; this pins the seams BETWEEN them so a regression at
+        any composition point (transition timing, dispatcher routing,
+        click-handler gating, milestone application) surfaces here.
+
+        Turn sequence:
+          T1: User describes problem → LLM proposes a statement (no confirm yet);
+              case stays in INQUIRY (Gate 1 open).
+          T2: User confirms; LLM sets ``user_confirmed_investigation=True``;
+              Gate 1 closes → case transitions IMMEDIATELY to INVESTIGATING
+              with ``path_selection=None`` and ``symptom_verified=False``
+              (Gate 2 not yet open).
+          T3: Agent inspects evidence and sets ``symptom_verified=True``;
+              Gate 2 opens. ``path_selection`` stays None (waiting on click).
+          T4: User clicks the Gate 2 path-selection button; click handler
+              creates ``case.path_selection``. Case stays in INVESTIGATING.
+        """
+        case = _make_inquiry_case(current_turn=1)
+        await case_repo.save(case)
+
+        # ---- T1: LLM proposes problem statement, no confirmation yet ----
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_inquiry_response_high_urgency(),
+        ):
+            r1 = await engine.process_turn(case, "Our API is down in production!")
+        case = r1["case_updated"]
+        assert case.status == CaseStatus.INQUIRY
+        assert case.inquiry.problem_statement_confirmed is False
+        assert case.path_selection is None
+
+        # ---- T2: User confirms → Gate 1 closes → transition to INVESTIGATING ----
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_inquiry_response_user_confirms(),
+        ):
+            r2 = await engine.process_turn(case, "Yes, please investigate.")
+        case = r2["case_updated"]
+        assert case.status == CaseStatus.INVESTIGATING
+        assert case.inquiry.problem_statement_confirmed is True
+        assert case.path_selection is None
+        assert case.progress.symptom_verified is False
+        # The transition is recorded in action_history at this turn.
+        assert any(t.to_status == CaseStatus.INVESTIGATING for t in case.action_history)
+
+        # ---- T3: Agent verifies the symptom from real evidence ----
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_investigation_verification_response(),
+        ):
+            r3 = await engine.process_turn(
+                case, "Here are the metrics from prod: p99=5200ms"
+            )
+        case = r3["case_updated"]
+        assert case.status == CaseStatus.INVESTIGATING
+        assert case.progress.symptom_verified is True
+        # path_selection STILL None — Gate 2 is open but the user hasn't clicked.
+        assert case.path_selection is None
+
+        # ---- T4: User clicks Gate 2 path-selection button → path commits ----
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_gate2_click_diagnosis_ack(),
+        ):
+            r4 = await engine.process_turn(
+                case,
+                "Let's go with mitigation-first.",
+                intent_type="path_selection",
+                intent_data={"investigation_path": "mitigation_first"},
+            )
+        case = r4["case_updated"]
+        assert case.status == CaseStatus.INVESTIGATING
+        assert case.path_selection is not None
+        assert case.path_selection.path == InvestigationPath.MITIGATION_FIRST
+        # The click occurred AFTER symptom_verified — the engine's click-handler
+        # status+symptom gate was satisfied.
+        assert case.progress.symptom_verified is True
 
     async def test_close_from_inquiry_via_intent(self, engine, case_repo):
         """Close case from INQUIRY via dropdown proposes pending transition."""
@@ -724,16 +852,18 @@ class TestCheckpointing:
     ):
         """Checkpoint created before INQUIRY → INVESTIGATING transition.
 
-        Post-INV-19 the transition fires on the Gate 2 turn (path-selection
-        click), not on the Gate 1 turn. The checkpoint is created at the
-        same chokepoint (_transition_to_investigating), so the assertion
-        holds — just one turn later in the flow.
+        Post-INV-19 redesign the transition fires on the Gate 1 turn
+        (problem statement confirmation). Gate 2 (path selection) opens
+        later, inside INVESTIGATING, after ``symptom_verified=True``.
+        The checkpoint is created at the same chokepoint
+        (``_transition_to_investigating``).
         """
         case = _make_inquiry_case(current_turn=2)
         case.inquiry.proposed_problem_statement = "API latency spike"
         await case_repo.save(case)
 
-        # Turn 1: Gate 1 close + urgency signals via dropdown intent.
+        # Turn 1: Gate 1 close via dropdown intent → transition fires;
+        # checkpoint is created inside _transition_to_investigating.
         with patch.object(
             engine,
             "_generate_structured_output",
@@ -746,27 +876,8 @@ class TestCheckpointing:
                 intent_data={"to_status": "investigating", "from_status": "inquiry"},
             )
 
-        after_gate1 = result["case_updated"]
-        assert after_gate1.status == CaseStatus.INQUIRY
-        # path_selection is None during INQUIRY (recommendation rendered
-        # on-demand). Gate 2 commit creates it on the next turn.
-        assert after_gate1.path_selection is None
-
-        # Turn 2: Gate 2 click → transition fires; checkpoint is created
-        # inside _transition_to_investigating.
-        with patch.object(
-            engine,
-            "_generate_structured_output",
-            return_value=_inquiry_response_gate2_ack(),
-        ):
-            result = await engine.process_turn(
-                after_gate1,
-                "Start it.",
-                intent_type="path_selection",
-                intent_data={"investigation_path": "mitigation_first"},
-            )
-
         assert result["case_updated"].status == CaseStatus.INVESTIGATING
+        assert result["case_updated"].path_selection is None
 
         # Verify checkpoint was created
         checkpoints = await case_repo.get_checkpoints(case.case_id)

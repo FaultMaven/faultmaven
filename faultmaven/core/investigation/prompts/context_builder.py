@@ -48,10 +48,10 @@ from faultmaven.modules.case.domain.services.investigation_router import (
 # state block's INSTRUCTION paragraph didn't cover:
 #
 #   (a) Structured-emission constraints: while Gate 2 is pending, the
-#       LLM must not emit hypotheses_to_add, classify evidence as any
-#       category, or emit solutions_to_add. The case is still in
-#       INQUIRY; investigation-stage writes are out of scope until the
-#       user picks a path.
+#       LLM must not emit ``hypotheses_to_add``, classify evidence as
+#       ``causal_evidence``, or emit ``solutions_to_add``. Post-redesign
+#       the case is in INVESTIGATING (Gate 1 has closed) but no path
+#       has been committed; deeper investigation writes are gated.
 #
 #   (b) Behavior when the user provides data without picking: tell the
 #       LLM to acknowledge briefly THEN re-assert the path question.
@@ -64,24 +64,31 @@ from faultmaven.modules.case.domain.services.investigation_router import (
 # (RECOMMENDED_PATH:, AUTO_SELECTED:, RATIONALE:), the reminder is
 # imperative.
 #
-# Engine-side backstop is unchanged: ``_path_selection_suggestions`` in
-# milestone_engine still emits the two COOPERATIVE buttons every turn
-# until Gate 2 commits, so the user always has a clickable path
-# regardless of LLM compliance. This reminder is the prompt-layer
-# reinforcement called out in INV-19.
+# Engine-side backstop is structurally enforced: ``_is_pre_path_investigating``
+# →  ``_path_conditional_emission_restriction`` rejects the three forbidden
+# emissions and writes ``system_feedback`` for next-turn correction.
+# ``_path_selection_suggestions`` continues to emit the deterministic
+# two-button pair every turn until the user clicks. The reminder is the
+# prompt-layer reinforcement called out in INV-19; the structural ban is
+# the load-bearing guarantee.
 #
 # Lives in context_builder (not templates.py) because templates.py
 # already imports context_builder; the reverse direction would create
 # a cycle. Single-consumer constant; tests import it from this module.
 _GATE2_PENDING_REMINDER = """\
 <gate2_pending_instructions>
-Until ``case.path_selection`` is committed, you are still in INQUIRY.
-Investigation-stage writes are out of scope:
-- DO NOT emit ``hypotheses_to_add``.
-- DO NOT classify any evidence as ``causal_evidence`` (or any other
-  category — no evidence records are created during INQUIRY).
-- DO NOT emit ``solutions_to_add``. No mitigation or solution proposal
-  is appropriate until the path is picked.
+You have set ``symptom_verified=True``; Gate 2 (the path-selection
+choice) is now open. Until ``case.path_selection`` is committed, deeper
+investigation writes are out of scope:
+- DO NOT emit ``hypotheses_to_add``. Hypothesis formation belongs
+  inside a committed path, not before.
+- DO NOT classify any evidence as ``causal_evidence``. Causal claims
+  presuppose a hypothesis (INV-17), and hypothesis emission is gated
+  here. Only ``symptom_evidence`` is in scope until the path commits.
+- DO NOT emit ``solutions_to_add``. Mitigation and solution proposals
+  belong inside a committed path (the mitigation-first path proposes
+  a workaround; the root-cause-first path proposes a fix after
+  hypothesis validation).
 
 If the user provides data this turn without picking a path, acknowledge
 what they shared in ONE short sentence — do not analyze it, do not
@@ -2062,18 +2069,25 @@ def build_investigation_context(
                     )
             inquiry_state_str += "</inquiry_state>"
 
-    # Gate 2 pending: Gate 1 has passed but case.path_selection is None
-    # (the field is only written by the Gate 2 click handler — existence
-    # IS the commit, see INV-19). Recommendation is computed on-demand
-    # here, matching what the deterministic COOPERATIVE suggestion pair
-    # surfaces (_path_selection_suggestions in milestone_engine). The
-    # prompt instructs the LLM to state the recommendation conversationally
-    # and wait for the user's click — it does NOT prescribe suggestion
-    # labels.
+    # Gate 2 pending (post-redesign): fires in INVESTIGATING after the
+    # agent has set ``symptom_verified=True`` and before the user clicks
+    # a path-selection button (``case.path_selection is None``). The user
+    # now has transcript-visible evidence of what the agent saw in the
+    # data, so they can override the recommendation with that context
+    # in view rather than acting on their own INQUIRY urgency claim (see
+    # INV-19). The recommendation algorithm itself is still
+    # ``preliminary_urgency``-based — what changed is *when* the user
+    # commits, not *how* the system computes the suggested path.
+    #
+    # Recommendation is computed on-demand here, matching what the
+    # deterministic COOPERATIVE suggestion pair surfaces
+    # (``_path_selection_suggestions`` in milestone_engine). The prompt
+    # instructs the LLM to state the recommendation conversationally and
+    # wait for the user's click — it does NOT prescribe suggestion labels.
+    gate2_state_str = ""
     if (
-        case.status == CaseStatus.INQUIRY
-        and case.inquiry
-        and case.inquiry.problem_statement_confirmed
+        case.status == CaseStatus.INVESTIGATING
+        and case.progress.symptom_verified
         and case.path_selection is None
     ):
         ps = recommend_investigation_path_for_case(case)
@@ -2088,23 +2102,22 @@ def build_investigation_context(
                 if ps.alternate_path.value == "mitigation_first"
                 else "root-cause analysis"
             )
-            inquiry_state_str += (
-                "\n<path_selection_state>\n"
+            gate2_state_str = (
+                "<path_selection_state>\n"
                 f"RECOMMENDED_PATH: {ps.path.value}\n"
                 f"AUTO_SELECTED: {ps.auto_selected}\n"
                 f"RATIONALE: {ps.rationale}\n"
                 f"ALTERNATE_PATH: {ps.alternate_path.value}\n"
                 "GATE_2_STATUS: pending (user has not committed a path yet)\n"
-                "INSTRUCTION: Gate 1 (problem statement) has passed. Surface the "
-                "investigation-path recommendation conversationally so the user "
-                "can confirm or override before investigation begins. State the "
-                f"recommendation ({recommended_label}) with a short rationale, "
-                f"and mention the alternate ({alternate_label}). Do NOT ask the "
-                "user to type their choice — the engine deterministically "
-                "attaches two COOPERATIVE suggestion buttons. Do NOT set "
-                "user_confirmed_investigation=True again — it is already True. "
-                "The case will not transition to INVESTIGATING until the user "
-                "clicks one of the path-selection suggestions.\n"
+                "INSTRUCTION: Symptom validation has completed (symptom_verified=True). "
+                "Surface the investigation-path recommendation conversationally so the "
+                "user can confirm or override before deeper diagnosis proceeds. State "
+                f"the recommendation ({recommended_label}) with a short rationale, "
+                f"and mention the alternate ({alternate_label}). Do NOT ask the user "
+                "to type their choice — the engine deterministically attaches two "
+                "COOPERATIVE suggestion buttons. The case remains in INVESTIGATING "
+                "regardless of which button the user clicks; the click commits the "
+                "path so deeper diagnosis can begin.\n"
                 "</path_selection_state>"
                 f"\n{_GATE2_PENDING_REMINDER}"
             )
@@ -2132,6 +2145,7 @@ def build_investigation_context(
         "conversation_history": budget.use(recent_history),
         "user_message": user_message_safe,  # Sanitized user message always included
         "inquiry_state": budget.use(inquiry_state_str),
+        "gate2_state": budget.use(gate2_state_str),
     }
 
     return ctx

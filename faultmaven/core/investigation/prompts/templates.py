@@ -558,12 +558,13 @@ TURN WHERE YOU FIRST DETECT A PROBLEM (user_confirmed_investigation=False):
     "Looking at the data, I can see [description]. Shall we investigate?"
 - Signal what confirmation leads to: "If so, we'll move into focused investigation."
 - Set user_confirmed_investigation=False. Do NOT suggest investigation steps
-  (evidence requests, diagnostic commands). Offer only the confirmation suggestions below:
-- Use the first applicable condition:
-    CRITICAL/HIGH + ongoing:  "Investigate (Mitigation First)" /
-                               "Investigate (Root Cause First)" / "Not yet."
-    Standard:                 "Yes, let's investigate" / "Not yet."
-  (No "It resolved it" option from INQUIRY — v3 routes runbook offers
+  (evidence requests, diagnostic commands). Offer only the confirmation
+  suggestions: "Yes, let's investigate" / "Not yet."
+  The path choice (mitigation-first vs root-cause-first) happens later,
+  inside INVESTIGATING, after symptom_verified — so the user can see
+  your symptom-validation work in the transcript before committing to a
+  path. Do NOT split confirmation into per-path buttons at INQUIRY. (No
+  "It resolved it" option from INQUIRY either — v3 routes runbook offers
   through INVESTIGATING; resolution confirmation happens there.)
 
 USER CORRECTS OR REFINES THE PROBLEM STATEMENT:
@@ -584,8 +585,10 @@ TURN WHERE USER CONFIRMS (user_confirmed_investigation=True):
 - If a knowledge_match was recorded in INQUIRY, surface the runbook now
   (we held it back during INQUIRY per v3) — see the DIAGNOSIS template's
   KNOWLEDGE & RUNBOOK AUTHORITY section for Cause-attribution behaviour.
-- If the user chose a path (Mitigation First / Root Cause First), acknowledge
-  it and frame the first investigation step accordingly.
+- Do not ask the user to choose a path here — the path choice happens
+  later in INVESTIGATING (Gate 2) after symptom_verified, so the user
+  has transcript-visible evidence of what the data shows before
+  committing.
 
 USER DECIDES NOT TO INVESTIGATE:
 If the user declines or closes the inquiry:
@@ -694,6 +697,8 @@ STATUS: INVESTIGATING
 {working_conclusion}
 
 {pending_action}
+
+{gate2_state}
 
 CONVERSATION HISTORY:
 {conversation_history}
@@ -1633,6 +1638,118 @@ The full RCA-diagnostic flow applies below.
 """
 
 
+# =============================================================================
+# _PRE_PATH_DIAGNOSIS_BLOCK — used when the case has transitioned to
+# INVESTIGATING but the user has not yet committed an investigation path
+# (``case.path_selection is None``). Post-redesign Gate 2 fires inside
+# INVESTIGATING after ``symptom_verified``, so this block carries the
+# agent through symptom validation FIRST. The user clicks Gate 2 only
+# after seeing the agent's symptom-validation work in the transcript —
+# this gives the user transcript-visible context to override the
+# recommendation, even though the recommendation algorithm itself
+# (``recommend_investigation_path_for_case``) still reads only
+# ``case.inquiry.preliminary_urgency``. Migrating the recommendation
+# itself to be evidence-derived is deferred follow-up.
+#
+# Hypothesis and RCA work are out of scope here: a path has not been
+# chosen, so neither MITIGATION_FIRST nor ROOT_CAUSE discipline applies.
+# Once ``symptom_verified=True``, the engine surfaces Gate 2 affordances
+# and the user's click commits the path; the dispatch then re-routes to
+# the per-path block (``_SYMPTOM_VALIDATION_BLOCK`` or
+# ``_RCA_DIAGNOSIS_BLOCK``) on subsequent turns.
+# =============================================================================
+_PRE_PATH_DIAGNOSIS_BLOCK = (
+    """
+**FOCUS: PRE-PATH SYMPTOM VALIDATION (Gate 2 pending)**
+
+The case has just entered INVESTIGATING. The investigation path
+(mitigation-first vs root-cause-first) has not yet been selected by the
+user — Gate 2 opens once you set ``symptom_verified=True`` based on
+real evidence. Your job this turn is symptom validation, NOT hypothesis
+formation or mitigation proposal.
+
+"""
+    + _DIAGNOSIS_ZONES_PREAMBLE
+    + """
+Within this state, only Zone 1 (symptom verification) is in scope.
+Zones 2 (hypothesis formation) and 3 (solution) are gated behind the
+user's Gate 2 path choice.
+
+**OBJECTIVE:**
+Verify the user's symptom claim against case evidence. When you have
+inspected real data and confirmed the symptom, set
+``symptom_verified=True`` — this opens Gate 2 so the user can pick
+mitigation-first vs root-cause-first with your symptom-validation work
+visible in the transcript. The system's recommendation is still based
+on the user's INQUIRY-stated urgency; your job is to make sure the
+user has transcript-visible evidence in view when they decide whether
+to follow that recommendation or override it.
+
+**BEFORE SETTING ``symptom_verified=True``, YOU MUST HAVE:**
+
+(a) **At least one SYMPTOM_EVIDENCE row attributable to the current
+    incident** — drawn from data you have actually inspected (logs,
+    metrics, status output, config snapshot). The user's claim alone
+    is NOT sufficient; it is unverified until you confirm it against
+    case data.
+
+(b) **A specific failing component identified from that evidence** —
+    the thing the failure is attached to (a pod, a service, an
+    endpoint, a config key). Without (b) the symptom is too abstract
+    to ground a path choice.
+
+If you do not yet have (a) AND (b), your next action is to REQUEST or
+SEARCH for the specific evidence that would establish them — not to
+set ``symptom_verified=True`` and not to propose a path.
+
+**STRUCTURED EMISSION CONSTRAINTS (pre-path):**
+
+- DO NOT emit ``hypotheses_to_add``. Hypothesis formation is RCA-side
+  work, gated behind the user's Gate 2 path choice.
+- DO NOT classify any evidence as ``causal_evidence``. Causal claims
+  presuppose a hypothesis to attach to (see INV-17); since hypotheses
+  are out of scope here, so is causal_evidence.
+- DO NOT emit ``solutions_to_add``. Mitigations and solutions are
+  proposed AFTER the path is committed (mitigation-first proposes a
+  workaround inside the mitigation path; root-cause-first proposes a
+  fix after hypothesis validation).
+- Allowed evidence categories this stage: ``symptom_evidence`` only.
+
+You MAY discuss possible causes and mitigations in prose — that helps
+the user understand the shape of the problem and informs their Gate 2
+choice. The constraint is on STRUCTURED emission, not on conversational
+reasoning.
+
+**SEARCH STRATEGY (symptom verification):**
+
+- ``search_file`` (keyword/regex) — when a specific symptom string or
+  pattern is known. Default symptom terms: ``error``, ``exception``,
+  ``failed``, ``timeout``, ``refused``, ``crash``, ``panic``, ``OOM``;
+  for HTTP status codes use regex ``[45][0-9]{2}``.
+- ``case_evidence_qa`` — semantic query when the concept is clear but
+  the exact text is not.
+
+Use uploaded-file ``<search_map>`` hints first — they are generated
+from actual file content and are the most reliable starting point.
+
+"""
+    + _EVIDENCE_REQUEST_FORMAT_BLOCK
+    + """
+**WHEN YOU HAVE (a) AND (b) — OPEN GATE 2:**
+
+1. State the verified symptom and failing component in one sentence each.
+2. Set ``symptom_verified=True`` in milestones.
+3. Frame the path choice conversationally based on what the data shows
+   (e.g., "this looks like an ongoing incident — mitigation-first is
+   probably right" or "the impact appears bounded — root-cause-first
+   gives you a permanent fix"). Do NOT prescribe button labels — the
+   engine attaches two COOPERATIVE buttons deterministically.
+
+"""
+    + _URGENCY_RECOGNITION_BLOCK
+)
+
+
 MITIGATION_INSTRUCTIONS = """
 **FOCUS: MITIGATION** (Stop the Bleeding)
 
@@ -2251,15 +2368,15 @@ def _select_diagnosis_block(case: Case) -> str:
     Selects the appropriate stage-instruction block (and any path-state
     prefix) based on ``case.path_selection``. The hypothesis mandate
     (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``) appears ONLY inside
-    ``_RCA_DIAGNOSIS_BLOCK``; pre-mitigation MITIGATION_FIRST cases
-    receive ``_SYMPTOM_VALIDATION_BLOCK``, which has no hypothesis
-    mandate by construction. This isolation is the structural fix
-    for the conflicting-signal problem (see INV-17 enforcement notes
-    in investigation-lifecycle-logic.md).
+    ``_RCA_DIAGNOSIS_BLOCK``; pre-path and pre-mitigation cases receive
+    blocks that explicitly forbid hypothesis emission. This isolation
+    is the structural fix for the conflicting-signal problem (see
+    INV-17 enforcement notes in investigation-lifecycle-logic.md).
 
     Routing:
-      - path_selection is None (defensive; post-INV-19 shouldn't happen)
-            → _SYMPTOM_VALIDATION_BLOCK
+      - path_selection is None (Gate 2 not yet committed — post-redesign
+        Gate 2 fires inside INVESTIGATING after ``symptom_verified``)
+            → _PRE_PATH_DIAGNOSIS_BLOCK
       - ROOT_CAUSE
             → focus_emphasis + _RCA_DIAGNOSIS_BLOCK
       - MITIGATION_FIRST + pre-mitigation
@@ -2274,13 +2391,13 @@ def _select_diagnosis_block(case: Case) -> str:
 
     Note on ``focus_emphasis``: Zone 1/2/3 emphasis is RCA-flavoured
     (Zone 2's "focus on hypotheses for root cause" would mislead a pre-
-    mitigation LLM). The emphasis is therefore included only on RCA
-    branches.
+    mitigation or pre-path LLM). The emphasis is therefore included only
+    on RCA branches.
     """
     ps = case.path_selection
 
     if ps is None:
-        return _SYMPTOM_VALIDATION_BLOCK
+        return _PRE_PATH_DIAGNOSIS_BLOCK
 
     if ps.path == InvestigationPath.ROOT_CAUSE:
         focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
@@ -2302,8 +2419,9 @@ def _select_diagnosis_block(case: Case) -> str:
             + _RCA_DIAGNOSIS_BLOCK
         )
 
-    # Defensive: unknown path enum value. Safest is symptom validation.
-    return _SYMPTOM_VALIDATION_BLOCK
+    # Defensive: unknown path enum value. Safest is the pre-path block
+    # (no hypothesis mandate, no mitigation proposal — strictest stance).
+    return _PRE_PATH_DIAGNOSIS_BLOCK
 
 
 def get_prompt_for_case(

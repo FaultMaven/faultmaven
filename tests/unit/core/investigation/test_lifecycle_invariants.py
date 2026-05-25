@@ -1965,3 +1965,37 @@ class TestINV18_RunbookEligibilityResolvedOnly:
             "INV-18 violation: /convert-from-case no longer rejects "
             "non-RESOLVED cases with HTTP 400."
         )
+
+
+# ============================================================================
+# INV-19 (post-redesign): path commit happens in INVESTIGATING after
+# symptom_verified, NOT at INQUIRY. INQUIRY_TEMPLATE must not offer a path
+# choice to the user — re-introducing per-path INQUIRY buttons would undo
+# the data-grounded design and restore the pre-investigation path-commit
+# failure mode.
+# ============================================================================
+
+
+@pytest.mark.unit
+class TestINV19_InquiryTemplateOffersNoPathChoice:
+    """INV-19 prompt-side guard: INQUIRY_TEMPLATE must not present
+    per-path confirmation buttons. The early-mitigation-offer 3-button
+    fork ("Investigate (Mitigation First)" / "Investigate (Root Cause
+    First)" / "Not yet.") was removed in the Move-Gate-2 refactor; a
+    future well-intentioned re-add would re-introduce path commit at
+    INQUIRY (pre-symptom-verification, on user-claimed urgency) and
+    undo the data-grounded design."""
+
+    def test_inquiry_template_does_not_contain_per_path_confirmation_buttons(self):
+        from faultmaven.core.investigation.prompts import templates as tmpl
+
+        assert "Investigate (Mitigation First)" not in tmpl.INQUIRY_TEMPLATE, (
+            "INV-19 violation: INQUIRY_TEMPLATE re-introduced the "
+            "'Investigate (Mitigation First)' button. Path choice belongs "
+            "in INVESTIGATING after symptom_verified, not INQUIRY."
+        )
+        assert "Investigate (Root Cause First)" not in tmpl.INQUIRY_TEMPLATE, (
+            "INV-19 violation: INQUIRY_TEMPLATE re-introduced the "
+            "'Investigate (Root Cause First)' button. Path choice belongs "
+            "in INVESTIGATING after symptom_verified, not INQUIRY."
+        )

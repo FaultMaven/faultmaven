@@ -43,20 +43,26 @@ from faultmaven.modules.case.domain.models import (
 # ---------------------------------------------------------------------------
 
 
-def _inquiry_case(
+def _case(
     *,
-    problem_statement_confirmed: bool,
+    status: CaseStatus = CaseStatus.INVESTIGATING,
+    problem_statement_confirmed: bool = True,
+    symptom_verified: bool = True,
     has_preliminary_urgency: bool = True,
     path_selection: PathSelection | None = None,
 ) -> Case:
-    """Build an INQUIRY-stage case with controllable Gate 1/2 inputs.
+    """Build a case with controllable gate inputs.
 
-    Default shape (no overrides) is Gate 1 passed + Gate 2 pending +
-    urgency populated — i.e., the case the reminder should fire on.
+    Post-redesign default: INVESTIGATING + Gate 1 passed +
+    symptom_verified + path_selection None + urgency populated —
+    i.e., the state where the Gate 2 reminder should fire.
     """
+    from faultmaven.modules.case.contracts import InvestigationProgress
+
     inquiry = InquiryData(
         proposed_problem_statement="Production API returning 503s",
         problem_statement_confirmed=problem_statement_confirmed,
+        decided_to_investigate=(status == CaseStatus.INVESTIGATING),
         problem_confirmation=ProblemConfirmation(
             problem_type="unavailability",
             severity_guess="high",
@@ -75,12 +81,30 @@ def _inquiry_case(
         user_id="u1",
         organization_id="o1",
         title="Test",
+        status=status,
         description="Production API returning 503s",
         inquiry=inquiry,
+        progress=InvestigationProgress(symptom_verified=symptom_verified),
     )
     if path_selection is not None:
         case.path_selection = path_selection
     return case
+
+
+# Backwards-compatible alias for the few tests that still want INQUIRY-shape.
+def _inquiry_case(
+    *,
+    problem_statement_confirmed: bool,
+    has_preliminary_urgency: bool = True,
+    path_selection: PathSelection | None = None,
+) -> Case:
+    return _case(
+        status=CaseStatus.INQUIRY,
+        problem_statement_confirmed=problem_statement_confirmed,
+        symptom_verified=False,
+        has_preliminary_urgency=has_preliminary_urgency,
+        path_selection=path_selection,
+    )
 
 
 def _committed_path() -> PathSelection:
@@ -164,29 +188,34 @@ class TestConditionalInjection:
     # the prose inside is reworded.
     _REMINDER_OPEN_TAG = "<gate2_pending_instructions>"
 
-    def test_reminder_present_when_gate1_passed_and_gate2_pending(self):
-        case = _inquiry_case(
-            problem_statement_confirmed=True,
-            path_selection=None,
-        )
+    def test_reminder_present_when_symptom_verified_and_path_not_committed(self):
+        """Post-redesign default state: INVESTIGATING + symptom_verified
+        + path_selection None + urgency populated. Reminder fires."""
+        case = _case()
         rendered = _rendered(case)
         assert self._REMINDER_OPEN_TAG in rendered
         # And the full structured-emission ban is reachable in the prompt.
         normalized = " ".join(rendered.split())
         assert "DO NOT emit ``hypotheses_to_add``" in normalized
 
-    def test_reminder_absent_when_gate1_not_passed(self):
-        """Before the user confirms the problem statement, Gate 2
-        doesn't apply — and the surrounding ``<path_selection_state>``
-        block doesn't render. Reminder must not fire.
-
-        Prevents premature firing that would tell the LLM "don't form
-        hypotheses" before the user has even confirmed the problem.
-        """
-        case = _inquiry_case(
-            problem_statement_confirmed=False,
-            path_selection=None,
+    def test_reminder_absent_in_inquiry(self):
+        """Pre-redesign Gate 2 was an INQUIRY-stage concept; post-redesign
+        it isn't. The reminder must NOT fire in INQUIRY regardless of
+        Gate 1 state. Prevents premature firing."""
+        case = _case(
+            status=CaseStatus.INQUIRY,
+            problem_statement_confirmed=True,
+            symptom_verified=False,  # symptom_verified is INVESTIGATING-stage
         )
+        rendered = _rendered(case)
+        assert self._REMINDER_OPEN_TAG not in rendered
+
+    def test_reminder_absent_when_symptom_not_yet_verified(self):
+        """In INVESTIGATING but pre-symptom-verified: agent is still in
+        Zone 1 doing symptom validation. Reminder must not fire — Gate
+        2 hasn't yet opened. The ``_PRE_PATH_DIAGNOSIS_BLOCK`` carries
+        its own constraints for this state."""
+        case = _case(symptom_verified=False)
         rendered = _rendered(case)
         assert self._REMINDER_OPEN_TAG not in rendered
 
@@ -196,10 +225,7 @@ class TestConditionalInjection:
         reminder would tell the LLM to keep re-asking — exactly the
         kind of stale-instruction drift the test guards against.
         """
-        case = _inquiry_case(
-            problem_statement_confirmed=True,
-            path_selection=_committed_path(),
-        )
+        case = _case(path_selection=_committed_path())
         rendered = _rendered(case)
         assert self._REMINDER_OPEN_TAG not in rendered
 
@@ -210,34 +236,12 @@ class TestConditionalInjection:
         block renders. Keeps prompt content coupled to a renderable
         recommendation.
         """
-        case = _inquiry_case(
-            problem_statement_confirmed=True,
-            has_preliminary_urgency=False,
-            path_selection=None,
-        )
+        case = _case(has_preliminary_urgency=False)
         rendered = _rendered(case)
         assert self._REMINDER_OPEN_TAG not in rendered
 
-    def test_reminder_absent_outside_inquiry_status(self):
-        """Pins the status gate IN ISOLATION. Fixture uses
-        ``path_selection=None`` (which alone would fire the reminder
-        during INQUIRY), then mutates status to INVESTIGATING. With
-        only the status check standing between the case and the
-        reminder, this exercises the status gate as the sole
-        suppressor — preventing INQUIRY-stage instructions from
-        leaking into INVESTIGATING-stage prompts (where dispatch is
-        path-conditional via ``_select_diagnosis_block``).
-        """
-        case = _inquiry_case(
-            problem_statement_confirmed=True,
-            path_selection=None,  # would otherwise fire the reminder
-        )
-        # Bypass cross-field validators to simulate the broken state
-        # (INVESTIGATING-status case without path_selection — INV-19
-        # would trip during engine milestone progression, but the
-        # context builder runs earlier and must still be safe).
-        object.__setattr__(case, "status", CaseStatus.INVESTIGATING)
-        object.__setattr__(case.inquiry, "decided_to_investigate", True)
-        rendered = _rendered(case)
-        # Absent because status != INQUIRY, not because path is committed.
-        assert self._REMINDER_OPEN_TAG not in rendered
+    # NOTE: Pre-redesign there was a ``test_reminder_absent_outside_inquiry_status``
+    # case that pinned an INQUIRY-stage status check. Post-redesign,
+    # ``test_reminder_absent_in_inquiry`` above covers the equivalent
+    # invariant (reminder must not fire in INQUIRY). The original test
+    # has been replaced.

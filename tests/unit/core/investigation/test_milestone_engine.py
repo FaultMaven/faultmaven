@@ -69,9 +69,12 @@ def mock_repo():
 
 @pytest.fixture
 def base_case():
-    # Post-INV-19: any INVESTIGATING case must carry a committed
-    # path_selection (existence == Gate 2 commit). The engine surfaces a
-    # RuntimeError on milestone progression if this is missing.
+    # Fully-pathed INVESTIGATING case (Gate 2 already committed) so tests
+    # exercising post-path behavior don't need to walk the pre-path
+    # window themselves. Post-INV-19 redesign, an INVESTIGATING case CAN
+    # legitimately have ``path_selection=None`` — that's the pre-path
+    # window between INQUIRY transition and Gate 2 click. Tests that
+    # need that shape construct it explicitly.
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
@@ -736,14 +739,10 @@ class TestMilestoneEngine:
     ):
         """Test explicit status_transition intent: INQUIRY → INVESTIGATING via dropdown.
 
-        Design: Dropdown = message. The dropdown does NOT bypass the agent.
-        It injects a pre-composed message and the LLM handles the multi-turn
-        problem statement flow. Post-INV-19, the case also needs Gate 2
-        (case.path_selection != None — existence == Gate 2 commit) before
-        transitioning, which fires as a separate user click after Gate 1
-        closes. Path_selection is never written during INQUIRY; the Gate 2
-        recommendation is computed on-demand and rendered into the
-        affordance pair.
+        Post-redesign: INQUIRY → INVESTIGATING requires Gate 1 only.
+        Gate 2 (path commit) fires later in INVESTIGATING after
+        ``symptom_verified``. The dropdown injects a pre-composed
+        message; the LLM emits confirmation; engine transitions.
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -794,9 +793,11 @@ class TestMilestoneEngine:
 
         updated_case = result["case_updated"]
 
-        # Turn 1: Gate 1 closes, path_selection NOT yet written (recommendation
-        # is rendered on-demand into the affordance pair), Gate 2 pending.
-        assert updated_case.status == CaseStatus.INQUIRY  # INV-19
+        # Gate 1 closes → case transitions to INVESTIGATING immediately
+        # (post-redesign: Gate 2 no longer gates the transition).
+        # path_selection is None; Gate 2 will fire later after
+        # symptom_verified.
+        assert updated_case.status == CaseStatus.INVESTIGATING
         assert updated_case.inquiry.problem_statement_confirmed is True
         assert updated_case.inquiry.decided_to_investigate is True
         assert updated_case.path_selection is None
@@ -804,28 +805,9 @@ class TestMilestoneEngine:
         # Should have called LLM (not bypassed)
         assert mock_llm.generate.called
 
-        # Turn 2: user clicks the path-selection suggestion → Gate 2 closes
-        # (creates case.path_selection) → transition fires.
-        mock_response_turn2 = json.dumps(
-            {
-                "agent_response": "Starting investigation.",
-                "state_updates": {},
-            }
-        )
-        mock_llm.generate.return_value = mock_response_turn2
-
-        result2 = await engine.process_turn(
-            case=updated_case,
-            user_message="Let's start with root-cause analysis.",
-            intent_type="path_selection",
-            intent_data={"investigation_path": "root_cause"},
-        )
-
-        final_case = result2["case_updated"]
-        assert final_case.status == CaseStatus.INVESTIGATING
-        assert final_case.path_selection is not None  # Gate 2 committed
-        assert len(final_case.action_history) > 0
-        last_transition = final_case.action_history[-1]
+        # Action history records the INQUIRY → INVESTIGATING transition.
+        assert len(updated_case.action_history) > 0
+        last_transition = updated_case.action_history[-1]
         assert last_transition.from_status == CaseStatus.INQUIRY
         assert last_transition.to_status == CaseStatus.INVESTIGATING
 
@@ -1122,8 +1104,12 @@ class TestGate2SetOnceSemantic:
             investigation_tools=MagicMock(),
         )
 
-        # Construct an INQUIRY case past Gate 1 with a path_selection ALREADY
-        # committed (e.g., user clicked Gate 2 on a prior turn).
+        # Construct an INVESTIGATING case past symptom_verified with a
+        # path_selection ALREADY committed (e.g., user clicked Gate 2 on a
+        # prior turn). Post-redesign, Gate 2 commits inside INVESTIGATING
+        # after symptom_verified — INQUIRY never carries a path_selection.
+        from faultmaven.modules.case.contracts import InvestigationProgress
+
         original_commit = PathSelection(
             path=InvestigationPath.ROOT_CAUSE,
             auto_selected=True,
@@ -1134,7 +1120,7 @@ class TestGate2SetOnceSemantic:
         case = Case(
             case_id="case_aaaaaaaaaaab",
             title="Re-commit test",
-            status=CaseStatus.INQUIRY,
+            status=CaseStatus.INVESTIGATING,
             user_id="user_123",
             organization_id="org_123",
             description="Test description",
@@ -1144,6 +1130,7 @@ class TestGate2SetOnceSemantic:
                 thread_id="thread_123",
                 proposed_problem_statement="Test symptom",
             ),
+            progress=InvestigationProgress(symptom_verified=True),
             path_selection=original_commit,
         )
         original_selected_at = case.path_selection.selected_at
@@ -1289,12 +1276,12 @@ class TestInquiryConfirmation:
         result = await engine.process_turn(case, "yes, proceed")
 
         updated_case = result["case_updated"]
-        # Gate 1 closed via the LLM path (problem_statement_confirmed=True);
-        # Gate 2 pending — case.path_selection stays None until the user
-        # clicks the Gate 2 suggestion (existence == commit). INV-19 holds —
-        # case stays in INQUIRY until Gate 2 is committed.
+        # Gate 1 closed via the LLM path (problem_statement_confirmed=True)
+        # → case transitions to INVESTIGATING (post-redesign: Gate 2 fires
+        # later in INVESTIGATING after symptom_verified, so it no longer
+        # gates the INQUIRY → INVESTIGATING transition).
         assert updated_case.inquiry.problem_statement_confirmed is True
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.status == CaseStatus.INVESTIGATING
         assert updated_case.path_selection is None
 
 

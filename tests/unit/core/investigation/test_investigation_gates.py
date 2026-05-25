@@ -2,11 +2,12 @@
 
 Pins three invariants:
 
-- INV-19: INQUIRY -> INVESTIGATING requires ``case.path_selection`` to exist
-  (existence IS the commit signal — the path is created exclusively at the
-  Gate 2 click handler).
-- ``case.path_selection`` is None during INQUIRY until the user clicks a
-  Gate 2 COOPERATIVE button.
+- INV-19 (post-redesign): Gate 2 fires inside INVESTIGATING after the agent
+  sets ``symptom_verified=True``. ``case.path_selection`` existence IS the
+  commit signal — the field is written exclusively at the Gate 2 click
+  handler, never during INQUIRY, never before symptom_verified.
+- INQUIRY → INVESTIGATING fires on Gate 1 alone (problem_statement_confirmed);
+  Gate 2 is not a transition gate.
 - The Gate 2 recommendation is computed on-demand at button-render time via
   ``recommend_investigation_path_for_case`` — pure helper, no mutation.
 """
@@ -43,8 +44,16 @@ def _make_case(
     is_ongoing: bool = True,
     proposed_statement: str = "Production API is returning 500s",
     path_selection: PathSelection | None = None,
+    status: CaseStatus = CaseStatus.INQUIRY,
+    symptom_verified: bool = False,
 ) -> Case:
-    """Build a Case in INQUIRY state with controllable Gate 1/2 inputs."""
+    """Build a Case with controllable gate inputs. Defaults to INQUIRY
+    state; pass ``status=CaseStatus.INVESTIGATING`` to construct a
+    post-transition case (used for the new Gate-2-in-INVESTIGATING
+    state-machine timing).
+    """
+    from faultmaven.modules.case.contracts import InvestigationProgress
+
     inquiry = InquiryData(
         problem_statement_confirmed=problem_statement_confirmed,
         proposed_problem_statement=proposed_statement,
@@ -53,6 +62,7 @@ def _make_case(
             severity_guess="high",
             preliminary_guidance="API down",
         ),
+        decided_to_investigate=(status == CaseStatus.INVESTIGATING),
     )
     if urgency is not None:
         inquiry.preliminary_urgency = PreliminaryUrgency(
@@ -66,8 +76,10 @@ def _make_case(
         user_id="u1",
         organization_id="o1",
         title="Test",
+        status=status,
         description=proposed_statement,
         inquiry=inquiry,
+        progress=InvestigationProgress(symptom_verified=symptom_verified),
     )
     if path_selection is not None:
         case.path_selection = path_selection
@@ -141,22 +153,40 @@ class TestRecommendInvestigationPathForCase:
 
 
 class TestGate2IsPending:
-    """`_gate2_is_pending` returns True when the user needs to click a path
-    button. After the refactor: detected from inquiry state + absence of
-    committed path_selection (no longer reads user_confirmed)."""
+    """`_gate2_is_pending` returns True when the user needs to click a
+    path button. Post-redesign, the gate fires in INVESTIGATING after
+    ``symptom_verified`` — the path choice is made on data-verified
+    urgency, not on user-claimed urgency at INQUIRY."""
 
-    def test_pending_when_inquiry_and_gate1_passed_and_no_path(self):
-        case = _make_case(problem_statement_confirmed=True)
-        assert case.path_selection is None
+    def test_pending_when_investigating_symptom_verified_and_no_path(self):
+        case = _make_case(
+            status=CaseStatus.INVESTIGATING,
+            symptom_verified=True,
+            path_selection=None,
+        )
         assert _gate2_is_pending(case) is True
 
-    def test_not_pending_when_gate1_not_passed(self):
-        case = _make_case(problem_statement_confirmed=False)
+    def test_not_pending_when_symptom_not_yet_verified(self):
+        """Pre-symptom-verified, the agent is still in Zone 1 — Gate 2
+        affordance has not yet opened. The agent's job is symptom
+        verification first."""
+        case = _make_case(
+            status=CaseStatus.INVESTIGATING,
+            symptom_verified=False,
+            path_selection=None,
+        )
+        assert _gate2_is_pending(case) is False
+
+    def test_not_pending_when_still_in_inquiry(self):
+        """Pre-redesign Gate 2 fired in INQUIRY; post-redesign it does
+        not. Confirms the migration: INQUIRY-stage cases never trip the
+        Gate 2 predicate."""
+        case = _make_case(problem_statement_confirmed=True)
         assert _gate2_is_pending(case) is False
 
     def test_not_pending_when_path_committed(self):
-        """Path_selection existence IS the commit. If it exists, Gate 2 has
-        passed and the gate is no longer pending."""
+        """Path_selection existence IS the commit. If it exists, Gate 2
+        has passed and the gate is no longer pending."""
         committed = PathSelection(
             path=InvestigationPath.MITIGATION_FIRST,
             auto_selected=True,
@@ -164,16 +194,11 @@ class TestGate2IsPending:
             alternate_path=InvestigationPath.ROOT_CAUSE,
             selected_by="u1",
         )
-        case = _make_case(path_selection=committed)
-        assert _gate2_is_pending(case) is False
-
-    def test_not_pending_when_not_inquiry(self):
-        case = _make_case(problem_statement_confirmed=True)
-        # Bypass the cross-field validator: simulate an already-transitioned
-        # case to confirm the gate predicate keys off status, not just on
-        # path_selection being None.
-        object.__setattr__(case, "status", CaseStatus.INVESTIGATING)
-        object.__setattr__(case.inquiry, "decided_to_investigate", True)
+        case = _make_case(
+            status=CaseStatus.INVESTIGATING,
+            symptom_verified=True,
+            path_selection=committed,
+        )
         assert _gate2_is_pending(case) is False
 
 
@@ -247,22 +272,35 @@ class TestPathSelectionSuggestions:
 
 
 class TestINV19PathSelectionAsCommitSignal:
-    """After the refactor, ``case.path_selection is not None`` means
-    "Gate 2 has been committed." No separate user_confirmed field —
-    existence IS the commit."""
+    """``case.path_selection is not None`` means "Gate 2 has been
+    committed." No separate user_confirmed field — existence IS the
+    commit. Post-redesign, the commit happens in INVESTIGATING after
+    ``symptom_verified`` (the path choice is data-grounded)."""
 
-    def test_inquiry_with_no_path_selection_is_pre_commit(self):
-        """The default state after Gate 1 confirmation: path_selection is
-        None until the user clicks Gate 2."""
-        case = _make_case(problem_statement_confirmed=True)
+    def test_investigating_pre_symptom_verified_is_pre_commit(self):
+        """Just-transitioned INVESTIGATING case: path_selection is
+        None; the Gate 2 affordance is not yet open (waiting for
+        symptom_verified)."""
+        case = _make_case(
+            status=CaseStatus.INVESTIGATING,
+            symptom_verified=False,
+        )
         assert case.path_selection is None
-        # Gate 2 detection follows the same signal
+        # Gate 2 is closed; the agent is still in Zone 1.
+        assert _gate2_is_pending(case) is False
+
+    def test_investigating_post_symptom_verified_is_gate2_pending(self):
+        """Symptom verified, path not yet committed → Gate 2 open."""
+        case = _make_case(
+            status=CaseStatus.INVESTIGATING,
+            symptom_verified=True,
+        )
+        assert case.path_selection is None
         assert _gate2_is_pending(case) is True
 
     def test_committed_path_selection_satisfies_gate2(self):
         """After Gate 2 click creates path_selection, _gate2_is_pending
-        returns False and the transition gate (path_selection is not None)
-        is satisfied."""
+        returns False."""
         committed = PathSelection(
             path=InvestigationPath.MITIGATION_FIRST,
             auto_selected=True,
@@ -270,9 +308,10 @@ class TestINV19PathSelectionAsCommitSignal:
             alternate_path=InvestigationPath.ROOT_CAUSE,
             selected_by="u1",
         )
-        case = _make_case(path_selection=committed)
+        case = _make_case(
+            status=CaseStatus.INVESTIGATING,
+            symptom_verified=True,
+            path_selection=committed,
+        )
         assert case.path_selection is not None
         assert _gate2_is_pending(case) is False
-        # The transition-gate check used by _check_automatic_transitions:
-        gate2_passed = case.path_selection is not None
-        assert gate2_passed is True
