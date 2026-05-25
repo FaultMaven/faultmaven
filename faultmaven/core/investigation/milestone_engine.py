@@ -5327,6 +5327,42 @@ class MilestoneEngine:
                             f"(Gate 3 pending)."
                         )
                         continue
+                    # Stage-gate ordering guard: reject ``mitigation_verified``
+                    # when ``mitigation_accepted`` is not yet set. Pydantic's
+                    # ``InvestigationProgress.solution_ordering`` validator
+                    # rejects this combination at save time, crashing the turn
+                    # with a 500. Catching it here surfaces the violation to
+                    # the LLM via ``system_feedback`` for next-turn retry,
+                    # instead of losing the turn. If the LLM emits both
+                    # milestones in one response, the ``mitigation_accepted``
+                    # iteration runs first (per ``milestone_fields`` order)
+                    # and this check passes naturally.
+                    if field == "mitigation_verified" and not p.mitigation_accepted:
+                        logger.warning(
+                            f"Rejected stage-gate milestone 'mitigation_verified' "
+                            f"for case {case.case_id}: prerequisite "
+                            f"'mitigation_accepted' is not set (state-machine "
+                            f"ordering)."
+                        )
+                        current_feedback = metadata.get("system_feedback") or ""
+                        metadata["system_feedback"] = (
+                            f"{current_feedback}\n"
+                            "MILESTONE ORDER ERROR: You set "
+                            "mitigation_verified=True without first setting "
+                            "mitigation_accepted=True. Verification "
+                            "presupposes acceptance — the user must have "
+                            "accepted the mitigation before its effect can be "
+                            "verified. Set BOTH milestones in the same "
+                            "response if the mitigation was both accepted and "
+                            "verified this turn, OR set "
+                            "mitigation_accepted=True first and verify on a "
+                            "follow-up turn after the user confirms."
+                        ).strip()
+                        metadata.setdefault("validation_repairs", []).append(
+                            "Rejected mitigation_verified "
+                            "(prerequisite mitigation_accepted not set)"
+                        )
+                        continue
                     # Only append if transitioning from False to True
                     if not getattr(p, field, False):
                         setattr(p, field, True)
