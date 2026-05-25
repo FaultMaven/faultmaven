@@ -5274,7 +5274,17 @@ class MilestoneEngine:
         if updates.milestones:
             m = updates.milestones
             p = case.progress
-            # Only set to True (never revert)
+            # Only set to True (never revert).
+            #
+            # LOAD-BEARING ORDER: ``mitigation_accepted`` MUST come before
+            # ``mitigation_verified``. The ordering-rejection guard below
+            # relies on this iteration order so that when the LLM emits
+            # both milestones in one response, ``mitigation_accepted``
+            # is applied first and the prerequisite check for
+            # ``mitigation_verified`` then passes. Reordering this list
+            # (alphabetical sort, regrouping) would silently shift the
+            # same-turn case onto the rejection path. See the ordering
+            # guard inside the loop below.
             milestone_fields = [
                 # Progress indicators (LLM context, non-stage-driving)
                 "symptom_verified",
@@ -5325,6 +5335,43 @@ class MilestoneEngine:
                             f"case {case.case_id} — mitigation is verified but "
                             f"the user has not yet chosen to continue with RCA "
                             f"(Gate 3 pending)."
+                        )
+                        continue
+                    # Stage-gate ordering guard: reject ``mitigation_verified``
+                    # when ``mitigation_accepted`` is not yet set. Pydantic's
+                    # ``InvestigationProgress.solution_ordering`` validator
+                    # rejects this combination at save time, crashing the turn
+                    # with a 500. Catching it here surfaces the violation to
+                    # the LLM via ``system_feedback`` for next-turn retry,
+                    # instead of losing the turn. If the LLM emits both
+                    # milestones in one response, the ``mitigation_accepted``
+                    # iteration runs first (per ``milestone_fields`` order)
+                    # and this check passes naturally.
+                    if field == "mitigation_verified" and not p.mitigation_accepted:
+                        logger.warning(
+                            f"Rejected stage-gate milestone 'mitigation_verified' "
+                            f"for case {case.case_id}: prerequisite "
+                            f"'mitigation_accepted' is not set (state-machine "
+                            f"ordering)."
+                        )
+                        current_feedback = metadata.get("system_feedback") or ""
+                        metadata["system_feedback"] = (
+                            f"{current_feedback}\n"
+                            "MILESTONE ORDER ERROR: You set "
+                            "mitigation_verified=True without first setting "
+                            "mitigation_accepted=True. Verification "
+                            "presupposes acceptance — set "
+                            "mitigation_accepted=True (based on the user's "
+                            "confirmation signals) before "
+                            "mitigation_verified=True. Set BOTH milestones "
+                            "in the same response if both happened this "
+                            "turn, OR set mitigation_accepted=True first "
+                            "and verify on a follow-up turn after the user "
+                            "confirms."
+                        ).strip()
+                        metadata.setdefault("validation_repairs", []).append(
+                            "Rejected mitigation_verified "
+                            "(prerequisite mitigation_accepted not set)"
                         )
                         continue
                     # Only append if transitioning from False to True
