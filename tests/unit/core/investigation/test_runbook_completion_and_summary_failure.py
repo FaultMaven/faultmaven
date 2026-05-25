@@ -30,6 +30,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     InquiryData,
     ProblemVerification,
+    ReportGenerationResponse,
     RootCauseConclusion,
     Solution,
     SolutionType,
@@ -136,7 +137,17 @@ class TestAutoGenerateReportTupleReturn:
         report = MagicMock()
         report.content = "# Resolution Summary\n\nDetails here."
         report_service = MagicMock()
-        report_service.generate_reports = AsyncMock(return_value=[report])
+        # generate_reports returns ReportGenerationResponse, not a bare
+        # list. Previously a bare-list mock masked a prod bug where
+        # callers were doing reports[0] on the response object.
+        # ``model_construct`` bypasses Pydantic validation so the inner
+        # report can stay a MagicMock — this test is about the response
+        # *wrapper's* unpacking, not the report's field schema.
+        report_service.generate_reports = AsyncMock(
+            return_value=ReportGenerationResponse.model_construct(
+                case_id=case.case_id, reports=[report], remaining_regenerations=4
+            )
+        )
 
         engine = MilestoneEngine(
             mock_llm,
