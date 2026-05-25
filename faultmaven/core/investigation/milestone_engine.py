@@ -774,6 +774,50 @@ def _gate3_is_pending(case: "Case") -> bool:
     return not ps.rca_after_mitigation_confirmed
 
 
+def _is_pre_mitigation_mitigation_first(case: "Case") -> bool:
+    """Whether the case is on MITIGATION_FIRST path and mitigation has
+    not yet been verified.
+
+    This is the state where ``_select_diagnosis_block`` returns
+    ``_SYMPTOM_VALIDATION_BLOCK`` — the prompt forbids RCA-side
+    emissions (no ``hypotheses_to_add``, no ``causal_evidence``).
+    Used by the path-conditional emission backstop to enforce those
+    bans at the engine layer when the LLM disregards the prompt.
+    """
+    if case.status != CaseStatus.INVESTIGATING:
+        return False
+    ps = case.path_selection
+    if ps is None or ps.path != InvestigationPath.MITIGATION_FIRST:
+        return False
+    return ps.mitigation_completed_at_turn is None
+
+
+def _path_conditional_emission_restriction(case: "Case") -> Optional[str]:
+    """Return a state label when the case is in a state where the
+    prompt forbids RCA-side structured emissions (``hypotheses_to_add``
+    and ``causal_evidence``), else ``None``.
+
+    States covered (both apply on MITIGATION_FIRST cases only):
+      - ``"pre_mitigation_mitigation_first"`` —
+        ``_SYMPTOM_VALIDATION_BLOCK`` is the rendered dispatch block.
+      - ``"gate3_pending"`` — ``_GATE3_PENDING_BLOCK`` is rendered.
+
+    The two states share the same forbidden-emission list because both
+    blocks issue identical "DO NOT emit ``hypotheses_to_add`` / DO NOT
+    classify causal_evidence" directives in their prompt text. The
+    engine backstop mirrors that prompt-side ban so a non-compliant
+    LLM cannot corrupt the case with persistent invalid records.
+
+    Returns the label so callers can build state-specific system_feedback
+    that names which prompt block the LLM violated.
+    """
+    if _is_pre_mitigation_mitigation_first(case):
+        return "pre_mitigation_mitigation_first"
+    if _gate3_is_pending(case):
+        return "gate3_pending"
+    return None
+
+
 def _gate1_is_pending(case: "Case") -> bool:
     """Whether Gate 1 (problem-statement confirmation) is open for this case.
 
@@ -5309,14 +5353,17 @@ class MilestoneEngine:
                 a.status == "pending" for a in case.proposed_actions
             )
 
-            # INV-21: on a mitigation-first case where mitigation has been
-            # verified but the user has not yet confirmed continuing to RCA
-            # (Gate 3 pending), reject RCA-side milestone updates. Prevents
-            # the engine from silently restarting RCA when the user might
-            # have wanted to close as mitigation-sufficient. Stage-gate
-            # mitigation milestones are exempt (a follow-up mitigation
-            # cycle is allowed via the existing re-entry mechanism).
-            gate3_blocks_rca_milestones = _gate3_is_pending(case)
+            # Path-conditional RCA-milestone restriction. Both
+            # ``_SYMPTOM_VALIDATION_BLOCK`` (pre-mitigation MITIGATION_FIRST)
+            # and ``_GATE3_PENDING_BLOCK`` (Gate 3 pending) explicitly
+            # forbid setting RCA-side milestones — RCA work is deferred to
+            # post-Gate-3 on the MITIGATION_FIRST path. Single predicate
+            # covers both states (INV-21 was Gate-3-specific; this extends
+            # the same enforcement to pre-mitigation, where the LLM
+            # disregarding _SYMPTOM_VALIDATION_BLOCK's "DO NOT set
+            # root_cause_identified" directive would otherwise corrupt the
+            # case with a premature root-cause attribution).
+            path_restricted_state = _path_conditional_emission_restriction(case)
             rca_side_milestones = {"root_cause_identified"}
 
             for field in milestone_fields:
@@ -5328,13 +5375,41 @@ class MilestoneEngine:
                             f"{case.case_id}: no pending ProposedAction exists"
                         )
                         continue
-                    # INV-21 guard: reject RCA-side milestones until Gate 3 passes
-                    if gate3_blocks_rca_milestones and field in rca_side_milestones:
+                    # Path-conditional RCA-milestone guard (covers INV-21
+                    # Gate-3-pending case + the pre-mitigation
+                    # MITIGATION_FIRST case under the same predicate).
+                    if (
+                        path_restricted_state is not None
+                        and field in rca_side_milestones
+                    ):
+                        block_name = (
+                            "_SYMPTOM_VALIDATION_BLOCK"
+                            if path_restricted_state
+                            == "pre_mitigation_mitigation_first"
+                            else "_GATE3_PENDING_BLOCK"
+                        )
                         logger.warning(
-                            f"INV-21: Rejected RCA-side milestone '{field}' for "
-                            f"case {case.case_id} — mitigation is verified but "
-                            f"the user has not yet chosen to continue with RCA "
-                            f"(Gate 3 pending)."
+                            f"Rejected RCA-side milestone '{field}' for case "
+                            f"{case.case_id}: forbidden in state "
+                            f"'{path_restricted_state}' (the {block_name} "
+                            f"prompt directive forbids setting RCA-side "
+                            f"milestones; RCA is deferred to post-Gate-3 on "
+                            f"the MITIGATION_FIRST path)."
+                        )
+                        current_feedback = metadata.get("system_feedback") or ""
+                        metadata["system_feedback"] = (
+                            f"{current_feedback}\n"
+                            "PATH-CONDITIONAL MILESTONE ERROR: You set "
+                            f"``{field}=True`` in a state where the "
+                            f"{block_name} prompt directive forbids "
+                            "RCA-side milestones. Root-cause work is "
+                            "deferred until the user opts to continue "
+                            "past Gate 3 (MITIGATION_FIRST path). Do not "
+                            f"re-emit ``{field}=True`` until the case "
+                            "reaches post-Gate-3 state."
+                        ).strip()
+                        metadata.setdefault("validation_repairs", []).append(
+                            f"Rejected {field} in {path_restricted_state} state"
                         )
                         continue
                     # Stage-gate ordering guard: reject ``mitigation_verified``
@@ -5481,7 +5556,55 @@ class MilestoneEngine:
             # through unchanged — no turn-file fallback, because that
             # would silently mis-attribute a chat-extracted USER_DESCRIPTION
             # quote to whatever file happens to be in the same turn.
+            # Path-conditional emission backstop: when the dispatcher
+            # renders _SYMPTOM_VALIDATION_BLOCK or _GATE3_PENDING_BLOCK,
+            # those prompt blocks explicitly forbid causal_evidence
+            # classification. If the LLM disregards the prompt, the
+            # engine would silently persist invalid evidence —
+            # corrupting the audit trail (downstream KB conversion /
+            # report generation / replay would see a causal_evidence
+            # row attached to a state where no hypothesis exists).
+            # Drop the offending items and re-surface to the LLM via
+            # system_feedback. Partial-accept semantics: other
+            # categories in the same response are accepted normally.
+            restricted_state = _path_conditional_emission_restriction(case)
             for ev_item in updates.evidence_to_add:
+                if (
+                    restricted_state is not None
+                    and ev_item.category == EvidenceCategory.CAUSAL_EVIDENCE
+                ):
+                    block_name = (
+                        "_SYMPTOM_VALIDATION_BLOCK"
+                        if restricted_state == "pre_mitigation_mitigation_first"
+                        else "_GATE3_PENDING_BLOCK"
+                    )
+                    logger.warning(
+                        f"Rejected causal_evidence emission for case "
+                        f"{case.case_id}: forbidden in state "
+                        f"'{restricted_state}' (the {block_name} prompt "
+                        f"directive explicitly bans this category). "
+                        f"summary={ev_item.summary[:80]!r}"
+                    )
+                    current_feedback = metadata.get("system_feedback") or ""
+                    metadata["system_feedback"] = (
+                        f"{current_feedback}\n"
+                        "PATH-CONDITIONAL EMISSION ERROR: You classified "
+                        "evidence as ``causal_evidence`` in a state where "
+                        f"the {block_name} prompt directive explicitly "
+                        "forbids this category. Causal claims presuppose "
+                        "a hypothesis to attach to (INV-17), and "
+                        "hypothesis formation is gated on this path. "
+                        "Use ``symptom_evidence`` (verifying the problem) "
+                        "or ``mitigation_evidence`` (the mitigation's "
+                        "effect) instead. RCA work — including causal "
+                        "evidence — is deferred until the user opts to "
+                        "continue past Gate 3."
+                    ).strip()
+                    metadata.setdefault("validation_repairs", []).append(
+                        f"Rejected causal_evidence in {restricted_state} state"
+                    )
+                    continue
+
                 # Infer milestone attribution (Tier 2 + Tier 3)
                 # Tier 2: System infers from category + milestones completed this turn
                 # Tier 3: LLM can override via advances_milestones field
@@ -5554,16 +5677,59 @@ class MilestoneEngine:
 
         # 3. Add/Update Hypotheses
         if hasattr(updates, "hypotheses_to_add") and updates.hypotheses_to_add:
-            for h_item in updates.hypotheses_to_add:
-                h = self.hypothesis_manager.create_hypothesis(
-                    statement=h_item.statement,
-                    category=h_item.category,
-                    initial_likelihood=h_item.likelihood,
-                    current_turn=case.current_turn,
-                    status=HypothesisStatus.ACTIVE,
+            # Path-conditional emission backstop: ``_SYMPTOM_VALIDATION_BLOCK``
+            # and ``_GATE3_PENDING_BLOCK`` both explicitly forbid hypothesis
+            # emission ("DO NOT emit ``hypotheses_to_add``"). If the LLM
+            # disregards the prompt, the engine would silently persist
+            # hypotheses attributed to a state where the framework says
+            # none should exist — degrading the audit trail and any
+            # downstream consumer (KB conversion, report generation,
+            # replay analysis). Reject-all semantics: hypotheses are
+            # categorically banned in these states, so there's no "good"
+            # hypothesis emission to preserve.
+            restricted_state = _path_conditional_emission_restriction(case)
+            if restricted_state is not None:
+                block_name = (
+                    "_SYMPTOM_VALIDATION_BLOCK"
+                    if restricted_state == "pre_mitigation_mitigation_first"
+                    else "_GATE3_PENDING_BLOCK"
                 )
-                case.hypotheses[h.hypothesis_id] = h
-                metadata["hypotheses_generated"].append(h.hypothesis_id)
+                count = len(updates.hypotheses_to_add)
+                logger.warning(
+                    f"Rejected hypotheses_to_add emission "
+                    f"({count} record(s)) for case {case.case_id}: "
+                    f"forbidden in state '{restricted_state}' (the "
+                    f"{block_name} prompt directive explicitly bans "
+                    f"structured hypothesis emission)."
+                )
+                current_feedback = metadata.get("system_feedback") or ""
+                metadata["system_feedback"] = (
+                    f"{current_feedback}\n"
+                    "PATH-CONDITIONAL EMISSION ERROR: You emitted "
+                    f"``hypotheses_to_add`` ({count} record(s)) in a state "
+                    f"where the {block_name} prompt directive forbids "
+                    "structured hypothesis emission. Hypothesis formation "
+                    "is gated until the user opts to continue past Gate 3 "
+                    "(MITIGATION_FIRST path). You may discuss possible "
+                    "causes in prose — conversational hypothesizing is "
+                    "allowed — but do not re-emit ``hypotheses_to_add`` "
+                    "until the case reaches post-Gate-3 state."
+                ).strip()
+                metadata.setdefault("validation_repairs", []).append(
+                    f"Rejected hypotheses_to_add ({count} record(s)) "
+                    f"in {restricted_state} state"
+                )
+            else:
+                for h_item in updates.hypotheses_to_add:
+                    h = self.hypothesis_manager.create_hypothesis(
+                        statement=h_item.statement,
+                        category=h_item.category,
+                        initial_likelihood=h_item.likelihood,
+                        current_turn=case.current_turn,
+                        status=HypothesisStatus.ACTIVE,
+                    )
+                    case.hypotheses[h.hypothesis_id] = h
+                    metadata["hypotheses_generated"].append(h.hypothesis_id)
 
         # 4. Link Evidence (Partial Application Check)
         # Note: Hypothesis-evidence linking is best-effort. The LLM may reference
