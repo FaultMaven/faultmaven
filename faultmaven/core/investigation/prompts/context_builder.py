@@ -43,9 +43,9 @@ from faultmaven.modules.case.domain.services.investigation_router import (
     recommend_investigation_path_for_case,
 )
 
-# Prompt-layer reinforcement appended to the <path_selection_state> block
-# below when Gate 2 is pending. Augments the existing instruction with
-# two pieces the original wording didn't pin:
+# Prompt-layer reinforcement emitted as a sibling block to
+# <path_selection_state> when Gate 2 is pending. Pins two pieces the
+# state block's INSTRUCTION paragraph didn't cover:
 #
 #   (a) Structured-emission constraints: while Gate 2 is pending, the
 #       LLM must not emit hypotheses_to_add, classify evidence as any
@@ -53,12 +53,16 @@ from faultmaven.modules.case.domain.services.investigation_router import (
 #       INQUIRY; investigation-stage writes are out of scope until the
 #       user picks a path.
 #
-#   (b) Behavior when the user provides data without picking: the
-#       observed failure mode is the user submitting telemetry and the
-#       LLM engaging with it, letting the path question fade into
-#       conversation noise. The reminder tells the LLM to acknowledge
-#       briefly THEN re-assert the path question prominently — keeping
-#       Gate 2 in the user's working memory until they click.
+#   (b) Behavior when the user provides data without picking: tell the
+#       LLM to acknowledge briefly THEN re-assert the path question.
+#       Without this, the LLM tends to engage with the data and let
+#       the path question fade into conversation noise.
+#
+# Lives in its own XML envelope (not inside <path_selection_state>) so
+# the LLM can distinguish "case state to remember" from "behavior
+# directive for this turn" — the state block is descriptive
+# (RECOMMENDED_PATH:, AUTO_SELECTED:, RATIONALE:), the reminder is
+# imperative.
 #
 # Engine-side backstop is unchanged: ``_path_selection_suggestions`` in
 # milestone_engine still emits the two COOPERATIVE buttons every turn
@@ -66,12 +70,11 @@ from faultmaven.modules.case.domain.services.investigation_router import (
 # regardless of LLM compliance. This reminder is the prompt-layer
 # reinforcement called out in INV-19.
 #
-# Lives here (not templates.py) because templates.py already imports
-# context_builder; the reverse direction would create a cycle. Single-
-# consumer constant; tests import it from this module.
+# Lives in context_builder (not templates.py) because templates.py
+# already imports context_builder; the reverse direction would create
+# a cycle. Single-consumer constant; tests import it from this module.
 _GATE2_PENDING_REMINDER = """\
-GATE 2 PENDING — REINFORCEMENT:
-
+<gate2_pending_instructions>
 Until ``case.path_selection`` is committed, you are still in INQUIRY.
 Investigation-stage writes are out of scope:
 - DO NOT emit ``hypotheses_to_add``.
@@ -83,13 +86,13 @@ Investigation-stage writes are out of scope:
 If the user provides data this turn without picking a path, acknowledge
 what they shared in ONE short sentence — do not analyze it, do not
 search it, do not categorize it — then re-assert the path question
-prominently. Example: "Thanks, I see the log excerpt. Before we dig in,
-which path makes sense here — mitigation-first to stop the impact, or
-root-cause analysis?"
+prominently. Example: "Thanks, I see the data you shared. Before we
+dig in, which investigation path makes sense — mitigation-first to
+stop the impact, or root-cause analysis?"
 
 The two COOPERATIVE buttons remain attached to your response
 automatically; the user clicks one to resolve Gate 2.
-"""
+</gate2_pending_instructions>"""
 
 
 # =============================================================================
@@ -2102,7 +2105,8 @@ def build_investigation_context(
                 "user_confirmed_investigation=True again — it is already True. "
                 "The case will not transition to INVESTIGATING until the user "
                 "clicks one of the path-selection suggestions.\n"
-                f"\n{_GATE2_PENDING_REMINDER}</path_selection_state>"
+                "</path_selection_state>"
+                f"\n{_GATE2_PENDING_REMINDER}"
             )
 
     # Phase 4c — entity highlights block. Pre-fetched by the milestone

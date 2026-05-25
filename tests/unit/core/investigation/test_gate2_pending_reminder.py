@@ -159,14 +159,18 @@ class TestConditionalInjection:
     ``<path_selection_state>`` block is suppressed).
     """
 
+    # The reminder emits as a sibling XML envelope to <path_selection_state>;
+    # its opening tag is a stable, structural marker that doesn't drift if
+    # the prose inside is reworded.
+    _REMINDER_OPEN_TAG = "<gate2_pending_instructions>"
+
     def test_reminder_present_when_gate1_passed_and_gate2_pending(self):
         case = _inquiry_case(
             problem_statement_confirmed=True,
             path_selection=None,
         )
         rendered = _rendered(case)
-        # The reminder header is a stable marker.
-        assert "GATE 2 PENDING — REINFORCEMENT:" in rendered
+        assert self._REMINDER_OPEN_TAG in rendered
         # And the full structured-emission ban is reachable in the prompt.
         normalized = " ".join(rendered.split())
         assert "DO NOT emit ``hypotheses_to_add``" in normalized
@@ -184,7 +188,7 @@ class TestConditionalInjection:
             path_selection=None,
         )
         rendered = _rendered(case)
-        assert "GATE 2 PENDING — REINFORCEMENT:" not in rendered
+        assert self._REMINDER_OPEN_TAG not in rendered
 
     def test_reminder_absent_when_path_committed(self):
         """Once the user has clicked a Gate 2 button (path_selection
@@ -197,14 +201,14 @@ class TestConditionalInjection:
             path_selection=_committed_path(),
         )
         rendered = _rendered(case)
-        assert "GATE 2 PENDING — REINFORCEMENT:" not in rendered
+        assert self._REMINDER_OPEN_TAG not in rendered
 
     def test_reminder_absent_when_preliminary_urgency_missing(self):
         """Without preliminary_urgency the recommendation helper
         returns None and the entire ``<path_selection_state>`` block
-        is suppressed. The reminder is part of that block and must
-        not appear standalone — keeping the prompt content coupled to
-        a renderable recommendation.
+        is suppressed. The reminder is part of that block's
+        co-emission path and must not appear standalone — keeping the
+        prompt content coupled to a renderable recommendation.
         """
         case = _inquiry_case(
             problem_statement_confirmed=True,
@@ -212,19 +216,32 @@ class TestConditionalInjection:
             path_selection=None,
         )
         rendered = _rendered(case)
-        assert "GATE 2 PENDING — REINFORCEMENT:" not in rendered
+        assert self._REMINDER_OPEN_TAG not in rendered
 
     def test_reminder_absent_outside_inquiry_status(self):
-        """If the case somehow lands in INVESTIGATING with the
-        Gate-2-pending shape (post-INV-19 this shouldn't happen, but
-        the dispatch is a different path), the reminder must not fire
-        — INVESTIGATING-stage prompts have their own dispatch."""
+        """Pins the status gate IN ISOLATION: path_selection is None
+        (which alone would fire the reminder during INQUIRY), but the
+        case is in INVESTIGATING. The reminder must still suppress —
+        the status check is the failsafe that keeps INQUIRY-stage
+        instructions out of INVESTIGATING-stage prompts (where the
+        dispatch is path-conditional via ``_select_diagnosis_block``).
+
+        Earlier this test passed for the wrong reason: it set
+        path_selection=committed AND mutated status, but the path-
+        commit gate already suppressed the reminder before the status
+        check mattered. Using path_selection=None forces the status
+        check to be the sole gate that fires.
+        """
         case = _inquiry_case(
             problem_statement_confirmed=True,
-            path_selection=_committed_path(),
+            path_selection=None,  # would normally fire the reminder
         )
-        # Bypass the cross-field validator to simulate the broken state.
+        # Bypass cross-field validators to simulate the broken state
+        # (INVESTIGATING-status case without path_selection — INV-19
+        # would trip during engine milestone progression, but the
+        # context builder runs earlier and must still be safe).
         object.__setattr__(case, "status", CaseStatus.INVESTIGATING)
         object.__setattr__(case.inquiry, "decided_to_investigate", True)
         rendered = _rendered(case)
-        assert "GATE 2 PENDING — REINFORCEMENT:" not in rendered
+        # Absent because status != INQUIRY, NOT because path is committed.
+        assert self._REMINDER_OPEN_TAG not in rendered
