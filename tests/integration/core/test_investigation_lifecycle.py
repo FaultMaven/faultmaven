@@ -49,7 +49,9 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.domain.models import (
     Case,
     InquiryData,
+    InvestigationPath,
     InvestigationProgress,
+    PathSelection,
     ProblemVerification,
 )
 from faultmaven.modules.case.infrastructure.case_repository import (
@@ -80,7 +82,10 @@ def _make_investigating_case(**overrides) -> Case:
 
     Pydantic validates INVESTIGATING requires confirmed problem statement
     and investigation commitment at construction time, so we pass a
-    pre-configured InquiryData in the constructor.
+    pre-configured InquiryData in the constructor. Post-INV-19, an
+    INVESTIGATING case also requires a committed ``path_selection``
+    (existence == Gate 2 commit); the engine surfaces a RuntimeError on
+    milestone progression otherwise.
     """
     description = overrides.pop(
         "description",
@@ -102,6 +107,13 @@ def _make_investigating_case(**overrides) -> Case:
         "problem_verification": ProblemVerification(
             symptom_statement=description,
             severity="LOW",
+        ),
+        "path_selection": PathSelection(
+            path=InvestigationPath.ROOT_CAUSE,
+            auto_selected=True,
+            rationale="historical low urgency",
+            alternate_path=InvestigationPath.MITIGATION_FIRST,
+            selected_by="test-user-123",
         ),
     }
     defaults.update(overrides)
@@ -224,12 +236,12 @@ def _inquiry_response_gate2_ack() -> InquiryResponse:
     """Inquiry response on the Gate-2-confirmation turn.
 
     The case is still in INQUIRY when the PATH_SELECTION intent fires
-    (the engine sets path_selection.user_confirmed=True via model_copy
-    but defers the actual transition to _check_automatic_transitions).
-    The LLM is invoked once more before the transition fires; this
-    minimal acknowledgment response covers that turn without changing
-    inquiry state. INV-19 then sees both gates passed and transitions
-    the case to INVESTIGATING.
+    (the engine creates case.path_selection — its existence is the Gate 2
+    commit signal — and defers the actual transition to
+    _check_automatic_transitions). The LLM is invoked once more before the
+    transition fires; this minimal acknowledgment response covers that turn
+    without changing inquiry state. INV-19 then sees both gates passed and
+    transitions the case to INVESTIGATING.
     """
     return InquiryResponse(
         agent_response="Starting investigation now.",
@@ -456,11 +468,13 @@ class TestInvestigationLifecycle:
         after_gate1 = result["case_updated"]
         assert after_gate1.status == CaseStatus.INQUIRY  # INV-19
         assert after_gate1.inquiry.problem_statement_confirmed is True
-        assert after_gate1.path_selection is not None
-        assert after_gate1.path_selection.user_confirmed is False
+        # path_selection stays None during INQUIRY — Gate 2 commit creates it.
+        assert after_gate1.path_selection is None
 
         # Turn 2: user clicks the path-selection suggestion (Gate 2). Both
         # gates now pass; _check_automatic_transitions fires the transition.
+        # The intent carries the chosen path explicitly (recommendation is
+        # rendered on-demand into the affordance, not stored on the case).
         with patch.object(
             engine,
             "_generate_structured_output",
@@ -470,9 +484,7 @@ class TestInvestigationLifecycle:
                 after_gate1,
                 "Let's start.",
                 intent_type="path_selection",
-                intent_data={
-                    "investigation_path": after_gate1.path_selection.path.value
-                },
+                intent_data={"investigation_path": "mitigation_first"},
             )
 
         updated = result["case_updated"]
@@ -480,8 +492,7 @@ class TestInvestigationLifecycle:
         assert updated.description != ""
         assert updated.progress is not None
         assert updated.problem_verification is not None
-        assert updated.path_selection is not None
-        assert updated.path_selection.user_confirmed is True
+        assert updated.path_selection is not None  # Gate 2 committed
         assert any(
             t.to_status == CaseStatus.INVESTIGATING for t in updated.action_history
         )
@@ -530,9 +541,10 @@ class TestInvestigationLifecycle:
 
         # === Turn 2: Gate 1 close via explicit intent (with urgency signals) ===
         # Dropdown routes through normal INQUIRY flow. LLM confirms +
-        # supplies urgency signals so the engine can compute the path.
-        # Post-INV-19 the case stays in INQUIRY with Gate 2 pending until
-        # the user clicks the path-selection suggestion.
+        # supplies urgency signals; the engine renders the Gate 2
+        # recommendation on-demand into the affordance pair (no auto-write
+        # to case.path_selection). Post-INV-19 the case stays in INQUIRY with
+        # Gate 2 pending until the user clicks a path-selection suggestion.
         case.current_turn = 2
         with patch.object(
             engine,
@@ -547,8 +559,7 @@ class TestInvestigationLifecycle:
             )
         case = result["case_updated"]
         assert case.status == CaseStatus.INQUIRY  # INV-19: Gate 2 still pending
-        assert case.path_selection is not None
-        assert case.path_selection.user_confirmed is False
+        assert case.path_selection is None
 
         # === Turn 3: User clicks Gate 2 path-selection suggestion → transition fires ===
         case.current_turn = 3
@@ -561,7 +572,7 @@ class TestInvestigationLifecycle:
                 case,
                 "Start it.",
                 intent_type="path_selection",
-                intent_data={"investigation_path": case.path_selection.path.value},
+                intent_data={"investigation_path": "mitigation_first"},
             )
         case = result["case_updated"]
         assert case.status == CaseStatus.INVESTIGATING
@@ -626,8 +637,9 @@ class TestInvestigationLifecycle:
         assert updated1.inquiry.problem_statement_confirmed is False
         assert updated1.inquiry.decided_to_investigate is False
 
-        # Turn 2: User confirms → Gate 1 closes; engine computes path
-        # recommendation; case stays in INQUIRY with Gate 2 pending.
+        # Turn 2: User confirms → Gate 1 closes; case stays in INQUIRY with
+        # Gate 2 pending. case.path_selection is NOT written during INQUIRY —
+        # the recommendation is rendered on-demand into the affordance pair.
         with patch.object(
             engine,
             "_generate_structured_output",
@@ -642,8 +654,7 @@ class TestInvestigationLifecycle:
         assert updated2.status == CaseStatus.INQUIRY
         assert updated2.inquiry.problem_statement_confirmed is True
         assert updated2.inquiry.decided_to_investigate is True
-        assert updated2.path_selection is not None
-        assert updated2.path_selection.user_confirmed is False
+        assert updated2.path_selection is None
 
         # Turn 3: User clicks the recommended Gate 2 suggestion → transition fires.
         with patch.object(
@@ -655,12 +666,12 @@ class TestInvestigationLifecycle:
                 updated2,
                 "Let's go with the recommended path.",
                 intent_type="path_selection",
-                intent_data={"investigation_path": updated2.path_selection.path.value},
+                intent_data={"investigation_path": "mitigation_first"},
             )
 
         updated3 = result3["case_updated"]
         assert updated3.status == CaseStatus.INVESTIGATING
-        assert updated3.path_selection.user_confirmed is True
+        assert updated3.path_selection is not None  # Gate 2 committed
 
     async def test_close_from_inquiry_via_intent(self, engine, case_repo):
         """Close case from INQUIRY via dropdown proposes pending transition."""
@@ -737,8 +748,9 @@ class TestCheckpointing:
 
         after_gate1 = result["case_updated"]
         assert after_gate1.status == CaseStatus.INQUIRY
-        assert after_gate1.path_selection is not None
-        assert after_gate1.path_selection.user_confirmed is False
+        # path_selection is None during INQUIRY (recommendation rendered
+        # on-demand). Gate 2 commit creates it on the next turn.
+        assert after_gate1.path_selection is None
 
         # Turn 2: Gate 2 click → transition fires; checkpoint is created
         # inside _transition_to_investigating.
@@ -751,9 +763,7 @@ class TestCheckpointing:
                 after_gate1,
                 "Start it.",
                 intent_type="path_selection",
-                intent_data={
-                    "investigation_path": after_gate1.path_selection.path.value
-                },
+                intent_data={"investigation_path": "mitigation_first"},
             )
 
         assert result["case_updated"].status == CaseStatus.INVESTIGATING

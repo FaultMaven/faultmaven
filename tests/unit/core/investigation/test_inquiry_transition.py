@@ -559,8 +559,9 @@ class TestInquiryTransitionLogic:
         assert case_after_turn1.status == CaseStatus.INQUIRY
         assert case_after_turn1.inquiry.problem_statement_confirmed is False
 
-        # Turn 2: User confirms → Gate 1 closes; engine computes path
-        # recommendation; stays in INQUIRY with Gate 2 pending.
+        # Turn 2: User confirms → Gate 1 closes; case stays in INQUIRY with
+        # Gate 2 pending (path_selection is None, recommendation rendered
+        # on-demand into the Gate 2 affordance).
         mock_response_turn2 = json.dumps(
             {
                 "agent_response": "Confirmed. Recommend mitigation-first given the active impact.",
@@ -577,12 +578,12 @@ class TestInquiryTransitionLogic:
         )
 
         # Turn 2: Gate 1 done, Gate 2 pending — case is still INQUIRY.
+        # path_selection stays None (no auto-write during INQUIRY).
         case_after_turn2 = result2["case_updated"]
         assert case_after_turn2.status == CaseStatus.INQUIRY  # INV-19
         assert case_after_turn2.inquiry.problem_statement_confirmed is True
         assert case_after_turn2.inquiry.decided_to_investigate is True
-        assert case_after_turn2.path_selection is not None
-        assert case_after_turn2.path_selection.user_confirmed is False
+        assert case_after_turn2.path_selection is None
 
         # Turn 3: User clicks the recommended Gate 2 suggestion.
         mock_response_turn3 = json.dumps(
@@ -598,14 +599,14 @@ class TestInquiryTransitionLogic:
             "Let's start with mitigation-first.",
             intent_type="path_selection",
             intent_data={
-                "investigation_path": case_after_turn2.path_selection.path.value,
+                "investigation_path": "mitigation_first",
             },
         )
 
-        # Turn 3: Gate 2 closed → transition fires.
+        # Turn 3: Gate 2 closed (path_selection created) → transition fires.
         case_after_turn3 = result3["case_updated"]
         assert case_after_turn3.status == CaseStatus.INVESTIGATING
-        assert case_after_turn3.path_selection.user_confirmed is True
+        assert case_after_turn3.path_selection is not None
         assert result3["metadata"]["status_transitioned"] is True
 
     @pytest.mark.asyncio
@@ -770,7 +771,7 @@ class TestInquiryTransitionLogic:
             investigation_tools=MagicMock(),
         )
 
-        # Turn 1: agent writes the statement, leaves user_confirmed=False.
+        # Turn 1: agent proposes the statement; user has not yet confirmed.
         mock_response_turn1 = json.dumps(
             {
                 "agent_response": "Let me confirm: API returning 503 errors. Is this right?",
@@ -812,11 +813,12 @@ class TestInquiryTransitionLogic:
         result2 = await engine.process_turn(case_after_turn1, "yes")
 
         case_after_turn2 = result2["case_updated"]
-        # INV-01 (Gate 1) passes; INV-19 (Gate 2) is still pending — case stays in INQUIRY.
+        # INV-01 (Gate 1) passes; INV-19 (Gate 2) is still pending — case stays
+        # in INQUIRY. path_selection is None during INQUIRY (no auto-write); it
+        # is created only when the user clicks the Gate 2 affordance.
         assert case_after_turn2.status == CaseStatus.INQUIRY
         assert case_after_turn2.inquiry.problem_statement_confirmed is True
-        assert case_after_turn2.path_selection is not None
-        assert case_after_turn2.path_selection.user_confirmed is False
+        assert case_after_turn2.path_selection is None
         assert case_after_turn2.inquiry.decided_to_investigate is True
 
 

@@ -3,12 +3,17 @@
 This module is responsible for determining the optimal investigation path
 (MITIGATION_FIRST vs ROOT_CAUSE) based on urgency and temporal state.
 
-The router returns a *recommendation*; the user confirms or overrides via
-Gate 2 (see PathSelection.user_confirmed). The router never returns
-USER_CHOICE — ambiguous cases default to ROOT_CAUSE with auto_selected=False
-and an honest rationale, and the user can switch to MITIGATION_FIRST in
-Gate 2 if they have out-of-band context (e.g., mitigation already applied
-elsewhere, telemetry doesn't capture the full impact).
+The router returns a *recommendation*; the user confirms or overrides at
+Gate 2. The router is a pure helper — it does NOT mutate the case. The
+engine renders the recommendation into the Gate 2 affordance, and only on
+the user's Gate 2 click does ``case.path_selection`` get created. Existence
+of ``case.path_selection`` IS the commit (see ``engine_owned_affordances``
+and ``_gate2_is_pending`` in milestone_engine.py).
+
+Ambiguous cases default to ROOT_CAUSE with auto_selected=False and an honest
+rationale; the user can switch to MITIGATION_FIRST in Gate 2 if they have
+out-of-band context (e.g., mitigation already applied elsewhere, telemetry
+doesn't capture the full impact).
 
 Note: The rca_infeasible advisory signal on ProblemVerification does NOT affect
 path selection. It influences post-mitigation agent behavior only (see §2.4 of
@@ -19,6 +24,7 @@ Design Reference:
 """
 
 import logging
+from typing import TYPE_CHECKING, Optional
 
 from faultmaven.modules.case.contracts import (
     InvestigationPath,
@@ -27,6 +33,9 @@ from faultmaven.modules.case.contracts import (
     TemporalState,
     UrgencyLevel,
 )
+
+if TYPE_CHECKING:
+    from faultmaven.modules.case.contracts import Case
 
 logger = logging.getLogger(__name__)
 
@@ -46,15 +55,16 @@ def determine_investigation_path(verification: ProblemVerification) -> PathSelec
     - HISTORICAL + any urgency  -> ROOT_CAUSE (auto)
     - missing/UNKNOWN signals   -> ROOT_CAUSE (default, not auto-selected)
 
-    All outcomes are recommendations — Gate 2 requires explicit user
-    confirmation before the path commits (see PathSelection.user_confirmed).
+    All outcomes are recommendations — the caller is responsible for surfacing
+    them at Gate 2 and only writing ``case.path_selection`` once the user
+    clicks (existence == commit, see milestone_engine).
 
     Args:
         verification: Consolidated problem verification data
 
     Returns:
         PathSelection with path, auto_selected, rationale, alternate_path.
-        user_confirmed defaults to False — caller must obtain Gate 2 confirmation.
+        Pure helper — does not mutate any case.
     """
     temporal = verification.temporal_state
     urgency = verification.urgency_level
@@ -136,3 +146,43 @@ def determine_investigation_path(verification: ProblemVerification) -> PathSelec
         ),
         alternate_path=InvestigationPath.MITIGATION_FIRST,
     )
+
+
+def recommend_investigation_path_for_case(case: "Case") -> Optional[PathSelection]:
+    """Pure recommendation helper — returns a ``PathSelection`` without mutating case.
+
+    Used at Gate 2 button-render time to determine which option to label
+    "Recommended", and inside the Gate 2 click handler to construct the
+    committed ``PathSelection`` from the user's choice + the recommendation
+    context (rationale, alternate_path).
+
+    Returns ``None`` if recommendation prerequisites aren't met:
+      - Gate 1 not yet passed (no problem_statement_confirmed)
+      - preliminary_urgency not populated
+
+    Does NOT write to ``case.path_selection`` — caller chooses when (and if)
+    to commit. The path-selection commit happens exclusively in the Gate 2
+    click handler; this function is read-only.
+    """
+    if not case.inquiry or not case.inquiry.problem_statement_confirmed:
+        return None
+    pu = case.inquiry.preliminary_urgency
+    if pu is None or pu.level is None:
+        return None
+
+    temporal = TemporalState.ONGOING if pu.is_ongoing else TemporalState.HISTORICAL
+    severity = pu.level.value.upper() if pu.level != UrgencyLevel.UNKNOWN else "MEDIUM"
+
+    # Build a transient ProblemVerification for the router. The case-level
+    # case.problem_verification is populated lazily in
+    # _transition_to_investigating; constructing one here avoids prematurely
+    # materializing case state that the transition path owns.
+    verification = ProblemVerification(
+        symptom_statement=case.description
+        or case.inquiry.proposed_problem_statement
+        or "Unspecified issue",
+        severity=severity,
+        temporal_state=temporal,
+        urgency_level=pu.level,
+    )
+    return determine_investigation_path(verification)

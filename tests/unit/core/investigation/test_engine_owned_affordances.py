@@ -99,28 +99,31 @@ def _investigating_case(
 
 def _mitigation_first_path(
     *,
-    user_confirmed: bool = True,
     mitigation_completed_at_turn: int | None = None,
     rca_after_mitigation_confirmed: bool = False,
 ) -> PathSelection:
+    """Build a committed MITIGATION_FIRST PathSelection. Existence on a case
+    means Gate 2 was passed (after the path-selection commit-timing refactor;
+    the legacy ``user_confirmed`` field has been removed)."""
     return PathSelection(
         path=InvestigationPath.MITIGATION_FIRST,
         auto_selected=True,
         rationale="ongoing critical impact",
         alternate_path=InvestigationPath.ROOT_CAUSE,
-        user_confirmed=user_confirmed,
+        selected_by="u1",
         mitigation_completed_at_turn=mitigation_completed_at_turn,
         rca_after_mitigation_confirmed=rca_after_mitigation_confirmed,
     )
 
 
-def _root_cause_path(*, user_confirmed: bool = False) -> PathSelection:
+def _root_cause_path() -> PathSelection:
+    """Build a committed ROOT_CAUSE PathSelection."""
     return PathSelection(
         path=InvestigationPath.ROOT_CAUSE,
         auto_selected=True,
         rationale="historical issue",
         alternate_path=InvestigationPath.MITIGATION_FIRST,
-        user_confirmed=user_confirmed,
+        selected_by="u1",
     )
 
 
@@ -150,30 +153,31 @@ class TestGate1Predicate:
 
 
 class TestGate2Predicate:
-    """Gate 2 is pending when Gate 1 has passed and path_selection awaits confirmation."""
+    """Gate 2 is pending when Gate 1 has passed and ``case.path_selection``
+    has not yet been committed. After the path-selection commit-timing
+    refactor, existence of path_selection IS the commit — there is no
+    separate user_confirmed flag."""
 
-    def test_pending_when_gate1_passed_and_path_unconfirmed(self):
+    def test_pending_when_gate1_passed_and_no_path_committed(self):
+        """Path uncommitted (None) during INQUIRY with Gate 1 passed → Gate 2 pending."""
         case = _inquiry_case(
             problem_statement_confirmed=True,
-            path_selection=_root_cause_path(user_confirmed=False),
+            path_selection=None,
         )
         assert _gate2_is_pending(case) is True
 
     def test_not_pending_when_gate1_not_passed(self):
         case = _inquiry_case(
             problem_statement_confirmed=False,
-            path_selection=_root_cause_path(user_confirmed=False),
+            path_selection=None,
         )
         assert _gate2_is_pending(case) is False
 
-    def test_not_pending_when_path_selection_missing(self):
-        case = _inquiry_case(problem_statement_confirmed=True, path_selection=None)
-        assert _gate2_is_pending(case) is False
-
-    def test_not_pending_when_user_confirmed_path(self):
+    def test_not_pending_when_path_committed(self):
+        """Path_selection existence means user has clicked Gate 2; gate closed."""
         case = _inquiry_case(
             problem_statement_confirmed=True,
-            path_selection=_root_cause_path(user_confirmed=True),
+            path_selection=_root_cause_path(),
         )
         assert _gate2_is_pending(case) is False
 
@@ -193,7 +197,6 @@ class TestEngineOwnedAffordances:
         # INVESTIGATING with all gates closed: no engine-owned affordance.
         case = _investigating_case(
             path_selection=_mitigation_first_path(
-                user_confirmed=True,
                 mitigation_completed_at_turn=5,
                 rca_after_mitigation_confirmed=True,
             ),
@@ -222,7 +225,7 @@ class TestEngineOwnedAffordances:
     def test_gate2_pending_returns_path_selection_pair(self):
         case = _inquiry_case(
             problem_statement_confirmed=True,
-            path_selection=_root_cause_path(user_confirmed=False),
+            path_selection=None,  # Gate 2 pending = path not yet committed
         )
         result = engine_owned_affordances(case)
         assert result is not None
@@ -234,7 +237,6 @@ class TestEngineOwnedAffordances:
     def test_gate3_pending_returns_post_mitigation_pair(self):
         case = _investigating_case(
             path_selection=_mitigation_first_path(
-                user_confirmed=True,
                 mitigation_completed_at_turn=5,
                 rca_after_mitigation_confirmed=False,
             ),
@@ -273,7 +275,6 @@ class TestEngineOwnedAffordances:
         """
         case = _investigating_case(
             path_selection=_mitigation_first_path(
-                user_confirmed=True,
                 mitigation_completed_at_turn=5,
                 rca_after_mitigation_confirmed=False,
             ),
@@ -289,7 +290,7 @@ class TestEngineOwnedAffordances:
         """Gate 1 is closed but Gate 2 still open: only Gate 2's pair fires."""
         case = _inquiry_case(
             problem_statement_confirmed=True,
-            path_selection=_root_cause_path(user_confirmed=False),
+            path_selection=None,  # Gate 2 pending = path not yet committed
         )
         result = engine_owned_affordances(case)
         assert result is not None

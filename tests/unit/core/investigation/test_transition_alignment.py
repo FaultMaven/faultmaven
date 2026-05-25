@@ -390,7 +390,7 @@ async def test_check_automatic_transitions_closure_reason_mitigation_sufficient(
         path=InvestigationPath.MITIGATION_FIRST,
         auto_selected=True,
         rationale="ongoing critical",
-        user_confirmed=True,
+        selected_by="u1",
         mitigation_completed_at_turn=case.current_turn,
         # rca_after_mitigation_confirmed default False → at Gate 3
     )
