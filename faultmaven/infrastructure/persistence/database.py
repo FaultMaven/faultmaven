@@ -25,7 +25,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -115,6 +115,35 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
             # SQLite-specific: enable foreign keys
             connect_args={"check_same_thread": False},
         )
+
+        # SQLite production PRAGMAs. Set on every new connection because
+        # PRAGMAs are per-connection state in SQLite (and NullPool opens
+        # a fresh connection per checkout).
+        #
+        # - journal_mode=WAL: readers don't block writers and writers don't
+        #   block readers. Without this the default rollback journal takes
+        #   an exclusive write lock, so any concurrent read+write from a
+        #   single async event loop will collide.
+        # - busy_timeout=5000: when contention still happens (single-writer
+        #   constraint persists under WAL), wait up to 5s before failing
+        #   instead of the default 0ms (which surfaces as "database is
+        #   locked" on the second concurrent commit — observed in eval
+        #   turn 2 on case_78c6ad39e2d4).
+        # - foreign_keys=ON: SQLite ignores FK constraints by default.
+        #   Setting this here lets ON DELETE CASCADE work; otherwise
+        #   each cascade-needing call site has to do an explicit
+        #   multi-phase delete (see the workaround at
+        #   sqlite_case_repository.py:3334).
+        @event.listens_for(_engine.sync_engine, "connect")
+        def _sqlite_set_pragmas(dbapi_conn, _connection_record):
+            cursor = dbapi_conn.cursor()
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cursor.close()
+
     else:
         # PostgreSQL: Use connection pooling
         _engine = create_async_engine(
