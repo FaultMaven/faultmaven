@@ -336,7 +336,7 @@ pip install -e ".[dev]"           # Install dependencies
 - Copies 59 built-in runbooks from `resources/knowledge/builtin/` to `data/knowledge/global/`
 - Runs database migrations
 - Creates a default admin account (`admin@local.faultmaven`)
-- Auto-ingests built-in runbooks into ChromaDB (scan → verify, ~2-3 min for embeddings)
+- Bootstraps the KB: atomic + idempotent ingestion of `data/knowledge/{scope}/**/*.md` into both `knowledge_items` and ChromaDB. Implementation: `faultmaven/bootstrap/kb_init.py`; runs on every startup but skips unchanged files via content-hash. See [`docs/architecture/knowledge-and-ai/kb-ingestion-architecture.md`](docs/architecture/knowledge-and-ai/kb-ingestion-architecture.md).
 
 Login via dev-login: `POST /api/v1/auth/dev-login` with `{"username": "admin"}`
 
@@ -664,7 +664,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | Knowledge | `POST /knowledge/convert-from-case` | Generate runbook from resolved case |
 | Knowledge | `POST /knowledge/runbooks/create` | Create runbook manually from template |
 | Knowledge | `GET /knowledge/drafts` | List all draft runbooks |
-| Knowledge | `POST /knowledge/scan` | Discover runbooks on disk (KB Toolkit bridge) |
+| Knowledge | `POST /knowledge/scan` | Manual draft reconciliation (auto-scan removed; ingestion is now owned by startup bootstrap) |
 | Knowledge | `GET /knowledge/conversions` | List conversion jobs |
 | Knowledge | `GET /knowledge/conversions/by-case/{case_id}` | Get conversion for a case |
 | Knowledge | `PUT/POST/DELETE .../drafts/{id}` | Draft management (edit, verify, delete) |

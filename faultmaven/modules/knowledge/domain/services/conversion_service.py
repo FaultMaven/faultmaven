@@ -1364,13 +1364,8 @@ class ConversionService:
                 )
                 file_path.write_text(content, encoding="utf-8")
 
-            # Update database
-            now = datetime.now(timezone.utc)
-            dm.status = DraftStatus.VERIFIED.value
-            dm.verified_at = now
-            dm.verified_by = user_id
-
-            # Populate metadata from frontmatter
+            # Populate metadata from frontmatter (safe to set pre-ingest; the
+            # frontmatter on disk was already updated above).
             content = file_path.read_text(encoding="utf-8")
             from faultmaven.utils.frontmatter import extract_frontmatter_metadata
 
@@ -1398,40 +1393,59 @@ class ConversionService:
                 except Exception:
                     pass
 
-            # Ingest into ChromaDB (chunk + embed + store)
-            knowledge_item_id = None
-            chunks_created = 0
+            # Ingest into ChromaDB (chunk + embed + store). The verified
+            # status is committed ONLY after ingestion succeeds — verifying
+            # without indexed embeddings is the bug history this guards
+            # against. The previous half-state (status=verified,
+            # knowledge_item_id=NULL) was then "repaired" by a subsequent
+            # KB-page scan that downgraded the row back to draft on every
+            # visit, corrupting user-verified runbooks.
             collection = f"{job.scope}_kb"
 
-            if self._knowledge_service:
-                try:
-                    import uuid as _uuid
+            if not self._knowledge_service:
+                raise RuntimeError(
+                    "KnowledgeService unavailable — cannot verify draft "
+                    "without ingestion. Aborting with no status mutation."
+                )
 
-                    knowledge_item_id = f"kb_{_uuid.uuid4().hex[:12]}"
-                    # ingest_runbook writes both the relational knowledge_items
-                    # row AND the ChromaDB embeddings. SQL-first ordering means
-                    # a ChromaDB failure leaves the SQL row in place for a
-                    # scan-and-recover pass to re-embed; we keep the
-                    # log-and-continue handler exactly so that recovery path
-                    # has something to discover.
-                    chunks_created = await self._knowledge_service.ingest_runbook(
-                        document_id=knowledge_item_id,
-                        title=dm.title,
-                        content=content,
-                        organization_id=job.organization_id,
-                        document_type="runbook",
-                        source_url=f"conversion:{conversion_id}",
-                        scope=job.scope,
-                        owner_id=user_id,
-                        team_id=job.team_id,
-                        verified_by=user_id,
-                    )
-                except Exception as e:
-                    logger.error(f"Ingestion failed for draft {draft_id}: {e}")
-                    knowledge_item_id = None
+            import uuid as _uuid
 
-            if knowledge_item_id and chunks_created > 0:
-                dm.knowledge_item_id = knowledge_item_id
+            knowledge_item_id = f"kb_{_uuid.uuid4().hex[:12]}"
+            try:
+                chunks_created = await self._knowledge_service.ingest_runbook(
+                    document_id=knowledge_item_id,
+                    title=dm.title,
+                    content=content,
+                    organization_id=job.organization_id,
+                    document_type="runbook",
+                    source_url=f"conversion:{conversion_id}",
+                    scope=job.scope,
+                    owner_id=user_id,
+                    team_id=job.team_id,
+                    verified_by=user_id,
+                )
+            except Exception as e:
+                # `ingest_runbook` cleaned up its own SQL row before raising.
+                # The draft stays in DRAFT state; the caller gets a 500 and
+                # can retry. No half-state in either store.
+                logger.error(f"Ingestion failed for draft {draft_id}: {e}")
+                raise
+
+            if chunks_created <= 0:
+                # Defence-in-depth: `ingest_runbook` should raise on 0-chunk
+                # results. If it doesn't, treat this as a contract violation
+                # and refuse to mark the draft verified.
+                raise RuntimeError(
+                    f"Vector indexing produced 0 chunks for draft {draft_id}. "
+                    f"Draft remains in DRAFT state."
+                )
+
+            # Ingestion succeeded — NOW commit the verified status.
+            now = datetime.now(timezone.utc)
+            dm.status = DraftStatus.VERIFIED.value
+            dm.verified_at = now
+            dm.verified_by = user_id
+            dm.knowledge_item_id = knowledge_item_id
 
             await session.commit()
 
@@ -1439,9 +1453,9 @@ class ConversionService:
                 draft_id=dm.id,
                 runbook_id=dm.runbook_id,
                 status="verified",
-                knowledge_item_id=knowledge_item_id or "",
-                ingested=knowledge_item_id is not None and chunks_created > 0,
-                ingested_at=now if knowledge_item_id else None,
+                knowledge_item_id=knowledge_item_id,
+                ingested=True,
+                ingested_at=now,
                 collection=collection,
                 chunks_created=chunks_created,
             )
@@ -1630,7 +1644,6 @@ status: draft
 
         discovered = []
         skipped = 0
-        reverted = 0
         errors = []
 
         # Reconcile DB state before scanning disk
@@ -1677,15 +1690,21 @@ status: draft
 
                     if draft_model.status == "verified":
                         # Trust SQLite: if knowledge_item_id is set, the
-                        # document was activated. Don't probe ChromaDB.
+                        # document was activated.
+                        # If status=verified but knowledge_item_id is missing,
+                        # this is a legacy half-state row from the pre-atomic
+                        # verify_draft path. The current verify_draft only
+                        # commits VERIFIED after successful ingestion, so new
+                        # rows should never reach this branch. Warn loudly
+                        # rather than silently downgrading — a silent revert
+                        # is what corrupted live data in the incident this
+                        # path was rewritten to prevent.
                         if not getattr(draft_model, "knowledge_item_id", None):
-                            # Verified but no knowledge_item_id — likely from
-                            # a failed ingestion. Revert to draft.
-                            draft_model.status = "draft"
-                            reverted += 1
-                            logger.info(
-                                f"Reverted draft {draft_model.id} "
-                                f"(verified but no knowledge_item_id)"
+                            logger.warning(
+                                f"Draft {draft_model.id} has status=verified "
+                                f"but no knowledge_item_id (legacy half-state). "
+                                f"Leaving as-is; investigate and clean up via "
+                                f"explicit admin action if needed."
                             )
 
                     tracked_paths.add(draft_model.file_path)
@@ -1715,7 +1734,6 @@ status: draft
         if not knowledge_dir.exists():
             return {
                 "discovered": 0,
-                "reverted": reverted,
                 "skipped": 0,
                 "errors": [],
                 "drafts": [],
@@ -1871,7 +1889,6 @@ status: draft
 
         return {
             "discovered": len(discovered),
-            "reverted": reverted,
             "skipped": skipped,
             "errors": errors,
             "drafts": discovered,

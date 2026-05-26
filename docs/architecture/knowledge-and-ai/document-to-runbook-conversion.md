@@ -749,11 +749,13 @@ Response: Updated draft object with re-run validation and quality score.
 ```
 
 This endpoint:
-1. Updates frontmatter `status` from `draft` to `verified` and sets `verified_by` to the current user.
-2. Creates a `KnowledgeItem` record in the database.
-3. Triggers the ingestion pipeline (chunk, embed, store in ChromaDB).
+1. Updates frontmatter `status` from `draft` to `verified` and sets `verified_by` on the file on disk (so chunk metadata carries `status=verified`).
+2. Atomically ingests the runbook via `KnowledgeService.ingest_runbook()` — creates the `knowledge_items` row AND writes ChromaDB chunks. If either step fails, the SQL row is rolled back and a 500 is returned; the draft stays in `DRAFT` state.
+3. Only after ingestion succeeds, commits `dm.status = VERIFIED`, `verified_at`, `verified_by`, `knowledge_item_id` in `conversion_drafts`.
 
-**Frontmatter mutation implementation note:** The `.md` file on disk must be updated before ingestion. Use `python-frontmatter` (or `ruamel.yaml`) to parse the YAML frontmatter, mutate the `status` and `verified_by` fields, and write back the file preserving the markdown body. Do not use regex substitution — YAML has edge cases (quoted strings, multiline values) that regex cannot handle reliably. The `kb-ingest` pipeline reads frontmatter from the file, so the file must be correct on disk before ingestion runs.
+**Atomicity guarantee (changed 2026-05-26):** The DB status flip to `VERIFIED` is the *last* mutation. Previously the status was committed up-front and ingestion failure left half-state rows (status=verified, knowledge_item_id=NULL) which a subsequent KB-page scan would mis-classify and revert. The new ordering eliminates that drift class. See [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the full atomicity contract.
+
+**Frontmatter mutation implementation note:** The `.md` file on disk is updated before ingestion using `python-frontmatter` (or `ruamel.yaml`) — not regex substitution, since YAML has edge cases (quoted strings, multiline values) that regex cannot handle reliably. If ingestion subsequently fails, the file's frontmatter retains `status: verified` while the DB row stays in `DRAFT`; this is harmless because the file mutation is idempotent and the next retry uses the same content.
 
 ### 6.6 Access Control
 
@@ -1174,6 +1176,8 @@ Post-construction wiring in `main.py` gives `KnowledgeService` a reference to `C
 ### 9.5 Scan Guard
 
 `ConversionService.scan_for_runbooks()` includes a bulk-discard guard: if the reconcile step would mark **every** active draft as discarded (because files are missing from disk), the session is rolled back and a `RuntimeError` is raised. The API surfaces this as `HTTP 409 Conflict` with the affected draft IDs and a recovery instruction. This prevents a storage-layer failure (wiped `data/knowledge/` directory) from silently destroying the entire KB draft state.
+
+**Verified-row policy (changed 2026-05-26):** The scan no longer reverts rows with `status=verified` but `knowledge_item_id=NULL` back to `draft`. The atomic `verify_draft` flow cannot produce that half-state anymore, and the previous "self-healing" behaviour turned out to be the destructive corruption path that downgraded user-verified runbooks every time the KB page was visited. Legacy rows are now surfaced via a WARN log so an operator can clean them up explicitly; the scan itself is read-only with respect to verified rows.
 
 ### 9.4 Source File Retention
 

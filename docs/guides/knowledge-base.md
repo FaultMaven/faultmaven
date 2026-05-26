@@ -17,11 +17,11 @@ This guide is a navigation pointer. The previous content (template, taxonomy, th
 
 ## Ingestion in one paragraph
 
-Place runbook `.md` files under `data/knowledge/{global|team_<id>|user_<id>}/`, then trigger a scan from the Dashboard KB page (or `POST /api/v1/knowledge/scan`). Scanned files appear as drafts in the Drafts tab. Verifying a draft chunks the file (structure-aware, 100–3000 chars), generates BGE-M3 embeddings (1024 dims), and stores chunks in the single `faultmaven_kb` ChromaDB collection with metadata-based scope filtering. There is no auto-on-PR-merge ingestion.
+There are two ingestion paths, by source. **Pre-deployed runbooks** — files you place directly under `data/knowledge/{global|team_<id>|user_<id>}/` — are ingested automatically at API startup by the [KB bootstrap](../architecture/knowledge-and-ai/kb-ingestion-architecture.md). The bootstrap is idempotent: unchanged files are skipped via content-hash on every restart. **Case-generated drafts** (from the Convert-from-Case feature) and **document-converted drafts** (from a file upload) land in the `conversion_drafts` table and require a human "Verify" click in the Dashboard Drafts tab before they reach the KB. Both paths produce chunks (structure-aware, 100–3000 chars), BGE-M3 embeddings (1024 dims), and rows in the single `faultmaven_kb` ChromaDB collection with metadata-based scope filtering.
 
 ## Auto-seeded built-in runbooks
 
-On first startup, FaultMaven copies 59 runbooks from `resources/knowledge/builtin/` to `data/knowledge/global/`. The Dashboard scans on KB-page mount and you can verify them from the Drafts tab (single or batch via `POST /knowledge/drafts/verify-batch`).
+On first startup, FaultMaven copies 59 runbooks from `resources/knowledge/builtin/` to `data/knowledge/global/`, and the startup bootstrap then ingests them automatically — no Dashboard step is required. To deploy additional runbooks from the KB Toolkit or hand-authored sources, drop them into `data/knowledge/{scope}/` and restart the API (or run `python scripts/reset_kb.py --yes --rebuild` for a hot rebuild without restart).
 
 ## Tools the agent uses during investigation
 

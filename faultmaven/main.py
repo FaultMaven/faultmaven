@@ -718,8 +718,31 @@ async def lifespan(app: FastAPI):
     # Middleware must be added before the app starts. It is configured at import time.
     logger.info("✅ Middleware already configured")
 
-    # KB scan moved to Dashboard mount — POST /api/v1/knowledge/scan
-    # Server startup stays fast; user triggers scan + ingestion from Dashboard
+    # KB Bootstrap: atomic, idempotent ingestion of shipped runbooks.
+    # Pre-deployed `.md` files under data/knowledge/{scope}/ are ingested
+    # directly into knowledge_items + ChromaDB without passing through the
+    # conversion_drafts table. Idempotent: unchanged files are skipped on
+    # subsequent runs. See faultmaven/bootstrap/kb_init.py.
+    try:
+        if getattr(app.state, "knowledge_service", None):
+            from .bootstrap.kb_init import bootstrap_kb
+            from .infrastructure.persistence.database import get_db_session
+            from .providers.tenancy.single_tenant import SingleTenantProvider
+
+            kb_result = await bootstrap_kb(
+                knowledge_service=app.state.knowledge_service,
+                db_session_factory=get_db_session,
+                organization_id=SingleTenantProvider.DEFAULT_ORG_ID,
+            )
+            logger.info(f"✅ KB bootstrap: {kb_result!r}")
+            if kb_result.failed:
+                # Don't block startup, but make failures loud.
+                for path, reason in kb_result.failed:
+                    logger.warning(f"  KB bootstrap failed for {path}: {reason}")
+        else:
+            logger.warning("KB bootstrap skipped: knowledge_service not available")
+    except Exception as e:
+        logger.error(f"KB bootstrap raised (non-fatal): {e}", exc_info=True)
 
     logger.info(
         "🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!"
