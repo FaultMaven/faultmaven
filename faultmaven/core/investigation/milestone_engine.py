@@ -6789,6 +6789,17 @@ class MilestoneEngine:
         validation_repairs: list[str] | None = None,
     ) -> TurnProgress:
         """Create turn progress record."""
+        # Multiple backstops (path-conditional emission rejection, milestone
+        # ordering, data-quality blockers, prompt-injection alerts, etc.)
+        # all append to ``metadata["system_feedback"]`` independently. A
+        # single turn can fire 4+ backstops (e.g., LLM emits root_cause
+        # milestone + causal_evidence + hypotheses_to_add + solutions_to_add
+        # in a pre_path_investigating state), pushing the accumulated text
+        # past ``TurnProgress.system_feedback``'s 1000-char Pydantic cap and
+        # crashing the turn save. Truncate at the chokepoint so every
+        # accumulation path is covered without per-call edits.
+        if system_feedback and len(system_feedback) > 1000:
+            system_feedback = system_feedback[:980] + "\n... [truncated]"
         return TurnProgress(
             turn_number=turn_number,
             timestamp=datetime.now(UTC),
