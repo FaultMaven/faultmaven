@@ -1,20 +1,27 @@
 """Integration test for KnowledgeService.ingest_runbook against a real
 in-memory SQLAlchemy engine.
 
-The method is the single atomic dual-write entry point introduced in
-commit H (post-redesign cleanup). It replaces the old
-``ingest_to_vector_store``, which silently published to ChromaDB without
-ever writing the relational ``knowledge_items`` row — leaving every
-verified runbook with a dangling ``ConversionDraftModel.knowledge_item_id``.
+The method is the single atomic dual-write entry point. It writes the
+relational ``knowledge_items`` row first, then the ChromaDB chunks. The
+contract (tightened 2026-05-26 — see PR #380 / kb-ingestion-architecture.md)
+is **atomic across both stores**: on any failure (vector indexing raises,
+or returns 0 chunks), the SQL row is rolled back before the exception
+propagates. Callers can rely on a non-zero return meaning "fully ingested
+in both stores"; an exception means "no half-state remains anywhere".
 
-This test pins three invariants:
+This test pins four invariants:
 
 1. **Happy path** — the SQL row exists with the expected verification
    level, scope, and timestamps; ChromaDB ingestion was invoked.
-2. **ChromaDB failure leaves the SQL row in place** — the recovery
-   contract requires the relational source-of-truth to remain
-   discoverable so a future scan-and-recover pass can re-embed.
-3. **SQL failure short-circuits before ChromaDB** — ordering matters;
+2. **ChromaDB failure rolls back the SQL row** — orphans are the bug
+   class the new design prevents (the previous "leave SQL for recovery"
+   policy produced half-state rows that downstream scans then
+   mis-classified, silently downgrading user-verified runbooks).
+3. **Zero-chunks return is treated as failure** — the silent
+   `chunks_created == 0` path (BGE-M3 unavailable, chunker empty, etc.)
+   is now the same as raising: SQL row is rolled back, RuntimeError is
+   raised.
+4. **SQL failure short-circuits before ChromaDB** — ordering matters;
    ChromaDB must not be touched if the SQL write didn't succeed.
 
 If any of those regress, this test fails on a real INSERT, not a mock.
@@ -193,9 +200,9 @@ class TestIngestRunbookDualWrite:
             assert row.scope == KnowledgeScope.PERSONAL.value
 
     @pytest.mark.asyncio
-    async def test_chromadb_failure_leaves_sql_row(self, seeded_session_factory):
-        """If ChromaDB fails, the SQL row must remain — recovery scans
-        re-embed missing rows; rolling back would erase the only signal."""
+    async def test_chromadb_failure_rolls_back_sql_row(self, seeded_session_factory):
+        """If ChromaDB indexing raises, the just-written SQL row must be
+        rolled back before the exception propagates — no orphan rows."""
         service = make_service(
             seeded_session_factory, chroma_raises=RuntimeError("chroma down")
         )
@@ -219,10 +226,41 @@ class TestIngestRunbookDualWrite:
                     )
                 )
             ).scalar_one_or_none()
-            assert (
-                row is not None
-            ), "SQL row must persist on ChromaDB failure (scan-and-recover contract)"
-            assert row.title == "Doomed embed"
+            assert row is None, (
+                "SQL row must be rolled back when ChromaDB ingestion fails "
+                "(atomicity contract — see kb-ingestion-architecture.md)"
+            )
+
+    @pytest.mark.asyncio
+    async def test_zero_chunks_returns_rolls_back_sql_row(self, seeded_session_factory):
+        """If vector indexing silently returns 0 chunks (BGE-M3 missing,
+        chunker empty, etc.), treat it as failure: roll back the SQL row
+        and raise RuntimeError."""
+        service = make_service(seeded_session_factory, chroma_returns=0)
+        item_id = "kb_zerochunk001"
+
+        with pytest.raises(RuntimeError, match="0 chunks"):
+            await service.ingest_runbook(
+                document_id=item_id,
+                title="Empty result",
+                content="content",
+                organization_id=DEFAULT_ORG_ID,
+                scope="global",
+                verified_by="user-4",
+            )
+
+        async with seeded_session_factory() as session:
+            row = (
+                await session.execute(
+                    select(KnowledgeItemModel).where(
+                        KnowledgeItemModel.item_id == item_id
+                    )
+                )
+            ).scalar_one_or_none()
+            assert row is None, (
+                "SQL row must be rolled back when vector indexing returns "
+                "0 chunks (atomicity contract)"
+            )
 
     @pytest.mark.asyncio
     async def test_sql_failure_short_circuits_chromadb(self, seeded_session_factory):
