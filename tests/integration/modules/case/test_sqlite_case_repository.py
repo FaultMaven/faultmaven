@@ -13,7 +13,6 @@ Key validations:
 4. All CRUD operations use SQLite-compatible SQL
 """
 
-import json
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -21,10 +20,11 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
+
+from faultmaven.infrastructure.persistence.models import Base
 
 
 @pytest.fixture
@@ -42,12 +42,16 @@ async def sqlite_db_path():
 
 @pytest.fixture
 async def sqlite_engine(sqlite_db_path):
-    """Create SQLAlchemy async engine for SQLite."""
+    """Create SQLAlchemy async engine for SQLite with schema from ORM models."""
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{sqlite_db_path}",
         echo=False,
         poolclass=NullPool,
     )
+    # Schema comes from the ORM — single source of truth, no drift between
+    # hand-rolled CREATE TABLE, models.py, and alembic on column additions.
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     yield engine
     await engine.dispose()
 
@@ -59,267 +63,7 @@ async def sqlite_session(sqlite_engine):
         sqlite_engine, class_=AsyncSession, expire_on_commit=False
     )
     async with async_session_factory() as session:
-        # Create minimal schema for testing
-        await create_test_schema(session)
         yield session
-
-
-async def create_test_schema(session: AsyncSession):
-    """Create minimal schema required for case repository testing."""
-    # Create cases table
-    await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS cases (
-            case_id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            organization_id TEXT,
-            title TEXT NOT NULL,
-            description TEXT DEFAULT '',
-            investigation_strategy TEXT DEFAULT 'post_mortem',
-            status TEXT NOT NULL DEFAULT 'inquiry',
-            current_turn INTEGER NOT NULL DEFAULT 0,
-            turns_without_progress INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_activity_at TIMESTAMP,
-            resolved_at TIMESTAMP,
-            closed_at TIMESTAMP,
-            -- Phase 6 Tier 1 column addition (storage redesign 2026-04).
-            closure_reason TEXT,
-            inquiry TEXT,
-            problem_verification TEXT,
-            working_conclusion TEXT,
-            root_cause_conclusion TEXT,
-            path_selection TEXT,
-            escalation_state TEXT,
-            documentation TEXT,
-            progress TEXT,
-            metadata TEXT,
-            -- Migration 013: denormalized per-disposition eligibility (JSON text).
-            disposition_eligibility TEXT,
-            is_archived INTEGER NOT NULL DEFAULT 0,
-            archived_at TIMESTAMP,
-            -- OCC token (2026-04-24 hierarchy consolidation).
-            version INTEGER NOT NULL DEFAULT 1
-        )
-    """))
-
-    # Create evidence table (post-009: includes primary_purpose, analysis,
-    # processing_mode, advances_milestones, collected_by). Schema mirrors
-    # what migration 009 produces; see EvidenceModel for the canonical shape.
-    await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS evidence (
-            evidence_id TEXT PRIMARY KEY,
-            case_id TEXT NOT NULL,
-            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
-            category TEXT,
-            summary TEXT,
-            preprocessed_content TEXT,
-            content_ref TEXT,
-            file_size BIGINT NOT NULL DEFAULT 0,
-            filename TEXT,
-            upload_timestamp TIMESTAMP,
-            metadata TEXT,
-            source_type TEXT,
-            content_hash TEXT,
-            collected_at_turn INTEGER,
-            source_file_id TEXT,
-            extract TEXT,
-            -- Phase 6 Tier 1 column additions (storage redesign 2026-04).
-            form TEXT NOT NULL DEFAULT 'text',
-            is_primary INTEGER NOT NULL DEFAULT 0,
-            content_type TEXT,
-            reliability_score REAL,
-            tags TEXT,
-            vectorized INTEGER NOT NULL DEFAULT 0,
-            coverage_start_ts TIMESTAMP,
-            coverage_end_ts TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            -- Migration 009 columns.
-            primary_purpose TEXT NOT NULL DEFAULT 'legacy',
-            analysis TEXT,
-            processing_mode TEXT,
-            advances_milestones TEXT,
-            collected_by TEXT NOT NULL DEFAULT 'system',
-            FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
-        )
-    """))
-
-    # Create hypotheses table
-    await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS hypotheses (
-            hypothesis_id TEXT PRIMARY KEY,
-            case_id TEXT NOT NULL,
-            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
-            statement TEXT,
-            status TEXT DEFAULT 'captured',
-            likelihood REAL,
-            initial_likelihood REAL,
-            generated_at_turn INTEGER DEFAULT 0,
-            last_updated_turn INTEGER DEFAULT 0,
-            last_progress_at_turn INTEGER DEFAULT 0,
-            iterations_without_progress INTEGER DEFAULT 0,
-            category TEXT,
-            generation_mode TEXT,
-            rationale TEXT,
-            retirement_reason TEXT,
-            refutation_reason TEXT,
-            evidence_links TEXT,
-            tested_at TIMESTAMP,
-            concluded_at TIMESTAMP,
-            proposed_at TIMESTAMP,
-            updated_at TIMESTAMP,
-            metadata TEXT,
-            created_by TEXT,
-            updated_by TEXT,
-            FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
-        )
-    """))
-
-    # Create hypothesis_evidence junction table (replaces hypotheses.evidence_links JSON blob)
-    await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS hypothesis_evidence (
-            hypothesis_id TEXT NOT NULL,
-            evidence_id TEXT NOT NULL,
-            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
-            relationship_type TEXT NOT NULL,
-            confidence REAL,
-            linked_at_turn INTEGER,
-            linked_by TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (hypothesis_id, evidence_id),
-            FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(hypothesis_id) ON DELETE CASCADE
-        )
-    """))
-
-    # Create solutions table (post-009 schema: dropped created_by/updated_by;
-    # renamed implemented_at -> applied_at, verification_timestamp -> verified_at;
-    # added proposed_by/applied_by/verification_method/verification_evidence_id/effectiveness).
-    await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS solutions (
-            solution_id TEXT PRIMARY KEY,
-            case_id TEXT NOT NULL,
-            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
-            solution_type TEXT DEFAULT 'other',
-            title TEXT DEFAULT '',
-            description TEXT NOT NULL DEFAULT '',
-            status TEXT DEFAULT 'proposed',
-            immediate_action TEXT,
-            longterm_fix TEXT,
-            implementation_steps TEXT,
-            commands TEXT,
-            risks TEXT,
-            risk_level TEXT,
-            estimated_effort TEXT,
-            proposed_by TEXT NOT NULL DEFAULT 'agent',
-            applied_by TEXT,
-            verification_method TEXT,
-            verification_evidence_id TEXT,
-            effectiveness REAL,
-            verification_result TEXT,
-            verified_at TIMESTAMP,
-            proposed_at TIMESTAMP,
-            applied_at TIMESTAMP,
-            updated_at TIMESTAMP,
-            metadata TEXT,
-            -- Phase 6 Tier 1 column addition (storage redesign 2026-04).
-            hypothesis_id TEXT,
-            FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE,
-            FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(hypothesis_id) ON DELETE SET NULL,
-            FOREIGN KEY (verification_evidence_id) REFERENCES evidence(evidence_id) ON DELETE SET NULL
-        )
-    """))
-
-    # Create uploaded_files table (per case-schema.md §4.6, post-010).
-    # The five trailing columns (summary, structural_index, data_type,
-    # coverage_start_ts, coverage_end_ts) were added by migration 010 to
-    # hold the file-level preprocessing artifacts that previously rode
-    # on the auto-DOCUMENT Evidence row.
-    await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS uploaded_files (
-            file_id TEXT PRIMARY KEY,
-            case_id TEXT NOT NULL,
-            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
-            filename TEXT NOT NULL,
-            size_bytes INTEGER NOT NULL DEFAULT 0,
-            content_type TEXT,
-            content_hash TEXT,
-            storage_ref TEXT,
-            upload_source TEXT NOT NULL DEFAULT 'file_upload',
-            uploaded_at_turn INTEGER NOT NULL DEFAULT 0,
-            uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            uploaded_by TEXT,
-            metadata TEXT DEFAULT '{}',
-            summary TEXT,
-            structural_index TEXT,
-            data_type TEXT,
-            coverage_start_ts TIMESTAMP,
-            coverage_end_ts TIMESTAMP,
-            FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
-        )
-    """))
-
-    # Create case_messages table (per case-schema.md §4.7)
-    await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS case_messages (
-            message_id TEXT PRIMARY KEY,
-            case_id TEXT NOT NULL,
-            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
-            turn_number INTEGER NOT NULL DEFAULT 0,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            token_count INTEGER,
-            metadata TEXT DEFAULT '{}',
-            FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
-        )
-    """))
-
-    # Create case_actions table (audit trail of case actions)
-    await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS case_actions (
-            transition_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            case_id TEXT NOT NULL,
-            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
-            from_status TEXT,
-            to_status TEXT NOT NULL,
-            reason TEXT,
-            -- Migration 008 (2026-05): triggered_by NOT NULL.
-            triggered_by TEXT NOT NULL,
-            transitioned_at TIMESTAMP,
-            metadata TEXT,
-            FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
-        )
-    """))
-
-    # evidence_artifacts table dropped in storage redesign 2026-04 phase 2
-    # (standalone evidence path deletion). Evidence is case-tied only and lives
-    # in the existing `evidence` table.
-
-    # Create reports table
-    await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS reports (
-            report_id TEXT PRIMARY KEY,
-            case_id TEXT NOT NULL,
-            report_type TEXT NOT NULL,
-            version INTEGER DEFAULT 1,
-            is_current INTEGER DEFAULT 1,
-            linked_to_closure INTEGER DEFAULT 0,
-            title TEXT,
-            content TEXT,
-            format TEXT DEFAULT 'markdown',
-            generation_status TEXT DEFAULT 'completed',
-            generation_time_ms INTEGER,
-            metadata TEXT,
-            generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP,
-            -- Phase 6 Tier 1 column addition (storage redesign 2026-04).
-            generated_by TEXT,
-            FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
-        )
-    """))
-
-    await session.commit()
 
 
 @pytest.mark.asyncio

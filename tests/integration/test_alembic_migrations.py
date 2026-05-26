@@ -132,6 +132,28 @@ EXPECTED_TABLES = [
 ]
 
 
+def test_head_revision_constant_matches_filesystem():
+    """Flag when a new migration lands without bumping HEAD_REVISION.
+
+    The constant stays hard-coded (not derived from ScriptDirectory) so the
+    `alembic upgrade head` assertions in this module remain meaningful
+    instead of tautological — this test catches the drift.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    sd = ScriptDirectory.from_config(cfg)
+    heads = sd.get_heads()
+    assert len(heads) == 1, f"Expected a single alembic head, got {heads}"
+    actual_head = heads[0]
+    assert HEAD_REVISION == actual_head, (
+        f"HEAD_REVISION ({HEAD_REVISION}) is out of date. "
+        f"Latest migration on disk is {actual_head}. "
+        f"Update the constant in tests/integration/test_alembic_migrations.py."
+    )
+
+
 class TestAlembicMigrationInfrastructure:
     """Test suite for Alembic migration infrastructure."""
 
