@@ -58,8 +58,6 @@ def derive_closure_reason(case: "Case") -> str:
     The LLM never authors closure_reason; it's purely engine-derived from
     structured case state.
     """
-    from faultmaven.modules.case.domain.models import CaseStatus
-
     if case.status == CaseStatus.INQUIRY:
         return "inquiry_only"
 
@@ -167,8 +165,6 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
     - Terminal (RESOLVED / CLOSED): no further actions. Returns all
       ``not_eligible``.
     """
-    from faultmaven.modules.case.domain.models import CaseStatus
-
     if case.status == CaseStatus.INQUIRY:
         return {
             "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
