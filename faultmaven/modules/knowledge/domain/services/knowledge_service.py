@@ -1241,8 +1241,9 @@ class KnowledgeService:
         now = datetime.now(timezone.utc)
 
         # 1) SQL first — relational source-of-truth. If this fails, ChromaDB
-        # is never touched; if ChromaDB later fails, the SQL row remains
-        # discoverable by a scan-and-recover pass.
+        # is never touched. If ChromaDB later fails (step 2), the SQL row
+        # is rolled back before we raise (see lines below) — atomic across
+        # both stores.
         if self._db_session_factory is None:
             raise ServiceException(
                 "ingest_runbook requires a db_session_factory; "
@@ -1273,8 +1274,10 @@ class KnowledgeService:
             repo = DatabaseKnowledgeItemRepository(session)
             await repo.create(item)
 
-        # 2) ChromaDB second — chunks + embeddings. Failure here leaves the
-        # SQL row in place for recovery.
+        # 2) ChromaDB second — chunks + embeddings. On failure (raises OR
+        # returns 0 chunks), delete the SQL row before raising. The prior
+        # "leave SQL for recovery" policy produced half-state rows that
+        # downstream scans then mis-classified.
         doc_model = KnowledgeBaseDocument(
             document_id=document_id,
             title=title,
@@ -1288,7 +1291,44 @@ class KnowledgeService:
             created_at=to_json_compatible(now),
             updated_at=to_json_compatible(now),
         )
-        return await self._index_document_in_vector_store(doc_model)
+        try:
+            chunks_created = await self._index_document_in_vector_store(doc_model)
+        except Exception:
+            await self._delete_knowledge_item_row(document_id)
+            raise
+
+        if chunks_created <= 0:
+            await self._delete_knowledge_item_row(document_id)
+            raise RuntimeError(
+                f"Vector indexing produced 0 chunks for {document_id}. "
+                f"Common causes: BGE-M3 model unavailable, ChromaDB unreachable, "
+                f"or chunker produced no output. SQL row cleaned up."
+            )
+
+        return chunks_created
+
+    async def _delete_knowledge_item_row(self, item_id: str) -> None:
+        """Best-effort cleanup of an orphaned knowledge_items row.
+
+        Used by `ingest_runbook` when vector indexing fails — guarantees no
+        half-state remains. Errors are logged but suppressed since the
+        caller is already on a failure path and will raise its own error.
+        """
+        from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+            DatabaseKnowledgeItemRepository,
+        )
+
+        if self._db_session_factory is None:
+            return
+        try:
+            async with self._db_session_factory() as session:
+                repo = DatabaseKnowledgeItemRepository(session)
+                await repo.delete(item_id)
+        except Exception as cleanup_err:
+            logger.warning(
+                f"Failed to clean up orphaned knowledge_items row {item_id}: "
+                f"{cleanup_err}"
+            )
 
     # API-compatible methods that match the router expectations
     async def upload_document(

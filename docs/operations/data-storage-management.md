@@ -68,25 +68,25 @@ Separating them into two ChromaDB instances (`chroma-kb/` and `chroma-evidence/`
 
 ### Relationship between knowledge/, evidence/, and the two ChromaDB instances
 
-```
-knowledge/*.md  →  Dashboard scan → activate  →  chroma-kb/ (faultmaven_kb collection)
+```text
+knowledge/*.md  →  startup bootstrap (atomic, idempotent)  →  chroma-kb/ (faultmaven_kb collection)
 
 evidence/<organization_id>/<case_id>/<date>/<uuid>_<file>  →  background vectorization  →  chroma-evidence/ (case_{id} collection)
 ```
 
-- `knowledge/` holds **source markdown files**. The canonical ingestion path is: copy files here, open the Dashboard KB page (triggers automatic scan), then activate drafts. Activation triggers chunking, BGE-M3 embedding generation, and storage into the `faultmaven_kb` collection in `chroma-kb/`.
+- `knowledge/` holds **source markdown files**. The canonical ingestion path for pre-deployed runbooks is: copy files into `data/knowledge/{scope}/`, then restart the API. The startup bootstrap (`faultmaven/bootstrap/kb_init.py`) walks the directory, chunks each file, generates BGE-M3 embeddings, and writes both a `knowledge_items` SQL row and the chunks atomically into `chroma-kb/`. Content-hash idempotency makes restarts free for unchanged files. Case-generated and document-converted runbooks take a separate path — see [`docs/architecture/knowledge-and-ai/kb-ingestion-architecture.md`](../architecture/knowledge-and-ai/kb-ingestion-architecture.md).
 - `evidence/` holds **raw uploaded files**. After the upload API returns a response, a background task vectorizes the content into a `case_{case_id}` collection in `chroma-evidence/`.
 - Each ChromaDB instance is independent — they share no files.
 
-Deleting a file from `knowledge/` does not remove its embeddings from ChromaDB. You must delete the document via the Dashboard or API for the vector store to reflect the change.
+Deleting a file from `knowledge/` does not remove its embeddings from ChromaDB. The bootstrap intentionally does not garbage-collect deleted files (that's a separate operator concern); use the Dashboard or `python scripts/reset_kb.py` to remove KB entries.
 
 ---
 
 ## Managing Knowledge Base Runbooks (Without UI)
 
-### Adding runbooks via filesystem + Dashboard scan
+### Adding runbooks via filesystem + API restart
 
-This is the recommended workflow for bulk-loading runbooks without using the API upload endpoint.
+This is the recommended workflow for bulk-loading pre-authored runbooks (e.g., from the KB Toolkit). It bypasses the Dashboard Drafts UI entirely — that UI is reserved for case-generated and document-converted drafts that need human review.
 
 **Step 1: Place runbook files on disk**
 
@@ -103,13 +103,14 @@ cp team-runbook.md data/knowledge/team_<team_id>/
 cp personal-runbook.md data/knowledge/personal_<user_id>/
 ```
 
-Runbooks should use YAML frontmatter for metadata. Minimal example:
+Runbooks must use YAML frontmatter for metadata. Minimal example:
 
 ```yaml
 ---
 id: my-runbook-id
 title: "PostgreSQL - Slow Query Diagnosis"
-technology: postgresql
+domain: database
+service: postgresql
 severity: medium
 tags:
   - postgresql
@@ -122,38 +123,37 @@ status: verified
 (runbook content here)
 ```
 
-See `docs/operations/runbooks/template.md` for the full template with all supported frontmatter fields.
+See `docs/operations/runbooks/template.md` for the full template with all supported frontmatter fields. `id` and `title` are mandatory; the bootstrap derives a deterministic `knowledge_items.item_id` from `id`.
 
-**Step 2: Scan from the Dashboard**
+**Step 2: Trigger ingestion**
 
-Open the Dashboard KB page (http://localhost:3333), go to the **Drafts** tab, and click **"Scan for runbooks"**. This calls `POST /api/v1/knowledge/scan` which:
-
-1. Walks `data/knowledge/` recursively for `.md` files
-2. Skips files already tracked in the database
-3. Extracts title and metadata from YAML frontmatter
-4. Infers scope from the directory name (`global/`, `team_*`, `personal_*`)
-5. Creates draft records so they appear in the Drafts tab
-
-From the Drafts tab you can then review, edit, and activate each draft into the vector database.
-
-**Step 2 (alternative): Scan via API**
+The startup bootstrap (`faultmaven/bootstrap/kb_init.py`) ingests every `.md` under `data/knowledge/{scope}/` on every API start. Pick one:
 
 ```bash
-curl -X POST http://localhost:8090/api/v1/knowledge/scan \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json"
+# Option A — full restart (production-style)
+./faultmaven.sh restart
+
+# Option B — hot rebuild without restart (operator-friendly during dev)
+python scripts/reset_kb.py --yes --rebuild
 ```
 
-Response:
+The bootstrap is **idempotent**: it compares SHA-256 of each file against the existing `knowledge_items.content` row and skips unchanged files. Changed files trigger an atomic delete-then-reingest. New files are added.
 
-```json
-{
-  "discovered": 3,
-  "skipped": 12,
-  "errors": [],
-  "drafts": [...]
-}
+The bootstrap is **atomic per file**: a failure (BGE-M3 unavailable, ChromaDB unreachable, chunker produced no output) cleans up any partial SQL row before raising — no half-state remains in either store. Per-file failures don't abort the rest of the bootstrap; check the API logs for any `KB bootstrap failed for ...` warnings after restart.
+
+### Reset / hot-rebuild
+
+`scripts/reset_kb.py` wipes the KB state and (optionally) re-runs the bootstrap in-process:
+
+```bash
+python scripts/reset_kb.py --dry-run             # See counts; no changes
+python scripts/reset_kb.py --yes                 # Wipe; bootstrap reruns on API restart
+python scripts/reset_kb.py --yes --rebuild       # Wipe + immediate in-process rebuild
+python scripts/reset_kb.py --yes --all-drafts    # Also delete case-generated drafts
+python scripts/reset_kb.py --yes --keep-chroma   # Wipe SQL only; keep ChromaDB collections
 ```
+
+Defaults are conservative — `conversion_drafts` (case-generated work in progress) is preserved unless `--all-drafts` is passed.
 
 ### Updating built-in global runbooks
 
@@ -175,34 +175,34 @@ rsync -av --delete \
   resources/knowledge/builtin/ \
   data/knowledge/global/
 
-# Then open the Dashboard KB page and activate the updated runbooks
+# Restart the API — the bootstrap will detect the content-hash changes and re-ingest
+./faultmaven.sh restart
 ```
 
-Note: the bootstrap only copies built-in runbooks if `data/knowledge/` has no `.md` files anywhere (including personal/team scopes). On subsequent startups, it does not overwrite user modifications. The rsync above is a manual step for when you want to pull in updated runbooks from a new release.
+Note: `seed_builtin_runbooks()` only copies built-in runbooks if `data/knowledge/` has no `.md` files anywhere (including personal/team scopes). On subsequent startups, it does not overwrite user modifications. The rsync above is the manual escape hatch for pulling in updates from a new release.
 
 ### Important: do not ingest runbooks directly into ChromaDB
 
-Copying runbook files into `data/knowledge/` is the correct way to add runbooks at the OS level. However, do **not** write directly to ChromaDB (e.g., via scripts or the ChromaDB Python client). The `conversion_drafts` table in `faultmaven.db` is the single source of truth for ingestion state. Writing directly to ChromaDB bypasses this table, which causes:
+Copying runbook files into `data/knowledge/` and letting the bootstrap ingest them is the correct way to add runbooks. Do **not** write directly to ChromaDB (e.g., via scripts or the ChromaDB Python client) or insert directly into `knowledge_items`. The bootstrap maintains the invariant that **no row exists in `knowledge_items` without a matching set of ChromaDB chunks for the same `item_id`**, and vice versa. Bypassing the bootstrap breaks that invariant and produces:
 
-- The Dashboard "Scan for runbooks" to re-discover the file as a new draft
-- Verifying that draft to ingest the same content a second time — duplicate embeddings
-- No audit trail of who ingested the runbook or when
-
-Always use the Dashboard scan → activate workflow to move runbooks from `data/knowledge/` into the vector database.
+- Orphaned vectors with no provenance (no SQL row to identify them).
+- Orphaned SQL rows that aren't searchable (no chunks for retrieval).
+- No audit trail of who ingested the runbook or when.
 
 ### Removing a runbook
 
-Removing a runbook requires two steps — deleting the source file and removing the vector entry:
+Removing a runbook requires two steps — deleting the source file and removing the KB entry:
 
 ```bash
-# 1. Remove the source file
+# 1. Remove the source file (so it doesn't get re-ingested on next restart)
 rm data/knowledge/global/my-runbook.md
 
-# 2. Remove from ChromaDB via API (if ingested)
-#    Use the document management endpoints or re-ingest with --force
+# 2. Delete via the API or Dashboard so both SQL and ChromaDB are updated
+#    The bootstrap intentionally does NOT garbage-collect files deleted from
+#    disk — explicit deletion is a separate operator concern.
 ```
 
-If the runbook was added via the scan workflow, delete the draft from the Dashboard Drafts tab. If it was already verified and ingested, use the KB management API to delete the document.
+For bulk removal, `scripts/reset_kb.py --yes` (without `--rebuild`) wipes the full KB state; the next API restart will re-ingest from whatever remains in `data/knowledge/`.
 
 ---
 
