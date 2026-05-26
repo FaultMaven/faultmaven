@@ -260,6 +260,34 @@ After upload, a background task vectorizes the content into `data/chroma-evidenc
 
 ## SQLite Database Management
 
+### Engine configuration
+
+The async SQLAlchemy engine is created in [`faultmaven/infrastructure/persistence/database.py`](../../faultmaven/infrastructure/persistence/database.py). For SQLite URLs the setup uses `NullPool` (SQLite doesn't pool well) and registers a `connect` event listener that sets six PRAGMAs on **every** new connection — PRAGMAs are per-connection state in SQLite, and `NullPool` opens a fresh connection per checkout.
+
+**Correctness PRAGMAs (must succeed for the app to behave):**
+
+| PRAGMA | Value | Why it's set |
+| --- | --- | --- |
+| `journal_mode` | `WAL` | Readers don't block writers. Without this the default rollback journal takes an exclusive write lock, so any concurrent read+write in the async event loop collides. |
+| `busy_timeout` | `5000` ms | Wait up to 5s on contention before failing. Default `0` ms surfaces as `sqlite3.OperationalError: database is locked` on the second concurrent commit. |
+| `foreign_keys` | `ON` | SQLite ignores FK constraints by default; setting this enables `ON DELETE CASCADE`. |
+
+**Performance PRAGMAs (safe defaults under WAL):**
+
+| PRAGMA | Value | Why it's set |
+| --- | --- | --- |
+| `synchronous` | `NORMAL` | Canonical WAL pairing. Default `FULL` fsyncs every commit; `NORMAL` is safe under WAL — loses at most the last few commits on **power loss**, never on app/OS crash — and substantially faster. |
+| `temp_store` | `MEMORY` | Temp tables, sort spill, and index build go to RAM instead of `/tmp` files. Temp data is ephemeral, so no durability cost. |
+| `cache_size` | `-64000` | ~64 MB page cache (negative = KB absolute). Default 2000 pages ≈ 8 MB is too small for the hot working set (cases + recent messages + evidence rows). |
+
+**Deployment scope:** These PRAGMAs apply only to SQLite (Local / Community Edition). Cloud / Enterprise deployments use PostgreSQL, which has its own concurrency model (MVCC), default-on foreign keys, and server-side configuration (`shared_buffers`, `work_mem`, `synchronous_commit`, etc.) outside the application engine layer. The branch in `get_engine()` is gated on `is_sqlite(url)` — the SQLite PRAGMA listener never runs against PostgreSQL.
+
+**Assumptions baked into the SQLite config:**
+
+- **Single-process per DB file.** Local deploys run one uvicorn worker against one `data/faultmaven.db` (per `docker-compose.yml`). WAL works best with single-writer-multi-reader; multiple writer processes would still serialize through `busy_timeout`.
+- **Local POSIX filesystem.** WAL requires correct fsync semantics. ext4 / btrfs / APFS / Docker volumes on host filesystems are fine. **NFS / SMB will corrupt the database** — SQLite docs explicitly warn against them.
+- **Dev-grade durability.** `synchronous=NORMAL` accepts the tail-of-commit risk on power loss. Acceptable for a self-hosted single-user tool; not acceptable for paid SaaS — but Cloud uses PostgreSQL so this trade-off doesn't apply there.
+
 ### Inspecting the database
 
 ```bash
@@ -295,12 +323,14 @@ SELECT status, COUNT(*) FROM conversion_drafts GROUP BY status;
 ### Backup
 
 ```bash
-# Online backup (safe while app is running)
+# Online backup (safe while app is running — WAL-aware)
 sqlite3 data/faultmaven.db ".backup data/faultmaven-backup-$(date +%Y%m%d).db"
 
 # Or simply copy (stop app first for consistency)
 cp data/faultmaven.db data/faultmaven-backup-$(date +%Y%m%d).db
 ```
+
+**WAL caveat:** Because the engine runs in WAL mode (see "Engine configuration" above), the DB file is accompanied by `data/faultmaven.db-wal` and `data/faultmaven.db-shm` sidecar files. The `.backup` command above is WAL-aware and produces a consistent snapshot from the live database. **A plain `cp` of only `faultmaven.db` may miss recent commits still in the WAL.** If you must use a file copy, either stop the app first, or run `sqlite3 data/faultmaven.db "PRAGMA wal_checkpoint(FULL);"` before copying — then include the `-wal` and `-shm` files in the copy as well.
 
 ### Database migrations
 
@@ -428,7 +458,7 @@ rm -rf data/faultmaven.db data/chroma-kb/ data/chroma-evidence/ data/evidence/
 
 | What | How | Frequency |
 | --- | --- | --- |
-| `data/faultmaven.db` | SQLite `.backup` command | Daily |
+| `data/faultmaven.db` | SQLite `.backup` command (WAL-aware; see "SQLite Database Management → Backup" for the file-copy caveat) | Daily |
 | `data/chroma-kb/` | Directory snapshot | Daily |
 | `data/knowledge/` | Directory copy | On change |
 | `data/evidence/` | Directory copy or rsync | Daily (large) |
