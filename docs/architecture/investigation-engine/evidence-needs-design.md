@@ -440,8 +440,9 @@ The evidence needs pool has three consumers.
 
 A new `<evidence_needs>` section is added to the existing
 `INVESTIGATION_BASE` prompt template. It slots between `{evidence}` and
-`{hypotheses}` (analogous to how `{gate2_state}` is hooked in for the
-Gate 2 reminder):
+`{entity_highlights}` (analogous to how `{gate2_state}` is hooked in
+for the Gate 2 reminder — a new named placeholder added to the
+template body and populated by the context builder):
 
 ```text
 …
@@ -700,7 +701,7 @@ hypothesis and refute another; both links are independent.
 
 `motivating_hypothesis_ids` on `EvidenceNeed` is informational — it
 records *why* the need exists for context and for the supersession
-rule (§7.3). It is not a hard ownership association.
+rule (§7.4). It is not a hard ownership association.
 
 ### 8.3 Relationship to the Post-010 Evidence Model
 
@@ -725,9 +726,9 @@ context. Filtering rules:
 - During MITIGATION / TREATMENT, fulfilled symptom and causal needs
   are surfaced as a re-verification checklist (their FULFILLED state
   is exception to the filtering rule for these stages).
-- A new `<uploads_this_turn>` section surfaces files received this
-  turn (separate from the `<evidence>` block) so the LLM can process
-  them against the pool.
+- No separate `<uploads_this_turn>` section is added. Per-turn upload
+  surfacing rides on the existing `<evidence_collected>` block's
+  `fresh="true"` attribute (PR #352).
 
 Expected token cost: ~50 tokens per active need. With ≤10 active
 needs, ~500 tokens — modest in an 8,000+ token budget. The section is
@@ -922,7 +923,7 @@ model with `motivating_hypothesis_ids` captures this naturally:
 - Cross-hypothesis sharing is the default, not a special case.
 - The LLM appends hypothesis IDs to existing needs rather than
   creating new ones.
-- The deterministic supersession rule (§7.3) preserves engine-side
+- The deterministic supersession rule (§7.4) preserves engine-side
   cleanup.
 
 Per-hypothesis progress signal is sacrificed (it's now LLM judgment
@@ -966,9 +967,8 @@ a behavior the LLM can self-regulate.
 
 **Validator-removal context (PR #348).** The
 `diagnostic_reasoning_validator` workstream was removed entirely; the
-Rule-2 / compliance signal moved to offline eval/CI per the
-[project_rule2_eval_workstream](../../../docs/working/) note. There is
-no longer a post-generation validator that could backstop a stored
+Rule-2 / compliance signal moved to offline eval/CI. There is no
+longer a post-generation validator that could backstop a stored
 mention-count anyway — runtime suggestion-quality enforcement is
 prompt-side only. If observed nagging becomes a problem in evaluation,
 the right response is a transcript-based eval rule (caught offline),
