@@ -176,6 +176,16 @@ class SQLiteCaseRepository(CaseRepository):
         try:
             case.updated_at = datetime.now(UTC)
 
+            # P3 chokepoint: refresh denormalized disposition_eligibility
+            # from current case content. Single site so the column stays
+            # in sync with status/root_cause/solutions/progress without
+            # per-mutation-site write burden.
+            from faultmaven.core.investigation.terminal_transitions import (
+                derive_disposition_eligibility,
+            )
+
+            case.disposition_eligibility = derive_disposition_eligibility(case)
+
             organization_id = case.organization_id
             await self._upsert_case_record(case)
             # evidence.source_file_id is a real FK to uploaded_files.file_id,
@@ -1902,6 +1912,7 @@ class SQLiteCaseRepository(CaseRepository):
                 last_activity_at = :last_activity_at,
                 resolved_at = :resolved_at,
                 closed_at = :closed_at,
+                disposition_eligibility = :disposition_eligibility,
                 inquiry = :inquiry,
                 problem_verification = :problem_verification,
                 working_conclusion = :working_conclusion,
@@ -1942,6 +1953,7 @@ class SQLiteCaseRepository(CaseRepository):
                     status, investigation_strategy, current_turn,
                     turns_without_progress, created_at, updated_at,
                     closure_reason, last_activity_at, resolved_at, closed_at,
+                    disposition_eligibility,
                     inquiry, problem_verification, working_conclusion,
                     root_cause_conclusion, path_selection,
                     escalation_state, documentation, progress, metadata,
@@ -1951,6 +1963,7 @@ class SQLiteCaseRepository(CaseRepository):
                     :status, :investigation_strategy, :current_turn,
                     :turns_without_progress, :created_at, :updated_at,
                     :closure_reason, :last_activity_at, :resolved_at, :closed_at,
+                    :disposition_eligibility,
                     :inquiry, :problem_verification, :working_conclusion,
                     :root_cause_conclusion, :path_selection,
                     :escalation_state, :documentation, :progress, :metadata,
@@ -1999,6 +2012,11 @@ class SQLiteCaseRepository(CaseRepository):
             "last_activity_at": last_activity_at,
             "resolved_at": getattr(case, "resolved_at", None),
             "closed_at": getattr(case, "closed_at", None),
+            "disposition_eligibility": (
+                json.dumps(case.disposition_eligibility)
+                if case.disposition_eligibility
+                else None
+            ),
             "inquiry": json.dumps(to_json_compatible(case.inquiry.model_dump())),
             "problem_verification": (
                 json.dumps(to_json_compatible(case.problem_verification.model_dump()))
@@ -2687,6 +2705,11 @@ class SQLiteCaseRepository(CaseRepository):
             "status": CaseStatus(row.status),
             "action_history": actions_data or [],
             "closure_reason": row.closure_reason,
+            "disposition_eligibility": (
+                json.loads(row.disposition_eligibility)
+                if getattr(row, "disposition_eligibility", None)
+                else None
+            ),
             "pending_transition": metadata.get("pending_transition"),
             "progress": progress,
             "current_turn": int(row.current_turn or 0),

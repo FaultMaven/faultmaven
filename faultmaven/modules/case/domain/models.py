@@ -3383,6 +3383,21 @@ class Case(BaseModel):
         max_length=100,
     )
 
+    disposition_eligibility: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Per-disposition eligibility view for the case-action dropdown. "
+            "Denormalized read view maintained at the single chokepoint "
+            "``CaseRepository.save()`` via ``derive_disposition_eligibility``. "
+            "Shape: ``{'resolved': str, 'closed': str}`` where each value is "
+            "one of ``ready`` / ``needs_info`` / ``not_eligible``. "
+            "Frontend uses this to gate Resolve/Close affordances on the "
+            "current case content, not just the structural action graph. "
+            "Always populated for persisted cases; may be None on in-memory "
+            "Case objects before the first save."
+        ),
+    )
+
     pending_transition: Optional[Dict[str, Any]] = Field(
         default=None,
         description="""

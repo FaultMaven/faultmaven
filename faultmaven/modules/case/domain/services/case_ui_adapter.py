@@ -287,6 +287,7 @@ def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
             status.value
             for status in CaseActionManager.get_allowed_transitions(case.status)
         ],
+        disposition_eligibility=case.disposition_eligibility,
     )
 
 
@@ -421,6 +422,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
             status.value
             for status in CaseActionManager.get_allowed_transitions(case.status)
         ],
+        disposition_eligibility=case.disposition_eligibility,
     )
 
 
@@ -564,4 +566,5 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
             status.value
             for status in CaseActionManager.get_allowed_transitions(case.status)
         ],
+        disposition_eligibility=case.disposition_eligibility,
     )

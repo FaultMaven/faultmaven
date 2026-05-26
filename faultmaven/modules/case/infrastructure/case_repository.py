@@ -752,10 +752,19 @@ class InMemoryCaseRepository(CaseRepository):
           version is bumped and the case is stored.
         - Existing case, version mismatch: raises StaleCaseException.
         """
+        from faultmaven.core.investigation.terminal_transitions import (
+            derive_disposition_eligibility,
+        )
         from faultmaven.modules.case.exceptions import StaleCaseException
 
         # Update timestamp
         case.updated_at = datetime.now(case.updated_at.tzinfo)
+
+        # P3 chokepoint: refresh denormalized disposition_eligibility from
+        # current case content. Same site as the SQL-backed repositories
+        # so all tests using the in-memory repo also exercise the
+        # eligibility-maintenance invariant.
+        case.disposition_eligibility = derive_disposition_eligibility(case)
 
         existing = self._cases.get(case.case_id)
         if existing is None:

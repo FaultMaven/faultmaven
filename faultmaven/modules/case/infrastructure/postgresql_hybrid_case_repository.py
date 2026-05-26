@@ -194,6 +194,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # Update timestamp
             case.updated_at = datetime.now(timezone.utc)
 
+            # P3 chokepoint: refresh denormalized disposition_eligibility
+            # from current case content. Same site as the SQLite + in-memory
+            # repositories so the column stays in sync regardless of
+            # backend, without per-mutation-site write burden.
+            from faultmaven.core.investigation.terminal_transitions import (
+                derive_disposition_eligibility,
+            )
+
+            case.disposition_eligibility = derive_disposition_eligibility(case)
+
             organization_id = case.organization_id
 
             await self._upsert_case_record(case)
@@ -1553,6 +1563,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 last_activity_at = :last_activity_at,
                 resolved_at = :resolved_at,
                 closed_at = :closed_at,
+                disposition_eligibility = :disposition_eligibility,
                 inquiry = :inquiry{jsonb},
                 problem_verification = :problem_verification{jsonb},
                 working_conclusion = :working_conclusion{jsonb},
@@ -1584,6 +1595,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     case_id, user_id, organization_id, title, description, investigation_strategy,
                     status, closure_reason, current_turn, turns_without_progress,
                     created_at, updated_at, last_activity_at, resolved_at, closed_at,
+                    disposition_eligibility,
                     inquiry, problem_verification, working_conclusion,
                     root_cause_conclusion, path_selection,
                     escalation_state, documentation, progress, metadata,
@@ -1592,6 +1604,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
                     :status, :closure_reason, :current_turn, :turns_without_progress,
                     :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
+                    :disposition_eligibility,
                     :inquiry{jsonb}, :problem_verification{jsonb}, :working_conclusion{jsonb},
                     :root_cause_conclusion{jsonb}, :path_selection{jsonb},
                     :escalation_state{jsonb}, :documentation{jsonb}, :progress{jsonb}, :metadata{jsonb},
@@ -1641,6 +1654,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             "last_activity_at": last_activity_at,
             "resolved_at": case.resolved_at,
             "closed_at": case.closed_at,
+            "disposition_eligibility": (
+                json.dumps(case.disposition_eligibility)
+                if case.disposition_eligibility
+                else None
+            ),
             "inquiry": json.dumps(case.inquiry.model_dump(mode="json")),
             "problem_verification": (
                 json.dumps(case.problem_verification.model_dump(mode="json"))
@@ -2340,6 +2358,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             "status": CaseStatus(row.status),
             "action_history": actions_data,
             "closure_reason": row.closure_reason,
+            "disposition_eligibility": (
+                (
+                    json.loads(row.disposition_eligibility)
+                    if isinstance(row.disposition_eligibility, str)
+                    else row.disposition_eligibility
+                )
+                if getattr(row, "disposition_eligibility", None)
+                else None
+            ),
             "pending_transition": metadata.get("pending_transition"),
             "progress": progress,
             "current_turn": int(row.current_turn or 0),

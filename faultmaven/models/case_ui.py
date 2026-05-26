@@ -399,6 +399,33 @@ class CaseUIResponse_Inquiry(BaseModel):
         description="Allowed status transitions from current state for user-initiated changes",
     )
 
+    disposition_eligibility: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Per-disposition eligibility for UI affordance gating. "
+            "Shape: ``{'resolved': str, 'closed': str}`` where each "
+            "value is one of:\n"
+            "- ``ready`` — disposition is appropriate; render the "
+            "affordance enabled with the default 'click to confirm' UX.\n"
+            "- ``needs_info`` — disposition is allowed but the case is "
+            "partial; user must ADD information (root cause / solution) "
+            "before transitioning. UX: prompt the user for the missing "
+            "data. Currently only the Resolve side surfaces this.\n"
+            "- ``suggests_alternative`` — disposition is allowed but the "
+            "system recommends the OTHER disposition for this case. "
+            "UX: warn and offer the alternative; if the user confirms "
+            "anyway, proceed. Distinct from ``needs_info`` — no data is "
+            "missing; the user is asked to RE-DIRECT, not to add. "
+            "Currently only the Close side surfaces this (when the case "
+            "has root cause + solution → resolving preserves attribution).\n"
+            "- ``not_eligible`` — disposition is not available; hide the "
+            "affordance entirely.\n\n"
+            "Different from ``valid_next_states`` — that field is the "
+            "structural action graph (which edges exist), this field is "
+            "the content-readiness layer on top."
+        ),
+    )
+
     path_selection: Optional[PathSelection] = Field(
         default=None,
         description=(
@@ -446,6 +473,33 @@ class CaseUIResponse_Investigating(BaseModel):
     valid_next_states: List[str] = Field(
         default_factory=list,
         description="Allowed status transitions from current state for user-initiated changes",
+    )
+
+    disposition_eligibility: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Per-disposition eligibility for UI affordance gating. "
+            "Shape: ``{'resolved': str, 'closed': str}`` where each "
+            "value is one of:\n"
+            "- ``ready`` — disposition is appropriate; render the "
+            "affordance enabled with the default 'click to confirm' UX.\n"
+            "- ``needs_info`` — disposition is allowed but the case is "
+            "partial; user must ADD information (root cause / solution) "
+            "before transitioning. UX: prompt the user for the missing "
+            "data. Currently only the Resolve side surfaces this.\n"
+            "- ``suggests_alternative`` — disposition is allowed but the "
+            "system recommends the OTHER disposition for this case. "
+            "UX: warn and offer the alternative; if the user confirms "
+            "anyway, proceed. Distinct from ``needs_info`` — no data is "
+            "missing; the user is asked to RE-DIRECT, not to add. "
+            "Currently only the Close side surfaces this (when the case "
+            "has root cause + solution → resolving preserves attribution).\n"
+            "- ``not_eligible`` — disposition is not available; hide the "
+            "affordance entirely.\n\n"
+            "Different from ``valid_next_states`` — that field is the "
+            "structural action graph (which edges exist), this field is "
+            "the content-readiness layer on top."
+        ),
     )
 
     problem_statement: Optional[str] = Field(
@@ -544,6 +598,33 @@ class CaseUIResponse_Resolved(BaseModel):
     valid_next_states: List[str] = Field(
         default_factory=list,
         description="Allowed status transitions from current state for user-initiated changes",
+    )
+
+    disposition_eligibility: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Per-disposition eligibility for UI affordance gating. "
+            "Shape: ``{'resolved': str, 'closed': str}`` where each "
+            "value is one of:\n"
+            "- ``ready`` — disposition is appropriate; render the "
+            "affordance enabled with the default 'click to confirm' UX.\n"
+            "- ``needs_info`` — disposition is allowed but the case is "
+            "partial; user must ADD information (root cause / solution) "
+            "before transitioning. UX: prompt the user for the missing "
+            "data. Currently only the Resolve side surfaces this.\n"
+            "- ``suggests_alternative`` — disposition is allowed but the "
+            "system recommends the OTHER disposition for this case. "
+            "UX: warn and offer the alternative; if the user confirms "
+            "anyway, proceed. Distinct from ``needs_info`` — no data is "
+            "missing; the user is asked to RE-DIRECT, not to add. "
+            "Currently only the Close side surfaces this (when the case "
+            "has root cause + solution → resolving preserves attribution).\n"
+            "- ``not_eligible`` — disposition is not available; hide the "
+            "affordance entirely.\n\n"
+            "Different from ``valid_next_states`` — that field is the "
+            "structural action graph (which edges exist), this field is "
+            "the content-readiness layer on top."
+        ),
     )
 
     problem_statement: Optional[str] = Field(
