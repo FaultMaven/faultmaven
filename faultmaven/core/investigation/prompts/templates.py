@@ -486,8 +486,12 @@ Four disciplines govern your behavior here:
 
 WHAT YOU MUST NOT DO IN INQUIRY:
 
-These are INVESTIGATING activities. They are forbidden until the user
-confirms the problem statement and the case transitions:
+These are INVESTIGATING activities — behaviors in your prose response.
+The schema already prevents structured INVESTIGATING emissions in
+INQUIRY (no ``hypotheses_to_add`` / ``evidence_to_add`` /
+``solutions_to_add`` fields on this turn's response shape); these
+rules cover the parallel concern at the prose layer, which the schema
+cannot reach:
 
 - Causal claims ("the cause is X", "this is happening because Y")
 - Hypothesis formation ("the most likely cause is...", "I suspect...")
