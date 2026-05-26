@@ -2297,3 +2297,118 @@ class TestNeedsInfoFollowupProposesClose:
         assert case.pending_transition["to_status"] == "closed"
         # Gate 3 open → closure_reason is mitigation_sufficient
         assert case.pending_transition["closure_reason"] == "mitigation_sufficient"
+
+
+class TestCreateTurnRecordSystemFeedbackTruncation:
+    """Regression: ``TurnProgress.system_feedback`` has a 1000-char Pydantic
+    cap. Multiple backstops (path-conditional emission rejection, milestone
+    ordering guards, data-quality blockers, etc.) each append independently
+    to ``metadata["system_feedback"]``. When 4+ backstops fire in one turn
+    the accumulated text overflowed the cap and crashed the turn save with
+    a 500. ``_create_turn_record`` is the single chokepoint where all
+    system_feedback values are written into the TurnProgress, so truncation
+    happens there."""
+
+    def _make_engine(self):
+        mock_llm = MockLLMProvider()
+        mock_llm.generate = AsyncMock()
+        mock_repo = MagicMock()
+        mock_repo.save = AsyncMock(side_effect=lambda c: c)
+        return MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+        )
+
+    def test_short_system_feedback_passes_through_unchanged(self):
+        from faultmaven.modules.case.contracts import TurnOutcome
+
+        engine = self._make_engine()
+        short_feedback = (
+            "MILESTONE ORDER ERROR: mitigation_verified without acceptance."
+        )
+        record = engine._create_turn_record(
+            turn_number=1,
+            milestones_completed=[],
+            evidence_added=[],
+            hypotheses_generated=[],
+            hypotheses_validated=[],
+            solutions_proposed=[],
+            progress_made=False,
+            outcome=TurnOutcome.CONVERSATION,
+            user_message="hi",
+            agent_response="ok",
+            system_feedback=short_feedback,
+        )
+        assert record.system_feedback == short_feedback
+
+    def test_oversized_system_feedback_is_truncated_with_marker(self):
+        """Simulate the multi-backstop pile-up from the eval failure:
+        four path-conditional rejection messages concatenated push past
+        1000 chars. Without truncation, TurnProgress validation crashes."""
+        from faultmaven.modules.case.contracts import TurnOutcome
+
+        engine = self._make_engine()
+        # Each path-conditional rejection message is ~300-400 chars.
+        # Four firing in one turn (rejected RCA milestone + causal_evidence
+        # + hypotheses_to_add + solutions_to_add in pre_path_investigating)
+        # easily exceeds 1000.
+        oversized_feedback = (
+            "PATH-CONDITIONAL MILESTONE ERROR: You set ``root_cause_identified=True`` "
+            "in a state where the _PRE_PATH_DIAGNOSIS_BLOCK prompt directive forbids "
+            "RCA-side milestones. Root-cause work is deferred until the user commits "
+            "an investigation path (Gate 2). Do not re-emit ``root_cause_identified=True`` "
+            "until the case reaches a state where RCA is in scope.\n"
+            "PATH-CONDITIONAL EMISSION ERROR: You classified evidence as "
+            "``causal_evidence`` in a state where the _PRE_PATH_DIAGNOSIS_BLOCK "
+            "prompt directive explicitly forbids this category. Causal claims "
+            "presuppose a hypothesis to attach to (INV-17), and hypothesis formation "
+            "is gated in this state. Use ``symptom_evidence`` instead.\n"
+            "PATH-CONDITIONAL EMISSION ERROR: You emitted ``hypotheses_to_add`` "
+            "(2 record(s)) in a state where the _PRE_PATH_DIAGNOSIS_BLOCK prompt "
+            "directive forbids structured hypothesis emission. Hypothesis formation "
+            "is deferred until the case reaches a state where it is in scope.\n"
+            "PATH-CONDITIONAL EMISSION ERROR: You emitted ``solutions_to_add`` "
+            "(1 record(s)) before the user committed an investigation path (Gate 2). "
+            "Mitigation and solution proposals only belong inside the chosen path."
+        )
+        assert len(oversized_feedback) > 1000  # sanity: the test setup is real
+
+        record = engine._create_turn_record(
+            turn_number=6,
+            milestones_completed=[],
+            evidence_added=[],
+            hypotheses_generated=[],
+            hypotheses_validated=[],
+            solutions_proposed=[],
+            progress_made=False,
+            outcome=TurnOutcome.CONVERSATION,
+            user_message="please continue",
+            agent_response="working on it",
+            system_feedback=oversized_feedback,
+        )
+        # Truncated to fit within the Pydantic max_length=1000 cap.
+        assert record.system_feedback is not None
+        assert len(record.system_feedback) <= 1000
+        assert "[truncated]" in record.system_feedback
+        # First backstop's content is preserved (truncation is tail-cut).
+        assert "PATH-CONDITIONAL MILESTONE ERROR" in record.system_feedback
+
+    def test_none_system_feedback_remains_none(self):
+        from faultmaven.modules.case.contracts import TurnOutcome
+
+        engine = self._make_engine()
+        record = engine._create_turn_record(
+            turn_number=1,
+            milestones_completed=[],
+            evidence_added=[],
+            hypotheses_generated=[],
+            hypotheses_validated=[],
+            solutions_proposed=[],
+            progress_made=False,
+            outcome=TurnOutcome.CONVERSATION,
+            user_message="hi",
+            agent_response="ok",
+            system_feedback=None,
+        )
+        assert record.system_feedback is None
