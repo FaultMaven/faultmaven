@@ -188,12 +188,28 @@ is pre-production and the existing plumbing is dead.
 | Old | New |
 |---|---|
 | `IntentType.EVIDENCE_REQUEST` | `IntentType.EVIDENCE_NEED` (stays `NOT_IMPLEMENTED`; see §9.3) |
-| `EvidenceRequestToAdd` (LLM schema) | `EvidenceNeedUpdate` |
-| `InvestigationStateUpdate.evidence_requests` | `InvestigationStateUpdate.evidence_need_updates` |
-| `InvestigationStateUpdate.mentioned_request_ids` | `InvestigationStateUpdate.mentioned_need_ids` |
+| `EvidenceRequestToAdd` in `faultmaven/models/llm_schemas.py` | DELETED |
+| `evidence_requests` field on legacy `InvestigationStateUpdate` | DELETED |
+| `mentioned_request_ids` field on legacy `InvestigationStateUpdate` | DELETED (mention-decay is fully prompt-only — see §9.7) |
+| `evidence_requests` field on `LLMResponse` in `faultmaven/models/api.py:245` | DELETED (orphan; never read in the current pipeline) |
 | `QueryIntent.evidence_id` | `QueryIntent.evidence_need_id` |
+| (no LLM schema class existed in the current pipeline) | `EvidenceNeedUpdate` in `faultmaven/core/investigation/schemas.py` |
+| (no field existed) | `evidence_need_updates: List[EvidenceNeedUpdate]` added to `DiagnosisStateUpdate`, `MitigationStateUpdate`, `TreatmentStateUpdate`, and `GeneralStateUpdate` |
 | (no domain model existed) | `EvidenceNeed` |
 | (no field existed) | `Case.evidence_needs: List[EvidenceNeed]` |
+
+**Schema-shape note (2026-05-26 audit).** The single
+`InvestigationStateUpdate` referenced in earlier drafts of this design
+no longer exists in the active pipeline — the stage-specific schemas
+(`DiagnosisStateUpdate`, `MitigationStateUpdate`, `TreatmentStateUpdate`,
+`GeneralStateUpdate`) under
+[`faultmaven/core/investigation/schemas.py`](../../../faultmaven/core/investigation/schemas.py)
+are the live targets. The legacy `InvestigationStateUpdate` in
+`faultmaven/models/llm_schemas.py` is dead code (still imported via
+`faultmaven/models/api.py` into a never-read `LLMResponse` field) and
+is removed wholesale in Phase 2. `InquiryStateUpdate` deliberately
+does **not** carry `evidence_need_updates` because INQUIRY creates no
+evidence-side state (per INV-07).
 
 ---
 
@@ -295,13 +311,15 @@ determines content (what data is needed and why); the engine provides
 the trigger and persists the result. This mirrors the existing
 `hypotheses_to_add` / `evidence_to_add` pattern.
 
-### 5.1 Trigger 1: Problem Statement Confirmed → Symptom Needs
+### 5.1 Trigger 1: Symptom-Validation Work → Symptom Needs
 
 When INQUIRY → INVESTIGATING fires (user confirms the problem
-statement at Gate 1), the **first INVESTIGATING turn** is where the LLM
-emits symptom needs. The transition itself does not synthesize needs —
-the LLM does, with the problem statement and full conversation history
-in context.
+statement at Gate 1), the case enters the `pre_path_investigating`
+state — INVESTIGATING with `path_selection is None` and Gate 2 still
+pending (per INV-19, Gate 2 commits after `symptom_verified=True`).
+This is where the LLM does symptom-validation work using the
+`_PRE_PATH_DIAGNOSIS_BLOCK` dispatch block; it is also where the LLM
+emits symptom needs.
 
 ```
 Input:  Confirmed problem statement + initial symptoms + urgency context
@@ -313,6 +331,15 @@ Each symptom need carries `purpose=symptom_verification` and an empty
 the case, motivated by the problem statement rather than by any
 hypothesis. They are not subject to hypothesis-retirement supersession.
 
+**Why `pre_path_investigating`, not "first INVESTIGATING turn".** The
+engine's [path-conditional emission backstop](#73-engine-backstop)
+rejects RCA-side emissions (`hypotheses_to_add`, `causal_evidence`,
+`solutions_to_add`) before Gate 2 commits, but symptom-side work — and
+symptom-need emission — is the *expected* activity in this window. The
+window can span multiple turns (the agent may need several rounds of
+data inspection to set `symptom_verified=True`); symptom-need
+emission/refinement is allowed across all of them.
+
 ### 5.2 Trigger 2: Hypothesis Created → Pool Evaluation
 
 When the LLM emits `hypotheses_to_add`, the same turn it evaluates the
@@ -323,7 +350,8 @@ shape is **pool-based**, not single-anchored:
 For each new hypothesis hyp_new:
   1. Scan existing evidence — does anything in the pool already
      speak to hyp_new?
-     → If yes, emit hypothesis_evidence link(s) with stance.
+     → If yes, emit hypothesis_evidence_links entries (resolved
+       per HypothesisEvidenceLinkToAdd) with stance.
        (Hyp may immediately become VALIDATED or REFUTED.)
   2. Scan existing PENDING needs — would any of them, when fulfilled,
      plausibly answer hyp_new?
@@ -336,6 +364,30 @@ For each new hypothesis hyp_new:
 The hypothesis-need relationship is **discovered**, not declared at
 creation. There is no duplication: an existing relevant need is shared
 across hypotheses by appending IDs to `motivating_hypothesis_ids`.
+
+**Path-conditional gating.** `hypotheses_to_add` is itself
+path-restricted: per INV-19/INV-21, the engine backstop rejects
+hypothesis emissions in the three restricted states
+(`pre_path_investigating`, `pre_mitigation_mitigation_first`,
+`gate3_pending`). Causal-purpose `evidence_need_updates` ride with the
+same gate — they may only be emitted in states where hypothesis
+creation is allowed (currently `_RCA_DIAGNOSIS_BLOCK` dispatch:
+`ROOT_CAUSE` path, or `MITIGATION_FIRST` after Gate 3). The engine
+backstop (§7.3) enforces this structurally so a non-compliant LLM
+cannot create orphan causal needs during a path-restricted window.
+
+**Same-turn ID resolution.** When the LLM creates a hypothesis and the
+need that anchors to it in the same turn, the hypothesis has no DB ID
+yet. Per the same pattern as `HypothesisEvidenceLinkToAdd` (PR #354 —
+`_coerce_bare_int_to_new_index`), `EvidenceNeedUpdate.motivating_hypothesis_ids`
+accepts `new_index_N` placeholders (or bare integers, coerced at
+schema validation) that reference the corresponding entry in
+`hypotheses_to_add`. The engine resolves these via the established
+`_resolve_id_ref` helper at apply time. The same pattern applies to
+`EvidenceNeedUpdate.fulfilling_evidence_ids` (resolves against
+`evidence_to_add`) and `EvidenceNeedUpdate.need_id` for update
+emissions referencing a need created earlier in the same
+`evidence_need_updates` list.
 
 ### 5.3 Out-of-Order Data Arrival
 
@@ -363,13 +415,20 @@ Four arrival shapes the LLM must handle:
 
 | Shape | Example | LLM behavior |
 |---|---|---|
-| Upload before any needs exist | Turn 1 INVESTIGATING upload during DIAGNOSIS | Create needs + extract evidence + fulfill in one turn |
+| Upload before any needs exist | Turn 1 INVESTIGATING upload during pre-path symptom validation | Create needs + extract evidence + fulfill in one turn |
 | Upload for an existing PENDING need | User uploads logs the LLM asked for | Extract evidence, link `fulfilling_evidence_ids`, mark FULFILLED |
 | Upload for no existing need (proactive) | User volunteers a related file | Extract evidence; optionally create+fulfill a new need |
 | Need creation with no upload | LLM emits causal needs at hypothesis creation | Pool grows; EVIDENCE suggestions surface next turn |
 
-The context-builder provides the necessary surfaces — see §6.1 and
-§8.4.
+**No separate `<this_turn>` / `<uploads_this_turn>` block is needed.**
+The existing `<evidence_collected>` block in
+[`context_builder.py`](../../../faultmaven/core/investigation/prompts/context_builder.py)
+already partitions fresh-from-this-turn vs. prior items via the
+`fresh="true"` attribute on `<uploaded_file>` and `<evidence>` rows
+(PR #352 — fresh-vs-prior partition, duplicate signal, semantic
+pasted labels, Rule 5 row). Evidence needs piggyback on that surface;
+§6.1 documents the single new section the prompt gains
+(`<evidence_needs>`), slotted into INVESTIGATION_BASE.
 
 ---
 
@@ -379,18 +438,28 @@ The evidence needs pool has three consumers.
 
 ### 6.1 File Processing — Search Agenda
 
-The context-builder renders three sections during INVESTIGATING:
+A new `<evidence_needs>` section is added to the existing
+`INVESTIGATION_BASE` prompt template. It slots between `{evidence}` and
+`{hypotheses}` (analogous to how `{gate2_state}` is hooked in for the
+Gate 2 reminder):
+
+```text
+…
+{evidence}              ← existing <evidence_collected> block
+                          (fresh/prior partitioning already lives here
+                          via PR #352's fresh="true" attribute on
+                          <uploaded_file> and <evidence> rows)
+
+{evidence_needs}        ← NEW slot
+
+{entity_highlights}
+{hypotheses}
+…
+```
+
+The rendered block:
 
 ```xml
-<this_turn>
-  <user_message>...</user_message>
-  <uploads_this_turn>
-    <upload file_id="up_001" filename="app.log">
-      <structural_index>14k ERROR lines, 2k WARN, range 14:00-15:00, services [api-server, redis-cache]</structural_index>
-    </upload>
-  </uploads_this_turn>
-</this_turn>
-
 <evidence_needs>
 When examining uploaded files, also look for data matching these
 outstanding needs. These are not the only things to look for —
@@ -404,15 +473,18 @@ hypotheses or revised needs.
   - [eneed_004] Application connection timeout logs (CAUSAL, MEDIUM)
       motivated_by: [hyp_001]
 </evidence_needs>
-
-<evidence>
-  ...collected so far, with source_file_id, category, hypothesis links...
-</evidence>
 ```
 
 Only PENDING and PARTIALLY_MET needs are rendered (FULFILLED and
 SUPERSEDED excluded to save tokens). Stage-specific filtering applies
 — see §8.4.
+
+**What lives in the existing `<evidence_collected>` block, not here.**
+Per-turn upload signal (file_id, structural_index, fresh attribute)
+and per-row evidence detail (extract, source_file_id, hypothesis
+links) stay in `<evidence_collected>`. The `<evidence_needs>` block is
+purely the demand-side index — it points back at evidence rows via
+need IDs, but does not duplicate their content.
 
 ### 6.2 Suggestions — EVIDENCE Type, LLM-Emitted
 
@@ -480,7 +552,60 @@ calls. See §10.4.
 | Solution applied | LLM re-evaluates needs by attempting to extract `CAUSAL_ABSENCE_EVIDENCE` (and refresh symptom-absence) |
 | LLM judges a need irrelevant | LLM emits update: status → `SUPERSEDED` (any time) |
 
-### 7.3 Hypothesis Retirement → Motivator-Based Supersession
+### 7.3 Engine Backstop
+
+The engine apply-layer for `evidence_need_updates` integrates with the
+existing `_path_conditional_emission_restriction(case)` predicate in
+[`milestone_engine.py`](../../../faultmaven/core/investigation/milestone_engine.py)
+(the same predicate that gates `hypotheses_to_add`, `causal_evidence`,
+and RCA-side milestone updates per INV-19 / INV-21).
+
+**Purpose-aware rejection rule.** Not all `evidence_need_updates` are
+RCA-side claims — symptom needs are emitted during the very window
+where the restriction fires (`pre_path_investigating` is precisely the
+symptom-validation window per §5.1). The apply-layer therefore must
+distinguish by `purpose`:
+
+```python
+restricted_state = _path_conditional_emission_restriction(case)
+for update in evidence_need_updates:
+    if restricted_state is not None and update.purpose == NeedPurpose.CAUSAL_VERIFICATION:
+        # Causal needs ride with hypotheses; same restriction applies.
+        # Reject and re-surface in system_feedback so the LLM sees
+        # the rejection on the next turn (mirrors the existing
+        # hypotheses_to_add rejection path).
+        block_name = _RESTRICTED_STATE_BLOCK_NAMES[restricted_state]
+        deferral_clause = _restricted_state_deferral_clause(
+            restricted_state, work="Causal evidence need"
+        )
+        _record_rejection(case, restricted_state, "evidence_need_updates",
+                          purpose="causal_verification",
+                          block_name=block_name,
+                          deferral_clause=deferral_clause)
+        continue
+    apply_update(update)
+```
+
+Symptom-purpose emissions are always allowed; causal-purpose
+emissions are rejected (and re-surfaced) whenever the predicate
+returns one of `pre_path_investigating`,
+`pre_mitigation_mitigation_first`, or `gate3_pending`. The rejection
+message uses the same `_RESTRICTED_STATE_BLOCK_NAMES` and
+`_restricted_state_deferral_clause` helpers already centralized in
+the milestone engine so error phrasing stays consistent with the
+existing `hypotheses_to_add` rejection messages.
+
+**Why backstop instead of pure prompt rule.** Prompt instructions are
+necessary but not sufficient — per the existing path-restricted-state
+composition seam (INV-19's "audit `templates.py:_select_diagnosis_block`,
+`context_builder.py:gate2_state_str`, `milestone_engine.py:_gate2_is_pending`,
+and `milestone_engine.py:_is_pre_path_investigating` together"), the
+engine backstop is what prevents a non-compliant LLM from corrupting
+the case during a restricted window. Evidence needs inherit the same
+seam: prompt-side restriction lives in the dispatch blocks (§5
+Phase 5 of the plan); the engine backstop catches a slip-through.
+
+### 7.4 Hypothesis Retirement → Motivator-Based Supersession
 
 This is a deterministic engine rule, not an LLM decision:
 
@@ -508,7 +633,7 @@ Notes:
   what *was* collected, even if the hypothesis is later retired.
 - The LLM can supersede explicitly at any time via update emissions.
 
-### 7.4 Re-Verification After Mitigation/Solution
+### 7.5 Re-Verification After Mitigation/Solution
 
 After mitigation or solution, the LLM does not mechanically flip need
 statuses. Instead, the pool serves as **memory of what symptoms and
@@ -627,34 +752,84 @@ class SuggestedFollowUp(BaseModel):
     )
 ```
 
-### 8.6 Relationship to `InvestigationStateUpdate` (LLM Schema)
+### 8.6 LLM Schema: `EvidenceNeedUpdate` + Stage Hooks
 
-The renamed and enriched schema:
+The LLM schema lives at
+[`faultmaven/core/investigation/schemas.py`](../../../faultmaven/core/investigation/schemas.py)
+alongside the existing `EvidenceToAdd` / `HypothesisToAdd` /
+`HypothesisEvidenceLinkToAdd` schemas. Per the stage-split refactor,
+`evidence_need_updates` is added as a field on the stage-specific
+state-update classes (one per non-INQUIRY stage), **not** on a single
+`InvestigationStateUpdate` (which no longer exists — the legacy class
+in `models/llm_schemas.py` is dead code removed in Phase 2):
 
 ```python
 class EvidenceNeedUpdate(BaseModel):
     """LLM-emitted: create a new need OR update an existing one."""
     need_id: Optional[str] = Field(
         default=None,
-        description="Set to update an existing need; omit to create a new one.",
+        description=(
+            "Set to update an existing need; omit (or omit field) to "
+            "create a new one. Accepts a real need_id, a 'new_index_N' "
+            "placeholder, or a bare integer coerced to 'new_index_N' "
+            "(referencing a need created earlier in this same "
+            "evidence_need_updates list)."
+        ),
     )
     purpose: Literal["symptom_verification", "causal_verification"]
     request_text: str = Field(max_length=500)
-    rationale: str = Field(max_length=500, description="Why this data would help (replaces old 'purpose' field).")
+    rationale: str = Field(
+        max_length=500,
+        description="Why this data would help advance the investigation.",
+    )
     priority: Literal["high", "medium", "low"] = "medium"
-    motivating_hypothesis_ids: List[str] = Field(default_factory=list)
-    status: Optional[NeedStatus] = Field(default=None, description="Set when updating; None for create.")
-    fulfilling_evidence_ids: List[str] = Field(default_factory=list)
+    motivating_hypothesis_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Hypotheses that motivate this need. Each entry accepts a "
+            "real hypothesis_id, a 'new_index_N' placeholder referencing "
+            "an entry in hypotheses_to_add, or a bare integer (coerced)."
+        ),
+    )
+    status: Optional[Literal["pending", "partially_met", "fulfilled", "superseded"]] = (
+        Field(default=None, description="Set when updating; None for create.")
+    )
+    fulfilling_evidence_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Evidence rows that fulfill this need. Each entry accepts a "
+            "real evidence_id, a 'new_index_N' placeholder referencing "
+            "an entry in evidence_to_add, or a bare integer (coerced)."
+        ),
+    )
+    superseded_reason: Optional[str] = Field(default=None, max_length=500)
 
-class InvestigationStateUpdate(BaseModel):
-    # ... existing fields ...
-    evidence_need_updates: List[EvidenceNeedUpdate] = Field(default_factory=list)
-    mentioned_need_ids: List[str] = Field(default_factory=list)
+    @field_validator("motivating_hypothesis_ids", "fulfilling_evidence_ids",
+                     "need_id", mode="before")
+    @classmethod
+    def _coerce_bare_int_to_new_index(cls, v):
+        # Same coercion shape as HypothesisEvidenceLinkToAdd (PR #354).
+        ...
 ```
 
-Note: the field formerly called `purpose` (free-text "why") is renamed
-to `rationale` to avoid collision with the new structured `purpose`
-field. No backcompat — direct rename.
+Stage hooks — `evidence_need_updates` is added to each of:
+
+- `InvestigationResponse_Diagnosis.DiagnosisStateUpdate`
+- `InvestigationResponse_Mitigation.MitigationStateUpdate`
+- `InvestigationResponse_Treatment.TreatmentStateUpdate`
+- `InvestigationResponse_General.GeneralStateUpdate`
+
+`InquiryStateUpdate` deliberately does **not** carry the field —
+INQUIRY creates no evidence-side state per INV-07. Pre-path symptom
+needs surface via `DiagnosisStateUpdate` (the `_PRE_PATH_DIAGNOSIS_BLOCK`
+dispatch is still inside the DIAGNOSIS stage; only the rendered prompt
+block changes by path).
+
+**No `mentioned_need_ids` field.** Mention-decay is fully prompt-only
+in the new design (§9.7) — the LLM relies on conversation history,
+not an emitted list. Adding the field would create state-management
+overhead with no enforcement consumer (the
+`diagnostic_reasoning_validator` workstream was removed in PR #348).
 
 ### 8.7 Persistence: New Table
 
@@ -789,8 +964,15 @@ see what it has previously suggested. Adding a stored `mention_count`
 or `last_mentioned_at_turn` introduces state-management overhead for
 a behavior the LLM can self-regulate.
 
-If observed nagging becomes a problem in evaluation, the field can be
-added — but only then. Avoid speculative state.
+**Validator-removal context (PR #348).** The
+`diagnostic_reasoning_validator` workstream was removed entirely; the
+Rule-2 / compliance signal moved to offline eval/CI per the
+[project_rule2_eval_workstream](../../../docs/working/) note. There is
+no longer a post-generation validator that could backstop a stored
+mention-count anyway — runtime suggestion-quality enforcement is
+prompt-side only. If observed nagging becomes a problem in evaluation,
+the right response is a transcript-based eval rule (caught offline),
+not a stored field. Avoid speculative state.
 
 ---
 
