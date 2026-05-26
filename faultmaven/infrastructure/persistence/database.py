@@ -106,13 +106,15 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
 
     # Configure engine based on database type
     if is_sqlite(url):
-        # SQLite: Use NullPool (doesn't support connection pooling)
+        # SQLite: Use NullPool (doesn't support connection pooling).
+        # pool_pre_ping is intentionally NOT set — it's a no-op on NullPool
+        # (no pooled connection to ping) and adds a SELECT 1 round-trip
+        # per checkout for no benefit. Each NullPool checkout opens a
+        # fresh DBAPI connection, which is its own implicit liveness check.
         _engine = create_async_engine(
             url,
             echo=db_config.database_echo,
-            pool_pre_ping=True,
             poolclass=NullPool,
-            # SQLite-specific: enable foreign keys
             connect_args={"check_same_thread": False},
         )
 
@@ -120,6 +122,7 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         # PRAGMAs are per-connection state in SQLite (and NullPool opens
         # a fresh connection per checkout).
         #
+        # Correctness:
         # - journal_mode=WAL: readers don't block writers and writers don't
         #   block readers. Without this the default rollback journal takes
         #   an exclusive write lock, so any concurrent read+write from a
@@ -134,13 +137,32 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         #   each cascade-needing call site has to do an explicit
         #   multi-phase delete (see the workaround at
         #   sqlite_case_repository.py:3334).
+        #
+        # Performance (safe defaults — no durability cost worth flagging):
+        # - synchronous=NORMAL: canonical pairing with WAL per SQLite docs.
+        #   Default FULL fsyncs on every commit; NORMAL is safe under WAL
+        #   (loses at most the last few commits on POWER LOSS, never on
+        #   app/OS crash) and substantially faster on commit-heavy paths
+        #   like the per-turn case save.
+        # - temp_store=MEMORY: temp tables / sort spill / index build go
+        #   to RAM instead of /tmp files. Temp data is ephemeral by
+        #   definition, so MEMORY has no durability cost.
+        # - cache_size=-64000: ~64 MB page cache (negative = KB; positive
+        #   = page count). Default 2000 pages ≈ 8 MB is too small for our
+        #   hot working set (cases + recent messages + evidence rows);
+        #   64 MB keeps the working set resident without hogging RAM.
         @event.listens_for(_engine.sync_engine, "connect")
         def _sqlite_set_pragmas(dbapi_conn, _connection_record):
             cursor = dbapi_conn.cursor()
             try:
+                # Correctness PRAGMAs (must succeed for the app to behave).
                 cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.execute("PRAGMA busy_timeout=5000")
                 cursor.execute("PRAGMA foreign_keys=ON")
+                # Performance PRAGMAs (safe defaults under WAL).
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.execute("PRAGMA temp_store=MEMORY")
+                cursor.execute("PRAGMA cache_size=-64000")
             finally:
                 cursor.close()
 
