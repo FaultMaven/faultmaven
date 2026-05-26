@@ -1,4 +1,4 @@
-"""013_evidence_needs
+"""014_evidence_needs
 
 Phase 1 of the Evidence Needs feature: create the demand-side persistence
 structure. Two new tables:
@@ -21,8 +21,8 @@ migrated. Phase 2+ of the feature will wire the LLM schema and engine
 lifecycle into these tables.
 
 Revision ID: e1d2c3b4a5f6
-Revises: a1b2c3d4e5f6
-Create Date: 2026-05-22 12:00:00.000000
+Revises: b2c3d4e5f607
+Create Date: 2026-05-26 10:00:00.000000
 """
 
 from typing import Sequence, Union
@@ -32,7 +32,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e1d2c3b4a5f6"
-down_revision: Union[str, Sequence[str], None] = "a1b2c3d4e5f6"
+down_revision: Union[str, Sequence[str], None] = "b2c3d4e5f607"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
