@@ -305,7 +305,14 @@ class TestAckTurnFollowUpsOnFailure:
 class TestRunbookCreationFollowUps:
     @pytest.mark.asyncio
     async def test_success_path_returns_resolved_suggestions(self, mock_llm, mock_repo):
-        """RG3: success branch re-offers regen + runbook so the user can iterate."""
+        """RG3: success branch re-offers the regen affordance only.
+
+        The runbook affordance is hidden on this turn — we just kicked
+        off generation as a background task, so re-offering would race
+        the in-flight task and risk a duplicate draft. The user iterates
+        on the resulting draft in the Dashboard Drafts editor, not via
+        another chat click.
+        """
         from faultmaven.core.investigation.milestone_engine import (
             _resolved_suggestions,
         )
@@ -325,11 +332,15 @@ class TestRunbookCreationFollowUps:
 
         result = await engine._handle_runbook_creation(case, metadata={})
 
-        # remaining=5 because the mock_repo's count_reports returns 0 by
-        # default (MagicMock default), so MAX - 0 = 5.
+        # `runbook_already_exists=True` is passed at this call site (we
+        # just kicked off conversion). The expected list contains only
+        # the regen affordance.
         assert result["suggested_follow_ups"] == _resolved_suggestions(
-            remaining=await engine._remaining_regens_for(case)
+            remaining=await engine._remaining_regens_for(case),
+            runbook_already_exists=True,
         )
+        labels = [s["label"] for s in result["suggested_follow_ups"]]
+        assert "Generate runbook from this case" not in labels
 
     @pytest.mark.asyncio
     async def test_not_ready_branch_returns_empty(self, mock_llm, mock_repo):

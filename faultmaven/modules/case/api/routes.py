@@ -901,6 +901,7 @@ async def get_case(
 @router.get("/{case_id}/ui", response_model=CaseUIResponse)
 @trace("api_get_case_ui")
 async def get_case_ui(
+    request: Request,
     case_id: str,
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
@@ -940,6 +941,35 @@ async def get_case_ui(
 
         # Transform to UI response based on phase
         ui_response = transform_case_for_ui(case)
+
+        # Enrich the terminal-phase response with any case-linked runbook
+        # drafts. The adapter is pure (no service deps); the case-ui route
+        # owns the cross-module composition. The Artifacts strip in the
+        # case header reads `reports_available` to render runbook badges.
+        from faultmaven.modules.case.contracts import CaseStatus as _CS
+
+        if case.status in (_CS.RESOLVED, _CS.CLOSED):
+            conversion_service = getattr(request.app.state, "conversion_service", None)
+            if conversion_service is not None:
+                try:
+                    drafts = await conversion_service.list_drafts_for_case(case_id)
+                except Exception:
+                    drafts = []
+                if drafts:
+                    from faultmaven.models.case_ui import ReportAvailability
+
+                    for d in drafts:
+                        ui_response.reports_available.append(
+                            ReportAvailability(
+                                report_type="runbook",
+                                status=(
+                                    "available"
+                                    if d.get("knowledge_item_id")
+                                    else "draft"
+                                ),
+                                reason=d.get("title"),
+                            )
+                        )
 
         return ui_response
 
