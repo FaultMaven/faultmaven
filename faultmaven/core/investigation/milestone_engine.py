@@ -7450,7 +7450,18 @@ class MilestoneEngine:
             )
 
     def _resolve_id_ref(self, ref: str, created_ids: list[str], prefix: str) -> str:
-        """Resolve 'new_index_N' to actual ID from created_ids list or return ref as-is."""
+        """Resolve ``new_index_N`` to the actual ID from ``created_ids``,
+        or return ``ref`` unchanged.
+
+        **Contract (load-bearing across all callers — Phase 3 apply-layer
+        for hypothesis/evidence refs, Phase 6 for need refs):** callers
+        detect unresolved placeholders by checking
+        ``ref.startswith("new_index_")`` on the return value. The
+        function returns the input unchanged when ``N`` is out of range
+        or malformed, never raises — graceful degradation. A "did this
+        resolve?" probe at the caller is the canonical pattern; do not
+        switch this to ``Optional[str]`` without auditing every caller.
+        """
         if ref and ref.startswith("new_index_"):
             try:
                 idx_str = ref.replace("new_index_", "")

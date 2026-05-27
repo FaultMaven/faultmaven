@@ -249,3 +249,38 @@ class TestMixedSuggestionList:
         assert out[0]["evidence_need_id"] == "eneed_aaaa11112222"
         assert "evidence_need_id" not in out[1]
         assert "evidence_need_id" not in out[2]
+
+
+# ============================================================
+# Call-site refactor pin — static-source guard
+# ============================================================
+
+
+@pytest.mark.unit
+class TestBothCallSitesUseFlattener:
+    """Pins that both follow-up flattening seams route through
+    ``_flatten_follow_ups``. Without this, a future partial revert
+    at one site would re-create the duplication this PR collapsed —
+    and the helper-only tests above wouldn't catch it. Same shape as
+    the static-source pins used in the lifecycle invariant matrix
+    (INV-10, INV-16, etc.)."""
+
+    def test_both_seams_call_flatten_follow_ups(self):
+        import inspect
+
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+        src_terminal = inspect.getsource(MilestoneEngine._process_terminal_qa)
+        src_turn = inspect.getsource(MilestoneEngine._process_turn_impl)
+        assert "self._flatten_follow_ups(" in src_terminal, (
+            "_process_terminal_qa no longer calls _flatten_follow_ups — a "
+            "partial revert has re-introduced the duplicated flattening "
+            "loop. Either restore the call or update this pin to match a "
+            "deliberate redesign."
+        )
+        assert "self._flatten_follow_ups(" in src_turn, (
+            "_process_turn_impl no longer calls _flatten_follow_ups — a "
+            "partial revert has re-introduced the duplicated flattening "
+            "loop. Either restore the call or update this pin to match a "
+            "deliberate redesign."
+        )
