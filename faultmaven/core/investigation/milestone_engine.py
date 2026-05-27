@@ -2189,6 +2189,13 @@ class MilestoneEngine:
             # Single integration point covers all four retirement sites
             # without threading ``case`` through hypothesis_manager and
             # progress_monitor APIs (see evidence-needs-design.md §7.4).
+            #
+            # CONTRACT PIN: the snapshot/diff shape (this block and the
+            # paired post-mutation diff at the end of _process_turn_impl)
+            # is exercised by ``TestSnapshotDiffBookendIntegration`` in
+            # tests/unit/core/investigation/test_evidence_need_apply_layer.py.
+            # If you refactor this bookend, update or replace that test —
+            # it pins the contract, not the call site.
             _pre_turn_retired_hyp_ids: set[str] = {
                 h_id
                 for h_id, h in case.hypotheses.items()
@@ -6328,7 +6335,6 @@ class MilestoneEngine:
         §5.3 (out-of-order arrival), §7.3 (engine backstop).
         """
         restricted_state = _path_conditional_emission_restriction(case)
-        existing_need_ids: set[str] = {n.need_id for n in case.evidence_needs}
         # Same-turn need_id resolution: needs created earlier in this
         # same ``updates_list`` are tracked here so a later update with
         # ``need_id="new_index_0"`` can find them.
@@ -6452,6 +6458,35 @@ class MilestoneEngine:
 
             # CREATE path (need_id is None)
             if resolved_need_id is None:
+                # Reject causal-purpose creates with no valid motivator.
+                # A causal need without any motivating hypothesis is the
+                # exact orphan state §7.4's supersession rule was
+                # designed to clean up — but the snapshot-diff only
+                # fires for *this-turn* retirements, so a need born
+                # empty would never be auto-cleaned. Per design §5.2,
+                # causal needs are *motivated by hypotheses*; absent
+                # motivators (whether the LLM omitted them or all
+                # references filtered away as dangling/retired) makes
+                # the emission malformed. Symptom needs are unaffected
+                # — empty motivator list is their normal shape, they're
+                # motivated by the problem statement.
+                if (
+                    update.purpose == NeedPurpose.CAUSAL_VERIFICATION
+                    and not valid_motivators
+                ):
+                    logger.warning(
+                        f"Rejected causal-purpose evidence_need create on "
+                        f"case {case.case_id}: no valid motivating "
+                        f"hypothesis (omitted, or all references were "
+                        f"dangling/retired). "
+                        f"request_text={update.request_text[:80]!r}"
+                    )
+                    metadata.setdefault("validation_repairs", []).append(
+                        "Rejected causal-purpose evidence_need create "
+                        "(no valid motivating hypothesis)"
+                    )
+                    continue
+
                 # FULFILLED→PARTIALLY_MET demotion when all referenced
                 # fulfilling evidence IDs were dropped as dangling. The
                 # schema's create-path rule rejects FULFILLED + empty

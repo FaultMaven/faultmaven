@@ -324,7 +324,11 @@ class TestEvidenceNeedUpdateApplyLayer:
         assert case.evidence_needs[0].status == NeedStatus.SUPERSEDED
         assert any("resurrection" in r for r in meta.get("validation_repairs", []))
 
-    def test_dangling_hypothesis_id_dropped(self):
+    def test_dangling_hypothesis_id_dropped_on_symptom_need(self):
+        """Dangling hypothesis IDs are dropped with a validation_repair
+        note. Tested on a SYMPTOM need (where empty motivators are
+        the normal shape) — causal needs with all-dangling motivators
+        are handled by the orphan-reject path below."""
         case = _make_case()
         engine = _make_engine()
         meta = _empty_metadata()
@@ -332,7 +336,7 @@ class TestEvidenceNeedUpdateApplyLayer:
             case,
             [
                 _make_update(
-                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                    purpose=NeedPurpose.SYMPTOM_VERIFICATION,
                     motivating_hypothesis_ids=["hyp_doesnotexist"],
                 )
             ],
@@ -517,11 +521,17 @@ class TestCausalNeedRejectionInRestrictedStates:
     def test_causal_allowed_in_root_cause_path(self):
         """Default fixture is ROOT_CAUSE path — unrestricted."""
         case = _make_case()  # default = ROOT_CAUSE path
+        h = _make_hypothesis(case)
         engine = _make_engine()
         meta = _empty_metadata()
         engine._apply_evidence_need_updates(
             case,
-            [_make_update(purpose=NeedPurpose.CAUSAL_VERIFICATION)],
+            [
+                _make_update(
+                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                    motivating_hypothesis_ids=[h.hypothesis_id],
+                )
+            ],
             meta,
             case.current_turn,
         )
@@ -778,7 +788,13 @@ class TestPriorTurnRetiredMotivatorFiltered:
             "retired hypothesis ID" in r for r in meta.get("validation_repairs", [])
         )
 
-    def test_all_retired_motivators_drops_all(self):
+    def test_all_retired_motivators_rejects_create(self):
+        """When every motivator filters away (all-retired, or all-
+        dangling, or originally empty), a causal-purpose create is
+        rejected outright. Persisting an orphan causal need would
+        bypass §7.4 supersession entirely — the snapshot-diff only
+        cleans up needs whose motivator retired *this turn*, so a
+        need born empty would live forever."""
         case = _make_case()
         h_retired = _make_hypothesis(case, status=HypothesisStatus.RETIRED)
         engine = _make_engine()
@@ -796,11 +812,61 @@ class TestPriorTurnRetiredMotivatorFiltered:
             case.current_turn,
         )
 
-        # Need still created (purpose lives independently of motivators),
-        # but motivators list is empty. The supersession rule won't see
-        # this in the same-turn snapshot-diff (hypothesis was retired
-        # on a prior turn), which is why dropping at create time matters.
-        assert case.evidence_needs[0].motivating_hypothesis_ids == []
+        assert case.evidence_needs == []
+        assert any(
+            "Rejected causal-purpose evidence_need create" in r
+            for r in meta.get("validation_repairs", [])
+        )
+
+    def test_all_dangling_motivators_rejects_causal_create(self):
+        """All-dangling motivator references hit the same orphan-reject
+        path as all-retired (same downstream symptom: causal need with
+        no valid motivating hypothesis)."""
+        case = _make_case()
+        engine = _make_engine()
+        meta = _empty_metadata()
+
+        engine._apply_evidence_need_updates(
+            case,
+            [
+                _make_update(
+                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                    motivating_hypothesis_ids=["hyp_doesnotexist"],
+                )
+            ],
+            meta,
+            case.current_turn,
+        )
+
+        assert case.evidence_needs == []
+        assert any(
+            "Rejected causal-purpose evidence_need create" in r
+            for r in meta.get("validation_repairs", [])
+        )
+
+    def test_causal_create_without_motivators_rejected(self):
+        """Same orphan-reject path covers the case where the LLM
+        omits motivators entirely on a causal need. Per design §5.2
+        causal needs are *motivated by hypotheses*; absent motivators
+        is malformed regardless of whether the field was empty or
+        filtered to empty."""
+        case = _make_case()
+        engine = _make_engine()
+        meta = _empty_metadata()
+
+        engine._apply_evidence_need_updates(
+            case,
+            [
+                _make_update(
+                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                    motivating_hypothesis_ids=[],
+                )
+            ],
+            meta,
+            case.current_turn,
+        )
+
+        assert case.evidence_needs == []
 
     def test_retired_motivator_dropped_on_update(self):
         case = _make_case()
