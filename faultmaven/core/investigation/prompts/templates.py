@@ -782,6 +782,8 @@ STATUS: INVESTIGATING
 
 {evidence}
 
+{evidence_needs}
+
 {entity_highlights}
 
 {hypotheses}

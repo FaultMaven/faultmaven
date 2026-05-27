@@ -38,6 +38,8 @@ from faultmaven.modules.case.contracts import (
     CaseStatus,
     EntityType,
     InvestigationStage,
+    NeedPurpose,
+    NeedStatus,
 )
 from faultmaven.modules.case.domain.services.investigation_router import (
     recommend_investigation_path_for_case,
@@ -1683,6 +1685,123 @@ def _build_verbatim_history(messages: list) -> str:
     return result
 
 
+# =============================================================================
+# Evidence-needs block (Phase 4 of evidence-needs rollout)
+# =============================================================================
+
+# Cap on rendered needs per block to keep token cost bounded. Design §8.4
+# targets ≤10 active needs (~500 tokens). The cap protects against pool
+# bloat without truncating mid-need.
+_EVIDENCE_NEEDS_RENDER_CAP = 15
+
+# Priority sort key — HIGH first so the LLM sees the urgent demand
+# without scrolling. ``priority`` is an LLM hint, not a guarantee, so
+# this is a presentation preference, not a correctness rule.
+_PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+
+def _build_evidence_needs_block(case: Case) -> str:
+    """Render the ``<evidence_needs>`` context block.
+
+    Returns ``""`` (progressive activation, design §10.6) when:
+
+    - The pool is empty.
+    - All needs are filtered out by status (no PENDING/PARTIALLY_MET
+      in DIAGNOSIS; no PENDING/PARTIALLY_MET/FULFILLED in
+      MITIGATION/TREATMENT).
+    - The case is not INVESTIGATING (terminal/inquiry have their own
+      surfaces).
+
+    Filtering rules (design §8.4):
+
+    - Default (DIAGNOSIS stage): render PENDING + PARTIALLY_MET.
+      FULFILLED and SUPERSEDED are excluded to save tokens.
+    - MITIGATION / TREATMENT: also include FULFILLED needs as a
+      re-verification checklist — the agent confirms the fix held by
+      re-checking the same data that established the symptom/cause.
+      SUPERSEDED remains excluded everywhere.
+
+    Output shape (design §6.1):
+
+        <evidence_needs>
+        When examining uploaded files, also look for data matching
+        these outstanding needs. These are not the only things to
+        look for — unexpected findings are equally important and may
+        lead to new hypotheses or revised needs.
+
+          - [eneed_001] Response time metrics (SYMPTOM, HIGH)
+              motivated_by: problem_statement
+          - [eneed_003] DB connection pool metrics (CAUSAL, HIGH)
+              motivated_by: [hyp_001, hyp_003]
+        </evidence_needs>
+    """
+    if case.status != CaseStatus.INVESTIGATING:
+        return ""
+    if not case.evidence_needs:
+        return ""
+
+    allowed_statuses: set[NeedStatus] = {NeedStatus.PENDING, NeedStatus.PARTIALLY_MET}
+    in_post_diagnosis = case.current_stage in (
+        InvestigationStage.MITIGATION,
+        InvestigationStage.TREATMENT,
+    )
+    if in_post_diagnosis:
+        allowed_statuses.add(NeedStatus.FULFILLED)
+
+    visible = [n for n in case.evidence_needs if n.status in allowed_statuses]
+    if not visible:
+        return ""
+
+    # Stable presentation: high-priority first, then created_at as a
+    # tiebreaker for deterministic rendering when priorities tie. The
+    # repo already returns rows sorted by created_at ASC, need_id ASC,
+    # so the secondary sort is implicit — only the priority key needs
+    # to be applied here.
+    visible.sort(key=lambda n: _PRIORITY_ORDER.get(n.priority.value, 99))
+
+    rendered_count = min(len(visible), _EVIDENCE_NEEDS_RENDER_CAP)
+    overflow = len(visible) - rendered_count
+
+    lines: list[str] = ["<evidence_needs>"]
+    lines.append("When examining uploaded files, also look for data matching these")
+    lines.append("outstanding needs. These are not the only things to look for —")
+    lines.append("unexpected findings are equally important and may lead to new")
+    lines.append("hypotheses or revised needs.")
+    lines.append("")
+
+    for need in visible[:rendered_count]:
+        purpose_label = (
+            "SYMPTOM" if need.purpose == NeedPurpose.SYMPTOM_VERIFICATION else "CAUSAL"
+        )
+        status_suffix = (
+            f", {need.status.value.upper()}"
+            if need.status != NeedStatus.PENDING
+            else ""
+        )
+        header = (
+            f"  - [{need.need_id}] {need.request_text} "
+            f"({purpose_label}, {need.priority.value.upper()}{status_suffix})"
+        )
+        if need.purpose == NeedPurpose.SYMPTOM_VERIFICATION:
+            motivator_line = "      motivated_by: problem_statement"
+        else:
+            ids = need.motivating_hypothesis_ids
+            motivator_line = (
+                f"      motivated_by: [{', '.join(ids)}]"
+                if ids
+                else "      motivated_by: []"
+            )
+        lines.append(header)
+        lines.append(motivator_line)
+
+    if overflow > 0:
+        lines.append("")
+        lines.append(f"  …and {overflow} more open need(s) not shown (cap reached).")
+
+    lines.append("</evidence_needs>")
+    return "\n".join(lines)
+
+
 def build_investigation_context(
     case: Case,
     user_message: str,
@@ -2129,12 +2248,18 @@ def build_investigation_context(
     # can reference it unconditionally.
     entity_highlights_str = entity_highlights or ""
 
+    # Evidence-needs Phase 4 — demand-side pool block. Empty string when
+    # the pool has no visible needs for this stage (progressive
+    # activation; design §10.6).
+    evidence_needs_str = _build_evidence_needs_block(case)
+
     # Assembly with budget check
     ctx = {
         "identity": budget.use(identity),
         "core_context": budget.use(core_context),
         "milestones": budget.use(milestones_str),
         "evidence": budget.use(evidence_str),
+        "evidence_needs": budget.use(evidence_needs_str),
         "entity_highlights": budget.use(entity_highlights_str),
         "hypotheses": budget.use(hypothesis_str),
         "investigation_journal": budget.use(journal_str),
