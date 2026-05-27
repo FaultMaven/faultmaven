@@ -313,7 +313,7 @@ class TestRenderCap:
         for i in range(_EVIDENCE_NEEDS_RENDER_CAP + 3):
             _make_need(case, request_text=f"need {i}")
         out = _build_evidence_needs_block(case)
-        assert "3 more open need(s) not shown" in out
+        assert "3 more outstanding need(s) not shown" in out
 
     def test_no_overflow_marker_when_within_cap(self):
         case = _make_case()
@@ -353,3 +353,129 @@ class TestContextBuilderIntegration:
         ctx = build_investigation_context(case, "user message", max_tokens=8000)
         assert "evidence_needs" in ctx
         assert ctx["evidence_needs"] == ""
+
+
+# ============================================================
+# Outstanding vs re-verification section split (review fix #1)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestOutstandingVsReVerificationSplit:
+    """In MITIGATION/TREATMENT, outstanding (PENDING/PARTIALLY_MET) and
+    FULFILLED needs render under separate section headings so the LLM
+    knows which line is a hunt-for vs which is a confirm-still-true."""
+
+    def test_diagnosis_uses_outstanding_preamble_only(self):
+        case = _make_case(stage=InvestigationStage.DIAGNOSIS)
+        _make_need(case, status=NeedStatus.PENDING)
+        out = _build_evidence_needs_block(case)
+        assert "Outstanding needs" in out
+        assert "Re-verification checklist" not in out
+
+    def test_mitigation_with_only_fulfilled_omits_outstanding_section(self):
+        case = _make_case(
+            stage=InvestigationStage.MITIGATION,
+            path=InvestigationPath.MITIGATION_FIRST,
+        )
+        _make_need(case, status=NeedStatus.FULFILLED)
+        out = _build_evidence_needs_block(case)
+        assert "Outstanding needs" not in out
+        assert "Re-verification checklist" in out
+
+    def test_mitigation_with_only_outstanding_omits_reverification_section(self):
+        case = _make_case(
+            stage=InvestigationStage.MITIGATION,
+            path=InvestigationPath.MITIGATION_FIRST,
+        )
+        _make_need(case, status=NeedStatus.PENDING)
+        out = _build_evidence_needs_block(case)
+        assert "Outstanding needs" in out
+        assert "Re-verification checklist" not in out
+
+    def test_mitigation_with_both_renders_both_sections_in_order(self):
+        case = _make_case(
+            stage=InvestigationStage.MITIGATION,
+            path=InvestigationPath.MITIGATION_FIRST,
+        )
+        pending = _make_need(case, status=NeedStatus.PENDING, request_text="open work")
+        fulfilled = _make_need(
+            case, status=NeedStatus.FULFILLED, request_text="established cause"
+        )
+        out = _build_evidence_needs_block(case)
+        assert "Outstanding needs" in out
+        assert "Re-verification checklist" in out
+        # Outstanding section precedes re-verification section
+        assert out.index("Outstanding needs") < out.index("Re-verification checklist")
+        # Each need lands in its proper section
+        assert out.index(pending.need_id) < out.index("Re-verification checklist")
+        assert out.index(fulfilled.need_id) > out.index("Re-verification checklist")
+
+
+# ============================================================
+# request_text truncation (review fix #2)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestRequestTextTruncation:
+    """``request_text`` is capped at 500 chars by the schema; the
+    rendered line truncates to keep the block scannable. Full text
+    stays in the DB for downstream consumers (suggestion-side, UI)."""
+
+    def test_short_request_text_renders_verbatim(self):
+        case = _make_case()
+        _make_need(case, request_text="short text")
+        out = _build_evidence_needs_block(case)
+        assert "short text" in out
+        assert "…" not in out
+
+    def test_long_request_text_truncated_with_ellipsis(self):
+        from faultmaven.core.investigation.prompts.context_builder import (
+            _REQUEST_TEXT_RENDER_CAP,
+        )
+
+        case = _make_case()
+        long_text = "x" * (_REQUEST_TEXT_RENDER_CAP + 50)
+        _make_need(case, request_text=long_text)
+        out = _build_evidence_needs_block(case)
+        # Truncated marker present
+        assert "…" in out
+        # Full text NOT present in render
+        assert long_text not in out
+        # Rendered prefix is within the cap
+        prefix = "x" * (_REQUEST_TEXT_RENDER_CAP - 1)
+        assert prefix in out
+
+    def test_at_exact_cap_no_truncation(self):
+        from faultmaven.core.investigation.prompts.context_builder import (
+            _REQUEST_TEXT_RENDER_CAP,
+        )
+
+        case = _make_case()
+        boundary_text = "y" * _REQUEST_TEXT_RENDER_CAP
+        _make_need(case, request_text=boundary_text)
+        out = _build_evidence_needs_block(case)
+        assert boundary_text in out
+        assert "…" not in out
+
+
+# ============================================================
+# Tied-priority deterministic ordering (review fix #4)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestTiedPriorityOrdering:
+    """Two needs at the same priority must render in a stable order so
+    the LLM sees a deterministic list across turns. The sort is
+    stable; the in-memory test exercises insertion order (the repo's
+    SELECT supplies created_at ASC, need_id ASC as the source order in
+    production)."""
+
+    def test_same_priority_needs_render_in_insertion_order(self):
+        case = _make_case()
+        a = _make_need(case, priority=NeedPriority.HIGH, request_text="first high")
+        b = _make_need(case, priority=NeedPriority.HIGH, request_text="second high")
+        out = _build_evidence_needs_block(case)
+        assert out.index(a.need_id) < out.index(b.need_id)

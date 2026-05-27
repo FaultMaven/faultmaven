@@ -38,6 +38,7 @@ from faultmaven.modules.case.contracts import (
     CaseStatus,
     EntityType,
     InvestigationStage,
+    NeedPriority,
     NeedPurpose,
     NeedStatus,
 )
@@ -1689,15 +1690,60 @@ def _build_verbatim_history(messages: list) -> str:
 # Evidence-needs block (Phase 4 of evidence-needs rollout)
 # =============================================================================
 
-# Cap on rendered needs per block to keep token cost bounded. Design §8.4
-# targets ≤10 active needs (~500 tokens). The cap protects against pool
-# bloat without truncating mid-need.
+# Cap on rendered needs per block to keep token cost bounded. Each
+# rendered need is ~80 chars of header (capped via
+# ``_REQUEST_TEXT_RENDER_CAP``) + ~80 chars of motivator line; 15 needs
+# stays around ~600 tokens worst case.
 _EVIDENCE_NEEDS_RENDER_CAP = 15
 
+# Per-need truncation cap for ``request_text``. The model attribute is
+# capped at 500 chars by the schema, but in the rendered block we keep
+# things scannable. The full text is preserved in the DB and surfaces
+# via the EVIDENCE-suggestion side (Phase 6).
+_REQUEST_TEXT_RENDER_CAP = 120
+
 # Priority sort key — HIGH first so the LLM sees the urgent demand
-# without scrolling. ``priority`` is an LLM hint, not a guarantee, so
-# this is a presentation preference, not a correctness rule.
-_PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+# without scrolling. Keyed by enum member rather than ``.value`` so a
+# future ``NeedPriority`` addition raises ``KeyError`` here instead of
+# silently sinking the new bucket to the bottom of the list.
+_PRIORITY_ORDER: dict[NeedPriority, int] = {
+    NeedPriority.HIGH: 0,
+    NeedPriority.MEDIUM: 1,
+    NeedPriority.LOW: 2,
+}
+
+
+def _truncate_request_text(text: str) -> str:
+    """Truncate ``request_text`` for rendering only — full text stays in
+    the DB. Adds a single-char ellipsis when truncation actually
+    occurs so the LLM knows the surfaced line is partial."""
+    if len(text) <= _REQUEST_TEXT_RENDER_CAP:
+        return text
+    return text[: _REQUEST_TEXT_RENDER_CAP - 1].rstrip() + "…"
+
+
+def _render_need_line(need) -> tuple[str, str]:
+    """Render one need into (header_line, motivator_line)."""
+    purpose_label = (
+        "SYMPTOM" if need.purpose == NeedPurpose.SYMPTOM_VERIFICATION else "CAUSAL"
+    )
+    status_suffix = (
+        f", {need.status.value.upper()}" if need.status != NeedStatus.PENDING else ""
+    )
+    header = (
+        f"  - [{need.need_id}] {_truncate_request_text(need.request_text)} "
+        f"({purpose_label}, {need.priority.value.upper()}{status_suffix})"
+    )
+    if need.purpose == NeedPurpose.SYMPTOM_VERIFICATION:
+        motivator_line = "      motivated_by: problem_statement"
+    else:
+        ids = need.motivating_hypothesis_ids
+        motivator_line = (
+            f"      motivated_by: [{', '.join(ids)}]"
+            if ids
+            else "      motivated_by: []"
+        )
+    return header, motivator_line
 
 
 def _build_evidence_needs_block(case: Case) -> str:
@@ -1714,19 +1760,21 @@ def _build_evidence_needs_block(case: Case) -> str:
 
     Filtering rules (design §8.4):
 
-    - Default (DIAGNOSIS stage): render PENDING + PARTIALLY_MET.
+    - Default (DIAGNOSIS stage): render PENDING + PARTIALLY_MET as
+      "outstanding needs" — data to look for during upload review.
       FULFILLED and SUPERSEDED are excluded to save tokens.
-    - MITIGATION / TREATMENT: also include FULFILLED needs as a
-      re-verification checklist — the agent confirms the fix held by
+    - MITIGATION / TREATMENT: render two clearly-labelled sections —
+      outstanding needs as above, plus a "re-verification checklist"
+      of FULFILLED needs so the agent can confirm the fix held by
       re-checking the same data that established the symptom/cause.
-      SUPERSEDED remains excluded everywhere.
+      SUPERSEDED remains excluded everywhere. Either section is
+      omitted if empty.
 
-    Output shape (design §6.1):
+    Output shape (DIAGNOSIS):
 
         <evidence_needs>
-        When examining uploaded files, also look for data matching
-        these outstanding needs. These are not the only things to
-        look for — unexpected findings are equally important and may
+        Outstanding needs (data to look for in uploads). Unexpected
+        findings outside this list are equally important and may
         lead to new hypotheses or revised needs.
 
           - [eneed_001] Response time metrics (SYMPTOM, HIGH)
@@ -1734,69 +1782,97 @@ def _build_evidence_needs_block(case: Case) -> str:
           - [eneed_003] DB connection pool metrics (CAUSAL, HIGH)
               motivated_by: [hyp_001, hyp_003]
         </evidence_needs>
+
+    Output shape (MITIGATION/TREATMENT, both sections populated):
+
+        <evidence_needs>
+        Outstanding needs (data to look for in uploads):
+          - [eneed_004] App connection timeout logs (CAUSAL, MEDIUM)
+              motivated_by: [hyp_001]
+
+        Re-verification checklist (confirm the fix held by re-checking
+        these — they were used to establish the symptom or cause):
+          - [eneed_001] Response time metrics (SYMPTOM, HIGH, FULFILLED)
+              motivated_by: problem_statement
+        </evidence_needs>
     """
     if case.status != CaseStatus.INVESTIGATING:
         return ""
     if not case.evidence_needs:
         return ""
 
-    allowed_statuses: set[NeedStatus] = {NeedStatus.PENDING, NeedStatus.PARTIALLY_MET}
     in_post_diagnosis = case.current_stage in (
         InvestigationStage.MITIGATION,
         InvestigationStage.TREATMENT,
     )
-    if in_post_diagnosis:
-        allowed_statuses.add(NeedStatus.FULFILLED)
 
-    visible = [n for n in case.evidence_needs if n.status in allowed_statuses]
-    if not visible:
+    outstanding = [
+        n
+        for n in case.evidence_needs
+        if n.status in (NeedStatus.PENDING, NeedStatus.PARTIALLY_MET)
+    ]
+    re_verification = (
+        [n for n in case.evidence_needs if n.status == NeedStatus.FULFILLED]
+        if in_post_diagnosis
+        else []
+    )
+
+    if not outstanding and not re_verification:
         return ""
 
-    # Stable presentation: high-priority first, then created_at as a
-    # tiebreaker for deterministic rendering when priorities tie. The
-    # repo already returns rows sorted by created_at ASC, need_id ASC,
-    # so the secondary sort is implicit — only the priority key needs
-    # to be applied here.
-    visible.sort(key=lambda n: _PRIORITY_ORDER.get(n.priority.value, 99))
+    # Stable presentation: high-priority first within each section.
+    # Stable sort preserves the repo's secondary order (created_at ASC,
+    # need_id ASC) for tied priorities.
+    outstanding.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
+    re_verification.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
 
-    rendered_count = min(len(visible), _EVIDENCE_NEEDS_RENDER_CAP)
-    overflow = len(visible) - rendered_count
+    # Render-cap budgets are computed per-section so neither one starves
+    # the other. With both sections active, each gets up to
+    # _EVIDENCE_NEEDS_RENDER_CAP entries — generous enough that real
+    # cases never hit the cap.
+    out_rendered = outstanding[:_EVIDENCE_NEEDS_RENDER_CAP]
+    out_overflow = len(outstanding) - len(out_rendered)
+    reverif_rendered = re_verification[:_EVIDENCE_NEEDS_RENDER_CAP]
+    reverif_overflow = len(re_verification) - len(reverif_rendered)
 
     lines: list[str] = ["<evidence_needs>"]
-    lines.append("When examining uploaded files, also look for data matching these")
-    lines.append("outstanding needs. These are not the only things to look for —")
-    lines.append("unexpected findings are equally important and may lead to new")
-    lines.append("hypotheses or revised needs.")
-    lines.append("")
 
-    for need in visible[:rendered_count]:
-        purpose_label = (
-            "SYMPTOM" if need.purpose == NeedPurpose.SYMPTOM_VERIFICATION else "CAUSAL"
-        )
-        status_suffix = (
-            f", {need.status.value.upper()}"
-            if need.status != NeedStatus.PENDING
-            else ""
-        )
-        header = (
-            f"  - [{need.need_id}] {need.request_text} "
-            f"({purpose_label}, {need.priority.value.upper()}{status_suffix})"
-        )
-        if need.purpose == NeedPurpose.SYMPTOM_VERIFICATION:
-            motivator_line = "      motivated_by: problem_statement"
+    if outstanding:
+        if re_verification:
+            lines.append("Outstanding needs (data to look for in uploads):")
         else:
-            ids = need.motivating_hypothesis_ids
-            motivator_line = (
-                f"      motivated_by: [{', '.join(ids)}]"
-                if ids
-                else "      motivated_by: []"
-            )
-        lines.append(header)
-        lines.append(motivator_line)
-
-    if overflow > 0:
+            lines.append("Outstanding needs (data to look for in uploads).")
+            lines.append("Unexpected findings outside this list are equally")
+            lines.append("important and may lead to new hypotheses or revised")
+            lines.append("needs.")
         lines.append("")
-        lines.append(f"  …and {overflow} more open need(s) not shown (cap reached).")
+        for need in out_rendered:
+            header, motivator_line = _render_need_line(need)
+            lines.append(header)
+            lines.append(motivator_line)
+        if out_overflow > 0:
+            lines.append("")
+            lines.append(
+                f"  …and {out_overflow} more outstanding need(s) not shown "
+                f"(cap reached)."
+            )
+
+    if re_verification:
+        if outstanding:
+            lines.append("")
+        lines.append("Re-verification checklist (confirm the fix held by re-checking")
+        lines.append("these — they were used to establish the symptom or cause):")
+        lines.append("")
+        for need in reverif_rendered:
+            header, motivator_line = _render_need_line(need)
+            lines.append(header)
+            lines.append(motivator_line)
+        if reverif_overflow > 0:
+            lines.append("")
+            lines.append(
+                f"  …and {reverif_overflow} more re-verification need(s) not "
+                f"shown (cap reached)."
+            )
 
     lines.append("</evidence_needs>")
     return "\n".join(lines)
