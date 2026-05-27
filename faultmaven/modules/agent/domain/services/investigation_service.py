@@ -374,14 +374,16 @@ _INTENT_DISPATCH: Dict[IntentType, _IntentDispatchKind] = {
     IntentType.CONVERSATION: _IntentDispatchKind.ENGINE,
     IntentType.PATH_SELECTION: _IntentDispatchKind.ENGINE,
     IntentType.POST_MITIGATION_CHOICE: _IntentDispatchKind.ENGINE,
-    # EVIDENCE_REQUEST is in the IntentType enum and has a QueryIntent
-    # validator requiring evidence_id, but neither investigation_service
-    # nor milestone_engine has ever implemented a handler. Marking it
-    # NOT_IMPLEMENTED makes the gap explicit (runtime 422 instead of 500)
-    # and forces a deliberate decision: implement the handler, or remove
-    # the enum value entirely. Pre-production cleanup; do not let this
-    # rot.
-    IntentType.EVIDENCE_REQUEST: _IntentDispatchKind.NOT_IMPLEMENTED,
+    # EVIDENCE_NEED (renamed from EVIDENCE_REQUEST in Phase 2 of the
+    # evidence-needs redesign) is in the IntentType enum and has a
+    # QueryIntent validator requiring evidence_need_id, but no handler
+    # is wired yet — the pool model surfaces needs through EVIDENCE-type
+    # suggestions and the LLM matches uploads to needs at file-
+    # processing time, so a user-initiated intent isn't needed for the
+    # MVP. Stays NOT_IMPLEMENTED until a frontend feature specifically
+    # requires it (e.g., a "tell me more about this need" button). See
+    # docs/architecture/investigation-engine/evidence-needs-design.md §9.3.
+    IntentType.EVIDENCE_NEED: _IntentDispatchKind.NOT_IMPLEMENTED,
 }
 
 

@@ -329,7 +329,7 @@ class IntentType(str, Enum):
     CONVERSATION = "conversation"  # Natural language query - use LLM
     STATUS_TRANSITION = "status_transition"  # Explicit state transition (resolve/close)
     HYPOTHESIS_ACTION = "hypothesis_action"  # Validate/refute/retire hypothesis
-    EVIDENCE_REQUEST = "evidence_request"  # Request specific evidence
+    EVIDENCE_NEED = "evidence_need"  # User-initiated action on a persistent EvidenceNeed (stays NOT_IMPLEMENTED until a frontend feature requires it)
     CONFIRMATION = "confirmation"  # Yes/No confirmation response
     GREETING = "greeting"  # Heuristic greeting response
     PATH_SELECTION = (
@@ -370,8 +370,12 @@ class QueryIntent(BaseModel):
     action: Optional[str] = Field(
         default=None, description="Action to perform: validate | refute | retire"
     )
-    evidence_id: Optional[str] = Field(
-        default=None, description="For evidence_request: target evidence ID"
+    evidence_need_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "For evidence_need: target EvidenceNeed ID "
+            "(format: ``eneed_xxxxxxxxxxxx``)."
+        ),
     )
     confirmation_value: Optional[bool] = Field(
         default=None, description="For confirmation: yes/no value"
@@ -399,9 +403,9 @@ class QueryIntent(BaseModel):
                 raise ValueError(
                     "hypothesis_id and action required for hypothesis_action intent"
                 )
-        elif self.type == IntentType.EVIDENCE_REQUEST:
-            if not self.evidence_id:
-                raise ValueError("evidence_id required for evidence_request intent")
+        elif self.type == IntentType.EVIDENCE_NEED:
+            if not self.evidence_need_id:
+                raise ValueError("evidence_need_id required for evidence_need intent")
         elif self.type == IntentType.CONFIRMATION:
             if self.confirmation_value is None:
                 raise ValueError("confirmation_value required for confirmation intent")

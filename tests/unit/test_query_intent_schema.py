@@ -24,7 +24,7 @@ class TestIntentTypeEnum:
             "conversation",
             "status_transition",
             "hypothesis_action",
-            "evidence_request",
+            "evidence_need",
             "confirmation",
             "greeting",
             "path_selection",
@@ -109,6 +109,6 @@ class TestExistingIntentValidators:
         with pytest.raises(ValidationError):
             QueryIntent(type=IntentType.HYPOTHESIS_ACTION)
 
-    def test_evidence_request_still_requires_evidence_id(self):
+    def test_evidence_need_still_requires_evidence_need_id(self):
         with pytest.raises(ValidationError):
-            QueryIntent(type=IntentType.EVIDENCE_REQUEST)
+            QueryIntent(type=IntentType.EVIDENCE_NEED)
