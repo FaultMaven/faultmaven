@@ -14,13 +14,13 @@ from __future__ import annotations
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import (
+    GENERATE_RUNBOOK_PAYLOAD,
+    REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
+    REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
     _closed_suggestions,
     _regenerate_resolution_summary_suggestion,
     _resolved_suggestions,
     _runbook_suggestion,
-    GENERATE_RUNBOOK_PAYLOAD,
-    REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
-    REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
 )
 
 
