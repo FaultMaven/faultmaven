@@ -75,6 +75,7 @@ from faultmaven.modules.case.contracts import (
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
+    EvidenceNeed,
     EvidenceSourceType,
     EvidenceStance,
     HypothesisStatus,
@@ -86,6 +87,9 @@ from faultmaven.modules.case.contracts import (
     JournalEntry,
     KnowledgeMatch,
     KnowledgeResolution,
+    NeedPriority,
+    NeedPurpose,
+    NeedStatus,
     ProblemVerification,
     ProposedAction,
     RootCauseConclusion,
@@ -888,6 +892,94 @@ def _restricted_state_deferral_clause(restricted_state: str, *, work: str) -> st
         f"{work} is deferred until the user opts to continue past Gate 3 "
         f"(MITIGATION_FIRST path)."
     )
+
+
+def _supersede_needs_on_hypothesis_retirement(
+    case: "Case", retired_hyp_id: str, current_turn: int
+) -> int:
+    """Deterministic engine rule: when a hypothesis retires, remove its
+    ID from every need's ``motivating_hypothesis_ids``. If the list
+    becomes empty AND the need is causal-purpose AND not FULFILLED,
+    mark the need SUPERSEDED.
+
+    Returns the count of needs whose status was flipped to SUPERSEDED.
+
+    Per evidence-needs-design.md §7.4:
+
+    - Needs motivated by multiple hypotheses survive partial
+      retirement; supersession fires only when all motivators are
+      gone.
+    - ``symptom_verification`` needs have empty motivating lists by
+      design (motivated by the problem statement) — they are exempt
+      from this rule.
+    - FULFILLED needs are never auto-superseded — they remain as the
+      audit trail of what was collected.
+
+    Called from all four ``HypothesisStatus.RETIRED`` write sites:
+    ``hypothesis_manager.py`` (low-confidence + anchoring-prevention),
+    ``progress_monitor.py`` (INCONCLUSIVE → RETIRED), and
+    ``milestone_engine.py`` (LLM-emitted retirement).
+
+    Persistence rides on the next ``repo.save(case)`` (no scoped repo
+    method — needs live on the Case aggregate per Phase 1 §1.5).
+    """
+    superseded_count = 0
+    for need in case.evidence_needs:
+        if retired_hyp_id not in need.motivating_hypothesis_ids:
+            continue
+        new_motivators = [
+            hyp_id
+            for hyp_id in need.motivating_hypothesis_ids
+            if hyp_id != retired_hyp_id
+        ]
+        prior_status = need.status
+        if (
+            not new_motivators
+            and need.purpose == NeedPurpose.CAUSAL_VERIFICATION
+            and need.status != NeedStatus.FULFILLED
+        ):
+            # Pydantic-frozen behavior: EvidenceNeed isn't frozen, so
+            # in-place mutation is allowed and re-validated at save time.
+            # The Case domain model's save path runs full validation.
+            new_status = NeedStatus.SUPERSEDED
+            new_reason = "all motivating hypotheses retired"
+            superseded_count += 1
+        else:
+            new_status = need.status
+            new_reason = need.superseded_reason
+
+        # Apply the update. Use object.__setattr__-free path since
+        # EvidenceNeed isn't frozen — direct attribute assignment is
+        # allowed and re-runs field validators (not the model validator
+        # though; the cross-field invariants are checked at save time
+        # via Case.model_validate in the repository).
+        need.motivating_hypothesis_ids = new_motivators
+        need.status = new_status
+        need.superseded_reason = new_reason
+        need.updated_at = datetime.now(UTC)
+
+        if (
+            new_status == NeedStatus.SUPERSEDED
+            and prior_status != NeedStatus.SUPERSEDED
+        ):
+            try:
+                from faultmaven.core.investigation.lifecycle_metrics import (
+                    evidence_need_status_changed_total,
+                )
+
+                evidence_need_status_changed_total.labels(
+                    from_status=prior_status.value, to_status=new_status.value
+                ).inc()
+            except Exception:
+                # Metrics are best-effort; never block lifecycle on them.
+                pass
+
+    if superseded_count:
+        logger.info(
+            f"Superseded {superseded_count} causal-verification need(s) on "
+            f"case {case.case_id} after hypothesis {retired_hyp_id} retirement."
+        )
+    return superseded_count
 
 
 def _gate1_is_pending(case: "Case") -> bool:
@@ -2073,9 +2165,28 @@ class MilestoneEngine:
                 "hypotheses_generated": [],
                 "hypotheses_validated": [],
                 "solutions_proposed": [],
+                # Evidence-needs Phase 3: IDs of needs created or updated
+                # this turn. Used by Phase 6 to resolve ``new_index_N``
+                # references on ``SuggestedFollowUp.evidence_need_id``.
+                "evidence_needs_updated": [],
                 "progress_made": False,
                 "status_transitioned": False,
                 "outcome": TurnOutcome.CONVERSATION,
+            }
+
+            # Evidence-needs Phase 3: snapshot which hypothesis IDs are
+            # ALREADY retired before any turn processing. After all the
+            # turn's hypothesis-state mutations are done (LLM-emitted
+            # retirements, anchoring-prevention, low-confidence, progress-
+            # monitor INCONCLUSIVE→RETIRED), the diff is the set of
+            # newly-retired IDs that the supersession helper processes.
+            # Single integration point covers all four retirement sites
+            # without threading ``case`` through hypothesis_manager and
+            # progress_monitor APIs (see evidence-needs-design.md §7.4).
+            _pre_turn_retired_hyp_ids: set[str] = {
+                h_id
+                for h_id, h in case.hypotheses.items()
+                if h.status == HypothesisStatus.RETIRED
             }
 
             # 0a. Terminal case handling — Q&A and report regeneration only
@@ -3153,6 +3264,26 @@ class MilestoneEngine:
                 validation_repairs=validation_repairs,
             )
             case_updated.turn_history.append(turn_record)
+
+            # Evidence-needs Phase 3: detect hypotheses that newly
+            # retired this turn and run the supersession rule for
+            # causal-purpose needs anchored to them. Covers all four
+            # retirement code paths via post-hoc diff:
+            #   - hypothesis_manager.py:396 (low-confidence)
+            #   - hypothesis_manager.py:584 (anchoring-prevention)
+            #   - progress_monitor.py:691 (INCONCLUSIVE → RETIRED)
+            #   - milestone_engine.py (LLM-emitted retirement)
+            # Runs BEFORE save() so the supersession lands in the same
+            # turn's persisted state.
+            _newly_retired_hyp_ids = {
+                h_id
+                for h_id, h in case_updated.hypotheses.items()
+                if h.status == HypothesisStatus.RETIRED
+            } - _pre_turn_retired_hyp_ids
+            for _retired_id in _newly_retired_hyp_ids:
+                _supersede_needs_on_hypothesis_retirement(
+                    case_updated, _retired_id, case_updated.current_turn
+                )
 
             # Step 7: Save case (only if changes made, but turn history always updates)
             case_updated.updated_at = datetime.now(UTC)
@@ -5977,6 +6108,24 @@ class MilestoneEngine:
                     metadata.get("hypothesis_evidence_links_applied", 0) + 1
                 )
 
+        # 4b. Evidence Needs (Phase 3 of evidence-needs rollout)
+        # Process LLM-emitted ``evidence_need_updates``. Runs AFTER
+        # evidence_to_add (so ``metadata["evidence_added"]`` is populated
+        # for ``new_index_N`` resolution on ``fulfilling_evidence_ids``)
+        # and AFTER hypotheses_to_add (so ``metadata["hypotheses_generated"]``
+        # is populated for ``new_index_N`` resolution on
+        # ``motivating_hypothesis_ids``). Symptom-purpose needs are
+        # always allowed; causal-purpose needs are rejected by the
+        # path-conditional emission backstop (parallels the
+        # causal_evidence rejection at lines ~5758+).
+        if hasattr(updates, "evidence_need_updates") and updates.evidence_need_updates:
+            self._apply_evidence_need_updates(
+                case=case,
+                updates_list=updates.evidence_need_updates,
+                metadata=metadata,
+                current_turn=case.current_turn,
+            )
+
         # 5. Solutions
         if hasattr(updates, "solutions_to_add") and updates.solutions_to_add:
             # Path-conditional emission backstop (pre-path only):
@@ -6137,6 +6286,256 @@ class MilestoneEngine:
         metadata["outcome"] = self._determine_turn_outcome(
             case, metadata, updates.outcome
         )
+
+    # =========================================================================
+    # Evidence Need apply-layer (Phase 3 of evidence-needs rollout)
+    # =========================================================================
+
+    def _apply_evidence_need_updates(
+        self,
+        case: Case,
+        updates_list: list,
+        metadata: dict[str, Any],
+        current_turn: int,
+    ) -> None:
+        """Apply LLM-emitted ``evidence_need_updates`` to the case.
+
+        Each ``EvidenceNeedUpdate`` either creates a new ``EvidenceNeed``
+        (when ``need_id`` is None) or updates an existing one. Cross-
+        emission ``new_index_N`` references are resolved against
+        metadata-stored ID lists populated earlier in this same
+        ``_apply_investigation_updates`` invocation:
+
+        - ``motivating_hypothesis_ids`` → ``metadata["hypotheses_generated"]``
+        - ``fulfilling_evidence_ids`` → ``metadata["evidence_added"]``
+        - ``need_id`` → in-loop list of need IDs created earlier in
+          this same ``updates_list``
+
+        Path-conditional emission backstop: causal-purpose updates are
+        rejected in restricted states (parallels the existing
+        causal_evidence rejection — same predicate, same helpers,
+        same system_feedback / validation_repairs surface). Symptom-
+        purpose updates are always allowed (symptom-validation work
+        is the *expected* activity in pre_path_investigating).
+
+        See ``docs/architecture/investigation-engine/evidence-needs-design.md``
+        §5.3 (out-of-order arrival), §7.3 (engine backstop).
+        """
+        from faultmaven.core.investigation.lifecycle_metrics import (
+            evidence_need_created_total,
+            evidence_need_rejected_total,
+            evidence_need_status_changed_total,
+        )
+
+        restricted_state = _path_conditional_emission_restriction(case)
+        existing_need_ids: set[str] = {n.need_id for n in case.evidence_needs}
+        # Same-turn need_id resolution: needs created earlier in this
+        # same ``updates_list`` are tracked here so a later update with
+        # ``need_id="new_index_0"`` can find them.
+        needs_created_in_this_loop: list[str] = []
+
+        for update in updates_list:
+            # Path-conditional rejection of causal-purpose emissions.
+            # Symptom-purpose updates are always allowed.
+            if (
+                restricted_state is not None
+                and update.purpose == NeedPurpose.CAUSAL_VERIFICATION
+            ):
+                block_name = _RESTRICTED_STATE_BLOCK_NAMES[restricted_state]
+                deferral_clause = _restricted_state_deferral_clause(
+                    restricted_state, work="Causal evidence need"
+                )
+                logger.warning(
+                    f"Rejected causal-purpose evidence_need_update for case "
+                    f"{case.case_id}: forbidden in state "
+                    f"'{restricted_state}' (the {block_name} prompt "
+                    f"directive forbids causal-side emissions). "
+                    f"request_text={update.request_text[:80]!r}"
+                )
+                current_feedback = metadata.get("system_feedback") or ""
+                metadata["system_feedback"] = (
+                    f"{current_feedback}\n"
+                    "PATH-CONDITIONAL EMISSION ERROR: You emitted an "
+                    "evidence_need_update with "
+                    "``purpose=causal_verification`` in a state where "
+                    f"the {block_name} prompt directive forbids causal "
+                    "claims. Causal needs presuppose a hypothesis to "
+                    "anchor (same INV-17 reasoning as causal_evidence). "
+                    "Use ``purpose=symptom_verification`` (verifying "
+                    f"the problem) instead. {deferral_clause}"
+                ).strip()
+                metadata.setdefault("validation_repairs", []).append(
+                    f"Rejected causal-purpose evidence_need_update in "
+                    f"{restricted_state} state"
+                )
+                try:
+                    evidence_need_rejected_total.labels(state=restricted_state).inc()
+                except Exception:
+                    pass
+                continue
+
+            # Resolve new_index_N references (same pattern as
+            # hypothesis_evidence_links at line ~5927 / 5931).
+            resolved_motivators = [
+                self._resolve_id_ref(
+                    hyp_ref, metadata.get("hypotheses_generated", []), "hyp"
+                )
+                for hyp_ref in (update.motivating_hypothesis_ids or [])
+            ]
+            resolved_fulfillments = [
+                self._resolve_id_ref(ev_ref, metadata.get("evidence_added", []), "ev")
+                for ev_ref in (update.fulfilling_evidence_ids or [])
+            ]
+            resolved_need_id: Optional[str] = None
+            if update.need_id is not None:
+                resolved_need_id = self._resolve_id_ref(
+                    update.need_id, needs_created_in_this_loop, "eneed"
+                )
+
+            # Reference validation: dangling hypothesis IDs are dropped
+            # (the link couldn't form anyway), dangling evidence IDs are
+            # dropped (likewise). These look like prompt-compliance
+            # issues, not lifecycle errors, so they go to
+            # validation_repairs not system_feedback.
+            valid_motivators = [
+                h_id for h_id in resolved_motivators if h_id in case.hypotheses
+            ]
+            if len(valid_motivators) != len(resolved_motivators):
+                dropped = set(resolved_motivators) - set(valid_motivators)
+                logger.warning(
+                    f"Dropped {len(dropped)} dangling hypothesis ID(s) on "
+                    f"evidence_need_update for case {case.case_id}: {dropped}"
+                )
+                metadata.setdefault("validation_repairs", []).append(
+                    f"Dropped {len(dropped)} dangling hypothesis ID(s) "
+                    f"on evidence_need_update"
+                )
+
+            valid_ev_ids = {ev.evidence_id for ev in case.evidence}
+            valid_fulfillments = [
+                e_id for e_id in resolved_fulfillments if e_id in valid_ev_ids
+            ]
+            if len(valid_fulfillments) != len(resolved_fulfillments):
+                dropped = set(resolved_fulfillments) - set(valid_fulfillments)
+                logger.warning(
+                    f"Dropped {len(dropped)} dangling evidence ID(s) on "
+                    f"evidence_need_update for case {case.case_id}: {dropped}"
+                )
+                metadata.setdefault("validation_repairs", []).append(
+                    f"Dropped {len(dropped)} dangling evidence ID(s) "
+                    f"on evidence_need_update"
+                )
+
+            # CREATE path (need_id is None)
+            if resolved_need_id is None:
+                new_need = EvidenceNeed(
+                    case_id=case.case_id,
+                    purpose=update.purpose,
+                    request_text=update.request_text,
+                    rationale=update.rationale,
+                    priority=update.priority,
+                    status=update.status or NeedStatus.PENDING,
+                    motivating_hypothesis_ids=valid_motivators,
+                    fulfilling_evidence_ids=valid_fulfillments,
+                    superseded_reason=update.superseded_reason,
+                    created_at_turn=current_turn,
+                )
+                case.evidence_needs.append(new_need)
+                needs_created_in_this_loop.append(new_need.need_id)
+                metadata["evidence_needs_updated"].append(new_need.need_id)
+                try:
+                    evidence_need_created_total.labels(
+                        purpose=new_need.purpose.value
+                    ).inc()
+                except Exception:
+                    pass
+                logger.info(
+                    f"Created EvidenceNeed {new_need.need_id} "
+                    f"(purpose={new_need.purpose.value}) on case {case.case_id}"
+                )
+                continue
+
+            # UPDATE path (need_id is set)
+            target = next(
+                (n for n in case.evidence_needs if n.need_id == resolved_need_id),
+                None,
+            )
+            if target is None:
+                logger.warning(
+                    f"evidence_need_update references unknown need_id "
+                    f"{resolved_need_id!r} on case {case.case_id}; "
+                    f"dropping update"
+                )
+                metadata.setdefault("validation_repairs", []).append(
+                    f"Dropped evidence_need_update for unknown need_id "
+                    f"{resolved_need_id!r}"
+                )
+                continue
+
+            # Purpose is immutable on the update path.
+            if update.purpose != target.purpose:
+                logger.warning(
+                    f"evidence_need_update attempted to flip purpose on "
+                    f"need {target.need_id} "
+                    f"({target.purpose.value} → {update.purpose.value}); "
+                    f"ignoring purpose change"
+                )
+                metadata.setdefault("validation_repairs", []).append(
+                    f"Ignored purpose-change attempt on " f"need {target.need_id}"
+                )
+
+            # SUPERSEDED is terminal — cannot resurrect via update.
+            if target.status == NeedStatus.SUPERSEDED and update.status not in (
+                None,
+                NeedStatus.SUPERSEDED,
+            ):
+                logger.warning(
+                    f"evidence_need_update attempted to resurrect "
+                    f"SUPERSEDED need {target.need_id}; ignoring status "
+                    f"change. Emit a new need instead."
+                )
+                metadata.setdefault("validation_repairs", []).append(
+                    f"Ignored resurrection attempt on SUPERSEDED "
+                    f"need {target.need_id}"
+                )
+                continue
+
+            # Merge lists (append-only). Dedup is handled by the
+            # EvidenceNeed field validator at assignment time.
+            prior_status = target.status
+            target.motivating_hypothesis_ids = list(
+                dict.fromkeys(list(target.motivating_hypothesis_ids) + valid_motivators)
+            )
+            target.fulfilling_evidence_ids = list(
+                dict.fromkeys(list(target.fulfilling_evidence_ids) + valid_fulfillments)
+            )
+            target.request_text = update.request_text
+            target.rationale = update.rationale
+            target.priority = update.priority
+            if update.status is not None:
+                target.status = update.status
+            if update.status == NeedStatus.SUPERSEDED:
+                target.superseded_reason = update.superseded_reason
+            elif update.status is not None and update.status != NeedStatus.SUPERSEDED:
+                # Clearing superseded_reason on non-SUPERSEDED transition
+                target.superseded_reason = None
+            target.updated_at = datetime.now(UTC)
+            if target.need_id not in metadata["evidence_needs_updated"]:
+                metadata["evidence_needs_updated"].append(target.need_id)
+
+            if update.status is not None and update.status != prior_status:
+                try:
+                    evidence_need_status_changed_total.labels(
+                        from_status=prior_status.value,
+                        to_status=update.status.value,
+                    ).inc()
+                except Exception:
+                    pass
+                logger.info(
+                    f"Need {target.need_id} status "
+                    f"{prior_status.value} → {update.status.value} "
+                    f"on case {case.case_id}"
+                )
 
     # =========================================================================
     # State Management

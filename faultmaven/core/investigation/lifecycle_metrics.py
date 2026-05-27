@@ -120,3 +120,46 @@ engine_owned_affordance_served_total = Counter(
     "suggestion-emission directives.",
     ["gate"],
 )
+
+
+# Evidence-needs lifecycle telemetry (Phase 3 of the evidence-needs
+# rollout). The pool model surfaces three things worth observing:
+#   1. Need creation by purpose — sanity check that symptom and causal
+#      needs are both being emitted in expected proportions
+#   2. Status transitions — measure how often needs reach FULFILLED vs
+#      SUPERSEDED vs stay PENDING; high SUPERSEDED rates may flag a
+#      prompt drift or anchoring problem
+#   3. Path-conditional rejection — counts causal-purpose updates the
+#      engine had to reject because the LLM tried to emit them in a
+#      restricted state. Healthy systems should trend toward zero as
+#      prompt updates improve compliance; a sustained nonzero signal
+#      means prompt-side guidance is weakening.
+evidence_need_created_total = Counter(
+    "faultmaven_evidence_need_created_total",
+    "EvidenceNeed rows created by purpose. Labels: purpose "
+    "(symptom_verification | causal_verification). Pairs with "
+    "``evidence_need_status_changed_total`` to track full lifecycle.",
+    ["purpose"],
+)
+
+evidence_need_status_changed_total = Counter(
+    "faultmaven_evidence_need_status_changed_total",
+    "EvidenceNeed status transitions. Labels: from_status, to_status. "
+    "Healthy patterns: PENDING→FULFILLED, PENDING→PARTIALLY_MET→FULFILLED, "
+    "PENDING→SUPERSEDED. Sustained PENDING (no transitions to FULFILLED) "
+    "suggests the LLM is emitting needs but not matching uploads against "
+    "them at file-processing time.",
+    ["from_status", "to_status"],
+)
+
+evidence_need_rejected_total = Counter(
+    "faultmaven_evidence_need_rejected_total",
+    "EvidenceNeedUpdate emissions rejected by the path-conditional "
+    "emission backstop. Labels: state "
+    "(pre_path_investigating | pre_mitigation_mitigation_first | "
+    "gate3_pending). Parallel to the existing causal_evidence and "
+    "hypotheses_to_add rejection counters. A sustained nonzero rate "
+    "means the prompt-side guidance is weakening — prompt blocks for "
+    "the restricted state need to be tightened.",
+    ["state"],
+)
