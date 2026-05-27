@@ -2043,24 +2043,14 @@ class MilestoneEngine:
         await redaction_ctx.save()
 
         # Extract follow-up suggestions
-        follow_ups = []
+        follow_ups: list[dict[str, Any]] = []
         if (
             hasattr(response_obj, "suggested_follow_ups")
             and response_obj.suggested_follow_ups
         ):
-            for f in response_obj.suggested_follow_ups:
-                suggestion = {
-                    "label": f.label,
-                    "action_type": f.action_type,
-                    "payload": f.payload,
-                }
-                if f.body:
-                    suggestion["body"] = f.body
-                if f.cooperative_action:
-                    suggestion["cooperative_action"] = f.cooperative_action
-                if f.hints:
-                    suggestion["hints"] = f.hints
-                follow_ups.append(suggestion)
+            follow_ups = self._flatten_follow_ups(
+                response_obj.suggested_follow_ups, metadata
+            )
 
         # Attach terminal-Q&A suggestions deterministically. The
         # TERMINAL_TEMPLATE instructs the LLM to leave its own
@@ -3350,25 +3340,14 @@ class MilestoneEngine:
             )
 
             # Extract follow-up suggestions from LLM response
-            follow_ups = []
+            follow_ups: list[dict[str, Any]] = []
             if (
                 hasattr(response_obj, "suggested_follow_ups")
                 and response_obj.suggested_follow_ups
             ):
-                for f in response_obj.suggested_follow_ups:
-                    suggestion = {
-                        "label": f.label,
-                        "action_type": f.action_type,
-                        "payload": f.payload,
-                    }
-                    # Optional fields — include only if present
-                    if f.body:
-                        suggestion["body"] = f.body
-                    if f.cooperative_action:
-                        suggestion["cooperative_action"] = f.cooperative_action
-                    if f.hints:
-                        suggestion["hints"] = f.hints
-                    follow_ups.append(suggestion)
+                follow_ups = self._flatten_follow_ups(
+                    response_obj.suggested_follow_ups, metadata
+                )
 
             # Persist redaction registry for cross-turn consistency
             await redaction_ctx.save()
@@ -7471,7 +7450,18 @@ class MilestoneEngine:
             )
 
     def _resolve_id_ref(self, ref: str, created_ids: list[str], prefix: str) -> str:
-        """Resolve 'new_index_N' to actual ID from created_ids list or return ref as-is."""
+        """Resolve ``new_index_N`` to the actual ID from ``created_ids``,
+        or return ``ref`` unchanged.
+
+        **Contract (load-bearing across all callers — Phase 3 apply-layer
+        for hypothesis/evidence refs, Phase 6 for need refs):** callers
+        detect unresolved placeholders by checking
+        ``ref.startswith("new_index_")`` on the return value. The
+        function returns the input unchanged when ``N`` is out of range
+        or malformed, never raises — graceful degradation. A "did this
+        resolve?" probe at the caller is the canonical pattern; do not
+        switch this to ``Optional[str]`` without auditing every caller.
+        """
         if ref and ref.startswith("new_index_"):
             try:
                 idx_str = ref.replace("new_index_", "")
@@ -7481,6 +7471,53 @@ class MilestoneEngine:
             except (ValueError, IndexError):
                 pass
         return ref
+
+    def _flatten_follow_ups(
+        self,
+        follow_ups: list,
+        metadata: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Flatten LLM-emitted ``SuggestedFollowUp`` objects into the
+        dict shape the API response carries.
+
+        Phase 6 of the evidence-needs rollout: resolves
+        ``evidence_need_id`` ``new_index_N`` placeholders against
+        ``metadata["evidence_needs_updated"]`` so the wire-level field
+        always carries a real ``eneed_xxxxxxxxxxxx`` ID. Unresolvable
+        refs are dropped silently (graceful degradation — matches the
+        apply-layer pattern for dangling motivator/evidence IDs).
+        """
+        out: list[dict[str, Any]] = []
+        for f in follow_ups:
+            suggestion: dict[str, Any] = {
+                "label": f.label,
+                "action_type": f.action_type,
+                "payload": f.payload,
+            }
+            if f.body:
+                suggestion["body"] = f.body
+            if f.cooperative_action:
+                suggestion["cooperative_action"] = f.cooperative_action
+            if f.hints:
+                suggestion["hints"] = f.hints
+            if getattr(f, "evidence_need_id", None):
+                resolved = self._resolve_id_ref(
+                    f.evidence_need_id,
+                    metadata.get("evidence_needs_updated", []),
+                    "eneed",
+                )
+                if resolved.startswith("new_index_"):
+                    logger.warning(
+                        f"Dropped unresolvable evidence_need_id "
+                        f"{f.evidence_need_id!r} on a SuggestedFollowUp "
+                        f"(index out of range for this turn's "
+                        f"evidence_needs_updated list of length "
+                        f"{len(metadata.get('evidence_needs_updated', []))})"
+                    )
+                else:
+                    suggestion["evidence_need_id"] = resolved
+            out.append(suggestion)
+        return out
 
 
 # =============================================================================
