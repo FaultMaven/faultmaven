@@ -1719,7 +1719,10 @@ class MilestoneEngine:
                 CaseConversionRequest,
             )
 
-            request = CaseConversionRequest.from_case(case, scope="global")
+            # Case-generated runbooks land in the case owner's personal KB by
+            # default. Global is reserved for platform-curated content; the
+            # owner can promote later via the Dashboard.
+            request = CaseConversionRequest.from_case(case, scope="personal")
             # Don't await the full pipeline — fire and forget
             import asyncio
 

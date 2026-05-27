@@ -210,6 +210,39 @@ RULES:
 
 
 # =============================================================================
+# Frontmatter Helpers
+# =============================================================================
+
+
+def _force_frontmatter_id(content: str, runbook_id: str) -> str:
+    """Rewrite the frontmatter ``id`` field to ``runbook_id``.
+
+    The conversion prompt instructs the LLM to use a specific kebab-case id,
+    but some models emit the failure-mode title (or other text) as the id
+    anyway, which then fails ``RunbookValidator`` for case-derived runbooks
+    whose titles contain capitals or periods. This helper guarantees the
+    frontmatter agrees with the filename + DB row by force-replacing the
+    line. If the LLM omitted ``id`` entirely, we insert one as the first
+    frontmatter field.
+    """
+    import re as _re
+
+    fm_match = _re.match(r"^(---\s*\n)(.*?)(\n---\s*\n)", content, _re.DOTALL)
+    if not fm_match:
+        # No frontmatter — caller's downstream validator will catch this;
+        # we don't synthesize one here.
+        return content
+    head, body, tail = fm_match.groups()
+    if _re.search(r"^id:\s*.+$", body, _re.MULTILINE):
+        new_body = _re.sub(
+            r"^id:\s*.+$", f"id: {runbook_id}", body, count=1, flags=_re.MULTILINE
+        )
+    else:
+        new_body = f"id: {runbook_id}\n{body}"
+    return head + new_body + tail + content[fm_match.end() :]
+
+
+# =============================================================================
 # ConversionService
 # =============================================================================
 
@@ -704,9 +737,16 @@ class ConversionService:
             knowledge_model = self._settings.llm.get_knowledge_model()
             today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+            # Pre-compute the runbook_id so we can pass the exact kebab-case
+            # value to the LLM. Without this, the LLM is left to derive `id`
+            # from the failure-mode title and routinely uses the title verbatim
+            # (e.g. "Case-260526-4"), which fails the kebab-case validator.
+            runbook_id = generate_runbook_id(failure_mode)
+
             user_message = (
                 f"Convert the following source material into a runbook for this specific "
                 f"failure mode:\n\n"
+                f"RUNBOOK_ID: {runbook_id}\n"
                 f"FAILURE MODE: {failure_mode.title}\n"
                 f"DOMAIN: {failure_mode.domain}\n"
                 f"SERVICE: {failure_mode.service}\n"
@@ -715,6 +755,9 @@ class ConversionService:
                 f"SCOPE: {scope}\n"
                 f"SOURCE FILENAME: {filename}\n"
                 f"TODAY: {today_iso}\n\n"
+                f"The frontmatter `id` field MUST be exactly: {runbook_id}\n"
+                f"(lowercase, kebab-case; do not derive a different id from "
+                f"the title).\n\n"
                 f"--- SOURCE MATERIAL ---\n{text}\n--- END SOURCE MATERIAL ---"
             )
 
@@ -757,9 +800,17 @@ class ConversionService:
                     retryable=True,
                 )
 
-            # Generate IDs
+            # Belt-and-suspenders: prompt instructions don't fully constrain
+            # the LLM, so rewrite the frontmatter `id` to the kebab-case
+            # value we computed. The filename + DB row + frontmatter all
+            # share this single source of truth.
+            runbook_content = _force_frontmatter_id(runbook_content, runbook_id)
+
+            # `runbook_id` was computed before the LLM call so it could be
+            # passed in the prompt; re-using it here keeps the on-disk
+            # filename, the prompt-injected `id`, and the row's runbook_id
+            # in sync.
             draft_id = generate_draft_id()
-            runbook_id = generate_runbook_id(failure_mode)
 
             # Write draft to disk
             scope_dir = self._scope_dir(scope, team_id, user_id)
@@ -1068,6 +1119,51 @@ class ConversionService:
                     ),
                 }
                 for job in jobs
+            ]
+
+    async def list_drafts_for_case(self, case_id: str) -> List[dict]:
+        """Return non-discarded drafts whose parent job links to ``case_id``.
+
+        Used by the case Report tab to surface case-derived runbook drafts
+        alongside the auto-generated resolution/closure summaries. Returns an
+        empty list when no DB session factory is wired up or no drafts match.
+        """
+        if not self._db_session_factory:
+            return []
+
+        async with self._db_session_factory() as session:
+            result = await session.execute(
+                select(ConversionDraftModel, ConversionJobModel)
+                .join(
+                    ConversionJobModel,
+                    ConversionDraftModel.conversion_id == ConversionJobModel.id,
+                )
+                .where(
+                    ConversionJobModel.case_id == case_id,
+                    ConversionDraftModel.status != DraftStatus.DISCARDED.value,
+                )
+                .order_by(ConversionDraftModel.created_at.desc())
+            )
+            rows = result.all()
+            return [
+                {
+                    "draft_id": dm.id,
+                    "conversion_id": job.id,
+                    "runbook_id": dm.runbook_id,
+                    "title": dm.title,
+                    "status": dm.status,
+                    "scope": job.scope,
+                    "file_path": dm.file_path,
+                    "knowledge_item_id": dm.knowledge_item_id,
+                    "validation_passed": dm.validation_passed,
+                    "created_at": (
+                        dm.created_at.isoformat() if dm.created_at else None
+                    ),
+                    "verified_at": (
+                        dm.verified_at.isoformat() if dm.verified_at else None
+                    ),
+                }
+                for dm, job in rows
             ]
 
     async def list_all_drafts(self, user_id: str) -> List[dict]:
