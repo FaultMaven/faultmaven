@@ -485,6 +485,12 @@ class SuggestedActionResponse(BaseModel):
     intent: Optional[Dict[str, Any]] = (
         None  # QueryIntent metadata for deterministic routing
     )
+    # Phase 6: EVIDENCE-type suggestions derived from an open EvidenceNeed
+    # carry the source need ID for frontend visual linkage (highlight /
+    # dismiss / group). The engine resolves any same-turn ``new_index_N``
+    # placeholders against ``metadata["evidence_needs_updated"]`` before
+    # this field is populated; unresolvable refs are dropped silently.
+    evidence_need_id: Optional[str] = None
 
 
 class ProgressTransparencyInfo(BaseModel):
