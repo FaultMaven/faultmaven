@@ -1690,10 +1690,14 @@ def _build_verbatim_history(messages: list) -> str:
 # Evidence-needs block (Phase 4 of evidence-needs rollout)
 # =============================================================================
 
-# Cap on rendered needs per block to keep token cost bounded. Each
+# Cap on rendered needs per section to keep token cost bounded. Each
 # rendered need is ~80 chars of header (capped via
-# ``_REQUEST_TEXT_RENDER_CAP``) + ~80 chars of motivator line; 15 needs
-# stays around ~600 tokens worst case.
+# ``_REQUEST_TEXT_RENDER_CAP``) + ~80 chars of motivator line.
+# Single-section case (DIAGNOSIS, or MITIGATION/TREATMENT with one of
+# outstanding/re-verification empty): ~600 tokens worst case at 15
+# needs. Both-sections case (MITIGATION/TREATMENT with both populated):
+# up to 30 needs total, ~1200 tokens worst case. Typical cases stay
+# well under either bound because the LLM emits short request_text.
 _EVIDENCE_NEEDS_RENDER_CAP = 15
 
 # Per-need truncation cap for ``request_text``. The model attribute is
@@ -1773,9 +1777,10 @@ def _build_evidence_needs_block(case: Case) -> str:
     Output shape (DIAGNOSIS):
 
         <evidence_needs>
-        Outstanding needs (data to look for in uploads). Unexpected
-        findings outside this list are equally important and may
-        lead to new hypotheses or revised needs.
+        Unexpected findings outside the entries below are equally
+        important and may lead to new hypotheses or revised needs.
+
+        Outstanding needs (data to look for in uploads):
 
           - [eneed_001] Response time metrics (SYMPTOM, HIGH)
               motivated_by: problem_statement
@@ -1786,12 +1791,17 @@ def _build_evidence_needs_block(case: Case) -> str:
     Output shape (MITIGATION/TREATMENT, both sections populated):
 
         <evidence_needs>
+        Unexpected findings outside the entries below are equally
+        important and may lead to new hypotheses or revised needs.
+
         Outstanding needs (data to look for in uploads):
+
           - [eneed_004] App connection timeout logs (CAUSAL, MEDIUM)
               motivated_by: [hyp_001]
 
         Re-verification checklist (confirm the fix held by re-checking
         these — they were used to establish the symptom or cause):
+
           - [eneed_001] Response time metrics (SYMPTOM, HIGH, FULFILLED)
               motivated_by: problem_statement
         </evidence_needs>
@@ -1836,15 +1846,19 @@ def _build_evidence_needs_block(case: Case) -> str:
     reverif_overflow = len(re_verification) - len(reverif_rendered)
 
     lines: list[str] = ["<evidence_needs>"]
+    # Anti-anchoring framing — design §6.1. Emitted once at the block
+    # opening regardless of which sections fire so the LLM never treats
+    # the list as exhaustive, including during re-verification (where
+    # evidence that the fix introduced a new problem is exactly the
+    # kind of finding this sentence keeps in view).
+    lines.append(
+        "Unexpected findings outside the entries below are equally important "
+        "and may lead to new hypotheses or revised needs."
+    )
+    lines.append("")
 
     if outstanding:
-        if re_verification:
-            lines.append("Outstanding needs (data to look for in uploads):")
-        else:
-            lines.append("Outstanding needs (data to look for in uploads).")
-            lines.append("Unexpected findings outside this list are equally")
-            lines.append("important and may lead to new hypotheses or revised")
-            lines.append("needs.")
+        lines.append("Outstanding needs (data to look for in uploads):")
         lines.append("")
         for need in out_rendered:
             header, motivator_line = _render_need_line(need)

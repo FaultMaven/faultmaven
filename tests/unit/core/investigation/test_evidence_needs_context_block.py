@@ -413,6 +413,76 @@ class TestOutstandingVsReVerificationSplit:
 
 
 # ============================================================
+# Anti-anchoring framing (design §6.1) — present in all shapes
+# ============================================================
+
+
+_ANTI_ANCHORING_MARKER = "Unexpected findings outside the entries below"
+
+
+@pytest.mark.unit
+class TestAntiAnchoringFraming:
+    """The "unexpected findings are equally important" sentence is
+    load-bearing per design §6.1 — it stops the LLM from treating the
+    list as exhaustive. It must appear in every rendered shape (not
+    just DIAGNOSIS-only), including during re-verification where
+    evidence the fix introduced a new problem is exactly the kind of
+    finding this framing keeps in view."""
+
+    def test_framing_present_in_diagnosis_outstanding_only(self):
+        case = _make_case(stage=InvestigationStage.DIAGNOSIS)
+        _make_need(case, status=NeedStatus.PENDING)
+        out = _build_evidence_needs_block(case)
+        assert _ANTI_ANCHORING_MARKER in out
+
+    def test_framing_present_in_mitigation_outstanding_only(self):
+        case = _make_case(
+            stage=InvestigationStage.MITIGATION,
+            path=InvestigationPath.MITIGATION_FIRST,
+        )
+        _make_need(case, status=NeedStatus.PENDING)
+        out = _build_evidence_needs_block(case)
+        assert _ANTI_ANCHORING_MARKER in out
+
+    def test_framing_present_in_mitigation_reverification_only(self):
+        case = _make_case(
+            stage=InvestigationStage.MITIGATION,
+            path=InvestigationPath.MITIGATION_FIRST,
+        )
+        _make_need(case, status=NeedStatus.FULFILLED)
+        out = _build_evidence_needs_block(case)
+        assert _ANTI_ANCHORING_MARKER in out
+
+    def test_framing_present_in_mitigation_both_sections(self):
+        case = _make_case(
+            stage=InvestigationStage.MITIGATION,
+            path=InvestigationPath.MITIGATION_FIRST,
+        )
+        _make_need(case, status=NeedStatus.PENDING)
+        _make_need(case, status=NeedStatus.FULFILLED)
+        out = _build_evidence_needs_block(case)
+        assert _ANTI_ANCHORING_MARKER in out
+        # Single emission — appears exactly once across the whole block.
+        assert out.count(_ANTI_ANCHORING_MARKER) == 1
+
+    def test_framing_precedes_first_section_heading(self):
+        """The anti-anchoring sentence renders at the block opening,
+        before any section heading. Pins the layout the design spec
+        depends on (LLM sees framing before parsing entries)."""
+        case = _make_case(
+            stage=InvestigationStage.MITIGATION,
+            path=InvestigationPath.MITIGATION_FIRST,
+        )
+        _make_need(case, status=NeedStatus.PENDING)
+        _make_need(case, status=NeedStatus.FULFILLED)
+        out = _build_evidence_needs_block(case)
+        assert out.index(_ANTI_ANCHORING_MARKER) < out.index("Outstanding needs")
+        assert out.index(_ANTI_ANCHORING_MARKER) < out.index(
+            "Re-verification checklist"
+        )
+
+
+# ============================================================
 # request_text truncation (review fix #2)
 # ============================================================
 
