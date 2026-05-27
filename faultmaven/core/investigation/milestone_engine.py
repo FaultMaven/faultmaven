@@ -1151,29 +1151,24 @@ def _runbook_suggestion() -> dict:
     }
 
 
-def _remaining_suffix(remaining: int) -> str:
-    """Format the regen-count suffix shown in the suggestion label."""
-    return f" ({remaining} left)"
-
-
 def _regenerate_resolution_summary_suggestion(remaining: int) -> Optional[dict]:
     """Regenerate-resolution-summary COOPERATIVE suggestion.
 
     Returns None when ``remaining <= 0`` so the caller can drop the
     affordance from the list entirely — the user has exhausted the
-    per-type regeneration cap (MAX_REGENERATIONS).
+    per-type regeneration cap (MAX_REGENERATIONS). The remaining count
+    drives the show/hide decision but is intentionally NOT surfaced in
+    the label or body. With a low cap, exposing the count adds a
+    ticking-clock feel without helping the user choose.
     """
     if remaining <= 0:
         return None
     return {
-        "label": f"Regenerate resolution summary{_remaining_suffix(remaining)}",
+        "label": "Regenerate resolution summary",
         "action_type": "COOPERATIVE",
         "cooperative_action": "query_submit",
         "payload": REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
-        "body": (
-            f"Re-create the resolution report. "
-            f"{remaining} regeneration{'s' if remaining != 1 else ''} remaining."
-        ),
+        "body": "Re-create the resolution report.",
     }
 
 
@@ -1220,7 +1215,7 @@ def _select_ack_follow_ups(case, summary_failed: bool, remaining: int) -> list:
     return []
 
 
-def _resolved_suggestions(remaining: int) -> list:
+def _resolved_suggestions(remaining: int, runbook_already_exists: bool = False) -> list:
     """Suggestions for terminal Q&A turns on a RESOLVED case.
 
     Both the regen affordance and the runbook affordance are offered.
@@ -1228,15 +1223,18 @@ def _resolved_suggestions(remaining: int) -> list:
     failed and as a way to iterate; the runbook path is the forward
     action. Symmetric with ``_closed_suggestions`` for CLOSED cases.
 
-    The regen affordance is dropped silently when ``remaining <= 0`` so
-    the user does not see a button they cannot use. The runbook
-    affordance is independent of the regen cap.
+    Each affordance has its own cap and is dropped silently when exhausted:
+      - Regen: per-type ``MAX_REGENERATIONS`` (drives ``remaining``).
+      - Runbook: one generation per case. After a draft has been written
+        the suggestion is hidden; the user iterates on it via the
+        Dashboard Drafts editor (no re-roll from chat).
     """
     suggestions: list = []
     regen = _regenerate_resolution_summary_suggestion(remaining)
     if regen is not None:
         suggestions.append(regen)
-    suggestions.append(_runbook_suggestion())
+    if not runbook_already_exists:
+        suggestions.append(_runbook_suggestion())
     return suggestions
 
 
@@ -1271,14 +1269,12 @@ def _closed_suggestions(case, remaining: int) -> list:
         return []
     return [
         {
-            "label": f"Regenerate closure summary{_remaining_suffix(remaining)}",
+            "label": "Regenerate closure summary",
             "action_type": "COOPERATIVE",
             "cooperative_action": "query_submit",
             "payload": REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
             "body": (
-                f"Re-create the closure report. "
-                f"{remaining} regeneration{'s' if remaining != 1 else ''} remaining. "
-                f"View the current report in the Dashboard."
+                "Re-create the closure report. View the current report in the Dashboard."
             ),
         },
     ]
@@ -1416,6 +1412,27 @@ class MilestoneEngine:
             return getattr(self.report_service, "MAX_REGENERATIONS", 5)
         max_regens = getattr(self.report_service, "MAX_REGENERATIONS", 5)
         return max(0, max_regens - count)
+
+    async def _case_has_runbook_draft(self, case: "Case") -> bool:
+        """Whether a runbook draft has already been generated for this case.
+
+        Drives the "hide once used" gate on the Generate-runbook affordance:
+        each case gets at most one chat-side generation. Re-rolls happen in
+        the Dashboard Drafts editor, not via repeated chat clicks.
+
+        Returns False (i.e. "show the affordance") on any lookup failure or
+        when the conversion service isn't wired — preserves the legacy
+        behaviour of always offering the affordance when state is unknown,
+        which is the safer default for a forward action.
+        """
+        conversion_service = getattr(self, "conversion_service", None)
+        if conversion_service is None:
+            return False
+        try:
+            drafts = await conversion_service.list_drafts_for_case(case.case_id)
+        except Exception:
+            return False
+        return any(d for d in drafts)
 
     async def _auto_generate_report(self, case: "Case") -> tuple[str | None, bool]:
         """Synchronous auto-generation of terminal summary.
@@ -1638,11 +1655,11 @@ class MilestoneEngine:
         # The "remaining" count comes from the DB and reflects the row
         # just written, so it correctly decrements turn-over-turn.
         remaining = await self._remaining_regens_for(case)
-        follow_ups = (
-            _resolved_suggestions(remaining)
-            if case.status == CaseStatus.RESOLVED
-            else _closed_suggestions(case, remaining)
-        )
+        if case.status == CaseStatus.RESOLVED:
+            runbook_exists = await self._case_has_runbook_draft(case)
+            follow_ups = _resolved_suggestions(remaining, runbook_exists)
+        else:
+            follow_ups = _closed_suggestions(case, remaining)
 
         return {
             "agent_response": agent_response,
@@ -1743,9 +1760,12 @@ class MilestoneEngine:
             # (regenerate summary, generate runbook) so the user can iterate
             # on the summary while the background runbook conversion runs,
             # or retry the runbook if the background task fails (the
-            # completion notification will tell them so).
+            # completion notification will tell them so). The runbook
+            # affordance is hidden on this turn — we just kicked off a
+            # generation, so re-offering it would race the background
+            # task and risk a duplicate draft.
             remaining = await self._remaining_regens_for(case)
-            follow_ups = _resolved_suggestions(remaining)
+            follow_ups = _resolved_suggestions(remaining, runbook_already_exists=True)
         except Exception as e:
             logger.warning(
                 f"Failed to initiate runbook creation for case {case.case_id}: {e}",
@@ -1941,7 +1961,10 @@ class MilestoneEngine:
             follow_ups = follow_ups + _closed_suggestions(case, remaining)
         elif case.status == CaseStatus.RESOLVED:
             remaining = await self._remaining_regens_for(case)
-            follow_ups = follow_ups + _resolved_suggestions(remaining)
+            runbook_exists = await self._case_has_runbook_draft(case)
+            follow_ups = follow_ups + _resolved_suggestions(
+                remaining, runbook_already_exists=runbook_exists
+            )
 
         return {
             "agent_response": response_obj.agent_response,

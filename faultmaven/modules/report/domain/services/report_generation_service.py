@@ -52,7 +52,7 @@ class ReportGenerationService:
     - Trivial case detection (skipped by should_generate_terminal_summary guardrail)
     """
 
-    MAX_REGENERATIONS = 5
+    MAX_REGENERATIONS = 2  # max total versions per type (initial + 1 regen)
     GENERATION_TIMEOUT_SECONDS = 30
 
     def __init__(
