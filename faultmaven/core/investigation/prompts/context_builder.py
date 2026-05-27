@@ -38,6 +38,9 @@ from faultmaven.modules.case.contracts import (
     CaseStatus,
     EntityType,
     InvestigationStage,
+    NeedPriority,
+    NeedPurpose,
+    NeedStatus,
 )
 from faultmaven.modules.case.domain.services.investigation_router import (
     recommend_investigation_path_for_case,
@@ -1683,6 +1686,212 @@ def _build_verbatim_history(messages: list) -> str:
     return result
 
 
+# =============================================================================
+# Evidence-needs block (Phase 4 of evidence-needs rollout)
+# =============================================================================
+
+# Cap on rendered needs per section to keep token cost bounded. Each
+# rendered need is ~80 chars of header (capped via
+# ``_REQUEST_TEXT_RENDER_CAP``) + ~80 chars of motivator line.
+# Single-section case (DIAGNOSIS, or MITIGATION/TREATMENT with one of
+# outstanding/re-verification empty): ~600 tokens worst case at 15
+# needs. Both-sections case (MITIGATION/TREATMENT with both populated):
+# up to 30 needs total, ~1200 tokens worst case. Typical cases stay
+# well under either bound because the LLM emits short request_text.
+_EVIDENCE_NEEDS_RENDER_CAP = 15
+
+# Per-need truncation cap for ``request_text``. The model attribute is
+# capped at 500 chars by the schema, but in the rendered block we keep
+# things scannable. The full text is preserved in the DB and surfaces
+# via the EVIDENCE-suggestion side (Phase 6).
+_REQUEST_TEXT_RENDER_CAP = 120
+
+# Priority sort key — HIGH first so the LLM sees the urgent demand
+# without scrolling. Keyed by enum member rather than ``.value`` so a
+# future ``NeedPriority`` addition raises ``KeyError`` here instead of
+# silently sinking the new bucket to the bottom of the list.
+_PRIORITY_ORDER: dict[NeedPriority, int] = {
+    NeedPriority.HIGH: 0,
+    NeedPriority.MEDIUM: 1,
+    NeedPriority.LOW: 2,
+}
+
+
+def _truncate_request_text(text: str) -> str:
+    """Truncate ``request_text`` for rendering only — full text stays in
+    the DB. Adds a single-char ellipsis when truncation actually
+    occurs so the LLM knows the surfaced line is partial."""
+    if len(text) <= _REQUEST_TEXT_RENDER_CAP:
+        return text
+    return text[: _REQUEST_TEXT_RENDER_CAP - 1].rstrip() + "…"
+
+
+def _render_need_line(need) -> tuple[str, str]:
+    """Render one need into (header_line, motivator_line)."""
+    purpose_label = (
+        "SYMPTOM" if need.purpose == NeedPurpose.SYMPTOM_VERIFICATION else "CAUSAL"
+    )
+    status_suffix = (
+        f", {need.status.value.upper()}" if need.status != NeedStatus.PENDING else ""
+    )
+    header = (
+        f"  - [{need.need_id}] {_truncate_request_text(need.request_text)} "
+        f"({purpose_label}, {need.priority.value.upper()}{status_suffix})"
+    )
+    if need.purpose == NeedPurpose.SYMPTOM_VERIFICATION:
+        motivator_line = "      motivated_by: problem_statement"
+    else:
+        ids = need.motivating_hypothesis_ids
+        motivator_line = (
+            f"      motivated_by: [{', '.join(ids)}]"
+            if ids
+            else "      motivated_by: []"
+        )
+    return header, motivator_line
+
+
+def _build_evidence_needs_block(case: Case) -> str:
+    """Render the ``<evidence_needs>`` context block.
+
+    Returns ``""`` (progressive activation, design §10.6) when:
+
+    - The pool is empty.
+    - All needs are filtered out by status (no PENDING/PARTIALLY_MET
+      in DIAGNOSIS; no PENDING/PARTIALLY_MET/FULFILLED in
+      MITIGATION/TREATMENT).
+    - The case is not INVESTIGATING (terminal/inquiry have their own
+      surfaces).
+
+    Filtering rules (design §8.4):
+
+    - Default (DIAGNOSIS stage): render PENDING + PARTIALLY_MET as
+      "outstanding needs" — data to look for during upload review.
+      FULFILLED and SUPERSEDED are excluded to save tokens.
+    - MITIGATION / TREATMENT: render two clearly-labelled sections —
+      outstanding needs as above, plus a "re-verification checklist"
+      of FULFILLED needs so the agent can confirm the fix held by
+      re-checking the same data that established the symptom/cause.
+      SUPERSEDED remains excluded everywhere. Either section is
+      omitted if empty.
+
+    Output shape (DIAGNOSIS):
+
+        <evidence_needs>
+        Unexpected findings outside the entries below are equally
+        important and may lead to new hypotheses or revised needs.
+
+        Outstanding needs (data to look for in uploads):
+
+          - [eneed_001] Response time metrics (SYMPTOM, HIGH)
+              motivated_by: problem_statement
+          - [eneed_003] DB connection pool metrics (CAUSAL, HIGH)
+              motivated_by: [hyp_001, hyp_003]
+        </evidence_needs>
+
+    Output shape (MITIGATION/TREATMENT, both sections populated):
+
+        <evidence_needs>
+        Unexpected findings outside the entries below are equally
+        important and may lead to new hypotheses or revised needs.
+
+        Outstanding needs (data to look for in uploads):
+
+          - [eneed_004] App connection timeout logs (CAUSAL, MEDIUM)
+              motivated_by: [hyp_001]
+
+        Re-verification checklist (confirm the fix held by re-checking
+        these — they were used to establish the symptom or cause):
+
+          - [eneed_001] Response time metrics (SYMPTOM, HIGH, FULFILLED)
+              motivated_by: problem_statement
+        </evidence_needs>
+    """
+    if case.status != CaseStatus.INVESTIGATING:
+        return ""
+    if not case.evidence_needs:
+        return ""
+
+    in_post_diagnosis = case.current_stage in (
+        InvestigationStage.MITIGATION,
+        InvestigationStage.TREATMENT,
+    )
+
+    outstanding = [
+        n
+        for n in case.evidence_needs
+        if n.status in (NeedStatus.PENDING, NeedStatus.PARTIALLY_MET)
+    ]
+    re_verification = (
+        [n for n in case.evidence_needs if n.status == NeedStatus.FULFILLED]
+        if in_post_diagnosis
+        else []
+    )
+
+    if not outstanding and not re_verification:
+        return ""
+
+    # Stable presentation: high-priority first within each section.
+    # Stable sort preserves the repo's secondary order (created_at ASC,
+    # need_id ASC) for tied priorities.
+    outstanding.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
+    re_verification.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
+
+    # Render-cap budgets are computed per-section so neither one starves
+    # the other. With both sections active, each gets up to
+    # _EVIDENCE_NEEDS_RENDER_CAP entries — generous enough that real
+    # cases never hit the cap.
+    out_rendered = outstanding[:_EVIDENCE_NEEDS_RENDER_CAP]
+    out_overflow = len(outstanding) - len(out_rendered)
+    reverif_rendered = re_verification[:_EVIDENCE_NEEDS_RENDER_CAP]
+    reverif_overflow = len(re_verification) - len(reverif_rendered)
+
+    lines: list[str] = ["<evidence_needs>"]
+    # Anti-anchoring framing — design §6.1. Emitted once at the block
+    # opening regardless of which sections fire so the LLM never treats
+    # the list as exhaustive, including during re-verification (where
+    # evidence that the fix introduced a new problem is exactly the
+    # kind of finding this sentence keeps in view).
+    lines.append(
+        "Unexpected findings outside the entries below are equally important "
+        "and may lead to new hypotheses or revised needs."
+    )
+    lines.append("")
+
+    if outstanding:
+        lines.append("Outstanding needs (data to look for in uploads):")
+        lines.append("")
+        for need in out_rendered:
+            header, motivator_line = _render_need_line(need)
+            lines.append(header)
+            lines.append(motivator_line)
+        if out_overflow > 0:
+            lines.append("")
+            lines.append(
+                f"  …and {out_overflow} more outstanding need(s) not shown "
+                f"(cap reached)."
+            )
+
+    if re_verification:
+        if outstanding:
+            lines.append("")
+        lines.append("Re-verification checklist (confirm the fix held by re-checking")
+        lines.append("these — they were used to establish the symptom or cause):")
+        lines.append("")
+        for need in reverif_rendered:
+            header, motivator_line = _render_need_line(need)
+            lines.append(header)
+            lines.append(motivator_line)
+        if reverif_overflow > 0:
+            lines.append("")
+            lines.append(
+                f"  …and {reverif_overflow} more re-verification need(s) not "
+                f"shown (cap reached)."
+            )
+
+    lines.append("</evidence_needs>")
+    return "\n".join(lines)
+
+
 def build_investigation_context(
     case: Case,
     user_message: str,
@@ -2129,12 +2338,18 @@ def build_investigation_context(
     # can reference it unconditionally.
     entity_highlights_str = entity_highlights or ""
 
+    # Evidence-needs Phase 4 — demand-side pool block. Empty string when
+    # the pool has no visible needs for this stage (progressive
+    # activation; design §10.6).
+    evidence_needs_str = _build_evidence_needs_block(case)
+
     # Assembly with budget check
     ctx = {
         "identity": budget.use(identity),
         "core_context": budget.use(core_context),
         "milestones": budget.use(milestones_str),
         "evidence": budget.use(evidence_str),
+        "evidence_needs": budget.use(evidence_needs_str),
         "entity_highlights": budget.use(entity_highlights_str),
         "hypotheses": budget.use(hypothesis_str),
         "investigation_journal": budget.use(journal_str),
