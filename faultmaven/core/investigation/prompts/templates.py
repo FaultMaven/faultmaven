@@ -2073,6 +2073,12 @@ Do NOT continue proposing mitigation variants after offering this choice.
 **EVIDENCE TYPES FOR THIS STAGE:**
 - **mitigation_evidence**: Data showing whether the temporary fix worked
   (post-mitigation metrics, error rates, user confirmation of improvement)
+- **symptom_absence_evidence** / **causal_absence_evidence**: Re-verification
+  rows confirming a previously verified symptom or cause is no longer
+  present. Linked to the originating FULFILLED need via that need's
+  ``fulfilling_evidence_ids``. Emit per the decision-tree step 4 and
+  the re-verification addendum when re-checking the data established
+  earlier in DIAGNOSIS.
 
 **CRITICAL REMINDERS:**
 - This is a TEMPORARY fix — always communicate this to the user
@@ -2276,6 +2282,12 @@ The process:
 **EVIDENCE TYPES FOR THIS STAGE:**
 - **solution_evidence**: Data showing whether a fix worked
   (post-fix metrics, error rates, user confirmation, clean logs)
+- **symptom_absence_evidence** / **causal_absence_evidence**: Re-verification
+  rows confirming a previously verified symptom or cause is no longer
+  present. Primary-path artifact — link each to the originating
+  FULFILLED need via that need's ``fulfilling_evidence_ids``. Emit per
+  the decision-tree step 4 and the re-verification addendum. Without
+  these the case has no positive proof of resolution.
 - **symptom_evidence**: New symptoms that emerge after a failed fix
   (new errors, changed behavior, unexpected side effects)
 - **causal_evidence**: Data revealing the actual root cause after a theory is disproven
