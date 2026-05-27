@@ -92,9 +92,11 @@ def get_current_revision(database_url: str) -> str:
 
 # Expected tables from all migrations
 # 16 domain tables + 11 auth/RBAC tables + 1 config table + 2 conversion tables
-# + 1 reports table + 1 case_entities (phase 4a) + alembic_version = 32
+# + 1 reports table + 1 case_entities (phase 4a) + 2 evidence_needs tables
+# (migration 014) + alembic_version = 34
 # (agent_tool_calls v1 removed in storage redesign 2026-04 phase 1;
-#  evidence_artifacts + standalone_evidence removed in phase 2)
+#  evidence_artifacts + standalone_evidence removed in phase 2;
+#  evidence_needs + evidence_need_fulfillment added in migration 014)
 EXPECTED_TABLES = [
     "agent_executions",
     "agent_tool_calls",
@@ -109,6 +111,8 @@ EXPECTED_TABLES = [
     "conversion_jobs",
     "enterprises",
     "evidence",
+    "evidence_need_fulfillment",
+    "evidence_needs",
     "hypotheses",
     "hypothesis_evidence",
     "investigation_sessions",
