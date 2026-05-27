@@ -33,6 +33,7 @@ from faultmaven.core.investigation.prompts.templates import (
     _PRE_PATH_DIAGNOSIS_BLOCK,
     _RCA_DIAGNOSIS_BLOCK,
     _SYMPTOM_VALIDATION_BLOCK,
+    INVESTIGATION_BASE,
     MITIGATION_INSTRUCTIONS,
     TREATMENT_INSTRUCTIONS,
 )
@@ -110,11 +111,18 @@ class TestLifecycleBlockContent:
             "Link inbound evidence to PENDING needs",
             "Same-turn IDs",
             "Mutability",
-            "Suggestion decay",
+            "Mention decay",
         ],
     )
     def test_directive_present(self, directive_marker):
         assert directive_marker in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+
+    def test_mention_decay_references_conversation_history_mechanism(self):
+        """Per design §10.5 the decay rule has no stored counter — the
+        LLM scans its prior turns to count mentions. Without that
+        framing the LLM may treat every turn as a first mention."""
+        assert "prior turns" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+        assert "no stored counter" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
 
     def test_references_evidence_need_id_field(self):
         """The mention-decay rule requires populating ``evidence_need_id``
@@ -232,6 +240,14 @@ class TestPoolEvalBlockContent:
     def test_step_3_references_evidence_need_updates(self):
         assert "evidence_need_updates" in _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK
 
+    def test_step_2_covers_both_pending_and_partially_met(self):
+        """context_builder renders both PENDING and PARTIALLY_MET in
+        <evidence_needs>. A directive that says only "PENDING needs"
+        would leave the LLM uncertain whether a PARTIALLY_MET need
+        can take new motivator IDs — and could lead it to create a
+        duplicate need rather than share into the partial one."""
+        assert "PENDING / PARTIALLY_MET" in _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK
+
 
 # ============================================================
 # Re-verification addendum — only in MITIGATION and TREATMENT
@@ -274,13 +290,81 @@ class TestReVerificationAddendumLocation:
         diagnosis). The shared addendum stays neutral; gating notes
         live at each stage's existing 'no hypothesis formation'
         anchor."""
-        assert "Causal" not in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+        # ``causal_absence_evidence`` does mention the word causal —
+        # the gating-claim guard is about causal_verification *needs*,
+        # not the absence-evidence category. Check the precise rule
+        # doesn't appear.
         assert "causal_verification" not in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+        assert "Causal need creation" not in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+
+
+@pytest.mark.unit
+class TestReVerificationSuccessCaseDirective:
+    """Re-verification has two outcomes; both must be covered. The
+    success-case (signature gone) directive triggers absence-evidence
+    emission — the load-bearing audit record proving the fix held.
+    Without it Phase 1's absence-evidence enums sit unused."""
+
+    def test_success_case_directive_present(self):
+        """If the signature is GONE, emit absence_evidence."""
+        assert "signature is GONE" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+
+    def test_failure_case_directive_present(self):
+        """If the signature REAPPEARS, surface as a new finding."""
+        assert (
+            "signature REAPPEARS" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+            or "did not hold" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+        )
+
+    def test_references_symptom_absence_evidence_category(self):
+        assert "symptom_absence_evidence" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+
+    def test_references_causal_absence_evidence_category(self):
+        assert "causal_absence_evidence" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+
+    def test_links_absence_row_to_originating_need(self):
+        """Absence rows must link back to the need they prove — the
+        link is what makes them the audit record, not orphan data."""
+        assert "fulfilling_evidence_ids" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
 
 
 # ============================================================
 # MITIGATION causal-need gating extension at the existing anchor
 # ============================================================
+
+
+@pytest.mark.unit
+class TestEvidenceClassificationDecisionTreeExtension:
+    """The universal classification decision tree in INVESTIGATION_BASE
+    must enumerate all six categories so the absence-evidence emission
+    rule in the re-verification addendum doesn't contradict the
+    universal rule the LLM reads first. INQUIRY_TEMPLATE keeps the
+    legacy four-category enumeration — pre-investigation has no
+    re-verification context."""
+
+    def test_tree_header_acknowledges_six_categories(self):
+        assert "(6 categories)" in INVESTIGATION_BASE
+
+    def test_tree_has_re_verification_step(self):
+        """Step 4 covers the re-verification case — without it the
+        decision tree gives no path to the absence categories."""
+        assert "RE-CHECKING" in INVESTIGATION_BASE
+
+    def test_tree_references_symptom_absence_evidence(self):
+        assert "symptom_absence_evidence" in INVESTIGATION_BASE
+
+    def test_tree_references_causal_absence_evidence(self):
+        assert "causal_absence_evidence" in INVESTIGATION_BASE
+
+    def test_category_field_enumeration_includes_absence_categories(self):
+        """The detailed required-fields enumeration must list the
+        absence variants — otherwise a careful LLM might reject them
+        as invalid."""
+        site_idx = INVESTIGATION_BASE.find("category: One of:")
+        assert site_idx != -1
+        site_block = INVESTIGATION_BASE[site_idx : site_idx + 500]
+        assert "symptom_absence_evidence" in site_block
+        assert "causal_absence_evidence" in site_block
 
 
 @pytest.mark.unit

@@ -836,7 +836,7 @@ WORKING WITH EVIDENCE DATA:
 When your analysis discovers NEW findings not in the structural index, create
 evidence records via evidence_to_add with appropriate category and summary.
 
-EVIDENCE CLASSIFICATION — DECISION TREE (4 categories):
+EVIDENCE CLASSIFICATION — DECISION TREE (6 categories):
 
 Each evidence row is a focused, claim-anchored extract. Rows that
 don't support a specific claim should NOT be created — files
@@ -844,7 +844,7 @@ provide background context via the structural index without needing
 an evidence row.
 
 1. Does this evidence show the PROBLEM EXISTS (errors, crashes, failures, latency spikes)?
-   YES → symptom_evidence; then CONTINUE evaluating steps 2-3 (an extract can be multi-classified)
+   YES → symptom_evidence; then CONTINUE evaluating steps 2-4 (an extract can be multi-classified)
    NO  → continue to 2
 
    NOTE: A single artifact can satisfy multiple steps. An OOM crash
@@ -863,6 +863,15 @@ an evidence row.
    Post-mitigation action → mitigation_evidence
    Post-solution action   → solution_evidence
 
+4. Is this evidence the result of RE-CHECKING a previously verified
+   symptom or cause to confirm a fix held (MITIGATION / TREATMENT
+   re-verification)?
+   Symptom no longer present → symptom_absence_evidence
+   Cause no longer present   → causal_absence_evidence
+   Link the absence row to the same need via that need's
+   `fulfilling_evidence_ids`. Without the absence row, the case has
+   no positive proof of resolution.
+
 CREATING EVIDENCE RECORDS (evidence_to_add):
 When your analysis discovers a claim-relevant slice not already
 captured:
@@ -870,7 +879,10 @@ captured:
 - Required fields:
   * summary: Brief description of the finding
   * category: One of: symptom_evidence, causal_evidence,
-              mitigation_evidence, solution_evidence
+              mitigation_evidence, solution_evidence,
+              symptom_absence_evidence, causal_absence_evidence
+              (the last two are emitted on MITIGATION / TREATMENT
+              re-verification — see step 4 of the decision tree).
   * source_type: What kind of data the slice is: logs, metrics,
                  configuration, code, text, image, or user_description
                  (for verbatim system-output quotes from the user's
@@ -1176,13 +1188,14 @@ investigation. You see it in <evidence_needs>; you mutate it via
 - **Mutability.** Revise, merge, or SUPERSEDE your own needs. A vague
   or obsoleted need in the pool degrades reasoning — keep it clean.
   SUPERSEDED needs require a one-line `superseded_reason`.
-- **Suggestion decay (anti-nagging).** When surfacing a PENDING need
-  as an EVIDENCE-type SuggestedFollowUp, populate `evidence_need_id`
-  with the need's ID. First mention: full request + rationale. Second:
-  brief reminder. Third+: stop surfacing (the need stays in the pool
-  for upload-matching; it just no longer appears as a suggestion).
-  If the user asks "what else do you need?", surface all PENDING
-  needs regardless.
+- **Mention decay (anti-nagging).** When surfacing a PENDING need as
+  an EVIDENCE-type SuggestedFollowUp, populate `evidence_need_id`
+  with the need's ID. Count mentions by scanning your prior turns in
+  the conversation history — no stored counter exists. First mention:
+  full request + rationale. Second: brief reminder. Third+: stop
+  surfacing (the need stays in the pool for upload-matching; it just
+  no longer appears as a suggestion). If the user asks "what else do
+  you need?", surface all PENDING needs regardless.
 """
 
 
@@ -1196,9 +1209,10 @@ This stage permits symptom needs only. Use
 `purpose=symptom_verification` with `motivating_hypothesis_ids=[]` —
 needs at this purpose are motivated by the problem statement and
 survive hypothesis retirement. Cover one per distinct data type the
-symptom would be verified against. Causal-purpose needs are gated;
-the engine backstop rejects them under the same rule as
-`hypotheses_to_add`.
+symptom would be verified against (e.g., one for application logs,
+one for system metrics, one for current state / config snapshot).
+Causal-purpose needs are gated; the engine backstop rejects them
+under the same rule as `hypotheses_to_add`.
 """
 
 
@@ -1215,10 +1229,11 @@ existing pool against it in the SAME turn:
    entry with stance (SUPPORTS / CONTRADICTS / NEUTRAL). The hypothesis
    may become VALIDATED or REFUTED immediately if the evidence is
    conclusive.
-2. **Existing PENDING needs.** Scan <evidence_needs>. If an open need
-   would plausibly speak to the new hypothesis when fulfilled, emit an
-   update on that need appending the hypothesis ID to
-   `motivating_hypothesis_ids` — share, don't duplicate.
+2. **Existing open needs (PENDING / PARTIALLY_MET).** Scan
+   <evidence_needs>. If a visible need would plausibly speak to the
+   new hypothesis when (further) fulfilled, emit an update on that
+   need appending the hypothesis ID to `motivating_hypothesis_ids` —
+   share, don't duplicate.
 3. **Gaps.** Identify data the new hypothesis requires that the pool
    doesn't yet cover. Emit fresh `evidence_need_updates` entries with
    `purpose=causal_verification` and `motivating_hypothesis_ids` set
@@ -1238,10 +1253,18 @@ existing pool against it in the SAME turn:
 _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM = """\
 **EVIDENCE NEEDS — re-verification:**
 <evidence_needs> renders FULFILLED needs as a "Re-verification
-checklist" in this stage. Re-check the data each one pinned to confirm
-the symptom (or cause) it captured is no longer present. If the
-original signature reappears, the fix did not hold — surface that as
-a new finding rather than declaring success.
+checklist" in this stage. Re-check the data each need pinned to
+confirm the symptom (or cause) it captured is no longer present.
+
+- If the signature is GONE: emit an `evidence_to_add` row with
+  `category=symptom_absence_evidence` (or `causal_absence_evidence`
+  when re-checking a cause), `source_file_id` pointing at the file
+  you re-checked, and link the row to the same need via that need's
+  `fulfilling_evidence_ids`. The absence row is the audit record that
+  the fix held — without it the case has no positive proof of
+  resolution.
+- If the original signature REAPPEARS, the fix did not hold —
+  surface that as a new finding rather than declaring success.
 """
 
 _URGENCY_RECOGNITION_BLOCK = """\
