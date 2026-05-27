@@ -1,0 +1,306 @@
+"""Phase 5 tests: evidence-needs prompt directives.
+
+Pins the per-block composition of the four evidence-needs prompt
+fragments introduced in Phase 5:
+
+- ``_EVIDENCE_NEEDS_LIFECYCLE_BLOCK`` — universal, in all 5
+  INVESTIGATING dispatch blocks.
+- ``_EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM`` — symptom-only stages
+  (``_PRE_PATH_DIAGNOSIS_BLOCK`` and ``_SYMPTOM_VALIDATION_BLOCK``).
+- ``_EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK`` — RCA only.
+- ``_EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM`` — MITIGATION and
+  TREATMENT.
+
+The tests use substring matches against the block constants so a
+future refactor that moves text around without losing meaning still
+passes. What we want to catch: a block dropping out of a dispatch
+block entirely, or the directive vocabulary drifting away from what
+the schema apply-layer expects.
+
+Run:
+    pytest tests/unit/core/investigation/test_evidence_needs_prompt_directives.py -v
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from faultmaven.core.investigation.prompts.templates import (
+    _EVIDENCE_NEEDS_LIFECYCLE_BLOCK,
+    _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK,
+    _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM,
+    _EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM,
+    _PRE_PATH_DIAGNOSIS_BLOCK,
+    _RCA_DIAGNOSIS_BLOCK,
+    _SYMPTOM_VALIDATION_BLOCK,
+    MITIGATION_INSTRUCTIONS,
+    TREATMENT_INSTRUCTIONS,
+)
+
+# A short, distinctive substring from each block — used as the
+# "is this block composed in?" probe. Chosen to be unique enough that
+# unrelated text won't accidentally match.
+_LIFECYCLE_PROBE = "EVIDENCE NEEDS (demand-side pool)"
+_SYMPTOM_ONLY_PROBE = "EVIDENCE NEEDS — symptom-only stage"
+_POOL_EVAL_PROBE = "POOL EVALUATION (at hypothesis creation)"
+_REVERIFICATION_PROBE = "EVIDENCE NEEDS — re-verification"
+
+
+# ============================================================
+# Lifecycle block — present in all 5 INVESTIGATING dispatch blocks
+# ============================================================
+
+
+@pytest.mark.unit
+class TestLifecycleBlockComposedInAllDispatchBlocks:
+    """The shared lifecycle block defines the cross-stage contract
+    (event-driven emission, link inbound evidence, same-turn IDs,
+    mutability, mention-decay). Every INVESTIGATING dispatch block
+    must compose it so the LLM sees the contract regardless of which
+    branch it's on this turn."""
+
+    @pytest.mark.parametrize(
+        "block,block_name",
+        [
+            (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
+            (_PRE_PATH_DIAGNOSIS_BLOCK, "_PRE_PATH_DIAGNOSIS_BLOCK"),
+            (_SYMPTOM_VALIDATION_BLOCK, "_SYMPTOM_VALIDATION_BLOCK"),
+            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
+            (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
+        ],
+    )
+    def test_lifecycle_block_present(self, block, block_name):
+        assert _LIFECYCLE_PROBE in block, (
+            f"{block_name} is missing the shared evidence-needs lifecycle "
+            "block — the LLM won't know about event-driven emission, "
+            "inbound-evidence linking, or mention decay."
+        )
+
+    def test_lifecycle_block_appears_exactly_once_per_dispatch(self):
+        """A double-composition would burn tokens and risk conflicting
+        signals if one copy drifted. Single emission per block."""
+        for block, name in [
+            (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
+            (_PRE_PATH_DIAGNOSIS_BLOCK, "_PRE_PATH_DIAGNOSIS_BLOCK"),
+            (_SYMPTOM_VALIDATION_BLOCK, "_SYMPTOM_VALIDATION_BLOCK"),
+            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
+            (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
+        ]:
+            assert block.count(_LIFECYCLE_PROBE) == 1, (
+                f"{name} composes the lifecycle block "
+                f"{block.count(_LIFECYCLE_PROBE)} times (expected 1)."
+            )
+
+
+# ============================================================
+# Lifecycle block content — pinned directive vocabulary
+# ============================================================
+
+
+@pytest.mark.unit
+class TestLifecycleBlockContent:
+    """The five universal directives, identified by their bold headers.
+    Drift on any of these means the prompt no longer covers a known
+    failure mode."""
+
+    @pytest.mark.parametrize(
+        "directive_marker",
+        [
+            "Event-driven emission",
+            "Link inbound evidence to PENDING needs",
+            "Same-turn IDs",
+            "Mutability",
+            "Suggestion decay",
+        ],
+    )
+    def test_directive_present(self, directive_marker):
+        assert directive_marker in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+
+    def test_references_evidence_need_id_field(self):
+        """The mention-decay rule requires populating ``evidence_need_id``
+        on EVIDENCE-type suggestions (Phase 6 frontend linkage)."""
+        assert "evidence_need_id" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+
+    def test_references_new_index_n_pattern(self):
+        """Same-turn ID resolution rides on the existing
+        ``new_index_N`` placeholder pattern — the LLM needs to know
+        the syntax."""
+        assert "new_index_N" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+
+    def test_references_fulfilling_evidence_ids(self):
+        """Inbound-evidence linking is the load-bearing mechanism for
+        needs to advance through PENDING → FULFILLED."""
+        assert "fulfilling_evidence_ids" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+
+    def test_does_not_restate_anti_anchoring_framing(self):
+        """The anti-anchoring sentence (\"unexpected findings are
+        equally important\") is rendered in <evidence_needs> by the
+        context builder. Restating it in the prompt burns tokens for
+        no signal."""
+        assert "Unexpected findings" not in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+
+
+# ============================================================
+# Symptom-only addendum — only in symptom-validation stages
+# ============================================================
+
+
+@pytest.mark.unit
+class TestSymptomOnlyAddendumLocation:
+    """Symptom-only stages (Gate 2 pending, pre-mitigation
+    MITIGATION_FIRST) emit only symptom needs — causal-purpose
+    emissions are rejected by the engine backstop. The addendum
+    must appear in those two blocks and stay out of the RCA-side
+    blocks."""
+
+    @pytest.mark.parametrize(
+        "block,block_name",
+        [
+            (_PRE_PATH_DIAGNOSIS_BLOCK, "_PRE_PATH_DIAGNOSIS_BLOCK"),
+            (_SYMPTOM_VALIDATION_BLOCK, "_SYMPTOM_VALIDATION_BLOCK"),
+        ],
+    )
+    def test_addendum_present_in_symptom_only_stages(self, block, block_name):
+        assert _SYMPTOM_ONLY_PROBE in block
+
+    @pytest.mark.parametrize(
+        "block,block_name",
+        [
+            (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
+            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
+            (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
+        ],
+    )
+    def test_addendum_absent_from_non_symptom_only_stages(self, block, block_name):
+        """Adding the symptom-only constraint to RCA stages would
+        falsely restrict causal-need creation. MITIGATION has its own
+        causal-gating note inline at the existing 'do not form
+        hypotheses' anchor; the symptom-only addendum doesn't fit."""
+        assert _SYMPTOM_ONLY_PROBE not in block
+
+    def test_addendum_references_engine_backstop(self):
+        """The engine enforces the gate structurally — calling that
+        out tells the LLM the constraint isn't just advisory."""
+        assert "engine backstop" in _EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM
+        assert "hypotheses_to_add" in _EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM
+
+
+# ============================================================
+# RCA pool-evaluation block — only in _RCA_DIAGNOSIS_BLOCK
+# ============================================================
+
+
+@pytest.mark.unit
+class TestPoolEvalBlockLocation:
+    """The 3-step pool evaluation at hypothesis creation (design §5.2)
+    only applies where hypotheses can be created. That's
+    _RCA_DIAGNOSIS_BLOCK on this dispatch."""
+
+    def test_pool_eval_present_in_rca_block(self):
+        assert _POOL_EVAL_PROBE in _RCA_DIAGNOSIS_BLOCK
+
+    @pytest.mark.parametrize(
+        "block,block_name",
+        [
+            (_PRE_PATH_DIAGNOSIS_BLOCK, "_PRE_PATH_DIAGNOSIS_BLOCK"),
+            (_SYMPTOM_VALIDATION_BLOCK, "_SYMPTOM_VALIDATION_BLOCK"),
+            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
+        ],
+    )
+    def test_pool_eval_absent_from_non_rca_blocks(self, block, block_name):
+        """Hypothesis creation is gated outside RCA — pool evaluation
+        would emit causal needs that the engine then rejects, wasting
+        a turn."""
+        assert _POOL_EVAL_PROBE not in block
+
+
+@pytest.mark.unit
+class TestPoolEvalBlockContent:
+    """The three steps of pool evaluation map to specific schema fields.
+    Renaming any of them would break the LLM's ability to follow the
+    rule."""
+
+    def test_step_1_references_hypothesis_evidence_links(self):
+        assert "hypothesis_evidence_links" in _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK
+
+    def test_step_2_references_motivating_hypothesis_ids(self):
+        assert "motivating_hypothesis_ids" in _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK
+
+    def test_step_3_references_causal_verification_purpose(self):
+        assert "causal_verification" in _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK
+
+    def test_step_3_references_evidence_need_updates(self):
+        assert "evidence_need_updates" in _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK
+
+
+# ============================================================
+# Re-verification addendum — only in MITIGATION and TREATMENT
+# ============================================================
+
+
+@pytest.mark.unit
+class TestReVerificationAddendumLocation:
+    """FULFILLED needs surface as a re-verification checklist only in
+    MITIGATION/TREATMENT stages (design §8.4). The prompt addendum
+    explains that surface to the LLM."""
+
+    @pytest.mark.parametrize(
+        "block,block_name",
+        [
+            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
+            (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
+        ],
+    )
+    def test_reverification_present_in_post_diagnosis_stages(self, block, block_name):
+        assert _REVERIFICATION_PROBE in block
+
+    @pytest.mark.parametrize(
+        "block,block_name",
+        [
+            (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
+            (_PRE_PATH_DIAGNOSIS_BLOCK, "_PRE_PATH_DIAGNOSIS_BLOCK"),
+            (_SYMPTOM_VALIDATION_BLOCK, "_SYMPTOM_VALIDATION_BLOCK"),
+        ],
+    )
+    def test_reverification_absent_from_diagnosis_stages(self, block, block_name):
+        """DIAGNOSIS-stage blocks don't render FULFILLED needs — the
+        re-verification framing would describe a checklist that
+        isn't there."""
+        assert _REVERIFICATION_PROBE not in block
+
+    def test_addendum_does_not_claim_causal_gating(self):
+        """Causal-need gating is stage-specific (gated in MITIGATION,
+        permitted in TREATMENT's failure path under extended
+        diagnosis). The shared addendum stays neutral; gating notes
+        live at each stage's existing 'no hypothesis formation'
+        anchor."""
+        assert "Causal" not in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+        assert "causal_verification" not in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+
+
+# ============================================================
+# MITIGATION causal-need gating extension at the existing anchor
+# ============================================================
+
+
+@pytest.mark.unit
+class TestMitigationCausalNeedsGatingExtension:
+    """The existing MITIGATION 'do not form hypotheses' line was
+    extended to also forbid causal-purpose evidence_need_updates. The
+    constraint is symmetric with hypothesis gating because causal
+    needs presuppose a hypothesis to anchor."""
+
+    def test_causal_evidence_need_updates_explicitly_gated(self):
+        assert (
+            "causal-purpose\n  evidence_need_updates" in MITIGATION_INSTRUCTIONS
+            or "causal-purpose evidence_need_updates" in MITIGATION_INSTRUCTIONS
+        )
+
+    def test_fresh_symptom_needs_still_allowed_clarified(self):
+        """The gating note also clarifies symptom needs remain
+        allowed if new symptoms emerge during mitigation work — the
+        LLM shouldn't over-restrict itself."""
+        assert "symptom-purpose needs are still allowed" in MITIGATION_INSTRUCTIONS or (
+            "symptom" in MITIGATION_INSTRUCTIONS.lower()
+            and "still allowed" in MITIGATION_INSTRUCTIONS
+        )
