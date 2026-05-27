@@ -38,6 +38,7 @@ from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_m
 from faultmaven.core.investigation.lifecycle_metrics import (
     engine_owned_affordance_served_total,
     evidence_need_created_total,
+    evidence_need_id_dropped_total,
     evidence_need_rejected_total,
     evidence_need_status_changed_total,
     inquiry_gate2_confirmed_total,
@@ -7501,19 +7502,28 @@ class MilestoneEngine:
             if f.hints:
                 suggestion["hints"] = f.hints
             if getattr(f, "evidence_need_id", None):
+                created_ids = metadata.get("evidence_needs_updated", [])
                 resolved = self._resolve_id_ref(
                     f.evidence_need_id,
-                    metadata.get("evidence_needs_updated", []),
+                    created_ids,
                     "eneed",
                 )
                 if resolved.startswith("new_index_"):
+                    drop_reason = (
+                        "missing_metadata"
+                        if "evidence_needs_updated" not in metadata
+                        else "out_of_range"
+                    )
                     logger.warning(
                         f"Dropped unresolvable evidence_need_id "
                         f"{f.evidence_need_id!r} on a SuggestedFollowUp "
-                        f"(index out of range for this turn's "
-                        f"evidence_needs_updated list of length "
-                        f"{len(metadata.get('evidence_needs_updated', []))})"
+                        f"(reason={drop_reason}; "
+                        f"evidence_needs_updated len={len(created_ids)})"
                     )
+                    try:
+                        evidence_need_id_dropped_total.labels(reason=drop_reason).inc()
+                    except Exception:
+                        pass
                 else:
                     suggestion["evidence_need_id"] = resolved
             out.append(suggestion)

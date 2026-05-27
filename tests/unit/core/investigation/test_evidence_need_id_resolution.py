@@ -168,6 +168,77 @@ class TestUnresolvableRefDropped:
 
 
 # ============================================================
+# Drop-counter observability (pairs with evidence_need_rejected_total)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestDropCounterObservability:
+    """Drops at the response-flattening seam increment
+    ``evidence_need_id_dropped_total{reason}``. Symmetric with the
+    apply-layer ``evidence_need_rejected_total`` so every drop along
+    the evidence-needs pipeline is observable as a ratio, not just a
+    log grep."""
+
+    def test_out_of_range_drop_counted_with_out_of_range_label(self):
+        from unittest.mock import MagicMock, patch
+
+        engine = _make_engine()
+        meta = {"evidence_needs_updated": ["eneed_aaaa11112222"]}
+        follow_ups = [_make_follow_up(evidence_need_id="new_index_5")]
+
+        mock_counter = MagicMock()
+        with patch(
+            "faultmaven.core.investigation.milestone_engine."
+            "evidence_need_id_dropped_total",
+            mock_counter,
+        ):
+            engine._flatten_follow_ups(follow_ups, meta)
+
+        mock_counter.labels.assert_called_once_with(reason="out_of_range")
+        mock_counter.labels.return_value.inc.assert_called_once()
+
+    def test_missing_metadata_drop_counted_with_missing_metadata_label(self):
+        from unittest.mock import MagicMock, patch
+
+        engine = _make_engine()
+        follow_ups = [_make_follow_up(evidence_need_id="new_index_0")]
+
+        mock_counter = MagicMock()
+        with patch(
+            "faultmaven.core.investigation.milestone_engine."
+            "evidence_need_id_dropped_total",
+            mock_counter,
+        ):
+            engine._flatten_follow_ups(follow_ups, {})
+
+        mock_counter.labels.assert_called_once_with(reason="missing_metadata")
+        mock_counter.labels.return_value.inc.assert_called_once()
+
+    def test_successful_resolution_does_not_increment_counter(self):
+        """Real IDs and resolved ``new_index_N`` placeholders should
+        not increment the drop counter — only actual drops do."""
+        from unittest.mock import MagicMock, patch
+
+        engine = _make_engine()
+        meta = {"evidence_needs_updated": ["eneed_aaaa11112222"]}
+        follow_ups = [
+            _make_follow_up(evidence_need_id="eneed_bbbb33334444"),
+            _make_follow_up(evidence_need_id="new_index_0"),
+        ]
+
+        mock_counter = MagicMock()
+        with patch(
+            "faultmaven.core.investigation.milestone_engine."
+            "evidence_need_id_dropped_total",
+            mock_counter,
+        ):
+            engine._flatten_follow_ups(follow_ups, meta)
+
+        mock_counter.labels.assert_not_called()
+
+
+# ============================================================
 # Other-field flattening preserved (regression guard)
 # ============================================================
 

@@ -163,3 +163,32 @@ evidence_need_rejected_total = Counter(
     "the restricted state need to be tightened.",
     ["state"],
 )
+
+
+# Phase 6 response-flattening seam. Counts ``SuggestedFollowUp.evidence_need_id``
+# values that ``_flatten_follow_ups`` drops because the ``new_index_N``
+# placeholder didn't resolve against this turn's
+# ``metadata["evidence_needs_updated"]`` list. Symmetric with
+# ``evidence_need_rejected_total`` (apply-layer rejections) so all drops
+# along the evidence-needs pipeline are observable as ratios, not just
+# log greps.
+#
+# Healthy-system expectation: near zero. A sustained nonzero rate signals
+# the LLM is emitting stale or mis-indexed ``new_index_N`` references on
+# the suggestion side — a Phase 5 prompt-quality concern (the same-turn
+# ID rule in ``_EVIDENCE_NEEDS_LIFECYCLE_BLOCK`` may need sharpening, or
+# the LLM is referencing needs created in earlier turns by index).
+# Labels:
+#   - ``out_of_range`` — N exceeded the length of
+#     ``evidence_needs_updated`` (most likely shape)
+#   - ``missing_metadata`` — the key was absent entirely (defensive
+#     default fired; should be near-zero in production paths)
+evidence_need_id_dropped_total = Counter(
+    "faultmaven_evidence_need_id_dropped_total",
+    "SuggestedFollowUp.evidence_need_id values dropped at the response-"
+    "flattening seam because the new_index_N placeholder didn't resolve. "
+    "Symmetric with ``evidence_need_rejected_total``. A sustained nonzero "
+    "rate means the LLM is emitting stale same-turn ID references on the "
+    "suggestion side.",
+    ["reason"],
+)
