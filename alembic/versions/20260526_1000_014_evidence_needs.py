@@ -28,6 +28,8 @@ Create Date: 2026-05-26 10:00:00.000000
 from typing import Sequence, Union
 
 import sqlalchemy as sa
+from sqlalchemy import Text
+from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
@@ -71,13 +73,14 @@ def upgrade() -> None:
             nullable=False,
             server_default="pending",
         ),
-        # motivating_hypothesis_ids: JSON list. PG promotes to JSONB via
-        # the JsonBlob TypeDecorator, but Alembic ops here just see Text;
-        # the dialect-specific behavior is handled by SQLAlchemy at
-        # query/bind time, not at migration time.
+        # motivating_hypothesis_ids: JSON list. Matches the baseline
+        # pattern for ``JsonBlob`` columns elsewhere in the schema
+        # (Text on SQLite, JSONB on PostgreSQL) so fresh PG deployments
+        # create the column as JSONB — aligning with the ORM-declared
+        # type at ``models.py`` and supporting future JSONB operators.
         sa.Column(
             "motivating_hypothesis_ids",
-            sa.Text(),
+            sa.Text().with_variant(postgresql.JSONB(astext_type=Text()), "postgresql"),
             nullable=False,
             server_default="[]",
         ),

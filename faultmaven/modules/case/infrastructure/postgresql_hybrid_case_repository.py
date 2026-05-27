@@ -545,7 +545,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     created_at_turn, created_at, updated_at
                 FROM evidence_needs
                 WHERE case_id = :case_id
-                ORDER BY created_at ASC
+                ORDER BY created_at ASC, need_id ASC
             """)
             need_rows = (
                 await self.db.execute(need_query, {"case_id": case.case_id})

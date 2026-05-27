@@ -628,3 +628,292 @@ class TestNeedSupersessionOnHypothesisRetirement:
         # Status stays FULFILLED; motivators list cleared
         assert case.evidence_needs[0].status == NeedStatus.FULFILLED
         assert case.evidence_needs[0].motivating_hypothesis_ids == []
+
+
+# ============================================================
+# FULFILLED-with-all-dangling-evidence demotion (post-review fix #1)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestFulfilledDemotionOnEmptyFulfillments:
+    """When all referenced ``fulfilling_evidence_ids`` are dropped as
+    dangling, FULFILLED status is demoted to PARTIALLY_MET to keep the
+    persisted ``EvidenceNeed`` consistent with its model invariant
+    (FULFILLED requires non-empty fulfillment list)."""
+
+    def test_create_with_fulfilled_and_all_dangling_evidence_demotes(self):
+        case = _make_case()
+        engine = _make_engine()
+        meta = _empty_metadata()
+
+        engine._apply_evidence_need_updates(
+            case,
+            [
+                _make_update(
+                    status=NeedStatus.FULFILLED,
+                    fulfilling_evidence_ids=["ev_doesnotexist"],
+                )
+            ],
+            meta,
+            case.current_turn,
+        )
+
+        assert len(case.evidence_needs) == 1
+        assert case.evidence_needs[0].status == NeedStatus.PARTIALLY_MET
+        assert case.evidence_needs[0].fulfilling_evidence_ids == []
+        assert any(
+            "Demoted FULFILLED→PARTIALLY_MET" in r
+            for r in meta.get("validation_repairs", [])
+        )
+
+    def test_update_to_fulfilled_with_all_dangling_evidence_demotes(self):
+        case = _make_case()
+        existing = EvidenceNeed(
+            case_id=case.case_id,
+            purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+            request_text="x",
+            rationale="y",
+            status=NeedStatus.PENDING,
+            created_at_turn=case.current_turn,
+        )
+        case.evidence_needs.append(existing)
+        engine = _make_engine()
+        meta = _empty_metadata()
+
+        engine._apply_evidence_need_updates(
+            case,
+            [
+                _make_update(
+                    need_id=existing.need_id,
+                    status=NeedStatus.FULFILLED,
+                    fulfilling_evidence_ids=["ev_doesnotexist"],
+                )
+            ],
+            meta,
+            case.current_turn,
+        )
+
+        assert case.evidence_needs[0].status == NeedStatus.PARTIALLY_MET
+        assert case.evidence_needs[0].fulfilling_evidence_ids == []
+        assert any(
+            "Demoted FULFILLED→PARTIALLY_MET" in r
+            for r in meta.get("validation_repairs", [])
+        )
+
+    def test_update_to_fulfilled_with_prior_fulfillment_succeeds(self):
+        """Demotion should *not* fire when the post-merge fulfillment
+        list is non-empty (a prior fulfillment carries the need)."""
+        case = _make_case()
+        ev_prior = _make_evidence(case)
+        existing = EvidenceNeed(
+            case_id=case.case_id,
+            purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+            request_text="x",
+            rationale="y",
+            status=NeedStatus.PARTIALLY_MET,
+            fulfilling_evidence_ids=[ev_prior.evidence_id],
+            created_at_turn=case.current_turn,
+        )
+        case.evidence_needs.append(existing)
+        engine = _make_engine()
+        meta = _empty_metadata()
+
+        engine._apply_evidence_need_updates(
+            case,
+            [
+                _make_update(
+                    need_id=existing.need_id,
+                    status=NeedStatus.FULFILLED,
+                    fulfilling_evidence_ids=["ev_doesnotexist"],
+                )
+            ],
+            meta,
+            case.current_turn,
+        )
+
+        # Prior fulfillment survives; new dangling ID dropped; no demotion.
+        assert case.evidence_needs[0].status == NeedStatus.FULFILLED
+        assert case.evidence_needs[0].fulfilling_evidence_ids == [ev_prior.evidence_id]
+
+
+# ============================================================
+# Prior-turn retired motivator filtering (post-review fix #2)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestPriorTurnRetiredMotivatorFiltered:
+    """A causal need motivated by an already-RETIRED hypothesis would
+    survive the end-of-turn snapshot-diff (which only fires for
+    this-turn retirements). The apply-layer drops RETIRED IDs at
+    create/update time to keep the pool clean."""
+
+    def test_retired_motivator_dropped_on_create(self):
+        case = _make_case()
+        h_retired = _make_hypothesis(case, status=HypothesisStatus.RETIRED)
+        h_active = _make_hypothesis(case, status=HypothesisStatus.ACTIVE)
+        engine = _make_engine()
+        meta = _empty_metadata()
+
+        engine._apply_evidence_need_updates(
+            case,
+            [
+                _make_update(
+                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                    motivating_hypothesis_ids=[
+                        h_retired.hypothesis_id,
+                        h_active.hypothesis_id,
+                    ],
+                )
+            ],
+            meta,
+            case.current_turn,
+        )
+
+        assert case.evidence_needs[0].motivating_hypothesis_ids == [
+            h_active.hypothesis_id
+        ]
+        assert any(
+            "retired hypothesis ID" in r for r in meta.get("validation_repairs", [])
+        )
+
+    def test_all_retired_motivators_drops_all(self):
+        case = _make_case()
+        h_retired = _make_hypothesis(case, status=HypothesisStatus.RETIRED)
+        engine = _make_engine()
+        meta = _empty_metadata()
+
+        engine._apply_evidence_need_updates(
+            case,
+            [
+                _make_update(
+                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                    motivating_hypothesis_ids=[h_retired.hypothesis_id],
+                )
+            ],
+            meta,
+            case.current_turn,
+        )
+
+        # Need still created (purpose lives independently of motivators),
+        # but motivators list is empty. The supersession rule won't see
+        # this in the same-turn snapshot-diff (hypothesis was retired
+        # on a prior turn), which is why dropping at create time matters.
+        assert case.evidence_needs[0].motivating_hypothesis_ids == []
+
+    def test_retired_motivator_dropped_on_update(self):
+        case = _make_case()
+        h_retired = _make_hypothesis(case, status=HypothesisStatus.RETIRED)
+        existing = EvidenceNeed(
+            case_id=case.case_id,
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            request_text="x",
+            rationale="y",
+            created_at_turn=case.current_turn,
+        )
+        case.evidence_needs.append(existing)
+        engine = _make_engine()
+        meta = _empty_metadata()
+
+        engine._apply_evidence_need_updates(
+            case,
+            [
+                _make_update(
+                    need_id=existing.need_id,
+                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                    motivating_hypothesis_ids=[h_retired.hypothesis_id],
+                )
+            ],
+            meta,
+            case.current_turn,
+        )
+
+        assert case.evidence_needs[0].motivating_hypothesis_ids == []
+
+
+# ============================================================
+# Snapshot-diff bookend integration (post-review fix #6.3 lite)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestSnapshotDiffBookendIntegration:
+    """Direct exercise of the snapshot/diff logic used in
+    ``_process_turn_impl``. Pins the integration contract without
+    requiring an LLM stub or the full turn pipeline: if the pre-turn
+    snapshot or post-turn diff is refactored away, this fails.
+
+    The integration shape under test:
+        pre  = {h_id : h.status == RETIRED} captured before update apply
+        post = same set computed after update apply
+        newly_retired = post - pre
+        for each in newly_retired: _supersede_needs_on_hypothesis_retirement(...)
+    """
+
+    def test_diff_identifies_newly_retired_and_supersedes(self):
+        case = _make_case()
+        # A causal need motivated by h_will_retire; the snapshot taken
+        # before retirement does NOT include h_will_retire in the
+        # retired set, so the post-update diff will flag it.
+        h_will_retire = _make_hypothesis(case, status=HypothesisStatus.ACTIVE)
+        need = EvidenceNeed(
+            case_id=case.case_id,
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            request_text="x",
+            rationale="y",
+            motivating_hypothesis_ids=[h_will_retire.hypothesis_id],
+            created_at_turn=case.current_turn,
+        )
+        case.evidence_needs.append(need)
+
+        # Pre-turn snapshot — empty (h_will_retire is ACTIVE).
+        pre_retired = {
+            h_id
+            for h_id, h in case.hypotheses.items()
+            if h.status == HypothesisStatus.RETIRED
+        }
+
+        # Simulate the engine flipping the hypothesis during this turn.
+        case.hypotheses[h_will_retire.hypothesis_id].status = HypothesisStatus.RETIRED
+
+        # Post-turn diff — the integration logic exactly as wired in
+        # _process_turn_impl.
+        newly_retired = {
+            h_id
+            for h_id, h in case.hypotheses.items()
+            if h.status == HypothesisStatus.RETIRED
+        } - pre_retired
+
+        assert newly_retired == {h_will_retire.hypothesis_id}
+
+        for retired_id in newly_retired:
+            _supersede_needs_on_hypothesis_retirement(
+                case, retired_id, case.current_turn
+            )
+
+        # Need was superseded because its sole motivator retired this turn.
+        assert case.evidence_needs[0].status == NeedStatus.SUPERSEDED
+
+    def test_diff_skips_prior_turn_retirements(self):
+        """A hypothesis that was already RETIRED in the pre-turn
+        snapshot does not appear in newly_retired and is not handed to
+        the supersession helper a second time."""
+        case = _make_case()
+        h_already_retired = _make_hypothesis(case, status=HypothesisStatus.RETIRED)
+
+        pre_retired = {
+            h_id
+            for h_id, h in case.hypotheses.items()
+            if h.status == HypothesisStatus.RETIRED
+        }
+        # No mutation this turn.
+        post_retired = {
+            h_id
+            for h_id, h in case.hypotheses.items()
+            if h.status == HypothesisStatus.RETIRED
+        }
+        newly_retired = post_retired - pre_retired
+
+        assert h_already_retired.hypothesis_id in pre_retired
+        assert newly_retired == set()

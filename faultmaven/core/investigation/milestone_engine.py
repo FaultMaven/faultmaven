@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.lifecycle_metrics import (
     engine_owned_affordance_served_total,
+    evidence_need_created_total,
+    evidence_need_rejected_total,
+    evidence_need_status_changed_total,
     inquiry_gate2_confirmed_total,
     inquiry_gate3_reached_total,
     inquiry_gate3_resolved_total,
@@ -915,10 +918,13 @@ def _supersede_needs_on_hypothesis_retirement(
     - FULFILLED needs are never auto-superseded — they remain as the
       audit trail of what was collected.
 
-    Called from all four ``HypothesisStatus.RETIRED`` write sites:
-    ``hypothesis_manager.py`` (low-confidence + anchoring-prevention),
-    ``progress_monitor.py`` (INCONCLUSIVE → RETIRED), and
-    ``milestone_engine.py`` (LLM-emitted retirement).
+    Wired via end-of-turn snapshot-diff in ``_process_turn_impl`` (pre-
+    turn retired set captured before update application, post-turn
+    diff invokes this helper for every newly-retired hypothesis). A
+    single integration point covers all four retirement write sites
+    (``hypothesis_manager.py`` low-confidence + anchoring-prevention,
+    ``progress_monitor.py`` INCONCLUSIVE → RETIRED, and LLM-emitted
+    retirement here) without threading ``case`` through those APIs.
 
     Persistence rides on the next ``repo.save(case)`` (no scoped repo
     method — needs live on the Case aggregate per Phase 1 §1.5).
@@ -6321,12 +6327,6 @@ class MilestoneEngine:
         See ``docs/architecture/investigation-engine/evidence-needs-design.md``
         §5.3 (out-of-order arrival), §7.3 (engine backstop).
         """
-        from faultmaven.core.investigation.lifecycle_metrics import (
-            evidence_need_created_total,
-            evidence_need_rejected_total,
-            evidence_need_status_changed_total,
-        )
-
         restricted_state = _path_conditional_emission_restriction(case)
         existing_need_ids: set[str] = {n.need_id for n in case.evidence_needs}
         # Same-turn need_id resolution: needs created earlier in this
@@ -6393,22 +6393,46 @@ class MilestoneEngine:
                 )
 
             # Reference validation: dangling hypothesis IDs are dropped
-            # (the link couldn't form anyway), dangling evidence IDs are
-            # dropped (likewise). These look like prompt-compliance
-            # issues, not lifecycle errors, so they go to
-            # validation_repairs not system_feedback.
+            # (the link couldn't form anyway), and already-RETIRED IDs
+            # are also dropped — anchoring a new need to a retired
+            # hypothesis would survive the snapshot-diff supersession
+            # (which only fires for this-turn retirements) and stay
+            # alive forever. Dangling evidence IDs are dropped likewise.
+            # These look like prompt-compliance issues, not lifecycle
+            # errors, so they go to validation_repairs not system_feedback.
+            dangling_hyp_ids = {
+                h_id for h_id in resolved_motivators if h_id not in case.hypotheses
+            }
+            retired_hyp_ids = {
+                h_id
+                for h_id in resolved_motivators
+                if h_id in case.hypotheses
+                and case.hypotheses[h_id].status == HypothesisStatus.RETIRED
+            }
             valid_motivators = [
-                h_id for h_id in resolved_motivators if h_id in case.hypotheses
+                h_id
+                for h_id in resolved_motivators
+                if h_id not in dangling_hyp_ids and h_id not in retired_hyp_ids
             ]
-            if len(valid_motivators) != len(resolved_motivators):
-                dropped = set(resolved_motivators) - set(valid_motivators)
+            if dangling_hyp_ids:
                 logger.warning(
-                    f"Dropped {len(dropped)} dangling hypothesis ID(s) on "
-                    f"evidence_need_update for case {case.case_id}: {dropped}"
+                    f"Dropped {len(dangling_hyp_ids)} dangling hypothesis "
+                    f"ID(s) on evidence_need_update for case {case.case_id}: "
+                    f"{dangling_hyp_ids}"
                 )
                 metadata.setdefault("validation_repairs", []).append(
-                    f"Dropped {len(dropped)} dangling hypothesis ID(s) "
-                    f"on evidence_need_update"
+                    f"Dropped {len(dangling_hyp_ids)} dangling hypothesis "
+                    f"ID(s) on evidence_need_update"
+                )
+            if retired_hyp_ids:
+                logger.warning(
+                    f"Dropped {len(retired_hyp_ids)} retired hypothesis "
+                    f"ID(s) on evidence_need_update for case {case.case_id}: "
+                    f"{retired_hyp_ids}"
+                )
+                metadata.setdefault("validation_repairs", []).append(
+                    f"Dropped {len(retired_hyp_ids)} retired hypothesis "
+                    f"ID(s) on evidence_need_update"
                 )
 
             valid_ev_ids = {ev.evidence_id for ev in case.evidence}
@@ -6428,16 +6452,33 @@ class MilestoneEngine:
 
             # CREATE path (need_id is None)
             if resolved_need_id is None:
+                # FULFILLED→PARTIALLY_MET demotion when all referenced
+                # fulfilling evidence IDs were dropped as dangling. The
+                # schema's create-path rule rejects FULFILLED + empty
+                # list at emission, but the apply-layer drop happens
+                # after that check; constructing EvidenceNeed with
+                # FULFILLED + [] would raise via the model_validator.
+                effective_status = update.status or NeedStatus.PENDING
+                effective_superseded_reason = update.superseded_reason
+                if effective_status == NeedStatus.FULFILLED and not valid_fulfillments:
+                    metadata.setdefault("validation_repairs", []).append(
+                        "Demoted FULFILLED→PARTIALLY_MET on evidence_need "
+                        "create (all fulfilling_evidence_ids dropped as "
+                        "dangling)"
+                    )
+                    effective_status = NeedStatus.PARTIALLY_MET
+                    effective_superseded_reason = None
+
                 new_need = EvidenceNeed(
                     case_id=case.case_id,
                     purpose=update.purpose,
                     request_text=update.request_text,
                     rationale=update.rationale,
                     priority=update.priority,
-                    status=update.status or NeedStatus.PENDING,
+                    status=effective_status,
                     motivating_hypothesis_ids=valid_motivators,
                     fulfilling_evidence_ids=valid_fulfillments,
-                    superseded_reason=update.superseded_reason,
+                    superseded_reason=effective_superseded_reason,
                     created_at_turn=current_turn,
                 )
                 case.evidence_needs.append(new_need)
@@ -6512,28 +6553,47 @@ class MilestoneEngine:
             target.request_text = update.request_text
             target.rationale = update.rationale
             target.priority = update.priority
-            if update.status is not None:
-                target.status = update.status
-            if update.status == NeedStatus.SUPERSEDED:
+            # FULFILLED→PARTIALLY_MET demotion when the post-merge
+            # fulfilling list is still empty. ``validate_assignment``
+            # is off on EvidenceNeed, so in-place mutation bypasses
+            # ``_validate_status_consistency`` — without this guard a
+            # bad LLM emission could leave the need in FULFILLED+[]
+            # state that raises on next reconstruction.
+            effective_status = update.status
+            if (
+                effective_status == NeedStatus.FULFILLED
+                and not target.fulfilling_evidence_ids
+            ):
+                metadata.setdefault("validation_repairs", []).append(
+                    f"Demoted FULFILLED→PARTIALLY_MET on need {target.need_id} "
+                    f"(all fulfilling_evidence_ids dropped as dangling)"
+                )
+                effective_status = NeedStatus.PARTIALLY_MET
+            if effective_status is not None:
+                target.status = effective_status
+            if effective_status == NeedStatus.SUPERSEDED:
                 target.superseded_reason = update.superseded_reason
-            elif update.status is not None and update.status != NeedStatus.SUPERSEDED:
+            elif (
+                effective_status is not None
+                and effective_status != NeedStatus.SUPERSEDED
+            ):
                 # Clearing superseded_reason on non-SUPERSEDED transition
                 target.superseded_reason = None
             target.updated_at = datetime.now(UTC)
             if target.need_id not in metadata["evidence_needs_updated"]:
                 metadata["evidence_needs_updated"].append(target.need_id)
 
-            if update.status is not None and update.status != prior_status:
+            if effective_status is not None and effective_status != prior_status:
                 try:
                     evidence_need_status_changed_total.labels(
                         from_status=prior_status.value,
-                        to_status=update.status.value,
+                        to_status=effective_status.value,
                     ).inc()
                 except Exception:
                     pass
                 logger.info(
                     f"Need {target.need_id} status "
-                    f"{prior_status.value} → {update.status.value} "
+                    f"{prior_status.value} → {effective_status.value} "
                     f"on case {case.case_id}"
                 )
 
