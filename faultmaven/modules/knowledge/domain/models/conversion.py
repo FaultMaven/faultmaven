@@ -279,15 +279,15 @@ class CaseConversionRequest(BaseModel):
     solutions: List[str] = Field(default_factory=list)
     hypotheses_summary: str = ""
     evidence_summary: str = ""
-    domain: str = "general"
+    domain: str = "application"
     service: str = "unknown"
     symptom_class: List[str] = Field(default_factory=list)
     severity: str = "medium"
     tags: List[str] = Field(default_factory=list)
-    scope: str = "global"
+    scope: str = "personal"
 
     @classmethod
-    def from_case(cls, case, scope: str = "global") -> "CaseConversionRequest":
+    def from_case(cls, case, scope: str = "personal") -> "CaseConversionRequest":
         """Extract runbook generation data from a RESOLVED Case domain object.
 
         Reusable by both the API route and the milestone engine.
@@ -358,6 +358,23 @@ class CaseConversionRequest(BaseModel):
         service = affected[0] if affected else "unknown"
         tags = getattr(case, "tags", []) or []
 
+        # Resolve `domain` to one of the 7 taxonomy values so the generated
+        # runbook passes validation. The keyword map is intentionally narrow
+        # — match on service names, tags, and root-cause/symptom text. When
+        # nothing matches we fall back to "application" (the broadest valid
+        # bucket) rather than "general" (rejected by RunbookValidator).
+        signal_text = " ".join(
+            [
+                service,
+                " ".join(tags),
+                " ".join(affected),
+                symptom,
+                root_cause or "",
+                rc_mechanism or "",
+            ]
+        ).lower()
+        domain = _resolve_domain(signal_text)
+
         return cls(
             case_id=case.case_id,
             title=getattr(case, "title", "Untitled Case") or "Untitled Case",
@@ -367,12 +384,168 @@ class CaseConversionRequest(BaseModel):
             solutions=solutions,
             hypotheses_summary=hyp_summary,
             evidence_summary=ev_summary,
-            domain="general",
+            domain=domain,
             service=service,
             severity=severity.lower() if isinstance(severity, str) else "medium",
             tags=tags if tags else affected,
             scope=scope,
         )
+
+
+# =============================================================================
+# Domain Resolution
+# =============================================================================
+
+# Keyword maps for case-to-domain classification. Must stay aligned with the
+# 7 valid domain values in RunbookValidator (database, networking, compute,
+# application, security, storage, messaging). "application" is the catch-all
+# default and intentionally has no keywords — anything that matches none of
+# the others lands there.
+_DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "networking": (
+        "istio",
+        "envoy",
+        "service mesh",
+        "loadbalancer",
+        "load balancer",
+        "ingress",
+        "egress",
+        "dns",
+        "tls",
+        "ssl",
+        "certificate",
+        "proxy",
+        "nginx",
+        "haproxy",
+        "destinationrule",
+        "virtualservice",
+        "gateway",
+        "route",
+        "routing",
+        "upstream",
+        "downstream",
+        "connection pool",
+        "503",
+        "504",
+        "502",
+        "network",
+        "tcp",
+        "udp",
+        "grpc",
+    ),
+    "database": (
+        "postgres",
+        "postgresql",
+        "mysql",
+        "mariadb",
+        "redis",
+        "memcached",
+        "mongodb",
+        "mongo",
+        "cassandra",
+        "elasticsearch",
+        "opensearch",
+        "rds",
+        "deadlock",
+        "vacuum",
+        "replication lag",
+        "replica lag",
+        "query",
+        "index",
+        "sql",
+        "db pool",
+        "connection pool exhaustion",
+    ),
+    "compute": (
+        "kubernetes",
+        "k8s",
+        "pod",
+        "container",
+        "docker",
+        "deployment",
+        "statefulset",
+        "replicaset",
+        "daemonset",
+        "node",
+        "oom",
+        "out of memory",
+        "cpu throttl",
+        "memory leak",
+        "crashloop",
+        "imagepull",
+        "ec2",
+        "vm",
+    ),
+    "security": (
+        "auth",
+        "oauth",
+        "jwt",
+        "rbac",
+        "iam",
+        "permission",
+        "forbidden",
+        "unauthorized",
+        " 401",
+        " 403",
+        "secret",
+        "vault",
+        "credential",
+        "token",
+        "cve",
+        "vulnerability",
+        "encryption",
+    ),
+    "storage": (
+        "s3",
+        "ebs",
+        "efs",
+        "pvc",
+        " pv ",
+        "volume",
+        "disk full",
+        "no space",
+        "blob storage",
+        "gcs",
+        "azure storage",
+        "bucket",
+        "object storage",
+    ),
+    "messaging": (
+        "kafka",
+        "rabbitmq",
+        "pubsub",
+        "sqs",
+        "sns",
+        "kinesis",
+        "queue",
+        "topic",
+        "partition",
+        "consumer lag",
+        "broker",
+        "nats",
+        "activemq",
+    ),
+}
+
+
+def _resolve_domain(text: str) -> str:
+    """Pick the runbook taxonomy domain that best matches the case signals.
+
+    Counts substring matches per domain over ``text`` (already lowercased by
+    the caller) and returns the highest-scoring domain. Ties are broken by
+    the dict iteration order. Falls back to "application" when no keyword
+    fires — the catch-all bucket for web apps, microservices, and generic
+    app-layer issues that the other domains don't cover.
+    """
+    if not text:
+        return "application"
+    scores: dict[str, int] = {}
+    for domain, keywords in _DOMAIN_KEYWORDS.items():
+        scores[domain] = sum(1 for k in keywords if k in text)
+    best_domain, best_score = max(scores.items(), key=lambda kv: kv[1])
+    if best_score == 0:
+        return "application"
+    return best_domain
 
 
 # =============================================================================

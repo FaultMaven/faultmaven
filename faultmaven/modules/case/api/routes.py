@@ -2786,6 +2786,7 @@ async def generate_case_reports(
 @router.get("/{case_id}/reports")
 @trace("api_get_case_reports")
 async def get_case_reports(
+    request: Request,
     case_id: str,
     include_history: bool = Query(default=False),
     report_type: Optional[str] = Query(default=None),
@@ -2796,13 +2797,21 @@ async def get_case_reports(
     """
     Retrieve generated reports for a case.
 
+    Composite response: includes both the SQL-persisted ``reports`` rows
+    (resolution_summary / closure_summary) and a projected view of any
+    conversion drafts linked to this case (returned as synthetic
+    ``report_type=runbook`` entries). The case Report tab uses the
+    runbook entries to drive the KB-link banner; the underlying runbook
+    content lives in ``conversion_drafts`` (the KB Drafts editor), not
+    ``reports``.
+
     Args:
         case_id: Case identifier
         include_history: If True, return all report versions; if False, only current
         report_type: Optional filter by report type (resolution_summary, closure_summary, runbook)
 
     Returns:
-        List of CaseReport objects
+        List of CaseReport objects (summaries plus any case-linked runbook drafts)
     """
     case_service = check_case_service_available(case_service)
 
@@ -2825,6 +2834,18 @@ async def get_case_reports(
             case_id=case_id, include_history=include_history, report_type=filter_type
         )
 
+        # Project case-linked conversion drafts into the same shape so the
+        # Report tab's runbook banner has something to count. Skipped when
+        # the conversion service isn't wired (e.g., minimal deployments) or
+        # the caller filtered to summary-only types.
+        if filter_type is None or filter_type == ReportType.RUNBOOK:
+            conversion_service = getattr(request.app.state, "conversion_service", None)
+            if conversion_service is not None:
+                draft_rows = await conversion_service.list_drafts_for_case(case_id)
+                reports = list(reports) + [
+                    _draft_to_runbook_report(case_id, d) for d in draft_rows
+                ]
+
         logger.info(
             f"Retrieved {len(reports)} reports for case",
             extra={
@@ -2843,6 +2864,37 @@ async def get_case_reports(
             f"Failed to retrieve reports for case {case_id}: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _draft_to_runbook_report(case_id: str, draft: dict) -> dict:
+    """Project a conversion-draft row into the CaseReport shape used by the
+    Report tab. Returns a dict (not a CaseReport instance) because some draft
+    titles violate the model's min_length=10 constraint — the projection is a
+    presentation-layer concern, not a domain artifact.
+
+    Only the fields the frontend reads are populated; everything else is left
+    out so this stays an unambiguous projection rather than a fake report row.
+    """
+    return {
+        "report_id": draft["draft_id"],
+        "case_id": case_id,
+        "report_type": "runbook",
+        "title": draft["title"],
+        "content": "",
+        "format": "markdown",
+        "generation_status": (
+            "completed" if draft.get("knowledge_item_id") else "draft"
+        ),
+        "generated_at": draft.get("created_at"),
+        "is_current": True,
+        "version": 1,
+        # Pass-through fields used by the deep-link banner.
+        "draft_id": draft["draft_id"],
+        "conversion_id": draft["conversion_id"],
+        "runbook_id": draft["runbook_id"],
+        "scope": draft.get("scope"),
+        "knowledge_item_id": draft.get("knowledge_item_id"),
+    }
 
 
 @router.get("/{case_id}/reports/{report_id}/download")
