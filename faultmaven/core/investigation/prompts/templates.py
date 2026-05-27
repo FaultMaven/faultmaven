@@ -836,7 +836,7 @@ WORKING WITH EVIDENCE DATA:
 When your analysis discovers NEW findings not in the structural index, create
 evidence records via evidence_to_add with appropriate category and summary.
 
-EVIDENCE CLASSIFICATION — DECISION TREE (4 categories):
+EVIDENCE CLASSIFICATION — DECISION TREE (6 categories):
 
 Each evidence row is a focused, claim-anchored extract. Rows that
 don't support a specific claim should NOT be created — files
@@ -844,7 +844,7 @@ provide background context via the structural index without needing
 an evidence row.
 
 1. Does this evidence show the PROBLEM EXISTS (errors, crashes, failures, latency spikes)?
-   YES → symptom_evidence; then CONTINUE evaluating steps 2-3 (an extract can be multi-classified)
+   YES → symptom_evidence; then CONTINUE evaluating steps 2-4 (an extract can be multi-classified)
    NO  → continue to 2
 
    NOTE: A single artifact can satisfy multiple steps. An OOM crash
@@ -863,6 +863,15 @@ an evidence row.
    Post-mitigation action → mitigation_evidence
    Post-solution action   → solution_evidence
 
+4. Is this evidence the result of RE-CHECKING a previously verified
+   symptom or cause to confirm a fix held (MITIGATION / TREATMENT
+   re-verification)?
+   Symptom no longer present → symptom_absence_evidence
+   Cause no longer present   → causal_absence_evidence
+   Link the absence row to the same need via that need's
+   `fulfilling_evidence_ids`. Without the absence row, the case has
+   no positive proof of resolution.
+
 CREATING EVIDENCE RECORDS (evidence_to_add):
 When your analysis discovers a claim-relevant slice not already
 captured:
@@ -870,7 +879,10 @@ captured:
 - Required fields:
   * summary: Brief description of the finding
   * category: One of: symptom_evidence, causal_evidence,
-              mitigation_evidence, solution_evidence
+              mitigation_evidence, solution_evidence,
+              symptom_absence_evidence, causal_absence_evidence
+              (the last two are emitted on MITIGATION / TREATMENT
+              re-verification — see step 4 of the decision tree).
   * source_type: What kind of data the slice is: logs, metrics,
                  configuration, code, text, image, or user_description
                  (for verbatim system-output quotes from the user's
@@ -1143,6 +1155,118 @@ One primary ask per turn. Stack only when items are genuinely parallel (e.g., tw
 log files that always arrive together).
 """
 
+
+# Universal evidence-needs lifecycle rules — composed into all four
+# INVESTIGATING dispatch blocks (_PRE_PATH_DIAGNOSIS_BLOCK,
+# _RCA_DIAGNOSIS_BLOCK, MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS).
+# Stage-specific behavior (when to emit causal vs symptom needs,
+# re-verification framing) lives in per-stage addenda; this block is
+# the cross-stage contract.
+#
+# The anti-anchoring framing ("unexpected findings are equally important")
+# is NOT restated here — context_builder.py renders it once at the top
+# of the <evidence_needs> block (design §6.1). Restating it would burn
+# tokens for no signal.
+_EVIDENCE_NEEDS_LIFECYCLE_BLOCK = """\
+**EVIDENCE NEEDS (demand-side pool):**
+The case carries a pool of needs — what data would advance the
+investigation. You see it in <evidence_needs>; you mutate it via
+`evidence_need_updates`.
+
+- **Event-driven emission.** Emit updates only when something changes
+  (problem confirmed, hypothesis created, evidence found matching a
+  need, need turned irrelevant). Do not re-enumerate the pool.
+- **Link inbound evidence to PENDING needs.** When an `evidence_to_add`
+  row fulfills a need from <evidence_needs>, emit an update on that
+  need with `fulfilling_evidence_ids` set — status=FULFILLED if the
+  evidence is conclusive, else PARTIALLY_MET. Skip the link and the
+  need stays PENDING and re-appears next turn.
+- **Same-turn IDs.** Reference this-turn-created hypotheses, evidence,
+  or earlier `evidence_need_updates` entries with `new_index_N`
+  placeholders against `hypotheses_to_add` / `evidence_to_add` / the
+  in-loop need list (same pattern as `hypothesis_evidence_links`).
+- **Mutability.** Revise, merge, or SUPERSEDE your own needs. A vague
+  or obsoleted need in the pool degrades reasoning — keep it clean.
+  SUPERSEDED needs require a one-line `superseded_reason`.
+- **Mention decay (anti-nagging).** When surfacing a PENDING need as
+  an EVIDENCE-type SuggestedFollowUp, populate `evidence_need_id`
+  with the need's ID. Count mentions by scanning your prior turns in
+  the conversation history — no stored counter exists. First mention:
+  full request + rationale. Second: brief reminder. Third+: stop
+  surfacing (the need stays in the pool for upload-matching; it just
+  no longer appears as a suggestion). If the user asks "what else do
+  you need?", surface all PENDING needs regardless.
+"""
+
+
+# Symptom-only addendum — used in stages where the engine backstop
+# gates causal-purpose emissions. Applies to two dispatch blocks:
+# _PRE_PATH_DIAGNOSIS_BLOCK (Gate 2 pending) and _SYMPTOM_VALIDATION_BLOCK
+# (MITIGATION_FIRST pre-mitigation).
+_EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM = """\
+**EVIDENCE NEEDS — symptom-only stage:**
+This stage permits symptom needs only. Use
+`purpose=symptom_verification` with `motivating_hypothesis_ids=[]` —
+needs at this purpose are motivated by the problem statement and
+survive hypothesis retirement. Cover one per distinct data type the
+symptom would be verified against (e.g., one for application logs,
+one for system metrics, one for current state / config snapshot).
+Causal-purpose needs are gated; the engine backstop rejects them
+under the same rule as `hypotheses_to_add`.
+"""
+
+
+# RCA addendum — three-step pool evaluation at hypothesis creation.
+# Sits inside _RCA_DIAGNOSIS_BLOCK near the existing hypothesis-evidence
+# ordering rule because they fire in the same turn.
+_EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK = """\
+**POOL EVALUATION (at hypothesis creation):**
+Each time you emit a hypothesis in `hypotheses_to_add`, evaluate the
+existing pool against it in the SAME turn:
+
+1. **Existing evidence.** Scan <evidence_collected>. If any row already
+   speaks to the new hypothesis, emit a `hypothesis_evidence_links`
+   entry with stance (SUPPORTS / CONTRADICTS / NEUTRAL). The hypothesis
+   may become VALIDATED or REFUTED immediately if the evidence is
+   conclusive.
+2. **Existing open needs (PENDING / PARTIALLY_MET).** Scan
+   <evidence_needs>. If a visible need would plausibly speak to the
+   new hypothesis when (further) fulfilled, emit an update on that
+   need appending the hypothesis ID to `motivating_hypothesis_ids` —
+   share, don't duplicate.
+3. **Gaps.** Identify data the new hypothesis requires that the pool
+   doesn't yet cover. Emit fresh `evidence_need_updates` entries with
+   `purpose=causal_verification` and `motivating_hypothesis_ids` set
+   to the hypothesis ID (or `new_index_N` if same-turn).
+"""
+
+
+# Mitigation/Treatment addendum — re-verification framing only.
+# Used by both MITIGATION_INSTRUCTIONS and TREATMENT_INSTRUCTIONS;
+# context_builder renders FULFILLED needs under "Re-verification
+# checklist" in those stages.
+#
+# Causal-need gating is stage-specific (gated in MITIGATION, permitted
+# in TREATMENT's failure path under extended diagnosis), so it lives
+# inline at each stage's existing "no hypothesis formation" anchor
+# rather than in this shared addendum.
+_EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM = """\
+**EVIDENCE NEEDS — re-verification:**
+<evidence_needs> renders FULFILLED needs as a "Re-verification
+checklist" in this stage. Re-check the data each need pinned to
+confirm the symptom (or cause) it captured is no longer present.
+
+- If the signature is GONE: emit an `evidence_to_add` row with
+  `category=symptom_absence_evidence` (or `causal_absence_evidence`
+  when re-checking a cause), `source_file_id` pointing at the file
+  you re-checked, and link the row to the same need via that need's
+  `fulfilling_evidence_ids`. The absence row is the audit record that
+  the fix held — without it the case has no positive proof of
+  resolution.
+- If the original signature REAPPEARS, the fix did not hold —
+  surface that as a new finding rather than declaring success.
+"""
+
 _URGENCY_RECOGNITION_BLOCK = """\
 **URGENCY RECOGNITION:**
 Watch for high-impact signals (revenue, production, data loss, customer complaints).
@@ -1203,6 +1327,9 @@ _RCA_DIAGNOSIS_BLOCK = (
     + """
 """
     + _HYPOTHESIS_EVIDENCE_ORDERING_BLOCK
+    + """
+"""
+    + _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK
     + """
 **HYPOTHESIS STATUS — REFUTED vs RETIRED:**
 - REFUTED = evidence directly disproves the hypothesis. When setting
@@ -1494,6 +1621,8 @@ supports a specific claim (symptom, cause, mitigation, or solution).
     + _URGENCY_RECOGNITION_BLOCK
     + "\n"
     + _EVIDENCE_REQUEST_FORMAT_BLOCK
+    + "\n"
+    + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
     + """
 **ROOT CAUSE IDENTIFICATION — Decision Tree:**
 
@@ -1665,6 +1794,10 @@ actual file content and are the most reliable starting point.
 
 """
     + _EVIDENCE_REQUEST_FORMAT_BLOCK
+    + "\n"
+    + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+    + "\n"
+    + _EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM
     + """
 **WHEN YOU HAVE (a) AND (b) — PROPOSE THE MITIGATION:**
 
@@ -1838,6 +1971,10 @@ from actual file content and are the most reliable starting point.
 
 """
     + _EVIDENCE_REQUEST_FORMAT_BLOCK
+    + "\n"
+    + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+    + "\n"
+    + _EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM
     + """
 **WHEN YOU HAVE (a) AND (b) — OPEN GATE 2:**
 
@@ -1854,7 +1991,8 @@ from actual file content and are the most reliable starting point.
 )
 
 
-MITIGATION_INSTRUCTIONS = """
+MITIGATION_INSTRUCTIONS = (
+    """
 **FOCUS: MITIGATION** (Stop the Bleeding)
 
 **OBJECTIVE:**
@@ -1942,8 +2080,16 @@ Do NOT continue proposing mitigation variants after offering this choice.
   the temporary workaround"
 - Keep the scope narrow — only fix what's needed to stop the bleeding
 - Do NOT pursue root cause analysis in this stage — do not form hypotheses
-  (hypotheses_to_add) or classify causal_evidence here; that's for DIAGNOSIS
+  (hypotheses_to_add), classify causal_evidence, or emit causal-purpose
+  evidence_need_updates here; all three are gated and that work is for DIAGNOSIS.
+  Fresh symptom-purpose needs are still allowed if mitigation work surfaces a
+  NEW symptom the original problem didn't cover.
 """
+    + "\n"
+    + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+    + "\n"
+    + _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+)
 
 TREATMENT_INSTRUCTIONS = (
     """
@@ -2245,6 +2391,10 @@ even during the treatment stage.
      rate returned to baseline after the config change, which confirms that
      [hypothesis] was the root cause."
 """
+    + "\n"
+    + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+    + "\n"
+    + _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
 )
 
 # =============================================================================
