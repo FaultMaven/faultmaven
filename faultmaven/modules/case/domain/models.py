@@ -1288,6 +1288,50 @@ class EvidenceCategory(str, Enum):
     - User confirmation that fix resolved the problem
     """
 
+    SYMPTOM_ABSENCE_EVIDENCE = "symptom_absence_evidence"
+    """
+    Shows that a previously-observed symptom is no longer present.
+
+    Purpose: Verify a fix attempt worked — at the level of "is the
+    user-visible problem gone?" The cause may or may not still be
+    there; this category answers symptom presence, not causation.
+
+    Collected during MITIGATION (sufficient for mitigation_verified)
+    and during TREATMENT (defense-in-depth confirmation alongside
+    causal-absence evidence).
+
+    Examples:
+    - ``kubectl get pods`` showing ``Running`` after CrashLoopBackOff
+    - Latency back under SLO after a workaround
+    - Error rate trending to zero in monitoring after rollback
+    - User confirms "the dashboard loads now"
+
+    Advances Milestones: mitigation_verified (primary), contributes to
+    solution_verified.
+    """
+
+    CAUSAL_ABSENCE_EVIDENCE = "causal_absence_evidence"
+    """
+    Shows that a previously-identified cause is no longer present.
+
+    Purpose: Verify a permanent fix at the level of "is the root
+    cause eliminated?" This is distinct from symptom absence — a
+    cause can be removed without an immediate symptom change (cached
+    state, downstream debris), and a symptom can be masked without
+    the cause being removed (mitigation).
+
+    Collected during TREATMENT.
+
+    Examples:
+    - ``cat /etc/app/config.yaml`` showing the corrected setting
+    - DB query plan showing the expected index is used after rebuild
+    - Deployment manifest showing the bad image tag has been replaced
+    - Config-management run output confirming the drift has been
+      reconciled
+
+    Advances Milestones: solution_verified.
+    """
+
 
 class EvidenceSourceType(str, Enum):
     """
@@ -1837,6 +1881,275 @@ class Evidence(BaseModel):
                 "evidence.source_file_id is required unless "
                 "source_type=USER_DESCRIPTION (the chat-quote case)"
             )
+        return self
+
+
+# =============================================================================
+# Evidence Needs (Demand-Side Counterpart to Evidence Rows)
+# =============================================================================
+#
+# Evidence needs are a flat pool on the case — a registry of *what data
+# the investigation requires*. They are the demand-side counterpart to
+# Evidence rows. Needs are NOT anchored to specific hypotheses; the
+# hypothesis-evidence relationship is recorded through the existing
+# ``hypothesis_evidence`` junction at evidence-collection time.
+#
+# Design reference:
+# docs/architecture/investigation-engine/evidence-needs-design.md
+
+
+class NeedPurpose(str, Enum):
+    """Why this need was created — maps to evidence categories.
+
+    A symptom_verification need produces SYMPTOM_EVIDENCE (presence)
+    initially and SYMPTOM_ABSENCE_EVIDENCE (absence) on re-check after
+    mitigation/solution. A causal_verification need produces
+    CAUSAL_EVIDENCE (presence) initially and CAUSAL_ABSENCE_EVIDENCE
+    (absence) on re-check after solution.
+
+    The same need produces multiple evidence rows of different
+    categories across the case's lifetime; the need's status stays
+    FULFILLED once fulfilled — re-check evidence is appended via
+    ``fulfilling_evidence_ids``, it does not reset the status.
+    """
+
+    SYMPTOM_VERIFICATION = "symptom_verification"
+    CAUSAL_VERIFICATION = "causal_verification"
+
+
+class NeedStatus(str, Enum):
+    """Lifecycle states of an evidence need.
+
+    PENDING        — Need identified, no evidence yet.
+    PARTIALLY_MET  — Some evidence collected but insufficient.
+    FULFILLED      — Sufficient evidence collected (terminal-positive).
+    SUPERSEDED     — No longer relevant (terminal-negative). Either all
+                     motivating hypotheses retired (engine rule) or LLM
+                     judged irrelevant (LLM update emission).
+
+    FULFILLED and SUPERSEDED are terminal — a need cannot resurrect from
+    SUPERSEDED. If the LLM later concludes the underlying data is
+    relevant again, it must create a new need.
+    """
+
+    PENDING = "pending"
+    PARTIALLY_MET = "partially_met"
+    FULFILLED = "fulfilled"
+    SUPERSEDED = "superseded"
+
+
+class NeedPriority(str, Enum):
+    """Priority hint for surfacing needs as EVIDENCE-type suggestions.
+
+    High-priority unfulfilled needs are surfaced first; medium and low
+    are deferred until higher priorities are addressed. Priority is an
+    LLM hint, not a hard ordering.
+    """
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class EvidenceNeed(BaseModel):
+    """A verification requirement on a case.
+
+    Each need represents "data that would advance the investigation."
+    Needs live in a flat pool on the case — not anchored to specific
+    hypotheses. ``motivating_hypothesis_ids`` records *why* the need
+    exists (which hypotheses motivated creating it) for context and
+    for the engine's retirement-supersession rule, but is not a hard
+    ownership association.
+
+    Lifecycle (see evidence-needs-design.md §7):
+
+    - Created by the LLM via ``EvidenceNeedUpdate`` emissions at
+      problem-statement confirmation (symptom needs) and at hypothesis
+      creation (causal needs).
+    - Updated by the LLM as evidence arrives (status, fulfilling
+      evidence linkage, motivating hypothesis IDs).
+    - Auto-superseded by the engine on hypothesis retirement when the
+      motivating list becomes empty AND purpose is CAUSAL_VERIFICATION
+      AND status is not FULFILLED. Symptom needs (empty motivating
+      list by design) are exempt — they're motivated by the problem
+      statement, not by a hypothesis.
+    """
+
+    need_id: str = Field(
+        default_factory=lambda: f"eneed_{uuid4().hex[:12]}",
+        description="Unique evidence-need identifier",
+        pattern=r"^eneed_[a-f0-9]{12}$",
+    )
+
+    case_id: str = Field(
+        description="Case this need belongs to",
+        min_length=17,
+        max_length=36,
+    )
+
+    purpose: NeedPurpose = Field(
+        description=(
+            "Why this need exists: symptom_verification (motivated by "
+            "the problem statement) or causal_verification (motivated "
+            "by one or more hypotheses)."
+        ),
+    )
+
+    request_text: str = Field(
+        description=(
+            "What data would fulfill this need, in a form suitable for "
+            "surfacing to the user as an EVIDENCE-type suggestion. "
+            "Example: 'kubectl get pods -n production showing current "
+            "restart counts'."
+        ),
+        min_length=1,
+        max_length=500,
+    )
+
+    rationale: str = Field(
+        description=(
+            "Why this data would advance the investigation. Used in "
+            "the LLM's <evidence_needs> context block to remind the "
+            "LLM why the need was created. Example: 'confirms whether "
+            "the pod-level OOMKill pattern is still active after the "
+            "memory-limit increase'."
+        ),
+        min_length=1,
+        max_length=500,
+    )
+
+    priority: NeedPriority = Field(
+        default=NeedPriority.MEDIUM,
+        description="LLM hint for surfacing-order on the suggestion side.",
+    )
+
+    status: NeedStatus = Field(
+        default=NeedStatus.PENDING,
+        description="Lifecycle state — see NeedStatus.",
+    )
+
+    motivating_hypothesis_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Hypothesis IDs that motivated this need's existence. Empty "
+            "list means the need is motivated by the problem statement "
+            "(symptom needs). Engine appends/removes IDs as hypotheses "
+            "share needs (cross-hypothesis evaluation per "
+            "evidence-needs-design.md §5.2) and as hypotheses are "
+            "retired (engine auto-supersession rule)."
+        ),
+    )
+
+    fulfilling_evidence_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Evidence rows that fulfill this need. Multiple entries may "
+            "accumulate across stages: presence evidence collected during "
+            "DIAGNOSIS plus absence evidence collected during "
+            "MITIGATION/TREATMENT. The list is append-only in practice — "
+            "the need's status stays FULFILLED once fulfilled even when "
+            "post-fix absence evidence is added."
+        ),
+    )
+
+    superseded_reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable explanation when status=SUPERSEDED. Set by "
+            "engine auto-supersession ('all motivating hypotheses "
+            "retired') or by LLM emission ('superseded by refined "
+            "problem statement'). Required when status=SUPERSEDED, "
+            "must be None otherwise."
+        ),
+        max_length=500,
+    )
+
+    created_at_turn: int = Field(
+        description="Turn number when the need was created.",
+        ge=0,
+    )
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        description="Wall-clock creation time.",
+    )
+
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        description="Wall-clock last-update time.",
+    )
+
+    @field_validator("request_text", "rationale", mode="after")
+    @classmethod
+    def _text_not_whitespace_only(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("text must not be whitespace-only")
+        return v
+
+    @field_validator("motivating_hypothesis_ids", mode="after")
+    @classmethod
+    def _hypothesis_ids_well_formed(cls, v: List[str]) -> List[str]:
+        # Hypothesis IDs follow the same pattern as elsewhere in the
+        # codebase (uuid4-based). Cross-row existence is checked at the
+        # engine apply-layer, not here — Pydantic only validates shape.
+        for hyp_id in v:
+            if not hyp_id or not isinstance(hyp_id, str):
+                raise ValueError(
+                    "motivating_hypothesis_ids entries must be non-empty strings"
+                )
+        # Deduplicate while preserving order (LLM may re-emit the same ID).
+        seen: set[str] = set()
+        deduped: List[str] = []
+        for hyp_id in v:
+            if hyp_id not in seen:
+                seen.add(hyp_id)
+                deduped.append(hyp_id)
+        return deduped
+
+    @field_validator("fulfilling_evidence_ids", mode="after")
+    @classmethod
+    def _evidence_ids_well_formed(cls, v: List[str]) -> List[str]:
+        for ev_id in v:
+            if not ev_id or not isinstance(ev_id, str):
+                raise ValueError(
+                    "fulfilling_evidence_ids entries must be non-empty strings"
+                )
+        seen: set[str] = set()
+        deduped: List[str] = []
+        for ev_id in v:
+            if ev_id not in seen:
+                seen.add(ev_id)
+                deduped.append(ev_id)
+        return deduped
+
+    @model_validator(mode="after")
+    def _validate_status_consistency(self) -> "EvidenceNeed":
+        # SUPERSEDED needs must carry a reason; non-SUPERSEDED needs
+        # must not. The asymmetric requirement mirrors how
+        # ``closure_reason`` is enforced on Case for terminal states.
+        if self.status == NeedStatus.SUPERSEDED and not (
+            self.superseded_reason and self.superseded_reason.strip()
+        ):
+            raise ValueError(
+                "EvidenceNeed.status=SUPERSEDED requires a non-empty "
+                "superseded_reason"
+            )
+        if self.status != NeedStatus.SUPERSEDED and self.superseded_reason is not None:
+            raise ValueError(
+                "EvidenceNeed.superseded_reason must be None unless "
+                "status=SUPERSEDED"
+            )
+
+        # FULFILLED needs must carry at least one fulfilling evidence
+        # ID. The engine's apply-layer is responsible for adding the
+        # ID; this validator catches a bad LLM emission that claims
+        # FULFILLED with no supporting evidence.
+        if self.status == NeedStatus.FULFILLED and not self.fulfilling_evidence_ids:
+            raise ValueError(
+                "EvidenceNeed.status=FULFILLED requires at least one "
+                "fulfilling_evidence_id"
+            )
+
         return self
 
 
@@ -3537,6 +3850,16 @@ class Case(BaseModel):
 
     evidence: List[Evidence] = Field(
         default_factory=list, description="All evidence collected during investigation"
+    )
+
+    evidence_needs: List[EvidenceNeed] = Field(
+        default_factory=list,
+        description=(
+            "Demand-side pool: verification requirements the investigation "
+            "has identified. Created by the LLM at problem-statement "
+            "confirmation (symptom needs) and at hypothesis creation "
+            "(causal needs). See evidence-needs-design.md."
+        ),
     )
 
     hypotheses: Dict[str, Hypothesis] = Field(

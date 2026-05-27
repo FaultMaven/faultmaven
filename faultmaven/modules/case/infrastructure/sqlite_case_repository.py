@@ -45,6 +45,7 @@ from faultmaven.modules.case.contracts import (
     EscalationState,
     Evidence,
     EvidenceCategory,
+    EvidenceNeed,
     EvidenceSourceType,
     EvidenceStance,
     Hypothesis,
@@ -52,6 +53,9 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     InvestigationProgress,
     InvestigationStrategy,
+    NeedPriority,
+    NeedPurpose,
+    NeedStatus,
     PathSelection,
     ProblemVerification,
     ProposedAction,
@@ -194,6 +198,14 @@ class SQLiteCaseRepository(CaseRepository):
                 case.case_id, case.uploaded_files, organization_id
             )
             await self._upsert_evidence(case.case_id, case.evidence, organization_id)
+            # Needs and the fulfillment junction must run AFTER evidence
+            # so the junction FK to evidence.evidence_id is satisfied.
+            await self._upsert_evidence_needs(
+                case.case_id,
+                case.evidence_needs,
+                organization_id,
+                case.current_turn,
+            )
             await self._upsert_hypotheses(
                 case.case_id, case.hypotheses, organization_id
             )
@@ -253,6 +265,7 @@ class SQLiteCaseRepository(CaseRepository):
             # Load evidence directly
             if case:
                 await self._load_evidence_for_case(case)
+                await self._load_evidence_needs_for_case(case)
 
             return case
 
@@ -614,6 +627,129 @@ class SQLiteCaseRepository(CaseRepository):
         except Exception as ev_err:  # noqa: BLE001
             logging.getLogger(__name__).warning(
                 "Failed to load evidence %s: %s", row[0], ev_err
+            )
+            return None
+
+    async def _load_evidence_needs_for_case(self, case: Case) -> None:
+        """Load evidence-need rows + their fulfillment junctions.
+
+        Hydrates ``case.evidence_needs`` with the persisted pool. The
+        fulfilling-evidence list comes from the junction; the need's
+        own row doesn't store it. The pair is loaded together so each
+        ``EvidenceNeed`` is fully reconstructed before being attached
+        to the case.
+        """
+        try:
+            need_query = text("""
+                SELECT
+                    need_id, purpose, request_text, rationale,
+                    priority, status,
+                    motivating_hypothesis_ids,
+                    superseded_reason,
+                    created_at_turn, created_at, updated_at
+                FROM evidence_needs
+                WHERE case_id = :case_id
+                ORDER BY created_at ASC, need_id ASC
+            """)
+            need_rows = (
+                await self.db.execute(need_query, {"case_id": case.case_id})
+            ).fetchall()
+
+            if not need_rows:
+                case.evidence_needs = []
+                return
+
+            # Load all junctions for this case's needs in one query.
+            need_ids = [row[0] for row in need_rows]
+            params: Dict[str, Any] = {}
+            placeholder_names: List[str] = []
+            for i, nid in enumerate(need_ids):
+                key = f"nid_{i}"
+                params[key] = nid
+                placeholder_names.append(f":{key}")
+            placeholders = ", ".join(placeholder_names)
+            junction_query = text(f"""
+                SELECT need_id, evidence_id
+                FROM evidence_need_fulfillment
+                WHERE need_id IN ({placeholders})
+            """)
+            junction_rows = (await self.db.execute(junction_query, params)).fetchall()
+
+            fulfillments_by_need: Dict[str, List[str]] = {}
+            for nid, eid in junction_rows:
+                fulfillments_by_need.setdefault(nid, []).append(eid)
+
+            needs: List[EvidenceNeed] = []
+            for row in need_rows:
+                need = self._row_to_evidence_need(
+                    row,
+                    case_id=case.case_id,
+                    fulfilling_evidence_ids=fulfillments_by_need.get(row[0], []),
+                )
+                if need is not None:
+                    needs.append(need)
+            case.evidence_needs = needs
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Failed to load evidence_needs for case %s: %s",
+                case.case_id,
+                e,
+            )
+
+    def _row_to_evidence_need(
+        self,
+        row: Any,
+        *,
+        case_id: str,
+        fulfilling_evidence_ids: List[str],
+    ) -> Optional[EvidenceNeed]:
+        """Reconstruct an ``EvidenceNeed`` from a SELECT row.
+
+        Column order: ``need_id, purpose, request_text, rationale,
+        priority, status, motivating_hypothesis_ids (JSON),
+        superseded_reason, created_at_turn, created_at, updated_at``.
+        ``case_id`` and ``fulfilling_evidence_ids`` are passed in by
+        the caller (the row doesn't carry case_id explicitly because
+        the WHERE clause already filtered by case).
+
+        Returns ``None`` and logs a warning when reconstruction fails
+        so one bad row doesn't blank an entire result set.
+        """
+        try:
+            motivating_raw = row[6]
+            try:
+                motivating = json.loads(motivating_raw) if motivating_raw else []
+            except (json.JSONDecodeError, TypeError):
+                motivating = []
+
+            def _parse_dt(value: Any) -> datetime:
+                if isinstance(value, datetime):
+                    return value
+                if isinstance(value, str):
+                    try:
+                        return datetime.fromisoformat(value.replace(" ", "T"))
+                    except ValueError:
+                        return datetime.now(UTC)
+                return datetime.now(UTC)
+
+            return EvidenceNeed(
+                need_id=str(row[0]),
+                case_id=case_id,
+                purpose=NeedPurpose(row[1]),
+                request_text=row[2],
+                rationale=row[3],
+                priority=NeedPriority(row[4]),
+                status=NeedStatus(row[5]),
+                motivating_hypothesis_ids=motivating,
+                fulfilling_evidence_ids=fulfilling_evidence_ids,
+                superseded_reason=row[7],
+                created_at_turn=row[8],
+                created_at=_parse_dt(row[9]),
+                updated_at=_parse_dt(row[10]),
+            )
+        except Exception as need_err:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "Failed to load evidence_need %s: %s", row[0], need_err
             )
             return None
 
@@ -2180,6 +2316,100 @@ class SQLiteCaseRepository(CaseRepository):
                     "updated_at": now,
                 },
             )
+
+    async def _upsert_evidence_needs(
+        self,
+        case_id: str,
+        needs_list: builtins.list[EvidenceNeed],
+        organization_id: str,
+        current_turn: int,
+    ) -> None:
+        """Upsert evidence-need records + their fulfillment junction rows.
+
+        Purely additive — see ``_upsert_evidence`` for rationale. A stale
+        Case snapshot must not be able to silently delete needs another
+        concurrent writer added; intentional removal of a need would
+        require an explicit ``delete_evidence_need`` method (not yet
+        defined, no caller).
+
+        The fulfillment junction is rebuilt per-need from
+        ``need.fulfilling_evidence_ids``: existing junction rows whose
+        ``evidence_id`` is no longer in the list are kept (additive
+        only), and new pairs are inserted with ``INSERT OR IGNORE`` so
+        the original ``linked_at_turn`` is preserved on re-save.
+
+        Must run AFTER ``_upsert_evidence`` so the junction's FK to
+        ``evidence.evidence_id`` is satisfied.
+        """
+        for need in needs_list:
+            query = text("""
+                INSERT INTO evidence_needs (
+                    need_id, case_id, organization_id,
+                    purpose, request_text, rationale,
+                    priority, status,
+                    motivating_hypothesis_ids,
+                    superseded_reason,
+                    created_at_turn, created_at, updated_at
+                ) VALUES (
+                    :need_id, :case_id, :organization_id,
+                    :purpose, :request_text, :rationale,
+                    :priority, :status,
+                    :motivating_hypothesis_ids,
+                    :superseded_reason,
+                    :created_at_turn, :created_at, :updated_at
+                )
+                ON CONFLICT (need_id) DO UPDATE SET
+                    purpose = EXCLUDED.purpose,
+                    request_text = EXCLUDED.request_text,
+                    rationale = EXCLUDED.rationale,
+                    priority = EXCLUDED.priority,
+                    status = EXCLUDED.status,
+                    motivating_hypothesis_ids = EXCLUDED.motivating_hypothesis_ids,
+                    superseded_reason = EXCLUDED.superseded_reason,
+                    updated_at = EXCLUDED.updated_at
+            """)
+
+            now = datetime.now(UTC)
+            await self.db.execute(
+                query,
+                {
+                    "need_id": need.need_id,
+                    "case_id": case_id,
+                    "organization_id": organization_id,
+                    "purpose": need.purpose.value,
+                    "request_text": need.request_text,
+                    "rationale": need.rationale,
+                    "priority": need.priority.value,
+                    "status": need.status.value,
+                    "motivating_hypothesis_ids": json.dumps(
+                        need.motivating_hypothesis_ids
+                    ),
+                    "superseded_reason": need.superseded_reason,
+                    "created_at_turn": need.created_at_turn,
+                    "created_at": need.created_at or now,
+                    "updated_at": now,
+                },
+            )
+
+            # Junction rows — additive, preserve original linked_at_turn.
+            if need.fulfilling_evidence_ids:
+                junction_query = text("""
+                    INSERT OR IGNORE INTO evidence_need_fulfillment (
+                        need_id, evidence_id, organization_id, linked_at_turn
+                    ) VALUES (
+                        :need_id, :evidence_id, :organization_id, :linked_at_turn
+                    )
+                """)
+                for evidence_id in need.fulfilling_evidence_ids:
+                    await self.db.execute(
+                        junction_query,
+                        {
+                            "need_id": need.need_id,
+                            "evidence_id": evidence_id,
+                            "organization_id": organization_id,
+                            "linked_at_turn": current_turn,
+                        },
+                    )
 
     async def _upsert_hypotheses(
         self, case_id: str, hypotheses_dict: dict[str, Hypothesis], organization_id: str

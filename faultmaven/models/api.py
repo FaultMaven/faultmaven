@@ -13,7 +13,6 @@ if TYPE_CHECKING:
     from faultmaven.modules.agent.domain.models.agentic import SuggestedAction
 
 # Import evidence-centric models
-from faultmaven.models.llm_schemas import EvidenceRequestToAdd as EvidenceRequest
 from faultmaven.modules.case.domain.models import CaseStatus as EvidenceCaseStatus
 from faultmaven.modules.case.domain.models import InvestigationStrategy
 
@@ -242,9 +241,6 @@ class AgentResponse(BaseModel):
     plan: Optional[List[PlanStep]] = None
 
     # EVIDENCE-CENTRIC FIELDS (v3.1.0)
-    evidence_requests: List[EvidenceRequest] = Field(
-        default_factory=list, description="Active evidence requests for this turn"
-    )
     investigation_mode: InvestigationStrategy = Field(
         default=InvestigationStrategy.ACTIVE_INCIDENT,
         description="Current investigation approach (speed vs depth)",

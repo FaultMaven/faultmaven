@@ -47,6 +47,9 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisStatus,
     InvestigationStage,
+    NeedPriority,
+    NeedPurpose,
+    NeedStatus,
     SolutionType,
     TurnOutcome,
 )
@@ -495,6 +498,154 @@ class HypothesisEvidenceLinkToAdd(BaseModel):
         return v
 
 
+class EvidenceNeedUpdate(BaseModel):
+    """LLM-emitted: create a new evidence need OR update an existing one.
+
+    Evidence needs are the demand-side counterpart to evidence rows —
+    a persistent registry of "what data would advance this case." See
+    docs/architecture/investigation-engine/evidence-needs-design.md.
+
+    On create (``need_id`` is None): ``purpose`` is required, ``status``
+    must be ``None`` or ``"pending"``, and the engine assigns a fresh
+    ``eneed_<uuid>`` ID.
+
+    On update (``need_id`` is set): the referenced need is updated.
+    ``purpose`` is immutable on the update path; lists are merged
+    (append-only) by the engine.
+
+    ``new_index_N`` references: ``need_id`` (same-turn re-update),
+    ``motivating_hypothesis_ids`` (refs to ``hypotheses_to_add``), and
+    ``fulfilling_evidence_ids`` (refs to ``evidence_to_add``) all accept
+    ``new_index_N`` placeholders that the engine resolves via
+    ``_resolve_id_ref`` at apply time. Bare integers are coerced at
+    schema-validation time, mirroring ``HypothesisEvidenceLinkToAdd``.
+    """
+
+    need_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Set to update an existing need; omit (or set None) to "
+            "create a new one. Accepts a real ``eneed_xxxxxxxxxxxx`` "
+            "ID, a ``new_index_N`` placeholder referencing a need "
+            "created earlier in this same evidence_need_updates list, "
+            "or a bare integer (coerced)."
+        ),
+    )
+    purpose: NeedPurpose = Field(
+        description=(
+            "Why this need exists: ``symptom_verification`` (motivated "
+            "by the problem statement) or ``causal_verification`` "
+            "(motivated by one or more hypotheses). Immutable on the "
+            "update path."
+        )
+    )
+    request_text: str = Field(
+        max_length=500,
+        description="What data would fulfill this need.",
+    )
+    rationale: str = Field(
+        max_length=500,
+        description="Why this data would advance the investigation.",
+    )
+    priority: NeedPriority = Field(
+        default=NeedPriority.MEDIUM,
+        description="Surfacing-order hint for EVIDENCE-type suggestions.",
+    )
+    motivating_hypothesis_ids: Optional[List[str]] = Field(
+        default_factory=list,
+        description=(
+            "Hypotheses that motivate this need. Each entry accepts a "
+            "real ``hyp_xxxxxxxxxxxx`` ID, a ``new_index_N`` "
+            "placeholder referencing an entry in ``hypotheses_to_add`` "
+            "this turn, or a bare integer (coerced). Empty list means "
+            "motivated by the problem statement (symptom needs)."
+        ),
+    )
+    status: Optional[NeedStatus] = Field(
+        default=None,
+        description=(
+            "Set when updating; omit for create (engine defaults to "
+            "PENDING). FULFILLED requires non-empty "
+            "``fulfilling_evidence_ids``; SUPERSEDED requires "
+            "non-empty ``superseded_reason``."
+        ),
+    )
+    fulfilling_evidence_ids: Optional[List[str]] = Field(
+        default_factory=list,
+        description=(
+            "Evidence rows that fulfill this need. Each entry accepts a "
+            "real ``ev_xxxxxxxxxxxx`` ID, a ``new_index_N`` placeholder "
+            "referencing an entry in ``evidence_to_add`` this turn, or "
+            "a bare integer (coerced). Appended on update."
+        ),
+    )
+    superseded_reason: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description=("Required when ``status=SUPERSEDED``; must be None " "otherwise."),
+    )
+
+    @field_validator(
+        "need_id",
+        "motivating_hypothesis_ids",
+        "fulfilling_evidence_ids",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_bare_int_to_new_index(cls, v):
+        """Coerce bare integers to ``new_index_N`` form. Same shape as
+        ``HypothesisEvidenceLinkToAdd._coerce_bare_int_to_new_index``
+        (PR #354). Handles both scalar and list inputs."""
+
+        def _coerce_one(item):
+            if isinstance(item, int) and not isinstance(item, bool):
+                return f"new_index_{item}"
+            return item
+
+        if isinstance(v, list):
+            return [_coerce_one(item) for item in v]
+        return _coerce_one(v)
+
+    @model_validator(mode="after")
+    def _validate_create_vs_update_semantics(self) -> "EvidenceNeedUpdate":
+        """Cross-field invariants.
+
+        Create path (``need_id is None``):
+        - ``status`` must be None or ``PENDING``.
+
+        Both paths:
+        - ``status=SUPERSEDED`` requires non-empty ``superseded_reason``;
+          non-SUPERSEDED forbids ``superseded_reason``.
+        - ``status=FULFILLED`` requires at least one
+          ``fulfilling_evidence_id`` on this emission.
+        """
+        if self.need_id is None and self.status not in (None, NeedStatus.PENDING):
+            raise ValueError(
+                f"Cannot create a need with status={self.status.value!r}; "
+                "use status=None or 'pending' on create, and emit a "
+                "follow-up update to transition to other statuses."
+            )
+
+        if self.status == NeedStatus.SUPERSEDED:
+            if not (self.superseded_reason and self.superseded_reason.strip()):
+                raise ValueError(
+                    "status=SUPERSEDED requires a non-empty superseded_reason"
+                )
+        else:
+            if self.superseded_reason is not None:
+                raise ValueError(
+                    "superseded_reason must be None unless status=SUPERSEDED"
+                )
+
+        if self.status == NeedStatus.FULFILLED and not self.fulfilling_evidence_ids:
+            raise ValueError(
+                "status=FULFILLED requires at least one fulfilling_evidence_id "
+                "in the same emission"
+            )
+
+        return self
+
+
 class JournalEntryOutput(BaseModel):
     """A journal entry produced by the LLM for the investigation journal."""
 
@@ -740,6 +891,43 @@ class SuggestedFollowUp(BaseModel):
         description="Short framework tags guiding what aspects the user should address (e.g., 'symptoms', 'timeline', 'affected services')",
     )
 
+    # EVIDENCE-suggestion-to-need linkage (Phase 6: engine resolves
+    # ``new_index_N`` here against ``metadata["evidence_needs_updated"]``
+    # before flattening to the API response dict).
+    evidence_need_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "For action_type=EVIDENCE only: the persistent EvidenceNeed "
+            "this suggestion derives from. Accepts a real "
+            "``eneed_xxxxxxxxxxxx`` ID, a ``new_index_N`` placeholder "
+            "referencing an entry in this turn's "
+            "``evidence_need_updates`` list, or a bare integer "
+            "(coerced). Used by the frontend for visual linkage."
+        ),
+    )
+
+    @field_validator("evidence_need_id", mode="before")
+    @classmethod
+    def _coerce_bare_int_evidence_need_id(cls, v):
+        """Bare int → ``new_index_N``. Same shape as
+        ``HypothesisEvidenceLinkToAdd._coerce_bare_int_to_new_index``."""
+        if isinstance(v, int) and not isinstance(v, bool):
+            return f"new_index_{v}"
+        return v
+
+    @model_validator(mode="after")
+    def _validate_evidence_need_id_only_with_evidence_action(
+        self,
+    ) -> "SuggestedFollowUp":
+        """``evidence_need_id`` only makes sense for EVIDENCE-type
+        suggestions; reject the combination on other action types."""
+        if self.evidence_need_id is not None and self.action_type != "EVIDENCE":
+            raise ValueError(
+                f"evidence_need_id only permitted with action_type=EVIDENCE "
+                f"(got action_type={self.action_type!r})"
+            )
+        return self
+
     # NOTE: there is no ``intent`` field on this LLM-facing model. Intent
     # metadata (QueryIntent routing) is owned by the engine, not the LLM —
     # it is attached deterministically by the response builder via
@@ -853,6 +1041,13 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
         )
+        evidence_need_updates: Optional[List[EvidenceNeedUpdate]] = Field(
+            default_factory=list,
+            description=(
+                "Demand-side updates: create / update evidence needs. "
+                "See docs/architecture/investigation-engine/evidence-needs-design.md."
+            ),
+        )
         solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
         working_conclusion: Optional[WorkingConclusionUpdate] = None
         root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
@@ -894,6 +1089,14 @@ class InvestigationResponse_Mitigation(BaseInteractionResponse):
     class MitigationStateUpdate(BaseModel):
         milestones: Optional[MilestoneUpdates] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
+        evidence_need_updates: Optional[List[EvidenceNeedUpdate]] = Field(
+            default_factory=list,
+            description=(
+                "Demand-side updates: typically used to mark FULFILLED "
+                "symptom needs with absence-evidence fulfillments "
+                "(SYMPTOM_ABSENCE_EVIDENCE) in MITIGATION."
+            ),
+        )
         solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
         solution_feedback: Optional[str] = None
         working_conclusion: Optional[WorkingConclusionUpdate] = None
@@ -940,6 +1143,14 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
         )
+        evidence_need_updates: Optional[List[EvidenceNeedUpdate]] = Field(
+            default_factory=list,
+            description=(
+                "Demand-side updates: typically used to re-check FULFILLED "
+                "needs with absence-evidence fulfillments "
+                "(CAUSAL_ABSENCE_EVIDENCE + SYMPTOM_ABSENCE_EVIDENCE)."
+            ),
+        )
         solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
         solution_feedback: Optional[str] = None
         working_conclusion: Optional[WorkingConclusionUpdate] = None
@@ -979,6 +1190,13 @@ class InvestigationResponse_General(BaseInteractionResponse):
         hypotheses_to_update: Dict[str, HypothesisUpdate] = Field(default_factory=dict)
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
+        )
+        evidence_need_updates: Optional[List[EvidenceNeedUpdate]] = Field(
+            default_factory=list,
+            description=(
+                "Demand-side updates. Engine's path-conditional emission "
+                "backstop gates causal-purpose needs by state at apply-time."
+            ),
         )
         solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
         working_conclusion: Optional[WorkingConclusionUpdate] = None

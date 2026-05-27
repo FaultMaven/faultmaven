@@ -113,22 +113,6 @@ class HypothesisToAdd(BaseModel):
     )
 
 
-class EvidenceRequestToAdd(BaseModel):
-    """
-    Evidence request the LLM wants to make to the user.
-
-    Example: "Please upload logs from the API gateway between 10:00-10:30 UTC"
-    """
-
-    request_text: str = Field(description="What evidence is requested", max_length=500)
-
-    priority: Literal["high", "medium", "low"] = Field(
-        default="medium", description="How critical this evidence is"
-    )
-
-    purpose: str = Field(description="Why this evidence is needed", max_length=500)
-
-
 class WorkingConclusionUpdate(BaseModel):
     """
     Agent's current understanding of the problem (updated iteratively).
@@ -232,18 +216,6 @@ class InvestigationStateUpdate(BaseModel):
         default_factory=list,
         description="Hypotheses to generate (optional, systematic investigation)",
         max_length=5,
-    )
-
-    evidence_requests: List[EvidenceRequestToAdd] = Field(
-        default_factory=list,
-        description="Requests for additional evidence from user",
-        max_length=5,
-    )
-
-    mentioned_request_ids: List[str] = Field(
-        default_factory=list,
-        description="Evidence request IDs agent mentioned this turn (for mention_count tracking)",
-        max_length=20,
     )
 
     working_conclusion: Optional[WorkingConclusionUpdate] = Field(

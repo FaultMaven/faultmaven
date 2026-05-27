@@ -595,8 +595,8 @@ class TestInvestigationServiceIntentDispatch:
         elif intent_value == IntentType.HYPOTHESIS_ACTION:
             intent_kwargs["hypothesis_id"] = "hyp_test"
             intent_kwargs["action"] = "accept"
-        elif intent_value == IntentType.EVIDENCE_REQUEST:
-            intent_kwargs["evidence_id"] = "evid_test"
+        elif intent_value == IntentType.EVIDENCE_NEED:
+            intent_kwargs["evidence_need_id"] = "eneed_test12345"
         elif intent_value == IntentType.PATH_SELECTION:
             intent_kwargs["investigation_path"] = "mitigation_first"
         elif intent_value == IntentType.POST_MITIGATION_CHOICE:
@@ -611,7 +611,7 @@ class TestInvestigationServiceIntentDispatch:
                 payload=payload,
             )
         except ValidationException:
-            # NOT_IMPLEMENTED intents (e.g., EVIDENCE_REQUEST) raise this
+            # NOT_IMPLEMENTED intents (e.g., EVIDENCE_NEED) raise this
             # — 422 to the client, contract gap surfaced honestly.
             pass
         except ServiceException as e:
@@ -657,7 +657,7 @@ class TestInvestigationServiceIntentDispatch:
         sample_user_id,
     ):
         """Intents marked NOT_IMPLEMENTED in the dispatch table must raise
-        ValidationException (422), not ServiceException (500). EVIDENCE_REQUEST
+        ValidationException (422), not ServiceException (500). EVIDENCE_NEED
         is currently in this state — defined in the enum + QueryIntent
         validator but with no handler.
         """
@@ -669,7 +669,7 @@ class TestInvestigationServiceIntentDispatch:
         payload = TurnPayload(
             query="test",
             intent=QueryIntent(
-                type=IntentType.EVIDENCE_REQUEST, evidence_id="evid_test"
+                type=IntentType.EVIDENCE_NEED, evidence_need_id="eneed_test12345"
             ),
         )
 
