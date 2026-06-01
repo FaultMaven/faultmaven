@@ -388,3 +388,40 @@ class TestMitigationCausalNeedsGatingExtension:
             "symptom" in MITIGATION_INSTRUCTIONS.lower()
             and "still allowed" in MITIGATION_INSTRUCTIONS
         )
+
+
+@pytest.mark.unit
+class TestStageEvidenceTypeListingsIncludeAbsence:
+    """The per-stage ``EVIDENCE TYPES FOR THIS STAGE:`` enumerations in
+    MITIGATION and TREATMENT must list the absence variants now that
+    re-verification emits them. Without these listings the prompt's
+    descriptive surface contradicts the decision-tree step 4 directive
+    in INVESTIGATION_BASE — a confused LLM might infer the stage's
+    "allowed types" exclude absence variants.
+
+    Pairs with the decision-tree extension pinned in
+    ``TestEvidenceClassificationDecisionTreeExtension`` (Phase 5)."""
+
+    def test_mitigation_lists_symptom_absence_evidence(self):
+        assert "symptom_absence_evidence" in MITIGATION_INSTRUCTIONS
+
+    def test_mitigation_lists_causal_absence_evidence(self):
+        assert "causal_absence_evidence" in MITIGATION_INSTRUCTIONS
+
+    def test_treatment_lists_symptom_absence_evidence(self):
+        assert "symptom_absence_evidence" in TREATMENT_INSTRUCTIONS
+
+    def test_treatment_lists_causal_absence_evidence(self):
+        assert "causal_absence_evidence" in TREATMENT_INSTRUCTIONS
+
+    def test_absence_variants_appear_under_evidence_types_heading(self):
+        """The mention must be in the ``EVIDENCE TYPES FOR THIS STAGE:``
+        block (where the LLM looks for "what categories are valid
+        here"), not just incidentally elsewhere in the dispatch."""
+        for block in (MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS):
+            heading_idx = block.find("**EVIDENCE TYPES FOR THIS STAGE:**")
+            assert heading_idx != -1
+            # Search within the ~500 chars immediately after the heading
+            section = block[heading_idx : heading_idx + 600]
+            assert "symptom_absence_evidence" in section
+            assert "causal_absence_evidence" in section
