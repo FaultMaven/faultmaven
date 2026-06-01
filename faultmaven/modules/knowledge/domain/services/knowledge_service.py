@@ -30,7 +30,16 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    # Type-only import; the runtime import stays lazy inside ingest_runbook
+    # to avoid the service↔persistence cycle. This satisfies the forward-ref
+    # annotation on ``verification_level`` for ruff/mypy without importing at
+    # module load.
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
