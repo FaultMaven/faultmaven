@@ -31,6 +31,7 @@ from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
     EnterpriseModel,
+    KnowledgeItemModel,
     OrganizationModel,
     UploadedFileModel,
 )
@@ -309,3 +310,82 @@ class TestScanForRunbooks:
             assert all(u.organization_id == explicit_org for u in uploads)
             assert all(j.organization_id == explicit_org for j in jobs)
             assert all(d.organization_id == explicit_org for d in drafts)
+
+
+class TestScanSkipsBootstrapIngestedRunbooks:
+    """The scan must not manufacture phantom drafts for runbooks already
+    published into knowledge_items by the startup bootstrap (which ingests
+    directly and never creates a draft, so the drafts table has no row).
+
+    Regression: scan tracked files only via conversion_drafts and ignored
+    knowledge_items, so every bootstrap-published runbook got a redundant
+    status='draft' row — 60/60 in eval 2026-06-01.
+    """
+
+    @staticmethod
+    async def _publish_kb_item(session_factory, runbook_id: str):
+        from faultmaven.utils.runbook_id import item_id_from_runbook_id
+
+        async with session_factory() as session:
+            session.add(
+                KnowledgeItemModel(
+                    item_id=item_id_from_runbook_id(runbook_id),
+                    organization_id="00000000-0000-0000-0000-000000000001",
+                    scope="global",
+                    title=runbook_id,
+                    content="published by bootstrap",
+                    item_type="runbook",
+                )
+            )
+            await session.commit()
+
+    @pytest.mark.asyncio
+    async def test_scan_skips_file_already_in_knowledge_items(
+        self, conversion_service, seeded_session_factory
+    ):
+        # redis-oom is already published by the bootstrap; pg-slow-queries is not.
+        await self._publish_kb_item(seeded_session_factory, "redis-oom")
+
+        result = await conversion_service.scan_for_runbooks(
+            user_id=None, organization_id=None
+        )
+
+        # Only the un-published runbook becomes a draft.
+        assert result["discovered"] == 1
+        async with seeded_session_factory() as session:
+            from sqlalchemy import select
+
+            drafts = (
+                (await session.execute(select(ConversionDraftModel))).scalars().all()
+            )
+        active = {d.runbook_id for d in drafts if d.status == "draft"}
+        assert "redis-oom" not in active  # phantom prevented
+        assert "pg-slow-queries" in active
+
+    @pytest.mark.asyncio
+    async def test_scan_discards_existing_phantom_draft(
+        self, conversion_service, seeded_session_factory
+    ):
+        # First scan (nothing published yet) creates both drafts.
+        first = await conversion_service.scan_for_runbooks(
+            user_id=None, organization_id=None
+        )
+        assert first["discovered"] == 2
+
+        # Bootstrap later publishes redis-oom directly into knowledge_items
+        # (knowledge_item_id stays None on the draft — the two paths don't link).
+        await self._publish_kb_item(seeded_session_factory, "redis-oom")
+
+        # Second scan must DISCARD the now-redundant redis-oom draft and
+        # leave the genuinely-pending pg-slow-queries draft alone.
+        await conversion_service.scan_for_runbooks(user_id=None, organization_id=None)
+
+        async with seeded_session_factory() as session:
+            from sqlalchemy import select
+
+            drafts = (
+                (await session.execute(select(ConversionDraftModel))).scalars().all()
+            )
+        by_runbook = {d.runbook_id: d.status for d in drafts}
+        assert by_runbook["redis-oom"] == "discarded"
+        assert by_runbook["pg-slow-queries"] == "draft"
