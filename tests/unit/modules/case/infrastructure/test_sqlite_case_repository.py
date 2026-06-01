@@ -1799,3 +1799,124 @@ class TestOptimisticConcurrencyControl:
             await update_case_with_retry(
                 repository, case.case_id, conflicting_apply, max_attempts=3
             )
+
+
+# ============================================================
+# case_actions — append-only audit trail (regression)
+# ============================================================
+
+
+def _make_investigating_case_with_action() -> Case:
+    """An INVESTIGATING case carrying one INQUIRY→INVESTIGATING audit row."""
+    inquiry = InquiryData()
+    inquiry.proposed_problem_statement = "Latency spike in API"
+    inquiry.problem_statement_confirmed = True
+    inquiry.decided_to_investigate = True
+    case = Case(
+        case_id=f"case_{uuid4().hex[:12]}",
+        user_id="user_alpha",
+        organization_id="org_alpha",
+        title="Investigating case",
+        description="Latency spike in API",
+        status=CaseStatus.INVESTIGATING,
+        investigation_strategy=InvestigationStrategy.ACTIVE_INCIDENT,
+        inquiry=inquiry,
+    )
+    case.action_history.append(
+        CaseAction(
+            from_status=CaseStatus.INQUIRY,
+            to_status=CaseStatus.INVESTIGATING,
+            triggered_by="system",
+            reason="Problem statement confirmed",
+        )
+    )
+    return case
+
+
+async def _count_case_actions(session: AsyncSession, case_id: str) -> int:
+    from sqlalchemy import text
+
+    result = await session.execute(
+        text("SELECT COUNT(*) FROM case_actions WHERE case_id = :cid"),
+        {"cid": case_id},
+    )
+    return result.scalar() or 0
+
+
+class TestCaseActionsAppendOnly:
+    """Regression: case_actions must not duplicate the full history per save.
+
+    Before the fix, ``save()`` re-inserted the entire ``action_history``
+    every turn. Because ``transition_id`` is an autoincrement PK with no
+    natural-key conflict target, ``ON CONFLICT DO NOTHING`` never fired, so
+    each save doubled the row count (R → 2R + new). A single legitimate
+    action exploded to ~2**N rows over N turn-saves (observed ~100K
+    rows/case in eval Run 32). The fix inserts only the unpersisted tail.
+    """
+
+    @pytest.mark.asyncio
+    async def test_resave_does_not_duplicate_existing_actions(
+        self, repository, async_session
+    ):
+        case = _make_investigating_case_with_action()
+        await repository.save(case)
+        assert await _count_case_actions(async_session, case.case_id) == 1
+
+        # Simulate many subsequent turns that re-save the same case. Each
+        # turn loads it fresh (rehydrating action_history from the persisted
+        # rows) and saves without adding a new action.
+        for _ in range(7):
+            loaded = await repository.get(case.case_id)
+            await repository.save(loaded)
+
+        # Pre-fix: geometric doubling → 2**8 = 256 rows. Fixed: stays at 1.
+        assert await _count_case_actions(async_session, case.case_id) == 1
+
+    @pytest.mark.asyncio
+    async def test_new_action_on_later_turn_persists_exactly_once(
+        self, repository, async_session
+    ):
+        case = _make_investigating_case_with_action()
+        await repository.save(case)
+
+        # A few no-op resaves (turns without a status transition).
+        for _ in range(3):
+            loaded = await repository.get(case.case_id)
+            await repository.save(loaded)
+        assert await _count_case_actions(async_session, case.case_id) == 1
+
+        # A later turn records a genuine disposition transition.
+        loaded = await repository.get(case.case_id)
+        loaded.action_history.append(
+            CaseAction(
+                from_status=CaseStatus.INVESTIGATING,
+                to_status=CaseStatus.CLOSED,
+                triggered_by="user_alpha",
+                reason="Escalated to vendor",
+            )
+        )
+        await repository.save(loaded)
+
+        # Exactly one new row, and both round-trip in order.
+        assert await _count_case_actions(async_session, case.case_id) == 2
+        final = await repository.get(case.case_id)
+        assert len(final.action_history) == 2
+        assert final.action_history[0].to_status == CaseStatus.INVESTIGATING
+        assert final.action_history[1].to_status == CaseStatus.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_action_history_round_trips_without_growth(
+        self, repository, async_session
+    ):
+        """Reloading after many saves yields the original single action."""
+        case = _make_investigating_case_with_action()
+        await repository.save(case)
+        for _ in range(5):
+            loaded = await repository.get(case.case_id)
+            await repository.save(loaded)
+
+        final = await repository.get(case.case_id)
+        assert len(final.action_history) == 1
+        assert final.action_history[0].from_status == CaseStatus.INQUIRY
+        assert final.action_history[0].to_status == CaseStatus.INVESTIGATING
+        assert final.action_history[0].triggered_by == "system"
