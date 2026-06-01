@@ -115,7 +115,16 @@ async def test_bootstrap_ingests_new_runbook(
         "example-runbook"
     )
     assert call_kwargs["title"] == "Example Runbook"
-    assert call_kwargs["verified_by"] == "system"
+    # Platform-shipped runbooks carry COMMUNITY trust via verification_level,
+    # NOT a fake verified_by — verified_by is an FK to users.user_id and must
+    # be a real user or NULL (regression: verified_by="system" failed the FK
+    # once foreign_keys=ON landed in #378).
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
+
+    assert call_kwargs["verified_by"] is None
+    assert call_kwargs["verification_level"] == VerificationLevel.COMMUNITY
 
 
 @pytest.mark.asyncio
@@ -251,3 +260,138 @@ def test_item_id_from_runbook_id_is_deterministic():
         "bar"
     )
     assert kb_init._item_id_from_runbook_id("foo").startswith("kb_")
+
+
+# ============================================================
+# FK-ON regression: the composition seam #378 + kb_init broke
+# ============================================================
+#
+# The unit tests above use FakeSession, so the FK on
+# knowledge_items.verified_by → users.user_id is never exercised. That is
+# exactly the dynamic-drift seam: #378 (foreign_keys=ON) and kb_init
+# (verified_by="system") were each locally fine; only their composition
+# failed — every shipped-runbook ingest hit "FOREIGN KEY constraint
+# failed" because no users row has user_id="system".
+#
+# This test drives the REAL ingest_runbook SQL path against an in-memory
+# SQLite with foreign_keys=ON and a seeded enterprise+org but NO "system"
+# user — the fresh-install shape — and asserts a clean ingest. A negative
+# control proves the FK is actually enforced in the test (so a green run
+# isn't a false pass).
+
+
+@pytest.fixture
+async def fk_on_ingest_service():
+    """Real KnowledgeService.ingest_runbook over FK-on SQLite.
+
+    ChromaDB is the only thing stubbed (``_index_document_in_vector_store``
+    returns a positive chunk count); the relational write — where the FK
+    fires — is real.
+    """
+    from sqlalchemy import event, text
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    from faultmaven.infrastructure.persistence.models import Base
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
+    )
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _fk_on(dbapi_conn, _rec):  # replicates the #378 connect listener
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        # Seed enterprise + org so knowledge_items.organization_id FK is
+        # satisfiable. Deliberately seed NO "system" user.
+        await conn.execute(
+            text(
+                "INSERT INTO enterprises (enterprise_id, name, slug) "
+                "VALUES ('ent-1', 'Default', 'default')"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO organizations "
+                "(organization_id, enterprise_id, name, slug) "
+                "VALUES ('org-1', 'ent-1', 'Org', 'org')"
+            )
+        )
+
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    svc = KnowledgeService.__new__(KnowledgeService)
+    svc._db_session_factory = factory
+    svc._index_document_in_vector_store = AsyncMock(return_value=3)
+    svc._delete_knowledge_item_row = AsyncMock()
+
+    yield svc, factory
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_ingest_runbook_succeeds_with_fk_enforced_fresh_install(
+    fk_on_ingest_service,
+):
+    """The fix: verified_by=None + verification_level=COMMUNITY ingests
+    cleanly under foreign_keys=ON with no 'system' user present."""
+    from sqlalchemy import text
+
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
+
+    svc, factory = fk_on_ingest_service
+
+    chunks = await svc.ingest_runbook(
+        document_id="kb_fkprobe",
+        title="Probe Runbook",
+        content="# body",
+        organization_id="org-1",
+        scope="global",
+        verified_by=None,
+        verification_level=VerificationLevel.COMMUNITY,
+    )
+    assert chunks == 3
+
+    async with factory() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT verified_by, verification_level "
+                    "FROM knowledge_items WHERE item_id='kb_fkprobe'"
+                )
+            )
+        ).first()
+    assert row is not None  # the row actually persisted (no FK rollback)
+    assert row[0] is None  # verified_by NULL — never a sentinel
+    assert row[1] == int(VerificationLevel.COMMUNITY)  # COMMUNITY trust kept
+
+
+@pytest.mark.asyncio
+async def test_ingest_runbook_with_sentinel_verified_by_fails_fk(
+    fk_on_ingest_service,
+):
+    """Negative control: the old behaviour (verified_by='system') still
+    violates the FK — proving foreign_keys=ON is genuinely active in this
+    test, so the positive assertion above isn't a false pass."""
+    svc, _ = fk_on_ingest_service
+
+    with pytest.raises(Exception) as exc_info:
+        await svc.ingest_runbook(
+            document_id="kb_sentinel",
+            title="Sentinel Runbook",
+            content="# body",
+            organization_id="org-1",
+            scope="global",
+            verified_by="system",  # no such users row → FK violation
+        )
+    assert "foreign key" in str(exc_info.value).lower()

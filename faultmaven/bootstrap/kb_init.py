@@ -254,6 +254,10 @@ async def _ingest_one(
     if not isinstance(tags, list):
         tags = [str(tags)]
 
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
+
     chunks_created = await knowledge_service.ingest_runbook(
         document_id=item_id,
         title=title,
@@ -267,7 +271,13 @@ async def _ingest_one(
         team_id=metadata.get("team_id"),
         # Pre-deployed runbooks bypass per-user verification — they ship
         # in the repo or are admin-deployed; the platform is the verifier.
-        verified_by="system",
+        # verified_by is an FK to users.user_id, so it MUST be a real user
+        # or NULL — never a sentinel string. The platform-verifier intent
+        # is expressed via verification_level=COMMUNITY instead. A fake
+        # verified_by="system" violated the FK once foreign_keys=ON landed
+        # in #378 and failed every shipped-runbook ingest.
+        verified_by=None,
+        verification_level=VerificationLevel.COMMUNITY,
     )
 
     if chunks_created <= 0:
