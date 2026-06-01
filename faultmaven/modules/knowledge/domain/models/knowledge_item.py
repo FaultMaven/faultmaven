@@ -180,6 +180,14 @@ class KnowledgeItem:
         # marker (already required as a base field above). No additional
         # owner_id / team_id required.
 
+        # Tags are labels and must be strings. Coerce first so values that
+        # arrive non-str survive — most commonly a YAML-parsed numeric tag
+        # from runbook frontmatter (e.g. a bare ``503`` in
+        # ``tags: [istio, 503, envoy]`` parses as int), which previously
+        # raised ``TypeError: argument of type 'int' is not iterable`` at
+        # the comma check below and failed the whole ingest.
+        self.tags = [str(tag) for tag in self.tags]
+
         # Tag values must not contain commas (SQLite stores tags
         # comma-separated; PG stores as TEXT[]). The cross-dialect
         # round-trip is lossless only if commas don't appear in values.

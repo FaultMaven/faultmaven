@@ -581,3 +581,29 @@ class TestTouch:
 # ============================================================
 # Repr Tests
 # ============================================================
+
+
+class TestKnowledgeItemTagCoercion:
+    """Tags must be strings even when supplied as other types.
+
+    Regression: a runbook frontmatter ``tags: [istio, 503, envoy]`` parses
+    the bare ``503`` as an int. ``__post_init__`` then ran ``if "," in tag``
+    over it and raised ``TypeError: argument of type 'int' is not iterable``,
+    failing the whole KB-bootstrap ingest of that runbook
+    (unknown-case-260526-4.md, eval 2026-06-01).
+    """
+
+    def test_numeric_tag_is_coerced_to_string(self):
+        item = create_sample_item(tags=["istio", 503, "envoy"])
+        assert item.tags == ["istio", "503", "envoy"]
+        assert all(isinstance(t, str) for t in item.tags)
+
+    def test_mixed_nonstring_tags_are_coerced(self):
+        item = create_sample_item(tags=[503, 8080, True])
+        assert item.tags == ["503", "8080", "True"]
+
+    def test_comma_check_still_fires_after_coercion(self):
+        # Coercion must not bypass the comma invariant (SQLite stores tags
+        # comma-separated). A genuine comma still raises.
+        with pytest.raises(ValueError, match="must not contain commas"):
+            create_sample_item(tags=["a,b"])
