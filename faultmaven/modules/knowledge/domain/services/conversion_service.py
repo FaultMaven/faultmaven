@@ -24,6 +24,7 @@ from faultmaven.exceptions import ConflictError, NotFoundError, ValidationExcept
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
+    KnowledgeItemModel,
     UploadedFileModel,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
@@ -1742,10 +1743,24 @@ status: draft
         skipped = 0
         errors = []
 
+        from faultmaven.utils.runbook_id import item_id_from_runbook_id
+
         # Reconcile DB state before scanning disk
         tracked_paths: set[str] = set()
+        # item_ids already published into knowledge_items — e.g. by the
+        # startup KB bootstrap, which ingests shipped runbooks DIRECTLY
+        # (bypassing conversion_drafts entirely, per kb_init's design). Such
+        # files have no draft row, so without this set the disk walk below
+        # would treat them as "untracked" and manufacture a phantom draft for
+        # every already-published runbook.
+        ingested_item_ids: set[str] = set()
         if self._db_session_factory:
             async with self._db_session_factory() as session:
+                ingested_result = await session.execute(
+                    select(KnowledgeItemModel.item_id)
+                )
+                ingested_item_ids = set(ingested_result.scalars().all())
+
                 all_drafts_result = await session.execute(select(ConversionDraftModel))
                 all_draft_models = all_drafts_result.scalars().all()
 
@@ -1755,6 +1770,13 @@ status: draft
                     if d.status != DraftStatus.DISCARDED.value
                 )
                 pending_discard_ids: list[str] = []
+                # Discards for drafts whose runbook is ALREADY published in
+                # knowledge_items. Kept separate from pending_discard_ids so
+                # they do NOT feed the "would discard ALL active drafts ⇒
+                # storage failure" abort guard below — clearing redundant
+                # phantom drafts is legitimate cleanup even if it empties the
+                # Drafts tab, not a wiped-data-dir signal.
+                redundant_discard_ids: list[str] = []
 
                 for draft_model in all_draft_models:
                     file_exists = Path(draft_model.file_path).exists()
@@ -1781,6 +1803,26 @@ status: draft
                         logger.info(
                             f"Removed duplicate draft {draft_model.id} "
                             f"(already has knowledge_item_id)"
+                        )
+                        continue
+
+                    # Redundant phantom draft: this runbook is already
+                    # published in knowledge_items (typically by the startup
+                    # bootstrap, which never sets knowledge_item_id on a
+                    # draft because it bypasses the drafts table). Discard so
+                    # it stops showing as pending in the Drafts tab.
+                    if (
+                        draft_model.status == "draft"
+                        and draft_model.runbook_id
+                        and item_id_from_runbook_id(draft_model.runbook_id)
+                        in ingested_item_ids
+                    ):
+                        draft_model.status = DraftStatus.DISCARDED.value
+                        redundant_discard_ids.append(draft_model.id)
+                        logger.info(
+                            f"Discarded phantom draft {draft_model.id} "
+                            f"(runbook '{draft_model.runbook_id}' already "
+                            f"published in knowledge_items)"
                         )
                         continue
 
@@ -1871,6 +1913,14 @@ status: draft
 
             title = metadata.get("title", md_file.stem.replace("-", " ").title())
             runbook_id = metadata.get("id", md_file.stem)
+
+            # Skip files already published into knowledge_items (e.g. by the
+            # startup bootstrap, which ingests directly and never creates a
+            # draft). Without this the scan manufactures a phantom draft for
+            # every already-published runbook.
+            if item_id_from_runbook_id(runbook_id) in ingested_item_ids:
+                skipped += 1
+                continue
 
             # Infer scope from directory path
             scope = "global"
