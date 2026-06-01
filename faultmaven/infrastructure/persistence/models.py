@@ -1821,6 +1821,10 @@ class KnowledgeItemModel(Base):
     # Verification: 0=experimental, 1=community, 2=admin_verified
     verification_level = Column(Integer, nullable=False, server_default="0", index=True)
     verification_reason = Column(String(512), nullable=True)
+    # Contract: a REAL users.user_id or NULL — never a sentinel string
+    # (e.g. "system"). It is an enforced FK (foreign_keys=ON since #378),
+    # so a non-user value fails the insert. Platform/system-verified trust
+    # belongs in verification_level (e.g. COMMUNITY), not here.
     verified_by = Column(
         String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
     )

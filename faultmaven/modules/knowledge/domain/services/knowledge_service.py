@@ -1205,6 +1205,7 @@ class KnowledgeService:
         owner_id: Optional[str] = None,
         team_id: Optional[str] = None,
         verified_by: Optional[str] = None,
+        verification_level: "Optional[VerificationLevel]" = None,
     ) -> int:
         """Promote runbook content to a fully-published KnowledgeItem.
 
@@ -1219,8 +1220,17 @@ class KnowledgeService:
             document_id: Stable id used for both the relational row and the
                 ChromaDB document.
             organization_id: Required for the KnowledgeItem row (NOT NULL FK).
-            verified_by: User id of the verifier when called from verify_draft;
-                None for unverified uploads. Drives initial verification_level.
+            verified_by: A REAL user_id (from verify_draft) or None. Never a
+                sentinel string — it is an FK to users.user_id. When None and
+                no explicit verification_level is given, the item is
+                EXPERIMENTAL. Trust for non-user-verified content (e.g.
+                platform-shipped runbooks) goes through verification_level,
+                not a fake verified_by.
+            verification_level: Explicit trust level. When provided it wins
+                over the verified_by-derived default — lets platform runbooks
+                ship as COMMUNITY without a verified_by FK value. When None,
+                falls back to the legacy derive so upload callers are
+                unchanged.
 
         Returns:
             Number of chunks indexed in ChromaDB. The SQL row exists either
@@ -1260,10 +1270,20 @@ class KnowledgeService:
             team_id=team_id,
             tags=list(tags) if tags else [],
             source_url=source_url,
+            # Explicit verification_level wins; otherwise derive from
+            # verified_by (COMMUNITY when a real user verified, else
+            # EXPERIMENTAL). The explicit override exists so platform-
+            # shipped runbooks can carry COMMUNITY trust WITHOUT a fake
+            # verified_by FK value — verified_by is a real user_id or
+            # NULL, never a sentinel.
             verification_level=(
-                VerificationLevel.COMMUNITY
-                if verified_by
-                else VerificationLevel.EXPERIMENTAL
+                verification_level
+                if verification_level is not None
+                else (
+                    VerificationLevel.COMMUNITY
+                    if verified_by
+                    else VerificationLevel.EXPERIMENTAL
+                )
             ),
             verified_by=verified_by,
             verified_at=now if verified_by else None,
