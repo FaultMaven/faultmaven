@@ -14,6 +14,7 @@ For understanding the investigation system, read in this order:
 
 ## Reference
 
+- **[Evidence Needs Design](./evidence-needs-design.md)** — Demand-side pool of outstanding evidence asks: creation triggers, lifecycle, engine backstop, context block, suggestion linkage. §11 is the as-built map (file:line, metrics, wire seam) for debugging the shipped feature.
 - **[Intent Resolution](./intent-resolution.md)** — Bounded choice matching, hypothesis action routing
 - **[Investigation Journal](./investigation-journal.md)** — Append-only long-term memory for key findings
 - **[Progress Transparency](./progress-transparency.md)** — Progress monitoring, repair patterns, milestone dependencies

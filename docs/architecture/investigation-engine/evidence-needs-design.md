@@ -22,6 +22,7 @@
 8. [Integration with Existing Architecture](#8-integration-with-existing-architecture)
 9. [Design Decisions](#9-design-decisions)
 10. [Risks and Mitigations](#10-risks-and-mitigations)
+11. [As-Built Implementation Map (Phases 1–6)](#11-as-built-implementation-map-phases-16)
 
 ---
 
@@ -246,6 +247,10 @@ both types of post-fix evidence — *"the app is running healthy"* is
 not the same as *"the bad config has been corrected."*
 
 ### 4.3 Four Evidence Categories
+
+> **As-built (see §11.5):** the live `EvidenceCategory` enum has **six**
+> members — these four verification categories plus `MITIGATION_EVIDENCE`
+> and `SOLUTION_EVIDENCE` retained from the post-010 evidence model.
 
 To make the presence/absence distinction structural rather than
 inferred, `EvidenceCategory` carries four categories:
@@ -845,7 +850,10 @@ proper structure gives:
   several mutable collections; piling needs on top would increase
   conflict surface)
 
-Schema (Alembic migration follows existing patterns):
+Schema (Alembic migration follows existing patterns). **As-built (§11.5):**
+the shipped migration `014` adds an `organization_id` FK to both tables
+and a `created_at` column to the junction; the DDL below is the
+conceptual shape, migration `014` is authoritative.
 
 ```sql
 CREATE TABLE evidence_needs (
@@ -1104,6 +1112,96 @@ structure** for what the investigation requires, without overriding
 the LLM's judgment about what matters on any given turn. The LLM
 remains the reasoner. The pool is a tool it uses, not a set of
 instructions it follows.
+
+---
+
+## 11. As-Built Implementation Map (Phases 1–6)
+
+> **Status (2026-05-26):** Evidence Needs shipped across PRs #384–#388.
+> Sections 1–10 above describe the *design rationale*; this section is
+> the **as-built map** for someone debugging the running feature. Where
+> the as-built reality differs from the rationale sections, this section
+> is authoritative.
+
+### 11.1 What shipped, by phase
+
+| Phase | PR | What landed |
+|---|---|---|
+| 1–3 | #384 | Foundation: migration `014`, ORM models, `EvidenceNeed` domain model, `EvidenceNeedUpdate` LLM schema, engine apply-layer |
+| 4 | #385 | `<evidence_needs>` context block in `context_builder.py` |
+| 5 | #386 | Lifecycle directives in prompt templates (`_EVIDENCE_NEEDS_*_BLOCK`) |
+| 6 | #387 | `evidence_need_id` wire-level rendering (LLM schema field → API response, Copilot UI) |
+| — | #388 | `evidence_need_id_dropped_total` metric at the response-flattening seam |
+
+Frontend: **Copilot shipped rendering** (`SuggestionCard.tsx` marks
+EVIDENCE suggestions tied to a tracked need + tests). **Dashboard has
+not** — consistent with the §10 "frontend deferred" stance, but note
+Copilot is already live.
+
+### 11.2 Where the code lives (file:line entry points)
+
+| Concern | Location |
+|---|---|
+| Domain model `EvidenceNeed` + `NeedPurpose`/`NeedStatus`/`NeedPriority` | `faultmaven/modules/case/domain/models.py` (`EvidenceNeed` ~`:1954`; enums ~`:1901`–`:1941`) |
+| `EvidenceCategory` enum | `faultmaven/modules/case/domain/models.py:1221` |
+| LLM schema `EvidenceNeedUpdate` + stage hooks | `faultmaven/core/investigation/schemas.py:501`; `evidence_need_updates` on Diagnosis/Mitigation/Treatment/General state-updates (~`:1044`–`:1194`); **absent from `InquiryStateUpdate` by design (INV-07)** |
+| `SuggestedFollowUp.evidence_need_id` + validators | `faultmaven/core/investigation/schemas.py:897`–`929` |
+| Engine apply-layer `_apply_evidence_need_updates` | `faultmaven/core/investigation/milestone_engine.py:6310`–`6637` (invoked ~`:6137`) |
+| Engine backstop (path-conditional rejection) | `milestone_engine.py:6349`–`6384` (reuses `_path_conditional_emission_restriction` / `_RESTRICTED_STATE_BLOCK_NAMES`) |
+| Hypothesis-retirement supersession | `milestone_engine.py:_supersede_needs_on_hypothesis_retirement` ~`:901`–`989` |
+| Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine.py:_flatten_follow_ups` ~`:7476`–`7530` |
+| Context block `<evidence_needs>` | `context_builder.py:_build_evidence_needs_block` ~`:1753`–`1892` (line render ~`:1737`) |
+| Prompt directives | `prompts/templates.py:_EVIDENCE_NEEDS_LIFECYCLE_BLOCK` ~`:1170`, `_..._SYMPTOM_ONLY_ADDENDUM` ~`:1206`, `_..._RCA_POOL_EVAL_BLOCK` ~`:1222`, `_..._REVERIFICATION_ADDENDUM` ~`:1253` |
+| Persistence (save/load) | `sqlite_case_repository.py:_upsert_evidence_needs` ~`:2320`, `_load_evidence_needs_for_case` ~`:633` |
+| Migration | `alembic/versions/20260526_1000_014_evidence_needs.py` |
+| Metrics | `faultmaven/core/investigation/lifecycle_metrics.py:137`–`194` |
+
+(Line numbers drift — treat as starting points, grep the symbol names to confirm.)
+
+### 11.3 Observability surface (NOT in §1–10)
+
+The design rationale predates the metrics layer. Four Prometheus
+counters in `lifecycle_metrics.py` instrument the feature — these are
+the **first things to check when debugging Evidence Needs behavior**:
+
+| Metric | Fires when | Debug signal |
+|---|---|---|
+| `faultmaven_evidence_need_created_total{purpose}` | A need is created in the apply-layer | Baseline volume; sudden zero ⇒ LLM stopped emitting `evidence_need_updates` |
+| `faultmaven_evidence_need_status_changed_total` | A need transitions status (incl. → SUPERSEDED) | Lifecycle churn; supersession spikes ⇒ hypothesis thrash |
+| `faultmaven_evidence_need_rejected_total{state}` | Apply-layer rejects a need (causal need in a path-restricted state) | Prompt not respecting the symptom-only gate; symmetric with the dropped counter below |
+| `faultmaven_evidence_need_id_dropped_total{reason}` | A `SuggestedFollowUp.evidence_need_id` can't be resolved at the flattening seam (`reason=out_of_range` \| `missing_metadata`) | LLM emitted a stale/mis-indexed `new_index_N` suggestion ref; sustained nonzero ⇒ Phase-5 same-turn-ID prompt rule needs sharpening |
+
+### 11.4 The wire-flattening seam (Phase 6 detail)
+
+§8.5 describes the `evidence_need_id` *field* but not how it reaches the
+wire. The LLM may reference a need created **in the same turn** via a
+`new_index_N` placeholder (the real `need_id` doesn't exist until the
+apply-layer runs). At response-build time, `_flatten_follow_ups`
+resolves `new_index_N` against `metadata["evidence_needs_updated"]`:
+
+- **Resolved** → `suggestion["evidence_need_id"] = <real need_id>` on the wire.
+- **Unresolvable** → the field is **dropped silently** from that suggestion (the suggestion itself still renders) and `evidence_need_id_dropped_total` increments with `reason=out_of_range` (index past the list) or `missing_metadata` (key absent). This is the demand-side mirror of `evidence_need_rejected_total` on the apply side.
+
+### 11.5 As-built deltas from §1–10
+
+- **`EvidenceCategory` has 6 members, not the 4 in §4.3.** The four in
+  §4.3 (`SYMPTOM_EVIDENCE`, `CAUSAL_EVIDENCE`, `SYMPTOM_ABSENCE_EVIDENCE`,
+  `CAUSAL_ABSENCE_EVIDENCE`) are the verification quartet Evidence Needs
+  introduced. The enum **also retains** `MITIGATION_EVIDENCE` and
+  `SOLUTION_EVIDENCE` from the post-010 evidence model (stage-completion
+  categories that predate this feature). A debugger seeing those two in
+  the code is not looking at a bug — they're legacy-but-live, outside the
+  presence/absence verification model. (The enum docstring still says
+  "Four claim-attached categories"; that string is stale.)
+- **DB tables carry two columns beyond the §8.7 DDL:** both
+  `evidence_needs` and `evidence_need_fulfillment` have an
+  `organization_id` FK (enterprise tenancy, matches every other case-
+  child table) and the junction has a `created_at` timestamp. The §8.7
+  DDL is the conceptual shape; migration `014` is authoritative.
+- **`NeedPurpose` has two values** (`symptom_verification`,
+  `causal_verification`) — matches §5/§7. There is no
+  mitigation/solution *need purpose*; re-verification reuses the same two
+  purposes (§7.5).
 
 ---
 
