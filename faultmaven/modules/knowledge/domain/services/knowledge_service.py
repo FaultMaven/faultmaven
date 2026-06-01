@@ -1259,6 +1259,16 @@ class KnowledgeService:
 
         now = datetime.now(timezone.utc)
 
+        # Normalize tags to strings up front so BOTH the relational
+        # KnowledgeItem and the Pydantic KnowledgeBaseDocument below receive
+        # str tags. YAML frontmatter can yield numeric tags (e.g. a bare
+        # ``503`` in ``tags: [istio, 503, envoy]``). KnowledgeItem coerces in
+        # __post_init__, but KnowledgeBaseDocument is a Pydantic model with a
+        # ``List[str]`` field and no such hook — it rejected the int and
+        # failed the whole runbook ingest. Coercing once here covers both.
+        if tags:
+            tags = [str(tag) for tag in tags]
+
         # 1) SQL first — relational source-of-truth. If this fails, ChromaDB
         # is never touched. If ChromaDB later fails (step 2), the SQL row
         # is rolled back before we raise (see lines below) — atomic across

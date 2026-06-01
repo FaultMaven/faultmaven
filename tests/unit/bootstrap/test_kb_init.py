@@ -395,3 +395,46 @@ async def test_ingest_runbook_with_sentinel_verified_by_fails_fk(
             verified_by="system",  # no such users row → FK violation
         )
     assert "foreign key" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_ingest_runbook_coerces_numeric_tags_for_both_models(
+    fk_on_ingest_service,
+):
+    """A numeric YAML tag (e.g. 503) must not break ingest at EITHER the
+    relational KnowledgeItem OR the Pydantic KnowledgeBaseDocument.
+
+    Regression: KnowledgeItem.__post_init__ coercion (#394) was not enough —
+    ingest_runbook also builds a KnowledgeBaseDocument (List[str] tags, no
+    coercion hook) which rejected the int and failed the whole ingest
+    (unknown-case-260526-4.md, failed=1 after #394).
+    """
+    from sqlalchemy import text
+
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
+
+    svc, factory = fk_on_ingest_service
+
+    # Must not raise (pre-fix: ValidationError on KnowledgeBaseDocument.tags).
+    chunks = await svc.ingest_runbook(
+        document_id="kb_numtag",
+        title="Numeric Tag Runbook",
+        content="# body",
+        organization_id="org-1",
+        scope="global",
+        tags=["istio", 503, "envoy"],
+        verified_by=None,
+        verification_level=VerificationLevel.COMMUNITY,
+    )
+    assert chunks == 3
+
+    async with factory() as session:
+        row = (
+            await session.execute(
+                text("SELECT tags FROM knowledge_items WHERE item_id='kb_numtag'")
+            )
+        ).first()
+    assert row is not None  # persisted (no rollback)
+    assert "503" in row[0]  # numeric tag coerced to "503"
