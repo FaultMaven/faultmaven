@@ -2795,8 +2795,28 @@ class SQLiteCaseRepository(CaseRepository):
     async def _append_case_actions(
         self, case_id: str, transitions: builtins.list[CaseAction], organization_id: str
     ) -> None:
-        """Append case actions (SQLite-compatible)."""
-        for transition in transitions:
+        """Append only newly-added case actions (append-only audit trail).
+
+        ``action_history`` is hydrated oldest-first by ``_load_case_actions``
+        and new actions are appended to the tail, so the in-memory list is
+        always ``[persisted_prefix..., new_tail...]``. Only the unpersisted
+        tail is inserted.
+
+        Re-inserting the full list every ``save()`` previously caused
+        *geometric* row growth: ``transition_id`` is an autoincrement PK with
+        no natural-key conflict target, so the ``ON CONFLICT DO NOTHING``
+        clause could never fire and every save duplicated the entire history
+        (R rows → 2R + new). Counting already-persisted rows and inserting
+        only ``transitions[already_persisted:]`` makes each save O(new), not
+        O(history).
+        """
+        count_result = await self.db.execute(
+            text("SELECT COUNT(*) FROM case_actions WHERE case_id = :case_id"),
+            {"case_id": case_id},
+        )
+        already_persisted = count_result.scalar() or 0
+        new_transitions = transitions[already_persisted:]
+        for transition in new_transitions:
             query = text("""
                 INSERT INTO case_actions (
                     case_id, organization_id, from_status, to_status, reason,
@@ -2805,7 +2825,6 @@ class SQLiteCaseRepository(CaseRepository):
                     :case_id, :organization_id, :from_status, :to_status, :reason,
                     :triggered_by, :transitioned_at, :metadata
                 )
-                ON CONFLICT DO NOTHING
             """)
 
             await self.db.execute(
