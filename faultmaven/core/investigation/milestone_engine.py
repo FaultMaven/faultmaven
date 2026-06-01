@@ -6338,6 +6338,15 @@ class MilestoneEngine:
         §5.3 (out-of-order arrival), §7.3 (engine backstop).
         """
         restricted_state = _path_conditional_emission_restriction(case)
+        # Ensure the metadata key exists before any append. The dict built
+        # in ``_process_response_structured`` (the one threaded here via
+        # ``_apply_investigation_updates``) does not seed
+        # ``evidence_needs_updated``, unlike the parallel dict in
+        # ``_process_turn_impl``. Without this, the first need created or
+        # updated this turn raised ``KeyError`` and 500'd the whole turn.
+        # The Phase-6 flatten seam already reads this key defensively
+        # (``metadata.get("evidence_needs_updated", [])``).
+        metadata.setdefault("evidence_needs_updated", [])
         # Same-turn need_id resolution: needs created earlier in this
         # same ``updates_list`` are tracked here so a later update with
         # ``need_id="new_index_0"`` can find them.

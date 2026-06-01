@@ -983,3 +983,85 @@ class TestSnapshotDiffBookendIntegration:
 
         assert h_already_retired.hypothesis_id in pre_retired
         assert newly_retired == set()
+
+
+def _process_response_metadata() -> dict:
+    """Metadata dict matching the one ``_process_response_structured``
+    actually builds and threads into ``_apply_investigation_updates``.
+
+    Crucially this does NOT contain ``evidence_needs_updated`` — the
+    production dict omits it (only the parallel ``_process_turn_impl``
+    dict seeds it). The apply-layer must seed the key itself; relying on
+    the caller raised ``KeyError`` and 500'd the turn (eval Run 33,
+    case_815d9ac01ec1).
+    """
+    return {
+        "milestones_completed": [],
+        "evidence_added": [],
+        "hypotheses_generated": [],
+        "hypotheses_validated": [],
+        "solutions_proposed": [],
+        "progress_made": False,
+        "status_transitioned": False,
+    }
+
+
+@pytest.mark.unit
+class TestApplyLayerSeedsMetadataKey:
+    """Regression: the apply-layer must not assume the caller seeded
+    ``metadata["evidence_needs_updated"]``.
+
+    ``_process_response_structured`` builds its own metadata dict without
+    that key, so a bare ``metadata["evidence_needs_updated"].append(...)``
+    raised ``KeyError`` on the FIRST need created or updated in a turn —
+    500'ing the entire turn. This is the demand-side create path the eval
+    expected to be "inert"; it was actually crashing.
+    """
+
+    def test_create_does_not_keyerror_without_seeded_key(self):
+        case = _make_case()
+        engine = _make_engine()
+        meta = _process_response_metadata()
+        assert "evidence_needs_updated" not in meta  # production shape
+
+        # Must not raise KeyError.
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[_make_update()],
+            metadata=meta,
+            current_turn=case.current_turn,
+        )
+
+        assert len(case.evidence_needs) == 1
+        assert meta["evidence_needs_updated"] == [case.evidence_needs[0].need_id]
+
+    def test_update_existing_need_does_not_keyerror(self):
+        case = _make_case()
+        engine = _make_engine()
+        # Seed an existing need to exercise the UPDATE append site (6621).
+        existing = EvidenceNeed(
+            case_id=case.case_id,
+            purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+            request_text="existing need",
+            rationale="seeded",
+            priority=NeedPriority.MEDIUM,
+            status=NeedStatus.PENDING,
+            created_at_turn=1,
+        )
+        case.evidence_needs.append(existing)
+
+        meta = _process_response_metadata()
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[
+                _make_update(
+                    need_id=existing.need_id,
+                    status=NeedStatus.PARTIALLY_MET,
+                )
+            ],
+            metadata=meta,
+            current_turn=case.current_turn,
+        )
+
+        assert existing.status == NeedStatus.PARTIALLY_MET
+        assert existing.need_id in meta["evidence_needs_updated"]
