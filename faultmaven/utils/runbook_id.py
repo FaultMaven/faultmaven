@@ -12,6 +12,18 @@ already-ingested runbooks.
 from __future__ import annotations
 
 import hashlib
+import re
+
+# A bootstrap-published (platform built-in) runbook has a deterministic
+# ``kb_<12-hex>`` item_id (see ``item_id_from_runbook_id``). This is the
+# provenance discriminator the inventory surface uses to decide delete
+# semantics: built-ins are *unpublished* (the file on disk would resurrect a
+# hard delete on the next bootstrap), authored items are *hard-deleted*.
+#
+# The anchor is EXACTLY 12 hex chars on purpose: the manual-create path
+# (``KnowledgeService._generate_document_id``) emits ``kb_<16-hex>``, so a
+# loose prefix match would misclassify manually-authored items as built-ins.
+_BUILTIN_ITEM_ID_RE = re.compile(r"^kb_[0-9a-f]{12}$")
 
 
 def item_id_from_runbook_id(runbook_id: str) -> str:
@@ -23,3 +35,14 @@ def item_id_from_runbook_id(runbook_id: str) -> str:
     """
     digest = hashlib.sha256(runbook_id.encode("utf-8")).hexdigest()[:12]
     return f"kb_{digest}"
+
+
+def is_builtin_item_id(item_id: str) -> bool:
+    """True if ``item_id`` is a bootstrap-published platform built-in.
+
+    Built-ins match ``^kb_[0-9a-f]{12}$`` exactly. Authored items
+    (verify_draft / API create) use random UUIDs or ``kb_<16-hex>`` and do
+    not match. Used by the inventory delete path to pick unpublish (built-in)
+    vs hard-delete (authored).
+    """
+    return bool(item_id and _BUILTIN_ITEM_ID_RE.match(item_id))

@@ -54,7 +54,6 @@ from faultmaven.models.interfaces import (
     IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
-from faultmaven.modules.knowledge.domain.models.conversion import DraftStatus
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -905,83 +904,73 @@ class KnowledgeService:
                 raise RuntimeError(f"Document update failed: {str(e)}") from e
 
     async def delete_document(self, document_id: str) -> Dict[str, Any]:
-        """
-        Soft-delete a document by setting its status to 'discarded'.
+        """Remove a published runbook from the inventory (provenance-gated).
 
-        Marks the document as deprecated and removes its chunks from vector search.
-        The document row is retained for referential integrity — past case
-        transcripts that cite this document remain valid.
+        Semantics depend on provenance (see ``is_builtin_item_id``):
 
-        Args:
-            document_id: Document identifier
+        - **Built-in** (``kb_<12 hex>``) → **unpublish**: set
+          ``is_published=False`` AND delete its ChromaDB vectors. A bare
+          ``is_published=False`` is NOT sufficient — investigation retrieval
+          does not honor the flag (``kb_qa`` filters ChromaDB by scope only),
+          so the vectors must be removed or the runbook stays queryable.
+          Deleting the vectors survives restart: the bootstrap content-hash
+          skip won't re-vectorize an unchanged row. (A later content change to
+          the on-disk file re-ingests it — an intentional new version.) The
+          row is kept because the file would resurrect a hard delete anyway.
+        - **Authored** (UUID / ``kb_<16 hex>``) → **hard delete**: drop the
+          ``knowledge_items`` row and its vectors.
 
-        Returns:
-            Dict with success status and document_id
-
-        Raises:
-            ValidationException: If document_id is empty
-            FileNotFoundError: If document not found
+        Returns ``{success, document_id, action}`` where action is
+        "unpublished" or "deleted".
         """
         with self._tracer.trace("knowledge_service_delete_document"):
-            logger.info(f"Deprecating document {document_id}")
-
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
 
+            if not self._db_session_factory:
+                return {"success": False, "error": "No database session factory"}
+
+            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+                DatabaseKnowledgeItemRepository,
+            )
+            from faultmaven.utils.runbook_id import is_builtin_item_id
+
             try:
-                # Delegate SQLite mutation to ConversionService (single owner).
-                # ConversionService commits status=DISCARDED before we touch
-                # ChromaDB so a ChromaDB failure leaves the DB in a consistent
-                # state (document is already hidden from queries).
-                if self._conversion_service is not None:
-                    found = await self._conversion_service.discard_by_knowledge_item_id(
-                        document_id
-                    )
-                elif self._db_session_factory:
-                    # Fallback when ConversionService has not been wired yet
-                    # (e.g. tests or early-startup edge cases).
-                    from sqlalchemy.future import select
+                builtin = is_builtin_item_id(document_id)
 
-                    from faultmaven.infrastructure.persistence.models import (
-                        ConversionDraftModel,
-                    )
+                async with self._db_session_factory() as session:
+                    repo = DatabaseKnowledgeItemRepository(session)
+                    item = await repo.get_by_id(document_id)
+                    if item is None:
+                        return {
+                            "success": False,
+                            "error": f"Document {document_id} not found",
+                        }
 
-                    async with self._db_session_factory() as session:
-                        result = await session.execute(
-                            select(ConversionDraftModel).where(
-                                (ConversionDraftModel.knowledge_item_id == document_id)
-                                | (ConversionDraftModel.runbook_id == document_id)
-                            )
-                        )
-                        dm = result.scalar_one_or_none()
-                        if dm is None:
-                            return {
-                                "success": False,
-                                "error": f"Document {document_id} not found",
-                            }
-                        dm.status = DraftStatus.DISCARDED.value
-                        dm.knowledge_item_id = None
-                        await session.commit()
-                        found = True
-                else:
-                    found = False
+                    if builtin:
+                        # Unpublish: keep the row, flip the flag (commits in repo).
+                        item.is_published = False
+                        await repo.update(item)
+                        action = "unpublished"
+                    else:
+                        await repo.delete(document_id)
+                        action = "deleted"
 
-                if not found:
-                    return {
-                        "success": False,
-                        "error": f"Document {document_id} not found",
-                    }
-
-                # Remove chunks from ChromaDB (best-effort, after DB commit).
+                # Remove ChromaDB vectors in BOTH paths (best-effort, after DB
+                # commit). Critical for unpublish: retrieval ignores
+                # is_published, so deleting the vectors is what actually
+                # removes the runbook from investigations.
                 if self._vector_store:
                     await self._remove_from_vector_store(document_id)
 
-                logger.info(f"Successfully deprecated document {document_id}")
-                return {"success": True, "document_id": document_id}
+                logger.info(f"{action} document {document_id}")
+                return {
+                    "success": True,
+                    "document_id": document_id,
+                    "action": action,
+                }
 
             except ValidationException:
-                raise
-            except FileNotFoundError:
                 raise
             except Exception as e:
                 logger.error(f"Failed to remove document {document_id}: {e}")
@@ -1540,10 +1529,14 @@ class KnowledgeService:
         user: Optional[Any] = None,
         team_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """List verified documents from SQLite with RBAC filtering.
+        """List published runbooks from knowledge_items with RBAC filtering.
 
-        SQLite (conversion_drafts) is the source of truth for document inventory.
-        ChromaDB is only used for vector search during investigations.
+        ``knowledge_items`` is the source of truth for the published runbook
+        inventory — both bootstrap built-ins and verify_draft promotions land
+        there. ``conversion_drafts`` is only the review queue (Drafts tab).
+        RBAC (org + personal/team isolation) is enforced in-query by the
+        repository; tag/scope filtering and pagination are applied here over
+        the already tenant-isolated set.
         """
         try:
             if not self._db_session_factory:
@@ -1555,84 +1548,90 @@ class KnowledgeService:
                     "offset": offset,
                 }
 
-            from sqlalchemy import func as sa_func
-            from sqlalchemy import or_
-            from sqlalchemy.future import select
-
-            from faultmaven.infrastructure.persistence.models import (
-                ConversionDraftModel,
-                ConversionJobModel,
+            from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+                KnowledgeItemType,
+            )
+            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+                DatabaseKnowledgeItemRepository,
+            )
+            from faultmaven.providers.tenancy.single_tenant import (
+                SingleTenantProvider,
             )
 
+            organization_id = (
+                getattr(user, "organization_id", None)
+                or SingleTenantProvider.DEFAULT_ORG_ID
+            )
             user_id = getattr(user, "user_id", None) if user else None
-            user_team_ids = set(team_ids) if team_ids else set()
+
+            item_type = None
+            if document_type:
+                try:
+                    item_type = KnowledgeItemType(document_type)
+                except ValueError:
+                    # Unknown type → no matching items (mirrors legacy empty
+                    # result for an unrecognized document_type filter).
+                    logger.info(
+                        f"Unknown document_type filter '{document_type}' — "
+                        "no matching items"
+                    )
+                    return {
+                        "documents": [],
+                        "total_count": 0,
+                        "limit": limit,
+                        "offset": offset,
+                        "filters": {
+                            "document_type": document_type,
+                            "tags": tags,
+                            "scope": scope,
+                        },
+                        "scope_counts": {"global": 0, "team": 0, "personal": 0},
+                    }
 
             async with self._db_session_factory() as session:
-                # Base query: verified drafts joined with jobs
-                base = (
-                    select(ConversionDraftModel, ConversionJobModel)
-                    .join(
-                        ConversionJobModel,
-                        ConversionDraftModel.conversion_id == ConversionJobModel.id,
-                    )
-                    .where(ConversionDraftModel.status == "verified")
+                repo = DatabaseKnowledgeItemRepository(session)
+                items = await repo.list_for_inventory(
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    team_ids=team_ids,
+                    item_type=item_type,
                 )
 
-                if document_type:
-                    base = base.where(
-                        ConversionDraftModel.document_type == document_type
-                    )
-
-                result = await session.execute(base)
-                rows = result.all()
-
-            # RBAC + scope filtering in Python (small result set)
+            # DTO build + tag filter over the RBAC-isolated set. Response shape
+            # is kept identical to the legacy conversion_drafts path so the
+            # dashboard needs no contract change; conversion-pipeline metadata
+            # (domain/service/severity/quality_score) is null for built-ins,
+            # which never went through that pipeline.
             all_documents: List[Dict[str, Any]] = []
-            for dm, job in rows:
-                doc_scope = job.scope or "global"
-
-                # RBAC
-                if doc_scope == "personal":
-                    if not user_id or job.user_id != user_id:
-                        continue
-                elif doc_scope == "team":
-                    if not user_team_ids or job.team_id not in user_team_ids:
-                        continue
-
-                # Parse tags
-                raw_tags = dm.tags or ""
-                if isinstance(raw_tags, str):
-                    tag_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
-                else:
-                    tag_list = raw_tags if isinstance(raw_tags, list) else []
+            for item in items:
+                tag_list = list(item.tags) if item.tags else []
 
                 # Tag filter
                 if tags and not any(t in tag_list for t in tags):
                     continue
 
+                meta = item.metadata or {}
                 all_documents.append(
                     {
-                        "document_id": dm.knowledge_item_id or dm.runbook_id,
-                        "title": dm.title,
-                        "document_type": dm.document_type or "runbook",
+                        "document_id": item.item_id,
+                        "title": item.title,
+                        "document_type": item.item_type.value,
                         "tags": tag_list,
-                        "scope": doc_scope,
-                        "owner_id": job.user_id,
-                        "team_id": job.team_id,
-                        "source_url": f"conversion:{dm.conversion_id}",
+                        "scope": item.scope.value,
+                        "owner_id": item.owner_id,
+                        "team_id": item.team_id,
+                        "source_url": item.source_url,
                         "created_at": (
-                            dm.created_at.isoformat() if dm.created_at else ""
+                            item.created_at.isoformat() if item.created_at else ""
                         ),
                         "updated_at": (
-                            dm.verified_at.isoformat() if dm.verified_at else ""
+                            item.updated_at.isoformat() if item.updated_at else ""
                         ),
                         "metadata": {
-                            "domain": dm.domain,
-                            "service": dm.service,
-                            "severity": dm.severity,
-                            "quality_score": (
-                                float(dm.quality_score) if dm.quality_score else None
-                            ),
+                            "domain": meta.get("domain"),
+                            "service": meta.get("service"),
+                            "severity": meta.get("severity"),
+                            "quality_score": meta.get("quality_score"),
                         },
                     }
                 )
@@ -1680,7 +1679,13 @@ class KnowledgeService:
             }
 
     async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
-        """Get a document by ID from SQLite + file content from disk."""
+        """Get a published runbook by ID from knowledge_items.
+
+        Content comes from the stored row (``knowledge_items.content``), not
+        from disk — the row is the source of truth for the published
+        inventory. Mirrors the ``list_documents`` DTO shape with a ``content``
+        field added.
+        """
         try:
             if not document_id:
                 return None
@@ -1688,70 +1693,35 @@ class KnowledgeService:
             if not self._db_session_factory:
                 return None
 
-            from pathlib import Path
-
-            from sqlalchemy.future import select
-
-            from faultmaven.infrastructure.persistence.models import (
-                ConversionDraftModel,
-                ConversionJobModel,
+            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+                DatabaseKnowledgeItemRepository,
             )
 
             async with self._db_session_factory() as session:
-                result = await session.execute(
-                    select(ConversionDraftModel, ConversionJobModel)
-                    .join(
-                        ConversionJobModel,
-                        ConversionDraftModel.conversion_id == ConversionJobModel.id,
-                    )
-                    .where(
-                        (ConversionDraftModel.knowledge_item_id == document_id)
-                        | (ConversionDraftModel.runbook_id == document_id)
-                    )
-                    .where(ConversionDraftModel.status == "verified")
-                )
-                row = result.first()
+                repo = DatabaseKnowledgeItemRepository(session)
+                item = await repo.get_by_id(document_id)
 
-            if not row:
+            if item is None:
                 return None
 
-            dm, job = row
-
-            # Read content from disk
-            content = ""
-            try:
-                content = Path(dm.file_path).read_text(encoding="utf-8")
-            except Exception:
-                logger.warning(
-                    f"Cannot read file for document {document_id}: {dm.file_path}"
-                )
-
-            raw_tags = dm.tags or ""
-            tag_list = (
-                [t.strip() for t in raw_tags.split(",") if t.strip()]
-                if isinstance(raw_tags, str)
-                else raw_tags if isinstance(raw_tags, list) else []
-            )
-
+            meta = item.metadata or {}
             return {
-                "document_id": dm.knowledge_item_id or dm.runbook_id,
-                "title": dm.title,
-                "content": content,
-                "document_type": dm.document_type or "runbook",
-                "tags": tag_list,
-                "scope": job.scope or "global",
-                "owner_id": job.user_id,
-                "team_id": job.team_id,
-                "source_url": f"conversion:{dm.conversion_id}",
-                "created_at": dm.created_at.isoformat() if dm.created_at else "",
-                "updated_at": dm.verified_at.isoformat() if dm.verified_at else "",
+                "document_id": item.item_id,
+                "title": item.title,
+                "content": item.content,
+                "document_type": item.item_type.value,
+                "tags": list(item.tags) if item.tags else [],
+                "scope": item.scope.value,
+                "owner_id": item.owner_id,
+                "team_id": item.team_id,
+                "source_url": item.source_url,
+                "created_at": item.created_at.isoformat() if item.created_at else "",
+                "updated_at": item.updated_at.isoformat() if item.updated_at else "",
                 "metadata": {
-                    "domain": dm.domain,
-                    "service": dm.service,
-                    "severity": dm.severity,
-                    "quality_score": (
-                        float(dm.quality_score) if dm.quality_score else None
-                    ),
+                    "domain": meta.get("domain"),
+                    "service": meta.get("service"),
+                    "severity": meta.get("severity"),
+                    "quality_score": meta.get("quality_score"),
                 },
             }
 
@@ -2076,65 +2046,84 @@ class KnowledgeService:
 
     async def update_document_metadata(
         self, document_id: str, **kwargs
-    ) -> Dict[str, Any]:
-        """Update document metadata and/or content.
+    ) -> Optional[Dict[str, Any]]:
+        """Update a published runbook's fields in knowledge_items.
 
-        Loads from SQLite (source of truth via get_document), applies updates,
-        then re-indexes in ChromaDB if content changed.
+        Loads the row (source of truth), applies title/content/tags/category/
+        document_type/version updates, persists via the repository, and
+        re-indexes ChromaDB when content changed. Returns the updated DTO, or
+        ``None`` when the document is not found.
         """
         try:
-            # Load current document from ChromaDB (source of truth)
-            document = await self.get_document(document_id)
-            if not document:
-                logger.warning(f"Document {document_id} not found for update")
+            if not self._db_session_factory:
                 return None
 
-            # Apply updates
-            if "title" in kwargs and kwargs["title"]:
-                document["title"] = kwargs["title"]
-            if "content" in kwargs and kwargs["content"]:
-                document["content"] = kwargs["content"]
-            if "tags" in kwargs:
-                document["tags"] = kwargs["tags"] if kwargs["tags"] is not None else []
-            if "document_type" in kwargs and kwargs["document_type"]:
-                document["document_type"] = kwargs["document_type"]
-            if "category" in kwargs and kwargs["category"]:
-                document["category"] = kwargs["category"]
-            if "version" in kwargs:
-                if "metadata" not in document:
-                    document["metadata"] = {}
-                document["metadata"]["version"] = kwargs["version"]
+            from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+                KnowledgeItemType,
+            )
+            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+                DatabaseKnowledgeItemRepository,
+            )
 
-            document["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
+            content_changed = bool(kwargs.get("content"))
 
-            # Re-index in ChromaDB (add with same ID overwrites — atomic swap)
-            content_changed = "content" in kwargs and kwargs["content"]
-            if self._vector_store:
+            async with self._db_session_factory() as session:
+                repo = DatabaseKnowledgeItemRepository(session)
+                item = await repo.get_by_id(document_id)
+                if item is None:
+                    logger.warning(f"Document {document_id} not found for update")
+                    return None
+
+                if kwargs.get("title"):
+                    item.title = self._sanitizer.sanitize(kwargs["title"])
+                if kwargs.get("content"):
+                    item.content = self._sanitizer.sanitize(kwargs["content"])
+                if "tags" in kwargs:
+                    item.tags = [str(t) for t in (kwargs["tags"] or [])]
+                if kwargs.get("category"):
+                    item.category = kwargs["category"]
+                if kwargs.get("document_type"):
+                    try:
+                        item.item_type = KnowledgeItemType(kwargs["document_type"])
+                    except ValueError:
+                        logger.info(
+                            f"Ignoring unknown document_type "
+                            f"'{kwargs['document_type']}' on update"
+                        )
+                if "version" in kwargs:
+                    meta = dict(item.metadata or {})
+                    meta["version"] = kwargs["version"]
+                    item.metadata = meta
+
+                await repo.update(item)  # commits + bumps updated_at
+
+            # Re-index ChromaDB when content changed (delete+add atomic swap).
+            if content_changed and self._vector_store:
                 doc_model = KnowledgeBaseDocument(
-                    document_id=document_id,
-                    title=document.get("title", ""),
-                    content=document.get("content", ""),
-                    document_type=document.get("document_type", "unknown"),
-                    tags=document.get("tags", []),
-                    source_url=document.get("source_url"),
-                    scope=document.get("scope", "global"),
-                    owner_id=document.get("owner_id"),
-                    team_id=document.get("team_id"),
-                    created_at=document.get("created_at", ""),
-                    updated_at=document["updated_at"],
+                    document_id=item.item_id,
+                    title=item.title,
+                    content=item.content,
+                    document_type=item.item_type.value,
+                    tags=list(item.tags) if item.tags else [],
+                    source_url=item.source_url,
+                    scope=item.scope.value,
+                    owner_id=item.owner_id,
+                    team_id=item.team_id,
+                    created_at=item.created_at.isoformat() if item.created_at else "",
+                    updated_at=item.updated_at.isoformat() if item.updated_at else "",
                 )
                 await self._index_document_in_vector_store(doc_model)
 
             logger.info(f"Successfully updated document {document_id}")
 
             return {
-                "document_id": document_id,
-                "title": document.get("title", ""),
-                "content": document.get("content", ""),
-                "document_type": document.get("document_type", ""),
-                "category": document.get("category", ""),
-                "tags": document.get("tags", []),
-                "updated_at": document["updated_at"],
+                "document_id": item.item_id,
+                "title": item.title,
+                "content": item.content,
+                "document_type": item.item_type.value,
+                "category": item.category or "",
+                "tags": list(item.tags) if item.tags else [],
+                "updated_at": item.updated_at.isoformat() if item.updated_at else "",
             }
 
         except Exception as e:
