@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -70,12 +71,14 @@ class BootstrapResult:
         self.ingested: list[str] = []
         self.skipped_unchanged: list[str] = []
         self.failed: list[tuple[str, str]] = []  # (filename, reason)
+        self.pruned: list[str] = []  # orphaned built-in item_ids removed
 
     def __repr__(self) -> str:
         return (
             f"BootstrapResult(ingested={len(self.ingested)}, "
             f"skipped_unchanged={len(self.skipped_unchanged)}, "
-            f"failed={len(self.failed)})"
+            f"failed={len(self.failed)}, "
+            f"pruned={len(self.pruned)})"
         )
 
 
@@ -163,12 +166,94 @@ async def bootstrap_kb(
             )
             result.failed.append((str(relative), reason))
 
+    # Reconcile: prune built-in rows whose source runbook no longer maps to
+    # any on-disk file (e.g. the runbook's frontmatter ``id`` changed,
+    # orphaning the old deterministic item_id). Keyed off the SAME on-disk
+    # set we just walked, independent of per-file ingest success.
+    keep_ids: set[str] = set()
+    for _scope, md_path in files_to_ingest:
+        iid = _item_id_for_file(md_path)
+        if iid:
+            keep_ids.add(iid)
+    result.pruned = await _prune_orphan_builtins(
+        keep_ids, knowledge_service, db_session_factory
+    )
+
     logger.info(
         f"KB bootstrap complete: {len(result.ingested)} ingested, "
         f"{len(result.skipped_unchanged)} unchanged, "
-        f"{len(result.failed)} failed"
+        f"{len(result.failed)} failed, "
+        f"{len(result.pruned)} pruned"
     )
     return result
+
+
+def _item_id_for_file(md_path: Path) -> Optional[str]:
+    """Derive the deterministic built-in item_id a runbook file maps to.
+
+    Returns None if the file has no frontmatter ``id`` (such a file can't
+    produce a row, so it contributes nothing to the keep-set).
+    """
+    try:
+        import frontmatter
+
+        post = frontmatter.load(str(md_path))
+        runbook_id = post.metadata.get("id")
+    except Exception as exc:
+        logger.warning(f"Could not read frontmatter id from {md_path.name}: {exc}")
+        return None
+    if not runbook_id:
+        return None
+    return _item_id_from_runbook_id(str(runbook_id))
+
+
+# Built-in rows carry a deterministic ``kb_<12 hex>`` item_id (see
+# ``_item_id_from_runbook_id``). User/authored items use random UUIDs, so this
+# pattern NEVER matches them — the prune below is structurally incapable of
+# touching authored content.
+_BUILTIN_ITEM_ID_RE = re.compile(r"^kb_[0-9a-f]{12}$")
+
+
+async def _prune_orphan_builtins(
+    keep_ids: set[str],
+    knowledge_service: Any,
+    db_session_factory: Callable[[], Awaitable[Any]],
+) -> list[str]:
+    """Delete built-in knowledge_items (+ vectors) with no on-disk source.
+
+    A built-in row is an orphan when its deterministic ``kb_<hash>`` id maps
+    to no current runbook file — typically because the runbook's frontmatter
+    ``id`` changed, leaving the old row behind (the bootstrap otherwise only
+    adds/updates, never removes). Authored/uuid items are out of scope: the
+    id pattern can't match them.
+
+    Safety: if ``keep_ids`` is empty (every file failed to yield an id — a
+    disk/parse anomaly, not a legitimate "remove everything" signal), prune
+    NOTHING. Mirrors the scan's "would discard all" abort guard.
+    """
+    if not keep_ids:
+        logger.warning(
+            "Orphan prune skipped: no on-disk runbook ids resolved "
+            "(possible data-dir/parse problem). No rows removed."
+        )
+        return []
+
+    from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+
+    async with db_session_factory() as session:
+        rows = await session.execute(select(KnowledgeItemModel.item_id))
+        all_item_ids = [r[0] for r in rows.all()]
+
+    pruned: list[str] = []
+    for item_id in all_item_ids:
+        if _BUILTIN_ITEM_ID_RE.match(item_id) and item_id not in keep_ids:
+            await _delete_existing(item_id, knowledge_service, db_session_factory)
+            pruned.append(item_id)
+            logger.info(
+                f"Pruned orphaned built-in knowledge_item {item_id} "
+                f"(no on-disk runbook maps to it)"
+            )
+    return pruned
 
 
 def _enumerate_runbook_files(knowledge_dir: Path) -> list[tuple[str, Path]]:

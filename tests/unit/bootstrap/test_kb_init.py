@@ -438,3 +438,55 @@ async def test_ingest_runbook_coerces_numeric_tags_for_both_models(
         ).first()
     assert row is not None  # persisted (no rollback)
     assert "503" in row[0]  # numeric tag coerced to "503"
+
+
+class TestPruneOrphanBuiltins:
+    """Bootstrap prunes built-in rows whose runbook id no longer maps to a
+    file on disk (id-churn orphans), without touching authored/uuid items.
+
+    Regression: id churn between runs left stale kb_<hash> rows (59 orphans
+    vs 60 files in eval 2026-06-01); the dashboard double-listed once the
+    Runbooks tab read knowledge_items.
+    """
+
+    @pytest.mark.asyncio
+    async def test_prunes_builtin_orphan_not_on_disk(self):
+        deleted: list[str] = []
+
+        async def fake_delete(item_id, _svc, _factory):
+            deleted.append(item_id)
+
+        keep = {"kb_aaaaaaaaaaaa"}  # the one current on-disk runbook
+        all_ids = [
+            "kb_aaaaaaaaaaaa",  # on disk → keep
+            "kb_bbbbbbbbbbbb",  # built-in, NOT on disk → prune
+            "550e8400-e29b-41d4-a716-446655440000",  # authored uuid → never touch
+        ]
+
+        class _Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def execute(self, _stmt):
+                return MagicMock(all=lambda: [(i,) for i in all_ids])
+
+        with patch.object(kb_init, "_delete_existing", side_effect=fake_delete):
+            pruned = await kb_init._prune_orphan_builtins(
+                keep, knowledge_service=MagicMock(), db_session_factory=lambda: _Session()
+            )
+
+        assert pruned == ["kb_bbbbbbbbbbbb"]
+        assert deleted == ["kb_bbbbbbbbbbbb"]  # uuid + kept id untouched
+
+    @pytest.mark.asyncio
+    async def test_empty_keepset_prunes_nothing(self):
+        """Safety guard: empty keep-set (disk/parse anomaly) removes nothing."""
+        with patch.object(kb_init, "_delete_existing") as del_mock:
+            pruned = await kb_init._prune_orphan_builtins(
+                set(), knowledge_service=MagicMock(), db_session_factory=MagicMock()
+            )
+        assert pruned == []
+        del_mock.assert_not_called()
