@@ -1169,7 +1169,7 @@ Key rules:
 
 **`ConversionService` is the sole owner of `conversion_drafts` mutations.** No other service writes directly to the `conversion_drafts` table.
 
-When `KnowledgeService.delete_document()` is called on a verified runbook, it delegates to `ConversionService.discard_by_knowledge_item_id()`, which sets `status=discarded` and clears `knowledge_item_id` before `KnowledgeService` removes the ChromaDB entry. This ordering ensures that a ChromaDB failure leaves the database in a consistent state (document hidden from queries).
+`KnowledgeService.delete_document()` now operates on the `knowledge_items` inventory directly (provenance-gated: built-in → unpublish + vector delete; authored → hard delete + vector delete — see [knowledge-base-architecture.md Storage Architecture](./knowledge-base-architecture.md#storage-architecture)). It does **not** mutate `conversion_drafts`, so the single-owner principle is preserved without a delete-time delegation.
 
 Post-construction wiring in `main.py` gives `KnowledgeService` a reference to `ConversionService` after both are initialised, avoiding circular DI.
 
@@ -1178,6 +1178,13 @@ Post-construction wiring in `main.py` gives `KnowledgeService` a reference to `C
 `ConversionService.scan_for_runbooks()` includes a bulk-discard guard: if the reconcile step would mark **every** active draft as discarded (because files are missing from disk), the session is rolled back and a `RuntimeError` is raised. The API surfaces this as `HTTP 409 Conflict` with the affected draft IDs and a recovery instruction. This prevents a storage-layer failure (wiped `data/knowledge/` directory) from silently destroying the entire KB draft state.
 
 **Verified-row policy (changed 2026-05-26):** The scan no longer reverts rows with `status=verified` but `knowledge_item_id=NULL` back to `draft`. The atomic `verify_draft` flow cannot produce that half-state anymore, and the previous "self-healing" behaviour turned out to be the destructive corruption path that downgraded user-verified runbooks every time the KB page was visited. Legacy rows are now surfaced via a WARN log so an operator can clean them up explicitly; the scan itself is read-only with respect to verified rows.
+
+**Already-published reconciliation (phantom-draft prevention):** The scan reconciles against `knowledge_items`, not just `conversion_drafts`. Built-in runbooks are ingested *directly* into `knowledge_items` by the bootstrap and never get a draft row, so a scan that only checked `conversion_drafts` treated each one as "untracked" and manufactured a redundant `status='draft'` row — flooding the Drafts tab with runbooks already published in the Runbooks tab. The scan now:
+
+- **skips** any on-disk file whose derived `item_id` already exists in `knowledge_items` (no new draft created); and
+- **discards** any existing `status='draft'` row whose `runbook_id` maps to a published `knowledge_items` row.
+
+These already-published discards are tracked separately from the bulk-discard guard above, so clearing redundant phantom drafts is never mistaken for the "files missing from disk" storage-failure signal.
 
 ### 9.4 Source File Retention
 

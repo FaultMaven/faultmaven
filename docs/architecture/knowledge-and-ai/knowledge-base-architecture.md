@@ -418,9 +418,12 @@ In the local (single-user) deployment, this is the only KB tier available. The u
 
 **Write path**: `upload_document()` and `verify_draft()` → `ingest_runbook()`, which writes the relational `knowledge_items` row first (source-of-truth) and then the ChromaDB chunks + embeddings. Both stores receive the same `kb_<uuid>` id; ChromaDB-side failures leave the SQL row in place for a future scan-and-recover pass to re-embed (rolling back would erase the only signal that re-embedding is needed). Conversion-bookkeeping rows (`conversion_jobs`, `conversion_drafts`) are written in addition for the upload-flow audit trail.
 
-**Read path**: `list_documents()` and `get_document()` read from **SQLite** (`conversion_drafts` joined with `conversion_jobs`). Full content read from markdown file on disk. ChromaDB is not queried for listing or retrieval.
+**Read path**: `list_documents()` and `get_document()` read from **`knowledge_items`** — the source of truth for the published inventory (both bootstrap built-ins and `verify_draft` promotions land there). Content comes from the stored `knowledge_items.content` row, not disk. RBAC (org tenancy + personal-owner / team-member isolation) is enforced **in-query** by the repository (`list_for_inventory`); tag/scope filtering and pagination are applied over that already tenant-isolated set. `conversion_drafts` is **only** the review queue (the Drafts tab = `status='draft'`); it is no longer the document inventory. ChromaDB is not queried for listing or retrieval.
 
-**Delete path**: `delete_document()` sets SQLite status to `deprecated` (the lifecycle terminal state per [runbook-content-architecture.md §5](./runbook-content-architecture.md#lifecycle-states) — "Replaced by a newer runbook or no longer applicable" extends to owner-initiated removal), then removes chunks from ChromaDB via `delete_documents_by_parent_id()`.
+**Delete path**: `delete_document()` is provenance-gated by id shape:
+
+- **Built-in** (deterministic `kb_<12 hex>` id) → **unpublish**: set `is_published=False` *and* delete its ChromaDB vectors. A bare flag flip is insufficient — investigation retrieval (`kb_qa`) filters ChromaDB by scope only and does **not** honor `is_published`, so the vectors must be removed for the runbook to actually leave investigations. The row is kept (a hard delete would be resurrected by the next bootstrap from the on-disk file); the deletion survives restart because the content-hash skip won't re-vectorize an unchanged row.
+- **Authored** (random-UUID id) → **hard delete**: drop the `knowledge_items` row and its ChromaDB vectors.
 
 **Search path**: `hybrid_search()` queries ChromaDB with explicit BGE-M3 embeddings (1024 dims). Two-stage: vector + keyword recall, then 4-signal reranker.
 
