@@ -149,6 +149,28 @@ class KnowledgeItemRepository(ABC):
         pass
 
     @abstractmethod
+    async def list_for_inventory(
+        self,
+        organization_id: str,
+        user_id: Optional[str] = None,
+        team_ids: Optional[List[str]] = None,
+        item_type: Optional[KnowledgeItemType] = None,
+    ) -> List[KnowledgeItem]:
+        """List published items visible to a requester, RBAC enforced in-query.
+
+        Powers the dashboard "Runbooks" inventory. Visibility:
+          - global / organization scope → visible to everyone in the org
+          - personal scope → only when ``owner_id == user_id``
+          - team scope → only when ``team_id in team_ids``
+
+        Returns the full RBAC-visible set (ordered created_at DESC); the
+        service applies tag/scope filtering and pagination over this already
+        tenant-isolated set. RBAC lives here, NOT in a post-fetch Python
+        filter, so a personal/team item can never leak across tenants.
+        """
+        pass
+
+    @abstractmethod
     async def search_by_text(
         self,
         organization_id: str,
@@ -511,6 +533,68 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             )
             raise KnowledgeItemRepositoryException(
                 f"Failed to list items for organization {organization_id}: {e}"
+            ) from e
+
+    @staticmethod
+    def _inventory_visibility_clause(
+        user_id: Optional[str], team_ids: Optional[List[str]]
+    ):
+        """RBAC scope-visibility predicate for the inventory surface.
+
+        global/organization → everyone in the org; personal → owner only;
+        team → members only. Branches for personal/team are added only when
+        the requester actually has a user_id / team memberships, so an
+        anonymous caller sees global/organization content only.
+        """
+        visibility = [KnowledgeItemModel.scope.in_(["global", "organization"])]
+        if user_id:
+            visibility.append(
+                and_(
+                    KnowledgeItemModel.scope == "personal",
+                    KnowledgeItemModel.owner_id == user_id,
+                )
+            )
+        if team_ids:
+            visibility.append(
+                and_(
+                    KnowledgeItemModel.scope == "team",
+                    KnowledgeItemModel.team_id.in_(list(team_ids)),
+                )
+            )
+        return or_(*visibility)
+
+    async def list_for_inventory(
+        self,
+        organization_id: str,
+        user_id: Optional[str] = None,
+        team_ids: Optional[List[str]] = None,
+        item_type: Optional[KnowledgeItemType] = None,
+    ) -> List[KnowledgeItem]:
+        """List published items visible to a requester, RBAC enforced in-query."""
+        try:
+            conditions = [
+                KnowledgeItemModel.organization_id == organization_id,
+                KnowledgeItemModel.is_published == True,  # noqa: E712
+                self._inventory_visibility_clause(user_id, team_ids),
+            ]
+            if item_type:
+                conditions.append(KnowledgeItemModel.item_type == item_type.value)
+
+            stmt = (
+                select(KnowledgeItemModel)
+                .where(and_(*conditions))
+                .order_by(KnowledgeItemModel.created_at.desc())
+            )
+            result = await self.db.execute(stmt)
+            item_models = result.scalars().all()
+            return [self._to_domain(model) for model in item_models]
+
+        except Exception as e:
+            logger.error(
+                f"Failed to list inventory for organization {organization_id}: {e}"
+            )
+            raise KnowledgeItemRepositoryException(
+                f"Failed to list inventory for organization {organization_id}: {e}"
             ) from e
 
     async def search_by_text(
@@ -876,6 +960,37 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         paginated = items[offset : offset + limit]
 
         return [deepcopy(i) for i in paginated]
+
+    @staticmethod
+    def _inventory_visible(item, user_id, team_set) -> bool:
+        scope = item.scope.value if hasattr(item.scope, "value") else str(item.scope)
+        if scope in ("global", "organization"):
+            return True
+        if scope == "personal":
+            return bool(user_id) and item.owner_id == user_id
+        if scope == "team":
+            return item.team_id in team_set
+        return False
+
+    async def list_for_inventory(
+        self,
+        organization_id: str,
+        user_id: Optional[str] = None,
+        team_ids: Optional[List[str]] = None,
+        item_type: Optional[KnowledgeItemType] = None,
+    ) -> List[KnowledgeItem]:
+        """List published items visible to a requester, RBAC enforced."""
+        team_set = set(team_ids or [])
+        items = [
+            i
+            for i in self._items.values()
+            if i.organization_id == organization_id
+            and i.is_published
+            and (item_type is None or i.item_type == item_type)
+            and self._inventory_visible(i, user_id, team_set)
+        ]
+        items.sort(key=lambda x: x.created_at, reverse=True)
+        return [deepcopy(i) for i in items]
 
     async def search_by_text(
         self,
