@@ -475,7 +475,9 @@ class TestPruneOrphanBuiltins:
 
         with patch.object(kb_init, "_delete_existing", side_effect=fake_delete):
             pruned = await kb_init._prune_orphan_builtins(
-                keep, knowledge_service=MagicMock(), db_session_factory=lambda: _Session()
+                keep,
+                knowledge_service=MagicMock(),
+                db_session_factory=lambda: _Session(),
             )
 
         assert pruned == ["kb_bbbbbbbbbbbb"]
