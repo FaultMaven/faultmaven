@@ -44,7 +44,7 @@ from faultmaven.core.investigation.prompts.templates import (
 _LIFECYCLE_PROBE = "EVIDENCE NEEDS (demand-side pool)"
 _SYMPTOM_ONLY_PROBE = "EVIDENCE NEEDS — symptom-only stage"
 _POOL_EVAL_PROBE = "POOL EVALUATION (at hypothesis creation)"
-_REVERIFICATION_PROBE = "EVIDENCE NEEDS — re-verification"
+_REVERIFICATION_PROBE = "RE-VERIFICATION:"
 
 
 # ============================================================
@@ -322,10 +322,18 @@ class TestReVerificationSuccessCaseDirective:
     def test_references_causal_absence_evidence_category(self):
         assert "causal_absence_evidence" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
 
-    def test_links_absence_row_to_originating_need(self):
-        """Absence rows must link back to the need they prove — the
-        link is what makes them the audit record, not orphan data."""
-        assert "fulfilling_evidence_ids" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+    def test_absence_rows_stand_alone_not_linked_to_hypothesis(self):
+        """Both absence categories are stand-alone resolution audit rows.
+        They must NOT be linked to a hypothesis: a successful fix confirms
+        the root-cause hypothesis, and the apply-layer coerces any
+        non-SUPPORTS stance to a likelihood penalty, so a confidence-
+        bearing link would erode the very hypothesis the fix proves."""
+        addendum = _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+        assert "STAND-ALONE" in addendum
+        assert "do NOT link" in addendum
+        # The backwards-semantics link must be gone.
+        assert "hypothesis_evidence_links" not in addendum
+        assert "CONTRADICTS" not in addendum
 
 
 # ============================================================

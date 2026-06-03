@@ -868,9 +868,13 @@ an evidence row.
    re-verification)?
    Symptom no longer present → symptom_absence_evidence
    Cause no longer present   → causal_absence_evidence
-   Link the absence row to the same need via that need's
-   `fulfilling_evidence_ids`. Without the absence row, the case has
-   no positive proof of resolution.
+   Both absence categories are STAND-ALONE resolution audit rows
+   (`source_file_id` + the re-checked extract). Do NOT link them to a
+   hypothesis: a successful fix CONFIRMS the root-cause hypothesis, so a
+   confidence-bearing link would erode the very hypothesis it proves.
+   Re-verification records that the fix held; it does not re-litigate
+   the diagnosis. Without the absence row, the case has no positive
+   proof of resolution.
 
 CREATING EVIDENCE RECORDS (evidence_to_add):
 When your analysis discovers a claim-relevant slice not already
@@ -1242,27 +1246,33 @@ existing pool against it in the SAME turn:
 
 
 # Mitigation/Treatment addendum — re-verification framing only.
-# Used by both MITIGATION_INSTRUCTIONS and TREATMENT_INSTRUCTIONS;
-# context_builder renders FULFILLED needs under "Re-verification
-# checklist" in those stages.
+# Used by both MITIGATION_INSTRUCTIONS and TREATMENT_INSTRUCTIONS.
+# context_builder renders the confirmed presence-evidence rows
+# (symptom_evidence / causal_evidence) under "Re-verification checklist"
+# in those stages — NOT FULFILLED needs (those are gap-rare and would
+# leave the checklist incomplete).
 #
 # Causal-need gating is stage-specific (gated in MITIGATION, permitted
 # in TREATMENT's failure path under extended diagnosis), so it lives
 # inline at each stage's existing "no hypothesis formation" anchor
 # rather than in this shared addendum.
 _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM = """\
-**EVIDENCE NEEDS — re-verification:**
-<evidence_needs> renders FULFILLED needs as a "Re-verification
-checklist" in this stage. Re-check the data each need pinned to
+**RE-VERIFICATION:**
+<evidence_needs> renders a "Re-verification checklist" in this stage —
+the confirmed findings (the symptom_evidence / causal_evidence rows that
+established each symptom and cause). Re-check the data behind each one to
 confirm the symptom (or cause) it captured is no longer present.
 
 - If the signature is GONE: emit an `evidence_to_add` row with
   `category=symptom_absence_evidence` (or `causal_absence_evidence`
-  when re-checking a cause), `source_file_id` pointing at the file
-  you re-checked, and link the row to the same need via that need's
-  `fulfilling_evidence_ids`. The absence row is the audit record that
-  the fix held — without it the case has no positive proof of
-  resolution.
+  when re-checking a cause) and `source_file_id` pointing at the file
+  you re-checked. Both absence categories are STAND-ALONE audit rows —
+  do NOT link them to a hypothesis. A successful fix confirms the
+  root-cause hypothesis, so a confidence-bearing link would erode the
+  very hypothesis it proves; re-verification records that the fix held,
+  not a change to the diagnosis. The absence row is the audit record
+  that the fix
+  held — without it the case has no positive proof of resolution.
 - If the original signature REAPPEARS, the fix did not hold —
   surface that as a new finding rather than declaring success.
 """
@@ -2075,10 +2085,11 @@ Do NOT continue proposing mitigation variants after offering this choice.
   (post-mitigation metrics, error rates, user confirmation of improvement)
 - **symptom_absence_evidence** / **causal_absence_evidence**: Re-verification
   rows confirming a previously verified symptom or cause is no longer
-  present. Linked to the originating FULFILLED need via that need's
-  ``fulfilling_evidence_ids``. Emit per the decision-tree step 4 and
-  the re-verification addendum when re-checking the data established
-  earlier in DIAGNOSIS.
+  present. Both are stand-alone resolution audit rows (`source_file_id`
+  + extract) — do NOT link them to a hypothesis (a fix confirms the
+  cause; a confidence-bearing link would erode it).
+  Emit per the decision-tree step 4 and the re-verification addendum
+  when re-checking the findings established earlier in DIAGNOSIS.
 
 **CRITICAL REMINDERS:**
 - This is a TEMPORARY fix — always communicate this to the user
@@ -2284,10 +2295,12 @@ The process:
   (post-fix metrics, error rates, user confirmation, clean logs)
 - **symptom_absence_evidence** / **causal_absence_evidence**: Re-verification
   rows confirming a previously verified symptom or cause is no longer
-  present. Primary-path artifact — link each to the originating
-  FULFILLED need via that need's ``fulfilling_evidence_ids``. Emit per
-  the decision-tree step 4 and the re-verification addendum. Without
-  these the case has no positive proof of resolution.
+  present. Primary-path artifact — both are stand-alone resolution
+  audit rows (`source_file_id` + extract); do NOT link them to a
+  hypothesis (a fix confirms the cause; a confidence-bearing link would
+  erode it). Emit per the decision-tree step 4 and the re-verification
+  addendum. Without these the case has no
+  positive proof of resolution.
 - **symptom_evidence**: New symptoms that emerge after a failed fix
   (new errors, changed behavior, unexpected side effects)
 - **causal_evidence**: Data revealing the actual root cause after a theory is disproven

@@ -1222,11 +1222,16 @@ class EvidenceCategory(str, Enum):
     """
     Evidence classification by investigation purpose.
 
-    Four claim-attached categories. Every row is the LLM's deliberate
-    decision to record a specific extract as evidence for a specific
-    claim, created only during INVESTIGATING. Contextual data lives on
-    ``uploaded_files`` — no evidence row is needed until the agent
-    extracts a claim-relevant slice. Rejection is expressed as the
+    Six claim-attached categories: the presence/absence verification
+    quartet (``symptom_evidence``, ``causal_evidence``,
+    ``symptom_absence_evidence``, ``causal_absence_evidence``) plus two
+    legacy stage-completion categories (``mitigation_evidence``,
+    ``solution_evidence``) retained from the post-010 model and slated
+    for removal once prompts stop emitting them. Every row is the LLM's
+    deliberate decision to record a specific extract as evidence for a
+    specific claim, created only during INVESTIGATING. Contextual data
+    lives on ``uploaded_files`` — no evidence row is needed until the
+    agent extracts a claim-relevant slice. Rejection is expressed as the
     absence of an evidence row; hypothesis-level refutation lives on
     ``hypothesis_evidence.stance``.
     """

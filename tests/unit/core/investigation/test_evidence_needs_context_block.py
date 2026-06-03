@@ -5,10 +5,12 @@ Verifies the demand-side pool rendering rules from
 and §8.4:
 
 - Progressive activation (design §10.6): empty pool → ``""``
-- Default filter (DIAGNOSIS): PENDING + PARTIALLY_MET only; FULFILLED
-  and SUPERSEDED excluded.
-- MITIGATION/TREATMENT stage exception: FULFILLED also surfaces as a
-  re-verification checklist. SUPERSEDED remains excluded.
+- Default filter (DIAGNOSIS): PENDING + PARTIALLY_MET needs only;
+  FULFILLED and SUPERSEDED excluded.
+- MITIGATION/TREATMENT re-verification checklist is built from the
+  confirmed presence-evidence rows (symptom_evidence / causal_evidence),
+  NOT from FULFILLED needs (needs are gap-rare; evidence rows are
+  complete). SUPERSEDED needs remain excluded from the outstanding list.
 - Symptom needs render ``motivated_by: problem_statement``; causal
   needs render ``motivated_by: [hyp_*, ...]``.
 - High-priority needs render first (presentation preference, not a
@@ -35,7 +37,10 @@ from faultmaven.core.investigation.prompts.context_builder import (
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
+    Evidence,
+    EvidenceCategory,
     EvidenceNeed,
+    EvidenceSourceType,
     InquiryData,
     InvestigationPath,
     InvestigationStage,
@@ -124,6 +129,29 @@ def _make_need(
     return need
 
 
+def _make_evidence(
+    case: Case,
+    *,
+    category: EvidenceCategory = EvidenceCategory.SYMPTOM_EVIDENCE,
+    summary: str = "confirmed symptom finding",
+) -> Evidence:
+    """Add a confirmed presence-evidence row — the re-verification
+    checklist is anchored on these, not on FULFILLED needs."""
+    ev = Evidence(
+        evidence_id=f"ev_{uuid4().hex[:12]}",
+        category=category,
+        primary_purpose="symptom_verified",
+        summary=summary,
+        extract="observed signature",
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id="file_aabb12345678",
+        collected_by="user_test",
+        collected_at_turn=case.current_turn,
+    )
+    case.evidence.append(ev)
+    return ev
+
+
 # ============================================================
 # Progressive activation
 # ============================================================
@@ -201,27 +229,60 @@ class TestDiagnosisStageFilter:
 
 @pytest.mark.unit
 class TestPostDiagnosisReVerificationException:
-    """During MITIGATION and TREATMENT, FULFILLED needs surface as a
-    re-verification checklist (design §8.4). SUPERSEDED remains
-    excluded across all stages."""
+    """During MITIGATION and TREATMENT, the re-verification checklist is
+    built from the confirmed presence-evidence rows
+    (symptom_evidence / causal_evidence) — NOT from FULFILLED needs.
 
-    def test_fulfilled_surfaces_in_mitigation(self):
+    Evidence rows exist for every confirmed finding; FULFILLED needs are
+    gap-conditional and gap-rare, so a need-anchored checklist would omit
+    findings confirmed from already-available data (the common case)."""
+
+    def test_presence_evidence_surfaces_in_mitigation(self):
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
             path=InvestigationPath.MITIGATION_FIRST,
         )
-        fulfilled = _make_need(case, status=NeedStatus.FULFILLED)
+        ev = _make_evidence(case, category=EvidenceCategory.SYMPTOM_EVIDENCE)
         out = _build_evidence_needs_block(case)
-        assert fulfilled.need_id in out
-        assert "FULFILLED" in out
+        assert ev.evidence_id in out
+        assert "Re-verification checklist" in out
 
-    def test_fulfilled_surfaces_in_treatment(self):
+    def test_causal_evidence_surfaces_in_treatment(self):
+        case = _make_case(stage=InvestigationStage.TREATMENT)
+        ev = _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
+        out = _build_evidence_needs_block(case)
+        assert ev.evidence_id in out
+        assert "CAUSE" in out
+
+    def test_confirmed_finding_surfaces_without_any_need(self):
+        """The decisive case: a cause confirmed from already-available
+        data leaves a causal_evidence row but NO need. It must still
+        appear on the re-verification checklist."""
+        case = _make_case(stage=InvestigationStage.TREATMENT)
+        ev = _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
+        assert not case.evidence_needs  # no need was ever created
+        out = _build_evidence_needs_block(case)
+        assert ev.evidence_id in out
+
+    def test_fulfilled_need_does_not_drive_checklist(self):
+        """A FULFILLED need with no corresponding evidence row no longer
+        produces a re-verification entry (the anchor moved to evidence)."""
         case = _make_case(stage=InvestigationStage.TREATMENT)
         fulfilled = _make_need(case, status=NeedStatus.FULFILLED)
         out = _build_evidence_needs_block(case)
-        assert fulfilled.need_id in out
+        # No presence-evidence rows → no re-verification section at all.
+        assert "Re-verification checklist" not in out
+        assert fulfilled.need_id not in out
 
-    def test_superseded_still_excluded_in_mitigation(self):
+    def test_presence_evidence_not_shown_in_diagnosis(self):
+        """Re-verification is post-diagnosis only — presence rows do not
+        surface as a checklist during DIAGNOSIS."""
+        case = _make_case(stage=InvestigationStage.DIAGNOSIS)
+        _make_evidence(case, category=EvidenceCategory.SYMPTOM_EVIDENCE)
+        out = _build_evidence_needs_block(case)
+        assert "Re-verification checklist" not in out
+
+    def test_superseded_need_still_excluded_in_mitigation(self):
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
             path=InvestigationPath.MITIGATION_FIRST,
@@ -230,7 +291,7 @@ class TestPostDiagnosisReVerificationException:
         pending = _make_need(case, status=NeedStatus.PENDING)
         out = _build_evidence_needs_block(case)
         assert superseded.need_id not in out
-        assert pending.need_id in out
+        assert pending.need_id in out  # outstanding-needs section still works
 
 
 # ============================================================
@@ -373,12 +434,13 @@ class TestOutstandingVsReVerificationSplit:
         assert "Outstanding needs" in out
         assert "Re-verification checklist" not in out
 
-    def test_mitigation_with_only_fulfilled_omits_outstanding_section(self):
+    def test_mitigation_with_only_reverification_omits_outstanding_section(self):
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
             path=InvestigationPath.MITIGATION_FIRST,
         )
-        _make_need(case, status=NeedStatus.FULFILLED)
+        # A confirmed finding (presence-evidence row) but no PENDING need.
+        _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
         out = _build_evidence_needs_block(case)
         assert "Outstanding needs" not in out
         assert "Re-verification checklist" in out
@@ -399,17 +461,16 @@ class TestOutstandingVsReVerificationSplit:
             path=InvestigationPath.MITIGATION_FIRST,
         )
         pending = _make_need(case, status=NeedStatus.PENDING, request_text="open work")
-        fulfilled = _make_need(
-            case, status=NeedStatus.FULFILLED, request_text="established cause"
-        )
+        finding = _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
         out = _build_evidence_needs_block(case)
         assert "Outstanding needs" in out
         assert "Re-verification checklist" in out
         # Outstanding section precedes re-verification section
         assert out.index("Outstanding needs") < out.index("Re-verification checklist")
-        # Each need lands in its proper section
+        # The PENDING need lands in outstanding; the confirmed finding
+        # (evidence row) lands in re-verification.
         assert out.index(pending.need_id) < out.index("Re-verification checklist")
-        assert out.index(fulfilled.need_id) > out.index("Re-verification checklist")
+        assert out.index(finding.evidence_id) > out.index("Re-verification checklist")
 
 
 # ============================================================
@@ -449,7 +510,7 @@ class TestAntiAnchoringFraming:
             stage=InvestigationStage.MITIGATION,
             path=InvestigationPath.MITIGATION_FIRST,
         )
-        _make_need(case, status=NeedStatus.FULFILLED)
+        _make_evidence(case, category=EvidenceCategory.SYMPTOM_EVIDENCE)
         out = _build_evidence_needs_block(case)
         assert _ANTI_ANCHORING_MARKER in out
 
@@ -459,7 +520,7 @@ class TestAntiAnchoringFraming:
             path=InvestigationPath.MITIGATION_FIRST,
         )
         _make_need(case, status=NeedStatus.PENDING)
-        _make_need(case, status=NeedStatus.FULFILLED)
+        _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
         out = _build_evidence_needs_block(case)
         assert _ANTI_ANCHORING_MARKER in out
         # Single emission — appears exactly once across the whole block.
@@ -474,7 +535,7 @@ class TestAntiAnchoringFraming:
             path=InvestigationPath.MITIGATION_FIRST,
         )
         _make_need(case, status=NeedStatus.PENDING)
-        _make_need(case, status=NeedStatus.FULFILLED)
+        _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
         out = _build_evidence_needs_block(case)
         assert out.index(_ANTI_ANCHORING_MARKER) < out.index("Outstanding needs")
         assert out.index(_ANTI_ANCHORING_MARKER) < out.index(
