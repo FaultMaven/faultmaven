@@ -7075,6 +7075,25 @@ class MilestoneEngine:
                     # Skip downstream proposal processing.
                     proposed = None
 
+            # Loop-bound (project-resolution-gate-stuck-loop): if the
+            # handshake block above already pivoted this case to CLOSE this
+            # turn — a repeated resolution NEEDS_INFO that re-asking cannot
+            # satisfy (the user keeps confirming but no Solution is/can be
+            # recorded) — do NOT let the LLM's same-turn ``proposed_transition``
+            # re-arm RESOLVED and clobber that CLOSE via ``propose_transition``.
+            # The LLM re-proposes RESOLVED every turn while the user confirms;
+            # without this guard the CLOSE pivot is overwritten every turn and
+            # the gate loops forever (Run 36, case_95d86b7daf8c). Honoring the
+            # CLOSE pivot terminates the case cleanly (root cause preserved).
+            if proposed and metadata.get("resolution_suggest_close"):
+                logger.info(
+                    f"Case {case.case_id}: honoring handshake CLOSE pivot — "
+                    f"ignoring same-turn LLM proposed_transition="
+                    f"{getattr(proposed, 'to_status', None)!r} so it does not "
+                    f"clobber the escape from a repeated resolution NEEDS_INFO."
+                )
+                proposed = None
+
             if proposed:
                 # The LLM emits only to_status (and optional evidence_ids).
                 # Engine handles everything else: closure_reason is derived
