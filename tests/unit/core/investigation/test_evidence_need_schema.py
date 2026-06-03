@@ -51,11 +51,38 @@ class TestEvidenceNeedUpdateValidators:
         )
         assert u.need_id is None
         assert u.purpose == NeedPurpose.SYMPTOM_VERIFICATION
-        assert u.priority == NeedPriority.MEDIUM
+        # priority is Optional[None] on the schema so an omitted priority on
+        # the UPDATE path is distinguishable from an explicit MEDIUM (it would
+        # otherwise clobber the stored priority). The MEDIUM default for the
+        # CREATE path is applied in the apply-layer (see
+        # test_evidence_need_apply_layer.py).
+        assert u.priority is None
         assert u.status is None
         assert u.motivating_hypothesis_ids == []
         assert u.fulfilling_evidence_ids == []
         assert u.superseded_reason is None
+
+    def test_bare_fulfill_update_validates(self):
+        """A fulfill/status update omits the create-only fields
+        (purpose/request_text/rationale/priority). This MUST validate —
+        before the fix it raised 'Field required' on those three and the
+        turn 500'd. Regression for fix/evidence-need-fulfill-path."""
+        u = EvidenceNeedUpdate(
+            need_id="eneed_d437986395a0",
+            status="fulfilled",
+            fulfilling_evidence_ids=["new_index_0"],
+        )
+        assert u.need_id == "eneed_d437986395a0"
+        assert u.purpose is None
+        assert u.request_text is None
+        assert u.rationale is None
+        assert u.priority is None
+
+    def test_create_missing_core_fields_rejected(self):
+        """Create path (need_id=None) still requires purpose/request_text/
+        rationale — the Optional-ness is for the update path only."""
+        with pytest.raises(ValidationError, match="create path"):
+            EvidenceNeedUpdate(need_id=None, status="pending")
 
     def test_create_with_non_pending_status_rejected(self):
         """Create path requires status=None or PENDING."""

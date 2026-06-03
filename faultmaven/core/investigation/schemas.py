@@ -531,25 +531,42 @@ class EvidenceNeedUpdate(BaseModel):
             "or a bare integer (coerced)."
         ),
     )
-    purpose: NeedPurpose = Field(
+    purpose: Optional[NeedPurpose] = Field(
+        default=None,
         description=(
             "Why this need exists: ``symptom_verification`` (motivated "
             "by the problem statement) or ``causal_verification`` "
-            "(motivated by one or more hypotheses). Immutable on the "
-            "update path."
-        )
+            "(motivated by one or more hypotheses). REQUIRED on create "
+            "(``need_id`` is None); OMIT on update — it is immutable on "
+            "the update path, so resending it is unnecessary."
+        ),
     )
-    request_text: str = Field(
+    request_text: Optional[str] = Field(
+        default=None,
         max_length=500,
-        description="What data would fulfill this need.",
+        description=(
+            "What data would fulfill this need. REQUIRED on create; "
+            "OMIT on update unless revising the text (None leaves the "
+            "existing text unchanged)."
+        ),
     )
-    rationale: str = Field(
+    rationale: Optional[str] = Field(
+        default=None,
         max_length=500,
-        description="Why this data would advance the investigation.",
+        description=(
+            "Why this data would advance the investigation. REQUIRED on "
+            "create; OMIT on update unless revising (None leaves the "
+            "existing rationale unchanged)."
+        ),
     )
-    priority: NeedPriority = Field(
-        default=NeedPriority.MEDIUM,
-        description="Surfacing-order hint for EVIDENCE-type suggestions.",
+    priority: Optional[NeedPriority] = Field(
+        default=None,
+        description=(
+            "Surfacing-order hint for EVIDENCE-type suggestions. "
+            "Defaults to MEDIUM on create; OMIT on update to preserve "
+            "the existing priority (None leaves it unchanged — sending "
+            "a value here would otherwise clobber the stored priority)."
+        ),
     )
     motivating_hypothesis_ids: Optional[List[str]] = Field(
         default_factory=list,
@@ -611,6 +628,9 @@ class EvidenceNeedUpdate(BaseModel):
         """Cross-field invariants.
 
         Create path (``need_id is None``):
+        - ``purpose``, ``request_text``, and ``rationale`` are required
+          (they are Optional on the field for the update path, where
+          they are omitted; on create they must be present).
         - ``status`` must be None or ``PENDING``.
 
         Both paths:
@@ -619,12 +639,25 @@ class EvidenceNeedUpdate(BaseModel):
         - ``status=FULFILLED`` requires at least one
           ``fulfilling_evidence_id`` on this emission.
         """
-        if self.need_id is None and self.status not in (None, NeedStatus.PENDING):
-            raise ValueError(
-                f"Cannot create a need with status={self.status.value!r}; "
-                "use status=None or 'pending' on create, and emit a "
-                "follow-up update to transition to other statuses."
-            )
+        if self.need_id is None:
+            missing = [
+                name
+                for name in ("purpose", "request_text", "rationale")
+                if getattr(self, name) in (None, "")
+            ]
+            if missing:
+                raise ValueError(
+                    "create path (need_id=None) requires: "
+                    f"{', '.join(missing)}. These are create-only on "
+                    "the schema (Optional for the update path); supply "
+                    "them when creating a new need."
+                )
+            if self.status not in (None, NeedStatus.PENDING):
+                raise ValueError(
+                    f"Cannot create a need with status={self.status.value!r}; "
+                    "use status=None or 'pending' on create, and emit a "
+                    "follow-up update to transition to other statuses."
+                )
 
         if self.status == NeedStatus.SUPERSEDED:
             if not (self.superseded_reason and self.superseded_reason.strip()):
