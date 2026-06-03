@@ -1224,3 +1224,38 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
             == "confirm the unindexed Seq Scan is holding pool connections"
         )
         assert updated.priority == NeedPriority.MEDIUM
+
+    def test_empty_string_revision_is_ignored(self):
+        """An explicit ``request_text=""`` / ``rationale=""`` on update is
+        treated as 'leave unchanged' (truthiness guard), not a blank-out.
+        These fields are min_length=1 on the domain model, so a "" would
+        otherwise corrupt the need and crash on the next repo round-trip."""
+        case = _make_case()
+        need = self._pending_causal_need(case)
+
+        engine = _make_engine()
+        meta = _empty_metadata()
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[
+                _make_update(
+                    need_id=need.need_id,
+                    purpose=None,
+                    request_text="",
+                    rationale="",
+                    priority=None,
+                    status=None,
+                )
+            ],
+            metadata=meta,
+            current_turn=case.current_turn,
+        )
+
+        updated = case.evidence_needs[0]
+        assert (
+            updated.request_text == "EXPLAIN ANALYZE output for the audit_events query"
+        )
+        assert (
+            updated.rationale
+            == "confirm the unindexed Seq Scan is holding pool connections"
+        )

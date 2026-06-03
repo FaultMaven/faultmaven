@@ -6615,9 +6615,17 @@ class MilestoneEngine:
             # this guard a bare fulfill update would null out request_text /
             # rationale (silent corruption) and downgrade priority to the
             # field default.
-            if update.request_text is not None:
+            #
+            # For the two text fields we guard on truthiness, not ``is not
+            # None``: an explicit "" is treated as "leave unchanged" too.
+            # request_text/rationale are min_length=1 on the domain model
+            # (validate_assignment is off, so "" wouldn't raise here — it
+            # would crash on the next repo round-trip), and blanking a
+            # mandatory field is never a valid revision. This mirrors the
+            # create validator, which rejects ``in (None, "")``.
+            if update.request_text:
                 target.request_text = update.request_text
-            if update.rationale is not None:
+            if update.rationale:
                 target.rationale = update.rationale
             if update.priority is not None:
                 target.priority = update.priority
