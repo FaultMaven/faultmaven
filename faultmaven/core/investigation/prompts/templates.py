@@ -868,10 +868,12 @@ an evidence row.
    re-verification)?
    Symptom no longer present → symptom_absence_evidence
    Cause no longer present   → causal_absence_evidence
-   Link a causal_absence_evidence row to the hypothesis it disproves
-   via `hypothesis_evidence_links` (stance=CONTRADICTS the cause being
-   present); a symptom_absence_evidence row stands alone against the
-   problem statement. Without the absence row, the case has no positive
+   Both absence categories are STAND-ALONE resolution audit rows
+   (`source_file_id` + the re-checked extract). Do NOT link them to a
+   hypothesis: a successful fix CONFIRMS the root-cause hypothesis, so a
+   confidence-bearing link would erode the very hypothesis it proves.
+   Re-verification records that the fix held; it does not re-litigate
+   the diagnosis. Without the absence row, the case has no positive
    proof of resolution.
 
 CREATING EVIDENCE RECORDS (evidence_to_add):
@@ -1264,10 +1266,12 @@ confirm the symptom (or cause) it captured is no longer present.
 - If the signature is GONE: emit an `evidence_to_add` row with
   `category=symptom_absence_evidence` (or `causal_absence_evidence`
   when re-checking a cause) and `source_file_id` pointing at the file
-  you re-checked. For a causal-absence row, link it to the same
-  hypothesis via `hypothesis_evidence_links` (stance=CONTRADICTS the
-  cause being present); a symptom-absence row stands alone against the
-  problem statement. The absence row is the audit record that the fix
+  you re-checked. Both absence categories are STAND-ALONE audit rows —
+  do NOT link them to a hypothesis. A successful fix confirms the
+  root-cause hypothesis, so a confidence-bearing link would erode the
+  very hypothesis it proves; re-verification records that the fix held,
+  not a change to the diagnosis. The absence row is the audit record
+  that the fix
   held — without it the case has no positive proof of resolution.
 - If the original signature REAPPEARS, the fix did not hold —
   surface that as a new finding rather than declaring success.
@@ -2081,8 +2085,9 @@ Do NOT continue proposing mitigation variants after offering this choice.
   (post-mitigation metrics, error rates, user confirmation of improvement)
 - **symptom_absence_evidence** / **causal_absence_evidence**: Re-verification
   rows confirming a previously verified symptom or cause is no longer
-  present. Link a causal-absence row to the hypothesis it disproves via
-  ``hypothesis_evidence_links``; a symptom-absence row stands alone.
+  present. Both are stand-alone resolution audit rows (`source_file_id`
+  + extract) — do NOT link them to a hypothesis (a fix confirms the
+  cause; a confidence-bearing link would erode it).
   Emit per the decision-tree step 4 and the re-verification addendum
   when re-checking the findings established earlier in DIAGNOSIS.
 
@@ -2290,10 +2295,11 @@ The process:
   (post-fix metrics, error rates, user confirmation, clean logs)
 - **symptom_absence_evidence** / **causal_absence_evidence**: Re-verification
   rows confirming a previously verified symptom or cause is no longer
-  present. Primary-path artifact — link a causal-absence row to the
-  hypothesis it disproves via ``hypothesis_evidence_links``; a
-  symptom-absence row stands alone. Emit per the decision-tree step 4
-  and the re-verification addendum. Without these the case has no
+  present. Primary-path artifact — both are stand-alone resolution
+  audit rows (`source_file_id` + extract); do NOT link them to a
+  hypothesis (a fix confirms the cause; a confidence-bearing link would
+  erode it). Emit per the decision-tree step 4 and the re-verification
+  addendum. Without these the case has no
   positive proof of resolution.
 - **symptom_evidence**: New symptoms that emerge after a failed fix
   (new errors, changed behavior, unexpected side effects)

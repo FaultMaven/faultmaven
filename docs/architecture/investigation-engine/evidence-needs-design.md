@@ -295,10 +295,12 @@ The need's `status` does not flip back to PENDING for re-verification
 > §5.2 step 3), so most confirmed symptoms/causes have **no** need; a
 > need-anchored re-check list would silently omit them. Evidence rows
 > exist for every confirmed finding, so they are the complete record of
-> "what to re-check." The post-fix absence rows link to the **hypothesis**
-> they disprove (causal) via `hypothesis_evidence_links`, or **stand
-> alone** against the problem statement (symptom) — not to a need. See
-> §7.5, §8.4, and the as-built note in §11.5.
+> "what to re-check." The post-fix absence rows are **stand-alone audit
+> rows** (`source_file_id` + extract) — NOT linked to a need *or* a
+> hypothesis. (A successful fix *confirms* the root-cause hypothesis; a
+> confidence-bearing link would erode the very hypothesis it proves — see
+> §11.6.) The before/after presence↔absence pairing is deferred. See
+> §7.5, §8.4, and §11.6.
 
 ### 4.5 Re-Verification Is Judgment, Not Mechanism
 
@@ -566,7 +568,7 @@ calls. See §10.4.
 | Hypothesis retired | Engine deterministically removes hyp_id from `motivating_hypothesis_ids`; if list becomes empty AND `purpose=causal_verification`, need → `SUPERSEDED` |
 | Problem statement refined | LLM may emit updates revising symptom needs (rewrite, supersede, add) |
 | Mitigation applied | LLM re-checks the confirmed `SYMPTOM_EVIDENCE` rows (the re-verification checklist, §8.4) by attempting to extract `SYMPTOM_ABSENCE_EVIDENCE`; absence row stands alone vs. the problem statement. Any FULFILLED need keeps its status |
-| Solution applied | LLM re-checks confirmed `CAUSAL_EVIDENCE` rows by attempting to extract `CAUSAL_ABSENCE_EVIDENCE` (linked to the disproved hypothesis via `hypothesis_evidence_links`), and refreshes symptom-absence |
+| Solution applied | LLM re-checks confirmed `CAUSAL_EVIDENCE` rows by attempting to extract `CAUSAL_ABSENCE_EVIDENCE` (stand-alone audit row — not linked to a hypothesis; a fix confirms the cause), and refreshes symptom-absence |
 | LLM judges a need irrelevant | LLM emits update: status → `SUPERSEDED` (any time) |
 
 ### 7.3 Engine Backstop
@@ -668,12 +670,17 @@ evidence rows exist for every confirmed finding, so anchoring on them
 makes the checklist complete.
 
 The LLM creates new `SYMPTOM_ABSENCE_EVIDENCE` / `CAUSAL_ABSENCE_EVIDENCE`
-rows reflecting the post-fix state. A causal-absence row links to the
-**hypothesis** it disproves via `hypothesis_evidence_links`
-(stance=CONTRADICTS); a symptom-absence row **stands alone** against the
-problem statement. The absence row is the positive audit record that the
-fix held. (Any FULFILLED need that does exist keeps its status — needs
-are never auto-reopened — but the need is not what drives re-verification.)
+rows reflecting the post-fix state. **Both are stand-alone audit rows**
+(`source_file_id` + the re-checked extract) — they are NOT linked to a
+hypothesis. A successful fix *confirms* the root-cause hypothesis, so a
+confidence-bearing link (the apply-layer maps any non-SUPPORTS stance to
+a likelihood penalty) would erode the very hypothesis the fix proves;
+re-verification records that the fix held, it does not re-litigate the
+diagnosis. The absence row is the positive audit record of resolution.
+(Any FULFILLED need that does exist keeps its status — needs are never
+auto-reopened — but the need is not what drives re-verification. The
+before/after presence↔absence *pairing* is deferred to a later step,
+since the data model has no evidence↔evidence link yet.)
 
 ---
 
@@ -1268,9 +1275,13 @@ authoritative**.
   already-available data (the common case). It is now built from the
   confirmed presence-evidence rows (`SYMPTOM_EVIDENCE` /
   `CAUSAL_EVIDENCE`), which exist for every confirmed finding →
-  complete. Post-fix absence rows link to the **hypothesis** they
-  disprove via `hypothesis_evidence_links` (causal) or **stand alone**
-  against the problem statement (symptom) — not to a need.
+  complete. Post-fix absence rows are **stand-alone audit rows**
+  (`source_file_id` + extract) — not linked to a need *or* a hypothesis
+  (a fix confirms the root-cause hypothesis; a confidence-bearing link
+  would erode it, and the apply-layer at `milestone_engine.py:6118`
+  coerces any non-SUPPORTS stance to a likelihood penalty). Before/after
+  presence↔absence pairing is deferred to a later step (no
+  evidence↔evidence link in the model yet).
   `context_builder._build_evidence_needs_block` (re-verification
   section) + `templates._EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM` + the
   per-stage EVIDENCE-TYPES sections and the classification decision-tree

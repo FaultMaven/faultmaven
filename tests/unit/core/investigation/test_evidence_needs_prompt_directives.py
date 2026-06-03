@@ -322,13 +322,18 @@ class TestReVerificationSuccessCaseDirective:
     def test_references_causal_absence_evidence_category(self):
         assert "causal_absence_evidence" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
 
-    def test_links_causal_absence_row_to_hypothesis(self):
-        """Causal-absence rows link to the hypothesis they disprove via
-        hypothesis_evidence_links (symptom-absence stands alone). The
-        link — not a now-gap-rare need — is what makes the absence row a
-        verifiable audit record."""
-        assert "hypothesis_evidence_links" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
-        assert "stands alone" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+    def test_absence_rows_stand_alone_not_linked_to_hypothesis(self):
+        """Both absence categories are stand-alone resolution audit rows.
+        They must NOT be linked to a hypothesis: a successful fix confirms
+        the root-cause hypothesis, and the apply-layer coerces any
+        non-SUPPORTS stance to a likelihood penalty, so a confidence-
+        bearing link would erode the very hypothesis the fix proves."""
+        addendum = _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+        assert "STAND-ALONE" in addendum
+        assert "do NOT link" in addendum
+        # The backwards-semantics link must be gone.
+        assert "hypothesis_evidence_links" not in addendum
+        assert "CONTRADICTS" not in addendum
 
 
 # ============================================================
