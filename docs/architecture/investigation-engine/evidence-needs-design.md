@@ -285,9 +285,20 @@ Need: "DB config: max_connections setting"  (purpose=causal_verification)
 ```
 
 The need's `status` does not flip back to PENDING for re-verification
-(per §7.2). The need acts as **memory of what to re-check**; new
-evidence rows are the audit trail of presence and absence at different
-times.
+(per §7.2).
+
+> **As-built (re-verification anchor).** The diagram above holds when a
+> need exists, but the re-verification checklist is **anchored on the
+> confirmed presence-evidence rows (`SYMPTOM_EVIDENCE` /
+> `CAUSAL_EVIDENCE`), not on FULFILLED needs.** Needs are gap-conditional
+> (created only when the verifying data wasn't already in hand — see
+> §5.2 step 3), so most confirmed symptoms/causes have **no** need; a
+> need-anchored re-check list would silently omit them. Evidence rows
+> exist for every confirmed finding, so they are the complete record of
+> "what to re-check." The post-fix absence rows link to the **hypothesis**
+> they disprove (causal) via `hypothesis_evidence_links`, or **stand
+> alone** against the problem statement (symptom) — not to a need. See
+> §7.5, §8.4, and the as-built note in §11.5.
 
 ### 4.5 Re-Verification Is Judgment, Not Mechanism
 
@@ -554,8 +565,8 @@ calls. See §10.4.
 | Partial evidence found | LLM emits update: status → `PARTIALLY_MET` |
 | Hypothesis retired | Engine deterministically removes hyp_id from `motivating_hypothesis_ids`; if list becomes empty AND `purpose=causal_verification`, need → `SUPERSEDED` |
 | Problem statement refined | LLM may emit updates revising symptom needs (rewrite, supersede, add) |
-| Mitigation applied | LLM re-evaluates fulfilled symptom needs by attempting to extract `SYMPTOM_ABSENCE_EVIDENCE`; need status unchanged |
-| Solution applied | LLM re-evaluates needs by attempting to extract `CAUSAL_ABSENCE_EVIDENCE` (and refresh symptom-absence) |
+| Mitigation applied | LLM re-checks the confirmed `SYMPTOM_EVIDENCE` rows (the re-verification checklist, §8.4) by attempting to extract `SYMPTOM_ABSENCE_EVIDENCE`; absence row stands alone vs. the problem statement. Any FULFILLED need keeps its status |
+| Solution applied | LLM re-checks confirmed `CAUSAL_EVIDENCE` rows by attempting to extract `CAUSAL_ABSENCE_EVIDENCE` (linked to the disproved hypothesis via `hypothesis_evidence_links`), and refreshes symptom-absence |
 | LLM judges a need irrelevant | LLM emits update: status → `SUPERSEDED` (any time) |
 
 ### 7.3 Engine Backstop
@@ -642,17 +653,27 @@ Notes:
 ### 7.5 Re-Verification After Mitigation/Solution
 
 After mitigation or solution, the LLM does not mechanically flip need
-statuses. Instead, the pool serves as **memory of what symptoms and
-causes were confirmed**. The LLM uses this memory to determine what to
-re-check, exercising judgment about appropriate verification for the
-specific case (per §4.5).
+statuses. Instead, the **confirmed presence-evidence rows
+(`SYMPTOM_EVIDENCE` / `CAUSAL_EVIDENCE`)** serve as the record of what
+symptoms and causes were established. The context builder renders these
+as the re-verification checklist (§8.4); the LLM uses it to determine
+what to re-check, exercising judgment about appropriate verification for
+the specific case (per §4.5).
 
-A fulfilled symptom need does not flip back to PENDING. The need
-remains FULFILLED (the symptom *was* confirmed). The LLM may create
-new evidence rows of `SYMPTOM_ABSENCE_EVIDENCE` category reflecting the
-post-fix state; these rows are linked to the same need via
-`fulfilling_evidence_ids` for audit but the need's status stays
-FULFILLED.
+**Why evidence rows, not FULFILLED needs.** Needs are gap-conditional
+(created only when the verifying data wasn't already in hand — §5.2
+step 3), so most confirmed symptoms/causes have no need at all. A
+need-anchored re-check list would be empty in the common case. Presence-
+evidence rows exist for every confirmed finding, so anchoring on them
+makes the checklist complete.
+
+The LLM creates new `SYMPTOM_ABSENCE_EVIDENCE` / `CAUSAL_ABSENCE_EVIDENCE`
+rows reflecting the post-fix state. A causal-absence row links to the
+**hypothesis** it disproves via `hypothesis_evidence_links`
+(stance=CONTRADICTS); a symptom-absence row **stands alone** against the
+problem statement. The absence row is the positive audit record that the
+fix held. (Any FULFILLED need that does exist keeps its status — needs
+are never auto-reopened — but the need is not what drives re-verification.)
 
 ---
 
@@ -728,16 +749,23 @@ context. Filtering rules:
   `SUPERSEDED` excluded (token budget).
 - After `symptom_verified=True`, symptom needs may be summarized
   rather than fully rendered.
-- During MITIGATION / TREATMENT, fulfilled symptom and causal needs
-  are surfaced as a re-verification checklist (their FULFILLED state
-  is exception to the filtering rule for these stages).
+- During MITIGATION / TREATMENT, a **re-verification checklist** is
+  rendered from the confirmed presence-evidence rows
+  (`SYMPTOM_EVIDENCE` / `CAUSAL_EVIDENCE`) — **not** from FULFILLED
+  needs. Needs are gap-conditional and gap-rare; presence-evidence rows
+  exist for every confirmed finding, so anchoring the checklist on them
+  makes it complete (see §11.6). The two sections (outstanding needs +
+  re-verification findings) render under one `<evidence_needs>` block.
 - No separate `<uploads_this_turn>` section is added. Per-turn upload
   surfacing rides on the existing `<evidence_collected>` block's
   `fresh="true"` attribute (PR #352).
 
-Expected token cost: ~50 tokens per active need. With ≤10 active
-needs, ~500 tokens — modest in an 8,000+ token budget. The section is
-omitted entirely when the pool is empty (progressive activation, §10.6).
+Expected token cost: ~50 tokens per active entry. The block is omitted
+entirely when there are no outstanding needs and no confirmed findings
+to re-check (progressive activation, §10.6). Because presence-evidence
+rows exist whenever a symptom/cause was confirmed, the re-verification
+checklist activates in MITIGATION/TREATMENT for essentially every real
+investigation — that is the intended completeness, not a regression.
 
 ### 8.5 Relationship to `suggested_follow_ups`
 
@@ -782,13 +810,19 @@ class EvidenceNeedUpdate(BaseModel):
             "evidence_need_updates list)."
         ),
     )
-    purpose: Literal["symptom_verification", "causal_verification"]
-    request_text: str = Field(max_length=500)
-    rationale: str = Field(
+    # Create-only fields: REQUIRED on create (need_id is None), enforced
+    # by the model validator; OMITTED on update (immutable / leave-as-is).
+    # They are Optional on the field so a fulfill/status update can omit
+    # them — see §11.6. Sending request_text/rationale on update revises;
+    # priority defaults to MEDIUM on create (default applied engine-side).
+    purpose: Optional[Literal["symptom_verification", "causal_verification"]] = None
+    request_text: Optional[str] = Field(default=None, max_length=500)
+    rationale: Optional[str] = Field(
+        default=None,
         max_length=500,
         description="Why this data would help advance the investigation.",
     )
-    priority: Literal["high", "medium", "low"] = "medium"
+    priority: Optional[Literal["high", "medium", "low"]] = None
     motivating_hypothesis_ids: List[str] = Field(
         default_factory=list,
         description=(
@@ -1202,6 +1236,47 @@ resolves `new_index_N` against `metadata["evidence_needs_updated"]`:
   `causal_verification`) — matches §5/§7. There is no
   mitigation/solution *need purpose*; re-verification reuses the same two
   purposes (§7.5).
+
+### 11.6 Post-rollout corrections (2026-06-03)
+
+Two fixes landed after the Phase 1–6 rollout, from a holistic review of
+the evidence-needs lifecycle. Where they touch §1–10, **this section is
+authoritative**.
+
+- **Fulfill-path crash fixed (the create→fulfill lifecycle now works).**
+  `EvidenceNeedUpdate` required `purpose` / `request_text` / `rationale`
+  on *every* emission, but those are create-only/immutable on the update
+  path. A bare fulfill update (`need_id` + `status=FULFILLED` +
+  `fulfilling_evidence_ids`) raised 3× "Field required" → HTTP 500 → the
+  turn that ingests the verifying evidence was lost → the agent
+  stuck-looped and the case never resolved. Invisible for the whole
+  rollout because no prior run had *created* a need to then fulfill.
+  **Fix:** those four fields (incl. `priority`) are now
+  `Optional[...] = None`; the model validator requires the first three
+  only on create (`need_id is None`); the engine applies the MEDIUM
+  `priority` default on create and uses **revise-don't-clobber** on
+  update (an omitted/`""` field leaves the stored value unchanged). See
+  the updated §8.6 schema. Apply-layer:
+  `milestone_engine._apply_evidence_need_updates`.
+
+- **Re-verification checklist re-anchored on evidence rows, not FULFILLED
+  needs.** The MITIGATION/TREATMENT re-verification checklist (§4.4,
+  §7.5, §8.4) was built from FULFILLED needs. Because need creation is
+  gap-conditional (§5.2 step 3) and the structural index pre-surfaces
+  most verifying data, needs are gap-rare — so the need-anchored
+  checklist was empty for every symptom/cause confirmed from
+  already-available data (the common case). It is now built from the
+  confirmed presence-evidence rows (`SYMPTOM_EVIDENCE` /
+  `CAUSAL_EVIDENCE`), which exist for every confirmed finding →
+  complete. Post-fix absence rows link to the **hypothesis** they
+  disprove via `hypothesis_evidence_links` (causal) or **stand alone**
+  against the problem statement (symptom) — not to a need.
+  `context_builder._build_evidence_needs_block` (re-verification
+  section) + `templates._EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM` + the
+  per-stage EVIDENCE-TYPES sections and the classification decision-tree
+  step 4. This makes the "always-create a need per hypothesis" idea
+  unnecessary: the pool stays demand-side (outstanding needs to look
+  for), and re-verification reads the supply-side evidence record.
 
 ---
 

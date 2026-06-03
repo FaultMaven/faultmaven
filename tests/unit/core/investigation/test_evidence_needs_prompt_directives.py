@@ -44,7 +44,7 @@ from faultmaven.core.investigation.prompts.templates import (
 _LIFECYCLE_PROBE = "EVIDENCE NEEDS (demand-side pool)"
 _SYMPTOM_ONLY_PROBE = "EVIDENCE NEEDS — symptom-only stage"
 _POOL_EVAL_PROBE = "POOL EVALUATION (at hypothesis creation)"
-_REVERIFICATION_PROBE = "EVIDENCE NEEDS — re-verification"
+_REVERIFICATION_PROBE = "RE-VERIFICATION:"
 
 
 # ============================================================
@@ -322,10 +322,13 @@ class TestReVerificationSuccessCaseDirective:
     def test_references_causal_absence_evidence_category(self):
         assert "causal_absence_evidence" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
 
-    def test_links_absence_row_to_originating_need(self):
-        """Absence rows must link back to the need they prove — the
-        link is what makes them the audit record, not orphan data."""
-        assert "fulfilling_evidence_ids" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+    def test_links_causal_absence_row_to_hypothesis(self):
+        """Causal-absence rows link to the hypothesis they disprove via
+        hypothesis_evidence_links (symptom-absence stands alone). The
+        link — not a now-gap-rare need — is what makes the absence row a
+        verifiable audit record."""
+        assert "hypothesis_evidence_links" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
+        assert "stands alone" in _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
 
 
 # ============================================================

@@ -37,6 +37,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
     EntityType,
+    EvidenceCategory,
     InvestigationStage,
     NeedPriority,
     NeedPurpose,
@@ -1750,6 +1751,26 @@ def _render_need_line(need) -> tuple[str, str]:
     return header, motivator_line
 
 
+def _render_finding_line(ev) -> str:
+    """Render one confirmed presence-evidence row as a re-check line.
+
+    The re-verification checklist (MITIGATION/TREATMENT) is anchored on
+    the confirmed ``symptom_evidence`` / ``causal_evidence`` rows — the
+    canonical record of what was established — NOT on FULFILLED needs.
+    Needs are demand-side and gap-conditional (created only when the
+    verifying data wasn't already in hand), so a need-anchored checklist
+    silently omits every symptom/cause that was confirmed from
+    already-available data. Evidence rows exist for every confirmed
+    finding, so this checklist is complete.
+    """
+    label = "SYMPTOM" if ev.category == EvidenceCategory.SYMPTOM_EVIDENCE else "CAUSE"
+    summary = ev.summary or ev.extract or "(no summary)"
+    return (
+        f"  - [{ev.evidence_id}] {_truncate_request_text(summary)} "
+        f"({label}, established turn {ev.collected_at_turn})"
+    )
+
+
 def _build_evidence_needs_block(case: Case) -> str:
     """Render the ``<evidence_needs>`` context block.
 
@@ -1764,15 +1785,19 @@ def _build_evidence_needs_block(case: Case) -> str:
 
     Filtering rules (design §8.4):
 
-    - Default (DIAGNOSIS stage): render PENDING + PARTIALLY_MET as
+    - Default (DIAGNOSIS stage): render PENDING + PARTIALLY_MET needs as
       "outstanding needs" — data to look for during upload review.
       FULFILLED and SUPERSEDED are excluded to save tokens.
     - MITIGATION / TREATMENT: render two clearly-labelled sections —
       outstanding needs as above, plus a "re-verification checklist"
-      of FULFILLED needs so the agent can confirm the fix held by
-      re-checking the same data that established the symptom/cause.
-      SUPERSEDED remains excluded everywhere. Either section is
-      omitted if empty.
+      built from the confirmed presence-evidence rows
+      (``symptom_evidence`` / ``causal_evidence``) so the agent can
+      confirm the fix held by re-checking the data that established each
+      symptom/cause. The checklist is anchored on evidence rows, NOT on
+      FULFILLED needs: needs are gap-conditional (created only when the
+      verifying data wasn't already in hand), so a need-anchored
+      checklist omits every finding confirmed from already-available
+      data — the common case. Either section is omitted if empty.
 
     Output shape (DIAGNOSIS):
 
@@ -1799,17 +1824,20 @@ def _build_evidence_needs_block(case: Case) -> str:
           - [eneed_004] App connection timeout logs (CAUSAL, MEDIUM)
               motivated_by: [hyp_001]
 
-        Re-verification checklist (confirm the fix held by re-checking
-        these — they were used to establish the symptom or cause):
+        Re-verification checklist (confirmed findings — re-check each to
+        confirm the fix held; emit *_absence_evidence when a signature is gone):
 
-          - [eneed_001] Response time metrics (SYMPTOM, HIGH, FULFILLED)
-              motivated_by: problem_statement
+          - [ev_abc123] API p99 latency 8.9s during incident (SYMPTOM, established turn 5)
+          - [ev_def456] audit_events Seq Scan, no index on created_at (CAUSE, established turn 8)
         </evidence_needs>
     """
     if case.status != CaseStatus.INVESTIGATING:
         return ""
-    if not case.evidence_needs:
-        return ""
+    # NOTE: do NOT early-return on an empty `evidence_needs` pool. The
+    # MITIGATION/TREATMENT re-verification checklist is sourced from
+    # presence-evidence rows, which exist even when no need was ever
+    # created (the common gap-free case). The `not outstanding and not
+    # re_verification` check below is the correct emptiness gate.
 
     in_post_diagnosis = case.current_stage in (
         InvestigationStage.MITIGATION,
@@ -1821,8 +1849,18 @@ def _build_evidence_needs_block(case: Case) -> str:
         for n in case.evidence_needs
         if n.status in (NeedStatus.PENDING, NeedStatus.PARTIALLY_MET)
     ]
+    # Re-verification checklist is anchored on confirmed presence-evidence
+    # rows (symptom/causal), NOT FULFILLED needs. Evidence rows exist for
+    # every confirmed finding; FULFILLED needs are gap-conditional and
+    # gap-rare, so a need-anchored checklist silently omits findings
+    # confirmed from already-available data. See _render_finding_line.
     re_verification = (
-        [n for n in case.evidence_needs if n.status == NeedStatus.FULFILLED]
+        [
+            ev
+            for ev in case.evidence
+            if ev.category
+            in (EvidenceCategory.SYMPTOM_EVIDENCE, EvidenceCategory.CAUSAL_EVIDENCE)
+        ]
         if in_post_diagnosis
         else []
     )
@@ -1830,11 +1868,11 @@ def _build_evidence_needs_block(case: Case) -> str:
     if not outstanding and not re_verification:
         return ""
 
-    # Stable presentation: high-priority first within each section.
-    # Stable sort preserves the repo's secondary order (created_at ASC,
-    # need_id ASC) for tied priorities.
+    # Outstanding needs: high-priority first (stable sort preserves the
+    # repo's created_at/need_id secondary order for ties). Re-verification
+    # findings: chronological by the turn they were established.
     outstanding.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
-    re_verification.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
+    re_verification.sort(key=lambda ev: ev.collected_at_turn)
 
     # Render-cap budgets are computed per-section so neither one starves
     # the other. With both sections active, each gets up to
@@ -1874,13 +1912,13 @@ def _build_evidence_needs_block(case: Case) -> str:
     if re_verification:
         if outstanding:
             lines.append("")
-        lines.append("Re-verification checklist (confirm the fix held by re-checking")
-        lines.append("these — they were used to establish the symptom or cause):")
+        lines.append("Re-verification checklist (confirmed findings — re-check each to")
+        lines.append(
+            "confirm the fix held; emit *_absence_evidence when a signature is gone):"
+        )
         lines.append("")
-        for need in reverif_rendered:
-            header, motivator_line = _render_need_line(need)
-            lines.append(header)
-            lines.append(motivator_line)
+        for ev in reverif_rendered:
+            lines.append(_render_finding_line(ev))
         if reverif_overflow > 0:
             lines.append("")
             lines.append(
