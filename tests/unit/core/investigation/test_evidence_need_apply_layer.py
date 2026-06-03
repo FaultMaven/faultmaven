@@ -1065,3 +1065,197 @@ class TestApplyLayerSeedsMetadataKey:
 
         assert existing.status == NeedStatus.PARTIALLY_MET
         assert existing.need_id in meta["evidence_needs_updated"]
+
+
+# ============================================================
+# Regression: bare fulfill/status update (create-only fields omitted)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestFulfillUpdateOmittedCreateOnlyFields:
+    """Regression for the fulfill-path crash (fix/evidence-need-fulfill-path).
+
+    A validated ``EvidenceNeedUpdate`` on a fulfill/status update carries
+    ``None`` for the create-only fields (``purpose`` / ``request_text`` /
+    ``rationale`` / ``priority``) — the LLM omits them because they are
+    immutable on the update path. Before the fix the apply-layer:
+      - crashed with ``None.value`` at the immutable-purpose guard, and
+      - clobbered ``request_text`` / ``rationale`` with None (silent
+        corruption) and downgraded ``priority`` to the field default.
+
+    These tests drive the bare fulfill THROUGH ``_apply_evidence_need_updates``
+    (not just schema validation) and assert the existing need's create-only
+    fields are preserved and status flips to FULFILLED.
+    """
+
+    def _pending_causal_need(self, case) -> EvidenceNeed:
+        need = EvidenceNeed(
+            case_id=case.case_id,
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            request_text="EXPLAIN ANALYZE output for the audit_events query",
+            rationale="confirm the unindexed Seq Scan is holding pool connections",
+            priority=NeedPriority.HIGH,
+            status=NeedStatus.PENDING,
+            motivating_hypothesis_ids=[],
+            created_at_turn=case.current_turn,
+        )
+        case.evidence_needs.append(need)
+        return need
+
+    def test_bare_fulfill_preserves_create_only_fields_and_fulfills(self):
+        case = _make_case()
+        ev = _make_evidence(case)
+        need = self._pending_causal_need(case)
+
+        engine = _make_engine()
+        meta = _empty_metadata()
+        # Exactly what a validated EvidenceNeedUpdate carries on a fulfill:
+        # need_id + status + fulfilling_evidence_ids; everything else None.
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[
+                _make_update(
+                    need_id=need.need_id,
+                    purpose=None,
+                    request_text=None,
+                    rationale=None,
+                    priority=None,
+                    status=NeedStatus.FULFILLED,
+                    fulfilling_evidence_ids=[ev.evidence_id],
+                )
+            ],
+            metadata=meta,
+            current_turn=case.current_turn,
+        )
+
+        updated = case.evidence_needs[0]
+        # status flipped, evidence linked
+        assert updated.status == NeedStatus.FULFILLED
+        assert ev.evidence_id in updated.fulfilling_evidence_ids
+        # create-only fields PRESERVED (not nulled / not downgraded)
+        assert (
+            updated.request_text == "EXPLAIN ANALYZE output for the audit_events query"
+        )
+        assert (
+            updated.rationale
+            == "confirm the unindexed Seq Scan is holding pool connections"
+        )
+        assert updated.priority == NeedPriority.HIGH
+        assert updated.purpose == NeedPurpose.CAUSAL_VERIFICATION
+        # No spurious "purpose-change" repair: purpose was omitted, not flipped
+        assert not any(
+            "purpose-change" in r for r in meta.get("validation_repairs", [])
+        )
+
+    def test_bare_partial_met_update_preserves_fields(self):
+        case = _make_case()
+        ev = _make_evidence(case)
+        need = self._pending_causal_need(case)
+
+        engine = _make_engine()
+        meta = _empty_metadata()
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[
+                _make_update(
+                    need_id=need.need_id,
+                    purpose=None,
+                    request_text=None,
+                    rationale=None,
+                    priority=None,
+                    status=NeedStatus.PARTIALLY_MET,
+                    fulfilling_evidence_ids=[ev.evidence_id],
+                )
+            ],
+            metadata=meta,
+            current_turn=case.current_turn,
+        )
+
+        updated = case.evidence_needs[0]
+        assert updated.status == NeedStatus.PARTIALLY_MET
+        assert updated.priority == NeedPriority.HIGH
+        assert updated.request_text.startswith("EXPLAIN ANALYZE")
+
+    def test_create_with_none_priority_defaults_to_medium(self):
+        """priority is Optional[None] on the schema; the apply-layer create
+        path applies the MEDIUM default (the default moved off the field so
+        an omitted priority on update wouldn't clobber the stored value)."""
+        case = _make_case()
+        engine = _make_engine()
+        meta = _empty_metadata()
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[_make_update(priority=None)],
+            metadata=meta,
+            current_turn=case.current_turn,
+        )
+        assert case.evidence_needs[0].priority == NeedPriority.MEDIUM
+
+    def test_update_can_still_revise_fields_when_provided(self):
+        """The None-guard is 'omit means leave unchanged' — a value
+        explicitly supplied on update still revises (design §7.2)."""
+        case = _make_case()
+        need = self._pending_causal_need(case)
+
+        engine = _make_engine()
+        meta = _empty_metadata()
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[
+                _make_update(
+                    need_id=need.need_id,
+                    purpose=None,
+                    request_text="revised: also capture pg_stat_statements",
+                    rationale=None,
+                    priority=NeedPriority.MEDIUM,
+                    status=None,
+                )
+            ],
+            metadata=meta,
+            current_turn=case.current_turn,
+        )
+
+        updated = case.evidence_needs[0]
+        assert updated.request_text == "revised: also capture pg_stat_statements"
+        # rationale omitted -> preserved; priority supplied -> revised
+        assert (
+            updated.rationale
+            == "confirm the unindexed Seq Scan is holding pool connections"
+        )
+        assert updated.priority == NeedPriority.MEDIUM
+
+    def test_empty_string_revision_is_ignored(self):
+        """An explicit ``request_text=""`` / ``rationale=""`` on update is
+        treated as 'leave unchanged' (truthiness guard), not a blank-out.
+        These fields are min_length=1 on the domain model, so a "" would
+        otherwise corrupt the need and crash on the next repo round-trip."""
+        case = _make_case()
+        need = self._pending_causal_need(case)
+
+        engine = _make_engine()
+        meta = _empty_metadata()
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[
+                _make_update(
+                    need_id=need.need_id,
+                    purpose=None,
+                    request_text="",
+                    rationale="",
+                    priority=None,
+                    status=None,
+                )
+            ],
+            metadata=meta,
+            current_turn=case.current_turn,
+        )
+
+        updated = case.evidence_needs[0]
+        assert (
+            updated.request_text == "EXPLAIN ANALYZE output for the audit_events query"
+        )
+        assert (
+            updated.rationale
+            == "confirm the unindexed Seq Scan is holding pool connections"
+        )

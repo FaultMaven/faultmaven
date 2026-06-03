@@ -6355,6 +6355,12 @@ class MilestoneEngine:
         for update in updates_list:
             # Path-conditional rejection of causal-purpose emissions.
             # Symptom-purpose updates are always allowed.
+            # NOTE: ``purpose`` is None on fulfill/status updates (it is
+            # create-only). ``None == CAUSAL_VERIFICATION`` is False, so this
+            # branch is correctly skipped for updates — a fulfill update is not
+            # *creating* a causal need, so the creation backstop must not fire.
+            # Do not "simplify" this guard to assume purpose is always set; the
+            # ``update.request_text[:80]`` below would then crash on None.
             if (
                 restricted_state is not None
                 and update.purpose == NeedPurpose.CAUSAL_VERIFICATION
@@ -6521,7 +6527,9 @@ class MilestoneEngine:
                     purpose=update.purpose,
                     request_text=update.request_text,
                     rationale=update.rationale,
-                    priority=update.priority,
+                    # priority is Optional on EvidenceNeedUpdate (omitted on
+                    # the update path); on create, fall back to MEDIUM.
+                    priority=update.priority or NeedPriority.MEDIUM,
                     status=effective_status,
                     motivating_hypothesis_ids=valid_motivators,
                     fulfilling_evidence_ids=valid_fulfillments,
@@ -6560,8 +6568,11 @@ class MilestoneEngine:
                 )
                 continue
 
-            # Purpose is immutable on the update path.
-            if update.purpose != target.purpose:
+            # Purpose is immutable on the update path. It is Optional on
+            # EvidenceNeedUpdate and is normally OMITTED on update (None);
+            # only warn when the LLM actually sent a *different* purpose.
+            # (Guarding on ``is not None`` also avoids ``None.value`` here.)
+            if update.purpose is not None and update.purpose != target.purpose:
                 logger.warning(
                     f"evidence_need_update attempted to flip purpose on "
                     f"need {target.need_id} "
@@ -6597,9 +6608,27 @@ class MilestoneEngine:
             target.fulfilling_evidence_ids = list(
                 dict.fromkeys(list(target.fulfilling_evidence_ids) + valid_fulfillments)
             )
-            target.request_text = update.request_text
-            target.rationale = update.rationale
-            target.priority = update.priority
+            # Revise-don't-clobber: request_text / rationale / priority are
+            # Optional on the update path and are normally omitted on a
+            # fulfill/status update. Only overwrite when the LLM actually
+            # supplied a new value — None means "leave unchanged". Without
+            # this guard a bare fulfill update would null out request_text /
+            # rationale (silent corruption) and downgrade priority to the
+            # field default.
+            #
+            # For the two text fields we guard on truthiness, not ``is not
+            # None``: an explicit "" is treated as "leave unchanged" too.
+            # request_text/rationale are min_length=1 on the domain model
+            # (validate_assignment is off, so "" wouldn't raise here — it
+            # would crash on the next repo round-trip), and blanking a
+            # mandatory field is never a valid revision. This mirrors the
+            # create validator, which rejects ``in (None, "")``.
+            if update.request_text:
+                target.request_text = update.request_text
+            if update.rationale:
+                target.rationale = update.rationale
+            if update.priority is not None:
+                target.priority = update.priority
             # FULFILLED→PARTIALLY_MET demotion when the post-merge
             # fulfilling list is still empty. ``validate_assignment``
             # is off on EvidenceNeed, so in-place mutation bypasses
