@@ -31,6 +31,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
     CaseStatus,
+    EvidenceCategory,
 )
 
 logger = logging.getLogger(__name__)
@@ -484,8 +485,23 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     if not has_cause:
         missing.append("root cause")
 
-    # Check 3: At least one solution
-    has_solution = bool(case.solutions and len(case.solutions) > 0)
+    # Check 3: At least one solution — satisfied by EITHER a formal Solution
+    # record OR solution_evidence on file. A solution_evidence row is direct
+    # proof a fix was applied and its effectiveness recorded, so it satisfies
+    # the "a solution exists" requirement even when no structured Solution was
+    # minted. Requiring the formal record on top produced an unescapable
+    # resolution loop: the opportunistic/instant-resolution flow records
+    # solution_evidence but may never emit `solutions_to_add` (and in a
+    # pre-path state the engine backstop forbids it outright), so the gate
+    # demanded a record the case could not produce and returned NEEDS_INFO
+    # every turn the user confirmed resolution. See
+    # project-resolution-gate-stuck-loop.
+    has_solution_record = bool(case.solutions and len(case.solutions) > 0)
+    has_solution_evidence = any(
+        getattr(e, "category", None) == EvidenceCategory.SOLUTION_EVIDENCE
+        for e in (case.evidence or [])
+    )
+    has_solution = has_solution_record or has_solution_evidence
     if not has_solution:
         missing.append("solution")
 
