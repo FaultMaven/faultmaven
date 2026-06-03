@@ -47,8 +47,9 @@ Runs once at API startup, immediately after the DI container has wired up `Knowl
         - **Match** → skip; record `skipped_unchanged`.
         - **Mismatch** → delete old SQL row + ChromaDB chunks for this `item_id`, then re-ingest.
         - **No existing row** → ingest fresh.
-4. Call `KnowledgeService.ingest_runbook(verified_by="system", ...)` — SQL row first, then ChromaDB embeddings.
+4. Call `KnowledgeService.ingest_runbook(verified_by=None, verification_level=COMMUNITY, ...)` — SQL row first, then ChromaDB embeddings. `verified_by` is an FK to `users.user_id` and must be a real user or `NULL` — **never a sentinel string**. Platform-shipped trust is expressed through `verification_level=COMMUNITY`, not a fake `verified_by` (a previous `verified_by="system"` violated the FK once `foreign_keys=ON` was enabled and failed every shipped-runbook ingest). Tags are coerced to strings on the way in — a bare numeric YAML tag such as `503` parses as `int`, and both the relational `KnowledgeItem` and the ChromaDB `KnowledgeBaseDocument` require `str` tags.
 5. If `chunks_created <= 0` or the call raised, the failure is recorded in `BootstrapResult.failed` and the next file is processed (single-file failures must not block the other 58).
+6. **Prune orphaned built-ins.** After the walk, delete any built-in `knowledge_items` row (deterministic `kb_<12 hex>` id) whose id maps to no on-disk file — typically because a runbook's frontmatter `id` changed, leaving the old deterministic row behind. Recorded in `BootstrapResult.pruned`.
 
 ### Atomicity
 
@@ -64,7 +65,9 @@ Bootstrap is safe to re-run on every restart:
 - Unchanged files are detected by content hash → no work, no churn.
 - Changed files trigger explicit delete-then-ingest.
 - New files are added.
-- **Deleted files are NOT removed from the KB** by bootstrap — file deletion is a separate concern, owned by the Dashboard's explicit delete path. Operators who need a full reset use `scripts/reset_kb.py`.
+- **Built-ins are filesystem-reconciled (add / skip / prune).** A built-in row (`kb_<12 hex>` id) whose source file is gone — or whose runbook `id` changed, orphaning the old deterministic id — is pruned at the end of bootstrap (step 6). The filesystem is the source of truth for built-in content.
+- **Authored/user content is never auto-removed.** Items created by `verify_draft` or the API carry random-UUID ids, which the `kb_<12 hex>` prune pattern cannot match — so the prune is structurally incapable of touching them. Removing those is the Dashboard's explicit delete path. Operators who need a full reset use `scripts/reset_kb.py`.
+- **Safety guard:** if the on-disk walk yields zero runbook ids (a data-dir/parse anomaly, not a legitimate "remove everything"), the prune is skipped entirely.
 
 ### Why bootstrap doesn't touch `conversion_drafts`
 

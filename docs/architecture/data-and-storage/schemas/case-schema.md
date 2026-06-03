@@ -937,6 +937,17 @@ The audit trail of phase transitions on a case. Migration 008 added
 table was effectively write-only (`action_history` was hardcoded to
 `[]` in `_to_domain`).
 
+> **Write semantics (append-only, count-based tail insert).** `transition_id`
+> is a DB-assigned autoincrement PK with no natural-key conflict target, so
+> `ON CONFLICT DO NOTHING` can never fire. `save(case)` therefore persists
+> **only the unpersisted tail** of `action_history` — it counts the rows
+> already in `case_actions` for the case and inserts `action_history[count:]`.
+> Re-inserting the full hydrated list every save (the prior behaviour) caused
+> *geometric* row growth (R rows → 2R + new each save, since none conflicted),
+> exploding a handful of real transitions into ~2ⁿ duplicate rows over n turns.
+> Each save is now O(new), not O(history). Same fix in both the SQLite and
+> PostgreSQL repositories.
+
 ```sql
 CREATE TABLE case_actions (
     -- Integer autoincrement PK (Tier 1 reality on both dialects).

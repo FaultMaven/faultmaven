@@ -225,12 +225,12 @@ await vector_store.add_documents([doc_dict])  # ChromaDBVectorStore
 
 ### 3.2.1 Document Listing and Retrieval
 
-**Source of truth**: SQLite (`conversion_drafts` table) is the document inventory. `KnowledgeService.list_documents()` and `get_document()` query SQLite, not ChromaDB. ChromaDB is used exclusively for vector similarity search during investigations.
+**Source of truth**: SQLite (`knowledge_items` table) is the published document inventory. `KnowledgeService.list_documents()` and `get_document()` query `knowledge_items`, not ChromaDB and not `conversion_drafts` (the latter is only the conversion review queue). ChromaDB is used exclusively for vector similarity search during investigations.
 
 ```python
-# KnowledgeService methods (query SQLite)
+# KnowledgeService methods (query knowledge_items)
 await knowledge_service.list_documents(scope="global", limit=50, offset=0)
-await knowledge_service.get_document(document_id)  # SQLite + file read from disk
+await knowledge_service.get_document(document_id)  # knowledge_items row (content in-row)
 
 # ChromaDB methods (vector search only)
 await vector_store.search(query, k=5, filters={"scope": "global"})

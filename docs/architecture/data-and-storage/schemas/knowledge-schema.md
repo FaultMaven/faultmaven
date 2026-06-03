@@ -374,7 +374,9 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 
 **Purpose**: The relational KB entry — one row per published or draft knowledge item. Stores full content, verification state, usage counters, and a stub for future pgvector embeddings. This table is the source of truth for item lifecycle; ChromaDB holds the chunked embeddings derived from `content`.
 
-**When written**: Populated by the conversion pipeline (`conversion_drafts` → verified → `knowledge_items`) or by direct admin ingestion. The `knowledge_item_id` FK on `conversion_drafts` and `knowledge_suggestions` links forward to the promoted item.
+**When written**: Populated three ways, all landing here as the source of truth for the published inventory: (1) the startup KB **bootstrap**, which ingests built-in runbook files directly (`verified_by=NULL`, `verification_level=COMMUNITY`, deterministic `kb_<12 hex>` id); (2) the conversion pipeline (`conversion_drafts` → `verify_draft` → `knowledge_items`, random-UUID id); (3) direct admin/API ingestion. The dashboard inventory surface (`list_documents` / `get_document` / `delete_document`) reads this table — **not** `conversion_drafts`. The `knowledge_item_id` FK on `conversion_drafts` and `knowledge_suggestions` links forward to the promoted item.
+
+> **`verified_by` contract**: FK to `users.user_id` — a real user or `NULL`, **never a sentinel string**. Platform/built-in trust is carried by `verification_level` (COMMUNITY), not a fake verifier.
 
 **Key columns** (see `models.py:1679`, 29 columns total):
 

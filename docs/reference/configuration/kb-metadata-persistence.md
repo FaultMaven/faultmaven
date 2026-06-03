@@ -1,6 +1,6 @@
 ### Knowledge Base (KB) Persistence Design
 
-This document describes how FaultMaven persists Knowledge Base (KB) data. SQLite is the document inventory, ChromaDB stores vector chunks for RAG search, and markdown files on disk hold the source content.
+This document describes how FaultMaven persists Knowledge Base (KB) data. SQLite is the document inventory — the `knowledge_items` table is the source of truth for published documents — ChromaDB stores vector chunks for RAG search, and markdown files on disk hold built-in runbook source content.
 
 ### Goals
 
@@ -11,7 +11,7 @@ This document describes how FaultMaven persists Knowledge Base (KB) data. SQLite
 
 ### Architecture Overview
 
-- **SQLite** (`conversion_drafts` + `conversion_jobs` tables) — document inventory, metadata, status, CRUD
+- **SQLite** (`knowledge_items` table) — published document inventory, metadata, status, CRUD (source of truth). `conversion_drafts` + `conversion_jobs` are the review queue for the conversion pipeline only (the Drafts tab), **not** the published inventory.
 - **ChromaDB** (`faultmaven_kb` collection) — chunked vector embeddings for RAG search only
 - **Disk** (`data/knowledge/{scope}/`) — markdown source files
 - **Redis** — not used for KB documents (used only for sessions, rate limiting)
@@ -66,18 +66,17 @@ Scope and ownership come from the joined `conversion_jobs` table (`scope`, `user
   2. Return per-item status (verified/failed/skipped)
 
 - **List** (GET `/api/v1/knowledge/documents`)
-  1. Query `conversion_drafts WHERE status='verified'` joined with `conversion_jobs`
-  2. Apply RBAC (personal → owner only, team → members only)
-  3. Apply optional scope/type/tag filters
-  4. Paginate and return with scope counts
+  1. Query `knowledge_items WHERE is_published=True` via `list_for_inventory`, with RBAC (org tenancy + personal → owner only, team → members only) enforced **in-query**
+  2. Apply optional scope/type/tag filters over the tenant-isolated set
+  3. Paginate and return with scope counts
 
 - **Get** (GET `/api/v1/knowledge/documents/{id}`)
-  1. Query `conversion_drafts` by `knowledge_item_id` or `runbook_id`
-  2. Read full markdown content from `file_path` on disk
+  1. Query `knowledge_items` by `item_id`
+  2. Content comes from the stored `knowledge_items.content` row (not disk)
 
-- **Delete** (DELETE `/api/v1/knowledge/documents/{id}`)
-  1. Update `conversion_drafts` status to `deactivated`
-  2. Remove chunks from ChromaDB (best-effort)
+- **Delete** (DELETE `/api/v1/knowledge/documents/{id}`) — provenance-gated:
+  1. **Built-in** (`kb_<12 hex>` id) → unpublish: set `is_published=False` AND delete ChromaDB vectors (retrieval ignores `is_published`, so the vectors must go; the row is kept so the on-disk file doesn't resurrect it)
+  2. **Authored** (UUID id) → hard delete the `knowledge_items` row + its ChromaDB vectors
 
 - **Search** (RAG during investigations)
   1. `KnowledgeVectorStore.hybrid_search()` — two-stage: vector + keyword recall, then 4-signal reranker
