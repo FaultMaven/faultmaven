@@ -1005,7 +1005,7 @@ async def update_case(
     """
     Update case details
 
-    Updates case metadata such as title, description, status, priority, and tags.
+    Updates case metadata such as title, description, state, priority, and tags.
     Requires edit permissions on the case.
     """
     correlation_id = str(uuid.uuid4())

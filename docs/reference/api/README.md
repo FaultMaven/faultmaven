@@ -2459,7 +2459,7 @@ Content-Type: `multipart/form-data`
 
 Get phase-adaptive UI-optimized case response.
 
-Returns different response schemas based on case status:
+Returns different response schemas based on case state:
 - INQUIRY: Focus on problem understanding, clarifying questions
 - INVESTIGATING: Milestone progress, hypotheses, evidence, working conclusion
 - RESOLVED: Root cause, solution, verification, resolution summary
@@ -5501,7 +5501,7 @@ Request to search cases.
 
 ---
 
-### CaseStatus
+### CaseState
 
 Case lifecycle status — passive label describing a case's current condition.
 
@@ -5984,7 +5984,7 @@ Philosophy: Hypotheses are OPTIONAL. Agent may:
 - `hypothesis_id` (string) ❌ - Unique hypothesis identifier
 - `statement` (string) ✅ - Hypothesis statement (what we think caused the problem)
 - `category` (unknown) ✅ - Hypothesis category (for anchoring detection)
-- `status` (unknown) ❌ - Current hypothesis status
+- `status` (unknown) ❌ - Current hypothesis state
 - `likelihood` (number) ❌ - Estimated likelihood this hypothesis is correct (0.0-1.0)
 - `initial_likelihood` (number) ❌ - Original likelihood when hypothesis was generated
 - `evidence_links` (array) ❌ - 
@@ -6050,7 +6050,7 @@ How hypothesis was generated
 
 ---
 
-### HypothesisStatus
+### HypothesisState
 
 Hypothesis lifecycle status
 

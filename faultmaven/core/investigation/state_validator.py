@@ -81,7 +81,7 @@ class StateValidator:
         """
         issues: List[ValidationIssue] = []
         issues.extend(self._validate_milestone_ordering(case.progress))
-        issues.extend(self._validate_status_consistency(case))
+        issues.extend(self._validate_state_consistency(case))
         issues.extend(self._validate_hypothesis_states(case))
         issues.extend(self._validate_evidence_links(case))
         issues.extend(self._validate_likelihood_bounds(case))
@@ -166,12 +166,12 @@ class StateValidator:
 
         return issues
 
-    def _validate_status_consistency(self, case: Case) -> List[ValidationIssue]:
+    def _validate_state_consistency(self, case: Case) -> List[ValidationIssue]:
         """
-        Ensure status matches progress state.
+        Ensure state matches progress state.
 
-        RESOLVED status requires solution_verified milestone.
-        INVESTIGATING status should have problem statement.
+        RESOLVED state requires solution_verified milestone.
+        INVESTIGATING state should have problem statement.
         """
         issues: List[ValidationIssue] = []
 
@@ -180,10 +180,10 @@ class StateValidator:
             issues.append(
                 ValidationIssue(
                     code="STATUS_MISMATCH_001",
-                    message="Status is RESOLVED but solution_verified=False",
+                    message="State is RESOLVED but solution_verified=False",
                     severity=ValidationSeverity.ERROR,
                     field="state",
-                    suggested_fix="Set solution_verified=True or change status to INVESTIGATING",
+                    suggested_fix="Set solution_verified=True or change state to INVESTIGATING",
                 )
             )
 
@@ -197,7 +197,7 @@ class StateValidator:
                 issues.append(
                     ValidationIssue(
                         code="STATUS_MISMATCH_002",
-                        message="Status is INVESTIGATING but symptom_statement is empty",
+                        message="State is INVESTIGATING but symptom_statement is empty",
                         severity=ValidationSeverity.WARNING,
                         field="problem_verification.symptom_statement",
                     )
@@ -209,7 +209,7 @@ class StateValidator:
                 issues.append(
                     ValidationIssue(
                         code="STATUS_METADATA_001",
-                        message=f"Status is {case.state.value} but closed_at is not set",
+                        message=f"State is {case.state.value} but closed_at is not set",
                         severity=ValidationSeverity.WARNING,
                         field="closed_at",
                     )
@@ -251,7 +251,7 @@ class StateValidator:
                             message=f"Hypothesis {hyp_id} is REFUTED with no refuting evidence",
                             severity=ValidationSeverity.WARNING,
                             field=f"hypotheses.{hyp_id}",
-                            suggested_fix="Add refuting evidence or change status",
+                            suggested_fix="Add refuting evidence or change state",
                         )
                     )
 

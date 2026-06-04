@@ -465,7 +465,7 @@ Accept settings beyond LLM:
 
 Cases have an `is_archived: bool` field (default `false`) and `archived_at` timestamp.
 Only terminal cases (RESOLVED or CLOSED) can be archived. Archiving is a user action
-from the dashboard, independent of case status.
+from the dashboard, independent of case state.
 
 | Component | Status |
 |-----------|--------|
@@ -507,7 +507,7 @@ from the dashboard, independent of case status.
 | **Archived** (flag) | Case hidden from active views, excluded from search | User via dashboard | Yes (unarchive) |
 
 Archiving is about **data lifecycle management** — reducing clutter, improving DB performance,
-and eventually moving data to cheaper storage. It is not a case status.
+and eventually moving data to cheaper storage. It is not a case state.
 
 ## Risks and Mitigations
 

@@ -346,9 +346,9 @@ from typing import List, Optional, Tuple
 
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     InvestigationProgress,
-    HypothesisStatus,
+    HypothesisState,
 )
 
 
@@ -455,7 +455,7 @@ class StateValidator:
         issues = []
 
         # RESOLVED requires solution_verified
-        if case.status == CaseStatus.RESOLVED and not case.progress.solution_verified:
+        if case.state == CaseState.RESOLVED and not case.progress.solution_verified:
             issues.append(ValidationIssue(
                 code="STATUS_MISMATCH_001",
                 message="Status is RESOLVED but solution_verified=False",
@@ -465,7 +465,7 @@ class StateValidator:
             ))
 
         # INVESTIGATING should have problem_statement
-        if case.status == CaseStatus.INVESTIGATING:
+        if case.state == CaseState.INVESTIGATING:
             has_statement = (
                 case.problem_verification and
                 case.problem_verification.symptom_statement
@@ -486,7 +486,7 @@ class StateValidator:
 
         for hyp_id, hypothesis in case.hypotheses.items():
             # VALIDATED requires sufficient evidence
-            if hypothesis.status == HypothesisStatus.VALIDATED:
+            if hypothesis.state == HypothesisState.VALIDATED:
                 supporting_count = len(hypothesis.supporting_evidence)
                 if supporting_count < 2:
                     issues.append(ValidationIssue(
@@ -656,8 +656,8 @@ class RecoveryManager:
 
         retired_count = 0
         for hypothesis in case.hypotheses.values():
-            if hypothesis.likelihood < 0.3 and hypothesis.status == HypothesisStatus.ACTIVE:
-                hypothesis.status = HypothesisStatus.RETIRED
+            if hypothesis.likelihood < 0.3 and hypothesis.state == HypothesisState.ACTIVE:
+                hypothesis.state = HypothesisState.RETIRED
                 retired_count += 1
 
         if retired_count > 0:

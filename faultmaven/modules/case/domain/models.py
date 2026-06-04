@@ -5,7 +5,7 @@ based on the Investigation Architecture Specification v2.0.
 
 Key Models:
 - Case: Root case entity with milestone-based progress tracking
-- CaseState: Lifecycle status (INQUIRY -> INVESTIGATING -> RESOLVED/CLOSED)
+- CaseState: Lifecycle state (INQUIRY -> INVESTIGATING -> RESOLVED/CLOSED)
 - InvestigationProgress: 7 milestones tracking verification, diagnosis, and resolution
 - ProblemVerification: Consolidated symptom, scope, timeline, and changes data
 - Evidence: Categorized evidence collection with hypothesis evaluation
@@ -107,22 +107,22 @@ class CaseState(str, Enum):
 
     @property
     def is_terminal(self) -> bool:
-        """Check if this status is a disposition (terminal)."""
+        """Check if this state is a disposition (terminal)."""
         return self in [CaseState.RESOLVED, CaseState.CLOSED]
 
     @property
     def is_active(self) -> bool:
-        """Check if this status is a phase (active, not terminal)."""
+        """Check if this state is a phase (active, not terminal)."""
         return self in [CaseState.INQUIRY, CaseState.INVESTIGATING]
 
     @property
     def is_phase(self) -> bool:
-        """Check if this status represents an active phase (INQUIRY or INVESTIGATING)."""
+        """Check if this state represents an active phase (INQUIRY or INVESTIGATING)."""
         return self.is_active
 
     @property
     def is_disposition(self) -> bool:
-        """Check if this status represents a terminal disposition (RESOLVED or CLOSED)."""
+        """Check if this state represents a terminal disposition (RESOLVED or CLOSED)."""
         return self.is_terminal
 
 
@@ -275,7 +275,7 @@ class InvestigationStrategy(str, Enum):
     Service is down NOW. Priority: Speed over completeness.
 
     Characteristics:
-    - Accept hypothesis with TESTING status for quick mitigation
+    - Accept hypothesis with TESTING state for quick mitigation
     - Skip to solution phase even without complete root cause analysis
     - Escalate after 3 failed attempts
     - Evidence threshold: SUPPORTS is sufficient (not STRONGLY_SUPPORTS)
@@ -1975,7 +1975,7 @@ class EvidenceNeed(BaseModel):
       evidence linkage, motivating hypothesis IDs).
     - Auto-superseded by the engine on hypothesis retirement when the
       motivating list becomes empty AND purpose is CAUSAL_VERIFICATION
-      AND status is not FULFILLED. Symptom needs (empty motivating
+      AND state is not FULFILLED. Symptom needs (empty motivating
       list by design) are exempt — they're motivated by the problem
       statement, not by a hypothesis.
     """
@@ -2128,7 +2128,7 @@ class EvidenceNeed(BaseModel):
         return deduped
 
     @model_validator(mode="after")
-    def _validate_status_consistency(self) -> "EvidenceNeed":
+    def _validate_state_consistency(self) -> "EvidenceNeed":
         # SUPERSEDED needs must carry a reason; non-SUPERSEDED needs
         # must not. The asymmetric requirement mirrors how
         # ``closure_reason`` is enforced on Case for terminal states.
@@ -2538,7 +2538,7 @@ class Hypothesis(BaseModel):
         return (total_support - total_refute) / total
 
     @model_validator(mode="after")
-    def _validate_refutation_reason_pairs_with_status(self) -> "Hypothesis":
+    def _validate_refutation_reason_pairs_with_state(self) -> "Hypothesis":
         """Pair integrity: state=REFUTED requires refutation_reason.
 
         The two fields travel together — a Hypothesis with state=REFUTED
@@ -2554,7 +2554,7 @@ class Hypothesis(BaseModel):
         if self.refutation_reason and self.state != HypothesisState.REFUTED:
             raise ValueError(
                 "refutation_reason is only valid when state=REFUTED. "
-                f"Current status is {self.state.value}."
+                f"Current state is {self.state.value}."
             )
         return self
 
@@ -2791,7 +2791,7 @@ class ProposedAction(BaseModel):
 
     @field_validator("state")
     @classmethod
-    def valid_action_status(cls, v):
+    def valid_action_state(cls, v):
         allowed = ["pending", "accepted", "rejected", "superseded"]
         if v not in allowed:
             raise ValueError(f"state must be one of: {allowed}")
@@ -4195,9 +4195,9 @@ class Case(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_status_timestamp_consistency(self) -> "Case":
+    def validate_state_timestamp_consistency(self) -> "Case":
         """
-        Enforce status-timestamp consistency per DB spec.
+        Enforce state-timestamp consistency per DB spec.
 
         Spec Reference: DB Design Specification lines 157-176
         """
@@ -4213,39 +4213,39 @@ class Case(BaseModel):
         # RESOLVED requires resolved_at and closed_at
         if self.state == CaseState.RESOLVED:
             if not self.resolved_at:
-                raise ValueError("RESOLVED status requires resolved_at timestamp")
+                raise ValueError("RESOLVED state requires resolved_at timestamp")
             if not self.closed_at:
-                raise ValueError("RESOLVED status requires closed_at timestamp")
+                raise ValueError("RESOLVED state requires closed_at timestamp")
 
         # Non-RESOLVED must not have resolved_at
         if self.state != CaseState.RESOLVED and self.resolved_at:
             raise ValueError(
-                f"resolved_at can only be set when status is RESOLVED (current: {self.state})"
+                f"resolved_at can only be set when state is RESOLVED (current: {self.state})"
             )
 
         # RESOLVED or CLOSED requires closed_at
         if self.state in [CaseState.RESOLVED, CaseState.CLOSED] and not self.closed_at:
             raise ValueError(
-                f"Terminal status {self.state} requires closed_at timestamp"
+                f"Terminal state {self.state} requires closed_at timestamp"
             )
 
         # Non-terminal must not have closed_at
         if self.state not in [CaseState.RESOLVED, CaseState.CLOSED] and self.closed_at:
             raise ValueError(
-                f"closed_at can only be set when status is RESOLVED or CLOSED (current: {self.state})"
+                f"closed_at can only be set when state is RESOLVED or CLOSED (current: {self.state})"
             )
 
         # closure_reason is a sub-categorization of CLOSED only.
-        #   - status == CLOSED:    closure_reason MUST be set (engine-derived)
-        #   - status == RESOLVED:  closure_reason MUST be None (resolution
+        #   - state == CLOSED:    closure_reason MUST be set (engine-derived)
+        #   - state == RESOLVED:  closure_reason MUST be None (resolution
         #                          itself is the reason; sub-categorization
-        #                          would be redundant with the status)
+        #                          would be redundant with the state)
         #   - non-terminal:        closure_reason MUST be None
         if self.state == CaseState.CLOSED and not self.closure_reason:
-            raise ValueError("CLOSED status requires closure_reason")
+            raise ValueError("CLOSED state requires closure_reason")
         if self.state != CaseState.CLOSED and self.closure_reason:
             raise ValueError(
-                f"closure_reason can only be set when status is CLOSED "
+                f"closure_reason can only be set when state is CLOSED "
                 f"(current: {self.state})"
             )
 
@@ -4254,7 +4254,7 @@ class Case(BaseModel):
     def atomic_transition(self):
         """
         Context manager to allow atomic updates of interdependent fields.
-        Useful for transitioning to terminal states where status/timestamps depend on each other.
+        Useful for transitioning to terminal states where state/timestamps depend on each other.
         """
 
         class AtomicContext:
@@ -4270,7 +4270,7 @@ class Case(BaseModel):
                     del self.case._in_terminal_transition
                 # Only validate if no exception occurred during the block
                 if exc_type is None:
-                    self.case.validate_status_timestamp_consistency()
+                    self.case.validate_state_timestamp_consistency()
 
         return AtomicContext(self)
 
@@ -4300,7 +4300,7 @@ class Case(BaseModel):
         if self.state in (CaseState.INVESTIGATING, CaseState.RESOLVED):
             if not self.description or self.description == "":
                 raise ValueError(
-                    f"{self.state.value} status requires non-empty description "
+                    f"{self.state.value} state requires non-empty description "
                     "(description carries the case's problem statement)"
                 )
 
@@ -4309,11 +4309,11 @@ class Case(BaseModel):
             # but enforced at the same gate.
             if not self.inquiry.problem_statement_confirmed:
                 raise ValueError(
-                    "INVESTIGATING status requires confirmed problem statement"
+                    "INVESTIGATING state requires confirmed problem statement"
                 )
             if not self.inquiry.decided_to_investigate:
                 raise ValueError(
-                    "INVESTIGATING status requires investigation commitment"
+                    "INVESTIGATING state requires investigation commitment"
                 )
 
         return self
@@ -4367,7 +4367,7 @@ class Case(BaseModel):
             object.__setattr__(self, "_in_atomic_update", False)
 
         try:
-            self.validate_status_timestamp_consistency()
+            self.validate_state_timestamp_consistency()
             self.validate_timestamp_ordering()
             self.validate_description_for_investigation_and_resolution()
         except ValueError:

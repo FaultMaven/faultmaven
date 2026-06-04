@@ -108,7 +108,7 @@ class TestMilestoneOrdering:
         assert warnings[0].code == "MILESTONE_INCOMPLETE_001"
 
 
-class TestStatusConsistency:
+class TestStateConsistency:
     """Test state-progress consistency validation."""
 
     def test_resolved_without_solution_verified(self, validator, base_case):
@@ -122,7 +122,7 @@ class TestStatusConsistency:
         )
         resolved_case.progress.solution_verified = False
 
-        issues = validator._validate_status_consistency(resolved_case)
+        issues = validator._validate_state_consistency(resolved_case)
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
 
         assert len(errors) == 1
@@ -139,7 +139,7 @@ class TestStatusConsistency:
         )
         resolved_case.progress.solution_verified = True
 
-        issues = validator._validate_status_consistency(resolved_case)
+        issues = validator._validate_state_consistency(resolved_case)
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
 
         assert len(errors) == 0
@@ -149,7 +149,7 @@ class TestStatusConsistency:
         base_case.state = CaseState.INVESTIGATING
         base_case.problem_verification = None
 
-        issues = validator._validate_status_consistency(base_case)
+        issues = validator._validate_state_consistency(base_case)
         warnings = [i for i in issues if i.severity == ValidationSeverity.WARNING]
 
         assert any(i.code == "STATUS_MISMATCH_002" for i in warnings)

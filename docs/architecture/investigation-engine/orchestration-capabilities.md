@@ -218,7 +218,7 @@ When a case reaches a terminal state (RESOLVED or CLOSED), the system emits stru
 
 ### 6.1 Prometheus Metrics
 
-**Implementation**: New module `faultmaven/infrastructure/observability/case_metrics.py`. Metrics are emitted in `terminal_transitions.py` immediately after the case status update.
+**Implementation**: New module `faultmaven/infrastructure/observability/case_metrics.py`. Metrics are emitted in `terminal_transitions.py` immediately after the case state update.
 
 **Counters:**
 
@@ -246,35 +246,35 @@ When a case reaches a terminal state (RESOLVED or CLOSED), the system emits stru
 
 All labels use bounded, enumerated values:
 
-- `status`: `"resolved"` | `"closed"` (from `CaseStatus` enum)
+- `status`: `"resolved"` | `"closed"` (from `CaseState` enum)
 - `closure_reason`: `"closed_after_investigation"` | `"mitigation_sufficient"` | `"inquiry_only"` (from `VALID_CLOSURE_REASONS`, set by `derive_closure_reason()`)
 - `summary_type`: `"resolution_summary"` | `"closure_summary"` (from `ReportType` enum)
 
 ### 6.3 Emission Point
 
 ```python
-# In terminal_transitions.py, after case status update:
+# In terminal_transitions.py, after case state update:
 
 def _emit_terminal_metrics(case: Case) -> None:
     """Emit Prometheus metrics when case reaches terminal state."""
     duration = (case.closed_at - case.created_at).total_seconds()
 
     case_terminal_total.labels(
-        status=case.status.value,
+        status=case.state.value,
         closure_reason=case.closure_reason,
     ).inc()
 
     case_duration_seconds.labels(
-        status=case.status.value,
+        status=case.state.value,
         closure_reason=case.closure_reason,
     ).observe(duration)
 
     case_turn_count.labels(
-        status=case.status.value,
+        status=case.state.value,
     ).observe(case.current_turn)
 
     case_evidence_count.labels(
-        status=case.status.value,
+        status=case.state.value,
     ).observe(len(case.evidence))
 
     cases_active_gauge.dec()
@@ -287,7 +287,7 @@ Alongside Prometheus metrics, a structured log event is emitted via structlog fo
 ```python
 structlog.get_logger().info(
     "case.terminal",
-    case_status=case.status.value,
+    case_status=case.state.value,
     closure_reason=case.closure_reason,
     duration_seconds=duration,
     turn_count=case.current_turn,

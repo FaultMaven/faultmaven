@@ -85,9 +85,9 @@ cursor.execute("INSERT INTO ...")
 ```python
 # ❌ NO!
 cursor.execute("""
-    INSERT INTO cases (case_id, user_id, status)
+    INSERT INTO cases (case_id, user_id, state)
     VALUES (?, ?, ?)
-""", (case.case_id, case.user_id, case.status))
+""", (case.case_id, case.user_id, case.state))
 ```
 
 **Why**: The repository abstraction handles this. Your code stays clean and testable.
@@ -99,14 +99,14 @@ cursor.execute("""
 ### ✅ You Work With Python Objects
 
 ```python
-from faultmaven.models.case import Case, CaseStatus
+from faultmaven.models.case import Case, CaseState
 
 # Create a case (just a Python object)
 case = Case(
     user_id="user_123",
     organization_id="org_456",
     title="API Error Investigation",
-    status=CaseStatus.INVESTIGATING
+    state=CaseState.INVESTIGATING
 )
 
 # That's it! No SQL, no database knowledge needed.
@@ -451,7 +451,7 @@ class Engine:
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
-from faultmaven.models.case import Case, CaseStatus
+from faultmaven.models.case import Case, CaseState
 
 @pytest.fixture
 def mock_repository():
@@ -463,7 +463,7 @@ def mock_repository():
         user_id="test",
         organization_id="org",
         title="Test Case",
-        status=CaseStatus.INVESTIGATING
+        state=CaseState.INVESTIGATING
     )
 
     return repo
@@ -484,7 +484,7 @@ async def test_process_turn_updates_case(mock_repository):
         user_id="test",
         organization_id="org",
         title="Test",
-        status=CaseStatus.INVESTIGATING
+        state=CaseState.INVESTIGATING
     )
 
     # 3. Process turn
@@ -657,7 +657,7 @@ async def get_user_cases_paginated(
 **Example request**:
 ```python
 # What you want to do:
-cases = await repo.list_by_status_and_date(
+cases = await repo.list_by_state_and_date(
     status="investigating",
     created_after=datetime.now() - timedelta(days=7)
 )

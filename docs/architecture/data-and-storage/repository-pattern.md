@@ -340,7 +340,7 @@ CHROMADB_COLLECTION=faultmaven_kb
 ```python
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any
-from faultmaven.models.case import Case, CaseStatus
+from faultmaven.models.case import Case, CaseState
 
 
 class CaseRepository(ABC):
@@ -518,7 +518,7 @@ Scoped methods:
 Mapping at the service layer (`CaseService.update_case`):
 
 - Updates touching only `title`/`description` → `repo.update_metadata_fields(...)`. No OCC.
-- Updates touching `status` or `closure_reason` (with or without metadata fields) → `update_case_with_retry(...)`. Versioned save with retry on conflict. Status transitions ARE investigation events; concurrent writers must coordinate.
+- Updates touching `state` or `closure_reason` (with or without metadata fields) → `update_case_with_retry(...)`. Versioned save with retry on conflict. State transitions ARE investigation events; concurrent writers must coordinate.
 
 This is the correct fix for the racing-writer pattern observed when a 49 s turn loop is interleaved with a `POST /title` and a `PUT /cases/{id}` (both metadata-only): under the v2.4 design, both bumped the version and the turn failed at save with `StaleCaseException`. Under v2.6, neither bumps the version, and the turn save succeeds.
 

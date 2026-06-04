@@ -28,7 +28,7 @@ This document defines the investigation architecture for FaultMaven's investigat
 | **Treatment failure** | Extended diagnosis within TREATMENT (new evidence required, not reprocessing) |
 
 **What does NOT change:**
-- Case statuses: INQUIRY → INVESTIGATING → RESOLVED/CLOSED
+- Case states: INQUIRY → INVESTIGATING → RESOLVED/CLOSED
 - INQUIRY phase and two-step confirmation for entering INVESTIGATING
 - User-Agent Handshake for disposition transitions (RESOLVED/CLOSED)
 - Hypothesis lifecycle (CAPTURED → ACTIVE → VALIDATED/REFUTED/INCONCLUSIVE/RETIRED)
@@ -400,7 +400,7 @@ In the current model:
 
 - **symptom_verified**: Retained as a progress indicator — confirms the problem exists before any hypothesis work begins.
 - **scope_assessed, timeline_established, changes_identified**: **Removed.** These failed both design tests: (a) their absence does not block progress (investigation continues without them), and (b) they don't require independent evidence searches — scope and timeline are extracted facts from symptom evidence, and change events are contextual triggers that live on `uploaded_files` (as file-level metadata) rather than as a synthetic evidence category. The agent captures this context opportunistically; it never stalls waiting for it.
-- **root_cause_identified**: Retained as a progress indicator. Also reflected in hypothesis status (VALIDATED with high confidence ≥ 70%).
+- **root_cause_identified**: Retained as a progress indicator. Also reflected in hypothesis state (VALIDATED with high confidence ≥ 70%).
 - **solution_proposed**: Retained as a progress indicator, set programmatically (not by LLM) when a `ProposedAction` with `action_type=SOLUTION` is created. Tells the LLM "you already proposed a solution" without scanning conversation history.
 - **solution_applied**: Tracked as part of TREATMENT workflow. Not a milestone.
 - **mitigation_applied**: Replaced by the MITIGATION stage with its own lifecycle.
@@ -1008,7 +1008,7 @@ class ProposedAction(BaseModel):
     commands: List[str]                   # Specific commands for the user to execute
     proposed_at: datetime                 # When the action was proposed (auto-set)
     proposed_in_turn: int                 # Turn number when proposed
-    status: str                           # "pending" | "accepted" | "rejected" | "superseded"
+    state: str                            # "pending" | "accepted" | "rejected" | "superseded"
 ```
 
 The `action_type` is determined by the system when creating the ProposedAction from a SolutionToAdd:
@@ -1237,7 +1237,7 @@ new.action_attempts = []
 
 | Component | Status |
 |-----------|--------|
-| CaseStatus (INQUIRY/INVESTIGATING/RESOLVED/CLOSED) | Unchanged |
+| CaseState (INQUIRY/INVESTIGATING/RESOLVED/CLOSED) | Unchanged |
 | INQUIRY template and two-step confirmation | Unchanged |
 | User-Agent Handshake for disposition actions | Unchanged |
 | TERMINAL template | Unchanged |
@@ -1278,7 +1278,7 @@ All open questions from the initial draft have been resolved.
 | **Phase** | An active work period: INQUIRY or INVESTIGATING. The case is being actively worked on. |
 | **Disposition** | A terminal resolution: RESOLVED or CLOSED. The case has reached its final state. |
 | **Case Action** | Any phase transition or disposition change (e.g., INQUIRY → INVESTIGATING, INVESTIGATING → RESOLVED). Recorded as `CaseAction` entries in the `case_actions` table (managed by `CaseActionManager`). |
-| **Status** | A passive descriptive label on entities (e.g., hypothesis status: CAPTURED, ACTIVE, VALIDATED). |
+| **Status** | A passive descriptive label on entities (e.g., hypothesis state: CAPTURED, ACTIVE, VALIDATED). |
 | **State/CaseState** | A complete technical snapshot of the case at a point in time. |
 | **Investigation State** | The current state of an investigation, defined by two dimensions: Stage (where the investigation is) and Investigation Milestones (what has been established and acted upon). See §4.1. |
 | **Stage** | One of DIAGNOSIS, MITIGATION, or TREATMENT (within the INVESTIGATING phase only). Computed from gate milestones. Determines which prompt the LLM receives. |

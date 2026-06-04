@@ -8,7 +8,7 @@ For understanding the investigation system, read in this order:
 
 1. **[Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md)** — The framework: philosophy, milestones, opportunistic completion
 2. **[Investigation Lifecycle Logic](./investigation-lifecycle-logic.md)** — State transitions, stage routing, case actions, turn tracking
-3. **[Investigation Data Models](./investigation-data-models.md)** — CaseStatus, Evidence, Hypothesis, Solution, and related structures
+3. **[Investigation Data Models](./investigation-data-models.md)** — CaseState, Evidence, Hypothesis, Solution, and related structures
 4. **[Prompt Templates](./prompt-templates.md)** — *(outdated — historical reference only; authoritative sources are `templates.py`, `agent-stage-playbook.md`, and `agent-behavioral-rules.md`)*
 5. **[Agent Behavioral Rules](./agent-behavioral-rules.md)** — 8 prompt-injected rules that constrain agent output and shape input reading
 

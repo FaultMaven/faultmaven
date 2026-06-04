@@ -280,7 +280,7 @@ class Case(BaseModel):
     case_id: str                       # Primary key - NOT nested under sessions
     title: str                         # Generated or user-provided title
     user_id: str                       # Authorization reference (NOT FK to session)
-    status: CaseStatus                 # INQUIRY | INVESTIGATING | RESOLVED | CLOSED
+    state: CaseState                 # INQUIRY | INVESTIGATING | RESOLVED | CLOSED
     severity: CaseSeverity             # LOW | MEDIUM | HIGH | CRITICAL
     is_archived: bool                  # Independent of status; data-lifecycle flag
     created_at: datetime               # UTC datetime
@@ -305,7 +305,7 @@ class ViewState(BaseModel):
     case_id: str                       # Current case being viewed
     user_id: str                       # Authorized user
     case_title: str                    # Display title for case
-    case_status: CaseStatus            # INQUIRY | INVESTIGATING | RESOLVED | CLOSED
+    case_state: CaseState            # INQUIRY | INVESTIGATING | RESOLVED | CLOSED
     running_summary: str               # AI-generated case summary
     uploaded_data: List[UploadedData]  # Files uploaded to this case
     conversation_count: int            # Number of exchanges in this case
@@ -323,7 +323,7 @@ class ViewState(BaseModel):
 interface CaseAPI {
   case_id: string;
   title: string;
-  status: CaseStatus;         // 'inquiry' | 'investigating' | 'resolved' | 'closed'
+  state: CaseState;         // 'inquiry' | 'investigating' | 'resolved' | 'closed'
   severity: CaseSeverity;     // 'low' | 'medium' | 'high' | 'critical'
   user_id: string;            // User who owns the case
   is_archived: boolean;       // Independent of status; data-lifecycle flag
