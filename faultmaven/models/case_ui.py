@@ -1,7 +1,7 @@
 """Phase-adaptive UI response models for milestone-based investigation.
 
-These models provide optimized responses for the browser extension UI based on case status.
-Each status (INQUIRY, INVESTIGATING, RESOLVED) returns a different response schema
+These models provide optimized responses for the browser extension UI based on case state.
+Each state (INQUIRY, INVESTIGATING, RESOLVED) returns a different response schema
 with fields relevant to that phase of the investigation.
 
 This eliminates the need for multiple API calls to assemble UI state.
@@ -396,7 +396,7 @@ class CaseUIResponse_Inquiry(BaseModel):
 
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed status transitions from current state for user-initiated changes",
+        description="Allowed state transitions from current state for user-initiated changes",
     )
 
     disposition_eligibility: Optional[Dict[str, str]] = Field(
@@ -472,7 +472,7 @@ class CaseUIResponse_Investigating(BaseModel):
 
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed status transitions from current state for user-initiated changes",
+        description="Allowed state transitions from current state for user-initiated changes",
     )
 
     disposition_eligibility: Optional[Dict[str, str]] = Field(
@@ -580,7 +580,7 @@ class CaseUIResponse_Resolved(BaseModel):
     case_id: str = Field(description="Case identifier")
 
     state: Literal[CaseState.RESOLVED, CaseState.CLOSED] = Field(
-        description="Case terminal status: 'resolved' (with solution) or 'closed' (without investigation)",
+        description="Case terminal state: 'resolved' (with solution) or 'closed' (without investigation)",
     )
 
     title: str = Field(description="Case title", max_length=200)
@@ -597,7 +597,7 @@ class CaseUIResponse_Resolved(BaseModel):
 
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed status transitions from current state for user-initiated changes",
+        description="Allowed state transitions from current state for user-initiated changes",
     )
 
     disposition_eligibility: Optional[Dict[str, str]] = Field(
@@ -679,7 +679,7 @@ CaseUIResponse = Annotated[
 """
 Phase-adaptive case response for UI.
 
-The API returns different response schemas based on case status:
+The API returns different response schemas based on case state:
 - INQUIRY → CaseUIResponse_Inquiry
 - INVESTIGATING → CaseUIResponse_Investigating
 - RESOLVED → CaseUIResponse_Resolved

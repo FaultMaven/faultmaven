@@ -25,9 +25,9 @@ from fastapi import APIRouter, Body, Depends, Query, status
 from faultmaven.api.dependencies import get_investigation_session_service
 from faultmaven.api.middleware.auth import get_current_user
 from faultmaven.api.models import (
+    InvestigationSessionResponse,
     SessionCreateRequest,
     SessionListResponse,
-    SessionResponse,
     SessionUpdateRequest,
 )
 from faultmaven.exceptions import NotFoundError
@@ -45,7 +45,9 @@ router = APIRouter(prefix="/api/v1/cases/{case_id}/sessions", tags=["Sessions"])
 # ============================================================
 
 
-@router.post("", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "", response_model=InvestigationSessionResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_session(
     case_id: str,
     request: SessionCreateRequest,
@@ -53,7 +55,7 @@ async def create_session(
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
-) -> SessionResponse:
+) -> InvestigationSessionResponse:
     """Create investigation session for case.
 
     Creates a new investigation session for the specified case.
@@ -86,17 +88,17 @@ async def create_session(
         metadata=request.metadata,
     )
 
-    return SessionResponse.from_domain(session)
+    return InvestigationSessionResponse.from_domain(session)
 
 
-@router.get("/active", response_model=Optional[SessionResponse])
+@router.get("/active", response_model=Optional[InvestigationSessionResponse])
 async def get_active_session(
     case_id: str,
     current_user: AuthenticatedUser = Depends(get_current_user),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
-) -> Optional[SessionResponse]:
+) -> Optional[InvestigationSessionResponse]:
     """Get currently active session for case.
 
     Returns the currently active investigation session for a case,
@@ -125,10 +127,10 @@ async def get_active_session(
     if not session:
         return None
 
-    return SessionResponse.from_domain(session)
+    return InvestigationSessionResponse.from_domain(session)
 
 
-@router.get("/{session_id}", response_model=SessionResponse)
+@router.get("/{session_id}", response_model=InvestigationSessionResponse)
 async def get_session(
     case_id: str,
     session_id: str,
@@ -136,7 +138,7 @@ async def get_session(
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
-) -> SessionResponse:
+) -> InvestigationSessionResponse:
     """Get session by ID.
 
     Retrieves a specific investigation session by its ID.
@@ -169,10 +171,10 @@ async def get_session(
     if session.case_id != case_id:
         raise NotFoundError("Session", session_id)
 
-    return SessionResponse.from_domain(session)
+    return InvestigationSessionResponse.from_domain(session)
 
 
-@router.get("", response_model=List[SessionResponse])
+@router.get("", response_model=List[InvestigationSessionResponse])
 async def list_sessions(
     case_id: str,
     current_user: AuthenticatedUser = Depends(get_current_user),
@@ -182,7 +184,7 @@ async def list_sessions(
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
-) -> List[SessionResponse]:
+) -> List[InvestigationSessionResponse]:
     """List sessions for case.
 
     Retrieves all investigation sessions for a case with optional filtering.
@@ -218,10 +220,10 @@ async def list_sessions(
         offset=offset,
     )
 
-    return [SessionResponse.from_domain(session) for session in sessions]
+    return [InvestigationSessionResponse.from_domain(session) for session in sessions]
 
 
-@router.patch("/{session_id}", response_model=SessionResponse)
+@router.patch("/{session_id}", response_model=InvestigationSessionResponse)
 async def update_session(
     case_id: str,
     session_id: str,
@@ -230,7 +232,7 @@ async def update_session(
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
-) -> SessionResponse:
+) -> InvestigationSessionResponse:
     """Update session.
 
     Updates specified fields of an investigation session.
@@ -272,7 +274,7 @@ async def update_session(
             raise NotFoundError("Session", session_id)
         if session.case_id != case_id:
             raise NotFoundError("Session", session_id)
-        return SessionResponse.from_domain(session)
+        return InvestigationSessionResponse.from_domain(session)
 
     session = await session_service.update_session(
         session_id=session_id,
@@ -284,10 +286,10 @@ async def update_session(
     if session.case_id != case_id:
         raise NotFoundError("Session", session_id)
 
-    return SessionResponse.from_domain(session)
+    return InvestigationSessionResponse.from_domain(session)
 
 
-@router.post("/{session_id}/pause", response_model=SessionResponse)
+@router.post("/{session_id}/pause", response_model=InvestigationSessionResponse)
 async def pause_session(
     case_id: str,
     session_id: str,
@@ -295,7 +297,7 @@ async def pause_session(
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
-) -> SessionResponse:
+) -> InvestigationSessionResponse:
     """Pause active session.
 
     Pauses an active investigation session. Only active sessions
@@ -327,10 +329,10 @@ async def pause_session(
     if session.case_id != case_id:
         raise NotFoundError("Session", session_id)
 
-    return SessionResponse.from_domain(session)
+    return InvestigationSessionResponse.from_domain(session)
 
 
-@router.post("/{session_id}/resume", response_model=SessionResponse)
+@router.post("/{session_id}/resume", response_model=InvestigationSessionResponse)
 async def resume_session(
     case_id: str,
     session_id: str,
@@ -338,7 +340,7 @@ async def resume_session(
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
-) -> SessionResponse:
+) -> InvestigationSessionResponse:
     """Resume paused session.
 
     Resumes a paused investigation session. Only paused sessions
@@ -370,10 +372,10 @@ async def resume_session(
     if session.case_id != case_id:
         raise NotFoundError("Session", session_id)
 
-    return SessionResponse.from_domain(session)
+    return InvestigationSessionResponse.from_domain(session)
 
 
-@router.post("/{session_id}/complete", response_model=SessionResponse)
+@router.post("/{session_id}/complete", response_model=InvestigationSessionResponse)
 async def complete_session(
     case_id: str,
     session_id: str,
@@ -382,7 +384,7 @@ async def complete_session(
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
-) -> SessionResponse:
+) -> InvestigationSessionResponse:
     """Complete session with findings.
 
     Completes an investigation session with a findings summary.
@@ -420,4 +422,4 @@ async def complete_session(
     if session.case_id != case_id:
         raise NotFoundError("Session", session_id)
 
-    return SessionResponse.from_domain(session)
+    return InvestigationSessionResponse.from_domain(session)

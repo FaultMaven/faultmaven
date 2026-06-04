@@ -5,7 +5,7 @@ based on the Investigation Architecture Specification v2.0.
 
 Key Models:
 - Case: Root case entity with milestone-based progress tracking
-- CaseState: Lifecycle status (INQUIRY -> INVESTIGATING -> RESOLVED/CLOSED)
+- CaseState: Lifecycle state (INQUIRY -> INVESTIGATING -> RESOLVED/CLOSED)
 - InvestigationProgress: 7 milestones tracking verification, diagnosis, and resolution
 - ProblemVerification: Consolidated symptom, scope, timeline, and changes data
 - Evidence: Categorized evidence collection with hypothesis evaluation
@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 class CaseState(str, Enum):
     """
-    Case lifecycle status — passive label describing a case's current condition.
+    Case lifecycle state — passive label describing a case's current condition.
 
     Values fall into two categories:
     - **Phases** (active work): INQUIRY, INVESTIGATING
@@ -822,7 +822,7 @@ class KnowledgeMatch(BaseModel):
 
 class InquiryData(BaseModel):
     """
-    Pre-investigation INQUIRY status data.
+    Pre-investigation INQUIRY state data.
     Captures early problem exploration before formal investigation commitment.
     """
 
@@ -885,7 +885,7 @@ class InquiryData(BaseModel):
     )
 
     inquiry_turns: int = Field(
-        default=0, ge=0, description="Number of turns spent in INQUIRY status"
+        default=0, ge=0, description="Number of turns spent in INQUIRY state"
     )
 
     knowledge_matches: List[KnowledgeMatch] = Field(
@@ -1913,9 +1913,9 @@ class NeedPurpose(str, Enum):
     (absence) on re-check after solution.
 
     The same need produces multiple evidence rows of different
-    categories across the case's lifetime; the need's status stays
+    categories across the case's lifetime; the need's state stays
     FULFILLED once fulfilled — re-check evidence is appended via
-    ``fulfilling_evidence_ids``, it does not reset the status.
+    ``fulfilling_evidence_ids``, it does not reset the state.
     """
 
     SYMPTOM_VERIFICATION = "symptom_verification"
@@ -1971,7 +1971,7 @@ class EvidenceNeed(BaseModel):
     - Created by the LLM via ``EvidenceNeedUpdate`` emissions at
       problem-statement confirmation (symptom needs) and at hypothesis
       creation (causal needs).
-    - Updated by the LLM as evidence arrives (status, fulfilling
+    - Updated by the LLM as evidence arrives (state, fulfilling
       evidence linkage, motivating hypothesis IDs).
     - Auto-superseded by the engine on hypothesis retirement when the
       motivating list becomes empty AND purpose is CAUSAL_VERIFICATION
@@ -2052,7 +2052,7 @@ class EvidenceNeed(BaseModel):
             "accumulate across stages: presence evidence collected during "
             "DIAGNOSIS plus absence evidence collected during "
             "MITIGATION/TREATMENT. The list is append-only in practice — "
-            "the need's status stays FULFILLED once fulfilled even when "
+            "the need's state stays FULFILLED once fulfilled even when "
             "post-fix absence evidence is added."
         ),
     )
@@ -2274,7 +2274,7 @@ class CaseEntity(BaseModel):
 
 
 class HypothesisState(str, Enum):
-    """Hypothesis lifecycle status"""
+    """Hypothesis lifecycle state"""
 
     CAPTURED = "captured"
     """
@@ -2409,7 +2409,7 @@ class Hypothesis(BaseModel):
     )
 
     state: HypothesisState = Field(
-        default=HypothesisState.CAPTURED, description="Current hypothesis status"
+        default=HypothesisState.CAPTURED, description="Current hypothesis state"
     )
 
     likelihood: float = Field(
@@ -3686,7 +3686,7 @@ class Case(BaseModel):
     # ============================================================
     state: CaseState = Field(
         default=CaseState.INQUIRY,
-        description="Current lifecycle status (phase or disposition)",
+        description="Current lifecycle state (phase or disposition)",
     )
 
     action_history: List[CaseAction] = Field(
@@ -3827,7 +3827,7 @@ class Case(BaseModel):
     # ============================================================
     inquiry: InquiryData = Field(
         default_factory=InquiryData,
-        description="Pre-investigation INQUIRY status data",
+        description="Pre-investigation INQUIRY state data",
     )
 
     problem_verification: Optional[ProblemVerification] = Field(
@@ -3949,7 +3949,7 @@ class Case(BaseModel):
     )
 
     resolved_at: Optional[datetime] = Field(
-        default=None, description="When case reached RESOLVED status"
+        default=None, description="When case reached RESOLVED state"
     )
 
     closed_at: Optional[datetime] = Field(

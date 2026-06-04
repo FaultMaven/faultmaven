@@ -149,7 +149,7 @@ class SessionUpdateRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
-class SessionResponse(BaseModel):
+class InvestigationSessionResponse(BaseModel):
     """Response model for investigation session."""
 
     session_id: str
@@ -172,14 +172,14 @@ class SessionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     @classmethod
-    def from_domain(cls, session: Any) -> "SessionResponse":
-        """Create SessionResponse from domain InvestigationSession model.
+    def from_domain(cls, session: Any) -> "InvestigationSessionResponse":
+        """Create InvestigationSessionResponse from domain InvestigationSession model.
 
         Args:
             session: Domain InvestigationSession object
 
         Returns:
-            SessionResponse instance
+            InvestigationSessionResponse instance
         """
         return cls(
             session_id=session.session_id,
@@ -204,7 +204,7 @@ class SessionResponse(BaseModel):
 class SessionListResponse(BaseModel):
     """Response model for session list."""
 
-    items: List[SessionResponse]
+    items: List[InvestigationSessionResponse]
     total: int
     limit: int
     offset: int
