@@ -5,7 +5,7 @@ Tests:
 - CaseUpdateRequest optional fields
 - CaseResponse serialization from domain model
 - SessionCreateRequest validation
-- SessionResponse serialization
+- InvestigationSessionResponse serialization
 - EvidenceResponse serialization
 - Pydantic validation errors (min_length, ge constraints)
 """
@@ -24,9 +24,9 @@ from faultmaven.api.models import (
     CaseUpdateRequest,
     ErrorResponse,
     EvidenceUpdateRequest,
+    InvestigationSessionResponse,
     SessionCreateRequest,
     SessionListResponse,
-    SessionResponse,
     SessionUpdateRequest,
     ValidationErrorResponse,
 )
@@ -335,17 +335,17 @@ class TestSessionUpdateRequest:
 
 
 # ============================================================
-# SessionResponse Tests
+# InvestigationSessionResponse Tests
 # ============================================================
 
 
 class TestSessionResponse:
-    """Tests for SessionResponse model."""
+    """Tests for InvestigationSessionResponse model."""
 
     def test_session_response_all_fields(self):
         """Test session response with all fields."""
         now = datetime.now(timezone.utc)
-        response = SessionResponse(
+        response = InvestigationSessionResponse(
             session_id="session_123",
             case_id="case_456",
             user_id="user_789",
@@ -388,7 +388,7 @@ class TestSessionResponse:
         mock_session.created_at = now
         mock_session.updated_at = now
 
-        response = SessionResponse.from_domain(mock_session)
+        response = InvestigationSessionResponse.from_domain(mock_session)
         assert response.session_id == "session_123"
         assert response.state == SessionState.PAUSED
         assert response.total_duration_ms == 60000
@@ -508,7 +508,7 @@ class TestEdgeCases:
     def test_session_response_completed(self):
         """Test session response with completed state."""
         now = datetime.now(timezone.utc)
-        response = SessionResponse(
+        response = InvestigationSessionResponse(
             session_id="session_123",
             case_id="case_456",
             user_id="user_789",

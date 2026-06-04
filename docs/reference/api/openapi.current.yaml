@@ -2522,7 +2522,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2594,7 +2594,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SessionResponse'
+                  $ref: '#/components/schemas/InvestigationSessionResponse'
                 title: Response List Sessions Api V1 Cases  Case Id  Sessions Get
         '422':
           description: Validation Error
@@ -2640,7 +2640,7 @@ paths:
             application/json:
               schema:
                 anyOf:
-                - $ref: '#/components/schemas/SessionResponse'
+                - $ref: '#/components/schemas/InvestigationSessionResponse'
                 - type: 'null'
                 title: Response Get Active Session Api V1 Cases  Case Id  Sessions
                   Active Get
@@ -2693,7 +2693,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2748,7 +2748,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2798,7 +2798,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2848,7 +2848,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2907,7 +2907,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -5248,7 +5248,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__models__api__SessionResponse'
+                $ref: '#/components/schemas/SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -10178,6 +10178,85 @@ components:
       description: "Progress metrics for INVESTIGATING phase.\n\nPurely descriptive\
         \ \u2014 all backward-looking facts, no speculative\nforward-looking predictions.\
         \ The frontend derives \"what's next\"\nfrom current_stage if needed."
+    InvestigationSessionResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        case_id:
+          type: string
+          title: Case Id
+        user_id:
+          type: string
+          title: User Id
+        organization_id:
+          type: string
+          title: Organization Id
+        state:
+          $ref: '#/components/schemas/SessionState'
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ended At
+        last_activity_at:
+          type: string
+          format: date-time
+          title: Last Activity At
+        total_duration_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Duration Ms
+        session_goal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Goal
+        findings_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Findings Summary
+        total_token_usage:
+          type: integer
+          title: Total Token Usage
+        total_agent_executions:
+          type: integer
+          title: Total Agent Executions
+        token_budget_limit:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Token Budget Limit
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - session_id
+      - case_id
+      - user_id
+      - organization_id
+      - state
+      - started_at
+      - last_activity_at
+      - total_token_usage
+      - total_agent_executions
+      - created_at
+      - updated_at
+      title: InvestigationSessionResponse
+      description: Response model for investigation session.
     InvestigationStage:
       type: string
       enum:
@@ -12234,83 +12313,53 @@ components:
       description: Request model for creating investigation session.
     SessionResponse:
       properties:
+        schema_version:
+          type: string
+          enum:
+          - 3.1.0
+          const: 3.1.0
+          title: Schema Version
+          default: 3.1.0
         session_id:
           type: string
           title: Session Id
-        case_id:
-          type: string
-          title: Case Id
         user_id:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: User Id
-        organization_id:
-          type: string
-          title: Organization Id
-        state:
-          $ref: '#/components/schemas/SessionState'
-        started_at:
-          type: string
-          format: date-time
-          title: Started At
-        ended_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Ended At
-        last_activity_at:
-          type: string
-          format: date-time
-          title: Last Activity At
-        total_duration_ms:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Total Duration Ms
-        session_goal:
+        client_id:
           anyOf:
           - type: string
           - type: 'null'
-          title: Session Goal
-        findings_summary:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Findings Summary
-        total_token_usage:
-          type: integer
-          title: Total Token Usage
-        total_agent_executions:
-          type: integer
-          title: Total Agent Executions
-        token_budget_limit:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Token Budget Limit
+          title: Client Id
+        status:
+          $ref: '#/components/schemas/AuthSessionStatus'
+          default: active
         created_at:
           type: string
-          format: date-time
           title: Created At
-        updated_at:
-          type: string
-          format: date-time
-          title: Updated At
+        expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expires At
+        metadata:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Metadata
+        session_resumed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Session Resumed
       type: object
       required:
       - session_id
-      - case_id
-      - user_id
-      - organization_id
-      - state
-      - started_at
-      - last_activity_at
-      - total_token_usage
-      - total_agent_executions
       - created_at
-      - updated_at
       title: SessionResponse
-      description: Response model for investigation session.
+      description: Response payload for auth session operations - API spec compliance.
     SessionRestoreRequest:
       properties:
         restore_point:
@@ -13673,55 +13722,6 @@ components:
       - last_updated
       title: WorkingConclusionSummary
       description: Agent's current understanding during INVESTIGATING phase.
-    faultmaven__models__api__SessionResponse:
-      properties:
-        schema_version:
-          type: string
-          enum:
-          - 3.1.0
-          const: 3.1.0
-          title: Schema Version
-          default: 3.1.0
-        session_id:
-          type: string
-          title: Session Id
-        user_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: User Id
-        client_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Client Id
-        status:
-          $ref: '#/components/schemas/AuthSessionStatus'
-          default: active
-        created_at:
-          type: string
-          title: Created At
-        expires_at:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Expires At
-        metadata:
-          anyOf:
-          - type: object
-          - type: 'null'
-          title: Metadata
-        session_resumed:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Session Resumed
-      type: object
-      required:
-      - session_id
-      - created_at
-      title: SessionResponse
-      description: Response payload for auth session operations - API spec compliance.
   securitySchemes:
     HTTPBearer:
       type: http
