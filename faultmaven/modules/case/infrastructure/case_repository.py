@@ -95,7 +95,7 @@ class CaseRepository(ABC):
         self,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        status: Optional[CaseState] = None,
+        state: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[List[Case], int]:
@@ -105,7 +105,7 @@ class CaseRepository(ABC):
         Args:
             user_id: Filter by user
             organization_id: Filter by organization
-            status: Filter by status
+            state: Filter by state
             limit: Maximum results
             offset: Pagination offset
 
@@ -790,7 +790,7 @@ class InMemoryCaseRepository(CaseRepository):
         self,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        status: Optional[CaseState] = None,
+        state: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[List[Case], int]:
@@ -804,8 +804,8 @@ class InMemoryCaseRepository(CaseRepository):
         if organization_id:
             filtered = [c for c in filtered if c.organization_id == organization_id]
 
-        if status:
-            filtered = [c for c in filtered if c.status == status]
+        if state:
+            filtered = [c for c in filtered if c.state == state]
 
         # Sort by last_activity_at descending
         filtered.sort(key=lambda c: c.last_activity_at, reverse=True)

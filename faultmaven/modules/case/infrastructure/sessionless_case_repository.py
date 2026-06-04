@@ -245,14 +245,14 @@ class SessionlessCaseRepository(CaseRepository):
         self,
         user_id: str | None = None,
         organization_id: str | None = None,
-        status: CaseState | None = None,
+        state: CaseState | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Case], int]:
         """List cases with optional filters."""
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
-            return await repo.list(user_id, organization_id, status, limit, offset)
+            return await repo.list(user_id, organization_id, state, limit, offset)
 
     async def search(
         self,
