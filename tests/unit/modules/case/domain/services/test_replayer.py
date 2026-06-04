@@ -33,7 +33,7 @@ def sample_case_snapshot():
         "organization_id": "org-1",
         "title": "Test Case",
         "description": "Test Description",
-        "status": "inquiry",
+        "state": "inquiry",
         "current_turn": 5,
         "progress": {"symptom_verified": True},
     }
@@ -101,7 +101,7 @@ async def test_diff_turns(replayer, mock_case_repo):
         "organization_id": "o1",
         "title": "Old Title",
         "description": "Old Description",
-        "status": "inquiry",
+        "state": "inquiry",
         "current_turn": 1,
     }
 

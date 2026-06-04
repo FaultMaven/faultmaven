@@ -14,7 +14,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     InquiryData,
     InvestigationPath,
     InvestigationStage,
@@ -78,7 +78,7 @@ def base_case():
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         user_id="user_123",
         organization_id="org_123",
         description="Test description",
@@ -132,7 +132,7 @@ class TestMilestoneEngine:
 
     @pytest.mark.asyncio
     async def test_process_turn_investigating(self, mock_llm, mock_repo, base_case):
-        """Test processing a turn in INVESTIGATING status"""
+        """Test processing a turn in INVESTIGATING state"""
         from faultmaven.modules.case.contracts import (
             Evidence,
             EvidenceCategory,
@@ -218,7 +218,7 @@ class TestMilestoneEngine:
 
     @pytest.mark.asyncio
     async def test_process_turn_inquiry(self, mock_llm, mock_repo):
-        """Test processing a turn in INQUIRY status"""
+        """Test processing a turn in INQUIRY state"""
         engine = MilestoneEngine(
             mock_llm,
             mock_repo,
@@ -228,7 +228,7 @@ class TestMilestoneEngine:
         case = Case(
             case_id="case_1234567890ab",
             title="Inquiry",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="",
@@ -464,10 +464,10 @@ class TestMilestoneEngine:
             investigation_tools=MagicMock(),
         )
 
-        base_case.status = CaseStatus.INVESTIGATING
+        base_case.state = CaseState.INVESTIGATING
         # Simulate a pending transition from a previous turn's propose_transition()
         base_case.pending_transition = {
-            "to_status": "resolved",
+            "to_state": "resolved",
             "reason": "User indicated the problem is resolved",
             "summary": "Based on your message, the issue appears to be resolved.",
             "evidence_ids": [],
@@ -494,7 +494,7 @@ class TestMilestoneEngine:
 
         # Verify transition executed via handshake confirmation
         assert result["case_updated"] is not None
-        assert result["case_updated"].status == CaseStatus.RESOLVED
+        assert result["case_updated"].state == CaseState.RESOLVED
         assert result["case_updated"].progress.solution_verified is True
 
     @pytest.mark.asyncio
@@ -517,7 +517,7 @@ class TestMilestoneEngine:
         )
 
         # Start in INVESTIGATING with resolution-ready case
-        base_case.status = CaseStatus.INVESTIGATING
+        base_case.state = CaseState.INVESTIGATING
         base_case.progress.symptom_verified = True
         _make_resolution_ready(base_case)
 
@@ -528,8 +528,8 @@ class TestMilestoneEngine:
             "the fix worked",
             intent_type="status_transition",
             intent_data={
-                "from_status": CaseStatus.INVESTIGATING,
-                "to_status": "resolved",
+                "from_state": CaseState.INVESTIGATING,
+                "to_state": "resolved",
                 "user_confirmed": False,
             },
         )
@@ -537,10 +537,10 @@ class TestMilestoneEngine:
         updated_case = result_turn_n["case_updated"]
 
         # Verify: Case stays INVESTIGATING, pending_transition proposed
-        assert updated_case.status == CaseStatus.INVESTIGATING
+        assert updated_case.state == CaseState.INVESTIGATING
         assert updated_case.progress.solution_verified is False
         assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_status"] == "resolved"
+        assert updated_case.pending_transition["to_state"] == "resolved"
 
         # ===== TURN N+1: User confirms the transition =====
 
@@ -560,8 +560,8 @@ class TestMilestoneEngine:
             "yes, go ahead",
             intent_type="status_transition",
             intent_data={
-                "from_status": CaseStatus.INVESTIGATING,
-                "to_status": "resolved",
+                "from_state": CaseState.INVESTIGATING,
+                "to_state": "resolved",
                 "user_confirmed": True,
             },
         )
@@ -571,7 +571,7 @@ class TestMilestoneEngine:
         # ===== VERIFY COMPLETE TERMINAL TRANSITION =====
 
         # 1. Case transitioned to RESOLVED terminal state
-        assert final_case.status == CaseStatus.RESOLVED
+        assert final_case.state == CaseState.RESOLVED
         assert final_case.is_terminal is True
 
         # 2. Terminal state timestamps set
@@ -592,8 +592,8 @@ class TestMilestoneEngine:
         # 6. Status history recorded transition with user as trigger
         assert len(final_case.action_history) > 0
         last_transition = final_case.action_history[-1]
-        assert last_transition.from_status == CaseStatus.INVESTIGATING
-        assert last_transition.to_status == CaseStatus.RESOLVED
+        assert last_transition.from_state == CaseState.INVESTIGATING
+        assert last_transition.to_state == CaseState.RESOLVED
 
     # Engine-level NL pattern matching for CLOSED-from-INVESTIGATING and the
     # "ambiguous close" clarification dialog were removed. NL transition
@@ -616,11 +616,11 @@ class TestMilestoneEngine:
             investigation_tools=MagicMock(),
         )
 
-        # Create case in INQUIRY status
+        # Create case in INQUIRY state
         inquiry_case = Case(
             case_id="case_1234567890ab",  # 17 chars
             title="Test Inquiry Close",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="Test description",
@@ -638,8 +638,8 @@ class TestMilestoneEngine:
             user_message="Close this case. I don't need further investigation.",
             intent_type="status_transition",
             intent_data={
-                "from_status": "inquiry",
-                "to_status": "closed",
+                "from_state": "inquiry",
+                "to_state": "closed",
                 "user_confirmed": True,
             },
         )
@@ -647,11 +647,11 @@ class TestMilestoneEngine:
         updated_case = result["case_updated"]
 
         # 1. Status should still be INQUIRY — pending transition proposed
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
 
         # 2. Pending transition should be set to "closed"
         assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_status"] == "closed"
+        assert updated_case.pending_transition["to_state"] == "closed"
 
         # 3. Should NOT have gone through investigation
         assert updated_case.progress.symptom_verified is False
@@ -690,7 +690,7 @@ class TestMilestoneEngine:
         )
 
         # Start in INVESTIGATING with some progress
-        base_case.status = CaseStatus.INVESTIGATING
+        base_case.state = CaseState.INVESTIGATING
         base_case.progress.symptom_verified = True
 
         # User clicks "Close" in dropdown - frontend sends status_transition intent
@@ -699,8 +699,8 @@ class TestMilestoneEngine:
             user_message="Close this case as unresolved.",
             intent_type="status_transition",
             intent_data={
-                "from_status": "investigating",
-                "to_status": "closed",
+                "from_state": "investigating",
+                "to_state": "closed",
                 "user_confirmed": True,
             },
         )
@@ -708,11 +708,11 @@ class TestMilestoneEngine:
         updated_case = result["case_updated"]
 
         # 1. Status should still be INVESTIGATING — pending transition proposed
-        assert updated_case.status == CaseStatus.INVESTIGATING
+        assert updated_case.state == CaseState.INVESTIGATING
 
         # 2. Pending transition should be set to "closed"
         assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_status"] == "closed"
+        assert updated_case.pending_transition["to_state"] == "closed"
 
         # 3. Solution should NOT be verified
         assert updated_case.progress.solution_verified is False
@@ -750,11 +750,11 @@ class TestMilestoneEngine:
             investigation_tools=MagicMock(),
         )
 
-        # Create case in INQUIRY status with a proposed problem statement
+        # Create case in INQUIRY state with a proposed problem statement
         inquiry_case = Case(
             case_id="case_0987654321ab",  # 17 chars
             title="Test Inquiry to Investigating",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="Test description",
@@ -785,8 +785,8 @@ class TestMilestoneEngine:
             user_message="I want to start a formal investigation to find the root cause.",
             intent_type="status_transition",
             intent_data={
-                "from_status": "inquiry",
-                "to_status": "investigating",
+                "from_state": "inquiry",
+                "to_state": "investigating",
                 "user_confirmed": True,
             },
         )
@@ -797,7 +797,7 @@ class TestMilestoneEngine:
         # (post-redesign: Gate 2 no longer gates the transition).
         # path_selection is None; Gate 2 will fire later after
         # symptom_verified.
-        assert updated_case.status == CaseStatus.INVESTIGATING
+        assert updated_case.state == CaseState.INVESTIGATING
         assert updated_case.inquiry.problem_statement_confirmed is True
         assert updated_case.inquiry.decided_to_investigate is True
         assert updated_case.path_selection is None
@@ -808,8 +808,8 @@ class TestMilestoneEngine:
         # Action history records the INQUIRY → INVESTIGATING transition.
         assert len(updated_case.action_history) > 0
         last_transition = updated_case.action_history[-1]
-        assert last_transition.from_status == CaseStatus.INQUIRY
-        assert last_transition.to_status == CaseStatus.INVESTIGATING
+        assert last_transition.from_state == CaseState.INQUIRY
+        assert last_transition.to_state == CaseState.INVESTIGATING
 
     @pytest.mark.asyncio
     async def test_investigating_dropdown_without_problem_statement_calls_llm(
@@ -829,7 +829,7 @@ class TestMilestoneEngine:
         inquiry_case = Case(
             case_id="case_0987654321cd",
             title="API issue",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="",
@@ -849,13 +849,13 @@ class TestMilestoneEngine:
             case=inquiry_case,
             user_message="",  # Empty message — dropdown click only
             intent_type="status_transition",
-            intent_data={"from_status": "inquiry", "to_status": "investigating"},
+            intent_data={"from_state": "inquiry", "to_state": "investigating"},
         )
 
         updated_case = result["case_updated"]
 
         # Case should stay in INQUIRY (no problem statement to confirm)
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
         # LLM was called (not bypassed)
         assert mock_llm.generate.called
 
@@ -901,17 +901,17 @@ class TestMilestoneEngine:
             case=base_case,
             user_message="The issue is resolved.",
             intent_type="status_transition",
-            intent_data={"from_status": "investigating", "to_status": "resolved"},
+            intent_data={"from_state": "investigating", "to_state": "resolved"},
         )
 
         updated_case = result["case_updated"]
 
         # Case should still be INVESTIGATING (transition proposed, not executed)
-        assert updated_case.status == CaseStatus.INVESTIGATING
+        assert updated_case.state == CaseState.INVESTIGATING
 
         # Pending transition should be set
         assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_status"] == "resolved"
+        assert updated_case.pending_transition["to_state"] == "resolved"
 
         # LLM is NOT called — response is returned immediately with proposal message
         assert not mock_llm.generate.called
@@ -942,14 +942,14 @@ class TestMilestoneEngine:
             case=base_case,
             user_message="The issue is resolved.",
             intent_type="status_transition",
-            intent_data={"from_status": "investigating", "to_status": "resolved"},
+            intent_data={"from_state": "investigating", "to_state": "resolved"},
         )
 
         # Case stays INVESTIGATING; pending transition pivots to CLOSED
         # (not RESOLVED) so the user's confirm click closes the case.
-        assert result["case_updated"].status == CaseStatus.INVESTIGATING
+        assert result["case_updated"].state == CaseState.INVESTIGATING
         assert result["case_updated"].pending_transition is not None
-        assert result["case_updated"].pending_transition["to_status"] == "closed"
+        assert result["case_updated"].pending_transition["to_state"] == "closed"
         # No needs_info flag — pivot path doesn't carry resolve intent forward.
         assert not result["case_updated"].pending_transition.get("needs_info")
 
@@ -976,7 +976,7 @@ class TestMilestoneEngine:
 
         # Set up pending transition from a previous turn
         base_case.pending_transition = {
-            "to_status": "resolved",
+            "to_state": "resolved",
             "reason": "User indicated resolution",
             "summary": "Issue resolved",
             "evidence_ids": [],
@@ -988,13 +988,13 @@ class TestMilestoneEngine:
             case=base_case,
             user_message="yes",
             intent_type="status_transition",
-            intent_data={"from_status": "investigating", "to_status": "resolved"},
+            intent_data={"from_state": "investigating", "to_state": "resolved"},
         )
 
         updated_case = result["case_updated"]
 
         # Transition should be executed (confirmed the pending)
-        assert updated_case.status == CaseStatus.RESOLVED
+        assert updated_case.state == CaseState.RESOLVED
         assert updated_case.pending_transition is None
         assert updated_case.progress.solution_verified is True
 
@@ -1038,7 +1038,7 @@ class TestMilestoneEngine:
             case=base_case,
             user_message="",  # Empty — dropdown click only
             intent_type="status_transition",
-            intent_data={"from_status": "investigating", "to_status": "resolved"},
+            intent_data={"from_state": "investigating", "to_state": "resolved"},
         )
 
         # LLM is NOT called — returns immediately with proposal
@@ -1067,15 +1067,15 @@ class TestMilestoneEngine:
             case=base_case,
             user_message="Close without resolution",
             intent_type="status_transition",
-            intent_data={"from_status": "investigating", "to_status": "closed"},
+            intent_data={"from_state": "investigating", "to_state": "closed"},
         )
 
         updated_case = result["case_updated"]
 
         # Should propose transition (not execute immediately)
-        assert updated_case.status == CaseStatus.INVESTIGATING
+        assert updated_case.state == CaseState.INVESTIGATING
         assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_status"] == "closed"
+        assert updated_case.pending_transition["to_state"] == "closed"
         # LLM should NOT be called (deterministic response)
         assert not mock_llm.generate.called
 
@@ -1120,7 +1120,7 @@ class TestGate2SetOnceSemantic:
         case = Case(
             case_id="case_aaaaaaaaaaab",
             title="Re-commit test",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             user_id="user_123",
             organization_id="org_123",
             description="Test description",
@@ -1174,7 +1174,7 @@ class TestInquiryConfirmation:
         case = Case(
             case_id="case_1234567890ab",
             title="Test INQUIRY stuck",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="",
@@ -1194,7 +1194,7 @@ class TestInquiryConfirmation:
 
         updated_case = result["case_updated"]
         # No fallback — LLM is the sole decision-maker for confirmation
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
         assert updated_case.inquiry.problem_statement_confirmed is False
 
     @pytest.mark.asyncio
@@ -1211,7 +1211,7 @@ class TestInquiryConfirmation:
         case = Case(
             case_id="case_1234567890ab",
             title="Test no statement",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="",
@@ -1230,7 +1230,7 @@ class TestInquiryConfirmation:
 
         updated_case = result["case_updated"]
         # Should stay in INQUIRY — no statement to confirm
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
         assert updated_case.inquiry.problem_statement_confirmed is False
 
     @pytest.mark.asyncio
@@ -1249,7 +1249,7 @@ class TestInquiryConfirmation:
         case = Case(
             case_id="case_1234567890ab",
             title="Test LLM priority",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="",
@@ -1281,7 +1281,7 @@ class TestInquiryConfirmation:
         # later in INVESTIGATING after symptom_verified, so it no longer
         # gates the INQUIRY → INVESTIGATING transition).
         assert updated_case.inquiry.problem_statement_confirmed is True
-        assert updated_case.status == CaseStatus.INVESTIGATING
+        assert updated_case.state == CaseState.INVESTIGATING
         assert updated_case.path_selection is None
 
 
@@ -1299,7 +1299,7 @@ class TestReadinessAssessments:
             "organization_id": "org_123",
             "title": "Test Case",
             "description": "Database queries timing out",
-            "status": CaseStatus.INVESTIGATING,
+            "state": CaseState.INVESTIGATING,
             "problem_verification": ProblemVerification(
                 symptom_statement="Database queries timing out",
                 severity="HIGH",
@@ -1533,7 +1533,7 @@ class TestReadinessAssessments:
 
         case = MagicMock()
         case.case_id = "case_resolved"
-        case.status = CaseStatus.RESOLVED
+        case.state = CaseState.RESOLVED
         # Even with thin content, RESOLVED never skips
         case.evidence = []
         case.hypotheses = {}
@@ -1555,7 +1555,7 @@ class TestReadinessAssessments:
 
         case = MagicMock()
         case.case_id = "case_short"
-        case.status = CaseStatus.CLOSED
+        case.state = CaseState.CLOSED
         case.evidence = [MagicMock()]
         case.hypotheses = {}
         case.description = "A real problem"
@@ -1572,7 +1572,7 @@ class TestReadinessAssessments:
 
         case = MagicMock()
         case.case_id = "case_trivial"
-        case.status = CaseStatus.CLOSED
+        case.state = CaseState.CLOSED
         case.evidence = []
         case.hypotheses = {}
         case.description = ""
@@ -1592,7 +1592,7 @@ class TestReadinessAssessments:
 
         case = MagicMock()
         case.case_id = "case_real"
-        case.status = CaseStatus.CLOSED
+        case.state = CaseState.CLOSED
         case.evidence = [MagicMock()]
         case.hypotheses = {}
         case.description = "API latency issue"
@@ -1625,7 +1625,7 @@ class TestRunbookSuggestion:
             organization_id="o1",
             title="Pool timeout issue",
             description="DB queries timing out",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             problem_verification=ProblemVerification(
                 symptom_statement="Timeout errors",
                 severity="HIGH",
@@ -1682,7 +1682,7 @@ class TestRunbookSuggestion:
             organization_id="o1",
             title="Pool timeout issue",
             description="DB queries timing out",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             problem_verification=ProblemVerification(
                 symptom_statement="Timeout errors",
                 severity="HIGH",
@@ -1725,7 +1725,7 @@ class TestRunbookSuggestion:
             organization_id="o1",
             title="Mystery issue",
             description="Something is wrong",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             problem_verification=ProblemVerification(
                 symptom_statement="Unknown",
                 severity="LOW",
@@ -1764,7 +1764,7 @@ class TestContradictingIntentCancelsPendingTransition:
         case = Case(
             case_id="case_1234567890ab",
             title="Test Case",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="Test",
@@ -1779,7 +1779,7 @@ class TestContradictingIntentCancelsPendingTransition:
         # Set up a pending CLOSE transition (post-simplification shape:
         # closure_reason is engine-derived enum; reason/proposed_by removed).
         case.pending_transition = {
-            "to_status": "closed",
+            "to_state": "closed",
             "summary": "Close without resolution",
             "evidence_ids": [],
             "proposed_at": "2026-04-23T00:00:00+00:00",
@@ -1802,7 +1802,7 @@ class TestContradictingIntentCancelsPendingTransition:
             case,
             "I want to investigate this",
             intent_type="status_transition",
-            intent_data={"to_status": "investigating"},
+            intent_data={"to_state": "investigating"},
         )
 
         updated_case = result["case_updated"]
@@ -1811,7 +1811,7 @@ class TestContradictingIntentCancelsPendingTransition:
         assert updated_case.pending_transition is None
 
         # Case should NOT have transitioned to CLOSED
-        assert updated_case.status != CaseStatus.CLOSED
+        assert updated_case.state != CaseState.CLOSED
 
     @pytest.mark.asyncio
     async def test_same_intent_still_confirms(self, mock_llm, mock_repo):
@@ -1825,7 +1825,7 @@ class TestContradictingIntentCancelsPendingTransition:
         case = Case(
             case_id="case_1234567890ab",
             title="Test Case",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             user_id="user_123",
             organization_id="org_123",
             description="Test",
@@ -1845,7 +1845,7 @@ class TestContradictingIntentCancelsPendingTransition:
         # Set up a pending CLOSE transition (post-simplification shape:
         # closure_reason is engine-derived enum; reason/proposed_by removed).
         case.pending_transition = {
-            "to_status": "closed",
+            "to_state": "closed",
             "summary": "Close without resolution",
             "evidence_ids": [],
             "proposed_at": "2026-04-23T00:00:00+00:00",
@@ -1857,13 +1857,13 @@ class TestContradictingIntentCancelsPendingTransition:
             case,
             "Close this case",
             intent_type="status_transition",
-            intent_data={"to_status": "closed"},
+            intent_data={"to_state": "closed"},
         )
 
         updated_case = result["case_updated"]
 
         # Case should have transitioned to CLOSED (same intent = confirmation)
-        assert updated_case.status == CaseStatus.CLOSED
+        assert updated_case.state == CaseState.CLOSED
         assert updated_case.pending_transition is None
 
 
@@ -1971,7 +1971,7 @@ class TestTerminalTransitionPendingActionCleanup:
         return Case(
             case_id="case_1234567890ab",
             title="Test Case",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             user_id="user_123",
             organization_id="org_123",
             description="Test description",
@@ -2005,13 +2005,13 @@ class TestTerminalTransitionPendingActionCleanup:
                 action_type=InvestigationActionType.SOLUTION,
                 description="Revised fix after first attempt failed",
                 proposed_in_turn=3,
-                status="pending",
+                state="pending",
             )
         )
 
         _execute_resolved_transition(case, "user_123")
 
-        assert case.proposed_actions[0].status == "accepted"
+        assert case.proposed_actions[0].state == "accepted"
         assert len(case.action_attempts) == 1
         attempt = case.action_attempts[0]
         assert attempt.compliance_detected is True
@@ -2034,14 +2034,14 @@ class TestTerminalTransitionPendingActionCleanup:
                 action_type=InvestigationActionType.SOLUTION,
                 description="Original fix — already accepted when solution_accepted fired",
                 proposed_in_turn=2,
-                status="accepted",
+                state="accepted",
             )
         )
 
         _execute_resolved_transition(case, "user_123")
 
         # Status unchanged, and no ActionAttempt created for it
-        assert case.proposed_actions[0].status == "accepted"
+        assert case.proposed_actions[0].state == "accepted"
         assert len(case.action_attempts) == 0
 
     def test_mixed_actions_only_pending_cleaned_up(self):
@@ -2061,7 +2061,7 @@ class TestTerminalTransitionPendingActionCleanup:
                 action_type=InvestigationActionType.SOLUTION,
                 description="Original fix",
                 proposed_in_turn=2,
-                status="accepted",
+                state="accepted",
             )
         )
         case.proposed_actions.append(
@@ -2070,14 +2070,14 @@ class TestTerminalTransitionPendingActionCleanup:
                 action_type=InvestigationActionType.SOLUTION,
                 description="Revised fix from failure path",
                 proposed_in_turn=4,
-                status="pending",
+                state="pending",
             )
         )
 
         _execute_resolved_transition(case, "user_123")
 
-        assert case.proposed_actions[0].status == "accepted"  # unchanged
-        assert case.proposed_actions[1].status == "accepted"  # cleaned up
+        assert case.proposed_actions[0].state == "accepted"  # unchanged
+        assert case.proposed_actions[1].state == "accepted"  # cleaned up
         assert len(case.action_attempts) == 1
         assert case.action_attempts[0].action_id == case.proposed_actions[1].action_id
 
@@ -2115,7 +2115,7 @@ class TestNeedsInfoFollowupProposesClose:
         case = Case(
             case_id="case_aabbccdd1122",
             title="Test Case",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             user_id="user_123",
             organization_id="org_123",
             description="Test",
@@ -2132,7 +2132,7 @@ class TestNeedsInfoFollowupProposesClose:
             ),
         )
         case.pending_transition = {
-            "to_status": "resolved",
+            "to_state": "resolved",
             "summary": "Awaiting user-provided detail",
             "needs_info": True,
             "evidence_ids": [],
@@ -2153,7 +2153,7 @@ class TestNeedsInfoFollowupProposesClose:
         await engine._check_automatic_transitions(case, metadata, user_message="ok")
 
         assert case.pending_transition is not None
-        assert case.pending_transition["to_status"] == "closed"
+        assert case.pending_transition["to_state"] == "closed"
         # closure_reason is auto-derived; no mitigation path → closed_after_investigation
         assert case.pending_transition["closure_reason"] == "closed_after_investigation"
         assert metadata.get("resolution_suggest_close") is True
@@ -2198,7 +2198,7 @@ class TestNeedsInfoFollowupProposesClose:
         await engine._check_automatic_transitions(case, metadata, user_message="ok")
 
         assert case.pending_transition is not None
-        assert case.pending_transition["to_status"] == "closed"
+        assert case.pending_transition["to_state"] == "closed"
         assert case.pending_transition["closure_reason"] == "closed_after_investigation"
         assert metadata.get("resolution_suggest_close") is True
         assert metadata.get("transition_proposed_this_turn") is True
@@ -2240,7 +2240,7 @@ class TestNeedsInfoFollowupProposesClose:
 
         # Pending transition stays as RESOLVED, needs_info cleared
         assert case.pending_transition is not None
-        assert case.pending_transition["to_status"] == "resolved"
+        assert case.pending_transition["to_state"] == "resolved"
         assert case.pending_transition.get("needs_info") is False
         assert metadata.get("resolution_ready_for_confirmation") is True
         # The propose-close path did NOT fire
@@ -2294,7 +2294,7 @@ class TestNeedsInfoFollowupProposesClose:
         await engine._check_automatic_transitions(case, metadata, user_message="ok")
 
         assert case.pending_transition is not None
-        assert case.pending_transition["to_status"] == "closed"
+        assert case.pending_transition["to_state"] == "closed"
         # Gate 3 open → closure_reason is mitigation_sufficient
         assert case.pending_transition["closure_reason"] == "mitigation_sufficient"
 

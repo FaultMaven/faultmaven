@@ -365,7 +365,7 @@ def parse_llm_response(
     return response_schema(**response_dict)
 
 
-def get_response_schema_for_status(status: str) -> type[BaseModel]:
+def get_response_schema_for_state(state: str) -> type[BaseModel]:
     """
     Get appropriate response schema for case status.
 
@@ -375,17 +375,17 @@ def get_response_schema_for_status(status: str) -> type[BaseModel]:
     Returns:
         Response schema class
     """
-    from faultmaven.modules.case.domain.models import CaseStatus
+    from faultmaven.modules.case.domain.models import CaseState
 
     schema_map = {
-        CaseStatus.INQUIRY: InquiryResponse,
-        CaseStatus.INVESTIGATING: InvestigationResponse,
-        CaseStatus.RESOLVED: TerminalResponse,
-        CaseStatus.CLOSED: TerminalResponse,
+        CaseState.INQUIRY: InquiryResponse,
+        CaseState.INVESTIGATING: InvestigationResponse,
+        CaseState.RESOLVED: TerminalResponse,
+        CaseState.CLOSED: TerminalResponse,
     }
 
     # Handle string status values
-    if isinstance(status, str):
-        status = CaseStatus(status)
+    if isinstance(state, str):
+        state = CaseState(state)
 
-    return schema_map[status]
+    return schema_map[state]

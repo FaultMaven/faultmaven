@@ -47,8 +47,8 @@ from faultmaven.models.case_ui import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
-    HypothesisStatus,
+    CaseState,
+    HypothesisState,
     InquiryData,
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
@@ -68,19 +68,17 @@ def transform_case_for_ui(case: Case) -> CaseUIResponse:
     Raises:
         ValueError: If case status is unsupported (CLOSED without RESOLVED)
     """
-    if case.status == CaseStatus.INQUIRY:
+    if case.state == CaseState.INQUIRY:
         return _transform_inquiry(case)
-    elif case.status == CaseStatus.INVESTIGATING:
+    elif case.state == CaseState.INVESTIGATING:
         return _transform_investigating(case)
-    elif case.status == CaseStatus.RESOLVED:
+    elif case.state == CaseState.RESOLVED:
         return _transform_resolved(case)
-    elif case.status == CaseStatus.CLOSED:
+    elif case.state == CaseState.CLOSED:
         # CLOSED cases: return RESOLVED format with closure details
         return _transform_resolved(case)
     else:
-        raise ValueError(
-            f"Unsupported case status for UI transformation: {case.status}"
-        )
+        raise ValueError(f"Unsupported case status for UI transformation: {case.state}")
 
 
 # ============================================================
@@ -275,7 +273,7 @@ def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
 
     return CaseUIResponse_Inquiry(
         case_id=case.case_id,
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         title=case.title,
         current_turn=case.current_turn,
         created_at=case.created_at,
@@ -285,7 +283,7 @@ def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
         path_selection=case.path_selection,
         valid_next_states=[
             status.value
-            for status in CaseActionManager.get_allowed_transitions(case.status)
+            for status in CaseActionManager.get_allowed_transitions(case.state)
         ],
         disposition_eligibility=case.disposition_eligibility,
     )
@@ -306,7 +304,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
     completed_stage_gates = [m for m in all_completed if m in stage_gate_names]
 
     active_hyp_count = sum(
-        1 for h in case.hypotheses.values() if h.status == HypothesisStatus.ACTIVE
+        1 for h in case.hypotheses.values() if h.state == HypothesisState.ACTIVE
     )
 
     progress = InvestigationProgressSummary(
@@ -322,7 +320,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
     working_conclusion = None
     if case.hypotheses:
         active_hypotheses = [
-            h for h in case.hypotheses.values() if h.status == HypothesisStatus.ACTIVE
+            h for h in case.hypotheses.values() if h.state == HypothesisState.ACTIVE
         ]
         if active_hypotheses:
             # Get hypothesis with highest likelihood
@@ -346,7 +344,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
                     hypothesis_id=hyp.hypothesis_id,
                     text=hyp.statement,
                     likelihood=hyp.likelihood,
-                    status=hyp.status,
+                    state=hyp.state,
                     evidence_count=len(hyp.evidence_links),
                     refutation_reason=hyp.refutation_reason,
                 )
@@ -402,7 +400,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
 
     return CaseUIResponse_Investigating(
         case_id=case.case_id,
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         title=case.title,
         current_turn=case.current_turn,
         created_at=case.created_at,
@@ -420,7 +418,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         progress_transparency=transparency_info,
         valid_next_states=[
             status.value
-            for status in CaseActionManager.get_allowed_transitions(case.status)
+            for status in CaseActionManager.get_allowed_transitions(case.state)
         ],
         disposition_eligibility=case.disposition_eligibility,
     )
@@ -441,7 +439,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         if case.hypotheses:
             # Find the hypothesis that was marked as VALIDATED
             for hyp in case.hypotheses.values():
-                if hyp.status == HypothesisStatus.VALIDATED:
+                if hyp.state == HypothesisState.VALIDATED:
                     root_cause_id = hyp.hypothesis_id
                     root_cause_category = hyp.category.value
                     break
@@ -500,11 +498,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         total_duration_minutes=duration_minutes,
         milestones_completed=len(case.progress.completed_milestones),
         hypotheses_tested=len(
-            [
-                h
-                for h in case.hypotheses.values()
-                if h.status != HypothesisStatus.CAPTURED
-            ]
+            [h for h in case.hypotheses.values() if h.state != HypothesisState.CAPTURED]
         ),
         evidence_collected=len(case.evidence),
         key_insights=key_insights,
@@ -515,7 +509,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
     # CLOSED: closure summary may be skipped if the case lacks substance;
     # surface the skip reason so the Report tab can render a note instead
     # of an empty state.
-    if case.status == CaseStatus.RESOLVED:
+    if case.state == CaseState.RESOLVED:
         reports_available = [
             ReportAvailability(
                 report_type="resolution_summary",
@@ -523,7 +517,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
                 reason="Auto-generated on resolution",
             ),
         ]
-    else:  # CaseStatus.CLOSED
+    else:  # CaseState.CLOSED
         from faultmaven.core.investigation.terminal_transitions import (
             terminal_summary_skip_reason,
         )
@@ -548,7 +542,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
 
     return CaseUIResponse_Resolved(
         case_id=case.case_id,
-        status=case.status,  # Use actual status (RESOLVED or CLOSED)
+        state=case.state,  # Use actual state (RESOLVED or CLOSED)
         title=case.title,
         current_turn=case.current_turn,
         created_at=case.created_at,
@@ -564,7 +558,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         reports_available=reports_available,
         valid_next_states=[
             status.value
-            for status in CaseActionManager.get_allowed_transitions(case.status)
+            for status in CaseActionManager.get_allowed_transitions(case.state)
         ],
         disposition_eligibility=case.disposition_eligibility,
     )

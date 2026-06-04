@@ -19,7 +19,7 @@ from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
-from faultmaven.modules.case.contracts import Case, CaseStatus
+from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.modules.case.domain.models import InvestigationProgress
 
 
@@ -46,7 +46,7 @@ async def test_intent_routing():
         organization_id="org_1",
         title="Test Case",
         description="Test Description",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
         last_activity_at=datetime.now(timezone.utc),
@@ -134,7 +134,7 @@ async def test_intent_routing():
     payload_transition = TurnPayload(
         query="Resolve this",
         intent=QueryIntent(
-            type=IntentType.STATUS_TRANSITION, to_status=CaseStatus.RESOLVED
+            type=IntentType.STATUS_TRANSITION, to_state=CaseState.RESOLVED
         ),
     )
 
@@ -146,7 +146,7 @@ async def test_intent_routing():
         kwargs = call_args.kwargs
         if (
             kwargs.get("intent_type") == "status_transition"
-            and kwargs.get("intent_data", {}).get("to_status") == "resolved"
+            and kwargs.get("intent_data", {}).get("to_state") == "resolved"
         ):
             print("✅ Engine called with correct 'status_transition' intent and data")
         else:

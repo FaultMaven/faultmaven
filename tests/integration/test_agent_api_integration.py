@@ -30,7 +30,7 @@ from faultmaven.exceptions import (
     ServiceError,
 )
 from faultmaven.main import app as main_app
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 from faultmaven.modules.agent.domain.events.execution_events import (
     ExecutionEvent,
     ExecutionEventType,
@@ -68,7 +68,7 @@ def mock_session():
     session.case_id = "case_456def"
     session.user_id = "user_789"
     session.organization_id = "org_456"
-    session.status = SessionStatus.ACTIVE
+    session.state = SessionState.ACTIVE
     session.total_token_usage = 1000
     session.token_budget_limit = 50000
     session.session_goal = "Debug the API errors"

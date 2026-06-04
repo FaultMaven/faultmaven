@@ -20,7 +20,7 @@ import pytest
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
@@ -50,7 +50,7 @@ def _needs_info_case() -> Case:
     case = Case(
         case_id="case_95d86b7daf8c",
         title="Close-escape regression",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         user_id="user_test",
         organization_id="org_test",
         description="ES fielddata latency",
@@ -66,7 +66,7 @@ def _needs_info_case() -> Case:
     case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
     case.inquiry.decided_to_investigate = True
     case.inquiry.decision_made_at = datetime.now(timezone.utc)
-    case.status = CaseStatus.INVESTIGATING
+    case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
     case.progress.symptom_verified = True
     case.root_cause_conclusion = RootCauseConclusion(
@@ -96,7 +96,7 @@ def _needs_info_case() -> Case:
 def _llm_proposes_resolved():
     fake = MagicMock()
     fake.state_updates.proposed_transition = MagicMock(
-        to_status="resolved", evidence_ids=[]
+        to_state="resolved", evidence_ids=[]
     )
     return {"response_obj": fake}
 
@@ -110,7 +110,7 @@ async def test_repeat_needs_info_escapes_to_close_not_clobbered():
     case = _needs_info_case()
     # Simulate turn N+1: we already asked for the solution last turn.
     case.pending_transition = {
-        "to_status": "resolved",
+        "to_state": "resolved",
         "summary": "Before I can mark this as resolved, I need a bit more detail…",
         "evidence_ids": [],
         "proposed_at": datetime.now(timezone.utc).isoformat(),
@@ -124,7 +124,7 @@ async def test_repeat_needs_info_escapes_to_close_not_clobbered():
 
     # Escape fired and was NOT clobbered by the LLM's re-proposed RESOLVED.
     assert case.pending_transition is not None
-    assert case.pending_transition["to_status"] == "closed", (
+    assert case.pending_transition["to_state"] == "closed", (
         "Repeat resolution NEEDS_INFO must escape to CLOSE; the LLM's "
         "same-turn RESOLVED re-proposal clobbered the pivot (the stuck loop)."
     )
@@ -144,7 +144,7 @@ async def test_first_needs_info_stays_resolved_not_prematurely_closed():
         case=case, metadata=metadata, user_message="mark resolved"
     )
 
-    assert case.pending_transition["to_status"] == "resolved"
+    assert case.pending_transition["to_state"] == "resolved"
     assert case.pending_transition.get("needs_info") is True
     assert not metadata.get("resolution_suggest_close")
 
@@ -168,5 +168,5 @@ async def test_ready_case_resolves_guard_does_not_interfere():
         case=case, metadata=metadata, user_message="mark resolved"
     )
 
-    assert case.pending_transition["to_status"] == "resolved"
+    assert case.pending_transition["to_state"] == "resolved"
     assert not metadata.get("resolution_suggest_close")

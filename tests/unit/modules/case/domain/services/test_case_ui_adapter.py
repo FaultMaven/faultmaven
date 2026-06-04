@@ -22,7 +22,7 @@ from faultmaven.models.case_ui import (
 )
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
@@ -30,7 +30,7 @@ from faultmaven.modules.case.domain.models import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
-    HypothesisStatus,
+    HypothesisState,
     InquiryData,
     InvestigationPath,
     PathSelection,
@@ -86,7 +86,7 @@ def _make_investigating_case(**overrides) -> Case:
     case.inquiry.proposed_problem_statement = "DNS resolution failing on prod"
     case.inquiry.problem_statement_confirmed = True
     case.inquiry.decided_to_investigate = True
-    case.status = CaseStatus.INVESTIGATING
+    case.state = CaseState.INVESTIGATING
 
     # Apply remaining overrides
     for k, v in overrides.items():
@@ -110,7 +110,7 @@ def _make_resolved_case(**overrides) -> Case:
     # closure_reason is None for RESOLVED — sub-categorization would be
     # redundant with the status itself.
     object.__setattr__(case, "closure_reason", None)
-    object.__setattr__(case, "status", CaseStatus.RESOLVED)
+    object.__setattr__(case, "state", CaseState.RESOLVED)
     for k, v in overrides.items():
         object.__setattr__(case, k, v)
     return case
@@ -125,7 +125,7 @@ def _make_closed_case(**overrides) -> Case:
     now = datetime.now(timezone.utc)
     object.__setattr__(case, "closed_at", now)
     object.__setattr__(case, "closure_reason", "closed_after_investigation")
-    object.__setattr__(case, "status", CaseStatus.CLOSED)
+    object.__setattr__(case, "state", CaseState.CLOSED)
     for k, v in overrides.items():
         object.__setattr__(case, k, v)
     return case
@@ -152,7 +152,7 @@ def _make_evidence(
 
 
 def _make_hypothesis(
-    status: HypothesisStatus = HypothesisStatus.ACTIVE,
+    state: HypothesisState = HypothesisState.ACTIVE,
     likelihood: float = 0.7,
     statement: str = "DNS cache stale",
     turn: int = 2,
@@ -160,16 +160,16 @@ def _make_hypothesis(
 ) -> Hypothesis:
     """Create a Hypothesis object.
 
-    When ``status=REFUTED``, a refutation_reason is required by the domain
+    When ``state=REFUTED``, a refutation_reason is required by the domain
     invariant; callers should pass one or accept the default placeholder.
     """
-    if status == HypothesisStatus.REFUTED and refutation_reason is None:
+    if state == HypothesisState.REFUTED and refutation_reason is None:
         refutation_reason = "test refutation reason"
     return Hypothesis(
         hypothesis_id=f"hyp_{uuid4().hex[:12]}",
         statement=statement,
         category=HypothesisCategory.CONFIG,
-        status=status,
+        state=state,
         likelihood=likelihood,
         generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
         rationale="DNS TTL expired",
@@ -202,7 +202,7 @@ class TestTransformInquiry:
         result = transform_case_for_ui(case)
 
         assert isinstance(result, CaseUIResponse_Inquiry)
-        assert result.status == CaseStatus.INQUIRY
+        assert result.state == CaseState.INQUIRY
         assert result.title == "DNS resolution failing"
         assert result.uploaded_files_count == 0
 
@@ -263,7 +263,7 @@ class TestTransformInvestigating:
         result = transform_case_for_ui(case)
 
         assert isinstance(result, CaseUIResponse_Investigating)
-        assert result.status == CaseStatus.INVESTIGATING
+        assert result.state == CaseState.INVESTIGATING
         assert result.title == "DNS resolution failing"
 
     def test_investigating_uploaded_files_count(self):
@@ -351,9 +351,9 @@ class TestTransformInvestigating:
 
     def test_hypothesis_summaries(self):
         case = _make_investigating_case()
-        h1 = _make_hypothesis(status=HypothesisStatus.ACTIVE, likelihood=0.8)
+        h1 = _make_hypothesis(state=HypothesisState.ACTIVE, likelihood=0.8)
         h2 = _make_hypothesis(
-            status=HypothesisStatus.REFUTED,
+            state=HypothesisState.REFUTED,
             likelihood=0.3,
             statement="Network partition",
             refutation_reason="packet capture shows consistent connectivity",
@@ -479,7 +479,7 @@ class TestTransformResolved:
         result = transform_case_for_ui(case)
 
         assert isinstance(result, CaseUIResponse_Resolved)
-        assert result.status == CaseStatus.RESOLVED
+        assert result.state == CaseState.RESOLVED
         assert result.root_cause.description == "DNS config drift"
 
     def test_resolved_uploaded_files_count(self):
@@ -542,7 +542,7 @@ class TestTransformResolved:
             likelihood=0.95,
             mechanism="TTL changed",
         )
-        hyp = _make_hypothesis(status=HypothesisStatus.VALIDATED, likelihood=0.95)
+        hyp = _make_hypothesis(state=HypothesisState.VALIDATED, likelihood=0.95)
         case.hypotheses[hyp.hypothesis_id] = hyp
 
         result = transform_case_for_ui(case)
@@ -565,7 +565,7 @@ class TestTransformClosed:
         result = transform_case_for_ui(case)
 
         assert isinstance(result, CaseUIResponse_Resolved)
-        assert result.status == CaseStatus.CLOSED
+        assert result.state == CaseState.CLOSED
 
     def test_closed_uploaded_files_count(self):
         case = _make_closed_case()

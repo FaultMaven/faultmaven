@@ -1,6 +1,6 @@
 """Unit tests for Investigation Session domain models.
 
-Tests the InvestigationSession dataclass and SessionStatus enum.
+Tests the InvestigationSession dataclass and SessionState enum.
 """
 
 import time
@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 
 
 class TestInvestigationSessionValidation:
@@ -154,7 +154,7 @@ class TestInvestigationSessionLifecycleMethods:
         sample_session.pause()
         after = datetime.now(timezone.utc)
 
-        assert sample_session.status == SessionStatus.PAUSED
+        assert sample_session.state == SessionState.PAUSED
         assert before <= sample_session.updated_at <= after
         assert sample_session.total_duration_ms is not None
 
@@ -180,7 +180,7 @@ class TestInvestigationSessionLifecycleMethods:
         sample_session.resume()
         after = datetime.now(timezone.utc)
 
-        assert sample_session.status == SessionStatus.ACTIVE
+        assert sample_session.state == SessionState.ACTIVE
         assert before <= sample_session.updated_at <= after
         assert before <= sample_session.last_activity_at <= after
 
@@ -197,12 +197,12 @@ class TestInvestigationSessionLifecycleMethods:
             sample_session.resume()
 
     def test_complete_from_active(self, sample_session):
-        """Test complete() from ACTIVE status."""
+        """Test complete() from ACTIVE state."""
         before = datetime.now(timezone.utc)
         sample_session.complete("Root cause identified: DB connection leak")
         after = datetime.now(timezone.utc)
 
-        assert sample_session.status == SessionStatus.COMPLETED
+        assert sample_session.state == SessionState.COMPLETED
         assert (
             sample_session.findings_summary
             == "Root cause identified: DB connection leak"
@@ -212,11 +212,11 @@ class TestInvestigationSessionLifecycleMethods:
         assert sample_session.total_duration_ms is not None
 
     def test_complete_from_paused(self, sample_session):
-        """Test complete() from PAUSED status."""
+        """Test complete() from PAUSED state."""
         sample_session.pause()
         sample_session.complete("Findings from paused session")
 
-        assert sample_session.status == SessionStatus.COMPLETED
+        assert sample_session.state == SessionState.COMPLETED
         assert sample_session.findings_summary == "Findings from paused session"
 
     def test_complete_from_completed_fails(self, sample_session):
@@ -234,22 +234,22 @@ class TestInvestigationSessionLifecycleMethods:
             sample_session.complete("Late findings")
 
     def test_abandon_from_active(self, sample_session):
-        """Test abandon() from ACTIVE status."""
+        """Test abandon() from ACTIVE state."""
         before = datetime.now(timezone.utc)
         sample_session.abandon()
         after = datetime.now(timezone.utc)
 
-        assert sample_session.status == SessionStatus.ABANDONED
+        assert sample_session.state == SessionState.ABANDONED
         assert before <= sample_session.ended_at <= after
         assert before <= sample_session.updated_at <= after
         assert sample_session.total_duration_ms is not None
 
     def test_abandon_from_paused(self, sample_session):
-        """Test abandon() from PAUSED status."""
+        """Test abandon() from PAUSED state."""
         sample_session.pause()
         sample_session.abandon()
 
-        assert sample_session.status == SessionStatus.ABANDONED
+        assert sample_session.state == SessionState.ABANDONED
 
     def test_abandon_from_completed_fails(self, sample_session):
         """Test abandon() fails if already completed."""
@@ -327,7 +327,7 @@ class TestInvestigationSessionAgentExecution:
 
 
 class TestInvestigationSessionStatusChecks:
-    """Tests for status check methods."""
+    """Tests for state check methods."""
 
     @pytest.fixture
     def sample_session(self):
@@ -615,21 +615,21 @@ class TestInvestigationSessionStateTransitions:
         )
 
         # Start active
-        assert session.status == SessionStatus.ACTIVE
+        assert session.state == SessionState.ACTIVE
         session.add_agent_execution(token_usage=100)
 
         # Pause
         session.pause()
-        assert session.status == SessionStatus.PAUSED
+        assert session.state == SessionState.PAUSED
 
         # Resume
         session.resume()
-        assert session.status == SessionStatus.ACTIVE
+        assert session.state == SessionState.ACTIVE
         session.add_agent_execution(token_usage=200)
 
         # Complete
         session.complete("Investigation complete")
-        assert session.status == SessionStatus.COMPLETED
+        assert session.state == SessionState.COMPLETED
         assert session.total_token_usage == 300
         assert session.total_agent_executions == 2
         assert session.findings_summary == "Investigation complete"
@@ -647,7 +647,7 @@ class TestInvestigationSessionStateTransitions:
         session.add_agent_execution(token_usage=100)
         session.abandon()
 
-        assert session.status == SessionStatus.ABANDONED
+        assert session.state == SessionState.ABANDONED
         assert session.ended_at is not None
         assert session.findings_summary is None
 
@@ -663,4 +663,4 @@ class TestInvestigationSessionStateTransitions:
         session.pause()
         session.abandon()
 
-        assert session.status == SessionStatus.ABANDONED
+        assert session.state == SessionState.ABANDONED

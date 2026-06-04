@@ -30,14 +30,14 @@ from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseAction,
-    CaseStatus,
+    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
-    HypothesisStatus,
+    HypothesisState,
     InquiryData,
     InvestigationStrategy,
     Solution,
@@ -90,7 +90,7 @@ def _make_case(
     user_id: str = "user_alpha",
     organization_id: str = "org_alpha",
     title: str = "Test case",
-    status: CaseStatus = CaseStatus.INQUIRY,
+    state: CaseState = CaseState.INQUIRY,
     description: str = "",
 ) -> Case:
     """Build a minimal Case suitable for persistence."""
@@ -100,7 +100,7 @@ def _make_case(
         organization_id=organization_id,
         title=title,
         description=description,
-        status=status,
+        state=state,
     )
 
 
@@ -128,7 +128,7 @@ def _make_hypothesis(
     return Hypothesis(
         statement=statement,
         category=HypothesisCategory.DATABASE,
-        status=HypothesisStatus.CAPTURED,
+        state=HypothesisState.CAPTURED,
         likelihood=0.6,
         initial_likelihood=0.6,
         generated_at_turn=1,
@@ -183,7 +183,7 @@ class TestSaveAndGet:
         assert retrieved.user_id == case.user_id
         assert retrieved.organization_id == case.organization_id
         assert retrieved.title == "API outage"
-        assert retrieved.status == CaseStatus.INQUIRY
+        assert retrieved.state == CaseState.INQUIRY
 
     @pytest.mark.asyncio
     async def test_get_returns_none_for_missing_case(self, repository):
@@ -222,7 +222,7 @@ class TestSaveAndGet:
             organization_id="org_alpha",
             title="Investigating case",
             description="Latency spike in API",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             investigation_strategy=InvestigationStrategy.ACTIVE_INCIDENT,
             inquiry=inquiry,
         )
@@ -233,7 +233,7 @@ class TestSaveAndGet:
         await repository.save(case)
 
         retrieved = await repository.get(case.case_id)
-        assert retrieved.status == CaseStatus.INVESTIGATING
+        assert retrieved.state == CaseState.INVESTIGATING
         assert retrieved.progress.symptom_verified is True
         assert retrieved.current_turn == 3
         assert retrieved.message_count == 6
@@ -247,7 +247,7 @@ class TestSaveAndGet:
             organization_id="org_alpha",
             title="Closed case",
             description="Already closed",
-            status=CaseStatus.RESOLVED,
+            state=CaseState.RESOLVED,
             created_at=now - timedelta(hours=1),
             resolved_at=now,
             closed_at=now,
@@ -259,7 +259,7 @@ class TestSaveAndGet:
         await repository.save(case)
 
         retrieved = await repository.get(case.case_id)
-        assert retrieved.status == CaseStatus.RESOLVED
+        assert retrieved.state == CaseState.RESOLVED
         assert retrieved.closure_reason is None
         # closed_at and resolved_at are stashed in metadata JSON for SQLite
         assert retrieved.closed_at is not None
@@ -308,7 +308,7 @@ class TestSaveAndGet:
         case = _make_case()  # default: INQUIRY (valid minimal state)
         # Force-corrupt the aggregate, fully bypassing validate_assignment.
         # status=RESOLVED requires resolved_at + closed_at, but we leave them None.
-        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+        object.__setattr__(case, "state", CaseState.RESOLVED)
 
         with pytest.raises(ValidationError):
             await repository.save(case)
@@ -539,8 +539,8 @@ class TestRelatedDataRoundTrip:
         """action_history transitions go into case_actions table."""
         case = _make_case()
         transition = CaseAction(
-            from_status=CaseStatus.INQUIRY,
-            to_status=CaseStatus.INVESTIGATING,
+            from_state=CaseState.INQUIRY,
+            to_state=CaseState.INVESTIGATING,
             triggered_by="user_alpha",
             reason="Starting investigation",
         )
@@ -554,7 +554,7 @@ class TestRelatedDataRoundTrip:
 
         result = await repository.db.execute(
             text(
-                "SELECT from_status, to_status, reason FROM case_actions WHERE case_id = :cid"
+                "SELECT from_state, to_state, reason FROM case_actions WHERE case_id = :cid"
             ),
             {"cid": case.case_id},
         )
@@ -596,8 +596,8 @@ class TestListAndSearch:
 
     @pytest.mark.asyncio
     async def test_list_filters_by_status(self, repository):
-        await repository.save(_make_case(status=CaseStatus.INQUIRY))
-        await repository.save(_make_case(status=CaseStatus.INQUIRY))
+        await repository.save(_make_case(state=CaseState.INQUIRY))
+        await repository.save(_make_case(state=CaseState.INQUIRY))
         # Build an INVESTIGATING case (requires description + inquiry)
         inq = InquiryData()
         inq.proposed_problem_statement = "X"
@@ -609,15 +609,15 @@ class TestListAndSearch:
             organization_id="org_alpha",
             title="I",
             description="X",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             inquiry=inq,
         )
         await repository.save(investigating)
 
-        inquiry_cases, total = await repository.list(status=CaseStatus.INQUIRY)
+        inquiry_cases, total = await repository.list(state=CaseState.INQUIRY)
 
         assert total == 2
-        assert all(c.status == CaseStatus.INQUIRY for c in inquiry_cases)
+        assert all(c.state == CaseState.INQUIRY for c in inquiry_cases)
 
     @pytest.mark.asyncio
     async def test_list_pagination(self, repository):
@@ -1205,7 +1205,7 @@ def _make_checkpoint(case_id: str, turn: int = 1) -> CaseCheckpoint:
         checkpoint_id=f"{case_id}:turn:{turn}",
         case_id=case_id,
         turn_number=turn,
-        case_snapshot={"status": "inquiry", "turn": turn},
+        case_snapshot={"state": "inquiry", "turn": turn},
         snapshot_hash=f"hash_{turn}",
         trigger="turn_complete",
         created_at=datetime.now(timezone.utc),
@@ -1818,14 +1818,14 @@ def _make_investigating_case_with_action() -> Case:
         organization_id="org_alpha",
         title="Investigating case",
         description="Latency spike in API",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         investigation_strategy=InvestigationStrategy.ACTIVE_INCIDENT,
         inquiry=inquiry,
     )
     case.action_history.append(
         CaseAction(
-            from_status=CaseStatus.INQUIRY,
-            to_status=CaseStatus.INVESTIGATING,
+            from_state=CaseState.INQUIRY,
+            to_state=CaseState.INVESTIGATING,
             triggered_by="system",
             reason="Problem statement confirmed",
         )
@@ -1889,8 +1889,8 @@ class TestCaseActionsAppendOnly:
         loaded = await repository.get(case.case_id)
         loaded.action_history.append(
             CaseAction(
-                from_status=CaseStatus.INVESTIGATING,
-                to_status=CaseStatus.CLOSED,
+                from_state=CaseState.INVESTIGATING,
+                to_state=CaseState.CLOSED,
                 triggered_by="user_alpha",
                 reason="Escalated to vendor",
             )
@@ -1901,8 +1901,8 @@ class TestCaseActionsAppendOnly:
         assert await _count_case_actions(async_session, case.case_id) == 2
         final = await repository.get(case.case_id)
         assert len(final.action_history) == 2
-        assert final.action_history[0].to_status == CaseStatus.INVESTIGATING
-        assert final.action_history[1].to_status == CaseStatus.CLOSED
+        assert final.action_history[0].to_state == CaseState.INVESTIGATING
+        assert final.action_history[1].to_state == CaseState.CLOSED
 
     @pytest.mark.asyncio
     async def test_action_history_round_trips_without_growth(
@@ -1917,6 +1917,6 @@ class TestCaseActionsAppendOnly:
 
         final = await repository.get(case.case_id)
         assert len(final.action_history) == 1
-        assert final.action_history[0].from_status == CaseStatus.INQUIRY
-        assert final.action_history[0].to_status == CaseStatus.INVESTIGATING
+        assert final.action_history[0].from_state == CaseState.INQUIRY
+        assert final.action_history[0].to_state == CaseState.INVESTIGATING
         assert final.action_history[0].triggered_by == "system"

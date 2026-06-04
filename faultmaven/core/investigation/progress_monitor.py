@@ -44,8 +44,8 @@ from typing import Dict, List, Optional
 
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
-    HypothesisStatus,
+    CaseState,
+    HypothesisState,
     InvestigationStage,
 )
 
@@ -219,7 +219,7 @@ class ProgressMonitor:
             ProgressCheckResult if transparent mode should activate, None otherwise
         """
         # Only during active investigation
-        if case.status != CaseStatus.INVESTIGATING:
+        if case.state != CaseState.INVESTIGATING:
             return None
 
         # Compute transparency state from turn history (stateless — no
@@ -485,9 +485,9 @@ class ProgressMonitor:
         category_counts: dict[str, int] = {}
 
         for hypothesis in case.hypotheses.values():
-            if hypothesis.status in (
-                HypothesisStatus.REFUTED,
-                HypothesisStatus.INCONCLUSIVE,
+            if hypothesis.state in (
+                HypothesisState.REFUTED,
+                HypothesisState.INCONCLUSIVE,
             ):
                 cat = (
                     hypothesis.category.value
@@ -516,7 +516,7 @@ class ProgressMonitor:
             return False
 
         all_inconclusive = all(
-            h.status == HypothesisStatus.INCONCLUSIVE for h in case.hypotheses.values()
+            h.state == HypothesisState.INCONCLUSIVE for h in case.hypotheses.values()
         )
 
         if all_inconclusive:
@@ -577,7 +577,7 @@ class ProgressMonitor:
         for h in case.hypotheses.values():
             cat = h.category.value if hasattr(h.category, "value") else str(h.category)
             categories_explored.add(cat)
-            if h.status in (HypothesisStatus.REFUTED, HypothesisStatus.INCONCLUSIVE):
+            if h.state in (HypothesisState.REFUTED, HypothesisState.INCONCLUSIVE):
                 refuted_count += 1
 
         evidence_count = len(case.evidence)
@@ -587,7 +587,7 @@ class ProgressMonitor:
             and refuted_count >= 2
             and evidence_count >= 2
             and not any(
-                h.status == HypothesisStatus.VALIDATED for h in case.hypotheses.values()
+                h.state == HypothesisState.VALIDATED for h in case.hypotheses.values()
             )
         ):
             logger.info(
@@ -613,7 +613,7 @@ class ProgressMonitor:
         accepted_count = sum(
             1
             for action in case.proposed_actions
-            if action.status == "accepted"
+            if action.state == "accepted"
             and action.action_type.value.lower() == action_type
         )
 
@@ -687,8 +687,8 @@ class ProgressMonitor:
         """
         retired_count = 0
         for hypothesis in case.hypotheses.values():
-            if hypothesis.status == HypothesisStatus.INCONCLUSIVE:
-                hypothesis.status = HypothesisStatus.RETIRED
+            if hypothesis.state == HypothesisState.INCONCLUSIVE:
+                hypothesis.state = HypothesisState.RETIRED
                 retired_count += 1
 
         return RepairAction(
@@ -715,7 +715,7 @@ class ProgressMonitor:
         for h in case.hypotheses.values():
             cat = h.category.value if hasattr(h.category, "value") else str(h.category)
             categories_explored.add(cat)
-            if h.status in (HypothesisStatus.REFUTED, HypothesisStatus.INCONCLUSIVE):
+            if h.state in (HypothesisState.REFUTED, HypothesisState.INCONCLUSIVE):
                 refuted_count += 1
 
         return RepairAction(
@@ -744,7 +744,7 @@ class ProgressMonitor:
         stage_name = stage.value if stage else "current"
 
         failed_count = (
-            sum(1 for a in case.proposed_actions if a.status == "accepted")
+            sum(1 for a in case.proposed_actions if a.state == "accepted")
             if case.proposed_actions
             else 0
         )
@@ -791,9 +791,9 @@ class ProgressMonitor:
         category_counts: dict[str, int] = {}
 
         for hypothesis in case.hypotheses.values():
-            if hypothesis.status in (
-                HypothesisStatus.REFUTED,
-                HypothesisStatus.INCONCLUSIVE,
+            if hypothesis.state in (
+                HypothesisState.REFUTED,
+                HypothesisState.INCONCLUSIVE,
             ):
                 cat = (
                     hypothesis.category.value

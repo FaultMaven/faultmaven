@@ -29,7 +29,7 @@ from faultmaven.core.investigation.milestone_engine import CATEGORY_MILESTONE_MA
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceNeed,
@@ -37,7 +37,7 @@ from faultmaven.modules.case.domain.models import (
     InquiryData,
     NeedPriority,
     NeedPurpose,
-    NeedStatus,
+    NeedState,
     UploadedFile,
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
@@ -78,7 +78,7 @@ def _make_case() -> Case:
         user_id="user_alpha",
         organization_id="org_alpha",
         title="Test case",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
     )
 
 
@@ -86,7 +86,7 @@ def _make_need(
     *,
     case_id: str,
     purpose: NeedPurpose = NeedPurpose.SYMPTOM_VERIFICATION,
-    status: NeedStatus = NeedStatus.PENDING,
+    state: NeedState = NeedState.PENDING,
     motivating_hypothesis_ids: list[str] | None = None,
     fulfilling_evidence_ids: list[str] | None = None,
     superseded_reason: str | None = None,
@@ -98,7 +98,7 @@ def _make_need(
         request_text="kubectl get pods showing crash counts",
         rationale="confirms whether pods are still restarting",
         priority=priority,
-        status=status,
+        state=state,
         motivating_hypothesis_ids=motivating_hypothesis_ids or [],
         fulfilling_evidence_ids=fulfilling_evidence_ids or [],
         superseded_reason=superseded_reason,
@@ -119,7 +119,7 @@ class TestEvidenceNeedValidators:
         n = _make_need(case_id="case_abc123def456")
         assert n.need_id.startswith("eneed_")
         assert n.purpose == NeedPurpose.SYMPTOM_VERIFICATION
-        assert n.status == NeedStatus.PENDING
+        assert n.state == NeedState.PENDING
         assert n.priority == NeedPriority.MEDIUM
         assert n.motivating_hypothesis_ids == []
         assert n.fulfilling_evidence_ids == []
@@ -129,7 +129,7 @@ class TestEvidenceNeedValidators:
         with pytest.raises(ValidationError, match="superseded_reason"):
             _make_need(
                 case_id="case_abc123def456",
-                status=NeedStatus.SUPERSEDED,
+                state=NeedState.SUPERSEDED,
                 superseded_reason=None,
             )
 
@@ -137,34 +137,34 @@ class TestEvidenceNeedValidators:
         with pytest.raises(ValidationError, match="must be None"):
             _make_need(
                 case_id="case_abc123def456",
-                status=NeedStatus.PENDING,
+                state=NeedState.PENDING,
                 superseded_reason="should not be here",
             )
 
     def test_superseded_with_reason_accepted(self):
         n = _make_need(
             case_id="case_abc123def456",
-            status=NeedStatus.SUPERSEDED,
+            state=NeedState.SUPERSEDED,
             superseded_reason="all motivating hypotheses retired",
         )
-        assert n.status == NeedStatus.SUPERSEDED
+        assert n.state == NeedState.SUPERSEDED
         assert n.superseded_reason == "all motivating hypotheses retired"
 
     def test_fulfilled_requires_fulfilling_evidence(self):
         with pytest.raises(ValidationError, match="fulfilling_evidence_id"):
             _make_need(
                 case_id="case_abc123def456",
-                status=NeedStatus.FULFILLED,
+                state=NeedState.FULFILLED,
                 fulfilling_evidence_ids=[],
             )
 
     def test_fulfilled_with_evidence_accepted(self):
         n = _make_need(
             case_id="case_abc123def456",
-            status=NeedStatus.FULFILLED,
+            state=NeedState.FULFILLED,
             fulfilling_evidence_ids=["ev_abc123def456"],
         )
-        assert n.status == NeedStatus.FULFILLED
+        assert n.state == NeedState.FULFILLED
         assert n.fulfilling_evidence_ids == ["ev_abc123def456"]
 
     def test_whitespace_only_request_text_rejected(self):
@@ -198,7 +198,7 @@ class TestEvidenceNeedValidators:
     def test_fulfilling_ids_deduplicate_preserve_order(self):
         n = _make_need(
             case_id="case_abc123def456",
-            status=NeedStatus.FULFILLED,
+            state=NeedState.FULFILLED,
             fulfilling_evidence_ids=["ev_aaa", "ev_bbb", "ev_aaa"],
         )
         assert n.fulfilling_evidence_ids == ["ev_aaa", "ev_bbb"]
@@ -293,7 +293,7 @@ class TestRepositoryRoundTrip:
         assert loaded.case_id == case.case_id
         assert loaded.purpose == NeedPurpose.SYMPTOM_VERIFICATION
         assert loaded.priority == NeedPriority.HIGH
-        assert loaded.status == NeedStatus.PENDING
+        assert loaded.state == NeedState.PENDING
         assert loaded.request_text == need.request_text
         assert loaded.rationale == need.rationale
         assert loaded.motivating_hypothesis_ids == []
@@ -325,7 +325,7 @@ class TestRepositoryRoundTrip:
         need = _make_need(
             case_id=case.case_id,
             purpose=NeedPurpose.CAUSAL_VERIFICATION,
-            status=NeedStatus.SUPERSEDED,
+            state=NeedState.SUPERSEDED,
             superseded_reason="all motivating hypotheses retired",
         )
         case.evidence_needs.append(need)
@@ -334,7 +334,7 @@ class TestRepositoryRoundTrip:
         retrieved = await repository.get(case.case_id)
 
         loaded = retrieved.evidence_needs[0]
-        assert loaded.status == NeedStatus.SUPERSEDED
+        assert loaded.state == NeedState.SUPERSEDED
         assert loaded.superseded_reason == "all motivating hypotheses retired"
 
     @pytest.mark.asyncio
@@ -373,7 +373,7 @@ class TestRepositoryRoundTrip:
             organization_id="org_alpha",
             title="API outage",
             description="API outage with database errors",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             inquiry=inquiry,
         )
         uploaded = UploadedFile(
@@ -400,7 +400,7 @@ class TestRepositoryRoundTrip:
         need = _make_need(
             case_id=case.case_id,
             purpose=NeedPurpose.SYMPTOM_VERIFICATION,
-            status=NeedStatus.FULFILLED,
+            state=NeedState.FULFILLED,
             fulfilling_evidence_ids=[evidence.evidence_id],
         )
         case.evidence_needs.append(need)
@@ -413,7 +413,7 @@ class TestRepositoryRoundTrip:
             None,
         )
         assert loaded_need is not None
-        assert loaded_need.status == NeedStatus.FULFILLED
+        assert loaded_need.state == NeedState.FULFILLED
         assert loaded_need.fulfilling_evidence_ids == [evidence.evidence_id]
 
     @pytest.mark.asyncio

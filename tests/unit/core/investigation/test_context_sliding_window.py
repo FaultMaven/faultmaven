@@ -27,7 +27,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
     _rerank_page_capture_sections,
 )
 from faultmaven.modules.case.contracts import (
-    CaseStatus,
+    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -145,7 +145,7 @@ def _make_case_with_evidence(evidence_list: list) -> Case:
         description="Test description",
         user_id="user_123",
         organization_id="org_123",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
@@ -214,7 +214,7 @@ def _make_inquiry_case_with_uploaded_files(
         description="Test description",
         user_id="user_123",
         organization_id="org_123",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         inquiry=InquiryData(),
         evidence=[],
         uploaded_files=uploaded_files,

@@ -14,11 +14,11 @@ from faultmaven.core.investigation.working_conclusion_generator import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
-    HypothesisStatus,
+    HypothesisState,
     InquiryData,
     InvestigationMomentum,
     InvestigationProgress,
@@ -34,7 +34,7 @@ def base_case():
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         user_id="user_123",
         organization_id="org_123",
         description="Test description",
@@ -55,7 +55,7 @@ def base_case():
 def create_hypothesis(
     hyp_id: str,
     statement: str,
-    status: HypothesisStatus = HypothesisStatus.ACTIVE,
+    state: HypothesisState = HypothesisState.ACTIVE,
     likelihood: float = 0.5,
     supporting_evidence: list = None,
     generated_at_turn: int = 1,
@@ -65,7 +65,7 @@ def create_hypothesis(
         hypothesis_id=hyp_id,
         statement=statement,
         category=HypothesisCategory.CODE,
-        status=status,
+        state=state,
         likelihood=likelihood,
         generated_at_turn=generated_at_turn,
         generation_mode=HypothesisGenerationMode.SYSTEMATIC,
@@ -122,12 +122,12 @@ class TestWorkingConclusionGeneration:
         """Should generate conclusion from highest likelihood hypothesis."""
         base_case.hypotheses = {
             "hyp_000000000001": create_hypothesis(
-                "hyp_000000000001", "Low likelihood", HypothesisStatus.ACTIVE, 0.3
+                "hyp_000000000001", "Low likelihood", HypothesisState.ACTIVE, 0.3
             ),
             "hyp_000000000002": create_hypothesis(
                 "hyp_000000000002",
                 "High likelihood",
-                HypothesisStatus.ACTIVE,
+                HypothesisState.ACTIVE,
                 0.8,
                 supporting_evidence=["ev_1", "ev_2"],
             ),
@@ -155,7 +155,7 @@ class TestWorkingConclusionGeneration:
             "hyp_000000000001": create_hypothesis(
                 "hyp_000000000001",
                 "Test",
-                HypothesisStatus.ACTIVE,
+                HypothesisState.ACTIVE,
                 0.7,
                 supporting_evidence=["ev_1", "ev_2", "ev_3"],
             ),
@@ -169,7 +169,7 @@ class TestWorkingConclusionGeneration:
         """Should generate caveats for low confidence hypotheses."""
         base_case.hypotheses = {
             "hyp_000000000001": create_hypothesis(
-                "hyp_000000000001", "Low confidence", HypothesisStatus.ACTIVE, 0.3
+                "hyp_000000000001", "Low confidence", HypothesisState.ACTIVE, 0.3
             ),
         }
 
@@ -230,7 +230,7 @@ class TestEvidenceCompleteness:
             "hyp_000000000001": create_hypothesis(
                 "hyp_000000000001",
                 "Test",
-                HypothesisStatus.ACTIVE,
+                HypothesisState.ACTIVE,
                 0.5,
                 supporting_evidence=["ev_1", "ev_2"],  # 2 out of typical 3
             ),

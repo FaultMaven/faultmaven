@@ -27,7 +27,7 @@ from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.case.contracts import (
     Case,
     CaseReport,
-    CaseStatus,
+    CaseState,
     ICaseRepository,
     InvestigationPath,
     ReportGenerationRequest,
@@ -453,9 +453,9 @@ class ReportGenerationService:
             validated = [
                 h
                 for h in hypotheses
-                if hasattr(h, "status")
-                and hasattr(h.status, "value")
-                and h.status.value == "validated"
+                if hasattr(h, "state")
+                and hasattr(h.state, "value")
+                and h.state.value == "validated"
             ]
             if validated:
                 parts.append("## Root Cause\n")
@@ -518,7 +518,7 @@ class ReportGenerationService:
                 "other": [],
             }
             for h in hypotheses:
-                status = h.status.value if hasattr(h.status, "value") else str(h.status)
+                status = h.state.value if hasattr(h.state, "value") else str(h.state)
                 if status in buckets:
                     buckets[status].append(h)
                 else:
@@ -632,7 +632,7 @@ class ReportGenerationService:
             )
             for h in sorted_hyps[:5]:
                 status_str = (
-                    h.status.value if hasattr(h.status, "value") else str(h.status)
+                    h.state.value if hasattr(h.state, "value") else str(h.state)
                 )
                 parts.append(
                     f"- **{h.statement}** — {status_str} "
@@ -685,7 +685,7 @@ class ReportGenerationService:
         context = {
             "title": case.title,
             "description": case.description,
-            "status": case.status.value,
+            "status": case.state.value,
             "created_at": (
                 to_json_compatible(case.created_at) if case.created_at else None
             ),
@@ -715,10 +715,10 @@ class ReportGenerationService:
 
     def _validate_case_for_report_generation(self, case: Case) -> None:
         """Validate case is in valid state for report generation."""
-        valid_states = [CaseStatus.RESOLVED, CaseStatus.CLOSED]
+        valid_states = [CaseState.RESOLVED, CaseState.CLOSED]
 
-        if case.status not in valid_states:
+        if case.state not in valid_states:
             raise ValidationException(
                 "invalid_case_state",
-                f"Cannot generate reports from {case.status.value} state. Case must be resolved or closed first.",
+                f"Cannot generate reports from {case.state.value} state. Case must be resolved or closed first.",
             )

@@ -25,9 +25,9 @@ from typing import List, Optional, Tuple
 
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     EvidenceStance,
-    HypothesisStatus,
+    HypothesisState,
     InvestigationProgress,
 )
 
@@ -176,19 +176,19 @@ class StateValidator:
         issues: List[ValidationIssue] = []
 
         # RESOLVED requires solution_verified
-        if case.status == CaseStatus.RESOLVED and not case.progress.solution_verified:
+        if case.state == CaseState.RESOLVED and not case.progress.solution_verified:
             issues.append(
                 ValidationIssue(
                     code="STATUS_MISMATCH_001",
                     message="Status is RESOLVED but solution_verified=False",
                     severity=ValidationSeverity.ERROR,
-                    field="status",
+                    field="state",
                     suggested_fix="Set solution_verified=True or change status to INVESTIGATING",
                 )
             )
 
         # INVESTIGATING should have problem_statement
-        if case.status == CaseStatus.INVESTIGATING:
+        if case.state == CaseState.INVESTIGATING:
             has_statement = (
                 case.problem_verification
                 and case.problem_verification.symptom_statement
@@ -204,12 +204,12 @@ class StateValidator:
                 )
 
         # Terminal states should have closure metadata
-        if case.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
+        if case.state in [CaseState.RESOLVED, CaseState.CLOSED]:
             if not case.closed_at:
                 issues.append(
                     ValidationIssue(
                         code="STATUS_METADATA_001",
-                        message=f"Status is {case.status.value} but closed_at is not set",
+                        message=f"Status is {case.state.value} but closed_at is not set",
                         severity=ValidationSeverity.WARNING,
                         field="closed_at",
                     )
@@ -228,7 +228,7 @@ class StateValidator:
 
         for hyp_id, hypothesis in case.hypotheses.items():
             # VALIDATED requires sufficient evidence
-            if hypothesis.status == HypothesisStatus.VALIDATED:
+            if hypothesis.state == HypothesisState.VALIDATED:
                 supporting_count = len(hypothesis.supporting_evidence)
                 if supporting_count < 2:
                     issues.append(
@@ -242,7 +242,7 @@ class StateValidator:
                     )
 
             # REFUTED should have refuting evidence
-            if hypothesis.status == HypothesisStatus.REFUTED:
+            if hypothesis.state == HypothesisState.REFUTED:
                 refuting_count = len(hypothesis.refuting_evidence)
                 if refuting_count < 1:
                     issues.append(
@@ -257,7 +257,7 @@ class StateValidator:
 
             # ACTIVE hypotheses with very low likelihood should be warned
             if (
-                hypothesis.status == HypothesisStatus.ACTIVE
+                hypothesis.state == HypothesisState.ACTIVE
                 and hypothesis.likelihood < 0.2
             ):
                 issues.append(

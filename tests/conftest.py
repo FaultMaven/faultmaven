@@ -903,7 +903,7 @@ def test_config():
 @pytest.fixture
 def sample_case():
     """Sample case for testing case persistence functionality."""
-    from faultmaven.modules.case.domain.models import Case, CaseStatus
+    from faultmaven.modules.case.domain.models import Case, CaseState
 
     return Case(
         case_id="case_test12345678",
@@ -911,7 +911,7 @@ def sample_case():
         description="A sample case for testing case persistence features",
         user_id="test-user-456",
         organization_id="test-org-123",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
     )
 
 
@@ -955,12 +955,12 @@ def sample_case_summary():
     from datetime import datetime, timezone
 
     from faultmaven.models.api_models import CaseSummary
-    from faultmaven.modules.case.domain.models import CaseStatus
+    from faultmaven.modules.case.domain.models import CaseState
 
     return CaseSummary(
         case_id="case_test12345678",
         title="Test Case Summary",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         user_id="test-user-456",
         organization_id="test-org-123",
         created_at=datetime.now(timezone.utc),
@@ -1042,7 +1042,7 @@ def case_update_request_data():
     return {
         "title": "Updated Test Case",
         "description": "Updated description for testing",
-        "status": "investigating",
+        "state": "investigating",
         "priority": "high",
         "tags": ["updated", "important"],
     }
@@ -1072,7 +1072,7 @@ def case_search_request_data():
 @pytest.fixture
 def multiple_cases():
     """Multiple sample cases for testing list and search operations."""
-    from faultmaven.modules.case.domain.models import Case, CaseStatus
+    from faultmaven.modules.case.domain.models import Case, CaseState
 
     cases = []
     for i in range(5):
@@ -1082,7 +1082,7 @@ def multiple_cases():
             description=f"Description for test case {i+1}",
             user_id=f"test-user-{i+1}",
             organization_id="test-org-123",
-            status=CaseStatus.INQUIRY if i % 2 == 0 else CaseStatus.INVESTIGATING,
+            state=CaseState.INQUIRY if i % 2 == 0 else CaseState.INVESTIGATING,
         )
         cases.append(case)
 
@@ -1095,7 +1095,7 @@ def case_with_conversation():
     from datetime import datetime, timedelta, timezone
     from uuid import uuid4
 
-    from faultmaven.modules.case.domain.models import Case, CaseStatus
+    from faultmaven.modules.case.domain.models import Case, CaseState
 
     now = datetime.now(timezone.utc)
     case_id = "case_conversation1"
@@ -1158,7 +1158,7 @@ def case_with_conversation():
         description="Testing conversation context generation",
         user_id="test-user-456",
         organization_id="test-org-123",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         messages=messages,
         message_count=len(messages),
         current_turn=3,

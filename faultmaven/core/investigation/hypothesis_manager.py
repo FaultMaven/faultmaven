@@ -10,7 +10,7 @@ Design Reference:
 - docs/architecture/investigation-engine/evidence-driven-investigation-framework.md
 - docs/architecture/investigation-engine/investigation-data-models.md (§3 Hypothesis Lifecycle)
 
-Hypothesis Lifecycle (matches HypothesisStatus enum):
+Hypothesis Lifecycle (matches HypothesisState enum):
 - CAPTURED: Opportunistic hypothesis (not yet promoted to active testing)
 - ACTIVE: Currently being tested (promoted from CAPTURED or systematic generation)
 - VALIDATED: Confirmed by evidence (likelihood ≥0.70 + ≥2 supporting evidence)
@@ -40,7 +40,7 @@ from faultmaven.modules.case.contracts import (
     Hypothesis,
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
-    HypothesisStatus,
+    HypothesisState,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ class HypothesisManager:
         initial_likelihood: float,
         current_turn: int,
         generation_mode: HypothesisGenerationMode = HypothesisGenerationMode.SYSTEMATIC,
-        status: HypothesisStatus = HypothesisStatus.ACTIVE,
+        state: HypothesisState = HypothesisState.ACTIVE,
         rationale: Optional[str] = None,
     ) -> Hypothesis:
         """Create new hypothesis"""
@@ -98,7 +98,7 @@ class HypothesisManager:
             category=category,
             likelihood=initial_likelihood,
             initial_likelihood=initial_likelihood,
-            status=status,
+            state=state,
             generation_mode=generation_mode,
             generated_at_turn=current_turn,
             last_updated_turn=current_turn,
@@ -135,7 +135,7 @@ class HypothesisManager:
             category=category,
             initial_likelihood=likelihood,
             current_turn=current_turn,
-            status=HypothesisStatus.VALIDATED,
+            state=HypothesisState.VALIDATED,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC,
         )
 
@@ -329,7 +329,7 @@ class HypothesisManager:
             hypothesis: Hypothesis to check
             turn: Current turn number
         """
-        if hypothesis.status != HypothesisStatus.ACTIVE:
+        if hypothesis.state != HypothesisState.ACTIVE:
             # Only active hypotheses can be auto-transitioned
             return
 
@@ -346,7 +346,7 @@ class HypothesisManager:
 
         # Check for validation
         if hypothesis.likelihood >= 0.70 and supporting_count >= 2:
-            hypothesis.status = HypothesisStatus.VALIDATED
+            hypothesis.state = HypothesisState.VALIDATED
             logger.info(
                 f"Hypothesis VALIDATED: {hypothesis.statement}",
                 extra={
@@ -362,7 +362,7 @@ class HypothesisManager:
                 f"likelihood {hypothesis.likelihood:.2f} with "
                 f"{refuting_count} refuting evidence items"
             )[:200]
-            hypothesis.status = HypothesisStatus.REFUTED
+            hypothesis.state = HypothesisState.REFUTED
             logger.info(
                 f"Hypothesis REFUTED: {hypothesis.statement}",
                 extra={
@@ -377,7 +377,7 @@ class HypothesisManager:
             0.3 <= hypothesis.likelihood <= 0.5
             and hypothesis.iterations_without_progress >= 3
         ):
-            hypothesis.status = HypothesisStatus.INCONCLUSIVE
+            hypothesis.state = HypothesisState.INCONCLUSIVE
             logger.info(
                 f"Hypothesis INCONCLUSIVE: {hypothesis.statement} "
                 f"(likelihood={hypothesis.likelihood:.2f}, stagnant for "
@@ -390,10 +390,9 @@ class HypothesisManager:
 
         # Check for retirement due to low confidence
         elif (
-            hypothesis.likelihood < 0.3
-            and hypothesis.status != HypothesisStatus.RETIRED
+            hypothesis.likelihood < 0.3 and hypothesis.state != HypothesisState.RETIRED
         ):
-            hypothesis.status = HypothesisStatus.RETIRED
+            hypothesis.state = HypothesisState.RETIRED
             hypothesis.rationale = "Low confidence after testing"  # Mapped retirement_reason to rationale or logging
             logger.info(
                 f"Hypothesis {hypothesis.hypothesis_id} RETIRED (likelihood < 30%)"
@@ -409,7 +408,7 @@ class HypothesisManager:
         Likelihood decay formula: base * 0.85^iterations_without_progress
         """
         if (
-            hypothesis.status == HypothesisStatus.ACTIVE
+            hypothesis.state == HypothesisState.ACTIVE
             and hypothesis.iterations_without_progress > 0
         ):
             old_likelihood = hypothesis.likelihood
@@ -446,7 +445,7 @@ class HypothesisManager:
         # Set refutation_reason BEFORE status so the pair invariant is
         # satisfied if this object is ever re-validated.
         hypothesis.refutation_reason = (reason or "refuted by evidence")[:200]
-        hypothesis.status = HypothesisStatus.REFUTED
+        hypothesis.state = HypothesisState.REFUTED
         hypothesis.likelihood = 0.0
         # hypothesis.refuting_evidence.extend(refuting_evidence_ids) # Updated logic via link_evidence manually or loop
         existing_evidence_ids = {link.evidence_id for link in hypothesis.evidence_links}
@@ -492,7 +491,7 @@ class HypothesisManager:
         active_hypotheses = [
             h
             for h in hypotheses
-            if h.status not in [HypothesisStatus.RETIRED, HypothesisStatus.REFUTED]
+            if h.state not in [HypothesisState.RETIRED, HypothesisState.REFUTED]
         ]
 
         if not active_hypotheses:
@@ -566,7 +565,7 @@ class HypothesisManager:
         # Identify over-represented categories
         category_counts: Dict[str, int] = {}
         for h in existing_hypotheses:
-            if h.status not in [HypothesisStatus.RETIRED, HypothesisStatus.REFUTED]:
+            if h.state not in [HypothesisState.RETIRED, HypothesisState.REFUTED]:
                 category_counts[h.category] = category_counts.get(h.category, 0) + 1
 
         # Find dominant category
@@ -579,9 +578,9 @@ class HypothesisManager:
             if (
                 h.category == dominant_category
                 and h.iterations_without_progress >= 2
-                and h.status == HypothesisStatus.ACTIVE
+                and h.state == HypothesisState.ACTIVE
             ):
-                h.status = HypothesisStatus.RETIRED
+                h.state = HypothesisState.RETIRED
                 h.retirement_reason = f"Anchoring prevention: retired to diversify from {dominant_category}"
                 h.last_updated_turn = current_turn
                 retired_count += 1
@@ -624,7 +623,7 @@ class HypothesisManager:
         testable = [
             h
             for h in hypotheses
-            if h.status == HypothesisStatus.ACTIVE
+            if h.state == HypothesisState.ACTIVE
             and h.likelihood > 0.2  # Skip very low confidence
         ]
 
@@ -648,7 +647,7 @@ class HypothesisManager:
         validated = [
             h
             for h in hypotheses
-            if h.status == HypothesisStatus.VALIDATED and h.likelihood >= 0.7
+            if h.state == HypothesisState.VALIDATED and h.likelihood >= 0.7
         ]
 
         if not validated:
@@ -669,9 +668,7 @@ class HypothesisManager:
         Returns:
             Hypothesis with highest likelihood, or None if no active hypotheses
         """
-        active_hypotheses = [
-            h for h in hypotheses if h.status == HypothesisStatus.ACTIVE
-        ]
+        active_hypotheses = [h for h in hypotheses if h.state == HypothesisState.ACTIVE]
 
         if not active_hypotheses:
             return None
@@ -706,7 +703,7 @@ class HypothesisManager:
         Returns:
             True if at least one hypothesis is validated
         """
-        return any(h.status == HypothesisStatus.VALIDATED for h in hypotheses)
+        return any(h.state == HypothesisState.VALIDATED for h in hypotheses)
 
 
 def create_hypothesis_manager() -> HypothesisManager:

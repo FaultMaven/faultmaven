@@ -28,7 +28,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
 )
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -53,7 +53,7 @@ def _make_mitigation_first_case(
     *,
     mitigation_completed_at_turn: int | None = None,
     rca_after_mitigation_confirmed: bool = False,
-    status: CaseStatus = CaseStatus.INVESTIGATING,
+    state: CaseState = CaseState.INVESTIGATING,
     current_turn: int = 5,
     closure_reason: str | None = None,
 ) -> Case:
@@ -72,17 +72,17 @@ def _make_mitigation_first_case(
         organization_id="o1",
         title="Test",
         description="API outage",
-        status=status,
+        state=state,
         current_turn=current_turn,
         path_selection=ps,
     )
-    if status in (CaseStatus.CLOSED, CaseStatus.RESOLVED):
+    if state in (CaseState.CLOSED, CaseState.RESOLVED):
         # closed_at / resolved_at must be after created_at; explicitly
         # set created_at well in the past so the validator passes.
         case_kwargs["created_at"] = datetime.now(UTC) - timedelta(hours=1)
         case_kwargs["closed_at"] = datetime.now(UTC)
         case_kwargs["closure_reason"] = closure_reason or "inquiry_only"
-        if status == CaseStatus.RESOLVED:
+        if state == CaseState.RESOLVED:
             case_kwargs["resolved_at"] = datetime.now(UTC)
     return Case(
         **case_kwargs,
@@ -145,7 +145,7 @@ class TestGate3IsPending:
     def test_false_when_case_is_terminal(self):
         case = _make_mitigation_first_case(
             mitigation_completed_at_turn=4,
-            status=CaseStatus.CLOSED,
+            state=CaseState.CLOSED,
         )
         assert _gate3_is_pending(case) is False
 
@@ -181,7 +181,7 @@ class TestPostMitigationSuggestions:
     def test_second_suggestion_closes_as_mitigation_sufficient(self):
         suggs = _post_mitigation_suggestions()
         assert suggs[1]["intent"]["type"] == "status_transition"
-        assert suggs[1]["intent"]["to_status"] == "closed"
+        assert suggs[1]["intent"]["to_state"] == "closed"
         assert suggs[1]["intent"]["closure_reason"] == "mitigation_sufficient"
         # The body must surface the runbook trade-off (clean-from-start
         # principle: the user sees the implication at click time).

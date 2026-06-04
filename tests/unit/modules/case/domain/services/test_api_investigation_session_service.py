@@ -28,7 +28,7 @@ from faultmaven.exceptions import (
     ServiceError,
     ValidationException,
 )
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentType,
@@ -36,7 +36,7 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     InvestigationStrategy,
 )
 from faultmaven.modules.case.domain.services.investigation_session_service import (
@@ -82,7 +82,7 @@ def sample_case():
         organization_id="org_456",
         title="Test Case",
         description="Test case description",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
 
@@ -95,7 +95,7 @@ def sample_session():
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_123",
         organization_id="org_456",
-        status=SessionStatus.ACTIVE,
+        state=SessionState.ACTIVE,
         session_goal="Debug authentication issue",
         total_token_usage=1000,
         total_agent_executions=5,
@@ -141,7 +141,7 @@ class TestCreateSession:
 
         assert result is not None
         assert result.case_id == sample_case.case_id
-        assert result.status == SessionStatus.ACTIVE
+        assert result.state == SessionState.ACTIVE
         mock_session_repo.create.assert_called_once()
 
     @pytest.mark.asyncio
@@ -177,7 +177,7 @@ class TestCreateSession:
             user_id="user_123",
         )
 
-        assert result.status == SessionStatus.ACTIVE
+        assert result.state == SessionState.ACTIVE
 
     @pytest.mark.asyncio
     async def test_create_session_sets_timestamps(
@@ -609,7 +609,7 @@ class TestPauseSession:
     ):
         """Test successful session pause."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_session_repo.update.side_effect = lambda s: s
@@ -618,7 +618,7 @@ class TestPauseSession:
             sample_session.session_id, sample_case.organization_id
         )
 
-        assert result.status == SessionStatus.PAUSED
+        assert result.state == SessionState.PAUSED
         mock_session_repo.update.assert_called_once()
 
     @pytest.mark.asyncio
@@ -632,7 +632,7 @@ class TestPauseSession:
     ):
         """Test that pausing non-active session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.COMPLETED
+        sample_session.state = SessionState.COMPLETED
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
 
@@ -682,7 +682,7 @@ class TestResumeSession:
     ):
         """Test successful session resume."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.PAUSED
+        sample_session.state = SessionState.PAUSED
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_session_repo.update.side_effect = lambda s: s
@@ -691,7 +691,7 @@ class TestResumeSession:
             sample_session.session_id, sample_case.organization_id
         )
 
-        assert result.status == SessionStatus.ACTIVE
+        assert result.state == SessionState.ACTIVE
         mock_session_repo.update.assert_called_once()
 
     @pytest.mark.asyncio
@@ -705,7 +705,7 @@ class TestResumeSession:
     ):
         """Test that resuming non-paused session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
 
@@ -727,7 +727,7 @@ class TestResumeSession:
     ):
         """Test authorization check when resuming."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.PAUSED
+        sample_session.state = SessionState.PAUSED
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
 
@@ -756,7 +756,7 @@ class TestCompleteSession:
     ):
         """Test successful session completion."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_session_repo.update.side_effect = lambda s: s
@@ -767,7 +767,7 @@ class TestCompleteSession:
             "Found root cause: memory leak in auth module",
         )
 
-        assert result.status == SessionStatus.COMPLETED
+        assert result.state == SessionState.COMPLETED
         mock_session_repo.update.assert_called_once()
 
     @pytest.mark.asyncio
@@ -781,7 +781,7 @@ class TestCompleteSession:
     ):
         """Test that complete_session sets findings_summary."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_session_repo.update.side_effect = lambda s: s
@@ -805,7 +805,7 @@ class TestCompleteSession:
     ):
         """Test that complete_session sets ended_at timestamp."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_session_repo.update.side_effect = lambda s: s
@@ -833,7 +833,7 @@ class TestCompleteSession:
     ):
         """Test that complete_session calculates total_duration_ms."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_session_repo.update.side_effect = lambda s: s
@@ -858,7 +858,7 @@ class TestCompleteSession:
     ):
         """Test that completing already-completed session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.COMPLETED
+        sample_session.state = SessionState.COMPLETED
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
 
@@ -882,7 +882,7 @@ class TestCompleteSession:
     ):
         """Test that completing abandoned session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ABANDONED
+        sample_session.state = SessionState.ABANDONED
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
 
@@ -914,7 +914,7 @@ class TestCompleteSession:
     ):
         """Test authorization check when completing."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
 
@@ -943,7 +943,7 @@ class TestAbandonSession:
     ):
         """Test successful session abandonment."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_session_repo.update.side_effect = lambda s: s
@@ -952,7 +952,7 @@ class TestAbandonSession:
             sample_session.session_id, sample_case.organization_id
         )
 
-        assert result.status == SessionStatus.ABANDONED
+        assert result.state == SessionState.ABANDONED
         mock_session_repo.update.assert_called_once()
 
     @pytest.mark.asyncio
@@ -966,7 +966,7 @@ class TestAbandonSession:
     ):
         """Test that abandoning completed session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.COMPLETED
+        sample_session.state = SessionState.COMPLETED
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
 
@@ -986,7 +986,7 @@ class TestAbandonSession:
     ):
         """Test authorization check when abandoning."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
 
@@ -1015,7 +1015,7 @@ class TestGetActiveSession:
     ):
         """Test that get_active_session returns active session."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_case_repo.get.return_value = sample_case
         mock_session_repo.get_active_session.return_value = sample_session
 
@@ -1024,7 +1024,7 @@ class TestGetActiveSession:
         )
 
         assert result is not None
-        assert result.status == SessionStatus.ACTIVE
+        assert result.state == SessionState.ACTIVE
 
     @pytest.mark.asyncio
     async def test_get_active_session_returns_none_when_no_active(
@@ -1103,11 +1103,11 @@ class TestListSessions:
         await session_service.list_sessions(
             sample_case.case_id,
             sample_case.organization_id,
-            status=SessionStatus.ACTIVE,
+            state=SessionState.ACTIVE,
         )
 
         mock_session_repo.list_by_case_id.assert_called_once_with(
-            sample_case.case_id, status=SessionStatus.ACTIVE
+            sample_case.case_id, state=SessionState.ACTIVE
         )
 
     @pytest.mark.asyncio
@@ -1273,7 +1273,7 @@ class TestAddExecutionToSession:
     ):
         """Test that add_execution_to_session links execution."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         sample_session.total_token_usage = 1000
         sample_session.total_agent_executions = 5
         mock_session_repo.get_by_id.return_value = sample_session
@@ -1304,7 +1304,7 @@ class TestAddExecutionToSession:
     ):
         """Test that token usage is incremented."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         sample_session.total_token_usage = 0
         sample_session.total_agent_executions = 0
         mock_session_repo.get_by_id.return_value = sample_session
@@ -1333,7 +1333,7 @@ class TestAddExecutionToSession:
     ):
         """Test that execution count is incremented."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         sample_session.total_token_usage = 0
         sample_session.total_agent_executions = 0
         mock_session_repo.get_by_id.return_value = sample_session
@@ -1375,7 +1375,7 @@ class TestAddExecutionToSession:
     ):
         """Test that non-existent execution raises NotFoundError."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.get_agent_execution.return_value = None
@@ -1401,7 +1401,7 @@ class TestAddExecutionToSession:
     ):
         """Test that adding to non-active session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.COMPLETED
+        sample_session.state = SessionState.COMPLETED
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
 
@@ -1438,7 +1438,7 @@ class TestAddExecutionToSession:
     ):
         """Test authorization check."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
 
@@ -1588,7 +1588,7 @@ class TestGetSessionStatistics:
     ):
         """Test that statistics includes by_status breakdown."""
         sample_session.case_id = sample_case.case_id
-        sample_session.status = SessionStatus.ACTIVE
+        sample_session.state = SessionState.ACTIVE
         mock_case_repo.get.return_value = sample_case
         mock_session_repo.list_by_case_id.return_value = [sample_session]
 

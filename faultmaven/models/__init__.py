@@ -30,7 +30,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseSeverity,
-    CaseStatus,
+    CaseState,
     MessageType,
     UrgencyLevel,
 )
@@ -142,7 +142,7 @@ __all__ = [
     "IKnowledgeIngester",
     # Case models (from modules/case)
     "Case",
-    "CaseStatus",
+    "CaseState",
     "CaseSeverity",
     "MessageType",
     "UrgencyLevel",

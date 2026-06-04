@@ -20,10 +20,10 @@ from typing import List, Optional
 
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     ConfidenceLevel,
     Hypothesis,
-    HypothesisStatus,
+    HypothesisState,
     InvestigationMomentum,
     WorkingConclusion,
 )
@@ -83,7 +83,7 @@ def generate_working_conclusion(
     active_hypotheses = [
         h
         for h in hypotheses
-        if h.status in [HypothesisStatus.ACTIVE, HypothesisStatus.VALIDATED]
+        if h.state in [HypothesisState.ACTIVE, HypothesisState.VALIDATED]
     ]
 
     # Handle case with no hypotheses yet
@@ -139,7 +139,7 @@ def calculate_progress_metrics(
     active_hypotheses = [
         h
         for h in hypotheses
-        if h.status in [HypothesisStatus.ACTIVE, HypothesisStatus.VALIDATED]
+        if h.state in [HypothesisState.ACTIVE, HypothesisState.VALIDATED]
     ]
 
     # Calculate evidence completeness across all active hypotheses
@@ -314,11 +314,11 @@ def _generate_next_steps(
     steps = []
 
     # Status-based guidance
-    if case.status == CaseStatus.INQUIRY:
+    if case.state == CaseState.INQUIRY:
         steps.append("Confirm problem statement and decide to investigate")
         return steps
 
-    if case.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
+    if case.state in [CaseState.RESOLVED, CaseState.CLOSED]:
         steps.append("Case closed - review documentation")
         return steps
 

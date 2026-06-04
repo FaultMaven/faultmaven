@@ -12,7 +12,7 @@ from faultmaven.exceptions import (
     PermissionDeniedException,
     ServiceException,
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus
+from faultmaven.modules.case.domain.models import Case, CaseState
 
 if TYPE_CHECKING:
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 def create_sample_case(
     case_id: Optional[str] = None,
     user_id: Optional[str] = None,
-    status: CaseStatus = CaseStatus.INQUIRY,
+    state: CaseState = CaseState.INQUIRY,
     current_turn: int = 0,
     message_count: int = 0,
 ) -> Case:
@@ -47,7 +47,7 @@ def create_sample_case(
         organization_id="org_test123",
         title="Test Case",
         description="Test case description",
-        status=status,
+        state=state,
         problem_verification=ProblemVerification(
             symptom_statement="Server verification test",
             severity="HIGH",
@@ -94,7 +94,7 @@ class MockCaseRepository:
         self,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        status: Optional[CaseStatus] = None,
+        status: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Case], int]:

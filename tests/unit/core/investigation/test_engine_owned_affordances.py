@@ -24,7 +24,7 @@ from faultmaven.core.investigation.milestone_engine import (
 )
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     InquiryData,
     InvestigationPath,
     PathSelection,
@@ -100,7 +100,7 @@ def _investigating_case(
         user_id="u1",
         organization_id="o1",
         title="Test",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         description="Production API is returning 500s",
         inquiry=inquiry,
         progress=InvestigationProgress(symptom_verified=symptom_verified),

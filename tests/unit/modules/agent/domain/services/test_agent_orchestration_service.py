@@ -22,7 +22,7 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 from faultmaven.modules.agent.domain.events.execution_events import (
     AgentContext,
     ExecutionEvent,
@@ -46,7 +46,7 @@ from faultmaven.modules.case.contracts import (
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus
+from faultmaven.modules.case.domain.models import Case, CaseState
 
 # =============================================================================
 # Fixtures
@@ -91,7 +91,7 @@ def sample_session():
         case_id="case_a1b2c3d4e5f6",
         user_id="user_test789",
         organization_id="org_test000",
-        status=SessionStatus.ACTIVE,
+        state=SessionState.ACTIVE,
         session_goal="Investigate API errors",
         token_budget_limit=100000,
         total_token_usage=0,
@@ -107,7 +107,7 @@ def sample_case():
         organization_id="org_test000",
         title="API Error Investigation",
         description="Investigating 500 errors in production API",
-        status=CaseStatus.INQUIRY,  # Use INQUIRY to avoid validation requirements
+        state=CaseState.INQUIRY,  # Use INQUIRY to avoid validation requirements
     )
 
 
@@ -215,7 +215,7 @@ class TestExecuteAgentBasicWorkflow:
             case_id="case_test",
             user_id="user_test",
             organization_id="org_test",
-            status=SessionStatus.PAUSED,
+            state=SessionState.PAUSED,
         )
         mock_session_service.get_session.return_value = paused_session
 

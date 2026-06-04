@@ -57,10 +57,10 @@ class CaseConverter:
             case_id=getattr(case_entity, "case_id", str(uuid4())),
             title=getattr(case_entity, "title", "Untitled Case"),
             description=getattr(case_entity, "description", None),
-            status=(
-                case_entity.status.value
-                if hasattr(case_entity.status, "value")
-                else str(getattr(case_entity, "status", "inquiry"))
+            state=(
+                case_entity.state.value
+                if hasattr(case_entity.state, "value")
+                else str(getattr(case_entity, "state", "inquiry"))
             ),
             priority=priority_value,
             created_at=(
@@ -110,10 +110,10 @@ class CaseConverter:
             case_id=case_summary.case_id,
             title=case_summary.title,
             description=None,  # CaseSummary doesn't have description field
-            status=(
-                case_summary.status.value
-                if hasattr(case_summary.status, "value")
-                else str(case_summary.status)
+            state=(
+                case_summary.state.value
+                if hasattr(case_summary.state, "value")
+                else str(case_summary.state)
             ),
             priority=(
                 case_summary.priority.value

@@ -144,7 +144,7 @@ def mock_case_service():
 
     from faultmaven.modules.case.contracts import (
         Case,
-        CaseStatus,
+        CaseState,
         InquiryData,
         InvestigationPath,
         PathSelection,
@@ -164,7 +164,7 @@ def mock_case_service():
             description=description or "Test Description",
             user_id=owner_id or "test_user_123",
             organization_id="test_org_123",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             current_turn=0,
             message_count=0,
         )
@@ -192,7 +192,7 @@ def mock_case_service():
                 description="Test Description",
                 user_id=user_id,
                 organization_id="test_org_123",
-                status=CaseStatus.INVESTIGATING,
+                state=CaseState.INVESTIGATING,
                 current_turn=1,
                 message_count=1,
                 inquiry=InquiryData(
@@ -272,7 +272,7 @@ def mock_investigation_service(mock_case_service):
     """Create a mock investigation service for tests."""
     from unittest.mock import AsyncMock
 
-    from faultmaven.modules.case.contracts import CaseStatus
+    from faultmaven.modules.case.contracts import CaseState
 
     service = AsyncMock()
 
@@ -380,7 +380,7 @@ def mock_investigation_service(mock_case_service):
             agent_response="Test response",
             turn_number=1,
             milestones_completed=[],
-            case_status=CaseStatus.INVESTIGATING,
+            case_status=CaseState.INVESTIGATING,
             progress_made=True,
             attachments_processed=attachments_processed,
         )

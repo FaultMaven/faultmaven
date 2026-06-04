@@ -35,7 +35,7 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     InvestigationStrategy,
 )
 from faultmaven.modules.case.infrastructure.case_repository import (
@@ -155,7 +155,7 @@ def sample_case() -> Case:
         organization_id="test-org-001",
         title="Test Case - API Slowness",
         description="API experiencing high latency",
-        status=CaseStatus.RESOLVED,
+        state=CaseState.RESOLVED,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
 
@@ -192,7 +192,7 @@ def sample_runbook_report() -> CaseReport:
         source=RunbookSource.INCIDENT_DRIVEN,
         domain="api",
         tags=["latency", "timeout"],
-        case_context={"case_id": "case_test123", "status": "resolved"},
+        case_context={"case_id": "case_test123", "state": "resolved"},
         llm_model="gpt-4",
     )
     return CaseReport(

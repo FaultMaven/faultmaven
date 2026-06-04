@@ -28,7 +28,7 @@ from faultmaven.core.investigation.terminal_transitions import (
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseAction,
-    CaseStatus,
+    CaseState,
     InquiryData,
     InvestigationProgress,
     KnowledgeResolution,
@@ -49,7 +49,7 @@ def _make_investigating_case() -> Case:
     case = Case(
         case_id="case_a1b2c3d4e5f6",
         title="Invariant test",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         user_id="user_test",
         organization_id="org_test",
         description="Invariant test description",
@@ -66,7 +66,7 @@ def _make_investigating_case() -> Case:
     case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
     case.inquiry.decided_to_investigate = True
     case.inquiry.decision_made_at = datetime.now(timezone.utc)
-    case.status = CaseStatus.INVESTIGATING
+    case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
     return case
 
@@ -80,10 +80,10 @@ def _make_investigating_case() -> Case:
 #   CLOSED, INQUIRY → CLOSED) NEVER auto-fire. The agent emits
 #   ProposedTransition; the user confirms on a subsequent turn.
 # Enforcement: Structural — propose_transition writes pending_transition only;
-#   confirm_pending_transition is the only path that mutates case.status.
+#   confirm_pending_transition is the only path that mutates case.state.
 #
 # These tests pin the *function-level contract* that the structural property
-# rests on: propose has no side effect on status, and confirm requires a
+# rests on: propose has no side effect on state, and confirm requires a
 # prior propose. The engine's per-turn message dispatch then ensures the two
 # calls land in separate turns. A refactor that consolidates propose+confirm
 # into a single function would break these tests immediately.
@@ -94,44 +94,44 @@ class TestINV03_DispositionHandshake:
 
     def test_inv03_propose_resolved_writes_pending_only(self):
         """``propose_transition`` to RESOLVED stores a pending transition but
-        does not mutate ``case.status``. Mirrors the design's "writes
+        does not mutate ``case.state``. Mirrors the design's "writes
         pending_transition; does NOT execute" guarantee.
         """
         case = _make_investigating_case()
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
         assert case.resolved_at is None
         assert case.pending_transition is None
 
         propose_transition(
             case,
-            to_status="resolved",
+            to_state="resolved",
             summary="Solution applied and verified",
             evidence_ids=[],
         )
 
         # Pending transition is recorded for the next-turn confirmation
         assert case.pending_transition is not None
-        assert case.pending_transition["to_status"] == "resolved"
+        assert case.pending_transition["to_state"] == "resolved"
         assert "proposed_at" in case.pending_transition
         # Status has NOT changed — propose is write-only-to-pending
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
         assert case.resolved_at is None
 
     def test_inv03_propose_closed_writes_pending_only(self):
         """``propose_transition`` to CLOSED stores a pending transition with
-        engine-derived closure_reason but does not mutate ``case.status``.
+        engine-derived closure_reason but does not mutate ``case.state``.
         """
         case = _make_investigating_case()
 
         propose_transition(
             case,
-            to_status="closed",
+            to_state="closed",
             summary="Closing without resolution",
             evidence_ids=[],
         )
 
         assert case.pending_transition is not None
-        assert case.pending_transition["to_status"] == "closed"
+        assert case.pending_transition["to_state"] == "closed"
         # closure_reason is engine-derived at propose time (one of the three
         # canonical values: inquiry_only | closed_after_investigation |
         # mitigation_sufficient)
@@ -142,25 +142,25 @@ class TestINV03_DispositionHandshake:
             "mitigation_sufficient",
         )
         # Status unchanged
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
         assert case.closed_at is None
 
     def test_inv03_confirm_without_prior_propose_is_noop(self):
         """``confirm_pending_transition`` is a no-op when no pending exists.
 
         Pins the one-way data dependency from propose to confirm: there is
-        no path to mutate status via confirm without first writing
+        no path to mutate state via confirm without first writing
         pending_transition via propose.
         """
         case = _make_investigating_case()
         assert case.pending_transition is None
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
 
         result = confirm_pending_transition(case, user_id="user_test")
 
         # Confirm returns False and mutates nothing
         assert result is False
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
         assert case.resolved_at is None
         assert case.closed_at is None
         assert case.pending_transition is None
@@ -169,7 +169,7 @@ class TestINV03_DispositionHandshake:
         """End-to-end function-level handshake: propose → confirm executes.
 
         Documents the canonical sequence and pins that ``confirm_pending_-
-        transition`` is the ONLY path that actually mutates ``case.status``
+        transition`` is the ONLY path that actually mutates ``case.state``
         for disposition transitions. The engine's per-turn message dispatch
         ensures these two calls land in separate process_turn invocations
         (Turn N: propose, Turn N+1: confirm).
@@ -179,33 +179,33 @@ class TestINV03_DispositionHandshake:
         # Turn N: agent proposes
         propose_transition(
             case,
-            to_status="resolved",
+            to_state="resolved",
             summary="Solution applied",
             evidence_ids=[],
         )
         assert case.pending_transition is not None
-        assert case.status == CaseStatus.INVESTIGATING  # NOT yet resolved
+        assert case.state == CaseState.INVESTIGATING  # NOT yet resolved
 
         # Turn N+1: user confirms via explicit confirm call
         result = confirm_pending_transition(case, user_id="user_test")
 
-        # Now and only now does status change
+        # Now and only now does state change
         assert result is True
-        assert case.status == CaseStatus.RESOLVED
+        assert case.state == CaseState.RESOLVED
         assert case.resolved_at is not None
         # Pending is cleared after successful execution
         assert case.pending_transition is None
 
     def test_inv03_decline_clears_pending_without_executing(self):
         """``cancel_pending_transition`` clears the pending transition and
-        leaves ``case.status`` unchanged. Complements the propose/confirm
+        leaves ``case.state`` unchanged. Complements the propose/confirm
         pair: the user can decline the proposal, and the case stays in
         its current state.
         """
         case = _make_investigating_case()
         propose_transition(
             case,
-            to_status="resolved",
+            to_state="resolved",
             summary="Solution applied",
             evidence_ids=[],
         )
@@ -215,7 +215,7 @@ class TestINV03_DispositionHandshake:
 
         assert cleared is True
         assert case.pending_transition is None
-        assert case.status == CaseStatus.INVESTIGATING  # unchanged
+        assert case.state == CaseState.INVESTIGATING  # unchanged
         assert case.resolved_at is None
 
 
@@ -231,13 +231,13 @@ class TestINV03_DispositionHandshake:
 #
 # Verification surfaced three enforcement surfaces — pinned below:
 #   1. ``is_valid_action(INQUIRY, RESOLVED)`` returns False.
-#   2. Constructing a ``CaseAction(from_status=INQUIRY, to_status=RESOLVED)``
+#   2. Constructing a ``CaseAction(from_state=INQUIRY, to_state=RESOLVED)``
 #      raises a Pydantic ValidationError via the model_validator that calls
 #      ``is_valid_action``. CaseAction is frozen, so the validator is the
 #      schema-level gate on the audit history.
 #   3. ``_execute_resolved_transition`` raises ``ValueError`` when called
 #      against a non-INVESTIGATING case — the runtime backstop that prevents
-#      mutating status even if a caller skips the audit-history check.
+#      mutating state even if a caller skips the audit-history check.
 #
 # Drift findings captured during this verification (not bugs — to be
 # folded into the matrix's drift notes at cluster end):
@@ -265,13 +265,13 @@ class TestINV04_NoDirectInquiryToResolved:
         consults. If a future refactor changes the valid_actions map, this
         test fails — surfacing the design-vs-code divergence.
         """
-        assert is_valid_action(CaseStatus.INQUIRY, CaseStatus.RESOLVED) is False
+        assert is_valid_action(CaseState.INQUIRY, CaseState.RESOLVED) is False
 
         # And the canonical edges that ARE allowed stay allowed:
-        assert is_valid_action(CaseStatus.INQUIRY, CaseStatus.INVESTIGATING) is True
-        assert is_valid_action(CaseStatus.INQUIRY, CaseStatus.CLOSED) is True
-        assert is_valid_action(CaseStatus.INVESTIGATING, CaseStatus.RESOLVED) is True
-        assert is_valid_action(CaseStatus.INVESTIGATING, CaseStatus.CLOSED) is True
+        assert is_valid_action(CaseState.INQUIRY, CaseState.INVESTIGATING) is True
+        assert is_valid_action(CaseState.INQUIRY, CaseState.CLOSED) is True
+        assert is_valid_action(CaseState.INVESTIGATING, CaseState.RESOLVED) is True
+        assert is_valid_action(CaseState.INVESTIGATING, CaseState.CLOSED) is True
 
     def test_inv04_case_action_validator_rejects_inquiry_to_resolved(self):
         """Constructing a ``CaseAction`` for INQUIRY → RESOLVED raises.
@@ -284,8 +284,8 @@ class TestINV04_NoDirectInquiryToResolved:
         """
         with pytest.raises(ValidationError, match="Invalid case action"):
             CaseAction(
-                from_status=CaseStatus.INQUIRY,
-                to_status=CaseStatus.RESOLVED,
+                from_state=CaseState.INQUIRY,
+                to_state=CaseState.RESOLVED,
                 triggered_by="user_test",
                 reason="forbidden",
             )
@@ -294,13 +294,13 @@ class TestINV04_NoDirectInquiryToResolved:
         """``_execute_resolved_transition`` raises against a non-INVESTIGATING
         case. This is the runtime backstop: even if a future code path were
         to skip the audit-history check, the execute function would still
-        refuse to mutate ``case.status``.
+        refuse to mutate ``case.state``.
         """
         # Build a case stuck in INQUIRY (do NOT promote it to INVESTIGATING)
         case = Case(
             case_id="case_a1b2c3d4e5f6",
             title="INV-04 inquiry case",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_test",
             organization_id="org_test",
             description="Stuck in inquiry",
@@ -312,29 +312,29 @@ class TestINV04_NoDirectInquiryToResolved:
             ),
             inquiry=InquiryData(thread_id="thread_test"),
         )
-        assert case.status == CaseStatus.INQUIRY
+        assert case.state == CaseState.INQUIRY
 
         with pytest.raises(ValueError, match="Cannot resolve case"):
             _execute_resolved_transition(case, user_id="user_test")
 
         # Status untouched after the exception
-        assert case.status == CaseStatus.INQUIRY
+        assert case.state == CaseState.INQUIRY
         assert case.resolved_at is None
 
     def test_inv04_ui_affordance_omits_resolved_from_inquiry(self):
         """The UI's ``ALLOWED_ACTIONS`` dict — used by ``get_allowed_transitions``
-        to populate the status-dropdown — does not offer RESOLVED as a
+        to populate the state-dropdown — does not offer RESOLVED as a
         target when the case is in INQUIRY.
 
         This is the affordance-surface check (not enforcement). A user
         looking at the dropdown sees only [INVESTIGATING, CLOSED]; the
         forbidden edge is invisible.
         """
-        inquiry_targets = ALLOWED_ACTIONS[CaseStatus.INQUIRY]
-        assert CaseStatus.RESOLVED not in inquiry_targets
+        inquiry_targets = ALLOWED_ACTIONS[CaseState.INQUIRY]
+        assert CaseState.RESOLVED not in inquiry_targets
         # The two legitimate targets are present:
-        assert CaseStatus.INVESTIGATING in inquiry_targets
-        assert CaseStatus.CLOSED in inquiry_targets
+        assert CaseState.INVESTIGATING in inquiry_targets
+        assert CaseState.CLOSED in inquiry_targets
 
     def test_inv04_valid_action_graphs_agree_across_definitions(self):
         """The valid-action graph appears in two places: ``ALLOWED_ACTIONS``
@@ -349,22 +349,22 @@ class TestINV04_NoDirectInquiryToResolved:
         Drift to address separately: consolidate to a single source of
         truth. Until then, this test is the consistency guard.
         """
-        for from_status in [
-            CaseStatus.INQUIRY,
-            CaseStatus.INVESTIGATING,
-            CaseStatus.RESOLVED,
-            CaseStatus.CLOSED,
+        for from_state in [
+            CaseState.INQUIRY,
+            CaseState.INVESTIGATING,
+            CaseState.RESOLVED,
+            CaseState.CLOSED,
         ]:
-            for to_status in [
-                CaseStatus.INQUIRY,
-                CaseStatus.INVESTIGATING,
-                CaseStatus.RESOLVED,
-                CaseStatus.CLOSED,
+            for to_state in [
+                CaseState.INQUIRY,
+                CaseState.INVESTIGATING,
+                CaseState.RESOLVED,
+                CaseState.CLOSED,
             ]:
-                dict_allows = to_status in ALLOWED_ACTIONS.get(from_status, [])
-                func_allows = is_valid_action(from_status, to_status)
+                dict_allows = to_state in ALLOWED_ACTIONS.get(from_state, [])
+                func_allows = is_valid_action(from_state, to_state)
                 assert dict_allows == func_allows, (
-                    f"Disagreement on {from_status.value} → {to_status.value}: "
+                    f"Disagreement on {from_state.value} → {to_state.value}: "
                     f"ALLOWED_ACTIONS says {dict_allows}, "
                     f"is_valid_action says {func_allows}. "
                     f"These must agree — see INV-04 drift note."
@@ -429,8 +429,8 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
         # Critically: no handshake artifacts
         assert case.pending_transition is None
         # And disposition is unchanged — stage transition does NOT touch
-        # case.status
-        assert case.status == CaseStatus.INVESTIGATING
+        # case.state
+        assert case.state == CaseState.INVESTIGATING
 
     def test_inv05_solution_accepted_advances_stage_immediately(self):
         """Setting ``solution_accepted=True`` advances ``current_stage``
@@ -444,7 +444,7 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
 
         assert case.current_stage == InvestigationStage.TREATMENT
         assert case.pending_transition is None
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
 
     def test_inv05_stage_property_does_not_write_pending_transition(self):
         """Static guard: ``InvestigationProgress.current_stage`` is a pure
@@ -534,16 +534,16 @@ class TestINV06_KBResolutionUsesPendingTransition:
 
         propose_transition(
             case,
-            to_status="resolved",
+            to_state="resolved",
             summary="Resolved via runbook rb_abc123",
             evidence_ids=[],
         )
 
         # Standard pending_transition write — identical to INV-03
         assert case.pending_transition is not None
-        assert case.pending_transition["to_status"] == "resolved"
+        assert case.pending_transition["to_state"] == "resolved"
         # Status UNCHANGED — no auto-resolve from knowledge_resolution
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
         assert case.resolved_at is None
         # knowledge_resolution is preserved on the case (audit trail)
         assert case.inquiry.knowledge_resolution is not None
@@ -583,8 +583,8 @@ class TestINV06_KBResolutionUsesPendingTransition:
             "confirm_pending_transition",
             "_execute_resolved_transition",
             "_execute_closed_transition",
-            "case.status = CaseStatus.RESOLVED",
-            "case.atomic_update(\n            status=CaseStatus.RESOLVED",
+            "case.state = CaseState.RESOLVED",
+            "case.atomic_update(\n            state=CaseState.RESOLVED",
         ]
         for forbidden in forbidden_calls:
             assert forbidden not in kr_region, (
@@ -619,12 +619,12 @@ class TestINV06_KBResolutionUsesPendingTransition:
         # transitions which holds the collapse logic.
         propose_transition(
             case,
-            to_status="resolved",
+            to_state="resolved",
             summary="Runbook rb_abc123 applied; user confirmed it worked",
             evidence_ids=[],
         )
         assert case.pending_transition is not None
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
 
         metadata = {
             "transition_proposed_this_turn": True,
@@ -634,7 +634,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
         result = await engine._check_automatic_transitions(case, metadata)
 
         # Same-turn collapse fired
-        assert result.status == CaseStatus.RESOLVED, (
+        assert result.state == CaseState.RESOLVED, (
             "KB-Resolution same-turn collapse did not fire even though both "
             "metadata flags were set. INV-06 design intent: the user's "
             "knowledge_resolution-triggering message covers the disposition "
@@ -662,7 +662,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
         case = _make_investigating_case()
         propose_transition(
             case,
-            to_status="resolved",
+            to_state="resolved",
             summary="Standard resolution proposal",
             evidence_ids=[],
         )
@@ -675,7 +675,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
         result = await engine._check_automatic_transitions(case, metadata)
 
         # Status UNCHANGED — standard 2-turn handshake holds
-        assert result.status == CaseStatus.INVESTIGATING, (
+        assert result.state == CaseState.INVESTIGATING, (
             "Same-turn collapse fired on a non-KB path. The collapse "
             "must be gated on BOTH transition_proposed_this_turn AND "
             "knowledge_resolution_signalled — never on the first alone."
@@ -709,11 +709,11 @@ class TestINV06_KBResolutionUsesPendingTransition:
         # Step 1: engine proposes (LLM emitted knowledge_resolution + ProposedTransition)
         propose_transition(
             case,
-            to_status="resolved",
+            to_state="resolved",
             summary="Resolved via runbook",
             evidence_ids=[],
         )
-        assert case.status == CaseStatus.INVESTIGATING  # NOT yet resolved
+        assert case.state == CaseState.INVESTIGATING  # NOT yet resolved
         assert case.pending_transition is not None
 
         # Step 2: explicit confirm (next turn, or via intent-routed click)
@@ -721,7 +721,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
         result = confirm_pending_transition(case, user_id="user_test")
 
         assert result is True
-        assert case.status == CaseStatus.RESOLVED
+        assert case.state == CaseState.RESOLVED
         assert case.resolved_at is not None
 
 
@@ -732,7 +732,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
 # Source: §1.5 *Manual Case Action Requests* — Core Principle: "Manual case
 #   actions follow the same confirmation pattern as natural progression —
 #   all case actions require explicit user confirmation."
-# Statement: Manual case-action requests (status dropdown) flow through the
+# Statement: Manual case-action requests (state dropdown) flow through the
 #   same confirmation pattern as natural progression — they cannot bypass
 #   the User-Agent Handshake.
 # Enforcement: Structural — the UI sends a system message with
@@ -745,7 +745,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
 # Drift surfaced during verification (to fold into §1.3.1 drift notes):
 #
 #   a. Design §1.5.2 Step 2 describes a system-generated message
-#      format ("[User requested to change case status to X]") sent to
+#      format ("[User requested to change case state to X]") sent to
 #      ``/queries`` as plain text. The current implementation uses
 #      ``intent_type="status_transition"`` + structured ``intent_data``,
 #      added by the 2026-02-09 bug fix (milestone_engine.py:1714).
@@ -766,7 +766,7 @@ class TestINV14_DropdownUsesStandardHandshake:
     """INV-14: dropdown-initiated case actions never bypass the handshake.
 
     Each test verifies that after the dropdown intent is processed:
-      - case.status is UNCHANGED (no auto-execution).
+      - case.state is UNCHANGED (no auto-execution).
       - pending_transition is set (for CLOSED/RESOLVED) — handshake
         proposal landed.
       - resolved_at / closed_at remain None.
@@ -788,13 +788,13 @@ class TestINV14_DropdownUsesStandardHandshake:
     @pytest.mark.asyncio
     async def test_inv14_dropdown_inquiry_to_closed_proposes_does_not_execute(self):
         """Dropdown INQUIRY → CLOSED writes pending_transition and returns
-        confirmation suggestions. Case status stays INQUIRY this turn.
+        confirmation suggestions. Case state stays INQUIRY this turn.
         """
         engine, _ = self._engine_and_repo()
         case = Case(
             case_id="case_a1b2c3d4e5f6",
             title="INV-14 inquiry",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_test",
             organization_id="org_test",
             description="Inquiry case",
@@ -812,24 +812,24 @@ class TestINV14_DropdownUsesStandardHandshake:
             user_message="Close this case.",
             intent_type="status_transition",
             intent_data={
-                "from_status": "inquiry",
-                "to_status": "closed",
+                "from_state": "inquiry",
+                "to_state": "closed",
                 "user_confirmed": True,
             },
         )
 
         updated = result["case_updated"]
-        # Handshake: pending written, status untouched
+        # Handshake: pending written, state untouched
         assert updated.pending_transition is not None
-        assert updated.pending_transition["to_status"] == "closed"
-        assert updated.status == CaseStatus.INQUIRY
+        assert updated.pending_transition["to_state"] == "closed"
+        assert updated.state == CaseState.INQUIRY
         assert updated.closed_at is None
 
     @pytest.mark.asyncio
     async def test_inv14_dropdown_investigating_to_closed_proposes_does_not_execute(
         self,
     ):
-        """Dropdown INVESTIGATING → CLOSED writes pending_transition; status
+        """Dropdown INVESTIGATING → CLOSED writes pending_transition; state
         stays INVESTIGATING this turn.
         """
         engine, _ = self._engine_and_repo()
@@ -841,16 +841,16 @@ class TestINV14_DropdownUsesStandardHandshake:
             user_message="Close this case as unresolved.",
             intent_type="status_transition",
             intent_data={
-                "from_status": "investigating",
-                "to_status": "closed",
+                "from_state": "investigating",
+                "to_state": "closed",
                 "user_confirmed": True,
             },
         )
 
         updated = result["case_updated"]
         assert updated.pending_transition is not None
-        assert updated.pending_transition["to_status"] == "closed"
-        assert updated.status == CaseStatus.INVESTIGATING
+        assert updated.pending_transition["to_state"] == "closed"
+        assert updated.state == CaseState.INVESTIGATING
         assert updated.closed_at is None
 
     @pytest.mark.asyncio
@@ -875,8 +875,8 @@ class TestINV14_DropdownUsesStandardHandshake:
             user_message="Mark this resolved.",
             intent_type="status_transition",
             intent_data={
-                "from_status": "investigating",
-                "to_status": "resolved",
+                "from_state": "investigating",
+                "to_state": "resolved",
                 "user_confirmed": True,
             },
         )
@@ -885,7 +885,7 @@ class TestINV14_DropdownUsesStandardHandshake:
         # Either RESOLVED or CLOSED could be proposed depending on
         # readiness verdict. The invariant is: not auto-executed.
         assert updated.pending_transition is not None
-        assert updated.status == CaseStatus.INVESTIGATING
+        assert updated.state == CaseState.INVESTIGATING
         assert updated.resolved_at is None
         assert updated.closed_at is None
 
@@ -895,7 +895,7 @@ class TestINV14_DropdownUsesStandardHandshake:
         """Static check: the engine's ``elif to_status_str == "investigating"``
         branch does NOT contain calls to ``_execute_resolved_transition``,
         ``_execute_closed_transition``, ``confirm_pending_transition``,
-        or direct status mutations. The branch falls through to the LLM
+        or direct state mutations. The branch falls through to the LLM
         pipeline so the standard handshake handles confirmation.
 
         Complement to the functional tests above: pins the structural
@@ -925,7 +925,7 @@ class TestINV14_DropdownUsesStandardHandshake:
             "_execute_resolved_transition",
             "_execute_closed_transition",
             "confirm_pending_transition(case, case.user_id)",
-            "case.status = CaseStatus.INVESTIGATING\n",
+            "case.state = CaseState.INVESTIGATING\n",
         ]
         for forbidden in forbidden_calls:
             assert forbidden not in branch_region, (
@@ -1095,16 +1095,16 @@ class TestINV09_TerminalCasesImmutable:
         case = _make_investigating_case()
 
         # Non-terminal states
-        object.__setattr__(case, "status", CaseStatus.INQUIRY)
+        object.__setattr__(case, "state", CaseState.INQUIRY)
         assert case.is_terminal is False
-        object.__setattr__(case, "status", CaseStatus.INVESTIGATING)
+        object.__setattr__(case, "state", CaseState.INVESTIGATING)
         assert case.is_terminal is False
 
         # Terminal states (bypass cross-field validators to isolate
         # the is_terminal property)
-        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+        object.__setattr__(case, "state", CaseState.RESOLVED)
         assert case.is_terminal is True
-        object.__setattr__(case, "status", CaseStatus.CLOSED)
+        object.__setattr__(case, "state", CaseState.CLOSED)
         assert case.is_terminal is True
 
     def test_inv09_require_case_not_terminal_raises_409_on_resolved(self):
@@ -1117,7 +1117,7 @@ class TestINV09_TerminalCasesImmutable:
         from faultmaven.modules.case.api.routes import require_case_not_terminal
 
         case = _make_investigating_case()
-        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+        object.__setattr__(case, "state", CaseState.RESOLVED)
 
         with pytest.raises(HTTPException) as exc_info:
             require_case_not_terminal(case)
@@ -1132,7 +1132,7 @@ class TestINV09_TerminalCasesImmutable:
         from faultmaven.modules.case.api.routes import require_case_not_terminal
 
         case = _make_investigating_case()
-        object.__setattr__(case, "status", CaseStatus.CLOSED)
+        object.__setattr__(case, "state", CaseState.CLOSED)
 
         with pytest.raises(HTTPException) as exc_info:
             require_case_not_terminal(case)
@@ -1148,11 +1148,11 @@ class TestINV09_TerminalCasesImmutable:
         case = _make_investigating_case()
 
         # INQUIRY: no-op
-        case.status = CaseStatus.INQUIRY
+        case.state = CaseState.INQUIRY
         require_case_not_terminal(case)  # must not raise
 
         # INVESTIGATING: no-op
-        case.status = CaseStatus.INVESTIGATING
+        case.state = CaseState.INVESTIGATING
         require_case_not_terminal(case)  # must not raise
 
     def test_inv09_milestone_engine_short_circuits_on_terminal_case(self):
@@ -1189,7 +1189,7 @@ class TestINV09_TerminalCasesImmutable:
 # Statement: ``submit_turn`` on a terminal case:
 #   - text query → routed to terminal Q&A
 #   - files / pasted content → 409 Conflict
-#   - status-transition intent → 409 Conflict
+#   - state-transition intent → 409 Conflict
 # Enforcement: API-level — submit_turn endpoint inspects payload kind.
 #
 # No drift surfaced; the matrix description matches the inline guard at
@@ -1216,14 +1216,14 @@ class TestINV10_SubmitTurnRejectionRules:
             "(files or pasted_content) on terminal cases. See §1.7 "
             "Terminal Mode rejection rules."
         )
-        # Must use the 409 Conflict status code
+        # Must use the 409 Conflict state code
         assert "HTTP_409_CONFLICT" in source, (
             "INV-10 violation: submit_turn no longer uses 409 Conflict "
             "for terminal-state rejections."
         )
 
     def test_inv10_submit_turn_rejects_status_transition_on_terminal_case(self):
-        """Static check: status-transition intents are rejected on
+        """Static check: state-transition intents are rejected on
         terminal cases."""
         from faultmaven.modules.case.api import routes
 
@@ -1231,7 +1231,7 @@ class TestINV10_SubmitTurnRejectionRules:
 
         # Must have the intent_type == "status_transition" rejection inside
         # the is_terminal block. We confirm the literal is present at all
-        # and the 409 status is in the surrounding lines.
+        # and the 409 state is in the surrounding lines.
         assert 'intent_type == "status_transition"' in source, (
             "INV-10 violation: submit_turn no longer rejects "
             'intent_type == "status_transition" on terminal cases.'
@@ -1307,7 +1307,7 @@ class TestINV12_FreeTextRoutesToQA:
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
-        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+        object.__setattr__(case, "state", CaseState.RESOLVED)
 
         # Mock the three dispatch handlers
         engine._handle_report_regeneration = AsyncMock(
@@ -1341,7 +1341,7 @@ class TestINV12_FreeTextRoutesToQA:
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
-        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+        object.__setattr__(case, "state", CaseState.RESOLVED)
 
         engine._handle_report_regeneration = AsyncMock()
         engine._handle_runbook_creation = AsyncMock()
@@ -1380,7 +1380,7 @@ class TestINV12_FreeTextRoutesToQA:
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
-        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+        object.__setattr__(case, "state", CaseState.RESOLVED)
 
         engine._handle_runbook_creation = AsyncMock()
         engine._process_terminal_qa = AsyncMock(
@@ -1513,7 +1513,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         from faultmaven.core.investigation.milestone_engine import _closed_suggestions
 
         case = _make_investigating_case()
-        object.__setattr__(case, "status", CaseStatus.CLOSED)
+        object.__setattr__(case, "state", CaseState.CLOSED)
 
         # No evidence / hypotheses / milestones → gate FAIL → no suggestions
         assert _closed_suggestions(case, remaining=5) == [], (
@@ -1849,7 +1849,7 @@ class TestINV17_HypothesisBeforeCausalEvidence:
 #   both the chat-side dispatcher AND the API endpoint.
 # Enforcement: **Code-guarded at two layers**:
 #   1. Engine: _process_terminal_turn computes
-#      is_runbook_eligible = case.status == CaseStatus.RESOLVED and
+#      is_runbook_eligible = case.state == CaseState.RESOLVED and
 #      refuses to dispatch the runbook-creation handler otherwise.
 #   2. API: POST /knowledge/convert-from-case returns HTTP 400 when
 #      case_status != "resolved".
@@ -1875,7 +1875,7 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
-        object.__setattr__(case, "status", CaseStatus.CLOSED)
+        object.__setattr__(case, "state", CaseState.CLOSED)
 
         engine._handle_runbook_creation = AsyncMock()
         engine._process_terminal_qa = AsyncMock(
@@ -1910,7 +1910,7 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
-        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+        object.__setattr__(case, "state", CaseState.RESOLVED)
 
         engine._handle_runbook_creation = AsyncMock(
             return_value={
@@ -1929,7 +1929,7 @@ class TestINV18_RunbookEligibilityResolvedOnly:
 
     def test_inv18_api_runbook_endpoint_rejects_non_resolved(self):
         """API layer: ``POST /knowledge/convert-from-case`` must reject
-        cases whose status is not RESOLVED with HTTP 400.
+        cases whose state is not RESOLVED with HTTP 400.
 
         Static check on the route source. Confirms the gate exists at
         the API surface independently of the engine-layer dispatcher.
@@ -1951,14 +1951,14 @@ class TestINV18_RunbookEligibilityResolvedOnly:
         # Window the function body — generous to survive minor edits.
         endpoint_region = source[endpoint_idx : endpoint_idx + 4000]
 
-        # The status gate
+        # The state gate
         assert (
             '"resolved"' in endpoint_region.lower() or "resolved" in endpoint_region
         ), (
             "INV-18 violation: /convert-from-case no longer references "
             "RESOLVED in its eligibility check."
         )
-        # And it must raise on non-RESOLVED (the 400 status code)
+        # And it must raise on non-RESOLVED (the 400 state code)
         assert (
             "400" in endpoint_region and "Case must be in RESOLVED" in endpoint_region
         ), (
@@ -2003,9 +2003,9 @@ class TestINV19_InquiryTemplateOffersNoPathChoice:
 
 # ============================================================================
 # INV-22: proposed_transition emissions are validated against the action
-# graph (ALLOWED_ACTIONS). The LLM cannot emit a to_status that isn't a
-# valid edge from case.status — protects against LLM hallucination of
-# invalid transitions (e.g., to_status="resolved" from INQUIRY, which is
+# graph (ALLOWED_ACTIONS). The LLM cannot emit a to_state that isn't a
+# valid edge from case.state — protects against LLM hallucination of
+# invalid transitions (e.g., to_state="resolved" from INQUIRY, which is
 # not a valid edge — INQUIRY can only go to INVESTIGATING or CLOSED).
 #
 # The prompt (INQUIRY_TEMPLATE) tells the LLM which edges exist and
@@ -2018,12 +2018,12 @@ class TestINV19_InquiryTemplateOffersNoPathChoice:
 @pytest.mark.unit
 class TestINV22_ProposedTransitionAgainstActionGraph:
     """INV-22: every ``proposed_transition`` emission is checked against
-    ``ALLOWED_ACTIONS[case.status]`` before downstream processing. Invalid
+    ``ALLOWED_ACTIONS[case.state]`` before downstream processing. Invalid
     edges are rejected with ``system_feedback``; downstream pivot logic
     (e.g., SUGGEST_CLOSE) never sees an invalid emission.
 
     Motivating failure mode: LLM in INQUIRY emits
-    ``proposed_transition.to_status="resolved"`` after misreading user
+    ``proposed_transition.to_state="resolved"`` after misreading user
     enthusiasm as a resolution claim. Without this guard the engine's
     SUGGEST_CLOSE pivot converts the bad emission into a CLOSED proposal
     and the next user message closes the case with no investigation —
@@ -2031,15 +2031,15 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
     """
 
     @staticmethod
-    def _response_obj_with_proposed(to_status: str):
+    def _response_obj_with_proposed(to_state: str):
         """Lightweight stand-in for an LLM response with a
         ``state_updates.proposed_transition``. The engine only reads
-        ``response_obj.state_updates.proposed_transition.to_status``."""
+        ``response_obj.state_updates.proposed_transition.to_state``."""
         from types import SimpleNamespace
 
         return SimpleNamespace(
             state_updates=SimpleNamespace(
-                proposed_transition=SimpleNamespace(to_status=to_status)
+                proposed_transition=SimpleNamespace(to_state=to_state)
             )
         )
 
@@ -2049,7 +2049,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         case = Case(
             case_id="case_aaaaaa220001",
             title="INV-22 inquiry test",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_test",
             organization_id="org_test",
             description="Test inquiry description",
@@ -2077,7 +2077,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
     @pytest.mark.asyncio
     async def test_engine_rejects_resolved_proposed_transition_from_inquiry(self):
         """The motivating failure mode: LLM in INQUIRY emits
-        ``proposed_transition.to_status="resolved"``. The engine
+        ``proposed_transition.to_state="resolved"``. The engine
         rejects it, no pending transition is set, no pivot to CLOSED
         happens. The case stays in INQUIRY."""
         repo = MagicMock()
@@ -2094,10 +2094,10 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         assert result.pending_transition is None, (
             "INV-22 violation: invalid proposed_transition from INQUIRY "
             "produced a pending_transition. The engine must reject "
-            "to_status='resolved' from INQUIRY (not a valid edge) "
+            "to_state='resolved' from INQUIRY (not a valid edge) "
             "instead of pivoting to CLOSED via SUGGEST_CLOSE."
         )
-        assert result.status == CaseStatus.INQUIRY
+        assert result.state == CaseState.INQUIRY
 
         feedback = metadata.get("system_feedback") or ""
         assert "INVALID TRANSITION ERROR" in feedback
@@ -2125,7 +2125,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
 
     @pytest.mark.asyncio
     async def test_engine_accepts_valid_closed_from_inquiry(self):
-        """Negative pin: ``to_status="closed"`` from INQUIRY IS a valid
+        """Negative pin: ``to_state="closed"`` from INQUIRY IS a valid
         edge (the only valid proposed_transition from INQUIRY). The
         guard must not over-reach and block legitimate emissions."""
         repo = MagicMock()
@@ -2139,19 +2139,19 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
 
         # Valid edge → pending transition WAS set.
         assert result.pending_transition is not None, (
-            "INV-22 over-reach: valid to_status='closed' from INQUIRY "
+            "INV-22 over-reach: valid to_state='closed' from INQUIRY "
             "was rejected. The guard should only reject invalid edges."
         )
-        assert result.pending_transition["to_status"] == "closed"
+        assert result.pending_transition["to_state"] == "closed"
         # No rejection feedback for a valid emission.
         assert "INVALID TRANSITION ERROR" not in (metadata.get("system_feedback") or "")
 
     @pytest.mark.asyncio
     async def test_engine_accepts_valid_resolved_from_investigating(self):
-        """Negative pin: ``to_status="resolved"`` from INVESTIGATING IS
-        a valid edge. The guard is status-specific; the same to_status
+        """Negative pin: ``to_state="resolved"`` from INVESTIGATING IS
+        a valid edge. The guard is state-specific; the same to_state
         that's invalid from INQUIRY is valid from INVESTIGATING. Pins
-        that the guard reads ``ALLOWED_ACTIONS[case.status]``, not a
+        that the guard reads ``ALLOWED_ACTIONS[case.state]``, not a
         hard-coded blocklist."""
         repo = MagicMock()
         repo.save = AsyncMock(side_effect=lambda c: c)
@@ -2164,12 +2164,12 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
 
         # No INVALID TRANSITION ERROR — the validation passed; whatever
         # happens downstream (SUGGEST_CLOSE pivot, NEEDS_INFO, or READY
-        # → propose) is the existing per-status processing, not this
+        # → propose) is the existing per-state processing, not this
         # invariant's concern.
         feedback = metadata.get("system_feedback") or ""
         assert "INVALID TRANSITION ERROR" not in feedback, (
-            "INV-22 over-reach: valid to_status='resolved' from "
+            "INV-22 over-reach: valid to_state='resolved' from "
             "INVESTIGATING was flagged as invalid. The guard must "
-            "consult ALLOWED_ACTIONS per current case.status, not "
+            "consult ALLOWED_ACTIONS per current case.state, not "
             "reject 'resolved' universally."
         )

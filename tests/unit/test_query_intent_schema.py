@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from faultmaven.models.api_models import IntentType, QueryIntent
-from faultmaven.modules.case.contracts import CaseStatus, InvestigationPath
+from faultmaven.modules.case.contracts import CaseState, InvestigationPath
 
 
 class TestIntentTypeEnum:
@@ -97,9 +97,9 @@ class TestExistingIntentValidators:
     def test_status_transition_constructs_with_to_status(self):
         intent = QueryIntent(
             type=IntentType.STATUS_TRANSITION,
-            to_status=CaseStatus.RESOLVED,
+            to_state=CaseState.RESOLVED,
         )
-        assert intent.to_status == CaseStatus.RESOLVED
+        assert intent.to_state == CaseState.RESOLVED
 
     def test_confirmation_still_requires_confirmation_value(self):
         with pytest.raises(ValidationError):

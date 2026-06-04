@@ -63,14 +63,14 @@ Base = declarative_base()
 # ============================================================
 
 
-class CaseStatus(str, enum.Enum):
+class CaseState(str, enum.Enum):
     INQUIRY = "inquiry"
     INVESTIGATING = "investigating"
     RESOLVED = "resolved"
     CLOSED = "closed"
 
 
-class HypothesisStatus(str, enum.Enum):
+class HypothesisState(str, enum.Enum):
     CAPTURED = "captured"
     ACTIVE = "active"
     VALIDATED = "validated"
@@ -79,7 +79,7 @@ class HypothesisStatus(str, enum.Enum):
     RETIRED = "retired"
 
 
-class SolutionStatus(str, enum.Enum):
+class SolutionState(str, enum.Enum):
     PROPOSED = "proposed"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
@@ -148,7 +148,7 @@ class ToolCallStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-class InvestigationSessionStatus(str, enum.Enum):
+class InvestigationSessionState(str, enum.Enum):
     ACTIVE = "active"
     PAUSED = "paused"
     COMPLETED = "completed"
@@ -630,7 +630,7 @@ class CaseModel(Base):
 
     title = Column(String(200), nullable=False)
     description = Column(Text, nullable=False, server_default="")
-    status = Column(String(50), nullable=False, server_default="inquiry", index=True)
+    state = Column(String(50), nullable=False, server_default="inquiry", index=True)
 
     # Investigation state (first-class columns; drive milestone engine logic)
     investigation_strategy = Column(Text, nullable=True)
@@ -703,8 +703,8 @@ class CaseModel(Base):
     __table_args__ = (
         CheckConstraint("LENGTH(TRIM(title)) > 0", name="cases_title_not_empty"),
         CheckConstraint(
-            "status IN ('inquiry', 'investigating', 'resolved', 'closed')",
-            name="cases_status_check",
+            "state IN ('inquiry', 'investigating', 'resolved', 'closed')",
+            name="cases_state_check",
         ),
         # Description = problem statement. INVESTIGATING and RESOLVED both
         # require the problem to be articulated:
@@ -717,7 +717,7 @@ class CaseModel(Base):
         # the case went through INVESTIGATING first, description is non-empty
         # via that gate's enforcement.
         CheckConstraint(
-            "status IN ('inquiry', 'closed') OR LENGTH(TRIM(description)) > 0",
+            "state IN ('inquiry', 'closed') OR LENGTH(TRIM(description)) > 0",
             name="cases_description_required_for_investigation",
         ),
         CheckConstraint("current_turn >= 0", name="cases_current_turn_nonnegative"),
@@ -977,7 +977,7 @@ class EvidenceNeedModel(Base):
     rationale = Column(String(500), nullable=False)
 
     priority = Column(String(10), nullable=False, server_default="medium")
-    status = Column(String(20), nullable=False, server_default="pending", index=True)
+    state = Column(String(20), nullable=False, server_default="pending", index=True)
 
     # JSON list of hypothesis IDs that motivate this need. Empty list
     # means the need is motivated by the problem statement (symptom
@@ -985,7 +985,7 @@ class EvidenceNeedModel(Base):
     # mutated as a unit by the engine on hypothesis-retirement events.
     motivating_hypothesis_ids = Column(JsonBlob, nullable=False, server_default="[]")
 
-    # Required iff status='superseded'; NULL otherwise. Mirrors the
+    # Required iff state='superseded'; NULL otherwise. Mirrors the
     # Pydantic model_validator on EvidenceNeed.
     superseded_reason = Column(String(500), nullable=True)
 
@@ -1017,14 +1017,14 @@ class EvidenceNeedModel(Base):
             name="evidence_needs_priority_check",
         ),
         CheckConstraint(
-            "status IN ('pending', 'partially_met', 'fulfilled', 'superseded')",
-            name="evidence_needs_status_check",
+            "state IN ('pending', 'partially_met', 'fulfilled', 'superseded')",
+            name="evidence_needs_state_check",
         ),
-        # superseded_reason required iff status='superseded'. Two-way:
+        # superseded_reason required iff state='superseded'. Two-way:
         # SUPERSEDED requires a reason, non-SUPERSEDED forbids it.
         CheckConstraint(
-            "(status = 'superseded' AND superseded_reason IS NOT NULL)"
-            " OR (status != 'superseded' AND superseded_reason IS NULL)",
+            "(state = 'superseded' AND superseded_reason IS NOT NULL)"
+            " OR (state != 'superseded' AND superseded_reason IS NULL)",
             name="evidence_needs_superseded_reason_invariant",
         ),
         CheckConstraint(
@@ -1039,7 +1039,7 @@ class EvidenceNeedModel(Base):
             "created_at_turn >= 0",
             name="evidence_needs_created_at_turn_nonnegative",
         ),
-        Index("ix_evidence_needs_case_status", "case_id", "status"),
+        Index("ix_evidence_needs_case_state", "case_id", "state"),
         Index("ix_evidence_needs_case_purpose", "case_id", "purpose"),
     )
 
@@ -1145,7 +1145,7 @@ class HypothesisModel(Base):
     )
 
     statement = Column(Text, nullable=False)
-    status = Column(String(20), nullable=False, server_default="captured", index=True)
+    state = Column(String(20), nullable=False, server_default="captured", index=True)
     likelihood = Column(Numeric(3, 2), nullable=True, server_default="0.5")
     initial_likelihood = Column(Numeric(3, 2), nullable=True, server_default="0.5")
     category = Column(String(50), nullable=False, index=True)
@@ -1194,8 +1194,8 @@ class HypothesisModel(Base):
             "LENGTH(TRIM(statement)) > 0", name="hypotheses_statement_not_empty"
         ),
         CheckConstraint(
-            "status IN ('captured', 'active', 'validated', 'refuted', 'inconclusive', 'retired')",
-            name="hypotheses_status_check",
+            "state IN ('captured', 'active', 'validated', 'refuted', 'inconclusive', 'retired')",
+            name="hypotheses_state_check",
         ),
         CheckConstraint(
             "likelihood IS NULL OR (likelihood >= 0 AND likelihood <= 1)",
@@ -1282,7 +1282,7 @@ class SolutionModel(Base):
     title = Column(String(500), nullable=False)
     description = Column(Text, nullable=False)
     solution_type = Column(String(30), nullable=False, server_default="other")
-    status = Column(String(20), nullable=False, server_default="proposed", index=True)
+    state = Column(String(20), nullable=False, server_default="proposed", index=True)
     risk_level = Column(String(20), nullable=True)
     estimated_effort = Column(String(50), nullable=True)
     immediate_action = Column(Text, nullable=True)
@@ -1332,8 +1332,8 @@ class SolutionModel(Base):
             "LENGTH(TRIM(description)) > 0", name="solutions_description_not_empty"
         ),
         CheckConstraint(
-            "status IN ('proposed', 'accepted', 'rejected', 'implemented', 'verified')",
-            name="solutions_status_check",
+            "state IN ('proposed', 'accepted', 'rejected', 'implemented', 'verified')",
+            name="solutions_state_check",
         ),
         CheckConstraint(
             "risk_level IS NULL OR risk_level IN ('low', 'medium', 'high', 'critical')",
@@ -1406,8 +1406,8 @@ class CaseActionModel(Base):
         nullable=False,
         index=True,
     )
-    from_status = Column(String(50), nullable=True)
-    to_status = Column(String(50), nullable=False)
+    from_state = Column(String(50), nullable=True)
+    to_state = Column(String(50), nullable=False)
     reason = Column(Text, nullable=True)
     # Free-form actor identifier: user UUID or sentinel like "system",
     # "agent", "scheduler". Not a FK because the value space is heterogeneous;
@@ -1522,7 +1522,7 @@ class InvestigationSessionModel(Base):
         index=True,
     )
 
-    status = Column(String(32), nullable=False, server_default="active", index=True)
+    state = Column(String(32), nullable=False, server_default="active", index=True)
     started_at = Column(DateTime(timezone=True), nullable=False)
     ended_at = Column(DateTime(timezone=True), nullable=True)
     last_activity_at = Column(DateTime(timezone=True), nullable=False)
@@ -1551,8 +1551,8 @@ class InvestigationSessionModel(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('active', 'paused', 'completed', 'abandoned')",
-            name="investigation_sessions_status_check",
+            "state IN ('active', 'paused', 'completed', 'abandoned')",
+            name="investigation_sessions_state_check",
         ),
         CheckConstraint(
             "total_duration_ms IS NULL OR total_duration_ms >= 0",

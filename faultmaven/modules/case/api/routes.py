@@ -116,7 +116,7 @@ from faultmaven.models.interfaces_case import ICaseService
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
 from faultmaven.modules.case.domain.models import Case as CaseEntity
-from faultmaven.modules.case.domain.models import CaseStatus
+from faultmaven.modules.case.domain.models import CaseState
 from faultmaven.modules.case.domain.services.case_converter import CaseConverter
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
@@ -717,7 +717,7 @@ async def list_cases(
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-    status: Optional[CaseStatus] = Query(None, description="Filter by status"),
+    state: Optional[CaseState] = Query(None, description="Filter by state"),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     # Changed default to True - new cases should be visible immediately
@@ -753,7 +753,7 @@ async def list_cases(
         # Build filter with restored filtering parameters
         filters = CaseListFilter(
             user_id=current_user.user_id,
-            status=status,
+            state=state,
             limit=limit,
             offset=offset,
             include_empty=include_empty,
@@ -946,9 +946,9 @@ async def get_case_ui(
         # drafts. The adapter is pure (no service deps); the case-ui route
         # owns the cross-module composition. The Artifacts strip in the
         # case header reads `reports_available` to render runbook badges.
-        from faultmaven.modules.case.contracts import CaseStatus as _CS
+        from faultmaven.modules.case.contracts import CaseState as _CS
 
-        if case.status in (_CS.RESOLVED, _CS.CLOSED):
+        if case.state in (_CS.RESOLVED, _CS.CLOSED):
             conversion_service = getattr(request.app.state, "conversion_service", None)
             if conversion_service is not None:
                 try:
@@ -1023,8 +1023,8 @@ async def update_case(
             updates["title"] = request.title
         if request.description is not None:
             updates["description"] = request.description
-        if request.status is not None:
-            updates["status"] = request.status.value  # Convert enum to string value
+        if request.state is not None:
+            updates["state"] = request.state.value  # Convert enum to string value
         # Note: priority and tags removed - not in milestone-based model
 
         if not updates:
@@ -2707,14 +2707,14 @@ async def get_report_recommendations(
 
         # Validate case is in resolved state (terminal state with solution)
         # Note: Only RESOLVED is valid - CLOSED is terminal without solution
-        if case.status != CaseStatus.RESOLVED:
+        if case.state != CaseState.RESOLVED:
             raise HTTPException(
                 status_code=400,
                 detail={
                     "error": "invalid_case_state",
-                    "message": f"Cannot get report recommendations for case in {case.status.value} state. Case must be RESOLVED.",
-                    "current_state": case.status.value,
-                    "required_state": CaseStatus.RESOLVED.value,
+                    "message": f"Cannot get report recommendations for case in {case.state.value} state. Case must be RESOLVED.",
+                    "current_state": case.state.value,
+                    "required_state": CaseState.RESOLVED.value,
                 },
             )
 
@@ -3048,14 +3048,14 @@ async def close_case(
 
         # Validate state
         allowed_states = [
-            CaseStatus.RESOLVED,
-            CaseStatus.SOLVED,
-            CaseStatus.DOCUMENTING,
+            CaseState.RESOLVED,
+            CaseState.SOLVED,
+            CaseState.DOCUMENTING,
         ]
-        if case.status not in allowed_states:
+        if case.state not in allowed_states:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot close case in {case.status.value} state",
+                detail=f"Cannot close case in {case.state.value} state",
             )
 
         # Get current reports for closure (TD-001: via CaseRepository)
@@ -3106,9 +3106,9 @@ async def close_case(
 
         # Close case
         closed_at = datetime.now(timezone.utc)
-        case.status = CaseStatus.CLOSED
+        case.state = CaseState.CLOSED
         await case_service.update_case_status(
-            case_id, CaseStatus.CLOSED, current_user.user_id
+            case_id, CaseState.CLOSED, current_user.user_id
         )
 
         logger.info(

@@ -38,7 +38,7 @@ from faultmaven.exceptions import (
     ServiceError,
     ValidationException,
 )
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 from faultmaven.modules.agent.domain.events.execution_events import (
     AgentContext,
     ExecutionEvent,
@@ -615,12 +615,12 @@ class AgentOrchestrationService:
         if not session:
             raise NotFoundError("Session", session_id)
 
-        if session.status != SessionStatus.ACTIVE:
+        if session.state != SessionState.ACTIVE:
             raise ConflictError(
-                f"Session {session_id} is not active (status: {session.status.value})",
+                f"Session {session_id} is not active (status: {session.state.value})",
                 resource_type="Session",
                 resource_id=session_id,
-                conflict_reason=f"session_{session.status.value}",
+                conflict_reason=f"session_{session.state.value}",
             )
 
         return session
@@ -919,7 +919,7 @@ class AgentOrchestrationService:
 
         # Status and progress
         status_str = (
-            case.status.value if hasattr(case.status, "value") else str(case.status)
+            case.state.value if hasattr(case.state, "value") else str(case.state)
         )
         summary_parts.append(f"Status: {status_str}")
 
@@ -936,7 +936,7 @@ class AgentOrchestrationService:
             active_hypotheses = [
                 h
                 for h in case.hypotheses.values()
-                if hasattr(h, "status") and h.status != "retired"
+                if hasattr(h, "state") and h.state != "retired"
             ]
             if active_hypotheses:
                 summary_parts.append(f"Hypotheses: {len(active_hypotheses)} active")

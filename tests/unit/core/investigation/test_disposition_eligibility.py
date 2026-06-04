@@ -4,7 +4,7 @@ gates Resolve / Close UI affordances on actual case content.
 Covers four concerns:
 
 1. **Pure-function derivation** (``derive_disposition_eligibility``):
-   maps case state → per-disposition eligibility verdict, status-aware.
+   maps case state → per-disposition eligibility verdict, state-aware.
 
 2. **Repository chokepoint (P3)**: ``CaseRepository.save()`` refreshes
    the persisted column from the helper at every save — no per-mutation
@@ -33,7 +33,7 @@ from faultmaven.core.investigation.terminal_transitions import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     EvidenceCategory,
     EvidenceSourceType,
     InquiryData,
@@ -60,7 +60,7 @@ def _make_inquiry_case() -> Case:
     return Case(
         case_id="case_de1100000001",
         title="Eligibility test",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         user_id="user_test",
         organization_id="org_test",
         description="",
@@ -72,7 +72,7 @@ def _make_investigating_case() -> Case:
     case = Case(
         case_id="case_de1100000002",
         title="Eligibility test (investigating)",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         user_id="user_test",
         organization_id="org_test",
         description="Test problem",
@@ -186,10 +186,10 @@ class TestDeriveDispositionEligibility:
         case = _make_investigating_case()
         _attach_root_cause(case)
         _attach_solution(case)
-        # Bypass Pydantic's status-transition validators by direct attribute write.
+        # Bypass Pydantic's state-transition validators by direct attribute write.
         # (Validators require resolved_at + closed_at + closure_reason for RESOLVED;
-        # we're only testing the derive helper's status branch here.)
-        object.__setattr__(case, "status", CaseStatus.RESOLVED)
+        # we're only testing the derive helper's state branch here.)
+        object.__setattr__(case, "state", CaseState.RESOLVED)
         result = derive_disposition_eligibility(case)
         assert result == {
             "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
@@ -199,7 +199,7 @@ class TestDeriveDispositionEligibility:
     def test_terminal_closed_is_not_eligible_for_anything(self):
         """CLOSED case is terminal — no further dispositions."""
         case = _make_inquiry_case()
-        object.__setattr__(case, "status", CaseStatus.CLOSED)
+        object.__setattr__(case, "state", CaseState.CLOSED)
         result = derive_disposition_eligibility(case)
         assert result == {
             "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
@@ -363,7 +363,7 @@ class TestLifecycleIntegration:
         case.inquiry.decided_to_investigate = True
         case.inquiry.proposed_problem_statement = "Problem"
         case.description = "Problem"
-        case.status = CaseStatus.INVESTIGATING
+        case.state = CaseState.INVESTIGATING
         case.progress = InvestigationProgress()
         case.problem_verification = ProblemVerification(
             symptom_statement="Symptom", severity="HIGH"

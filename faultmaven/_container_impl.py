@@ -1018,7 +1018,7 @@ class DIContainer(BaseDIContainer):
         import uuid
         from datetime import datetime
 
-        from faultmaven.modules.case.domain.models import Case, CaseStatus
+        from faultmaven.modules.case.domain.models import Case, CaseState
 
         class MinimalCaseService:
             def __init__(self):
@@ -1086,7 +1086,7 @@ class DIContainer(BaseDIContainer):
                     description=description or "",
                     user_id=final_user_id,
                     organization_id=final_org_id,
-                    status=CaseStatus.INQUIRY,
+                    status=CaseState.INQUIRY,
                     message_count=message_count,
                 )
 
@@ -1141,7 +1141,7 @@ class DIContainer(BaseDIContainer):
                         session_cases = [
                             case
                             for case in session_cases
-                            if case.status != CaseStatus.CLOSED
+                            if case.state != CaseState.CLOSED
                         ]
 
                     if not getattr(filters, "include_terminal", False):
@@ -1149,8 +1149,7 @@ class DIContainer(BaseDIContainer):
                         session_cases = [
                             case
                             for case in session_cases
-                            if case.status
-                            not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
+                            if case.state not in [CaseState.RESOLVED, CaseState.CLOSED]
                         ]
 
                     if not getattr(filters, "include_empty", False):
@@ -1166,7 +1165,7 @@ class DIContainer(BaseDIContainer):
                     session_cases = [
                         case
                         for case in session_cases
-                        if case.status in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
+                        if case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     session_cases = [
@@ -1193,7 +1192,7 @@ class DIContainer(BaseDIContainer):
                         session_cases = [
                             case
                             for case in session_cases
-                            if case.status != CaseStatus.CLOSED
+                            if case.state != CaseState.CLOSED
                         ]
 
                     if not getattr(filters, "include_terminal", False):
@@ -1201,8 +1200,7 @@ class DIContainer(BaseDIContainer):
                         session_cases = [
                             case
                             for case in session_cases
-                            if case.status
-                            not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
+                            if case.state not in [CaseState.RESOLVED, CaseState.CLOSED]
                         ]
 
                     if not getattr(filters, "include_empty", False):
@@ -1218,7 +1216,7 @@ class DIContainer(BaseDIContainer):
                     session_cases = [
                         case
                         for case in session_cases
-                        if case.status in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
+                        if case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     session_cases = [
@@ -1303,7 +1301,7 @@ class DIContainer(BaseDIContainer):
                         user_cases = [
                             case
                             for case in user_cases
-                            if case.status != CaseStatus.CLOSED
+                            if case.state != CaseState.CLOSED
                         ]
 
                     if not getattr(filters, "include_terminal", False):
@@ -1311,8 +1309,7 @@ class DIContainer(BaseDIContainer):
                         user_cases = [
                             case
                             for case in user_cases
-                            if case.status
-                            not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
+                            if case.state not in [CaseState.RESOLVED, CaseState.CLOSED]
                         ]
 
                     if not getattr(filters, "include_empty", False):
@@ -1325,9 +1322,9 @@ class DIContainer(BaseDIContainer):
                         ]
 
                     # Apply other existing filters
-                    if hasattr(filters, "status") and filters.status:
+                    if hasattr(filters, "state") and filters.state:
                         user_cases = [
-                            case for case in user_cases if case.status == filters.status
+                            case for case in user_cases if case.state == filters.state
                         ]
                     if hasattr(filters, "priority") and filters.priority:
                         user_cases = [
@@ -1347,7 +1344,7 @@ class DIContainer(BaseDIContainer):
                     user_cases = [
                         case
                         for case in user_cases
-                        if case.status in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
+                        if case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     user_cases = [
@@ -1386,7 +1383,7 @@ class DIContainer(BaseDIContainer):
                         user_cases = [
                             case
                             for case in user_cases
-                            if case.status != CaseStatus.CLOSED
+                            if case.state != CaseState.CLOSED
                         ]
 
                     if not getattr(filters, "include_terminal", False):
@@ -1394,8 +1391,7 @@ class DIContainer(BaseDIContainer):
                         user_cases = [
                             case
                             for case in user_cases
-                            if case.status
-                            not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
+                            if case.state not in [CaseState.RESOLVED, CaseState.CLOSED]
                         ]
 
                     if not getattr(filters, "include_empty", False):
@@ -1407,9 +1403,9 @@ class DIContainer(BaseDIContainer):
                         ]
 
                     # Apply other existing filters
-                    if hasattr(filters, "status") and filters.status:
+                    if hasattr(filters, "state") and filters.state:
                         user_cases = [
-                            case for case in user_cases if case.status == filters.status
+                            case for case in user_cases if case.state == filters.state
                         ]
                     if hasattr(filters, "priority") and filters.priority:
                         user_cases = [
@@ -1429,7 +1425,7 @@ class DIContainer(BaseDIContainer):
                     user_cases = [
                         case
                         for case in user_cases
-                        if case.status in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
+                        if case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     user_cases = [
@@ -1659,7 +1655,7 @@ class DIContainer(BaseDIContainer):
 
                 context_lines = []
                 context_lines.append(f"Previous conversation for case: {case.title}")
-                context_lines.append(f"Case status: {case.status.value}")
+                context_lines.append(f"Case status: {case.state.value}")
                 context_lines.append(f"Created: {case.created_at}")
                 context_lines.append(f"Last updated: {case.updated_at}")
                 context_lines.append(
@@ -1722,7 +1718,7 @@ class DIContainer(BaseDIContainer):
                             raise ValueError(
                                 f"Invalid case status '{status_value}'. Valid statuses: {valid_statuses}"
                             )
-                        case.status = CaseStatus(status_value)
+                        case.state = CaseState(status_value)
                 # Always update timestamp when any field is modified
                 case.updated_at = current_time
 

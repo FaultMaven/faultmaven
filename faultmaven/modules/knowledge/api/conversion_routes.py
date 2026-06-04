@@ -501,7 +501,7 @@ async def convert_from_case(
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    case_status = getattr(case, "status", None)
+    case_status = getattr(case, "state", None)
     if case_status and hasattr(case_status, "value"):
         case_status = case_status.value
     if case_status not in ("resolved", "RESOLVED"):

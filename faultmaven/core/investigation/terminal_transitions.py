@@ -30,7 +30,7 @@ from faultmaven.modules.case.contracts import (
     ActionAttempt,
     Case,
     CaseAction,
-    CaseStatus,
+    CaseState,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ def derive_closure_reason(case: "Case") -> str:
     The LLM never authors closure_reason; it's purely engine-derived from
     structured case state.
     """
-    if case.status == CaseStatus.INQUIRY:
+    if case.state == CaseState.INQUIRY:
         return "inquiry_only"
 
     ps = getattr(case, "path_selection", None)
@@ -147,7 +147,7 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
     other action". The two are deliberately distinct because they
     drive different UX patterns.
 
-    Semantics by current status:
+    Semantics by current state:
 
     - INQUIRY: only CLOSED is a valid edge per ``ALLOWED_ACTIONS``
       (resolution requires investigation work). Returns
@@ -165,13 +165,13 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
     - Terminal (RESOLVED / CLOSED): no further actions. Returns all
       ``not_eligible``.
     """
-    if case.status == CaseStatus.INQUIRY:
+    if case.state == CaseState.INQUIRY:
         return {
             "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
             "closed": DISPOSITION_ELIGIBILITY_READY,
         }
 
-    if case.status != CaseStatus.INVESTIGATING:
+    if case.state != CaseState.INVESTIGATING:
         # Terminal — no further dispositions.
         return {
             "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
@@ -213,7 +213,7 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
 
 def propose_transition(
     case: Case,
-    to_status: str,
+    to_state: str,
     summary: str,
     evidence_ids: Optional[list] = None,
 ) -> None:
@@ -229,21 +229,21 @@ def propose_transition(
 
     Args:
         case: Case to propose transition for
-        to_status: Target status ("resolved" or "closed")
+        to_state: Target status ("resolved" or "closed")
         summary: Summary presented to user for confirmation
         evidence_ids: Evidence IDs supporting the proposal
     """
     pending: dict = {
-        "to_status": to_status,
+        "to_state": to_state,
         "summary": summary,
         "evidence_ids": evidence_ids or [],
         "proposed_at": datetime.now(UTC).isoformat(),
     }
-    if to_status == "closed":
+    if to_state == "closed":
         pending["closure_reason"] = derive_closure_reason(case)
     case.pending_transition = pending
     logger.info(
-        f"Transition proposed for case {case.case_id}: → {to_status} "
+        f"Transition proposed for case {case.case_id}: → {to_state} "
         f"(pending user confirmation)"
     )
 
@@ -266,14 +266,14 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
         return False
 
     pending = case.pending_transition
-    to_status = pending["to_status"]
+    to_state = pending["to_state"]
 
-    if to_status == "resolved":
+    if to_state == "resolved":
         _execute_resolved_transition(case, user_id)
-    elif to_status == "closed":
+    elif to_state == "closed":
         _execute_closed_transition(case, user_id, pending["closure_reason"])
     else:
-        logger.error(f"Unknown pending transition target: {to_status}")
+        logger.error(f"Unknown pending transition target: {to_state}")
         case.pending_transition = None
         return False
 
@@ -291,7 +291,7 @@ def cancel_pending_transition(case: Case) -> bool:
     if hasattr(case, "pending_transition") and case.pending_transition:
         logger.info(
             f"Pending transition cancelled for case {case.case_id}: "
-            f"→ {case.pending_transition['to_status']} (user declined)"
+            f"→ {case.pending_transition['to_state']} (user declined)"
         )
         case.pending_transition = None
         return True
@@ -304,9 +304,9 @@ def _execute_resolved_transition(case: Case, user_id: str):
     Raises:
         ValueError: If case is not in INVESTIGATING status.
     """
-    if case.status != CaseStatus.INVESTIGATING:
+    if case.state != CaseState.INVESTIGATING:
         raise ValueError(
-            f"Cannot resolve case {case.case_id}: status is {case.status}, "
+            f"Cannot resolve case {case.case_id}: status is {case.state}, "
             f"expected INVESTIGATING"
         )
 
@@ -342,8 +342,8 @@ def _execute_resolved_transition(case: Case, user_id: str):
     # stage-gate milestone. Because solution_accepted is already True, no stage-gate
     # fires and _apply_stage_gate_side_effects is never called for the revised action.
     for action in case.proposed_actions:
-        if action.status == "pending":
-            action.status = "accepted"
+        if action.state == "pending":
+            action.state = "accepted"
             case.action_attempts.append(
                 ActionAttempt(
                     action_id=action.action_id,
@@ -358,7 +358,7 @@ def _execute_resolved_transition(case: Case, user_id: str):
                 f"on resolution of case {case.case_id}"
             )
     case.atomic_update(
-        status=CaseStatus.RESOLVED,
+        state=CaseState.RESOLVED,
         resolved_at=now,
         closed_at=now,
         # closure_reason is None for RESOLVED — resolution itself is the
@@ -366,8 +366,8 @@ def _execute_resolved_transition(case: Case, user_id: str):
     )
     case.action_history.append(
         CaseAction(
-            from_status=CaseStatus.INVESTIGATING,
-            to_status=CaseStatus.RESOLVED,
+            from_state=CaseState.INVESTIGATING,
+            to_state=CaseState.RESOLVED,
             triggered_at=now,
             triggered_by=user_id,
             reason="User confirmed resolution",
@@ -388,28 +388,28 @@ def _execute_closed_transition(case: Case, user_id: str, closure_reason: str):
     Raises:
         ValueError: If case is not in INVESTIGATING or INQUIRY status.
     """
-    from_status = case.status
-    if from_status not in (CaseStatus.INVESTIGATING, CaseStatus.INQUIRY):
+    from_state = case.state
+    if from_state not in (CaseState.INVESTIGATING, CaseState.INQUIRY):
         raise ValueError(
-            f"Cannot close case {case.case_id}: status is {from_status}, "
+            f"Cannot close case {case.case_id}: status is {from_state}, "
             f"expected INVESTIGATING or INQUIRY"
         )
 
     logger.info(
         f"User {user_id} confirmed closure for case {case.case_id}. "
-        f"Executing {from_status.value} → CLOSED transition."
+        f"Executing {from_state.value} → CLOSED transition."
     )
 
     now = datetime.now(UTC)
     case.atomic_update(
-        status=CaseStatus.CLOSED,
+        state=CaseState.CLOSED,
         closed_at=now,
         closure_reason=closure_reason,
     )
     case.action_history.append(
         CaseAction(
-            from_status=from_status,
-            to_status=CaseStatus.CLOSED,
+            from_state=from_state,
+            to_state=CaseState.CLOSED,
             triggered_at=now,
             triggered_by=user_id,
             reason=f"User confirmed closure ({closure_reason})",
@@ -897,7 +897,7 @@ def terminal_summary_skip_reason(case: "Case") -> Optional[str]:
     Used by the case UI adapter to surface the skip reason in the Report tab
     when no Report row exists for a terminal case.
     """
-    if case.status != CaseStatus.CLOSED:
+    if case.state != CaseState.CLOSED:
         return None
 
     if should_generate_terminal_summary(case):

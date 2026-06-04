@@ -8,13 +8,13 @@ import pytest
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models.api_models import CaseListFilter, CaseMessage, CaseSearchRequest
-from faultmaven.modules.case.domain.models import Case, CaseStatus, MessageType
+from faultmaven.modules.case.domain.models import Case, CaseState, MessageType
 from faultmaven.modules.case.domain.services.case_service import CaseService
 
 
 def _make_case(
     user_id="user_123",
-    status=CaseStatus.INQUIRY,
+    state=CaseState.INQUIRY,
     current_turn=1,
     messages=None,
     **kwargs,
@@ -27,7 +27,7 @@ def _make_case(
         description=kwargs.get("description", "test description"),
     )
     # Use object.__setattr__ to bypass Pydantic cross-field validators
-    object.__setattr__(case, "status", status)
+    object.__setattr__(case, "state", state)
     object.__setattr__(case, "current_turn", current_turn)
     if messages is not None:
         object.__setattr__(case, "messages", messages)
@@ -104,7 +104,7 @@ class TestCreateCase:
     @pytest.mark.asyncio
     async def test_enforces_case_limit(self, service, mock_repo):
         # Return max_cases_per_user active cases
-        active_cases = [_make_case(status=CaseStatus.INQUIRY) for _ in range(50)]
+        active_cases = [_make_case(state=CaseState.INQUIRY) for _ in range(50)]
         mock_repo.list.return_value = (active_cases, 50)
 
         with pytest.raises(ValidationException, match="maximum case limit"):
@@ -113,7 +113,7 @@ class TestCreateCase:
     @pytest.mark.asyncio
     async def test_resolved_cases_dont_count_toward_limit(self, service, mock_repo):
         # 50 resolved cases should NOT block creation
-        resolved = [_make_case(status=CaseStatus.RESOLVED) for _ in range(50)]
+        resolved = [_make_case(state=CaseState.RESOLVED) for _ in range(50)]
         mock_repo.list.return_value = (resolved, 50)
 
         case = await service.create_case(title="New case", owner_id="user_123")
@@ -234,7 +234,7 @@ class TestUpdateCase:
         """
         case = _make_case()
         future = datetime.now(timezone.utc) + timedelta(seconds=1)
-        object.__setattr__(case, "status", CaseStatus.CLOSED)
+        object.__setattr__(case, "state", CaseState.CLOSED)
         object.__setattr__(case, "closed_at", future)
         object.__setattr__(case, "closure_reason", "inquiry_only")
         return case

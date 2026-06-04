@@ -34,7 +34,7 @@ from faultmaven.models.api_models import (
 )
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.modules.case.domain.models import Case, CaseStatus, MessageType
+from faultmaven.modules.case.domain.models import Case, CaseState, MessageType
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.utils.datetime import parse_utc_timestamp
@@ -119,7 +119,7 @@ class CaseService(ICaseService):
             active_cases = [
                 c
                 for c in user_cases_list
-                if c.status not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
+                if c.state not in [CaseState.RESOLVED, CaseState.CLOSED]
             ]
 
             if len(active_cases) >= self.max_cases_per_user:
@@ -311,7 +311,7 @@ class CaseService(ICaseService):
 
         # Validate and apply updates directly to Case object
         metadata_fields = {"title", "description"}
-        state_fields = {"status", "closure_reason"}
+        state_fields = {"state", "closure_reason"}
         allowed_fields = metadata_fields | state_fields
         safe_updates = {k: v for k, v in updates.items() if k in allowed_fields}
 
@@ -763,9 +763,9 @@ class CaseService(ICaseService):
 
         try:
             # Get cases from repository
-            status_filter = filters.status if filters else None
+            status_filter = filters.state if filters else None
             cases_list, total = await self.repository.list(
-                user_id=user_id, status=status_filter
+                user_id=user_id, state=status_filter
             )
 
             # Apply additional filters in service layer (restored from old implementation)

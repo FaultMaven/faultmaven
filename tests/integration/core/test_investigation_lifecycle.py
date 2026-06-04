@@ -5,8 +5,8 @@ InMemoryCaseRepository and mocked LLM responses, validating:
 - Multi-turn INQUIRY → INVESTIGATING → RESOLVED lifecycle
 - Concurrent process_turn locking
 - Evidence accumulation across turns
-- Checkpoint creation at status transitions
-- Explicit status transitions via intent_type
+- Checkpoint creation at state transitions
+- Explicit state transitions via intent_type
 - Terminal transitions via User-Agent Handshake
 
 These are integration tests because they exercise the full MilestoneEngine
@@ -42,7 +42,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputStrategy,
 )
 from faultmaven.modules.case.contracts import (
-    CaseStatus,
+    CaseState,
     EvidenceCategory,
     EvidenceSourceType,
 )
@@ -64,13 +64,13 @@ from faultmaven.modules.case.infrastructure.case_repository import (
 
 
 def _make_inquiry_case(**overrides) -> Case:
-    """Create a Case in INQUIRY status with sensible defaults."""
+    """Create a Case in INQUIRY state with sensible defaults."""
     defaults = {
         "user_id": "test-user-123",
         "organization_id": "test-org-456",
         "title": "API latency spike in production",
         "description": "",
-        "status": CaseStatus.INQUIRY,
+        "state": CaseState.INQUIRY,
         "current_turn": 0,
     }
     defaults.update(overrides)
@@ -78,7 +78,7 @@ def _make_inquiry_case(**overrides) -> Case:
 
 
 def _make_investigating_case(**overrides) -> Case:
-    """Create a Case in INVESTIGATING status with required fields.
+    """Create a Case in INVESTIGATING state with required fields.
 
     Pydantic validates INVESTIGATING requires confirmed problem statement
     and investigation commitment at construction time, so we pass a
@@ -97,7 +97,7 @@ def _make_investigating_case(**overrides) -> Case:
         "organization_id": "test-org-456",
         "title": "API latency spike in production",
         "description": description,
-        "status": CaseStatus.INVESTIGATING,
+        "state": CaseState.INVESTIGATING,
         "current_turn": 3,
         "inquiry": InquiryData(
             problem_statement_confirmed=True,
@@ -326,7 +326,7 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Treatmen
                 solution_accepted=True,
             ),
             proposed_transition=ProposedTransition(
-                to_status="resolved",
+                to_state="resolved",
                 reason="Root cause identified and fix applied.",
                 summary="Connection pool config issue fixed by rolling back.",
                 evidence_ids=[],
@@ -403,7 +403,7 @@ class TestInvestigationLifecycle:
 
         updated = result["case_updated"]
         # LOW urgency, not ongoing → stays in INQUIRY
-        assert updated.status == CaseStatus.INQUIRY
+        assert updated.state == CaseState.INQUIRY
         assert updated.inquiry.proposed_problem_statement is not None
         assert "latency" in updated.inquiry.proposed_problem_statement.lower()
         assert updated.inquiry.problem_confirmation is not None
@@ -438,7 +438,7 @@ class TestInvestigationLifecycle:
         # The strict invariant: no Evidence during INQUIRY.
         assert updated.evidence == []
         # Case stays in INQUIRY (no confirmation in this turn).
-        assert updated.status == CaseStatus.INQUIRY
+        assert updated.state == CaseState.INQUIRY
 
     async def test_explicit_transition_to_investigating(self, engine, case_repo):
         """Explicit intent_type='status_transition' routes through normal INQUIRY flow.
@@ -467,11 +467,11 @@ class TestInvestigationLifecycle:
                 case,
                 "Let's investigate this",
                 intent_type="status_transition",
-                intent_data={"to_status": "investigating", "from_status": "inquiry"},
+                intent_data={"to_state": "investigating", "from_state": "inquiry"},
             )
 
         after_gate1 = result["case_updated"]
-        assert after_gate1.status == CaseStatus.INVESTIGATING
+        assert after_gate1.state == CaseState.INVESTIGATING
         assert after_gate1.inquiry.problem_statement_confirmed is True
         assert after_gate1.path_selection is None
         assert after_gate1.progress.symptom_verified is False
@@ -488,7 +488,7 @@ class TestInvestigationLifecycle:
             )
 
         after_verify = result["case_updated"]
-        assert after_verify.status == CaseStatus.INVESTIGATING
+        assert after_verify.state == CaseState.INVESTIGATING
         assert after_verify.progress.symptom_verified is True
         assert after_verify.path_selection is None
 
@@ -508,13 +508,13 @@ class TestInvestigationLifecycle:
             )
 
         updated = result["case_updated"]
-        assert updated.status == CaseStatus.INVESTIGATING
+        assert updated.state == CaseState.INVESTIGATING
         assert updated.description != ""
         assert updated.progress is not None
         assert updated.problem_verification is not None
         assert updated.path_selection is not None  # Gate 2 committed
         assert any(
-            t.to_status == CaseStatus.INVESTIGATING for t in updated.action_history
+            t.to_state == CaseState.INVESTIGATING for t in updated.action_history
         )
 
     async def test_investigation_turn_with_milestone_progress(self, engine, case_repo):
@@ -530,7 +530,7 @@ class TestInvestigationLifecycle:
             result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
 
         updated = result["case_updated"]
-        assert updated.status == CaseStatus.INVESTIGATING
+        assert updated.state == CaseState.INVESTIGATING
         assert updated.progress.symptom_verified is True
         assert len(updated.evidence) >= 1
         # Post-010: Evidence is the LLM's claim-anchored extract; the
@@ -557,7 +557,7 @@ class TestInvestigationLifecycle:
                 case, "Our API is experiencing high latency"
             )
         case = result["case_updated"]
-        assert case.status == CaseStatus.INQUIRY
+        assert case.state == CaseState.INQUIRY
 
         # === Turn 2: Gate 1 close via explicit intent (with urgency signals) ===
         # Dropdown routes through normal INQUIRY flow. LLM confirms +
@@ -575,10 +575,10 @@ class TestInvestigationLifecycle:
                 case,
                 "Let's investigate",
                 intent_type="status_transition",
-                intent_data={"to_status": "investigating", "from_status": "inquiry"},
+                intent_data={"to_state": "investigating", "from_state": "inquiry"},
             )
         case = result["case_updated"]
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
         assert case.path_selection is None
         assert case.progress.symptom_verified is False
 
@@ -608,7 +608,7 @@ class TestInvestigationLifecycle:
                 intent_data={"investigation_path": "mitigation_first"},
             )
         case = result["case_updated"]
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
         assert case.path_selection is not None
 
         # === Turn 5: Agent proposes resolution ===
@@ -623,7 +623,7 @@ class TestInvestigationLifecycle:
             )
         case = result["case_updated"]
         assert case.pending_transition is not None
-        assert case.pending_transition["to_status"] == "resolved"
+        assert case.pending_transition["to_state"] == "resolved"
 
         # === Turn 6: User confirms resolution via explicit intent ===
         case.current_turn = 6
@@ -631,16 +631,16 @@ class TestInvestigationLifecycle:
             case,
             "yes",
             intent_type="status_transition",
-            intent_data={"to_status": "resolved", "from_status": "investigating"},
+            intent_data={"to_state": "resolved", "from_state": "investigating"},
         )
         case = result["case_updated"]
-        assert case.status == CaseStatus.RESOLVED
+        assert case.state == CaseState.RESOLVED
         assert case.is_terminal is True
 
         # Verify persistence
         persisted = await case_repo.get(case.case_id)
         assert persisted is not None
-        assert persisted.status == CaseStatus.RESOLVED
+        assert persisted.state == CaseState.RESOLVED
 
     async def test_high_urgency_stays_inquiry_until_confirmed(self, engine, case_repo):
         """HIGH urgency + ongoing stays INQUIRY → user confirms → transitions to INVESTIGATING.
@@ -661,7 +661,7 @@ class TestInvestigationLifecycle:
             result1 = await engine.process_turn(case, "Our API is down in production!")
 
         updated1 = result1["case_updated"]
-        assert updated1.status == CaseStatus.INQUIRY
+        assert updated1.state == CaseState.INQUIRY
         assert updated1.inquiry.problem_statement_confirmed is False
         assert updated1.inquiry.decided_to_investigate is False
 
@@ -678,7 +678,7 @@ class TestInvestigationLifecycle:
             )
 
         updated2 = result2["case_updated"]
-        assert updated2.status == CaseStatus.INVESTIGATING
+        assert updated2.state == CaseState.INVESTIGATING
         assert updated2.inquiry.problem_statement_confirmed is True
         assert updated2.inquiry.decided_to_investigate is True
         assert updated2.path_selection is None
@@ -712,7 +712,7 @@ class TestInvestigationLifecycle:
             )
 
         updated4 = result4["case_updated"]
-        assert updated4.status == CaseStatus.INVESTIGATING
+        assert updated4.state == CaseState.INVESTIGATING
         assert updated4.path_selection is not None  # Gate 2 committed
 
     async def test_post_redesign_gate2_end_to_end_walk(self, engine, case_repo):
@@ -747,7 +747,7 @@ class TestInvestigationLifecycle:
         ):
             r1 = await engine.process_turn(case, "Our API is down in production!")
         case = r1["case_updated"]
-        assert case.status == CaseStatus.INQUIRY
+        assert case.state == CaseState.INQUIRY
         assert case.inquiry.problem_statement_confirmed is False
         assert case.path_selection is None
 
@@ -759,12 +759,12 @@ class TestInvestigationLifecycle:
         ):
             r2 = await engine.process_turn(case, "Yes, please investigate.")
         case = r2["case_updated"]
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
         assert case.inquiry.problem_statement_confirmed is True
         assert case.path_selection is None
         assert case.progress.symptom_verified is False
         # The transition is recorded in action_history at this turn.
-        assert any(t.to_status == CaseStatus.INVESTIGATING for t in case.action_history)
+        assert any(t.to_state == CaseState.INVESTIGATING for t in case.action_history)
 
         # ---- T3: Agent verifies the symptom from real evidence ----
         with patch.object(
@@ -776,7 +776,7 @@ class TestInvestigationLifecycle:
                 case, "Here are the metrics from prod: p99=5200ms"
             )
         case = r3["case_updated"]
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
         assert case.progress.symptom_verified is True
         # path_selection STILL None — Gate 2 is open but the user hasn't clicked.
         assert case.path_selection is None
@@ -794,11 +794,11 @@ class TestInvestigationLifecycle:
                 intent_data={"investigation_path": "mitigation_first"},
             )
         case = r4["case_updated"]
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
         assert case.path_selection is not None
         assert case.path_selection.path == InvestigationPath.MITIGATION_FIRST
         # The click occurred AFTER symptom_verified — the engine's click-handler
-        # status+symptom gate was satisfied.
+        # state+symptom gate was satisfied.
         assert case.progress.symptom_verified is True
 
     async def test_close_from_inquiry_via_intent(self, engine, case_repo):
@@ -810,14 +810,14 @@ class TestInvestigationLifecycle:
             case,
             "Close this case",
             intent_type="status_transition",
-            intent_data={"to_status": "closed", "from_status": "inquiry"},
+            intent_data={"to_state": "closed", "from_state": "inquiry"},
         )
 
         updated = result["case_updated"]
         # Should propose CLOSED, not execute immediately
-        assert updated.status == CaseStatus.INQUIRY
+        assert updated.state == CaseState.INQUIRY
         assert updated.pending_transition is not None
-        assert updated.pending_transition["to_status"] == "closed"
+        assert updated.pending_transition["to_state"] == "closed"
 
     async def test_abandon_investigation_via_intent(self, engine, case_repo):
         """Close INVESTIGATING case via dropdown proposes pending transition."""
@@ -828,14 +828,14 @@ class TestInvestigationLifecycle:
             case,
             "Close without resolution",
             intent_type="status_transition",
-            intent_data={"to_status": "closed", "from_status": "investigating"},
+            intent_data={"to_state": "closed", "from_state": "investigating"},
         )
 
         updated = result["case_updated"]
         # Should propose CLOSED, not execute immediately
-        assert updated.status == CaseStatus.INVESTIGATING
+        assert updated.state == CaseState.INVESTIGATING
         assert updated.pending_transition is not None
-        assert updated.pending_transition["to_status"] == "closed"
+        assert updated.pending_transition["to_state"] == "closed"
 
 
 # ============================================================
@@ -845,7 +845,7 @@ class TestInvestigationLifecycle:
 
 @pytest.mark.asyncio
 class TestCheckpointing:
-    """Verify checkpoint creation at status transitions."""
+    """Verify checkpoint creation at state transitions."""
 
     async def test_checkpoint_created_on_transition_to_investigating(
         self, engine, case_repo, checkpoint_service
@@ -873,10 +873,10 @@ class TestCheckpointing:
                 case,
                 "Investigate this",
                 intent_type="status_transition",
-                intent_data={"to_status": "investigating", "from_status": "inquiry"},
+                intent_data={"to_state": "investigating", "from_state": "inquiry"},
             )
 
-        assert result["case_updated"].status == CaseStatus.INVESTIGATING
+        assert result["case_updated"].state == CaseState.INVESTIGATING
         assert result["case_updated"].path_selection is None
 
         # Verify checkpoint was created
@@ -885,8 +885,8 @@ class TestCheckpointing:
         assert len(pre_change_cps) >= 1
         cp = pre_change_cps[0]
         assert cp.case_id == case.case_id
-        assert cp.metadata["from_status"] == "inquiry"
-        assert cp.metadata["to_status"] == "investigating"
+        assert cp.metadata["from_state"] == "inquiry"
+        assert cp.metadata["to_state"] == "investigating"
 
     async def test_explicit_ui_resolve_proposes_then_confirms(
         self, engine, case_repo, checkpoint_service
@@ -924,13 +924,13 @@ class TestCheckpointing:
             case,
             "Mark as resolved",
             intent_type="status_transition",
-            intent_data={"to_status": "resolved", "from_status": "investigating"},
+            intent_data={"to_state": "resolved", "from_state": "investigating"},
         )
 
         case = result["case_updated"]
-        assert case.status == CaseStatus.INVESTIGATING  # NOT resolved yet
+        assert case.state == CaseState.INVESTIGATING  # NOT resolved yet
         assert case.pending_transition is not None
-        assert case.pending_transition["to_status"] == "resolved"
+        assert case.pending_transition["to_state"] == "resolved"
 
         # Turn 2: Second Resolve dropdown — confirms pending transition
         case.current_turn = 6
@@ -938,12 +938,12 @@ class TestCheckpointing:
             case,
             "yes",
             intent_type="status_transition",
-            intent_data={"to_status": "resolved", "from_status": "investigating"},
+            intent_data={"to_state": "resolved", "from_state": "investigating"},
         )
 
-        assert result["case_updated"].status == CaseStatus.RESOLVED
+        assert result["case_updated"].state == CaseState.RESOLVED
         persisted = await case_repo.get(case.case_id)
-        assert persisted.status == CaseStatus.RESOLVED
+        assert persisted.state == CaseState.RESOLVED
 
 
 # ============================================================

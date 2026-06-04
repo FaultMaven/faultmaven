@@ -23,7 +23,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
     _build_evidence_context,
 )
 from faultmaven.modules.case.contracts import (
-    CaseStatus,
+    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -87,7 +87,7 @@ def _make_case(evidence_list):
         description="Test description",
         user_id="user_123",
         organization_id="org_123",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,

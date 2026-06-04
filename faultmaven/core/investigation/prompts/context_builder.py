@@ -35,13 +35,13 @@ from faultmaven.core.preprocessing.evidence_metadata import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     EntityType,
     EvidenceCategory,
     InvestigationStage,
     NeedPriority,
     NeedPurpose,
-    NeedStatus,
+    NeedState,
 )
 from faultmaven.modules.case.domain.services.investigation_router import (
     recommend_investigation_path_for_case,
@@ -753,10 +753,10 @@ def _build_state_summary(case: Case) -> str:
 
     # Current stage
     stage = "INQUIRY"
-    if case.status.value == "investigating" and case.current_stage:
+    if case.state.value == "investigating" and case.current_stage:
         stage = case.current_stage.value.upper()
-    elif case.status.value in ["resolved", "closed"]:
-        stage = case.status.value.upper()
+    elif case.state.value in ["resolved", "closed"]:
+        stage = case.state.value.upper()
 
     # Verification status
     verified_items = []
@@ -770,13 +770,13 @@ def _build_state_summary(case: Case) -> str:
     # Active hypotheses — include top 3 so the agent retains awareness of
     # competing theories when the full hypothesis block is absent.
     active_h = [
-        h for h in case.hypotheses.values() if h.status.value in ["active", "validated"]
+        h for h in case.hypotheses.values() if h.state.value in ["active", "validated"]
     ]
     if active_h:
         sorted_h = sorted(active_h, key=lambda h: h.likelihood, reverse=True)
         hypothesis_lines = []
         for h in sorted_h[:3]:
-            status_tag = " [VALIDATED]" if h.status.value == "validated" else ""
+            status_tag = " [VALIDATED]" if h.state.value == "validated" else ""
             hypothesis_lines.append(
                 f"  - {h.statement[:100]} ({h.likelihood*100:.0f}%{status_tag})"
             )
@@ -989,7 +989,7 @@ def _score_evidence_for_tier_a(
     # Hypothesis linkage: evidence linked to active/validated hypotheses
     # with a supportive stance (supports/strongly_supports)
     for h in case.hypotheses.values():
-        if h.status.value not in ("active", "validated"):
+        if h.state.value not in ("active", "validated"):
             continue
         link = next(
             (l for l in h.evidence_links if l.evidence_id == ev.evidence_id),
@@ -1733,7 +1733,7 @@ def _render_need_line(need) -> tuple[str, str]:
         "SYMPTOM" if need.purpose == NeedPurpose.SYMPTOM_VERIFICATION else "CAUSAL"
     )
     status_suffix = (
-        f", {need.status.value.upper()}" if need.status != NeedStatus.PENDING else ""
+        f", {need.state.value.upper()}" if need.state != NeedState.PENDING else ""
     )
     header = (
         f"  - [{need.need_id}] {_truncate_request_text(need.request_text)} "
@@ -1831,7 +1831,7 @@ def _build_evidence_needs_block(case: Case) -> str:
           - [ev_def456] audit_events Seq Scan, no index on created_at (CAUSE, established turn 8)
         </evidence_needs>
     """
-    if case.status != CaseStatus.INVESTIGATING:
+    if case.state != CaseState.INVESTIGATING:
         return ""
     # NOTE: do NOT early-return on an empty `evidence_needs` pool. The
     # MITIGATION/TREATMENT re-verification checklist is sourced from
@@ -1847,7 +1847,7 @@ def _build_evidence_needs_block(case: Case) -> str:
     outstanding = [
         n
         for n in case.evidence_needs
-        if n.status in (NeedStatus.PENDING, NeedStatus.PARTIALLY_MET)
+        if n.state in (NeedState.PENDING, NeedState.PARTIALLY_MET)
     ]
     # Re-verification checklist is anchored on confirmed presence-evidence
     # rows (symptom/causal), NOT FULFILLED needs. Evidence rows exist for
@@ -1988,8 +1988,8 @@ def build_investigation_context(
     # 1. Identity & Status (Gap #8: XML tags for better LLM attention)
     identity = f"<case_identity>\n"
     identity += f"CASE_ID: {case.case_id}\n"
-    identity += f"STATUS: {case.status.value.upper()}\n"
-    if case.status == CaseStatus.INVESTIGATING and case.current_stage:
+    identity += f"STATE: {case.state.value.upper()}\n"
+    if case.state == CaseState.INVESTIGATING and case.current_stage:
         identity += f"CURRENT_STAGE: {case.current_stage.value.upper()}\n"
     identity += "</case_identity>"
 
@@ -2008,7 +2008,7 @@ def build_investigation_context(
 
     # 3. Milestone Status (separated into stage-gate and progress indicators)
     milestones_str = ""
-    if case.status == CaseStatus.INVESTIGATING:
+    if case.state == CaseState.INVESTIGATING:
         p = case.progress
 
         # Stage-gate milestones (drive transitions)
@@ -2057,18 +2057,18 @@ def build_investigation_context(
     # agent sees WHY a theory was rejected, not just that it was. This
     # prevents re-proposing near-duplicates under slightly different names
     # and supports Rule 8 (Full-Context Reasoning). The pair-integrity
-    # invariant guarantees refutation_reason is non-empty when status=REFUTED,
+    # invariant guarantees refutation_reason is non-empty when state=REFUTED,
     # so no fallback rendering is needed.
     hypothesis_str = ""
-    active_h = [h for h in case.hypotheses.values() if h.status.value != "retired"]
+    active_h = [h for h in case.hypotheses.values() if h.state.value != "retired"]
     if active_h:
         hypothesis_str = "<working_hypotheses>\n"
         for h in active_h:
             hypothesis_str += (
                 f"- {h.statement} "
-                f"(Confidence: {h.likelihood*100:.0f}%, Status: {h.status.value})\n"
+                f"(Confidence: {h.likelihood*100:.0f}%, State: {h.state.value})\n"
             )
-            if h.status.value == "refuted":
+            if h.state.value == "refuted":
                 hypothesis_str += f"  Refuted because: {h.refutation_reason}\n"
         hypothesis_str += "</working_hypotheses>"
 
@@ -2101,7 +2101,7 @@ def build_investigation_context(
     pending_action_str = ""
     if case.proposed_actions:
         for action in reversed(case.proposed_actions):
-            if action.status == "pending":
+            if action.state == "pending":
                 action_type_upper = action.action_type.value.upper()
                 pending_action_str = "<pending_action>\n"
                 pending_action_str += f"ACTION_TYPE: {action_type_upper}\n"
@@ -2212,7 +2212,7 @@ def build_investigation_context(
     # diagnosis is complete. Frees budget for action-focused context.
     # Uses its own query against case.hypotheses rather than the active_h
     # variable from section 5 (which contains all non-retired hypotheses).
-    if enable_stage_specific_loading and case.status == CaseStatus.INVESTIGATING:
+    if enable_stage_specific_loading and case.state == CaseState.INVESTIGATING:
         stage = case.current_stage or InvestigationStage.DIAGNOSIS
 
         if stage == InvestigationStage.DIAGNOSIS:
@@ -2222,7 +2222,7 @@ def build_investigation_context(
                 active_validated = [
                     h
                     for h in case.hypotheses.values()
-                    if h.status.value in ("active", "validated")
+                    if h.state.value in ("active", "validated")
                 ]
                 if active_validated:
                     top_3 = sorted(
@@ -2230,7 +2230,7 @@ def build_investigation_context(
                     )[:3]
                     hypothesis_str = "<working_hypotheses>\n"
                     for h in top_3:
-                        hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%, Status: {h.status.value})\n"
+                        hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%, State: {h.state.value})\n"
                     hypothesis_str += "</working_hypotheses>"
 
         elif stage == InvestigationStage.MITIGATION:
@@ -2238,7 +2238,7 @@ def build_investigation_context(
             active_validated = [
                 h
                 for h in case.hypotheses.values()
-                if h.status.value in ("active", "validated")
+                if h.state.value in ("active", "validated")
             ]
             if active_validated:
                 hypothesis_str = "<working_hypotheses>\n"
@@ -2253,7 +2253,7 @@ def build_investigation_context(
         elif stage == InvestigationStage.TREATMENT:
             logger.debug("Stage-specific loading: TREATMENT - condensing hypotheses")
             validated = [
-                h for h in case.hypotheses.values() if h.status.value == "validated"
+                h for h in case.hypotheses.values() if h.state.value == "validated"
             ]
             if validated:
                 best = max(validated, key=lambda h: h.likelihood)
@@ -2272,7 +2272,7 @@ def build_investigation_context(
     # case.inquiry.handshake_deferred_at_turn (set by _apply_inquiry_updates
     # in milestone_engine when the guard rejects a same-turn collapse).
     inquiry_state_str = ""
-    if case.status == CaseStatus.INQUIRY and case.inquiry:
+    if case.state == CaseState.INQUIRY and case.inquiry:
         inq = case.inquiry
         if inq.proposed_problem_statement and inq.proposed_problem_statement.strip():
             inquiry_state_str = "<inquiry_state>\n"
@@ -2333,7 +2333,7 @@ def build_investigation_context(
     # wait for the user's click — it does NOT prescribe suggestion labels.
     gate2_state_str = ""
     if (
-        case.status == CaseStatus.INVESTIGATING
+        case.state == CaseState.INVESTIGATING
         and case.progress.symptom_verified
         and case.path_selection is None
     ):

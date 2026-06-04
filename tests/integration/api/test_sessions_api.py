@@ -24,7 +24,7 @@ from fastapi import status
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app as main_app
-from faultmaven.models.investigation_session import SessionStatus
+from faultmaven.models.investigation_session import SessionState
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 
@@ -48,7 +48,7 @@ def mock_session():
     mock.case_id = "case_456def"
     mock.user_id = "user_789"
     mock.organization_id = "org_456"
-    mock.status = SessionStatus.ACTIVE
+    mock.state = SessionState.ACTIVE
     mock.started_at = datetime.now(timezone.utc)
     mock.ended_at = None
     mock.last_activity_at = datetime.now(timezone.utc)
@@ -127,7 +127,7 @@ class TestCreateSession:
         assert response.status_code == status.HTTP_201_CREATED
         data = response.json()
         assert data["session_id"] == "session_123abc"
-        assert data["status"] == "active"
+        assert data["state"] == "active"
 
     def test_create_session_with_budget(
         self, client, mock_session_service, mock_session, headers
@@ -234,7 +234,7 @@ class TestGetSession:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["session_id"] == "session_123abc"
-        assert data["status"] == "active"
+        assert data["state"] == "active"
 
     def test_get_session_not_found(self, client, mock_session_service, headers):
         """Test session not found."""
@@ -302,18 +302,18 @@ class TestListSessions:
     def test_list_sessions_with_status_filter(
         self, client, mock_session_service, headers
     ):
-        """Test session list with status filter."""
+        """Test session list with state filter."""
         mock_session_service.list_sessions.return_value = []
 
         response = client.get(
-            "/api/v1/cases/case_456def/sessions?status=paused",
+            "/api/v1/cases/case_456def/sessions?state=paused",
             headers=headers,
         )
 
         assert response.status_code == status.HTTP_200_OK
         mock_session_service.list_sessions.assert_called_once()
         call_kwargs = mock_session_service.list_sessions.call_args.kwargs
-        assert call_kwargs["status"] == SessionStatus.PAUSED
+        assert call_kwargs["state"] == SessionState.PAUSED
 
     def test_list_sessions_case_not_found(self, client, mock_session_service, headers):
         """Test listing sessions for non-existent case."""
@@ -428,7 +428,7 @@ class TestPauseSession:
         self, client, mock_session_service, mock_session, headers
     ):
         """Test successful session pause."""
-        mock_session.status = SessionStatus.PAUSED
+        mock_session.state = SessionState.PAUSED
         mock_session_service.pause_session.return_value = mock_session
 
         response = client.post(
@@ -438,14 +438,14 @@ class TestPauseSession:
 
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        assert data["status"] == "paused"
+        assert data["state"] == "paused"
 
     def test_pause_session_not_active(self, client, mock_session_service, headers):
         """Test pausing session that's not active."""
         from faultmaven.exceptions import ValidationException
 
         mock_session_service.pause_session.side_effect = ValidationException(
-            "Cannot pause session in paused status"
+            "Cannot pause session in paused state"
         )
 
         response = client.post(
@@ -484,7 +484,7 @@ class TestResumeSession:
         self, client, mock_session_service, mock_session, headers
     ):
         """Test successful session resume."""
-        mock_session.status = SessionStatus.ACTIVE
+        mock_session.state = SessionState.ACTIVE
         mock_session_service.resume_session.return_value = mock_session
 
         response = client.post(
@@ -494,14 +494,14 @@ class TestResumeSession:
 
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        assert data["status"] == "active"
+        assert data["state"] == "active"
 
     def test_resume_session_not_paused(self, client, mock_session_service, headers):
         """Test resuming session that's not paused."""
         from faultmaven.exceptions import ValidationException
 
         mock_session_service.resume_session.side_effect = ValidationException(
-            "Cannot resume session in active status"
+            "Cannot resume session in active state"
         )
 
         response = client.post(
@@ -525,7 +525,7 @@ class TestCompleteSession:
         self, client, mock_session_service, mock_session, headers
     ):
         """Test successful session completion."""
-        mock_session.status = SessionStatus.COMPLETED
+        mock_session.state = SessionState.COMPLETED
         mock_session.findings_summary = "Root cause identified"
         mock_session_service.complete_session.return_value = mock_session
 
@@ -537,7 +537,7 @@ class TestCompleteSession:
 
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        assert data["status"] == "completed"
+        assert data["state"] == "completed"
         assert data["findings_summary"] == "Root cause identified"
 
     def test_complete_session_missing_findings(self, client, headers):
@@ -557,7 +557,7 @@ class TestCompleteSession:
         from faultmaven.exceptions import ValidationException
 
         mock_session_service.complete_session.side_effect = ValidationException(
-            "Cannot complete session in completed status"
+            "Cannot complete session in completed state"
         )
 
         response = client.post(
@@ -592,7 +592,7 @@ class TestGetActiveSession:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["session_id"] == "session_123abc"
-        assert data["status"] == "active"
+        assert data["state"] == "active"
 
     def test_get_active_session_none(self, client, mock_session_service, headers):
         """Test when no active session exists."""

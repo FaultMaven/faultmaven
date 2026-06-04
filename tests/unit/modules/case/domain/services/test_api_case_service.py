@@ -29,7 +29,7 @@ from faultmaven.exceptions import (
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseSeverity,
-    CaseStatus,
+    CaseState,
     InvestigationStrategy,
 )
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
@@ -71,7 +71,7 @@ def sample_case():
         organization_id="org_456",
         title="Test Case",
         description="Test case description",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
 
@@ -93,7 +93,7 @@ class TestCreateCase:
             organization_id="org_1",
             title="New Case",
             description="Description",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
         )
 
         result = await case_service.create_case(
@@ -355,7 +355,7 @@ class TestUpdateCase:
             await case_service.update_case(
                 sample_case.case_id,
                 sample_case.organization_id,
-                {"status": CaseStatus.INVESTIGATING},
+                {"state": CaseState.INVESTIGATING},
             )
 
     @pytest.mark.asyncio
@@ -417,10 +417,10 @@ class TestUpdateCase:
             await case_service.update_case(
                 sample_case.case_id,
                 sample_case.organization_id,
-                {"status": "invalid_status"},
+                {"state": "invalid_status"},
             )
 
-        assert "status" in str(exc_info.value).lower()
+        assert "state" in str(exc_info.value).lower()
 
 
 # ============================================================
@@ -512,10 +512,10 @@ class TestListCases:
         """Test list_cases filters by status."""
         mock_case_repo.list.return_value = ([sample_case], 1)
 
-        await case_service.list_cases("org_456", status=CaseStatus.INQUIRY)
+        await case_service.list_cases("org_456", state=CaseState.INQUIRY)
 
         call_kwargs = mock_case_repo.list.call_args[1]
-        assert call_kwargs["status"] == CaseStatus.INQUIRY
+        assert call_kwargs["state"] == CaseState.INQUIRY
 
     @pytest.mark.asyncio
     async def test_list_cases_respects_limit(self, case_service, mock_case_repo):
@@ -699,7 +699,7 @@ class TestCloseCase:
             sample_case.organization_id,
         )
 
-        assert result.status == CaseStatus.RESOLVED
+        assert result.state == CaseState.RESOLVED
         assert result.resolved_at is not None
 
     @pytest.mark.asyncio
@@ -720,7 +720,7 @@ class TestCloseCase:
             sample_case.organization_id,
         )
 
-        assert result.status == CaseStatus.RESOLVED
+        assert result.state == CaseState.RESOLVED
         assert result.closure_reason is None
 
     @pytest.mark.asyncio
@@ -730,7 +730,7 @@ class TestCloseCase:
         """Test that closing already-closed case raises ConflictError."""
         closed_case = sample_case.model_copy(
             update={
-                "status": CaseStatus.RESOLVED,
+                "state": CaseState.RESOLVED,
                 "resolved_at": datetime.now(timezone.utc),
                 "closure_reason": None,
             }
@@ -795,7 +795,7 @@ class TestGetCaseStatistics:
         """Test that statistics includes avg_resolution_time."""
         resolved_case = sample_case.model_copy(
             update={
-                "status": CaseStatus.RESOLVED,
+                "state": CaseState.RESOLVED,
                 "resolved_at": sample_case.created_at + timedelta(hours=2),
             }
         )

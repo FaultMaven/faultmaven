@@ -32,7 +32,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     InMemoryInvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentType,
@@ -41,7 +41,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseSeverity,
-    CaseStatus,
+    CaseState,
     InvestigationStrategy,
 )
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
@@ -148,7 +148,7 @@ async def sample_case(case_repo) -> Case:
         organization_id=f"org_{uuid4().hex[:8]}",
         title="Test Case",
         description="Test case for session testing",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
     # InMemoryCaseRepository uses save() to persist cases
@@ -205,7 +205,7 @@ class TestSessionLifecycle:
         )
 
         assert session is not None
-        assert session.status == SessionStatus.ACTIVE
+        assert session.state == SessionState.ACTIVE
         assert session.session_goal == "Debug authentication issue"
         assert session.token_budget_limit == 10000
 
@@ -220,13 +220,13 @@ class TestSessionLifecycle:
         paused = await session_service.pause_session(
             session.session_id, organization_id
         )
-        assert paused.status == SessionStatus.PAUSED
+        assert paused.state == SessionState.PAUSED
 
         # Step 4: Resume session
         resumed = await session_service.resume_session(
             session.session_id, organization_id
         )
-        assert resumed.status == SessionStatus.ACTIVE
+        assert resumed.state == SessionState.ACTIVE
 
         # Step 5: Complete session with findings
         completed = await session_service.complete_session(
@@ -235,7 +235,7 @@ class TestSessionLifecycle:
             "Root cause identified: JWT token expiry issue",
         )
 
-        assert completed.status == SessionStatus.COMPLETED
+        assert completed.state == SessionState.COMPLETED
         assert completed.ended_at is not None
         assert completed.total_duration_ms is not None
         assert "JWT token expiry" in completed.findings_summary
@@ -254,7 +254,7 @@ class TestSessionLifecycle:
             session.session_id, sample_case.organization_id
         )
 
-        assert abandoned.status == SessionStatus.ABANDONED
+        assert abandoned.state == SessionState.ABANDONED
         assert abandoned.ended_at is not None
         assert abandoned.findings_summary is None
 
@@ -279,7 +279,7 @@ class TestSessionLifecycle:
             session.session_id, sample_case.organization_id
         )
 
-        assert abandoned.status == SessionStatus.ABANDONED
+        assert abandoned.state == SessionState.ABANDONED
 
     @pytest.mark.asyncio
     async def test_multiple_sessions_for_case_sequential(
@@ -461,7 +461,7 @@ class TestActiveSessionEnforcement:
             user_id=sample_case.user_id,
         )
 
-        assert session1.status == SessionStatus.ACTIVE
+        assert session1.state == SessionState.ACTIVE
 
         # Attempt to create another active session - should raise ConflictError
         with pytest.raises(ConflictError) as exc_info:
@@ -499,7 +499,7 @@ class TestActiveSessionEnforcement:
         )
 
         assert session2 is not None
-        assert session2.status == SessionStatus.ACTIVE
+        assert session2.state == SessionState.ACTIVE
 
     @pytest.mark.asyncio
     async def test_can_create_new_session_after_abandon(
@@ -948,21 +948,21 @@ class TestListAndQuery:
         completed = await session_service.list_sessions(
             sample_case.case_id,
             sample_case.organization_id,
-            status=SessionStatus.COMPLETED,
+            state=SessionState.COMPLETED,
         )
 
         assert len(completed) == 1
-        assert completed[0].status == SessionStatus.COMPLETED
+        assert completed[0].state == SessionState.COMPLETED
 
         # List only active
         active = await session_service.list_sessions(
             sample_case.case_id,
             sample_case.organization_id,
-            status=SessionStatus.ACTIVE,
+            state=SessionState.ACTIVE,
         )
 
         assert len(active) == 1
-        assert active[0].status == SessionStatus.ACTIVE
+        assert active[0].state == SessionState.ACTIVE
 
     @pytest.mark.asyncio
     async def test_list_sessions_pagination(self, session_service, sample_case):
@@ -1027,7 +1027,7 @@ class TestListAndQuery:
 
         assert active is not None
         assert active.session_id == session.session_id
-        assert active.status == SessionStatus.ACTIVE
+        assert active.state == SessionState.ACTIVE
 
 
 # ============================================================
@@ -1051,7 +1051,7 @@ class TestOrganizationIsolation:
             organization_id=org_a,
             title="Org A Case",
             description="",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
         )
         case_a = await case_repo.save(case_a)
 
@@ -1061,7 +1061,7 @@ class TestOrganizationIsolation:
             organization_id=org_b,
             title="Org B Case",
             description="",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
         )
         case_b = await case_repo.save(case_b)
 
