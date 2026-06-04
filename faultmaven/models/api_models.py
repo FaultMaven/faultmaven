@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     InvestigationPath,
     InvestigationStage,
 )
@@ -72,7 +72,7 @@ class CaseUpdateRequest(BaseModel):
         default=None, description="Updated description", max_length=2000
     )
 
-    status: Optional[CaseStatus] = Field(
+    state: Optional[CaseState] = Field(
         default=None, description="Updated status (admin only)"
     )
 
@@ -88,7 +88,7 @@ class CaseSummary(BaseModel):
     case_id: str
     title: str
     description: str
-    status: CaseStatus
+    state: CaseState
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime
@@ -119,7 +119,7 @@ class CaseSummary(BaseModel):
             case_id=case.case_id,
             title=case.title,
             description=case.description,
-            status=case.status,
+            state=case.state,
             created_at=case.created_at,
             updated_at=case.updated_at,
             last_activity_at=case.last_activity_at,
@@ -134,7 +134,7 @@ class CaseSummary(BaseModel):
             is_terminal=case.is_terminal,
             valid_next_states=[
                 status.value
-                for status in CaseActionManager.get_allowed_transitions(case.status)
+                for status in CaseActionManager.get_allowed_transitions(case.state)
             ],
         )
 
@@ -145,7 +145,7 @@ class CaseDetail(BaseModel):
     case_id: str
     title: str
     description: str
-    status: CaseStatus
+    state: CaseState
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime
@@ -187,7 +187,7 @@ class CaseDetail(BaseModel):
             case_id=case.case_id,
             title=case.title,
             description=case.description,
-            status=case.status,
+            state=case.state,
             created_at=case.created_at,
             updated_at=case.updated_at,
             last_activity_at=case.last_activity_at,
@@ -210,7 +210,7 @@ class CaseDetail(BaseModel):
             ),
             valid_next_states=[
                 status.value
-                for status in CaseActionManager.get_allowed_transitions(case.status)
+                for status in CaseActionManager.get_allowed_transitions(case.state)
             ],
         )
 
@@ -229,7 +229,7 @@ class CaseListFilter(BaseModel):
         default=None, description="Filter by organization ID"
     )
 
-    status: Optional[CaseStatus] = Field(default=None, description="Filter by status")
+    state: Optional[CaseState] = Field(default=None, description="Filter by status")
 
     created_after: Optional[datetime] = Field(
         default=None, description="Cases created after this date"
@@ -290,7 +290,7 @@ class CaseSearchRequest(BaseModel):
         default=None, description="Limit to organization's cases"
     )
 
-    status: Optional[CaseStatus] = Field(default=None, description="Filter by status")
+    state: Optional[CaseState] = Field(default=None, description="Filter by status")
 
     limit: int = Field(default=20, ge=1, le=100, description="Maximum results")
 
@@ -353,10 +353,10 @@ class QueryIntent(BaseModel):
     )
 
     # Additional intent-specific fields (vary by type)
-    from_status: Optional[CaseStatus] = Field(
+    from_state: Optional[CaseState] = Field(
         default=None, description="For status_transition: source status (validation)"
     )
-    to_status: Optional[CaseStatus] = Field(
+    to_state: Optional[CaseState] = Field(
         default=None,
         description="For status_transition: target status (REQUIRED for status_transition)",
     )
@@ -396,8 +396,8 @@ class QueryIntent(BaseModel):
     def validate_intent_fields(self):
         """Ensure required fields present for each intent type."""
         if self.type == IntentType.STATUS_TRANSITION:
-            if not self.to_status:
-                raise ValueError("to_status required for status_transition intent")
+            if not self.to_state:
+                raise ValueError("to_state required for status_transition intent")
         elif self.type == IntentType.HYPOTHESIS_ACTION:
             if not self.hypothesis_id or not self.action:
                 raise ValueError(
@@ -527,7 +527,7 @@ class TurnResponse(BaseModel):
     agent_response: str
     turn_number: int
     milestones_completed: List[str]
-    case_status: CaseStatus
+    case_state: CaseState
     progress_made: bool
     attachments_processed: List[AttachmentResult] = Field(default_factory=list)
     suggested_actions: List[SuggestedActionResponse] = Field(default_factory=list)

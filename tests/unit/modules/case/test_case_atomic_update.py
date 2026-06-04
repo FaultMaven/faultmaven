@@ -13,7 +13,7 @@ import pytest
 
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     InquiryData,
     InvestigationProgress,
     ProblemVerification,
@@ -24,7 +24,7 @@ def _make_investigating_case() -> Case:
     return Case(
         case_id="case_abcdef123456",
         title="Test Case",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         user_id="user_test",
         organization_id="org_test",
         description="Investigating something concrete",
@@ -49,32 +49,32 @@ class TestAtomicUpdateValidation:
         case = _make_investigating_case()
         now = datetime.now(timezone.utc)
         case.atomic_update(
-            status=CaseStatus.RESOLVED,
+            state=CaseState.RESOLVED,
             resolved_at=now,
             closed_at=now,
         )
-        assert case.status == CaseStatus.RESOLVED
+        assert case.state == CaseState.RESOLVED
         assert case.resolved_at == now
         assert case.closed_at == now
 
     def test_resolved_without_timestamps_raises(self):
         case = _make_investigating_case()
         with pytest.raises(ValueError, match="RESOLVED.*resolved_at"):
-            case.atomic_update(status=CaseStatus.RESOLVED)
+            case.atomic_update(state=CaseState.RESOLVED)
 
     def test_resolved_with_only_resolved_at_raises(self):
         case = _make_investigating_case()
         now = datetime.now(timezone.utc)
         with pytest.raises(ValueError, match="closed_at"):
-            case.atomic_update(status=CaseStatus.RESOLVED, resolved_at=now)
+            case.atomic_update(state=CaseState.RESOLVED, resolved_at=now)
 
     def test_failed_update_rolls_back_state(self):
         case = _make_investigating_case()
-        original_status = case.status
+        original_status = case.state
         original_resolved_at = case.resolved_at
         with pytest.raises(ValueError):
-            case.atomic_update(status=CaseStatus.RESOLVED)
-        assert case.status == original_status
+            case.atomic_update(state=CaseState.RESOLVED)
+        assert case.state == original_status
         assert case.resolved_at == original_resolved_at
 
     def test_failed_update_rolls_back_partial_changes(self):
@@ -82,26 +82,26 @@ class TestAtomicUpdateValidation:
         now = datetime.now(timezone.utc)
         with pytest.raises(ValueError):
             # status=RESOLVED + resolved_at, but no closed_at — invalid
-            case.atomic_update(status=CaseStatus.RESOLVED, resolved_at=now)
-        assert case.status == CaseStatus.INVESTIGATING
+            case.atomic_update(state=CaseState.RESOLVED, resolved_at=now)
+        assert case.state == CaseState.INVESTIGATING
         assert case.resolved_at is None
 
     def test_closed_with_closure_reason_succeeds(self):
         case = _make_investigating_case()
         now = datetime.now(timezone.utc)
         case.atomic_update(
-            status=CaseStatus.CLOSED,
+            state=CaseState.CLOSED,
             closed_at=now,
             closure_reason="abandoned",
         )
-        assert case.status == CaseStatus.CLOSED
+        assert case.state == CaseState.CLOSED
         assert case.closure_reason == "abandoned"
 
     def test_closed_without_closure_reason_raises(self):
         case = _make_investigating_case()
         now = datetime.now(timezone.utc)
         with pytest.raises(ValueError, match="closure_reason"):
-            case.atomic_update(status=CaseStatus.CLOSED, closed_at=now)
+            case.atomic_update(state=CaseState.CLOSED, closed_at=now)
 
     def test_inverted_timestamps_raise_and_roll_back(self):
         case = _make_investigating_case()
@@ -117,10 +117,10 @@ class TestAtomicUpdateValidation:
         # resolved_at after closed_at violates timestamp ordering
         with pytest.raises(ValueError, match="resolved_at.*cannot be after closed_at"):
             case.atomic_update(
-                status=CaseStatus.RESOLVED,
+                state=CaseState.RESOLVED,
                 resolved_at=later,
                 closed_at=earlier,
             )
-        assert case.status == CaseStatus.INVESTIGATING
+        assert case.state == CaseState.INVESTIGATING
         assert case.resolved_at is None
         assert case.closed_at is None

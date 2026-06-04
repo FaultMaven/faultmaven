@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
-from faultmaven.modules.case.contracts import CaseStatus
+from faultmaven.modules.case.contracts import CaseState
 
 from .helpers import assert_case_status, assert_has_confirmation_suggestions
 
@@ -73,7 +73,7 @@ async def test_llm_does_not_auto_confirm_on_recovery_turn(
     follow_ups = result["suggested_follow_ups"]
 
     # 1. No premature transition.
-    assert_case_status(case_after, CaseStatus.INQUIRY, context="recovery turn")
+    assert_case_status(case_after, CaseState.INQUIRY, context="recovery turn")
 
     # 2. The LLM honored the HANDSHAKE_DEFERRED "do not auto-confirm" rule.
     # If this fails, the prompt's recovery-turn instruction is being

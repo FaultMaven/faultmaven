@@ -36,7 +36,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceNeed,
@@ -46,7 +46,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationStage,
     NeedPriority,
     NeedPurpose,
-    NeedStatus,
+    NeedState,
     PathSelection,
 )
 
@@ -57,7 +57,7 @@ from faultmaven.modules.case.contracts import (
 
 def _make_case(
     *,
-    status: CaseStatus = CaseStatus.INVESTIGATING,
+    state: CaseState = CaseState.INVESTIGATING,
     stage: InvestigationStage = InvestigationStage.DIAGNOSIS,
     path: InvestigationPath = InvestigationPath.ROOT_CAUSE,
 ) -> Case:
@@ -67,7 +67,7 @@ def _make_case(
     inquiry.decided_to_investigate = True
 
     path_selection = None
-    if status == CaseStatus.INVESTIGATING:
+    if state == CaseState.INVESTIGATING:
         path_selection = PathSelection(
             path=path,
             auto_selected=False,
@@ -81,12 +81,12 @@ def _make_case(
         organization_id="org_test",
         title="Test case",
         description="Test problem",
-        status=status,
+        state=state,
         inquiry=inquiry,
         path_selection=path_selection,
     )
     case.current_turn = 5
-    if status == CaseStatus.INVESTIGATING:
+    if state == CaseState.INVESTIGATING:
         case.progress.symptom_verified = True
         if stage == InvestigationStage.MITIGATION:
             case.progress.mitigation_accepted = True
@@ -99,7 +99,7 @@ def _make_need(
     case: Case,
     *,
     purpose: NeedPurpose = NeedPurpose.SYMPTOM_VERIFICATION,
-    status: NeedStatus = NeedStatus.PENDING,
+    state: NeedState = NeedState.PENDING,
     priority: NeedPriority = NeedPriority.MEDIUM,
     request_text: str = "kubectl get pods",
     rationale: str = "confirm symptom",
@@ -107,11 +107,11 @@ def _make_need(
     fulfilling_evidence_ids: list[str] | None = None,
     superseded_reason: str | None = None,
 ) -> EvidenceNeed:
-    if status == NeedStatus.SUPERSEDED and superseded_reason is None:
+    if state == NeedState.SUPERSEDED and superseded_reason is None:
         superseded_reason = "stale"
     # FULFILLED needs require a non-empty fulfillment list per model
     # invariant — synthesize one if the caller didn't provide it.
-    if status == NeedStatus.FULFILLED and not fulfilling_evidence_ids:
+    if state == NeedState.FULFILLED and not fulfilling_evidence_ids:
         fulfilling_evidence_ids = [f"ev_{uuid4().hex[:12]}"]
     need = EvidenceNeed(
         case_id=case.case_id,
@@ -119,7 +119,7 @@ def _make_need(
         request_text=request_text,
         rationale=rationale,
         priority=priority,
-        status=status,
+        state=state,
         motivating_hypothesis_ids=motivating_hypothesis_ids or [],
         fulfilling_evidence_ids=fulfilling_evidence_ids or [],
         superseded_reason=superseded_reason,
@@ -164,21 +164,21 @@ class TestProgressiveActivation:
         assert _build_evidence_needs_block(case) == ""
 
     def test_non_investigating_case_renders_empty_string(self):
-        case = _make_case(status=CaseStatus.INQUIRY)
+        case = _make_case(state=CaseState.INQUIRY)
         # Even with a need attached, INQUIRY case suppresses the block.
         _make_need(case)
         assert _build_evidence_needs_block(case) == ""
 
     def test_only_superseded_renders_empty_string(self):
         case = _make_case()
-        _make_need(case, status=NeedStatus.SUPERSEDED)
+        _make_need(case, state=NeedState.SUPERSEDED)
         assert _build_evidence_needs_block(case) == ""
 
     def test_only_fulfilled_in_diagnosis_renders_empty_string(self):
         """FULFILLED is excluded by default in DIAGNOSIS — pool with only
         fulfilled needs surfaces no block."""
         case = _make_case(stage=InvestigationStage.DIAGNOSIS)
-        _make_need(case, status=NeedStatus.FULFILLED)
+        _make_need(case, state=NeedState.FULFILLED)
         assert _build_evidence_needs_block(case) == ""
 
 
@@ -191,7 +191,7 @@ class TestProgressiveActivation:
 class TestDiagnosisStageFilter:
     def test_pending_need_renders(self):
         case = _make_case(stage=InvestigationStage.DIAGNOSIS)
-        need = _make_need(case, status=NeedStatus.PENDING)
+        need = _make_need(case, state=NeedState.PENDING)
         out = _build_evidence_needs_block(case)
         assert "<evidence_needs>" in out
         assert "</evidence_needs>" in out
@@ -199,7 +199,7 @@ class TestDiagnosisStageFilter:
 
     def test_partially_met_need_renders(self):
         case = _make_case(stage=InvestigationStage.DIAGNOSIS)
-        need = _make_need(case, status=NeedStatus.PARTIALLY_MET)
+        need = _make_need(case, state=NeedState.PARTIALLY_MET)
         out = _build_evidence_needs_block(case)
         assert need.need_id in out
         # Non-PENDING status is surfaced in the header line
@@ -207,16 +207,16 @@ class TestDiagnosisStageFilter:
 
     def test_fulfilled_excluded_in_diagnosis(self):
         case = _make_case(stage=InvestigationStage.DIAGNOSIS)
-        pending = _make_need(case, status=NeedStatus.PENDING)
-        fulfilled = _make_need(case, status=NeedStatus.FULFILLED)
+        pending = _make_need(case, state=NeedState.PENDING)
+        fulfilled = _make_need(case, state=NeedState.FULFILLED)
         out = _build_evidence_needs_block(case)
         assert pending.need_id in out
         assert fulfilled.need_id not in out
 
     def test_superseded_excluded_in_diagnosis(self):
         case = _make_case(stage=InvestigationStage.DIAGNOSIS)
-        pending = _make_need(case, status=NeedStatus.PENDING)
-        superseded = _make_need(case, status=NeedStatus.SUPERSEDED)
+        pending = _make_need(case, state=NeedState.PENDING)
+        superseded = _make_need(case, state=NeedState.SUPERSEDED)
         out = _build_evidence_needs_block(case)
         assert pending.need_id in out
         assert superseded.need_id not in out
@@ -268,7 +268,7 @@ class TestPostDiagnosisReVerificationException:
         """A FULFILLED need with no corresponding evidence row no longer
         produces a re-verification entry (the anchor moved to evidence)."""
         case = _make_case(stage=InvestigationStage.TREATMENT)
-        fulfilled = _make_need(case, status=NeedStatus.FULFILLED)
+        fulfilled = _make_need(case, state=NeedState.FULFILLED)
         out = _build_evidence_needs_block(case)
         # No presence-evidence rows → no re-verification section at all.
         assert "Re-verification checklist" not in out
@@ -287,8 +287,8 @@ class TestPostDiagnosisReVerificationException:
             stage=InvestigationStage.MITIGATION,
             path=InvestigationPath.MITIGATION_FIRST,
         )
-        superseded = _make_need(case, status=NeedStatus.SUPERSEDED)
-        pending = _make_need(case, status=NeedStatus.PENDING)
+        superseded = _make_need(case, state=NeedState.SUPERSEDED)
+        pending = _make_need(case, state=NeedState.PENDING)
         out = _build_evidence_needs_block(case)
         assert superseded.need_id not in out
         assert pending.need_id in out  # outstanding-needs section still works
@@ -334,7 +334,7 @@ class TestNeedFormatting:
         the default status; non-default statuses (PARTIALLY_MET,
         FULFILLED) are explicit."""
         case = _make_case()
-        _make_need(case, status=NeedStatus.PENDING)
+        _make_need(case, state=NeedState.PENDING)
         out = _build_evidence_needs_block(case)
         assert "PENDING" not in out
 
@@ -410,7 +410,7 @@ class TestContextBuilderIntegration:
     def test_key_present_for_non_investigating_case(self):
         """Even outside INVESTIGATING the key must be present so the
         template format call doesn't KeyError."""
-        case = _make_case(status=CaseStatus.INQUIRY)
+        case = _make_case(state=CaseState.INQUIRY)
         ctx = build_investigation_context(case, "user message", max_tokens=8000)
         assert "evidence_needs" in ctx
         assert ctx["evidence_needs"] == ""
@@ -429,7 +429,7 @@ class TestOutstandingVsReVerificationSplit:
 
     def test_diagnosis_uses_outstanding_preamble_only(self):
         case = _make_case(stage=InvestigationStage.DIAGNOSIS)
-        _make_need(case, status=NeedStatus.PENDING)
+        _make_need(case, state=NeedState.PENDING)
         out = _build_evidence_needs_block(case)
         assert "Outstanding needs" in out
         assert "Re-verification checklist" not in out
@@ -450,7 +450,7 @@ class TestOutstandingVsReVerificationSplit:
             stage=InvestigationStage.MITIGATION,
             path=InvestigationPath.MITIGATION_FIRST,
         )
-        _make_need(case, status=NeedStatus.PENDING)
+        _make_need(case, state=NeedState.PENDING)
         out = _build_evidence_needs_block(case)
         assert "Outstanding needs" in out
         assert "Re-verification checklist" not in out
@@ -460,7 +460,7 @@ class TestOutstandingVsReVerificationSplit:
             stage=InvestigationStage.MITIGATION,
             path=InvestigationPath.MITIGATION_FIRST,
         )
-        pending = _make_need(case, status=NeedStatus.PENDING, request_text="open work")
+        pending = _make_need(case, state=NeedState.PENDING, request_text="open work")
         finding = _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
         out = _build_evidence_needs_block(case)
         assert "Outstanding needs" in out
@@ -492,7 +492,7 @@ class TestAntiAnchoringFraming:
 
     def test_framing_present_in_diagnosis_outstanding_only(self):
         case = _make_case(stage=InvestigationStage.DIAGNOSIS)
-        _make_need(case, status=NeedStatus.PENDING)
+        _make_need(case, state=NeedState.PENDING)
         out = _build_evidence_needs_block(case)
         assert _ANTI_ANCHORING_MARKER in out
 
@@ -501,7 +501,7 @@ class TestAntiAnchoringFraming:
             stage=InvestigationStage.MITIGATION,
             path=InvestigationPath.MITIGATION_FIRST,
         )
-        _make_need(case, status=NeedStatus.PENDING)
+        _make_need(case, state=NeedState.PENDING)
         out = _build_evidence_needs_block(case)
         assert _ANTI_ANCHORING_MARKER in out
 
@@ -519,7 +519,7 @@ class TestAntiAnchoringFraming:
             stage=InvestigationStage.MITIGATION,
             path=InvestigationPath.MITIGATION_FIRST,
         )
-        _make_need(case, status=NeedStatus.PENDING)
+        _make_need(case, state=NeedState.PENDING)
         _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
         out = _build_evidence_needs_block(case)
         assert _ANTI_ANCHORING_MARKER in out
@@ -534,7 +534,7 @@ class TestAntiAnchoringFraming:
             stage=InvestigationStage.MITIGATION,
             path=InvestigationPath.MITIGATION_FIRST,
         )
-        _make_need(case, status=NeedStatus.PENDING)
+        _make_need(case, state=NeedState.PENDING)
         _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
         out = _build_evidence_needs_block(case)
         assert out.index(_ANTI_ANCHORING_MARKER) < out.index("Outstanding needs")

@@ -26,7 +26,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     InMemoryInvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentType,
@@ -34,7 +34,7 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     InvestigationStrategy,
 )
 
@@ -113,7 +113,7 @@ async def sample_case(case_repo) -> Case:
         organization_id=create_test_org_id(),
         title="Benchmark Test Case",
         description="Case for performance benchmarks",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
     return await case_repo.save(case)
@@ -198,7 +198,7 @@ class TestCreateSessionBenchmarks:
                 organization_id=sample_case.organization_id,
                 title=f"Benchmark Case {i}",
                 description="",
-                status=CaseStatus.INQUIRY,
+                state=CaseState.INQUIRY,
             )
             await case_repo.save(case)
 
@@ -308,7 +308,7 @@ class TestPauseResumeSessionBenchmarks:
                 organization_id=sample_case.organization_id,
                 title=f"Pause Test Case {i}",
                 description="",
-                status=CaseStatus.INQUIRY,
+                state=CaseState.INQUIRY,
             )
             await case_repo.save(case)
 
@@ -345,7 +345,7 @@ class TestPauseResumeSessionBenchmarks:
                 organization_id=sample_case.organization_id,
                 title=f"Resume Test Case {i}",
                 description="",
-                status=CaseStatus.INQUIRY,
+                state=CaseState.INQUIRY,
             )
             await case_repo.save(case)
 
@@ -394,7 +394,7 @@ class TestCompleteSessionBenchmarks:
                 organization_id=sample_case.organization_id,
                 title=f"Complete Test Case {i}",
                 description="",
-                status=CaseStatus.INQUIRY,
+                state=CaseState.INQUIRY,
             )
             await case_repo.save(case)
 

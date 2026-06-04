@@ -33,7 +33,7 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseAction,
     CaseEntity,
-    CaseStatus,
+    CaseState,
     DocumentationData,
     EntityType,
     EscalationState,
@@ -49,7 +49,7 @@ from faultmaven.modules.case.domain.models import (
     InvestigationStrategy,
     NeedPriority,
     NeedPurpose,
-    NeedStatus,
+    NeedState,
     PathSelection,
     ProblemVerification,
     ProposedAction,
@@ -154,7 +154,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     - Case load: ~10ms (single query + JOINs)
     - Evidence filtering: ~5ms (indexed queries on normalized table)
     - Search: ~15ms (tsvector search on cases.title + inquiry text)
-    - Hypothesis tracking: ~3ms (status index lookup)
+    - Hypothesis tracking: ~3ms (state index lookup)
     """
 
     def __init__(
@@ -274,7 +274,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                         json_agg(DISTINCT jsonb_build_object(
                             'hypothesis_id', h.hypothesis_id,
                             'statement', h.statement,
-                            'status', h.status,
+                            'state', h.state,
                             'likelihood', h.likelihood,
                             'initial_likelihood', h.initial_likelihood,
                             'generated_at_turn', h.generated_at_turn,
@@ -539,7 +539,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             need_query = text("""
                 SELECT
                     need_id, purpose, request_text, rationale,
-                    priority, status,
+                    priority, state,
                     motivating_hypothesis_ids,
                     superseded_reason,
                     created_at_turn, created_at, updated_at
@@ -594,7 +594,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """Reconstruct an ``EvidenceNeed`` from a SELECT row.
 
         Column order: ``need_id, purpose, request_text, rationale,
-        priority, status, motivating_hypothesis_ids (JSONB),
+        priority, state, motivating_hypothesis_ids (JSONB),
         superseded_reason, created_at_turn, created_at, updated_at``.
         On PG, JSONB is returned as a Python list directly (asyncpg);
         on dialect-compatibility paths a JSON string is also tolerated.
@@ -618,7 +618,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 request_text=row[2],
                 rationale=row[3],
                 priority=NeedPriority(row[4]),
-                status=NeedStatus(row[5]),
+                state=NeedState(row[5]),
                 motivating_hypothesis_ids=motivating,
                 fulfilling_evidence_ids=fulfilling_evidence_ids,
                 superseded_reason=row[7],
@@ -701,7 +701,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         self,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        status: Optional[CaseStatus] = None,
+        state: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[List[Case], int]:
@@ -713,7 +713,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Args:
             user_id: Filter by user
             organization_id: Filter by organization
-            status: Filter by status
+            state: Filter by state
             limit: Maximum results
             offset: Pagination offset
 
@@ -733,9 +733,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 where_clauses.append("organization_id = :organization_id")
                 params["organization_id"] = organization_id
 
-            if status:
-                where_clauses.append("status = :status")
-                params["status"] = status.value
+            if state:
+                where_clauses.append("state = :state")
+                params["state"] = state.value
 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -1536,9 +1536,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text("""
                 SELECT
                     COUNT(DISTINCT h.hypothesis_id) as hypothesis_count,
-                    COUNT(DISTINCT h.hypothesis_id) FILTER (WHERE h.status = 'validated') as validated_hypotheses,
+                    COUNT(DISTINCT h.hypothesis_id) FILTER (WHERE h.state = 'validated') as validated_hypotheses,
                     COUNT(DISTINCT s.solution_id) as solution_count,
-                    COUNT(DISTINCT s.solution_id) FILTER (WHERE s.status = 'implemented') as implemented_solutions,
+                    COUNT(DISTINCT s.solution_id) FILTER (WHERE s.state = 'implemented') as implemented_solutions,
                     COUNT(DISTINCT m.message_id) as message_count,
                     COUNT(DISTINCT f.file_id) as file_count,
                     SUM(f.size_bytes) as total_file_size
@@ -1605,7 +1605,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 WHERE case_id IN (
                     SELECT case_id
                     FROM cases
-                    WHERE status = 'closed'
+                    WHERE state = 'closed'
                     AND closed_at IS NOT NULL
                     AND closed_at < NOW() - make_interval(days := :max_age_days)
                     LIMIT :batch_size
@@ -1670,7 +1670,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 title = :title,
                 description = :description,
                 investigation_strategy = :investigation_strategy,
-                status = :status,
+                state = :state,
                 closure_reason = :closure_reason,
                 current_turn = :current_turn,
                 turns_without_progress = :turns_without_progress,
@@ -1708,7 +1708,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             insert_query = text(f"""
                 INSERT INTO cases (
                     case_id, user_id, organization_id, title, description, investigation_strategy,
-                    status, closure_reason, current_turn, turns_without_progress,
+                    state, closure_reason, current_turn, turns_without_progress,
                     created_at, updated_at, last_activity_at, resolved_at, closed_at,
                     disposition_eligibility,
                     inquiry, problem_verification, working_conclusion,
@@ -1717,7 +1717,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     version
                 ) VALUES (
                     :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
-                    :status, :closure_reason, :current_turn, :turns_without_progress,
+                    :state, :closure_reason, :current_turn, :turns_without_progress,
                     :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
                     :disposition_eligibility,
                     :inquiry{jsonb}, :problem_verification{jsonb}, :working_conclusion{jsonb},
@@ -1760,7 +1760,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             "title": case.title,
             "description": case.description or "",
             "investigation_strategy": case.investigation_strategy.value,
-            "status": case.status.value,
+            "state": case.state.value,
             "closure_reason": case.closure_reason,
             "current_turn": case.current_turn,
             "turns_without_progress": case.turns_without_progress,
@@ -1944,14 +1944,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 INSERT INTO evidence_needs (
                     need_id, case_id, organization_id,
                     purpose, request_text, rationale,
-                    priority, status,
+                    priority, state,
                     motivating_hypothesis_ids,
                     superseded_reason,
                     created_at_turn, created_at, updated_at
                 ) VALUES (
                     :need_id, :case_id, :organization_id,
                     :purpose, :request_text, :rationale,
-                    :priority, :status,
+                    :priority, :state,
                     :motivating_hypothesis_ids::jsonb,
                     :superseded_reason,
                     :created_at_turn, :created_at, :updated_at
@@ -1961,7 +1961,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     request_text = EXCLUDED.request_text,
                     rationale = EXCLUDED.rationale,
                     priority = EXCLUDED.priority,
-                    status = EXCLUDED.status,
+                    state = EXCLUDED.state,
                     motivating_hypothesis_ids = EXCLUDED.motivating_hypothesis_ids,
                     superseded_reason = EXCLUDED.superseded_reason,
                     updated_at = EXCLUDED.updated_at
@@ -1978,7 +1978,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "request_text": need.request_text,
                     "rationale": need.rationale,
                     "priority": need.priority.value,
-                    "status": need.status.value,
+                    "state": need.state.value,
                     "motivating_hypothesis_ids": json.dumps(
                         need.motivating_hypothesis_ids
                     ),
@@ -2026,7 +2026,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         for hypothesis_id, hypothesis in hypotheses_dict.items():
             query = text("""
                 INSERT INTO hypotheses (
-                    hypothesis_id, case_id, organization_id, statement, status,
+                    hypothesis_id, case_id, organization_id, statement, state,
                     likelihood, initial_likelihood,
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
                     iterations_without_progress,
@@ -2035,7 +2035,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     tested_at, concluded_at, proposed_at, updated_at, metadata,
                     created_by, updated_by
                 ) VALUES (
-                    :hypothesis_id, :case_id, :organization_id, :statement, :status,
+                    :hypothesis_id, :case_id, :organization_id, :statement, :state,
                     :likelihood, :initial_likelihood,
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
                     :iterations_without_progress,
@@ -2046,7 +2046,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 )
                 ON CONFLICT (hypothesis_id) DO UPDATE SET
                     statement = EXCLUDED.statement,
-                    status = EXCLUDED.status,
+                    state = EXCLUDED.state,
                     likelihood = EXCLUDED.likelihood,
                     generated_at_turn = EXCLUDED.generated_at_turn,
                     last_updated_turn = EXCLUDED.last_updated_turn,
@@ -2066,7 +2066,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "case_id": case_id,
                     "organization_id": organization_id,
                     "statement": hypothesis.statement,
-                    "status": hypothesis.status.value,
+                    "state": hypothesis.state.value,
                     "likelihood": hypothesis.likelihood,
                     "initial_likelihood": hypothesis.initial_likelihood,
                     "generated_at_turn": hypothesis.generated_at_turn,
@@ -2164,13 +2164,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         for solution in solutions_list:
             applied_at = solution.applied_at
             verified_at = solution.verified_at
-            status = self._derive_solution_status(solution)
+            state = self._derive_solution_status(solution)
 
             query = text("""
                 INSERT INTO solutions (
                     solution_id, case_id, organization_id, solution_type, title,
                     immediate_action, longterm_fix, implementation_steps, commands, risks,
-                    description, status,
+                    description, state,
                     proposed_by, applied_by,
                     verification_method, verification_evidence_id, effectiveness,
                     verification_result, verified_at,
@@ -2179,7 +2179,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     :solution_id, :case_id, :organization_id, :solution_type, :title,
                     :immediate_action, :longterm_fix, :implementation_steps::jsonb,
                     :commands::jsonb, :risks::jsonb,
-                    :description, :status,
+                    :description, :state,
                     :proposed_by, :applied_by,
                     :verification_method, :verification_evidence_id, :effectiveness,
                     :verification_result, :verified_at,
@@ -2194,7 +2194,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     commands = EXCLUDED.commands,
                     risks = EXCLUDED.risks,
                     description = EXCLUDED.description,
-                    status = EXCLUDED.status,
+                    state = EXCLUDED.state,
                     proposed_by = EXCLUDED.proposed_by,
                     applied_by = EXCLUDED.applied_by,
                     verification_method = EXCLUDED.verification_method,
@@ -2227,7 +2227,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                         or solution.longterm_fix
                         or solution.title
                     ),
-                    "status": status,
+                    "state": state,
                     "proposed_by": solution.proposed_by,
                     "applied_by": solution.applied_by,
                     "verification_method": solution.verification_method,
@@ -2245,7 +2245,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     @staticmethod
     def _derive_solution_status(solution: Solution) -> str:
         """Map Pydantic Solution lifecycle fields to the schema's
-        status CHECK vocabulary. Mirrors the SQLite repo logic.
+        state CHECK vocabulary. Mirrors the SQLite repo logic.
         """
         if solution.verified_at is not None:
             return "verified"
@@ -2407,10 +2407,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         for transition in new_transitions:
             query = text("""
                 INSERT INTO case_actions (
-                    case_id, organization_id, from_status, to_status, reason,
+                    case_id, organization_id, from_state, to_state, reason,
                     triggered_by, transitioned_at, metadata
                 ) VALUES (
-                    :case_id, :organization_id, :from_status, :to_status, :reason,
+                    :case_id, :organization_id, :from_state, :to_state, :reason,
                     :triggered_by, :transitioned_at, :metadata::jsonb
                 )
             """)
@@ -2420,10 +2420,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "case_id": case_id,
                     "organization_id": organization_id,
-                    "from_status": (
-                        transition.from_status.value if transition.from_status else None
+                    "from_state": (
+                        transition.from_state.value if transition.from_state else None
                     ),
-                    "to_status": transition.to_status.value,
+                    "to_state": transition.to_state.value,
                     "reason": (
                         transition.reason if hasattr(transition, "reason") else None
                     ),
@@ -2440,7 +2440,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         in ``_to_domain``). Rows are returned ordered oldest-first.
         """
         query = text("""
-            SELECT from_status, to_status, reason, triggered_by, transitioned_at
+            SELECT from_state, to_state, reason, triggered_by, transitioned_at
             FROM case_actions
             WHERE case_id = :case_id
             ORDER BY transitioned_at ASC, transition_id ASC
@@ -2451,10 +2451,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         for row in rows:
             actions.append(
                 CaseAction(
-                    from_status=(
-                        CaseStatus(row.from_status) if row.from_status else None
-                    ),
-                    to_status=CaseStatus(row.to_status),
+                    from_state=(CaseState(row.from_state) if row.from_state else None),
+                    to_state=CaseState(row.to_state),
                     triggered_at=row.transitioned_at,
                     triggered_by=row.triggered_by,
                     reason=row.reason or "",
@@ -2555,7 +2553,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         # (rare; pre-redesign rows that fell through the migration).
         description = row.description or ""
         if (
-            CaseStatus(row.status) == CaseStatus.INVESTIGATING
+            CaseState(row.state) == CaseState.INVESTIGATING
             and (not description or not description.strip())
             and inquiry.proposed_problem_statement
         ):
@@ -2576,7 +2574,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             "user_id": row.user_id,
             "organization_id": row.organization_id,
             "title": row.title,
-            "status": CaseStatus(row.status),
+            "state": CaseState(row.state),
             "action_history": actions_data,
             "closure_reason": row.closure_reason,
             "disposition_eligibility": (

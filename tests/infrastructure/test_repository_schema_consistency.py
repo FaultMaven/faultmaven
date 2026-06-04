@@ -23,7 +23,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.modules.case.domain.models import Case, CaseStatus, UploadedFile
+from faultmaven.modules.case.domain.models import Case, CaseState, UploadedFile
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
@@ -119,7 +119,7 @@ class TestUploadedFileSchemaConsistency:
             description="Schema-consistency test case",
             user_id="user_123",
             organization_id="org_123",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],
@@ -246,7 +246,7 @@ class TestRepositoryArchitecture:
             title="User 1 Case",
             user_id="user_001",  # Required field, not owner_id
             organization_id="org_001",  # Required field
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],
@@ -257,7 +257,7 @@ class TestRepositoryArchitecture:
             title="User 2 Case",
             user_id="user_002",  # Required field, not owner_id
             organization_id="org_002",  # Required field
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],
@@ -328,7 +328,7 @@ class TestDatabaseSchemaIntegration:
             description="Roundtrip integration test",
             user_id="user_integration_001",
             organization_id="org_integration_001",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],
@@ -374,7 +374,7 @@ class TestDatabaseSchemaIntegration:
             description="Null-fields integration test",
             user_id="user_integration_002",
             organization_id="org_integration_002",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],

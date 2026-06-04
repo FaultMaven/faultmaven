@@ -28,14 +28,14 @@ from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.repository_factory import (
     reset_inmemory_investigation_session_repository,
 )
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentToolCall,
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InquiryData
+from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
@@ -166,7 +166,7 @@ async def sample_case(case_repository: SQLiteCaseRepository) -> Case:
         organization_id="integration-test-org",
         title="Investigation Session Integration Test Case",
         description="Testing investigation session management",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
@@ -180,7 +180,7 @@ def create_sample_session(
     case_id: str,
     user_id: str = "integration-test-user",
     organization_id: str = "integration-test-org",
-    status: SessionStatus = SessionStatus.ACTIVE,
+    state: SessionState = SessionState.ACTIVE,
     session_goal: str = None,
     token_budget_limit: int = None,
 ) -> InvestigationSession:
@@ -190,7 +190,7 @@ def create_sample_session(
         case_id=case_id,
         user_id=user_id,
         organization_id=organization_id,
-        status=status,
+        state=state,
         session_goal=session_goal,
         token_budget_limit=token_budget_limit,
     )
@@ -249,7 +249,7 @@ async def test_full_session_lifecycle(
 
     assert created.session_id == session.session_id
     assert created.case_id == sample_case.case_id
-    assert created.status == SessionStatus.ACTIVE
+    assert created.state == SessionState.ACTIVE
     assert created.session_goal == "Find root cause of timeout issue"
     assert created.token_budget_limit == 10000
 
@@ -267,17 +267,17 @@ async def test_full_session_lifecycle(
     # Step 4: Update session (pause)
     session.pause()
     updated = await session_repository.update(session)
-    assert updated.status == SessionStatus.PAUSED
+    assert updated.state == SessionState.PAUSED
 
     # Step 5: Update session (resume)
     session.resume()
     updated = await session_repository.update(session)
-    assert updated.status == SessionStatus.ACTIVE
+    assert updated.state == SessionState.ACTIVE
 
     # Step 6: Update session (complete)
     session.complete("Root cause identified: connection pool exhaustion")
     updated = await session_repository.update(session)
-    assert updated.status == SessionStatus.COMPLETED
+    assert updated.state == SessionState.COMPLETED
     assert (
         updated.findings_summary == "Root cause identified: connection pool exhaustion"
     )
@@ -311,7 +311,7 @@ async def test_session_lifecycle_active_to_abandoned(
     session.abandon()
     updated = await session_repository.update(session)
 
-    assert updated.status == SessionStatus.ABANDONED
+    assert updated.state == SessionState.ABANDONED
     assert updated.ended_at is not None
     assert updated.total_token_usage == 300
     assert updated.total_agent_executions == 2
@@ -337,7 +337,7 @@ async def test_cascade_delete_case_to_sessions(
         organization_id="cascade-test-org",
         title="CASCADE Delete Test Case",
         description="Testing CASCADE delete",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
@@ -399,7 +399,7 @@ async def test_four_level_cascade_delete_chain(
         organization_id="cascade-test-org",
         title="Four-Level CASCADE Test",
         description="Testing full cascade chain",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
@@ -542,13 +542,13 @@ async def test_list_sessions_by_case_with_status_filter(
     """Test filtering sessions by status."""
     # Create sessions with different statuses
     active_session = create_sample_session(
-        sample_case.case_id, status=SessionStatus.ACTIVE
+        sample_case.case_id, state=SessionState.ACTIVE
     )
     paused_session = create_sample_session(
-        sample_case.case_id, status=SessionStatus.PAUSED
+        sample_case.case_id, state=SessionState.PAUSED
     )
     completed_session = create_sample_session(
-        sample_case.case_id, status=SessionStatus.COMPLETED
+        sample_case.case_id, state=SessionState.COMPLETED
     )
 
     await session_repository.create(active_session)
@@ -558,18 +558,18 @@ async def test_list_sessions_by_case_with_status_filter(
     # Test filter by ACTIVE
     active_list = await session_repository.list_by_case_id(
         sample_case.case_id,
-        status=SessionStatus.ACTIVE,
+        state=SessionState.ACTIVE,
     )
     assert len(active_list) == 1
-    assert active_list[0].status == SessionStatus.ACTIVE
+    assert active_list[0].state == SessionState.ACTIVE
 
     # Test filter by PAUSED
     paused_list = await session_repository.list_by_case_id(
         sample_case.case_id,
-        status=SessionStatus.PAUSED,
+        state=SessionState.PAUSED,
     )
     assert len(paused_list) == 1
-    assert paused_list[0].status == SessionStatus.PAUSED
+    assert paused_list[0].state == SessionState.PAUSED
 
     # Test no filter (all)
     all_list = await session_repository.list_by_case_id(sample_case.case_id)
@@ -590,7 +590,7 @@ async def test_get_active_session_single(
 
     assert result is not None
     assert result.session_id == active_session.session_id
-    assert result.status == SessionStatus.ACTIVE
+    assert result.state == SessionState.ACTIVE
 
 
 @pytest.mark.asyncio
@@ -603,7 +603,7 @@ async def test_get_active_session_returns_none_when_no_active(
     # Create only completed session
     completed_session = create_sample_session(
         sample_case.case_id,
-        status=SessionStatus.COMPLETED,
+        state=SessionState.COMPLETED,
     )
     await session_repository.create(completed_session)
 
@@ -629,7 +629,7 @@ async def test_list_sessions_by_user_pagination(
             organization_id="test-org",
             title=f"Pagination Test Case {i}",
             description="Testing pagination",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             inquiry=InquiryData(
                 proposed_problem_statement="Test problem statement",
                 problem_statement_confirmed=True,

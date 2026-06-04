@@ -88,18 +88,18 @@ class CaseActionError(AgentException):
     def __init__(
         self,
         message: str,
-        from_status: Optional[str] = None,
-        to_status: Optional[str] = None,
+        from_state: Optional[str] = None,
+        to_state: Optional[str] = None,
         reason: Optional[str] = None,
     ):
-        self.from_status = from_status
-        self.to_status = to_status
+        self.from_state = from_state
+        self.to_state = to_state
         self.reason = reason
         super().__init__(
             message,
             details={
-                "from_status": from_status,
-                "to_status": to_status,
+                "from_state": from_state,
+                "to_state": to_state,
                 "reason": reason,
             },
         )

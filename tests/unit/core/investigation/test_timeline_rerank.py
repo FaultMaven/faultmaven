@@ -30,7 +30,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
 )
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -104,7 +104,7 @@ def _case(evidence_list: list[Evidence]) -> Case:
         description="Test",
         user_id="user_1",
         organization_id="org_1",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,

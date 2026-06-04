@@ -25,7 +25,7 @@ from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseEntity,
-    CaseStatus,
+    CaseState,
     EntityType,
     Evidence,
     EvidenceCategory,
@@ -82,7 +82,7 @@ def _make_case(
         user_id=user_id,
         organization_id=organization_id,
         title="Test case",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
     )
 
 

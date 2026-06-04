@@ -5,7 +5,7 @@ investigation sessions within cases.
 
 Features:
 - Full CRUD operations for investigation sessions
-- Query by case with optional status filtering
+- Query by case with optional state filtering
 - Get active session for a case
 - Pagination support
 - Support for both in-memory and database backends
@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from faultmaven.infrastructure.persistence.models import InvestigationSessionModel
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -122,13 +122,13 @@ class InvestigationSessionRepository(ABC):
     async def list_by_case_id(
         self,
         case_id: str,
-        status: Optional[SessionStatus] = None,
+        state: Optional[SessionState] = None,
     ) -> List[InvestigationSession]:
-        """List all sessions for a case, optionally filtered by status.
+        """List all sessions for a case, optionally filtered by state.
 
         Args:
             case_id: Case identifier
-            status: Optional filter by session status
+            state: Optional filter by session state
 
         Returns:
             List of sessions ordered by started_at DESC
@@ -203,7 +203,7 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
                 case_id=session.case_id,
                 user_id=session.user_id,
                 organization_id=session.organization_id,
-                status=session.status.value,
+                state=session.state.value,
                 started_at=session.started_at,
                 ended_at=session.ended_at,
                 last_activity_at=session.last_activity_at,
@@ -266,7 +266,7 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
             ) from e
 
     async def update(self, session: InvestigationSession) -> InvestigationSession:
-        """Update session status and fields."""
+        """Update session state and fields."""
         try:
             session.updated_at = datetime.now(timezone.utc)
 
@@ -274,7 +274,7 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
                 update(InvestigationSessionModel)
                 .where(InvestigationSessionModel.session_id == session.session_id)
                 .values(
-                    status=session.status.value,
+                    state=session.state.value,
                     ended_at=session.ended_at,
                     last_activity_at=session.last_activity_at,
                     total_duration_ms=session.total_duration_ms,
@@ -340,14 +340,14 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
     async def list_by_case_id(
         self,
         case_id: str,
-        status: Optional[SessionStatus] = None,
+        state: Optional[SessionState] = None,
     ) -> List[InvestigationSession]:
-        """List all sessions for a case, optionally filtered by status."""
+        """List all sessions for a case, optionally filtered by state."""
         try:
             # Build query conditions
             conditions = [InvestigationSessionModel.case_id == case_id]
-            if status:
-                conditions.append(InvestigationSessionModel.status == status.value)
+            if state:
+                conditions.append(InvestigationSessionModel.state == state.value)
 
             where_clause = and_(*conditions)
 
@@ -376,7 +376,7 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
                 .where(
                     and_(
                         InvestigationSessionModel.case_id == case_id,
-                        InvestigationSessionModel.status == SessionStatus.ACTIVE.value,
+                        InvestigationSessionModel.state == SessionState.ACTIVE.value,
                     )
                 )
                 .order_by(InvestigationSessionModel.started_at.desc())
@@ -459,7 +459,7 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
             case_id=model.case_id,
             user_id=model.user_id,
             organization_id=model.organization_id,
-            status=SessionStatus(model.status),
+            state=SessionState(model.state),
             started_at=self._ensure_tz_aware(model.started_at),
             ended_at=self._ensure_tz_aware(model.ended_at),
             last_activity_at=self._ensure_tz_aware(model.last_activity_at),
@@ -513,7 +513,7 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
         return deepcopy(session)
 
     async def update(self, session: InvestigationSession) -> InvestigationSession:
-        """Update session status and fields."""
+        """Update session state and fields."""
         if session.session_id not in self._sessions:
             raise ValueError(f"Investigation session {session.session_id} not found")
 
@@ -535,13 +535,13 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
     async def list_by_case_id(
         self,
         case_id: str,
-        status: Optional[SessionStatus] = None,
+        state: Optional[SessionState] = None,
     ) -> List[InvestigationSession]:
-        """List all sessions for a case, optionally filtered by status."""
+        """List all sessions for a case, optionally filtered by state."""
         sessions = [s for s in self._sessions.values() if s.case_id == case_id]
 
-        if status:
-            sessions = [s for s in sessions if s.status == status]
+        if state:
+            sessions = [s for s in sessions if s.state == state]
 
         # Sort by started_at descending
         sessions.sort(key=lambda s: s.started_at, reverse=True)
@@ -553,7 +553,7 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
         active_sessions = [
             s
             for s in self._sessions.values()
-            if s.case_id == case_id and s.status == SessionStatus.ACTIVE
+            if s.case_id == case_id and s.state == SessionState.ACTIVE
         ]
 
         if not active_sessions:

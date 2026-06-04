@@ -30,8 +30,8 @@ from faultmaven.api.models import (
     SessionUpdateRequest,
     ValidationErrorResponse,
 )
-from faultmaven.models.investigation_session import SessionStatus
-from faultmaven.modules.case.domain.models import CaseSeverity, CaseStatus
+from faultmaven.models.investigation_session import SessionState
+from faultmaven.modules.case.domain.models import CaseSeverity, CaseState
 
 # ============================================================
 # CaseCreateRequest Tests
@@ -133,7 +133,7 @@ class TestCaseUpdateRequest:
         assert request.title is None
         assert request.description is None
         assert request.severity is None
-        assert request.status is None
+        assert request.state is None
         assert request.assigned_to is None
         assert request.metadata is None
 
@@ -141,10 +141,10 @@ class TestCaseUpdateRequest:
         """Test partial update."""
         request = CaseUpdateRequest(
             title="Updated Title",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
         )
         assert request.title == "Updated Title"
-        assert request.status == CaseStatus.INVESTIGATING
+        assert request.state == CaseState.INVESTIGATING
         assert request.description is None
 
     def test_update_request_title_validation(self):
@@ -187,7 +187,7 @@ class TestCaseResponse:
             title="Test Case",
             description="Description",
             severity=CaseSeverity.HIGH,
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             assigned_to="user_assigned",
             created_at=now,
             updated_at=now,
@@ -197,7 +197,7 @@ class TestCaseResponse:
         )
         assert response.case_id == "case_123"
         assert response.severity == CaseSeverity.HIGH
-        assert response.status == CaseStatus.INQUIRY
+        assert response.state == CaseState.INQUIRY
 
     def test_case_response_from_domain(self):
         """Test creating response from domain model."""
@@ -207,7 +207,7 @@ class TestCaseResponse:
         mock_case.user_id = "user_789"
         mock_case.title = "Test Case"
         mock_case.description = "Description"
-        mock_case.status = CaseStatus.INVESTIGATING
+        mock_case.state = CaseState.INVESTIGATING
         mock_case.assigned_to = None
         mock_case.created_at = datetime.now(timezone.utc)
         mock_case.updated_at = datetime.now(timezone.utc)
@@ -231,7 +231,7 @@ class TestCaseResponse:
         mock_case.user_id = "user_789"
         mock_case.title = "Test Case"
         mock_case.description = "Description"
-        mock_case.status = CaseStatus.INQUIRY
+        mock_case.state = CaseState.INQUIRY
         mock_case.assigned_to = None
         mock_case.created_at = datetime.now(timezone.utc)
         mock_case.updated_at = datetime.now(timezone.utc)
@@ -259,7 +259,7 @@ class TestCaseListResponse:
             title="Test Case",
             description="Description",
             severity=CaseSeverity.LOW,
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             created_at=now,
             updated_at=now,
         )
@@ -350,7 +350,7 @@ class TestSessionResponse:
             case_id="case_456",
             user_id="user_789",
             organization_id="org_abc",
-            status=SessionStatus.ACTIVE,
+            state=SessionState.ACTIVE,
             started_at=now,
             ended_at=None,
             last_activity_at=now,
@@ -364,7 +364,7 @@ class TestSessionResponse:
             updated_at=now,
         )
         assert response.session_id == "session_123"
-        assert response.status == SessionStatus.ACTIVE
+        assert response.state == SessionState.ACTIVE
         assert response.total_token_usage == 1000
 
     def test_session_response_from_domain(self):
@@ -375,7 +375,7 @@ class TestSessionResponse:
         mock_session.case_id = "case_456"
         mock_session.user_id = "user_789"
         mock_session.organization_id = "org_abc"
-        mock_session.status = SessionStatus.PAUSED
+        mock_session.state = SessionState.PAUSED
         mock_session.started_at = now
         mock_session.ended_at = None
         mock_session.last_activity_at = now
@@ -390,7 +390,7 @@ class TestSessionResponse:
 
         response = SessionResponse.from_domain(mock_session)
         assert response.session_id == "session_123"
-        assert response.status == SessionStatus.PAUSED
+        assert response.state == SessionState.PAUSED
         assert response.total_duration_ms == 60000
 
 
@@ -486,7 +486,7 @@ class TestEdgeCases:
     """Tests for edge cases and special scenarios."""
 
     def test_case_response_with_closed_status(self):
-        """Test case response with closed status."""
+        """Test case response with closed state."""
         now = datetime.now(timezone.utc)
         response = CaseResponse(
             case_id="case_123",
@@ -495,25 +495,25 @@ class TestEdgeCases:
             title="Closed Case",
             description="Description",
             severity=CaseSeverity.CRITICAL,
-            status=CaseStatus.CLOSED,
+            state=CaseState.CLOSED,
             created_at=now,
             updated_at=now,
             closed_at=now,
             resolution="Issue was a duplicate",
         )
-        assert response.status == CaseStatus.CLOSED
+        assert response.state == CaseState.CLOSED
         assert response.closed_at is not None
         assert response.resolution == "Issue was a duplicate"
 
     def test_session_response_completed(self):
-        """Test session response with completed status."""
+        """Test session response with completed state."""
         now = datetime.now(timezone.utc)
         response = SessionResponse(
             session_id="session_123",
             case_id="case_456",
             user_id="user_789",
             organization_id="org_abc",
-            status=SessionStatus.COMPLETED,
+            state=SessionState.COMPLETED,
             started_at=now,
             ended_at=now,
             last_activity_at=now,
@@ -526,7 +526,7 @@ class TestEdgeCases:
             created_at=now,
             updated_at=now,
         )
-        assert response.status == SessionStatus.COMPLETED
+        assert response.state == SessionState.COMPLETED
         assert response.findings_summary == "Root cause was memory leak"
         assert response.ended_at is not None
 

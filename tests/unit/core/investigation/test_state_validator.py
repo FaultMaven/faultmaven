@@ -14,14 +14,14 @@ from faultmaven.core.investigation.state_validator import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
-    HypothesisStatus,
+    HypothesisState,
     InquiryData,
     InvestigationProgress,
     ProblemVerification,
@@ -39,7 +39,7 @@ def base_case():
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         user_id="user_123",
         organization_id="org_123",
         description="Test description",
@@ -109,14 +109,14 @@ class TestMilestoneOrdering:
 
 
 class TestStatusConsistency:
-    """Test status-progress consistency validation."""
+    """Test state-progress consistency validation."""
 
     def test_resolved_without_solution_verified(self, validator, base_case):
-        """RESOLVED status requires solution_verified milestone."""
-        # Update status and resolved_at together to pass Pydantic validation
+        """RESOLVED state requires solution_verified milestone."""
+        # Update state and resolved_at together to pass Pydantic validation
         resolved_case = base_case.model_copy(
             update={
-                "status": CaseStatus.RESOLVED,
+                "state": CaseState.RESOLVED,
                 "resolved_at": datetime.now(timezone.utc),
             }
         )
@@ -130,10 +130,10 @@ class TestStatusConsistency:
 
     def test_resolved_with_solution_verified(self, validator, base_case):
         """RESOLVED with solution_verified should be valid."""
-        # Update status and resolved_at together to pass Pydantic validation
+        # Update state and resolved_at together to pass Pydantic validation
         resolved_case = base_case.model_copy(
             update={
-                "status": CaseStatus.RESOLVED,
+                "state": CaseState.RESOLVED,
                 "resolved_at": datetime.now(timezone.utc),
             }
         )
@@ -146,7 +146,7 @@ class TestStatusConsistency:
 
     def test_investigating_without_problem_statement(self, validator, base_case):
         """INVESTIGATING should have symptom_statement."""
-        base_case.status = CaseStatus.INVESTIGATING
+        base_case.state = CaseState.INVESTIGATING
         base_case.problem_verification = None
 
         issues = validator._validate_status_consistency(base_case)
@@ -169,7 +169,7 @@ class TestHypothesisStates:
             hypothesis_id="hyp_123456789012",
             statement="Test hypothesis",
             category=HypothesisCategory.CODE,
-            status=HypothesisStatus.VALIDATED,
+            state=HypothesisState.VALIDATED,
             generated_at_turn=1,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC,
             rationale="Test hypothesis",
@@ -197,7 +197,7 @@ class TestHypothesisStates:
             hypothesis_id="hyp_123456789012",
             statement="Test hypothesis",
             category=HypothesisCategory.CODE,
-            status=HypothesisStatus.REFUTED,
+            state=HypothesisState.REFUTED,
             refutation_reason="disproved by counter-evidence",
             generated_at_turn=1,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC,
@@ -218,7 +218,7 @@ class TestHypothesisStates:
                 hypothesis_id="hyp_123456789012",
                 statement="Test hypothesis",
                 category=HypothesisCategory.CODE,
-                status=HypothesisStatus.ACTIVE,
+                state=HypothesisState.ACTIVE,
                 generated_at_turn=1,
                 generation_mode=HypothesisGenerationMode.SYSTEMATIC,
                 rationale="Test hypothesis",
@@ -247,7 +247,7 @@ class TestEvidenceLinks:
             hypothesis_id="hyp_123456789012",
             statement="Test hypothesis",
             category=HypothesisCategory.CODE,
-            status=HypothesisStatus.ACTIVE,
+            state=HypothesisState.ACTIVE,
             generated_at_turn=1,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC,
             rationale="Test hypothesis",
@@ -281,7 +281,7 @@ class TestEvidenceLinks:
             hypothesis_id="hyp_123456789012",
             statement="Test hypothesis",
             category=HypothesisCategory.CODE,
-            status=HypothesisStatus.ACTIVE,
+            state=HypothesisState.ACTIVE,
             generated_at_turn=1,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC,
             rationale="Test hypothesis",
@@ -316,7 +316,7 @@ class TestLikelihoodBounds:
             hypothesis_id="hyp_123456789012",
             statement="Test hypothesis",
             category=HypothesisCategory.CODE,
-            status=HypothesisStatus.ACTIVE,
+            state=HypothesisState.ACTIVE,
             generated_at_turn=1,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC,
             rationale="Test hypothesis",
@@ -339,7 +339,7 @@ class TestLikelihoodBounds:
                 hypothesis_id="hyp_123456789012",
                 statement="Test hypothesis",
                 category=HypothesisCategory.CODE,
-                status=HypothesisStatus.ACTIVE,
+                state=HypothesisState.ACTIVE,
                 generated_at_turn=1,
                 generation_mode=HypothesisGenerationMode.SYSTEMATIC,
                 rationale="Test hypothesis",

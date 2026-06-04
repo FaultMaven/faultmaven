@@ -5,7 +5,7 @@ Tests:
 - GET /api/v1/cases/{case_id} (200 OK)
 - GET /api/v1/cases/{case_id} (404 Not Found)
 - GET /api/v1/cases (200 OK, list)
-- GET /api/v1/cases?status=OPEN (filter)
+- GET /api/v1/cases?state=OPEN (filter)
 - PATCH /api/v1/cases/{case_id} (200 OK)
 - PATCH /api/v1/cases/{case_id} (403 Forbidden, wrong org)
 - DELETE /api/v1/cases/{case_id} (204 No Content)
@@ -31,7 +31,7 @@ from httpx import ASGITransport, AsyncClient
 from faultmaven.main import app as main_app
 from faultmaven.models.api_models import CaseSummary
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
-from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseStatus
+from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseState
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ def mock_case():
     mock.user_id = "user_789"
     mock.title = "Test Case"
     mock.description = "Test Description"
-    mock.status = CaseStatus.INQUIRY
+    mock.state = CaseState.INQUIRY
     mock.is_terminal = False
     mock.created_at = datetime.now(timezone.utc)
     mock.updated_at = datetime.now(timezone.utc)
@@ -72,7 +72,7 @@ def mock_case():
     mock.severity = CaseSeverity.MEDIUM  # Used by from_domain
 
     # Investigation stage and progress (v2.0)
-    mock.current_stage = None  # None for INQUIRY status (only set for INVESTIGATING)
+    mock.current_stage = None  # None for INQUIRY state (only set for INVESTIGATING)
     mock_progress = MagicMock()
     mock_progress.completed_milestones = []
     mock_progress.pending_milestones = ["M1", "M2", "M3"]
@@ -90,7 +90,7 @@ def mock_case_summary():
     return CaseSummary(
         case_id="case_123abc",
         title="Test Case",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         created_at=now,
         updated_at=now,
         last_activity_at=now,
@@ -442,24 +442,24 @@ class TestListCases:
     async def test_list_cases_with_status_filter(
         self, client, mock_case_service, mock_case_summary, headers
     ):
-        """Test case list with status filter."""
+        """Test case list with state filter."""
         mock_case_service.list_user_cases.return_value = [mock_case_summary]
 
         response = await client.get(
-            "/api/v1/cases?status=inquiry",
+            "/api/v1/cases?state=inquiry",
             headers=headers,
         )
 
         assert response.status_code == status.HTTP_200_OK
         mock_case_service.list_user_cases.assert_called_once()
-        # Verify the filter object passed to list_user_cases has the status filter
+        # Verify the filter object passed to list_user_cases has the state filter
         call_args = mock_case_service.list_user_cases.call_args
         filters = (
             call_args[0][1]
             if len(call_args[0]) > 1
             else call_args.kwargs.get("filters")
         )
-        assert filters.status == CaseStatus.INQUIRY
+        assert filters.state == CaseState.INQUIRY
 
     async def test_list_cases_with_severity_filter(
         self, client, mock_case_service, mock_case_summary, headers
@@ -519,7 +519,7 @@ class TestUpdateCase:
     async def test_update_case_success(
         self, client, mock_case_service, mock_case, headers
     ):
-        """Test successful case update - v2.0 uses PUT and returns status response."""
+        """Test successful case update - v2.0 uses PUT and returns state response."""
         mock_case.title = "Updated Title"
         mock_case_service.get_case.return_value = mock_case
         mock_case_service.update_case.return_value = mock_case
@@ -532,7 +532,7 @@ class TestUpdateCase:
 
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        # v2.0 API returns status response, not full case object
+        # v2.0 API returns state response, not full case object
         assert data["success"] is True
         assert data["case_id"] == "case_123abc"
         assert "updated successfully" in data["message"].lower()
@@ -542,7 +542,7 @@ class TestUpdateCase:
     ):
         """Test updating multiple fields - v2.0 uses PUT method."""
         mock_case.title = "Updated"
-        mock_case.status = CaseStatus.INVESTIGATING
+        mock_case.state = CaseState.INVESTIGATING
         mock_case_service.get_case.return_value = mock_case
         mock_case_service.update_case.return_value = mock_case
 
@@ -550,7 +550,7 @@ class TestUpdateCase:
             "/api/v1/cases/case_123abc",
             json={
                 "title": "Updated",
-                "status": "investigating",
+                "state": "investigating",
             },
             headers=headers,
         )

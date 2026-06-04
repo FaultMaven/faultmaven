@@ -15,20 +15,20 @@ reconsider what you're really testing.
 
 from typing import Any, Iterable
 
-from faultmaven.modules.case.contracts import Case, CaseStatus
+from faultmaven.modules.case.contracts import Case, CaseState
 
 
-def assert_case_status(case: Case, expected: CaseStatus, context: str = "") -> None:
+def assert_case_status(case: Case, expected: CaseState, context: str = "") -> None:
     """Assert the case is in the expected status; include context on failure.
 
     Use ``context`` to describe the turn under test — failure messages
     that say "after turn 2 the case should be in INQUIRY but is
     INVESTIGATING" are far more useful than the raw status mismatch.
     """
-    msg = f"Expected status {expected.value}, got {case.status.value}"
+    msg = f"Expected status {expected.value}, got {case.state.value}"
     if context:
         msg = f"{context}: {msg}"
-    assert case.status == expected, msg
+    assert case.state == expected, msg
 
 
 def assert_handshake_deferred_at(case: Case, expected_turn: int) -> None:
@@ -86,7 +86,7 @@ def assert_no_silent_stall(case: Case, max_turns_without_progress: int = 5) -> N
     assert actual <= max_turns_without_progress, (
         f"Case turns_without_progress={actual} exceeds threshold "
         f"{max_turns_without_progress} — likely a silent stall. "
-        f"Status={case.status.value}, "
+        f"Status={case.state.value}, "
         f"inquiry.proposed_problem_statement="
         f"{case.inquiry.proposed_problem_statement!r}, "
         f"inquiry.problem_statement_confirmed="

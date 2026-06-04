@@ -29,13 +29,13 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     InMemoryInvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseStatus
+from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseState
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
@@ -184,7 +184,7 @@ class TestCaseLifecycle:
         )
 
         assert case is not None
-        assert case.status == CaseStatus.INQUIRY
+        assert case.state == CaseState.INQUIRY
 
         # Step 2: Retrieve case
         retrieved = await case_service.get_case(case.case_id, organization_id)
@@ -216,10 +216,10 @@ class TestCaseLifecycle:
         updated = await case_service.update_case(
             case.case_id,
             organization_id,
-            {"status": CaseStatus.INVESTIGATING},
+            {"state": CaseState.INVESTIGATING},
         )
 
-        assert updated.status == CaseStatus.INVESTIGATING
+        assert updated.state == CaseState.INVESTIGATING
         assert updated.title == "DB performance issue"
 
         # Step 4: Close case
@@ -228,7 +228,7 @@ class TestCaseLifecycle:
             organization_id,
         )
 
-        assert closed.status == CaseStatus.RESOLVED
+        assert closed.state == CaseState.RESOLVED
         assert closed.resolved_at is not None
         # closure_reason is None for RESOLVED — sub-categorization would
         # be redundant with the status itself. The free-form resolution
@@ -508,7 +508,7 @@ class TestCaseStateTransitions:
             severity=CaseSeverity.LOW,
         )
 
-        assert case.status == CaseStatus.INQUIRY
+        assert case.state == CaseState.INQUIRY
 
         # Set inquiry fields required for INVESTIGATING status
         case_from_repo = await case_service.case_repo.get(case.case_id)
@@ -520,10 +520,10 @@ class TestCaseStateTransitions:
         updated = await case_service.update_case(
             case.case_id,
             organization_id,
-            {"status": CaseStatus.INVESTIGATING},
+            {"state": CaseState.INVESTIGATING},
         )
 
-        assert updated.status == CaseStatus.INVESTIGATING
+        assert updated.state == CaseState.INVESTIGATING
 
     @pytest.mark.asyncio
     async def test_transition_investigating_to_resolved(self, case_service):
@@ -547,12 +547,12 @@ class TestCaseStateTransitions:
         await case_service.case_repo.save(case_from_repo)
 
         await case_service.update_case(
-            case.case_id, organization_id, {"status": CaseStatus.INVESTIGATING}
+            case.case_id, organization_id, {"state": CaseState.INVESTIGATING}
         )
 
         closed = await case_service.close_case(case.case_id, organization_id)
 
-        assert closed.status == CaseStatus.RESOLVED
+        assert closed.state == CaseState.RESOLVED
 
     @pytest.mark.asyncio
     async def test_cannot_close_already_closed_case(self, case_service):
@@ -609,7 +609,7 @@ class TestCaseDetails:
             case_id=case.case_id,
             user_id=user_id,
             organization_id=organization_id,
-            status=SessionStatus.ACTIVE,
+            state=SessionState.ACTIVE,
         )
         await session_repo.create(session)
 

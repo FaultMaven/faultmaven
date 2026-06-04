@@ -21,7 +21,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     InquiryData,
     ProblemVerification,
 )
@@ -105,7 +105,7 @@ def base_case():
     return Case(
         case_id="case_fc1234567890",  # Exactly 17 chars
         title="Test Function Calling",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         user_id="user_123",
         organization_id="org_123",
         description="Test function calling mode",

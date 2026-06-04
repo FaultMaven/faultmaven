@@ -26,7 +26,7 @@ from faultmaven.core.investigation.prompts.templates import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     InquiryData,
     InvestigationPath,
     PathSelection,
@@ -156,7 +156,7 @@ def _make_case(
     case = Case(
         case_id="case_abcdef012345",
         title="Test case",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         user_id="test-user",
         organization_id="test-org",
         description="Production API returning 503s",

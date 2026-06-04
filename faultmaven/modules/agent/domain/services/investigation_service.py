@@ -45,7 +45,7 @@ from faultmaven.models.api_models import (
 )
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import Case, CaseStatus
+from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
 from faultmaven.modules.case.domain.models import (
     Evidence,
@@ -634,8 +634,8 @@ class InvestigationService:
                     result = await self._handle_status_transition(
                         case=case,
                         user_message=query or "",
-                        from_status=intent.from_status if intent else None,
-                        to_status=intent.to_status if intent else None,
+                        from_state=intent.from_state if intent else None,
+                        to_state=intent.to_state if intent else None,
                         user_confirmed=(
                             (intent.user_confirmed or False) if intent else False
                         ),
@@ -780,7 +780,7 @@ class InvestigationService:
                 milestones_completed=result.get("metadata", {}).get(
                     "milestones_completed", []
                 ),
-                case_status=updated_case.status,
+                case_state=updated_case.state,
                 progress_made=result.get("metadata", {}).get("progress_made", False),
                 attachments_processed=[
                     AttachmentResult(
@@ -806,7 +806,7 @@ class InvestigationService:
 
             logger.info(
                 f"Processed turn {response.turn_number} for case {case_id}, "
-                f"status={response.case_status}, milestones={len(response.milestones_completed)}, "
+                f"status={response.case_state}, milestones={len(response.milestones_completed)}, "
                 f"attachments={len(uploaded_files_this_turn)}, messages={updated_case.message_count}"
             )
 
@@ -865,7 +865,7 @@ class InvestigationService:
             # Return progress summary
             return {
                 "case_id": case.case_id,
-                "status": case.status.value,
+                "state": case.state.value,
                 "current_stage": (
                     case.current_stage.value if case.current_stage else None
                 ),
@@ -1109,8 +1109,8 @@ class InvestigationService:
         self,
         case: "Case",
         user_message: str,
-        from_status: Optional[str],
-        to_status: Optional[str],
+        from_state: Optional[str],
+        to_state: Optional[str],
         user_confirmed: bool,
     ) -> Dict[str, Any]:
         """Handle status transition intent with validation.
@@ -1118,23 +1118,23 @@ class InvestigationService:
         Args:
             case: Case entity
             user_message: User's message explaining the transition
-            from_status: Expected current status
-            to_status: Requested new status
+            from_state: Expected current status
+            to_state: Requested new status
             user_confirmed: Whether user confirmed the transition
 
         Returns:
             Result dict with agent response and updated case
         """
         logger.info(
-            f"Processing status transition: {from_status} → {to_status} "
+            f"Processing status transition: {from_state} → {to_state} "
             f"(confirmed={user_confirmed}) for case {case.case_id}"
         )
 
         # Validate transition request
-        if not to_status:
+        if not to_state:
             raise ValidationException(
-                "to_status is required for status_transition intent",
-                {"field": "to_status"},
+                "to_state is required for status_transition intent",
+                {"field": "to_state"},
             )
 
         # Delegate to milestone engine with structured intent
@@ -1144,8 +1144,8 @@ class InvestigationService:
             attachments=None,
             intent_type="status_transition",
             intent_data={
-                "from_status": from_status,
-                "to_status": to_status,
+                "from_state": from_state,
+                "to_state": to_state,
                 "user_confirmed": user_confirmed,
             },
         )
@@ -1337,9 +1337,9 @@ class InvestigationService:
                 )
 
             # Validate current status
-            if case.status != CaseStatus.INQUIRY:
+            if case.state != CaseState.INQUIRY:
                 raise ServiceException(
-                    f"Cannot transition to INVESTIGATING: case is in {case.status.value} status"
+                    f"Cannot transition to INVESTIGATING: case is in {case.state.value} status"
                 )
 
             # Ensure inquiry data is properly set for INVESTIGATING transition
@@ -1357,7 +1357,7 @@ class InvestigationService:
 
             # Update case
             case.description = confirmed_description
-            case.status = CaseStatus.INVESTIGATING
+            case.state = CaseState.INVESTIGATING
 
             # Path selection is now DEFERRED until symptom verification (Bug #3 fix)
             # Logic moved to MilestoneEngine._process_response_structured via automatic check
@@ -1608,7 +1608,7 @@ class InvestigationService:
             # Cross-field validators on Case require object.__setattr__
             # when setting multiple interdependent terminal fields.
             now = datetime.now(timezone.utc)
-            object.__setattr__(case, "status", CaseStatus.CLOSED)
+            object.__setattr__(case, "state", CaseState.CLOSED)
             object.__setattr__(case, "closure_reason", closure_reason)
             object.__setattr__(case, "closed_at", now)
 

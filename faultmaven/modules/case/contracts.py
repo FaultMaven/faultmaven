@@ -99,7 +99,7 @@ class ICaseRepository(Protocol):
         self,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        status: Optional["CaseStatus"] = None,
+        state: Optional["CaseState"] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[List["Case"], int]:
@@ -345,7 +345,7 @@ class ICaseRepository(Protocol):
 # ============================================================
 
 
-class CaseStatusDTO(str, Enum):
+class CaseStateDTO(str, Enum):
     """Public case status enum for cross-module use."""
 
     INQUIRY = "inquiry"
@@ -368,7 +368,7 @@ class CaseDTO:
 
     case_id: str
     title: str
-    status: CaseStatusDTO
+    state: CaseStateDTO
     user_id: str
     organization_id: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -384,7 +384,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     CaseAction,
     CaseEntity,
     CaseSeverity,
-    CaseStatus,
+    CaseState,
     ConfidenceLevel,
     DocumentationData,
     DocumentType,
@@ -401,7 +401,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     HypothesisCategory,
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
-    HypothesisStatus,
+    HypothesisState,
     InquiryData,
     InvestigationActionType,
     InvestigationMomentum,
@@ -414,7 +414,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     KnowledgeResolution,
     NeedPriority,
     NeedPurpose,
-    NeedStatus,
+    NeedState,
     PathSelection,
     PreliminaryUrgency,
     ProblemVerification,
@@ -438,7 +438,7 @@ __all__ = [
     # Repository and Service Contracts
     "ICaseRepository",
     # DTOs
-    "CaseStatusDTO",
+    "CaseStateDTO",
     "CaseDTO",
     # Case-owned Evidence DTOs (per module-organization-design.md)
     "EvidenceArtifactType",
@@ -471,7 +471,7 @@ __all__ = [
     "Case",
     "CaseAction",
     "CaseSeverity",
-    "CaseStatus",
+    "CaseState",
     "ConfidenceLevel",
     "InquiryData",
     "DocumentationData",
@@ -488,7 +488,7 @@ __all__ = [
     "HypothesisCategory",
     "HypothesisEvidenceLink",
     "HypothesisGenerationMode",
-    "HypothesisStatus",
+    "HypothesisState",
     "InvestigationMomentum",
     "InvestigationPath",
     "InvestigationProgress",
@@ -499,7 +499,7 @@ __all__ = [
     "KnowledgeResolution",
     "NeedPriority",
     "NeedPurpose",
-    "NeedStatus",
+    "NeedState",
     "PathSelection",
     "PreliminaryUrgency",
     "ProblemVerification",

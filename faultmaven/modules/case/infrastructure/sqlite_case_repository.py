@@ -39,7 +39,7 @@ from faultmaven.modules.case.contracts import (
     CaseCheckpoint,
     CaseEntity,
     CaseReport,
-    CaseStatus,
+    CaseState,
     DocumentationData,
     EntityType,
     EscalationState,
@@ -55,7 +55,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationStrategy,
     NeedPriority,
     NeedPurpose,
-    NeedStatus,
+    NeedState,
     PathSelection,
     ProblemVerification,
     ProposedAction,
@@ -182,7 +182,7 @@ class SQLiteCaseRepository(CaseRepository):
 
             # P3 chokepoint: refresh denormalized disposition_eligibility
             # from current case content. Single site so the column stays
-            # in sync with status/root_cause/solutions/progress without
+            # in sync with state/root_cause/solutions/progress without
             # per-mutation-site write burden.
             from faultmaven.core.investigation.terminal_transitions import (
                 derive_disposition_eligibility,
@@ -281,7 +281,7 @@ class SQLiteCaseRepository(CaseRepository):
         ``hypotheses.evidence_links`` JSON blob).
         """
         query = text("""
-            SELECT hypothesis_id, statement, status, likelihood, initial_likelihood,
+            SELECT hypothesis_id, statement, state, likelihood, initial_likelihood,
                    generated_at_turn, last_updated_turn, last_progress_at_turn,
                    iterations_without_progress,
                    category, generation_mode, rationale, retirement_reason,
@@ -302,7 +302,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "hypothesis_id": row[0],
                     "statement": row[1],
-                    "status": row[2],
+                    "state": row[2],
                     "likelihood": row[3],
                     "initial_likelihood": row[4],
                     "generated_at_turn": row[5] or 0,
@@ -643,7 +643,7 @@ class SQLiteCaseRepository(CaseRepository):
             need_query = text("""
                 SELECT
                     need_id, purpose, request_text, rationale,
-                    priority, status,
+                    priority, state,
                     motivating_hypothesis_ids,
                     superseded_reason,
                     created_at_turn, created_at, updated_at
@@ -706,7 +706,7 @@ class SQLiteCaseRepository(CaseRepository):
         """Reconstruct an ``EvidenceNeed`` from a SELECT row.
 
         Column order: ``need_id, purpose, request_text, rationale,
-        priority, status, motivating_hypothesis_ids (JSON),
+        priority, state, motivating_hypothesis_ids (JSON),
         superseded_reason, created_at_turn, created_at, updated_at``.
         ``case_id`` and ``fulfilling_evidence_ids`` are passed in by
         the caller (the row doesn't carry case_id explicitly because
@@ -739,7 +739,7 @@ class SQLiteCaseRepository(CaseRepository):
                 request_text=row[2],
                 rationale=row[3],
                 priority=NeedPriority(row[4]),
-                status=NeedStatus(row[5]),
+                state=NeedState(row[5]),
                 motivating_hypothesis_ids=motivating,
                 fulfilling_evidence_ids=fulfilling_evidence_ids,
                 superseded_reason=row[7],
@@ -780,7 +780,7 @@ class SQLiteCaseRepository(CaseRepository):
         params: dict[str, Any] = {}
         placeholders = self._bind_ids(params, case_ids)
         query = text(f"""
-            SELECT case_id, hypothesis_id, statement, status, likelihood,
+            SELECT case_id, hypothesis_id, statement, state, likelihood,
                    initial_likelihood, generated_at_turn, last_updated_turn,
                    last_progress_at_turn, iterations_without_progress,
                    category, generation_mode, rationale, retirement_reason,
@@ -802,7 +802,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "hypothesis_id": row[1],
                     "statement": row[2],
-                    "status": row[3],
+                    "state": row[3],
                     "likelihood": row[4],
                     "initial_likelihood": row[5],
                     "generated_at_turn": row[6] or 0,
@@ -1026,7 +1026,7 @@ class SQLiteCaseRepository(CaseRepository):
         self,
         user_id: str | None = None,
         organization_id: str | None = None,
-        status: CaseStatus | None = None,
+        state: CaseState | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Case], int]:
@@ -1050,9 +1050,9 @@ class SQLiteCaseRepository(CaseRepository):
                 where_clauses.append("organization_id = :organization_id")
                 params["organization_id"] = organization_id
 
-            if status:
-                where_clauses.append("status = :status")
-                params["status"] = status.value
+            if state:
+                where_clauses.append("state = :state")
+                params["state"] = state.value
 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -1925,9 +1925,9 @@ class SQLiteCaseRepository(CaseRepository):
             query = text("""
                 SELECT
                     (SELECT COUNT(*) FROM hypotheses WHERE case_id = :case_id) as hypothesis_count,
-                    (SELECT COUNT(*) FROM hypotheses WHERE case_id = :case_id AND status = 'validated') as validated_hypotheses,
+                    (SELECT COUNT(*) FROM hypotheses WHERE case_id = :case_id AND state = 'validated') as validated_hypotheses,
                     (SELECT COUNT(*) FROM solutions WHERE case_id = :case_id) as solution_count,
-                    (SELECT COUNT(*) FROM solutions WHERE case_id = :case_id AND status = 'implemented') as implemented_solutions,
+                    (SELECT COUNT(*) FROM solutions WHERE case_id = :case_id AND state = 'implemented') as implemented_solutions,
                     (SELECT COUNT(*) FROM case_messages WHERE case_id = :case_id) as message_count,
                     (SELECT COUNT(*) FROM uploaded_files WHERE case_id = :case_id) as file_count
             """)
@@ -1991,7 +1991,7 @@ class SQLiteCaseRepository(CaseRepository):
                 WHERE case_id IN (
                     SELECT case_id
                     FROM cases
-                    WHERE status = 'closed'
+                    WHERE state = 'closed'
                     AND closed_at IS NOT NULL
                     AND closed_at < datetime('now', '-' || :max_age_days || ' days')
                     LIMIT :batch_size
@@ -2039,7 +2039,7 @@ class SQLiteCaseRepository(CaseRepository):
                 organization_id = :organization_id,
                 title = :title,
                 description = :description,
-                status = :status,
+                state = :state,
                 investigation_strategy = :investigation_strategy,
                 current_turn = :current_turn,
                 turns_without_progress = :turns_without_progress,
@@ -2086,7 +2086,7 @@ class SQLiteCaseRepository(CaseRepository):
             insert_query = text("""
                 INSERT INTO cases (
                     case_id, user_id, organization_id, title, description,
-                    status, investigation_strategy, current_turn,
+                    state, investigation_strategy, current_turn,
                     turns_without_progress, created_at, updated_at,
                     closure_reason, last_activity_at, resolved_at, closed_at,
                     disposition_eligibility,
@@ -2096,7 +2096,7 @@ class SQLiteCaseRepository(CaseRepository):
                     version
                 ) VALUES (
                     :case_id, :user_id, :organization_id, :title, :description,
-                    :status, :investigation_strategy, :current_turn,
+                    :state, :investigation_strategy, :current_turn,
                     :turns_without_progress, :created_at, :updated_at,
                     :closure_reason, :last_activity_at, :resolved_at, :closed_at,
                     :disposition_eligibility,
@@ -2138,7 +2138,7 @@ class SQLiteCaseRepository(CaseRepository):
             "organization_id": case.organization_id,
             "title": case.title,
             "description": case.description or "",
-            "status": case.status.value,
+            "state": case.state.value,
             "investigation_strategy": case.investigation_strategy.value,
             "current_turn": case.current_turn,
             "turns_without_progress": case.turns_without_progress,
@@ -2346,14 +2346,14 @@ class SQLiteCaseRepository(CaseRepository):
                 INSERT INTO evidence_needs (
                     need_id, case_id, organization_id,
                     purpose, request_text, rationale,
-                    priority, status,
+                    priority, state,
                     motivating_hypothesis_ids,
                     superseded_reason,
                     created_at_turn, created_at, updated_at
                 ) VALUES (
                     :need_id, :case_id, :organization_id,
                     :purpose, :request_text, :rationale,
-                    :priority, :status,
+                    :priority, :state,
                     :motivating_hypothesis_ids,
                     :superseded_reason,
                     :created_at_turn, :created_at, :updated_at
@@ -2363,7 +2363,7 @@ class SQLiteCaseRepository(CaseRepository):
                     request_text = EXCLUDED.request_text,
                     rationale = EXCLUDED.rationale,
                     priority = EXCLUDED.priority,
-                    status = EXCLUDED.status,
+                    state = EXCLUDED.state,
                     motivating_hypothesis_ids = EXCLUDED.motivating_hypothesis_ids,
                     superseded_reason = EXCLUDED.superseded_reason,
                     updated_at = EXCLUDED.updated_at
@@ -2380,7 +2380,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "request_text": need.request_text,
                     "rationale": need.rationale,
                     "priority": need.priority.value,
-                    "status": need.status.value,
+                    "state": need.state.value,
                     "motivating_hypothesis_ids": json.dumps(
                         need.motivating_hypothesis_ids
                     ),
@@ -2428,7 +2428,7 @@ class SQLiteCaseRepository(CaseRepository):
         for hypothesis_id, hypothesis in hypotheses_dict.items():
             query = text("""
                 INSERT INTO hypotheses (
-                    hypothesis_id, case_id, organization_id, statement, status,
+                    hypothesis_id, case_id, organization_id, statement, state,
                     likelihood, initial_likelihood,
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
                     iterations_without_progress,
@@ -2437,7 +2437,7 @@ class SQLiteCaseRepository(CaseRepository):
                     tested_at, concluded_at, proposed_at, updated_at, metadata,
                     created_by, updated_by
                 ) VALUES (
-                    :hypothesis_id, :case_id, :organization_id, :statement, :status,
+                    :hypothesis_id, :case_id, :organization_id, :statement, :state,
                     :likelihood, :initial_likelihood,
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
                     :iterations_without_progress,
@@ -2448,7 +2448,7 @@ class SQLiteCaseRepository(CaseRepository):
                 )
                 ON CONFLICT (hypothesis_id) DO UPDATE SET
                     statement = EXCLUDED.statement,
-                    status = EXCLUDED.status,
+                    state = EXCLUDED.state,
                     likelihood = EXCLUDED.likelihood,
                     generated_at_turn = EXCLUDED.generated_at_turn,
                     last_updated_turn = EXCLUDED.last_updated_turn,
@@ -2468,7 +2468,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "case_id": case_id,
                     "organization_id": organization_id,
                     "statement": hypothesis.statement,
-                    "status": hypothesis.status.value,
+                    "state": hypothesis.state.value,
                     "likelihood": hypothesis.likelihood,
                     "initial_likelihood": hypothesis.initial_likelihood,
                     "generated_at_turn": hypothesis.generated_at_turn,
@@ -2569,13 +2569,13 @@ class SQLiteCaseRepository(CaseRepository):
         for solution in solutions_list:
             applied_at = solution.applied_at
             verified_at = solution.verified_at
-            status = self._derive_solution_status(solution)
+            state = self._derive_solution_status(solution)
 
             query = text("""
                 INSERT INTO solutions (
                     solution_id, case_id, organization_id, solution_type, title,
                     immediate_action, longterm_fix, implementation_steps, commands, risks,
-                    description, status,
+                    description, state,
                     proposed_by, applied_by,
                     verification_method, verification_evidence_id, effectiveness,
                     verification_result, verified_at,
@@ -2583,7 +2583,7 @@ class SQLiteCaseRepository(CaseRepository):
                 ) VALUES (
                     :solution_id, :case_id, :organization_id, :solution_type, :title,
                     :immediate_action, :longterm_fix, :implementation_steps, :commands, :risks,
-                    :description, :status,
+                    :description, :state,
                     :proposed_by, :applied_by,
                     :verification_method, :verification_evidence_id, :effectiveness,
                     :verification_result, :verified_at,
@@ -2598,7 +2598,7 @@ class SQLiteCaseRepository(CaseRepository):
                     commands = EXCLUDED.commands,
                     risks = EXCLUDED.risks,
                     description = EXCLUDED.description,
-                    status = EXCLUDED.status,
+                    state = EXCLUDED.state,
                     proposed_by = EXCLUDED.proposed_by,
                     applied_by = EXCLUDED.applied_by,
                     verification_method = EXCLUDED.verification_method,
@@ -2631,7 +2631,7 @@ class SQLiteCaseRepository(CaseRepository):
                         or solution.longterm_fix
                         or solution.title
                     ),
-                    "status": status,
+                    "state": state,
                     "proposed_by": solution.proposed_by,
                     "applied_by": solution.applied_by,
                     "verification_method": solution.verification_method,
@@ -2649,7 +2649,7 @@ class SQLiteCaseRepository(CaseRepository):
     @staticmethod
     def _derive_solution_status(solution: Solution) -> str:
         """Map Pydantic Solution lifecycle fields to the schema's
-        status CHECK vocabulary ('proposed', 'accepted', 'rejected',
+        state CHECK vocabulary ('proposed', 'accepted', 'rejected',
         'implemented', 'verified'). Single source of truth for the
         write path, used by both ``_upsert_solutions`` and the PG
         hybrid repo.
@@ -2819,10 +2819,10 @@ class SQLiteCaseRepository(CaseRepository):
         for transition in new_transitions:
             query = text("""
                 INSERT INTO case_actions (
-                    case_id, organization_id, from_status, to_status, reason,
+                    case_id, organization_id, from_state, to_state, reason,
                     triggered_by, transitioned_at, metadata
                 ) VALUES (
-                    :case_id, :organization_id, :from_status, :to_status, :reason,
+                    :case_id, :organization_id, :from_state, :to_state, :reason,
                     :triggered_by, :transitioned_at, :metadata
                 )
             """)
@@ -2832,10 +2832,10 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "case_id": case_id,
                     "organization_id": organization_id,
-                    "from_status": (
-                        transition.from_status.value if transition.from_status else None
+                    "from_state": (
+                        transition.from_state.value if transition.from_state else None
                     ),
-                    "to_status": transition.to_status.value,
+                    "to_state": transition.to_state.value,
                     "reason": (
                         transition.reason if hasattr(transition, "reason") else None
                     ),
@@ -2853,7 +2853,7 @@ class SQLiteCaseRepository(CaseRepository):
         the in-memory append order.
         """
         query = text("""
-            SELECT from_status, to_status, reason, triggered_by, transitioned_at
+            SELECT from_state, to_state, reason, triggered_by, transitioned_at
             FROM case_actions
             WHERE case_id = :case_id
             ORDER BY transitioned_at ASC, transition_id ASC
@@ -2864,10 +2864,8 @@ class SQLiteCaseRepository(CaseRepository):
         for row in rows:
             actions.append(
                 CaseAction(
-                    from_status=(
-                        CaseStatus(row.from_status) if row.from_status else None
-                    ),
-                    to_status=CaseStatus(row.to_status),
+                    from_state=(CaseState(row.from_state) if row.from_state else None),
+                    to_state=CaseState(row.to_state),
                     triggered_at=row.transitioned_at,
                     triggered_by=row.triggered_by,
                     reason=row.reason or "",
@@ -2951,7 +2949,7 @@ class SQLiteCaseRepository(CaseRepository):
             "user_id": row.user_id,
             "organization_id": row.organization_id,  # NOT NULL in DB
             "title": row.title,
-            "status": CaseStatus(row.status),
+            "state": CaseState(row.state),
             "action_history": actions_data or [],
             "closure_reason": row.closure_reason,
             "disposition_eligibility": (
@@ -3007,7 +3005,7 @@ class SQLiteCaseRepository(CaseRepository):
         # is paranoid coalesce against any row that somehow has NULL.
         description = row.description or ""
         if (
-            CaseStatus(row.status) == CaseStatus.INVESTIGATING
+            CaseState(row.state) == CaseState.INVESTIGATING
             and (not description or not description.strip())
             and inquiry.proposed_problem_statement
         ):

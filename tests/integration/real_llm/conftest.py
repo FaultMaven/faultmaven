@@ -25,7 +25,7 @@ import pytest
 
 from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
-from faultmaven.modules.case.contracts import Case, CaseStatus, InquiryData
+from faultmaven.modules.case.contracts import Case, CaseState, InquiryData
 
 # Default model: Haiku 4.5 — cheapest current Anthropic model. Tests use
 # temperature=0 where the engine surface allows; flakiness policy is
@@ -96,7 +96,7 @@ def fresh_inquiry_case() -> Case:
     return Case(
         case_id="case_realllm00001",
         title="Real-LLM Integration Test",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         user_id="user_realllm",
         organization_id="org_realllm",
         description="",

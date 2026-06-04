@@ -18,7 +18,7 @@ from faultmaven.core.investigation.terminal_transitions import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     InquiryData,
     InvestigationPath,
     InvestigationProgress,
@@ -55,7 +55,7 @@ def _make_case(
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         user_id="user_123",
         organization_id="org_123",
         description="Test description",
@@ -94,7 +94,7 @@ def test_rca_infeasible_creates_pending_closure():
     )
 
     assert case.pending_transition is not None
-    assert case.pending_transition["to_status"] == "closed"
+    assert case.pending_transition["to_state"] == "closed"
     assert case.pending_transition["closure_reason"] == "mitigation_sufficient"
     assert "third-party API outage" in case.pending_transition["summary"]
     assert (
@@ -158,7 +158,7 @@ def test_confirm_pending_transition_closes_with_mitigation_sufficient():
     confirmed = confirm_pending_transition(case, "user_123")
 
     assert confirmed is True
-    assert case.status == CaseStatus.CLOSED
+    assert case.state == CaseState.CLOSED
     assert case.closure_reason == "mitigation_sufficient"
     assert case.pending_transition is None
 
@@ -172,7 +172,7 @@ def test_decline_clears_pending_and_keeps_case_investigating():
 
     assert cancelled is True
     assert case.pending_transition is None
-    assert case.status == CaseStatus.INVESTIGATING
+    assert case.state == CaseState.INVESTIGATING
 
 
 @pytest.mark.parametrize(

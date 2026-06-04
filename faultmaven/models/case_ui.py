@@ -14,9 +14,9 @@ from pydantic import BaseModel, Field
 
 from faultmaven.models.api_models import ProgressTransparencyInfo
 from faultmaven.modules.case.domain.models import (
-    CaseStatus,
+    CaseState,
     ConfidenceLevel,
-    HypothesisStatus,
+    HypothesisState,
     InvestigationStage,
     PathSelection,
 )
@@ -122,7 +122,7 @@ class HypothesisSummary(BaseModel):
 
     likelihood: float = Field(ge=0.0, le=1.0, description="Likelihood score (0.0-1.0)")
 
-    status: HypothesisStatus = Field(
+    state: HypothesisState = Field(
         description="Status: CAPTURED | ACTIVE | VALIDATED | REFUTED | INCONCLUSIVE | RETIRED"
     )
 
@@ -379,8 +379,8 @@ class CaseUIResponse_Inquiry(BaseModel):
 
     case_id: str = Field(description="Case identifier")
 
-    status: Literal[CaseStatus.INQUIRY] = Field(
-        default=CaseStatus.INQUIRY,
+    state: Literal[CaseState.INQUIRY] = Field(
+        default=CaseState.INQUIRY,
         description="Always 'inquiry' for this response type",
     )
 
@@ -455,8 +455,8 @@ class CaseUIResponse_Investigating(BaseModel):
 
     case_id: str = Field(description="Case identifier")
 
-    status: Literal[CaseStatus.INVESTIGATING] = Field(
-        default=CaseStatus.INVESTIGATING,
+    state: Literal[CaseState.INVESTIGATING] = Field(
+        default=CaseState.INVESTIGATING,
         description="Always 'investigating' for this response type",
     )
 
@@ -579,7 +579,7 @@ class CaseUIResponse_Resolved(BaseModel):
 
     case_id: str = Field(description="Case identifier")
 
-    status: Literal[CaseStatus.RESOLVED, CaseStatus.CLOSED] = Field(
+    state: Literal[CaseState.RESOLVED, CaseState.CLOSED] = Field(
         description="Case terminal status: 'resolved' (with solution) or 'closed' (without investigation)",
     )
 
@@ -674,7 +674,7 @@ CaseUIResponse = Annotated[
     Union[
         CaseUIResponse_Inquiry, CaseUIResponse_Investigating, CaseUIResponse_Resolved
     ],
-    Field(discriminator="status"),
+    Field(discriminator="state"),
 ]
 """
 Phase-adaptive case response for UI.

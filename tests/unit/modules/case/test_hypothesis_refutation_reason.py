@@ -1,6 +1,6 @@
 """Tests for the Hypothesis refutation_reason invariant.
 
-Pair integrity: status=REFUTED and refutation_reason travel together.
+Pair integrity: state=REFUTED and refutation_reason travel together.
 A Hypothesis cannot exist in memory with one but not the other; RETIRED
 is the fallback when there is no disproof evidence.
 
@@ -14,7 +14,7 @@ from faultmaven.modules.case.domain.models import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
-    HypothesisStatus,
+    HypothesisState,
 )
 
 
@@ -32,17 +32,17 @@ def _hypothesis_fields(**overrides):
 
 
 class TestRefutationReasonInvariant:
-    """Pair integrity between status=REFUTED and refutation_reason."""
+    """Pair integrity between state=REFUTED and refutation_reason."""
 
     @pytest.mark.unit
     def test_refuted_with_reason_accepted(self):
         """REFUTED with a refutation_reason is the canonical refutation."""
         h = Hypothesis(
-            status=HypothesisStatus.REFUTED,
+            state=HypothesisState.REFUTED,
             refutation_reason="metrics at 14:02 ruled out connection pool exhaustion",
             **_hypothesis_fields(),
         )
-        assert h.status == HypothesisStatus.REFUTED
+        assert h.state == HypothesisState.REFUTED
         assert h.refutation_reason is not None
 
     @pytest.mark.unit
@@ -50,7 +50,7 @@ class TestRefutationReasonInvariant:
         """A Hypothesis cannot be constructed with REFUTED and no reason."""
         with pytest.raises(ValidationError) as excinfo:
             Hypothesis(
-                status=HypothesisStatus.REFUTED,
+                state=HypothesisState.REFUTED,
                 **_hypothesis_fields(),
             )
         assert "refutation_reason is required" in str(excinfo.value)
@@ -58,40 +58,40 @@ class TestRefutationReasonInvariant:
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "status",
+        "state",
         [
-            HypothesisStatus.CAPTURED,
-            HypothesisStatus.ACTIVE,
-            HypothesisStatus.VALIDATED,
-            HypothesisStatus.RETIRED,
-            HypothesisStatus.INCONCLUSIVE,
+            HypothesisState.CAPTURED,
+            HypothesisState.ACTIVE,
+            HypothesisState.VALIDATED,
+            HypothesisState.RETIRED,
+            HypothesisState.INCONCLUSIVE,
         ],
     )
-    def test_non_refuted_with_reason_rejected(self, status):
-        """refutation_reason is only valid when status=REFUTED."""
+    def test_non_refuted_with_reason_rejected(self, state):
+        """refutation_reason is only valid when state=REFUTED."""
         with pytest.raises(ValidationError) as excinfo:
             Hypothesis(
-                status=status,
+                state=state,
                 refutation_reason="should not be here",
                 **_hypothesis_fields(),
             )
-        assert "only valid when status=REFUTED" in str(excinfo.value)
+        assert "only valid when state=REFUTED" in str(excinfo.value)
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "status",
+        "state",
         [
-            HypothesisStatus.CAPTURED,
-            HypothesisStatus.ACTIVE,
-            HypothesisStatus.VALIDATED,
-            HypothesisStatus.RETIRED,
-            HypothesisStatus.INCONCLUSIVE,
+            HypothesisState.CAPTURED,
+            HypothesisState.ACTIVE,
+            HypothesisState.VALIDATED,
+            HypothesisState.RETIRED,
+            HypothesisState.INCONCLUSIVE,
         ],
     )
-    def test_non_refuted_without_reason_accepted(self, status):
-        """Every non-REFUTED status can exist without a refutation_reason."""
-        h = Hypothesis(status=status, **_hypothesis_fields())
-        assert h.status == status
+    def test_non_refuted_without_reason_accepted(self, state):
+        """Every non-REFUTED state can exist without a refutation_reason."""
+        h = Hypothesis(state=state, **_hypothesis_fields())
+        assert h.state == state
         assert h.refutation_reason is None
 
     @pytest.mark.unit
@@ -100,7 +100,7 @@ class TestRefutationReasonInvariant:
         long_reason = "x" * 201
         with pytest.raises(ValidationError) as excinfo:
             Hypothesis(
-                status=HypothesisStatus.REFUTED,
+                state=HypothesisState.REFUTED,
                 refutation_reason=long_reason,
                 **_hypothesis_fields(),
             )
@@ -110,7 +110,7 @@ class TestRefutationReasonInvariant:
     def test_refutation_reason_at_max_length_accepted(self):
         """Exactly 200 chars is the boundary — accepted."""
         h = Hypothesis(
-            status=HypothesisStatus.REFUTED,
+            state=HypothesisState.REFUTED,
             refutation_reason="x" * 200,
             **_hypothesis_fields(),
         )
@@ -121,7 +121,7 @@ class TestRefutationReasonInvariant:
         """An empty string for refutation_reason is treated as missing."""
         with pytest.raises(ValidationError):
             Hypothesis(
-                status=HypothesisStatus.REFUTED,
+                state=HypothesisState.REFUTED,
                 refutation_reason="",
                 **_hypothesis_fields(),
             )

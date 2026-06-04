@@ -8,7 +8,7 @@ import pytest
 
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     InvestigationStrategy,
 )
 from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
@@ -24,7 +24,7 @@ def case_checkpoint() -> CaseCheckpoint:
         checkpoint_id="case_123:turn:1",
         case_id="case_123",
         turn_number=1,
-        case_snapshot={"status": "inquiry", "title": "Test Case"},
+        case_snapshot={"state": "inquiry", "title": "Test Case"},
         snapshot_hash="abc123hash",
         trigger="turn_complete",
         created_at=datetime.now(ZoneInfo("UTC")),
@@ -60,7 +60,7 @@ async def test_get_checkpoints_for_case(case_checkpoint: CaseCheckpoint):
         checkpoint_id="case_123:turn:2",
         case_id="case_123",
         turn_number=2,
-        case_snapshot={"status": "investigating"},
+        case_snapshot={"state": "investigating"},
         snapshot_hash="def456hash",
         trigger="turn_complete",
         created_at=datetime.now(ZoneInfo("UTC")),

@@ -20,7 +20,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseEntity,
-    CaseStatus,
+    CaseState,
     EntityType,
     InquiryData,
 )
@@ -160,7 +160,7 @@ class TestContextBuilderSlot:
             organization_id="o",
             title="t",
             description="d",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             inquiry=InquiryData(
                 problem_statement_confirmed=True,
                 decided_to_investigate=True,

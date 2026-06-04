@@ -41,7 +41,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
-    CaseStatus,
+    CaseState,
     ICaseRepository,
     InvestigationStrategy,
 )
@@ -163,7 +163,7 @@ class APICaseService(BaseService):
                 organization_id=resolved_org_id.strip(),
                 title=title.strip(),
                 description=description.strip() if description else "",
-                status=CaseStatus.INQUIRY,
+                state=CaseState.INQUIRY,
                 investigation_strategy=InvestigationStrategy.POST_MORTEM,
             )
 
@@ -287,7 +287,7 @@ class APICaseService(BaseService):
             allowed_fields = {
                 "title",
                 "description",
-                "status",
+                "state",
                 "severity",
                 "assigned_to",
             }
@@ -308,17 +308,17 @@ class APICaseService(BaseService):
                 elif key == "description":
                     case.description = value.strip() if value else ""
 
-                elif key == "status":
+                elif key == "state":
                     if isinstance(value, str):
                         try:
-                            value = CaseStatus(value)
+                            value = CaseState(value)
                         except ValueError:
                             raise ValidationException(
-                                f"status: Invalid status '{value}'. Must be one of: "
-                                f"{[s.value for s in CaseStatus]}"
+                                f"state: Invalid status '{value}'. Must be one of: "
+                                f"{[s.value for s in CaseState]}"
                             )
                     try:
-                        case.status = value
+                        case.state = value
                     except PydanticValidationError as e:
                         raise ValidationException(str(e))
 
@@ -423,7 +423,7 @@ class APICaseService(BaseService):
         self,
         organization_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        status: Optional[CaseStatus] = None,
+        state: Optional[CaseState] = None,
         severity: Optional[CaseSeverity] = None,
         assigned_to: Optional[str] = None,
         limit: int = 50,
@@ -439,7 +439,7 @@ class APICaseService(BaseService):
         Args:
             organization_id: Organization ID (optional for single-tenant, required for multi-tenant)
             user_id: Optional filter by reporter
-            status: Optional filter by status
+            state: Optional filter by status
             severity: Optional filter by severity
             assigned_to: Optional filter by assignee
             limit: Max results (default 50)
@@ -467,7 +467,7 @@ class APICaseService(BaseService):
             "list_cases",
             organization_id=resolved_org_id,
             user_id=user_id,
-            status=status.value if status else None,
+            state=state.value if state else None,
             severity=severity.value if severity else None,
             assigned_to=assigned_to,
             limit=limit,
@@ -482,7 +482,7 @@ class APICaseService(BaseService):
             cases, total = await self.case_repo.list(
                 organization_id=resolved_org_id,
                 user_id=user_id,
-                status=status,
+                state=state,
                 limit=limit,
                 offset=offset,
             )
@@ -663,7 +663,7 @@ class APICaseService(BaseService):
             organization_id: Organization for authorization
 
         Returns:
-            Updated case with status=RESOLVED
+            Updated case with state=RESOLVED
 
         Raises:
             NotFoundError: If case not found
@@ -682,9 +682,9 @@ class APICaseService(BaseService):
             raise NotFoundError("Case", case_id)
 
         # Check if case is already closed
-        if case.status.is_terminal:
+        if case.state.is_terminal:
             raise ConflictError(
-                f"Case {case_id} is already closed with status {case.status.value}",
+                f"Case {case_id} is already closed with status {case.state.value}",
                 resource_type="Case",
                 resource_id=case_id,
                 conflict_reason="already_closed",
@@ -696,7 +696,7 @@ class APICaseService(BaseService):
             now = datetime.now(timezone.utc)
             updated_case = case.model_copy(
                 update={
-                    "status": CaseStatus.RESOLVED,
+                    "state": CaseState.RESOLVED,
                     "resolved_at": now,
                     "closed_at": now,
                     "closure_reason": None,
@@ -709,7 +709,7 @@ class APICaseService(BaseService):
             self.log_operation(
                 "close_case_success",
                 case_id=case_id,
-                status=saved_case.status.value,
+                state=saved_case.state.value,
             )
 
             return saved_case
@@ -756,7 +756,7 @@ class APICaseService(BaseService):
 
             for case in cases:
                 # Count by status
-                status_key = case.status.value
+                status_key = case.state.value
                 by_status[status_key] = by_status.get(status_key, 0) + 1
 
                 # Count by severity (from problem_verification if available)
@@ -765,14 +765,14 @@ class APICaseService(BaseService):
                     by_severity[severity_key] = by_severity.get(severity_key, 0) + 1
 
                 # Calculate resolution time for resolved cases
-                if case.status == CaseStatus.RESOLVED and case.resolved_at:
+                if case.state == CaseState.RESOLVED and case.resolved_at:
                     resolution_time = (
                         case.resolved_at - case.created_at
                     ).total_seconds()
                     resolution_times.append(resolution_time)
 
                 # Count unassigned (cases in INQUIRY without progress)
-                if case.status == CaseStatus.INQUIRY and case.current_turn == 0:
+                if case.state == CaseState.INQUIRY and case.current_turn == 0:
                     unassigned_count += 1
 
             # Calculate average resolution time

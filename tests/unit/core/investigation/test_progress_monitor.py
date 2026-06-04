@@ -14,11 +14,11 @@ from faultmaven.core.investigation.progress_monitor import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
-    HypothesisStatus,
+    HypothesisState,
     InquiryData,
     InvestigationProgress,
     ProblemVerification,
@@ -38,7 +38,7 @@ def base_case():
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         user_id="user_123",
         organization_id="org_123",
         description="Test description",
@@ -92,7 +92,7 @@ class TestProgressTransparency:
         case = Case(
             case_id="case_1234567890ab",
             title="Test",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             inquiry=InquiryData(),
@@ -233,7 +233,7 @@ class TestHypothesisAnchoring:
                 hypothesis_id=f"hyp_{i:012x}",
                 statement=f"Code hypothesis {i}",
                 category=HypothesisCategory.CODE,
-                status=HypothesisStatus.REFUTED,
+                state=HypothesisState.REFUTED,
                 refutation_reason=f"disproved by evidence {i}",
                 generated_at_turn=1,
                 generation_mode=HypothesisGenerationMode.SYSTEMATIC,
@@ -265,7 +265,7 @@ class TestHypothesisAnchoring:
                 hypothesis_id=f"hyp_{i:012x}",
                 statement=f"Hypothesis {i}",
                 category=categories[i],
-                status=HypothesisStatus.REFUTED,
+                state=HypothesisState.REFUTED,
                 refutation_reason=f"disproved by evidence {i}",
                 generated_at_turn=1,
                 generation_mode=HypothesisGenerationMode.SYSTEMATIC,
@@ -301,7 +301,7 @@ class TestHypothesisDeadlock:
                 hypothesis_id=f"hyp_{i:012x}",
                 statement=f"Hypothesis {i}",
                 category=categories[i],
-                status=HypothesisStatus.INCONCLUSIVE,
+                state=HypothesisState.INCONCLUSIVE,
                 generated_at_turn=1,
                 generation_mode=HypothesisGenerationMode.SYSTEMATIC,
                 rationale="Test hypothesis for deadlock detection",
@@ -330,7 +330,7 @@ class TestHypothesisDeadlock:
                 hypothesis_id=f"hyp_{i:012x}",
                 statement=f"Hypothesis {i}",
                 category=categories[i],
-                status=HypothesisStatus.INCONCLUSIVE,
+                state=HypothesisState.INCONCLUSIVE,
                 generated_at_turn=1,
                 generation_mode=HypothesisGenerationMode.SYSTEMATIC,
                 rationale="Test hypothesis for retirement",
@@ -345,7 +345,7 @@ class TestHypothesisDeadlock:
         monitor.check_progress(base_case)
 
         for hyp in base_case.hypotheses.values():
-            assert hyp.status == HypothesisStatus.RETIRED
+            assert hyp.state == HypothesisState.RETIRED
 
 
 class TestActionLoop:

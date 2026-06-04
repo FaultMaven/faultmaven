@@ -2,7 +2,7 @@
 
 Pins:
 
-- ``EvidenceNeedUpdate`` validators (create-vs-update semantics, status
+- ``EvidenceNeedUpdate`` validators (create-vs-update semantics, state
   invariants, coercion of ``new_index_N`` from bare integers).
 - ``SuggestedFollowUp.evidence_need_id`` field + action-type guard +
   coercion.
@@ -30,7 +30,7 @@ from faultmaven.core.investigation.schemas import (
 from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
-    NeedStatus,
+    NeedState,
 )
 
 # ============================================================
@@ -57,19 +57,19 @@ class TestEvidenceNeedUpdateValidators:
         # CREATE path is applied in the apply-layer (see
         # test_evidence_need_apply_layer.py).
         assert u.priority is None
-        assert u.status is None
+        assert u.state is None
         assert u.motivating_hypothesis_ids == []
         assert u.fulfilling_evidence_ids == []
         assert u.superseded_reason is None
 
     def test_bare_fulfill_update_validates(self):
-        """A fulfill/status update omits the create-only fields
+        """A fulfill/state update omits the create-only fields
         (purpose/request_text/rationale/priority). This MUST validate —
         before the fix it raised 'Field required' on those three and the
         turn 500'd. Regression for fix/evidence-need-fulfill-path."""
         u = EvidenceNeedUpdate(
             need_id="eneed_d437986395a0",
-            status="fulfilled",
+            state="fulfilled",
             fulfilling_evidence_ids=["new_index_0"],
         )
         assert u.need_id == "eneed_d437986395a0"
@@ -82,28 +82,28 @@ class TestEvidenceNeedUpdateValidators:
         """Create path (need_id=None) still requires purpose/request_text/
         rationale — the Optional-ness is for the update path only."""
         with pytest.raises(ValidationError, match="create path"):
-            EvidenceNeedUpdate(need_id=None, status="pending")
+            EvidenceNeedUpdate(need_id=None, state="pending")
 
     def test_create_with_non_pending_status_rejected(self):
-        """Create path requires status=None or PENDING."""
+        """Create path requires state=None or PENDING."""
         with pytest.raises(ValidationError, match="Cannot create"):
             EvidenceNeedUpdate(
                 purpose=NeedPurpose.SYMPTOM_VERIFICATION,
                 request_text="x",
                 rationale="y",
-                status=NeedStatus.FULFILLED,
+                state=NeedState.FULFILLED,
                 fulfilling_evidence_ids=["ev_abc123def456"],
             )
 
     def test_create_with_pending_status_accepted(self):
-        """status=PENDING is explicit-but-redundant; allowed on create."""
+        """state=PENDING is explicit-but-redundant; allowed on create."""
         u = EvidenceNeedUpdate(
             purpose=NeedPurpose.SYMPTOM_VERIFICATION,
             request_text="x",
             rationale="y",
-            status=NeedStatus.PENDING,
+            state=NeedState.PENDING,
         )
-        assert u.status == NeedStatus.PENDING
+        assert u.state == NeedState.PENDING
 
     def test_superseded_requires_reason(self):
         """SUPERSEDED without superseded_reason is rejected."""
@@ -113,11 +113,11 @@ class TestEvidenceNeedUpdateValidators:
                 purpose=NeedPurpose.CAUSAL_VERIFICATION,
                 request_text="x",
                 rationale="y",
-                status=NeedStatus.SUPERSEDED,
+                state=NeedState.SUPERSEDED,
             )
 
     def test_non_superseded_forbids_reason(self):
-        """superseded_reason on non-SUPERSEDED status is rejected."""
+        """superseded_reason on non-SUPERSEDED state is rejected."""
         with pytest.raises(ValidationError, match="must be None"):
             EvidenceNeedUpdate(
                 need_id="eneed_abc123def456",
@@ -135,7 +135,7 @@ class TestEvidenceNeedUpdateValidators:
                 purpose=NeedPurpose.SYMPTOM_VERIFICATION,
                 request_text="x",
                 rationale="y",
-                status=NeedStatus.FULFILLED,
+                state=NeedState.FULFILLED,
             )
 
     def test_fulfilled_with_evidence_accepted(self):
@@ -144,10 +144,10 @@ class TestEvidenceNeedUpdateValidators:
             purpose=NeedPurpose.SYMPTOM_VERIFICATION,
             request_text="x",
             rationale="y",
-            status=NeedStatus.FULFILLED,
+            state=NeedState.FULFILLED,
             fulfilling_evidence_ids=["ev_aaa111bbb222"],
         )
-        assert u.status == NeedStatus.FULFILLED
+        assert u.state == NeedState.FULFILLED
         assert u.fulfilling_evidence_ids == ["ev_aaa111bbb222"]
 
 
@@ -181,7 +181,7 @@ class TestNewIndexCoercion:
             purpose=NeedPurpose.SYMPTOM_VERIFICATION,
             request_text="x",
             rationale="y",
-            status=NeedStatus.FULFILLED,
+            state=NeedState.FULFILLED,
             fulfilling_evidence_ids=[2],
         )
         assert u.fulfilling_evidence_ids == ["new_index_2"]

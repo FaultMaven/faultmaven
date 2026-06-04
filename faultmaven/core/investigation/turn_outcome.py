@@ -10,8 +10,8 @@ from typing import List
 
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
-    HypothesisStatus,
+    CaseState,
+    HypothesisState,
     TurnOutcome,
 )
 
@@ -50,10 +50,10 @@ def determine_turn_outcome(
     if case.is_terminal:
         outcome = (
             TurnOutcome.CASE_RESOLVED
-            if case.status == CaseStatus.RESOLVED
+            if case.state == CaseState.RESOLVED
             else TurnOutcome.CONVERSATION
         )
-        logger.debug(f"Turn outcome: {outcome} (terminal state: {case.status})")
+        logger.debug(f"Turn outcome: {outcome} (terminal state: {case.state})")
         return outcome
 
     # Milestone completed

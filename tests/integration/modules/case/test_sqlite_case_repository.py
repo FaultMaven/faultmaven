@@ -84,7 +84,7 @@ class TestSQLiteCaseRepository:
         """
         from faultmaven.modules.case.domain.models import (
             Case,
-            CaseStatus,
+            CaseState,
             DocumentationData,
             InquiryData,
             InvestigationProgress,
@@ -103,7 +103,7 @@ class TestSQLiteCaseRepository:
             user_id="test_user_123",
             organization_id="test_org_123",
             title="Test Case for SQLite Compatibility",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
@@ -134,7 +134,7 @@ class TestSQLiteCaseRepository:
         """
         from faultmaven.modules.case.domain.models import (
             Case,
-            CaseStatus,
+            CaseState,
             DocumentationData,
             InquiryData,
             InvestigationProgress,
@@ -152,7 +152,7 @@ class TestSQLiteCaseRepository:
             user_id="test_user_456",
             organization_id="test_org_456",
             title="Retrieval Test Case",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
@@ -178,7 +178,7 @@ class TestSQLiteCaseRepository:
         """
         from faultmaven.modules.case.domain.models import (
             Case,
-            CaseStatus,
+            CaseState,
             DocumentationData,
             InquiryData,
             InvestigationProgress,
@@ -202,7 +202,7 @@ class TestSQLiteCaseRepository:
                 user_id="search_user",
                 organization_id="search_org",
                 title=title,
-                status=CaseStatus.INQUIRY,
+                state=CaseState.INQUIRY,
                 inquiry=InquiryData(),
                 documentation=DocumentationData(),
                 progress=InvestigationProgress(),
@@ -224,7 +224,7 @@ class TestSQLiteCaseRepository:
         """Test that list operation works with SQLite."""
         from faultmaven.modules.case.domain.models import (
             Case,
-            CaseStatus,
+            CaseState,
             DocumentationData,
             InquiryData,
             InvestigationProgress,
@@ -244,7 +244,7 @@ class TestSQLiteCaseRepository:
                 user_id=user_id,
                 organization_id=organization_id,
                 title=f"List Test Case {i}",
-                status=CaseStatus.INQUIRY,
+                state=CaseState.INQUIRY,
                 inquiry=InquiryData(),
                 documentation=DocumentationData(),
                 progress=InvestigationProgress(),
@@ -262,7 +262,7 @@ class TestSQLiteCaseRepository:
         """Test that message operations work with SQLite (no ::jsonb)."""
         from faultmaven.modules.case.domain.models import (
             Case,
-            CaseStatus,
+            CaseState,
             DocumentationData,
             InquiryData,
             InvestigationProgress,
@@ -280,7 +280,7 @@ class TestSQLiteCaseRepository:
             user_id="msg_user",
             organization_id="msg_org",
             title="Message Test Case",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
@@ -311,7 +311,7 @@ class TestSQLiteCaseRepository:
         """Test that analytics work with SQLite (no FILTER clause)."""
         from faultmaven.modules.case.domain.models import (
             Case,
-            CaseStatus,
+            CaseState,
             DocumentationData,
             InquiryData,
             InvestigationProgress,
@@ -329,7 +329,7 @@ class TestSQLiteCaseRepository:
             user_id="analytics_user",
             organization_id="analytics_org",
             title="Analytics Test Case",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
@@ -349,7 +349,7 @@ class TestSQLiteCaseRepository:
         """Test that delete works with SQLite."""
         from faultmaven.modules.case.domain.models import (
             Case,
-            CaseStatus,
+            CaseState,
             DocumentationData,
             InquiryData,
             InvestigationProgress,
@@ -367,7 +367,7 @@ class TestSQLiteCaseRepository:
             user_id="delete_user",
             organization_id="delete_org",
             title="Delete Test Case",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
@@ -411,14 +411,14 @@ class TestSQLiteCaseRepository:
         """
         from faultmaven.modules.case.domain.models import (
             Case,
-            CaseStatus,
+            CaseState,
             DocumentationData,
             EvidenceStance,
             Hypothesis,
             HypothesisCategory,
             HypothesisEvidenceLink,
             HypothesisGenerationMode,
-            HypothesisStatus,
+            HypothesisState,
             InquiryData,
             InvestigationProgress,
         )
@@ -459,7 +459,7 @@ class TestSQLiteCaseRepository:
             hypothesis_id="hyp_0123456789ab",
             statement="Database connection pool exhaustion caused the timeout errors",
             category=HypothesisCategory.DATABASE,
-            status=HypothesisStatus.ACTIVE,
+            state=HypothesisState.ACTIVE,
             likelihood=0.8,
             initial_likelihood=0.5,
             evidence_links=[
@@ -480,7 +480,7 @@ class TestSQLiteCaseRepository:
             organization_id="test_org_evidence_links",
             title="Test Case for Evidence Links Serialization",
             description="Testing hypothesis evidence links serialization with datetime fields",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
@@ -580,7 +580,7 @@ class TestUploadedFilePreprocessingRoundtrip:
         """save() then get() must preserve all five preprocessing fields."""
         from faultmaven.modules.case.domain.models import (
             Case,
-            CaseStatus,
+            CaseState,
             DocumentationData,
             InquiryData,
             InvestigationProgress,
@@ -604,7 +604,7 @@ class TestUploadedFilePreprocessingRoundtrip:
             user_id="user_001",
             organization_id="00000000-0000-0000-0000-000000000001",
             title="Preprocessing roundtrip case",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
@@ -658,7 +658,7 @@ class TestUploadedFilePreprocessingRoundtrip:
         """
         from faultmaven.modules.case.domain.models import (
             Case,
-            CaseStatus,
+            CaseState,
             DocumentationData,
             InquiryData,
             InvestigationProgress,
@@ -678,7 +678,7 @@ class TestUploadedFilePreprocessingRoundtrip:
             user_id="user_001",
             organization_id="00000000-0000-0000-0000-000000000001",
             title="COALESCE upsert test",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),

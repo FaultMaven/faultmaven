@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from faultmaven.modules.agent.domain.models.agentic import SuggestedAction
 
 # Import evidence-centric models
-from faultmaven.modules.case.domain.models import CaseStatus as EvidenceCaseStatus
+from faultmaven.modules.case.domain.models import CaseState as EvidenceCaseState
 from faultmaven.modules.case.domain.models import InvestigationStrategy
 
 # --- Enumerations for Explicit Contracts ---
@@ -91,7 +91,7 @@ class ProcessingStatus(str, Enum):
 class AuthSessionStatus(str, Enum):
     """Defines the status of authentication sessions (not investigation sessions).
 
-    For investigation session status, see faultmaven.models.investigation_session.SessionStatus
+    For investigation session status, see faultmaven.models.investigation_session.SessionState
     """
 
     ACTIVE = "active"
@@ -245,8 +245,8 @@ class AgentResponse(BaseModel):
         default=InvestigationStrategy.ACTIVE_INCIDENT,
         description="Current investigation approach (speed vs depth)",
     )
-    case_status: EvidenceCaseStatus = Field(
-        default=EvidenceCaseStatus.INQUIRY,
+    case_state: EvidenceCaseState = Field(
+        default=EvidenceCaseState.INQUIRY,
         description="Current case investigation state",
     )
 
@@ -347,8 +347,8 @@ class Case(BaseModel):
     case_id: str  # Match frontend expectations
     title: str
     description: Optional[str] = None
-    status: Literal["inquiry", "investigating", "resolved", "closed"] = (
-        "inquiry"  # Valid CaseStatus values
+    state: Literal["inquiry", "investigating", "resolved", "closed"] = (
+        "inquiry"  # Valid CaseState values
     )
     priority: Literal["low", "medium", "high", "critical"] = "medium"
     created_at: str = Field(

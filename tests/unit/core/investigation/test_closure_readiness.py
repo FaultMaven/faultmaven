@@ -26,7 +26,7 @@ from faultmaven.core.investigation.terminal_transitions import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     EvidenceCategory,
     EvidenceSourceType,
     InquiryData,
@@ -46,7 +46,7 @@ def _make_investigating_case() -> Case:
     case = Case(
         case_id="case_c0bbeef0a510",
         title="Closure readiness test",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         user_id="user_test",
         organization_id="org_test",
         description="Test description",

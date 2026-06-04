@@ -15,12 +15,12 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from faultmaven.models.investigation_session import SessionStatus
+from faultmaven.models.investigation_session import SessionState
 
 # Import from contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import (
     CaseSeverity,
-    CaseStatus,
+    CaseState,
     EvidenceArtifactType,
     InvestigationProgress,
 )
@@ -45,7 +45,7 @@ class CaseUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=512)
     description: Optional[str] = Field(None, min_length=1)
     severity: Optional[CaseSeverity] = None
-    status: Optional[CaseStatus] = None
+    state: Optional[CaseState] = None
     assigned_to: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
 
@@ -59,7 +59,7 @@ class CaseResponse(BaseModel):
     title: str
     description: str
     severity: CaseSeverity
-    status: CaseStatus
+    state: CaseState
     progress: Optional[InvestigationProgress] = None
     assigned_to: Optional[str] = None
     created_at: datetime
@@ -108,7 +108,7 @@ class CaseResponse(BaseModel):
             title=case.title,
             description=case.description,
             severity=case_severity,
-            status=case.status,
+            state=case.state,
             progress=getattr(case, "progress", None),
             assigned_to=getattr(case, "assigned_to", None),
             created_at=case.created_at,
@@ -156,7 +156,7 @@ class SessionResponse(BaseModel):
     case_id: str
     user_id: str
     organization_id: str
-    status: SessionStatus
+    state: SessionState
     started_at: datetime
     ended_at: Optional[datetime] = None
     last_activity_at: datetime
@@ -186,7 +186,7 @@ class SessionResponse(BaseModel):
             case_id=session.case_id,
             user_id=session.user_id,
             organization_id=session.organization_id,
-            status=session.status,
+            state=session.state,
             started_at=session.started_at,
             ended_at=session.ended_at,
             last_activity_at=session.last_activity_at,

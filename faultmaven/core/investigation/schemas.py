@@ -45,11 +45,11 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     EvidenceStance,
     HypothesisCategory,
-    HypothesisStatus,
+    HypothesisState,
     InvestigationStage,
     NeedPriority,
     NeedPurpose,
-    NeedStatus,
+    NeedState,
     SolutionType,
     TurnOutcome,
 )
@@ -394,40 +394,40 @@ class HypothesisUpdate(BaseModel):
     Pair integrity: when ``status`` is set to ``REFUTED``, ``refutation_reason``
     MUST also be provided (max 200 chars). The orchestration layer rejects
     updates that carry one without the other. If there is no disproof
-    evidence, use ``status=RETIRED`` instead (no reason required).
+    evidence, use ``state=RETIRED`` instead (no reason required).
     """
 
     likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
-    status: Optional[HypothesisStatus] = None
+    state: Optional[HypothesisState] = None
     refutation_reason: Optional[str] = Field(
         default=None,
         max_length=200,
         description=(
-            "Required when setting status=REFUTED. Cite the specific evidence "
+            "Required when setting state=REFUTED. Cite the specific evidence "
             "or reasoning that disproves the hypothesis. Not used for other "
-            "statuses. status=REFUTED and refutation_reason travel together."
+            "statuses. state=REFUTED and refutation_reason travel together."
         ),
     )
 
-    @field_validator("status", mode="before")
+    @field_validator("state", mode="before")
     @classmethod
     def validate_status(cls, v):
         """
-        Validate hypothesis status against HypothesisStatus enum.
+        Validate hypothesis status against HypothesisState enum.
 
         Maps known LLM aliases (e.g., "TESTING" -> ACTIVE) and rejects
         unrecognized values by returning None (no status update).
         """
         if v is None:
             return None
-        if isinstance(v, HypothesisStatus):
+        if isinstance(v, HypothesisState):
             return v
         if isinstance(v, str):
             # Map known LLM aliases to valid enum values
             aliases = {"TESTING": "active", "testing": "active"}
             mapped = aliases.get(v, v.lower())
             try:
-                return HypothesisStatus(mapped)
+                return HypothesisState(mapped)
             except ValueError:
                 import logging
 
@@ -578,7 +578,7 @@ class EvidenceNeedUpdate(BaseModel):
             "motivated by the problem statement (symptom needs)."
         ),
     )
-    status: Optional[NeedStatus] = Field(
+    state: Optional[NeedState] = Field(
         default=None,
         description=(
             "Set when updating; omit for create (engine defaults to "
@@ -599,7 +599,7 @@ class EvidenceNeedUpdate(BaseModel):
     superseded_reason: Optional[str] = Field(
         default=None,
         max_length=500,
-        description=("Required when ``status=SUPERSEDED``; must be None " "otherwise."),
+        description=("Required when ``state=SUPERSEDED``; must be None " "otherwise."),
     )
 
     @field_validator(
@@ -634,9 +634,9 @@ class EvidenceNeedUpdate(BaseModel):
         - ``status`` must be None or ``PENDING``.
 
         Both paths:
-        - ``status=SUPERSEDED`` requires non-empty ``superseded_reason``;
+        - ``state=SUPERSEDED`` requires non-empty ``superseded_reason``;
           non-SUPERSEDED forbids ``superseded_reason``.
-        - ``status=FULFILLED`` requires at least one
+        - ``state=FULFILLED`` requires at least one
           ``fulfilling_evidence_id`` on this emission.
         """
         if self.need_id is None:
@@ -652,27 +652,27 @@ class EvidenceNeedUpdate(BaseModel):
                     "the schema (Optional for the update path); supply "
                     "them when creating a new need."
                 )
-            if self.status not in (None, NeedStatus.PENDING):
+            if self.state not in (None, NeedState.PENDING):
                 raise ValueError(
-                    f"Cannot create a need with status={self.status.value!r}; "
-                    "use status=None or 'pending' on create, and emit a "
+                    f"Cannot create a need with state={self.state.value!r}; "
+                    "use state=None or 'pending' on create, and emit a "
                     "follow-up update to transition to other statuses."
                 )
 
-        if self.status == NeedStatus.SUPERSEDED:
+        if self.state == NeedState.SUPERSEDED:
             if not (self.superseded_reason and self.superseded_reason.strip()):
                 raise ValueError(
-                    "status=SUPERSEDED requires a non-empty superseded_reason"
+                    "state=SUPERSEDED requires a non-empty superseded_reason"
                 )
         else:
             if self.superseded_reason is not None:
                 raise ValueError(
-                    "superseded_reason must be None unless status=SUPERSEDED"
+                    "superseded_reason must be None unless state=SUPERSEDED"
                 )
 
-        if self.status == NeedStatus.FULFILLED and not self.fulfilling_evidence_ids:
+        if self.state == NeedState.FULFILLED and not self.fulfilling_evidence_ids:
             raise ValueError(
-                "status=FULFILLED requires at least one fulfilling_evidence_id "
+                "state=FULFILLED requires at least one fulfilling_evidence_id "
                 "in the same emission"
             )
 
@@ -781,7 +781,7 @@ class ProposedTransition(BaseModel):
     builds the confirmation prompt summary from existing helpers.
     """
 
-    to_status: str = Field(description="Target status: 'resolved' or 'closed'")
+    to_state: str = Field(description="Target state: 'resolved' or 'closed'")
     evidence_ids: Optional[List[str]] = Field(
         default_factory=list,
         description="Evidence IDs supporting this transition proposal",
@@ -1030,7 +1030,7 @@ class InquiryResponse(BaseInteractionResponse):
             None,
             description=(
                 "Propose INQUIRY → CLOSED for user confirmation when the user asks "
-                "to close/cancel without investigating. Use to_status='closed'. "
+                "to close/cancel without investigating. Use to_state='closed'. "
                 "The transition is NOT executed until the user explicitly confirms."
             ),
         )

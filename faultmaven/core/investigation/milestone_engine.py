@@ -75,14 +75,14 @@ from faultmaven.modules.case.contracts import (
     ActionAttempt,
     Case,
     CaseAction,
-    CaseStatus,
+    CaseState,
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceNeed,
     EvidenceSourceType,
     EvidenceStance,
-    HypothesisStatus,
+    HypothesisState,
     InvestigationActionType,
     InvestigationMomentum,
     InvestigationPath,
@@ -93,7 +93,7 @@ from faultmaven.modules.case.contracts import (
     KnowledgeResolution,
     NeedPriority,
     NeedPurpose,
-    NeedStatus,
+    NeedState,
     ProblemVerification,
     ProposedAction,
     RootCauseConclusion,
@@ -229,12 +229,12 @@ def _apply_stage_gate_side_effects(
     # Find the most recent pending action
     pending_action = None
     for action in reversed(case.proposed_actions):
-        if action.status == "pending":
+        if action.state == "pending":
             pending_action = action
             break
 
     if pending_action:
-        pending_action.status = "accepted"
+        pending_action.state = "accepted"
         # Create audit trail
         attempt = ActionAttempt(
             action_id=pending_action.action_id,
@@ -305,7 +305,7 @@ def _apply_stage_gate_side_effects(
 
             propose_transition(
                 case=case,
-                to_status="closed",
+                to_state="closed",
                 summary=closure_message,
             )
             metadata["transition_proposed"] = True
@@ -429,7 +429,7 @@ def validate_reasoning_first(
     # Debug logging for Turn 2 issue
     logger.debug(
         f"validate_reasoning_first: response_type={type(response_obj).__name__}, "
-        f"case_status={case.status.value}, "
+        f"case_status={case.state.value}, "
         f"is_InquiryResponse={isinstance(response_obj, InquiryResponse)}, "
         f"is_TerminalResponse={isinstance(response_obj, TerminalResponse)}"
     )
@@ -467,7 +467,7 @@ def validate_reasoning_first(
     # Skip validation if case has a pending transition (User-Agent Handshake in progress).
     # The user has already confirmed the transition, so we allow graceful closure
     # without forcing the LLM to justify additional milestones.
-    if case.status == CaseStatus.INVESTIGATING:
+    if case.state == CaseState.INVESTIGATING:
         has_pending = hasattr(case, "pending_transition") and case.pending_transition
         already_solution_verified = case.progress.solution_verified
 
@@ -770,7 +770,7 @@ def _post_mitigation_suggestions() -> list:
             ),
             "intent": {
                 "type": "status_transition",
-                "to_status": "closed",
+                "to_state": "closed",
                 "closure_reason": "mitigation_sufficient",
                 "user_confirmed": True,
             },
@@ -790,7 +790,7 @@ def _gate3_is_pending(case: "Case") -> bool:
     Used by both the deterministic suggestion-emission backstop and the
     INV-21 milestone guard. See investigation-lifecycle-logic.md INV-21.
     """
-    if case.status != CaseStatus.INVESTIGATING:
+    if case.state != CaseState.INVESTIGATING:
         return False
     ps = case.path_selection
     if ps is None or ps.path != InvestigationPath.MITIGATION_FIRST:
@@ -810,7 +810,7 @@ def _is_pre_mitigation_mitigation_first(case: "Case") -> bool:
     Used by the path-conditional emission backstop to enforce those
     bans at the engine layer when the LLM disregards the prompt.
     """
-    if case.status != CaseStatus.INVESTIGATING:
+    if case.state != CaseState.INVESTIGATING:
         return False
     ps = case.path_selection
     if ps is None or ps.path != InvestigationPath.MITIGATION_FIRST:
@@ -828,7 +828,7 @@ def _is_pre_path_investigating(case: "Case") -> bool:
     which forbids hypothesis/causal_evidence/solution emission. The
     engine backstop mirrors that prompt-side ban.
     """
-    if case.status != CaseStatus.INVESTIGATING:
+    if case.state != CaseState.INVESTIGATING:
         return False
     return case.path_selection is None
 
@@ -939,20 +939,20 @@ def _supersede_needs_on_hypothesis_retirement(
             for hyp_id in need.motivating_hypothesis_ids
             if hyp_id != retired_hyp_id
         ]
-        prior_status = need.status
+        prior_status = need.state
         if (
             not new_motivators
             and need.purpose == NeedPurpose.CAUSAL_VERIFICATION
-            and need.status != NeedStatus.FULFILLED
+            and need.state != NeedState.FULFILLED
         ):
             # Pydantic-frozen behavior: EvidenceNeed isn't frozen, so
             # in-place mutation is allowed and re-validated at save time.
             # The Case domain model's save path runs full validation.
-            new_status = NeedStatus.SUPERSEDED
+            new_status = NeedState.SUPERSEDED
             new_reason = "all motivating hypotheses retired"
             superseded_count += 1
         else:
-            new_status = need.status
+            new_status = need.state
             new_reason = need.superseded_reason
 
         # Apply the update. Use object.__setattr__-free path since
@@ -961,21 +961,18 @@ def _supersede_needs_on_hypothesis_retirement(
         # though; the cross-field invariants are checked at save time
         # via Case.model_validate in the repository).
         need.motivating_hypothesis_ids = new_motivators
-        need.status = new_status
+        need.state = new_status
         need.superseded_reason = new_reason
         need.updated_at = datetime.now(UTC)
 
-        if (
-            new_status == NeedStatus.SUPERSEDED
-            and prior_status != NeedStatus.SUPERSEDED
-        ):
+        if new_status == NeedState.SUPERSEDED and prior_status != NeedState.SUPERSEDED:
             try:
                 from faultmaven.core.investigation.lifecycle_metrics import (
                     evidence_need_status_changed_total,
                 )
 
                 evidence_need_status_changed_total.labels(
-                    from_status=prior_status.value, to_status=new_status.value
+                    from_state=prior_status.value, to_state=new_status.value
                 ).inc()
             except Exception:
                 # Metrics are best-effort; never block lifecycle on them.
@@ -1002,7 +999,7 @@ def _gate1_is_pending(case: "Case") -> bool:
     INQUIRY prompt's confirmation-suggestion enumeration. Matches the pattern
     already established for Gate 2 and Gate 3.
     """
-    if case.status != CaseStatus.INQUIRY:
+    if case.state != CaseState.INQUIRY:
         return False
     inq = case.inquiry
     if inq is None:
@@ -1032,7 +1029,7 @@ def _gate2_is_pending(case: "Case") -> bool:
     *override context the user sees*, not the algorithm itself. Making
     the recommendation itself evidence-derived is deferred follow-up.
     """
-    if case.status != CaseStatus.INVESTIGATING:
+    if case.state != CaseState.INVESTIGATING:
         return False
     if not case.progress.symptom_verified:
         return False
@@ -1207,7 +1204,7 @@ def _terminal_confirmation_response(case) -> str:
     The terminal reply is composed by ``_compose_terminal_reply`` which
     appends the auto-generated summary content (when produced).
     """
-    if case.status == CaseStatus.RESOLVED:
+    if case.state == CaseState.RESOLVED:
         return "Case resolved."
 
     closure_reason = getattr(case, "closure_reason", "") or ""
@@ -1322,12 +1319,12 @@ def _select_ack_follow_ups(case, summary_failed: bool, remaining: int) -> list:
     "hide when exhausted" gate inside the per-type suggestion builders.
     """
     if summary_failed:
-        if case.status == CaseStatus.RESOLVED:
+        if case.state == CaseState.RESOLVED:
             return _resolved_suggestions(remaining)
-        if case.status == CaseStatus.CLOSED:
+        if case.state == CaseState.CLOSED:
             return _closed_suggestions(case, remaining)
         return []
-    if case.status == CaseStatus.RESOLVED:
+    if case.state == CaseState.RESOLVED:
         return _resolved_ack_suggestions()
     return []
 
@@ -1513,9 +1510,9 @@ class MilestoneEngine:
 
         if self.report_service is None or self.repository is None:
             return getattr(self.report_service, "MAX_REGENERATIONS", 5)
-        if case.status == CaseStatus.RESOLVED:
+        if case.state == CaseState.RESOLVED:
             report_type = ReportType.RESOLUTION_SUMMARY
-        elif case.status == CaseStatus.CLOSED:
+        elif case.state == CaseState.CLOSED:
             report_type = ReportType.CLOSURE_SUMMARY
         else:
             # Non-terminal cases have no regen affordance at all; the
@@ -1581,7 +1578,7 @@ class MilestoneEngine:
             terminal_summary_skip_reason,
         )
 
-        if case.status == CaseStatus.CLOSED and not should_generate_terminal_summary(
+        if case.state == CaseState.CLOSED and not should_generate_terminal_summary(
             case
         ):
             skip = terminal_summary_skip_reason(case)
@@ -1594,15 +1591,15 @@ class MilestoneEngine:
 
         from faultmaven.modules.case.domain.owned_models.report import ReportType
 
-        if case.status == CaseStatus.RESOLVED:
+        if case.state == CaseState.RESOLVED:
             report_type = ReportType.RESOLUTION_SUMMARY
             report_label = "Resolution summary"
-        elif case.status == CaseStatus.CLOSED:
+        elif case.state == CaseState.CLOSED:
             report_type = ReportType.CLOSURE_SUMMARY
             report_label = "Closure summary"
         else:
             logger.warning(
-                f"Unexpected status {case.status} for auto-summary on case {case.case_id}"
+                f"Unexpected status {case.state} for auto-summary on case {case.case_id}"
             )
             return None, False
 
@@ -1681,7 +1678,7 @@ class MilestoneEngine:
         # payload triggers persisted runbook generation; paraphrases
         # fall through to Q&A. RESOLVED-only — runbooks codify a
         # confirmed root-cause-to-solution chain.
-        is_runbook_eligible = case.status == CaseStatus.RESOLVED
+        is_runbook_eligible = case.state == CaseState.RESOLVED
         if is_runbook_eligible and msg_lower in self._RUNBOOK_CREATION_PATTERNS:
             return await self._handle_runbook_creation(case, metadata)
 
@@ -1710,7 +1707,7 @@ class MilestoneEngine:
         )
         from faultmaven.modules.case.domain.owned_models.report import ReportType
 
-        if case.status == CaseStatus.RESOLVED:
+        if case.state == CaseState.RESOLVED:
             report_type = ReportType.RESOLUTION_SUMMARY
             report_label = "Resolution Summary"
         else:
@@ -1720,7 +1717,7 @@ class MilestoneEngine:
         # Strict gating for CLOSED: the verdict at regen time must agree
         # with the verdict at closure time. Substance signals are frozen
         # in CLOSED state, so this is a stable check.
-        if case.status == CaseStatus.CLOSED and not should_generate_terminal_summary(
+        if case.state == CaseState.CLOSED and not should_generate_terminal_summary(
             case
         ):
             skip = terminal_summary_skip_reason(case) or (
@@ -1772,7 +1769,7 @@ class MilestoneEngine:
         # The "remaining" count comes from the DB and reflects the row
         # just written, so it correctly decrements turn-over-turn.
         remaining = await self._remaining_regens_for(case)
-        if case.status == CaseStatus.RESOLVED:
+        if case.state == CaseState.RESOLVED:
             runbook_exists = await self._case_has_runbook_draft(case)
             follow_ups = _resolved_suggestions(remaining, runbook_exists)
         else:
@@ -2063,10 +2060,10 @@ class MilestoneEngine:
         #   - RESOLVED: regen-resolution-summary + runbook cards. Regen
         #     mirrors CLOSED's offering; runbook is the forward action
         #     RESOLVED enables.
-        if case.status == CaseStatus.CLOSED:
+        if case.state == CaseState.CLOSED:
             remaining = await self._remaining_regens_for(case)
             follow_ups = follow_ups + _closed_suggestions(case, remaining)
-        elif case.status == CaseStatus.RESOLVED:
+        elif case.state == CaseState.RESOLVED:
             remaining = await self._remaining_regens_for(case)
             runbook_exists = await self._case_has_runbook_draft(case)
             follow_ups = follow_ups + _resolved_suggestions(
@@ -2160,20 +2157,20 @@ class MilestoneEngine:
         intent_info = f" [intent={intent_type}]" if intent_type else ""
         logger.info(
             f"Processing turn {case.current_turn} for case {case.case_id} "
-            f"(status: {case.status}){intent_info}"
+            f"(state: {case.state}){intent_info}"
         )
 
         # Debug logging for Turn 2 issue
         # Note: current_turn already incremented before this point
-        if case.status == CaseStatus.INQUIRY:
+        if case.state == CaseState.INQUIRY:
             logger.info(
-                f"Turn {case.current_turn} starting: status={case.status.value}, "
+                f"Turn {case.current_turn} starting: state={case.state.value}, "
                 f"confirmed={case.inquiry.problem_statement_confirmed}, "
                 f"decided_to_investigate={case.inquiry.decided_to_investigate}"
             )
         else:
             logger.info(
-                f"Turn {case.current_turn} starting: status={case.status.value}, "
+                f"Turn {case.current_turn} starting: state={case.state.value}, "
                 f"stage={case.current_stage}"
             )
 
@@ -2213,7 +2210,7 @@ class MilestoneEngine:
             _pre_turn_retired_hyp_ids: set[str] = {
                 h_id
                 for h_id, h in case.hypotheses.items()
-                if h.status == HypothesisStatus.RETIRED
+                if h.state == HypothesisState.RETIRED
             }
 
             # 0a. Terminal case handling — Q&A and report regeneration only
@@ -2238,15 +2235,15 @@ class MilestoneEngine:
                 if (
                     intent_type == "status_transition"
                     and intent_data
-                    and intent_data.get("to_status")
-                    != case.pending_transition.get("to_status")
+                    and intent_data.get("to_state")
+                    != case.pending_transition.get("to_state")
                 ):
                     from faultmaven.core.investigation.terminal_transitions import (
                         cancel_pending_transition,
                     )
 
-                    old_target = case.pending_transition.get("to_status")
-                    new_target = intent_data.get("to_status")
+                    old_target = case.pending_transition.get("to_state")
+                    new_target = intent_data.get("to_state")
                     cancel_pending_transition(case)
                     logger.info(
                         f"Pending transition to '{old_target}' cancelled — user "
@@ -2266,8 +2263,8 @@ class MilestoneEngine:
                     # proposed the transition.
                     status_transition_confirms = (
                         intent_type == "status_transition"
-                        and (intent_data or {}).get("to_status")
-                        == case.pending_transition.get("to_status")
+                        and (intent_data or {}).get("to_state")
+                        == case.pending_transition.get("to_state")
                     )
                     intent_confirms = intent_confirms or status_transition_confirms
                     intent_declines = (
@@ -2287,15 +2284,15 @@ class MilestoneEngine:
                         )
 
                         if self.checkpoint_service:
-                            to_status = case.pending_transition.get(
-                                "to_status", "unknown"
+                            to_state = case.pending_transition.get(
+                                "to_state", "unknown"
                             )
                             await self.checkpoint_service.create_checkpoint(
                                 case,
                                 trigger="pre_case_action",
                                 metadata={
-                                    "from_status": case.status.value,
-                                    "to_status": to_status,
+                                    "from_state": case.state.value,
+                                    "to_state": to_state,
                                 },
                             )
 
@@ -2313,7 +2310,7 @@ class MilestoneEngine:
                             and not case.path_selection.rca_after_mitigation_confirmed
                             and (case.pending_transition or {}).get("closure_reason")
                             == "mitigation_sufficient"
-                            and (case.pending_transition or {}).get("to_status")
+                            and (case.pending_transition or {}).get("to_state")
                             == "closed"
                         )
 
@@ -2403,10 +2400,10 @@ class MilestoneEngine:
                         # Re-present the confirmation — don't fall through
                         # to the LLM tool loop, which crashes on short or
                         # ambiguous messages (tool_choice=required fails).
-                        to_status = case.pending_transition.get("to_status", "resolved")
+                        to_state = case.pending_transition.get("to_state", "resolved")
                         summary = case.pending_transition.get("summary", "")
 
-                        if to_status == "resolved":
+                        if to_state == "resolved":
                             agent_response = (
                                 "Please select one of the options above to continue."
                                 if not summary
@@ -2465,12 +2462,12 @@ class MilestoneEngine:
             # ROOT CAUSE: intent_type="status_transition" skipped pattern matching but had no handler
             # FIX: Add explicit handler before pattern matching section
             if intent_type == "status_transition" and intent_data:
-                to_status_str = intent_data.get("to_status")
-                from_status_str = intent_data.get("from_status")
+                to_status_str = intent_data.get("to_state")
+                from_status_str = intent_data.get("from_state")
 
                 if not to_status_str:
                     raise ValueError(
-                        "to_status is required for status_transition intent"
+                        "to_state is required for status_transition intent"
                     )
 
                 logger.info(
@@ -2486,12 +2483,12 @@ class MilestoneEngine:
 
                 # Handle each status transition
                 if to_status_str == "closed":
-                    if case.status not in (
-                        CaseStatus.INQUIRY,
-                        CaseStatus.INVESTIGATING,
+                    if case.state not in (
+                        CaseState.INQUIRY,
+                        CaseState.INVESTIGATING,
                     ):
                         raise ValueError(
-                            f"Cannot transition to CLOSED from {case.status.value}"
+                            f"Cannot transition to CLOSED from {case.state.value}"
                         )
 
                     # Use closure readiness for a meaningful summary, and
@@ -2506,7 +2503,7 @@ class MilestoneEngine:
                         # the resolution confirmation pair.
                         propose_transition(
                             case=case,
-                            to_status="resolved",
+                            to_state="resolved",
                             summary=closure.message,
                         )
                         logger.info(
@@ -2534,7 +2531,7 @@ class MilestoneEngine:
                     # propose_transition from case state.
                     propose_transition(
                         case=case,
-                        to_status="closed",
+                        to_state="closed",
                         summary=closure.message,
                     )
 
@@ -2561,9 +2558,9 @@ class MilestoneEngine:
                     }
 
                 elif to_status_str == "resolved":
-                    if case.status != CaseStatus.INVESTIGATING:
+                    if case.state != CaseState.INVESTIGATING:
                         raise ValueError(
-                            f"Cannot transition to RESOLVED from {case.status.value}"
+                            f"Cannot transition to RESOLVED from {case.state.value}"
                         )
 
                     from faultmaven.modules.case.domain.services.case_action_manager import (
@@ -2573,7 +2570,7 @@ class MilestoneEngine:
                     if not user_message or not user_message.strip():
                         user_message = (
                             CaseActionManager.get_agent_message(
-                                CaseStatus.INVESTIGATING, CaseStatus.RESOLVED
+                                CaseState.INVESTIGATING, CaseState.RESOLVED
                             )
                             or "The issue is resolved."
                         )
@@ -2584,7 +2581,7 @@ class MilestoneEngine:
                     if (
                         hasattr(case, "pending_transition")
                         and case.pending_transition
-                        and case.pending_transition.get("to_status") == "resolved"
+                        and case.pending_transition.get("to_state") == "resolved"
                     ):
                         from faultmaven.core.investigation.terminal_transitions import (
                             confirm_pending_transition,
@@ -2643,7 +2640,7 @@ class MilestoneEngine:
                         )
                         propose_transition(
                             case=case,
-                            to_status="closed",
+                            to_state="closed",
                             summary=readiness.message,
                         )
                         self._record_deterministic_turn(
@@ -2672,7 +2669,7 @@ class MilestoneEngine:
                         )
                         propose_transition(
                             case=case,
-                            to_status="resolved",
+                            to_state="resolved",
                             summary=readiness.message,
                         )
                         case.pending_transition["needs_info"] = True
@@ -2694,7 +2691,7 @@ class MilestoneEngine:
                     # READY — propose transition via User-Agent Handshake
                     propose_transition(
                         case=case,
-                        to_status="resolved",
+                        to_state="resolved",
                         summary="Case meets resolution criteria. Awaiting user confirmation.",
                     )
                     metadata["transition_proposed_this_turn"] = True
@@ -2724,9 +2721,9 @@ class MilestoneEngine:
                     }
 
                 elif to_status_str == "investigating":
-                    if case.status != CaseStatus.INQUIRY:
+                    if case.state != CaseState.INQUIRY:
                         raise ValueError(
-                            f"Cannot transition to INVESTIGATING from {case.status.value}"
+                            f"Cannot transition to INVESTIGATING from {case.state.value}"
                         )
 
                     # Inject a pre-composed message and let the normal INQUIRY
@@ -2742,7 +2739,7 @@ class MilestoneEngine:
                     if not user_message or not user_message.strip():
                         user_message = (
                             CaseActionManager.get_agent_message(
-                                CaseStatus.INQUIRY, CaseStatus.INVESTIGATING
+                                CaseState.INQUIRY, CaseState.INVESTIGATING
                             )
                             or "I want to start a formal investigation to find the root cause."
                         )
@@ -2754,7 +2751,7 @@ class MilestoneEngine:
                     # Fall through to normal LLM processing (no transition executed here)
 
                 else:
-                    raise ValueError(f"Unknown to_status: {to_status_str}")
+                    raise ValueError(f"Unknown to_state: {to_status_str}")
 
             elif intent_type == "confirmation":
                 logger.info(
@@ -2762,9 +2759,9 @@ class MilestoneEngine:
                     f"(has_pending_statement={bool(case.inquiry.proposed_problem_statement)})"
                 )
 
-                if case.status != CaseStatus.INQUIRY:
+                if case.state != CaseState.INQUIRY:
                     logger.warning(
-                        f"Received confirmation intent for case {case.case_id} but status is {case.status.value}"
+                        f"Received confirmation intent for case {case.case_id} but status is {case.state.value}"
                     )
                 elif not case.inquiry.proposed_problem_statement:
                     logger.warning(
@@ -2801,10 +2798,10 @@ class MilestoneEngine:
                     f"(intent_data={intent_data})"
                 )
 
-                if case.status != CaseStatus.INVESTIGATING:
+                if case.state != CaseState.INVESTIGATING:
                     logger.warning(
                         f"Received path_selection intent for case {case.case_id} "
-                        f"but status is {case.status.value}"
+                        f"but status is {case.state.value}"
                     )
                 elif not case.progress.symptom_verified:
                     logger.warning(
@@ -2898,10 +2895,10 @@ class MilestoneEngine:
                     f"{case.case_id} (intent_data={intent_data})"
                 )
 
-                if case.status != CaseStatus.INVESTIGATING:
+                if case.state != CaseState.INVESTIGATING:
                     logger.warning(
                         f"Received post_mitigation_choice intent for case "
-                        f"{case.case_id} but status is {case.status.value}"
+                        f"{case.case_id} but status is {case.state.value}"
                     )
                 elif not _gate3_is_pending(case):
                     logger.warning(
@@ -2969,11 +2966,11 @@ class MilestoneEngine:
                                 reason=user_message or "User refuted",
                             )
                         elif action == "validate":
-                            hypothesis.status = HypothesisStatus.VALIDATED
+                            hypothesis.state = HypothesisState.VALIDATED
                             hypothesis.likelihood = 1.0
                             hypothesis.last_updated_turn = case.current_turn
                         elif action == "retire":
-                            hypothesis.status = HypothesisStatus.RETIRED
+                            hypothesis.state = HypothesisState.RETIRED
                             hypothesis.retirement_reason = (
                                 user_message or "User retired"
                             )
@@ -3079,17 +3076,17 @@ class MilestoneEngine:
             )
 
             # Determine schema based on status/stage
-            if case.status == CaseStatus.INQUIRY:
+            if case.state == CaseState.INQUIRY:
                 schema_model = InquiryResponse
                 logger.info(
                     f"Turn {case.current_turn} schema selection: "
-                    f"status={case.status.value}, schema=InquiryResponse"
+                    f"state={case.state.value}, schema=InquiryResponse"
                 )
-            elif case.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
+            elif case.state in [CaseState.RESOLVED, CaseState.CLOSED]:
                 schema_model = TerminalResponse
                 logger.info(
                     f"Turn {case.current_turn} schema selection: "
-                    f"status={case.status.value}, schema=TerminalResponse"
+                    f"state={case.state.value}, schema=TerminalResponse"
                 )
             else:
                 schema_model = get_schema_for_stage(
@@ -3097,7 +3094,7 @@ class MilestoneEngine:
                 )
                 logger.info(
                     f"Turn {case.current_turn} schema selection: "
-                    f"status={case.status.value}, stage={case.current_stage}, "
+                    f"state={case.state.value}, stage={case.current_stage}, "
                     f"schema={schema_model.__name__}"
                 )
 
@@ -3186,7 +3183,7 @@ class MilestoneEngine:
             # Gap #7: Working Conclusion Every Turn
             # Reference: Prompt Engineering Guide Section 11.7
             # Why: Provides consistent context tracking, prevents "lost context" issues
-            if case_updated.status == CaseStatus.INVESTIGATING:
+            if case_updated.state == CaseState.INVESTIGATING:
                 working_conclusion = generate_working_conclusion(
                     case=case_updated, current_turn=case_updated.current_turn
                 )
@@ -3305,7 +3302,7 @@ class MilestoneEngine:
             _newly_retired_hyp_ids = {
                 h_id
                 for h_id, h in case_updated.hypotheses.items()
-                if h.status == HypothesisStatus.RETIRED
+                if h.state == HypothesisState.RETIRED
             } - _pre_turn_retired_hyp_ids
             for _retired_id in _newly_retired_hyp_ids:
                 _supersede_needs_on_hypothesis_retirement(
@@ -3326,9 +3323,9 @@ class MilestoneEngine:
             # affordance (G2).
             summary_payload: str | None = None
             summary_failed: bool = False
-            if metadata.get("status_transitioned") and case_updated.status in (
-                CaseStatus.RESOLVED,
-                CaseStatus.CLOSED,
+            if metadata.get("status_transitioned") and case_updated.state in (
+                CaseState.RESOLVED,
+                CaseState.CLOSED,
             ):
                 summary_payload, summary_failed = await self._auto_generate_report(
                     case_updated
@@ -3336,7 +3333,7 @@ class MilestoneEngine:
 
             logger.info(
                 f"Turn {case_updated.current_turn} processed successfully. "
-                f"Status: {case_updated.status}, "
+                f"Status: {case_updated.state}, "
                 f"Progress made: {metadata.get('progress_made', False)}"
             )
 
@@ -3424,9 +3421,9 @@ class MilestoneEngine:
             # When generation failed, include the regen affordance so the
             # user can retry immediately (G2 — the "noise" guard doesn't
             # apply when there's no inline summary).
-            if metadata.get("status_transitioned") and case_updated.status in (
-                CaseStatus.RESOLVED,
-                CaseStatus.CLOSED,
+            if metadata.get("status_transitioned") and case_updated.state in (
+                CaseState.RESOLVED,
+                CaseState.CLOSED,
             ):
                 remaining = await self._remaining_regens_for(case_updated)
                 follow_ups = _select_ack_follow_ups(
@@ -3479,7 +3476,7 @@ class MilestoneEngine:
             )
             _agent_text_lower = (agent_response_text or "").lower()
             # Capture LLM-vs-engine drift on the proposed-transition path.
-            # When the LLM emits to_status=resolved on a thin case, the engine
+            # When the LLM emits to_state=resolved on a thin case, the engine
             # pivots to closed (see _check_automatic_transitions). Recording
             # the pivot here lets us compare LLM intent against engine action
             # over time without diffing log lines.
@@ -3489,10 +3486,10 @@ class MilestoneEngine:
                 None,
             )
             _llm_proposed_to_status = (
-                getattr(_llm_proposed, "to_status", None) if _llm_proposed else None
+                getattr(_llm_proposed, "to_state", None) if _llm_proposed else None
             )
             _engine_to_status = (
-                case_updated.pending_transition.get("to_status")
+                case_updated.pending_transition.get("to_state")
                 if case_updated.pending_transition
                 else None
             )
@@ -3506,7 +3503,7 @@ class MilestoneEngine:
                 extra={
                     "case_id": case_updated.case_id,
                     "turn": case_updated.current_turn,
-                    "status": case_updated.status.value,
+                    "state": case_updated.state.value,
                     "proposed_transition_emitted": bool(
                         metadata.get("transition_proposed")
                     ),
@@ -5699,7 +5696,7 @@ class MilestoneEngine:
             # stage-gate milestones. Prevents LLM hallucinating compliance
             # when no action was proposed.
             has_pending_action = any(
-                a.status == "pending" for a in case.proposed_actions
+                a.state == "pending" for a in case.proposed_actions
             )
 
             # Path-conditional RCA-milestone restriction. Both
@@ -5801,7 +5798,7 @@ class MilestoneEngine:
                         metadata["milestones_completed"].append(field)
 
             # Post-INV-19 redesign: Gate 2 fires INSIDE INVESTIGATING after
-            # symptom_verified. The state (status=INVESTIGATING,
+            # symptom_verified. The state (state=INVESTIGATING,
             # symptom_verified=True, path_selection=None) is the
             # Gate-2-pending shape — expected, not an invariant violation.
             # The dispatcher routes this state to _PRE_PATH_DIAGNOSIS_BLOCK
@@ -6058,7 +6055,7 @@ class MilestoneEngine:
                         category=h_item.category,
                         initial_likelihood=h_item.likelihood,
                         current_turn=case.current_turn,
-                        status=HypothesisStatus.ACTIVE,
+                        state=HypothesisState.ACTIVE,
                     )
                     case.hypotheses[h.hypothesis_id] = h
                     metadata["hypotheses_generated"].append(h.hypothesis_id)
@@ -6431,7 +6428,7 @@ class MilestoneEngine:
                 h_id
                 for h_id in resolved_motivators
                 if h_id in case.hypotheses
-                and case.hypotheses[h_id].status == HypothesisStatus.RETIRED
+                and case.hypotheses[h_id].state == HypothesisState.RETIRED
             }
             valid_motivators = [
                 h_id
@@ -6511,15 +6508,15 @@ class MilestoneEngine:
                 # list at emission, but the apply-layer drop happens
                 # after that check; constructing EvidenceNeed with
                 # FULFILLED + [] would raise via the model_validator.
-                effective_status = update.status or NeedStatus.PENDING
+                effective_status = update.state or NeedState.PENDING
                 effective_superseded_reason = update.superseded_reason
-                if effective_status == NeedStatus.FULFILLED and not valid_fulfillments:
+                if effective_status == NeedState.FULFILLED and not valid_fulfillments:
                     metadata.setdefault("validation_repairs", []).append(
                         "Demoted FULFILLED→PARTIALLY_MET on evidence_need "
                         "create (all fulfilling_evidence_ids dropped as "
                         "dangling)"
                     )
-                    effective_status = NeedStatus.PARTIALLY_MET
+                    effective_status = NeedState.PARTIALLY_MET
                     effective_superseded_reason = None
 
                 new_need = EvidenceNeed(
@@ -6530,7 +6527,7 @@ class MilestoneEngine:
                     # priority is Optional on EvidenceNeedUpdate (omitted on
                     # the update path); on create, fall back to MEDIUM.
                     priority=update.priority or NeedPriority.MEDIUM,
-                    status=effective_status,
+                    state=effective_status,
                     motivating_hypothesis_ids=valid_motivators,
                     fulfilling_evidence_ids=valid_fulfillments,
                     superseded_reason=effective_superseded_reason,
@@ -6584,9 +6581,9 @@ class MilestoneEngine:
                 )
 
             # SUPERSEDED is terminal — cannot resurrect via update.
-            if target.status == NeedStatus.SUPERSEDED and update.status not in (
+            if target.state == NeedState.SUPERSEDED and update.state not in (
                 None,
-                NeedStatus.SUPERSEDED,
+                NeedState.SUPERSEDED,
             ):
                 logger.warning(
                     f"evidence_need_update attempted to resurrect "
@@ -6601,7 +6598,7 @@ class MilestoneEngine:
 
             # Merge lists (append-only). Dedup is handled by the
             # EvidenceNeed field validator at assignment time.
-            prior_status = target.status
+            prior_status = target.state
             target.motivating_hypothesis_ids = list(
                 dict.fromkeys(list(target.motivating_hypothesis_ids) + valid_motivators)
             )
@@ -6635,23 +6632,23 @@ class MilestoneEngine:
             # ``_validate_status_consistency`` — without this guard a
             # bad LLM emission could leave the need in FULFILLED+[]
             # state that raises on next reconstruction.
-            effective_status = update.status
+            effective_status = update.state
             if (
-                effective_status == NeedStatus.FULFILLED
+                effective_status == NeedState.FULFILLED
                 and not target.fulfilling_evidence_ids
             ):
                 metadata.setdefault("validation_repairs", []).append(
                     f"Demoted FULFILLED→PARTIALLY_MET on need {target.need_id} "
                     f"(all fulfilling_evidence_ids dropped as dangling)"
                 )
-                effective_status = NeedStatus.PARTIALLY_MET
+                effective_status = NeedState.PARTIALLY_MET
             if effective_status is not None:
-                target.status = effective_status
-            if effective_status == NeedStatus.SUPERSEDED:
+                target.state = effective_status
+            if effective_status == NeedState.SUPERSEDED:
                 target.superseded_reason = update.superseded_reason
             elif (
                 effective_status is not None
-                and effective_status != NeedStatus.SUPERSEDED
+                and effective_status != NeedState.SUPERSEDED
             ):
                 # Clearing superseded_reason on non-SUPERSEDED transition
                 target.superseded_reason = None
@@ -6662,8 +6659,8 @@ class MilestoneEngine:
             if effective_status is not None and effective_status != prior_status:
                 try:
                     evidence_need_status_changed_total.labels(
-                        from_status=prior_status.value,
-                        to_status=effective_status.value,
+                        from_state=prior_status.value,
+                        to_state=effective_status.value,
                     ).inc()
                 except Exception:
                     pass
@@ -6710,8 +6707,8 @@ class MilestoneEngine:
                 case,
                 trigger="pre_case_action",
                 metadata={
-                    "from_status": case.status.value,
-                    "to_status": "investigating",
+                    "from_state": case.state.value,
+                    "to_state": "investigating",
                 },
             )
 
@@ -6725,7 +6722,7 @@ class MilestoneEngine:
             case.description = case.title or "Investigation requested by user"
 
         # Change status (Pydantic validation happens here)
-        case.status = CaseStatus.INVESTIGATING
+        case.state = CaseState.INVESTIGATING
 
         # Outcome telemetry for INV-01: count cases that reached
         # INVESTIGATING after a prior same-turn-confirmation guard fire.
@@ -6873,7 +6870,7 @@ class MilestoneEngine:
         - The transition is NOT executed until the user confirms in the next turn
         - If a pending_transition exists and user confirms, execute it
         """
-        old_status = case.status
+        old_status = case.state
 
         # 0. Handle pending transition confirmation from previous turn
         # Skip confirmation check if we just proposed a transition this turn (User-Agent Handshake)
@@ -6946,7 +6943,7 @@ class MilestoneEngine:
                     cancel_pending_transition(case)
                     propose_transition(
                         case=case,
-                        to_status="closed",
+                        to_state="closed",
                         summary=readiness.message,
                     )
                     metadata["transition_proposed_this_turn"] = True
@@ -6972,7 +6969,7 @@ class MilestoneEngine:
                     )
                     propose_transition(
                         case=case,
-                        to_status="closed",
+                        to_state="closed",
                         summary=close_message,
                     )
                     metadata["transition_proposed_this_turn"] = True
@@ -6993,13 +6990,13 @@ class MilestoneEngine:
                 if self._user_confirms_transition(user_message):
                     # Gap #6: Checkpoint before terminal transition
                     if self.checkpoint_service:
-                        to_status = case.pending_transition.get("to_status", "unknown")
+                        to_state = case.pending_transition.get("to_state", "unknown")
                         await self.checkpoint_service.create_checkpoint(
                             case,
                             trigger="pre_case_action",
                             metadata={
-                                "from_status": case.status.value,
-                                "to_status": to_status,
+                                "from_state": case.state.value,
+                                "to_state": to_state,
                             },
                         )
                     confirm_pending_transition(case, case.user_id)
@@ -7024,7 +7021,7 @@ class MilestoneEngine:
         # work in the transcript before committing. (The recommendation
         # itself is still computed from user-claimed urgency; making the
         # recommendation evidence-derived is deferred follow-up.)
-        if case.status == CaseStatus.INQUIRY:
+        if case.state == CaseState.INQUIRY:
             gate1_passed = case.inquiry.decided_to_investigate or (
                 case.inquiry.problem_statement_confirmed
                 and case.inquiry.problem_confirmation
@@ -7034,8 +7031,8 @@ class MilestoneEngine:
                 metadata["status_transitioned"] = True
                 case.action_history.append(
                     CaseAction(
-                        from_status=old_status,
-                        to_status=CaseStatus.INVESTIGATING,
+                        from_state=old_status,
+                        to_state=CaseState.INVESTIGATING,
                         triggered_by="system",
                         reason="Problem statement confirmed",
                     )
@@ -7060,22 +7057,22 @@ class MilestoneEngine:
                 )
 
                 # Structural validation against the action graph: the LLM
-                # cannot emit a ``proposed_transition`` whose ``to_status``
-                # is not a valid edge from the current ``case.status`` per
+                # cannot emit a ``proposed_transition`` whose ``to_state``
+                # is not a valid edge from the current ``case.state`` per
                 # ``ALLOWED_ACTIONS``. The prompt instructs the LLM on
                 # which edges exist; this is the safety net for prompt
-                # non-compliance (e.g., an LLM emitting ``to_status="resolved"``
+                # non-compliance (e.g., an LLM emitting ``to_state="resolved"``
                 # from INQUIRY, which is not a valid edge — INQUIRY can
                 # only transition to INVESTIGATING or CLOSED). Rejecting
                 # here prevents downstream pivot logic from accepting an
                 # invalid emission and quietly converting it into a
                 # different transition the user never intended.
-                valid_targets = {s.value for s in ALLOWED_ACTIONS.get(case.status, [])}
-                if proposed.to_status not in valid_targets:
+                valid_targets = {s.value for s in ALLOWED_ACTIONS.get(case.state, [])}
+                if proposed.to_state not in valid_targets:
                     logger.warning(
                         f"Rejected proposed_transition for case {case.case_id}: "
-                        f"to_status={proposed.to_status!r} is not a valid edge "
-                        f"from {case.status.value!r}. "
+                        f"to_state={proposed.to_state!r} is not a valid edge "
+                        f"from {case.state.value!r}. "
                         f"Valid targets: {sorted(valid_targets)}."
                     )
                     current_feedback = metadata.get("system_feedback") or ""
@@ -7086,10 +7083,10 @@ class MilestoneEngine:
                     metadata["system_feedback"] = (
                         f"{current_feedback}\n"
                         "INVALID TRANSITION ERROR: You emitted "
-                        f"``proposed_transition.to_status={proposed.to_status!r}`` "
-                        f"from case.status={case.status.value!r}, which is "
+                        f"``proposed_transition.to_state={proposed.to_state!r}`` "
+                        f"from case.state={case.state.value!r}, which is "
                         f"not a valid edge in the case action graph. "
-                        f"Valid targets from {case.status.value!r}: "
+                        f"Valid targets from {case.state.value!r}: "
                         f"{valid_list}. "
                         "Per the lifecycle: from INQUIRY only CLOSED is a "
                         "valid proposed_transition (resolution requires "
@@ -7098,8 +7095,8 @@ class MilestoneEngine:
                         "transition; emit only valid edges."
                     ).strip()
                     metadata.setdefault("validation_repairs", []).append(
-                        f"Rejected proposed_transition.to_status="
-                        f"{proposed.to_status!r} from {case.status.value!r}"
+                        f"Rejected proposed_transition.to_state="
+                        f"{proposed.to_state!r} from {case.state.value!r}"
                     )
                     # Skip downstream proposal processing.
                     proposed = None
@@ -7118,13 +7115,13 @@ class MilestoneEngine:
                 logger.info(
                     f"Case {case.case_id}: honoring handshake CLOSE pivot — "
                     f"ignoring same-turn LLM proposed_transition="
-                    f"{getattr(proposed, 'to_status', None)!r} so it does not "
+                    f"{getattr(proposed, 'to_state', None)!r} so it does not "
                     f"clobber the escape from a repeated resolution NEEDS_INFO."
                 )
                 proposed = None
 
             if proposed:
-                # The LLM emits only to_status (and optional evidence_ids).
+                # The LLM emits only to_state (and optional evidence_ids).
                 # Engine handles everything else: closure_reason is derived
                 # inside propose_transition; summary is built programmatically
                 # via the same helpers the UI dropdown path uses, so all
@@ -7143,10 +7140,10 @@ class MilestoneEngine:
                 #                     + solution; closing would discard the
                 #                     resolution attribution)
                 #   HAS_SUBSTANCE / TRIVIAL → propose CLOSED with summary
-                effective_to_status = proposed.to_status
+                effective_to_status = proposed.to_state
                 needs_info_message: str | None = None
 
-                if proposed.to_status == "resolved":
+                if proposed.to_state == "resolved":
                     readiness = assess_resolution_readiness(case)
                     if readiness.verdict == readiness.SUGGEST_CLOSE:
                         effective_to_status = "closed"
@@ -7181,7 +7178,7 @@ class MilestoneEngine:
 
                 propose_transition(
                     case=case,
-                    to_status=effective_to_status,
+                    to_state=effective_to_status,
                     summary=summary,
                     evidence_ids=getattr(proposed, "evidence_ids", None),
                 )
@@ -7478,7 +7475,7 @@ class MilestoneEngine:
     ) -> None:
         """Apply confidence decay and anchoring detection."""
         active_hypotheses = [
-            h for h in case.hypotheses.values() if h.status == HypothesisStatus.ACTIVE
+            h for h in case.hypotheses.values() if h.state == HypothesisState.ACTIVE
         ]
 
         if not active_hypotheses:

@@ -30,7 +30,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputStrategy,
 )
 from faultmaven.models.interfaces import ILLMProvider
-from faultmaven.modules.case.contracts import Case, CaseStatus, InquiryData
+from faultmaven.modules.case.contracts import Case, CaseState, InquiryData
 
 
 class MockLLMProvider(ILLMProvider):
@@ -76,11 +76,11 @@ def mock_repo():
 
 @pytest.fixture
 def inquiry_case():
-    """Base case in INQUIRY status"""
+    """Base case in INQUIRY state"""
     return Case(
         case_id="case_1234567890ab",
         title="Test Inquiry",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         user_id="user_123",
         organization_id="org_123",
         description="",
@@ -136,7 +136,7 @@ class TestInquiryTransitionLogic:
 
         # Verify stays in INQUIRY — agent should ask for confirmation in response
         updated_case = result["case_updated"]
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
         assert updated_case.inquiry.problem_statement_confirmed is False
         assert updated_case.inquiry.decided_to_investigate is False
         assert (
@@ -169,7 +169,7 @@ class TestInquiryTransitionLogic:
 
         # Verify stays in INQUIRY
         updated_case = result["case_updated"]
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
         assert updated_case.inquiry.problem_statement_confirmed is False
         assert updated_case.inquiry.decided_to_investigate is False
         assert result["metadata"].get("status_transitioned", False) is False
@@ -200,7 +200,7 @@ class TestInquiryTransitionLogic:
 
         # Verify stays in INQUIRY
         updated_case = result["case_updated"]
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
         assert updated_case.inquiry.problem_statement_confirmed is False
         assert updated_case.inquiry.decided_to_investigate is False
 
@@ -243,7 +243,7 @@ class TestInquiryTransitionLogic:
 
         # Verify stays in INQUIRY (not auto-confirmed because not ongoing)
         updated_case = result["case_updated"]
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
         assert (
             updated_case.inquiry.proposed_problem_statement
             == "Historical outage occurred last Tuesday requiring root cause analysis"
@@ -290,7 +290,7 @@ class TestInquiryTransitionLogic:
 
         # Verify stays in INQUIRY (MEDIUM urgency doesn't trigger auto-confirm)
         updated_case = result["case_updated"]
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
         assert (
             updated_case.inquiry.proposed_problem_statement
             == "Checkout performance degradation observed intermittently"
@@ -329,7 +329,7 @@ class TestInquiryTransitionLogic:
 
         # Verify Turn 1: stays in INQUIRY
         case_after_turn1 = result1["case_updated"]
-        assert case_after_turn1.status == CaseStatus.INQUIRY
+        assert case_after_turn1.state == CaseState.INQUIRY
         assert (
             case_after_turn1.inquiry.proposed_problem_statement
             == "API behavior anomaly - details unclear"
@@ -365,7 +365,7 @@ class TestInquiryTransitionLogic:
 
         # Verify Turn 2: STILL in INQUIRY — user hasn't confirmed yet
         case_after_turn2 = result2["case_updated"]
-        assert case_after_turn2.status == CaseStatus.INQUIRY
+        assert case_after_turn2.state == CaseState.INQUIRY
         assert case_after_turn2.inquiry.problem_statement_confirmed is False
         assert case_after_turn2.inquiry.decided_to_investigate is False
 
@@ -407,7 +407,7 @@ class TestInquiryTransitionLogic:
 
         # Verify NO premature transition (this is the original bug fix)
         updated_case = result["case_updated"]
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
         assert (
             updated_case.inquiry.proposed_problem_statement
             == "Development environment errors suspected in agent workflow"
@@ -456,7 +456,7 @@ class TestInquiryTransitionLogic:
 
         # Verify stays in INQUIRY (user hasn't confirmed yet)
         updated_case = result["case_updated"]
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
         assert updated_case.inquiry.problem_statement_confirmed is False
         assert updated_case.inquiry.decided_to_investigate is False
 
@@ -500,7 +500,7 @@ class TestInquiryTransitionLogic:
 
         # Verify uses proposed_problem_statement (fallback works) but stays in INQUIRY
         updated_case = result["case_updated"]
-        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.state == CaseState.INQUIRY
         assert (
             updated_case.inquiry.proposed_problem_statement
             == "API latency spike to 8 seconds affecting dashboards"
@@ -557,7 +557,7 @@ class TestInquiryTransitionLogic:
 
         # Turn 1: stays in INQUIRY
         case_after_turn1 = result1["case_updated"]
-        assert case_after_turn1.status == CaseStatus.INQUIRY
+        assert case_after_turn1.state == CaseState.INQUIRY
         assert case_after_turn1.inquiry.problem_statement_confirmed is False
 
         # Turn 2: User confirms → Gate 1 closes → case transitions to
@@ -582,7 +582,7 @@ class TestInquiryTransitionLogic:
         # Turn 2: Gate 1 closed → transition to INVESTIGATING.
         # path_selection is None (Gate 2 deferred to after symptom_verified).
         case_after_turn2 = result2["case_updated"]
-        assert case_after_turn2.status == CaseStatus.INVESTIGATING
+        assert case_after_turn2.state == CaseState.INVESTIGATING
         assert case_after_turn2.inquiry.problem_statement_confirmed is True
         assert case_after_turn2.inquiry.decided_to_investigate is True
         assert case_after_turn2.path_selection is None
@@ -628,7 +628,7 @@ class TestInquiryTransitionLogic:
             inquiry_case, "Our API is returning 503 errors."
         )
         case_after_turn1 = result1["case_updated"]
-        assert case_after_turn1.status == CaseStatus.INQUIRY
+        assert case_after_turn1.state == CaseState.INQUIRY
 
         # Turn 2: User corrects the problem statement
         mock_response_turn2 = json.dumps(
@@ -649,7 +649,7 @@ class TestInquiryTransitionLogic:
 
         # Turn 2: stays in INQUIRY (user corrected, didn't confirm)
         case_after_turn2 = result2["case_updated"]
-        assert case_after_turn2.status == CaseStatus.INQUIRY
+        assert case_after_turn2.state == CaseState.INQUIRY
         assert case_after_turn2.inquiry.problem_statement_confirmed is False
         assert case_after_turn2.inquiry.decided_to_investigate is False
         assert (
@@ -718,7 +718,7 @@ class TestInquiryTransitionLogic:
         # transition does NOT fire — case stays in INQUIRY for the user
         # to confirm explicitly on a subsequent turn.
         case_after_turn1 = result1["case_updated"]
-        assert case_after_turn1.status == CaseStatus.INQUIRY, (
+        assert case_after_turn1.state == CaseState.INQUIRY, (
             "Same-turn confirmation collapsed the handshake — INQUIRY → INVESTIGATING "
             "fired without giving the user a chance to confirm. This is the "
             "regression the same-turn guard prevents."
@@ -774,7 +774,7 @@ class TestInquiryTransitionLogic:
         mock_llm.generate.return_value = mock_response_turn1
         result1 = await engine.process_turn(inquiry_case, "API is returning 503s")
         case_after_turn1 = result1["case_updated"]
-        assert case_after_turn1.status == CaseStatus.INQUIRY
+        assert case_after_turn1.state == CaseState.INQUIRY
 
         # Turn 2: user confirms; LLM only emits user_confirmed_investigation=True
         # (no new proposed_problem_statement). Statement existed before this
@@ -795,7 +795,7 @@ class TestInquiryTransitionLogic:
         case_after_turn2 = result2["case_updated"]
         # INV-01 (Gate 1) passes → transition fires. path_selection is None;
         # Gate 2 will fire after symptom_verified.
-        assert case_after_turn2.status == CaseStatus.INVESTIGATING
+        assert case_after_turn2.state == CaseState.INVESTIGATING
         assert case_after_turn2.inquiry.problem_statement_confirmed is True
         assert case_after_turn2.path_selection is None
         assert case_after_turn2.inquiry.decided_to_investigate is True
@@ -818,7 +818,7 @@ class TestContextBuilderConfirmationInjection:
         case = Case(
             case_id="case_1234567890ab",
             title="Test",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="",
@@ -845,7 +845,7 @@ class TestContextBuilderConfirmationInjection:
         case = Case(
             case_id="case_1234567890ab",
             title="Test",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="",
@@ -886,7 +886,7 @@ class TestHandshakeDeferredRecovery:
         case = Case(
             case_id="case_1234567890ab",
             title="Test",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="",
@@ -923,7 +923,7 @@ class TestHandshakeDeferredRecovery:
         case = Case(
             case_id="case_1234567890ab",
             title="Test",
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
             description="",
@@ -991,7 +991,7 @@ class TestHandshakeDeferredRecovery:
         case_after_turn1 = result1["case_updated"]
 
         # Guard fired: flag set to this turn, no transition.
-        assert case_after_turn1.status == CaseStatus.INQUIRY
+        assert case_after_turn1.state == CaseState.INQUIRY
         assert case_after_turn1.inquiry.handshake_deferred_at_turn == 1
 
         # Simulate investigation_service incrementing current_turn for turn 2.

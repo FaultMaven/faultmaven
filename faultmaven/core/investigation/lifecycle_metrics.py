@@ -144,12 +144,12 @@ evidence_need_created_total = Counter(
 
 evidence_need_status_changed_total = Counter(
     "faultmaven_evidence_need_status_changed_total",
-    "EvidenceNeed status transitions. Labels: from_status, to_status. "
+    "EvidenceNeed status transitions. Labels: from_state, to_state. "
     "Healthy patterns: PENDING→FULFILLED, PENDING→PARTIALLY_MET→FULFILLED, "
     "PENDING→SUPERSEDED. Sustained PENDING (no transitions to FULFILLED) "
     "suggests the LLM is emitting needs but not matching uploads against "
     "them at file-processing time.",
-    ["from_status", "to_status"],
+    ["from_state", "to_state"],
 )
 
 evidence_need_rejected_total = Counter(

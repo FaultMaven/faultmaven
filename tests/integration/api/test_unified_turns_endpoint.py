@@ -23,7 +23,7 @@ import pytest
 
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api_models import AttachmentResult, IntentType, TurnResponse
-from faultmaven.modules.case.contracts import CaseStatus
+from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models import Case
 
 # ============================================================
@@ -39,7 +39,7 @@ def _make_mock_case(**overrides) -> Case:
         "description": "API latency spike",
         "user_id": "test-user-123",
         "organization_id": "org_test123",
-        "status": CaseStatus.INQUIRY,
+        "state": CaseState.INQUIRY,
         "current_turn": 0,
     }
     defaults.update(overrides)
@@ -52,7 +52,7 @@ def _make_turn_response(**overrides) -> TurnResponse:
         "agent_response": "I'll analyze this for you.",
         "turn_number": 1,
         "milestones_completed": [],
-        "case_status": CaseStatus.INQUIRY,
+        "case_state": CaseState.INQUIRY,
         "progress_made": False,
         "attachments_processed": [],
     }
@@ -139,7 +139,7 @@ class TestTurnPayloadConstruction:
         att = Attachment(content=b"logs", filename="app.log", content_type="text/plain")
         intent = QueryIntent(
             type=IntentType.STATUS_TRANSITION,
-            to_status=CaseStatus.INVESTIGATING,
+            to_state=CaseState.INVESTIGATING,
         )
         payload = TurnPayload(
             query="Let's investigate",
@@ -405,11 +405,11 @@ class TestTurnResponseModel:
         """TurnResponse includes milestone completion data."""
         response = _make_turn_response(
             milestones_completed=["symptom_verified"],
-            case_status=CaseStatus.INVESTIGATING,
+            case_state=CaseState.INVESTIGATING,
             progress_made=True,
         )
         assert response.milestones_completed == ["symptom_verified"]
-        assert response.case_status == CaseStatus.INVESTIGATING
+        assert response.case_state == CaseState.INVESTIGATING
         assert response.progress_made is True
 
     def test_progress_transparency_in_response(self):

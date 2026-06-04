@@ -335,7 +335,7 @@ class CaseConversionRequest(BaseModel):
         hypotheses = getattr(case, "hypotheses", {}) or {}
         validated = []
         for h_id, h in hypotheses.items() if isinstance(hypotheses, dict) else []:
-            status = getattr(h, "status", None)
+            status = getattr(h, "state", None)
             val = status.value if hasattr(status, "value") else str(status)
             if val == "validated":
                 validated.append(getattr(h, "statement", None) or str(h))

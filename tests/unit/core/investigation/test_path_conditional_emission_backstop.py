@@ -44,7 +44,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     InquiryData,
     InvestigationPath,
     PathSelection,
@@ -111,7 +111,7 @@ def _mitigation_first_case(
     case = Case(
         case_id="case_aaaaaaaaaaab",
         title="Emission backstop test",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         user_id="user_123",
         organization_id="org_123",
         description="Test description",
@@ -276,7 +276,7 @@ class TestStatePredicates:
         """The pre-path predicate is INVESTIGATING-scoped; INQUIRY cases
         without path_selection are pre-Gate-1, not pre-Gate-2."""
         case = _pre_path_case()
-        case.status = CaseStatus.INQUIRY
+        case.state = CaseState.INQUIRY
         assert _is_pre_path_investigating(case) is False
 
     def test_restriction_label_pre_path(self):

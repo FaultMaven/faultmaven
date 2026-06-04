@@ -33,14 +33,14 @@ from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseAction,
-    CaseStatus,
+    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
-    HypothesisStatus,
+    HypothesisState,
     InquiryData,
     InvestigationProgress,
     InvestigationStrategy,
@@ -164,7 +164,7 @@ def sample_case_with_evidence() -> Case:
         organization_id="integration-test-org",
         title="Case with Evidence",
         description="Testing evidence linking",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
@@ -219,7 +219,7 @@ def sample_case_with_hypotheses() -> Case:
         organization_id="integration-test-org",
         title="Case with Hypotheses",
         description="Testing hypothesis tracking",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
@@ -232,7 +232,7 @@ def sample_case_with_hypotheses() -> Case:
         hypothesis_id=f"hyp_{uuid4().hex[:12]}",
         statement="Connection pool is exhausted",
         category=HypothesisCategory.ENVIRONMENT,
-        status=HypothesisStatus.ACTIVE,
+        state=HypothesisState.ACTIVE,
         likelihood=0.7,
         generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
         rationale="High connection count observed during error spike",
@@ -269,7 +269,7 @@ async def test_full_case_lifecycle(db_repository: SQLiteCaseRepository):
     retrieved = await db_repository.get(case.case_id)
     assert retrieved is not None
     assert retrieved.title == "Full Lifecycle Test"
-    assert retrieved.status == CaseStatus.INQUIRY
+    assert retrieved.state == CaseState.INQUIRY
 
     # Step 3: Update case
     case.title = "Updated Lifecycle Test"
@@ -277,7 +277,7 @@ async def test_full_case_lifecycle(db_repository: SQLiteCaseRepository):
     case.inquiry.problem_statement_confirmed = True
     case.inquiry.decided_to_investigate = True
     case.inquiry.proposed_problem_statement = "Test problem statement"
-    case.status = CaseStatus.INVESTIGATING
+    case.state = CaseState.INVESTIGATING
     case.current_turn = 5
     updated = await db_repository.save(case)
     assert updated.title == "Updated Lifecycle Test"
@@ -285,7 +285,7 @@ async def test_full_case_lifecycle(db_repository: SQLiteCaseRepository):
     # Verify update persisted
     retrieved_updated = await db_repository.get(case.case_id)
     assert retrieved_updated.title == "Updated Lifecycle Test"
-    assert retrieved_updated.status == CaseStatus.INVESTIGATING
+    assert retrieved_updated.state == CaseState.INVESTIGATING
 
     # Step 4: Delete case
     deleted = await db_repository.delete(case.case_id)
@@ -391,7 +391,7 @@ async def test_case_with_hypotheses(
 
     hypothesis_id = list(retrieved.hypotheses.keys())[0]
     hypothesis = retrieved.hypotheses[hypothesis_id]
-    assert hypothesis.status == HypothesisStatus.ACTIVE
+    assert hypothesis.state == HypothesisState.ACTIVE
     assert "connection pool" in hypothesis.statement.lower()
 
 
@@ -406,7 +406,7 @@ async def test_hypothesis_validation_flow(db_repository: SQLiteCaseRepository):
         organization_id="hypothesis-test-org",
         title="Hypothesis Validation Test",
         description="Testing hypothesis validation flow",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
@@ -420,7 +420,7 @@ async def test_hypothesis_validation_flow(db_repository: SQLiteCaseRepository):
         hypothesis_id=hyp_id,
         statement="Database connection leak",
         category=HypothesisCategory.DATA,
-        status=HypothesisStatus.CAPTURED,
+        state=HypothesisState.CAPTURED,
         likelihood=0.5,
         generation_mode=HypothesisGenerationMode.SYSTEMATIC,
         rationale="Connection count increases over time",
@@ -429,18 +429,18 @@ async def test_hypothesis_validation_flow(db_repository: SQLiteCaseRepository):
     await db_repository.save(case)
 
     # Update to testing
-    case.hypotheses[hyp_id].status = HypothesisStatus.ACTIVE
+    case.hypotheses[hyp_id].state = HypothesisState.ACTIVE
     case.hypotheses[hyp_id].likelihood = 0.7
     await db_repository.save(case)
 
     # Update to validated
-    case.hypotheses[hyp_id].status = HypothesisStatus.VALIDATED
+    case.hypotheses[hyp_id].state = HypothesisState.VALIDATED
     case.hypotheses[hyp_id].likelihood = 0.95
     await db_repository.save(case)
 
     # Verify final state
     retrieved = await db_repository.get(case.case_id)
-    assert retrieved.hypotheses[hyp_id].status == HypothesisStatus.VALIDATED
+    assert retrieved.hypotheses[hyp_id].state == HypothesisState.VALIDATED
     assert retrieved.hypotheses[hyp_id].likelihood == 0.95
 
 
@@ -584,7 +584,7 @@ async def test_complex_case_persistence(db_repository: SQLiteCaseRepository):
         organization_id="complex-test-org",
         title="Complex Case Test",
         description="Testing all fields",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         investigation_strategy=InvestigationStrategy.ACTIVE_INCIDENT,
         inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
@@ -610,7 +610,7 @@ async def test_complex_case_persistence(db_repository: SQLiteCaseRepository):
 
     # Verify all fields preserved
     assert retrieved.title == "Complex Case Test"
-    assert retrieved.status == CaseStatus.INVESTIGATING
+    assert retrieved.state == CaseState.INVESTIGATING
     assert retrieved.investigation_strategy == InvestigationStrategy.ACTIVE_INCIDENT
     assert retrieved.inquiry.inquiry_turns == 3
     assert retrieved.progress.symptom_verified is True
@@ -642,7 +642,7 @@ async def test_action_history_round_trip(db_repository: SQLiteCaseRepository):
         organization_id="lifecycle-test-org",
         title="Action Trail Test",
         description="Round-trip case_actions including triggered_by",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             proposed_problem_statement="Pinning the audit trail",
             problem_statement_confirmed=True,
@@ -653,15 +653,15 @@ async def test_action_history_round_trip(db_repository: SQLiteCaseRepository):
     base_ts = datetime(2026, 5, 9, 12, 0, 0, tzinfo=timezone.utc)
     case.action_history = [
         CaseAction(
-            from_status=CaseStatus.INQUIRY,
-            to_status=CaseStatus.INVESTIGATING,
+            from_state=CaseState.INQUIRY,
+            to_state=CaseState.INVESTIGATING,
             triggered_at=base_ts,
             triggered_by="lifecycle-test-user",
             reason="user confirmed problem",
         ),
         CaseAction(
-            from_status=CaseStatus.INVESTIGATING,
-            to_status=CaseStatus.CLOSED,
+            from_state=CaseState.INVESTIGATING,
+            to_state=CaseState.CLOSED,
             triggered_at=base_ts + timedelta(seconds=30),
             triggered_by="system",
             reason="auto-closed: stale investigation",
@@ -675,13 +675,13 @@ async def test_action_history_round_trip(db_repository: SQLiteCaseRepository):
     assert len(retrieved.action_history) == 2
 
     first, second = retrieved.action_history
-    assert first.from_status == CaseStatus.INQUIRY
-    assert first.to_status == CaseStatus.INVESTIGATING
+    assert first.from_state == CaseState.INQUIRY
+    assert first.to_state == CaseState.INVESTIGATING
     assert first.triggered_by == "lifecycle-test-user"
     assert first.reason == "user confirmed problem"
 
-    assert second.from_status == CaseStatus.INVESTIGATING
-    assert second.to_status == CaseStatus.CLOSED
+    assert second.from_state == CaseState.INVESTIGATING
+    assert second.to_state == CaseState.CLOSED
     assert second.triggered_by == "system"
     assert second.reason == "auto-closed: stale investigation"
 
@@ -696,7 +696,7 @@ async def test_solution_full_audit_round_trip(
     Pre-009 the repo persisted a hollow shell: ``proposed_by``,
     ``applied_at/by``, ``verified_at``, ``verification_method``,
     ``verification_evidence_id`` and ``effectiveness`` were all dropped
-    or hardcoded ``None`` on insert; ``status`` was hardcoded
+    or hardcoded ``None`` on insert; ``state`` was hardcoded
     ``"proposed"`` and the ON CONFLICT UPDATE clause omitted it. This
     test pins the post-009 fix by walking a Solution through three
     lifecycle stages — proposed -> implemented -> verified — and
@@ -711,7 +711,7 @@ async def test_solution_full_audit_round_trip(
         organization_id="complex-test-org",
         title="Solution Audit Round-trip",
         description="Pin the full audit trail across lifecycle stages",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             proposed_problem_statement="testing solution persistence",
             problem_statement_confirmed=True,
@@ -822,7 +822,7 @@ async def test_evidence_full_audit_round_trip(
         organization_id="evidence-test-org",
         title="Evidence Audit Round-trip",
         description="Pin the 5 evidence fields added by migration 009",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             proposed_problem_statement="testing evidence persistence",
             problem_statement_confirmed=True,

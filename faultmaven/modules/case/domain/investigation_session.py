@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 
-class SessionStatus(str, Enum):
+class SessionState(str, Enum):
     """Investigation session status.
 
     Tracks the lifecycle of an investigation session from active to completion.
@@ -37,7 +37,7 @@ class InvestigationSession:
         case_id: Case this session belongs to
         user_id: User who owns this session
         organization_id: Organization that owns this session
-        status: Current session status (active, paused, completed, abandoned)
+        state: Current session status (active, paused, completed, abandoned)
         started_at: When the session started
         ended_at: When the session ended (for completed/abandoned sessions)
         last_activity_at: Timestamp of last activity in the session
@@ -56,7 +56,7 @@ class InvestigationSession:
     case_id: str
     user_id: str
     organization_id: str
-    status: SessionStatus = SessionStatus.ACTIVE
+    state: SessionState = SessionState.ACTIVE
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     ended_at: Optional[datetime] = None
     last_activity_at: datetime = field(
@@ -101,12 +101,12 @@ class InvestigationSession:
         Raises:
             ValueError: If session is not in ACTIVE status.
         """
-        if self.status != SessionStatus.ACTIVE:
+        if self.state != SessionState.ACTIVE:
             raise ValueError(
-                f"Cannot pause session in {self.status.value} status. "
+                f"Cannot pause session in {self.state.value} status. "
                 "Only active sessions can be paused."
             )
-        self.status = SessionStatus.PAUSED
+        self.state = SessionState.PAUSED
         self._update_duration()
         self.updated_at = datetime.now(timezone.utc)
 
@@ -118,12 +118,12 @@ class InvestigationSession:
         Raises:
             ValueError: If session is not in PAUSED status.
         """
-        if self.status != SessionStatus.PAUSED:
+        if self.state != SessionState.PAUSED:
             raise ValueError(
-                f"Cannot resume session in {self.status.value} status. "
+                f"Cannot resume session in {self.state.value} status. "
                 "Only paused sessions can be resumed."
             )
-        self.status = SessionStatus.ACTIVE
+        self.state = SessionState.ACTIVE
         self.last_activity_at = datetime.now(timezone.utc)
         self.updated_at = datetime.now(timezone.utc)
 
@@ -138,12 +138,12 @@ class InvestigationSession:
         Raises:
             ValueError: If session is already in a terminal status.
         """
-        if self.status in (SessionStatus.COMPLETED, SessionStatus.ABANDONED):
+        if self.state in (SessionState.COMPLETED, SessionState.ABANDONED):
             raise ValueError(
-                f"Cannot complete session in {self.status.value} status. "
+                f"Cannot complete session in {self.state.value} status. "
                 "Session is already in a terminal state."
             )
-        self.status = SessionStatus.COMPLETED
+        self.state = SessionState.COMPLETED
         self.findings_summary = findings_summary
         self.ended_at = datetime.now(timezone.utc)
         self._update_duration()
@@ -157,12 +157,12 @@ class InvestigationSession:
         Raises:
             ValueError: If session is already in a terminal status.
         """
-        if self.status in (SessionStatus.COMPLETED, SessionStatus.ABANDONED):
+        if self.state in (SessionState.COMPLETED, SessionState.ABANDONED):
             raise ValueError(
-                f"Cannot abandon session in {self.status.value} status. "
+                f"Cannot abandon session in {self.state.value} status. "
                 "Session is already in a terminal state."
             )
-        self.status = SessionStatus.ABANDONED
+        self.state = SessionState.ABANDONED
         self.ended_at = datetime.now(timezone.utc)
         self._update_duration()
         self.updated_at = datetime.now(timezone.utc)
@@ -181,7 +181,7 @@ class InvestigationSession:
             raise ValueError("token_usage cannot be negative")
         if not self.is_active():
             raise ValueError(
-                f"Cannot add execution to session in {self.status.value} status. "
+                f"Cannot add execution to session in {self.state.value} status. "
                 "Session must be active."
             )
         self.total_token_usage += token_usage
@@ -195,7 +195,7 @@ class InvestigationSession:
         Returns:
             True if session status is ACTIVE.
         """
-        return self.status == SessionStatus.ACTIVE
+        return self.state == SessionState.ACTIVE
 
     def is_paused(self) -> bool:
         """Check if session is currently paused.
@@ -203,7 +203,7 @@ class InvestigationSession:
         Returns:
             True if session status is PAUSED.
         """
-        return self.status == SessionStatus.PAUSED
+        return self.state == SessionState.PAUSED
 
     def is_completed(self) -> bool:
         """Check if session is in a terminal state.
@@ -211,7 +211,7 @@ class InvestigationSession:
         Returns:
             True if session status is COMPLETED or ABANDONED.
         """
-        return self.status in (SessionStatus.COMPLETED, SessionStatus.ABANDONED)
+        return self.state in (SessionState.COMPLETED, SessionState.ABANDONED)
 
     def is_over_budget(self) -> bool:
         """Check if session has exceeded token budget.
@@ -299,6 +299,6 @@ class InvestigationSession:
         return (
             f"InvestigationSession(session_id={self.session_id!r}, "
             f"case_id={self.case_id!r}, "
-            f"status={self.status.value!r}, "
+            f"state={self.state.value!r}, "
             f"total_agent_executions={self.total_agent_executions})"
         )

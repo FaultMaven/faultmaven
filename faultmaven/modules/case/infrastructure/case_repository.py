@@ -15,7 +15,7 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseAction,
     CaseEntity,
-    CaseStatus,
+    CaseState,
     DocumentationData,
     EntityType,
     EscalationState,
@@ -95,7 +95,7 @@ class CaseRepository(ABC):
         self,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        status: Optional[CaseStatus] = None,
+        status: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[List[Case], int]:
@@ -790,7 +790,7 @@ class InMemoryCaseRepository(CaseRepository):
         self,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        status: Optional[CaseStatus] = None,
+        status: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[List[Case], int]:
@@ -1122,7 +1122,7 @@ class InMemoryCaseRepository(CaseRepository):
 
         analytics = {
             "case_id": case.case_id,
-            "status": case.status.value,
+            "state": case.state.value,
             "created_at": to_json_compatible(case.created_at),
             "last_activity_at": to_json_compatible(case.last_activity_at),
             "message_count": case.message_count,
@@ -1157,7 +1157,7 @@ class InMemoryCaseRepository(CaseRepository):
         to_delete = []
         for case_id, case in self._cases.items():
             if (
-                case.status == CaseStatus.CLOSED
+                case.state == CaseState.CLOSED
                 and case.closed_at
                 and case.closed_at < cutoff_date
             ):

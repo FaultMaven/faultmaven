@@ -2,7 +2,7 @@
 G1/G2 changes shipped on `feat/runbook-completion-notification`.
 
 Covered behaviors:
-- G1: ``_auto_generate_report`` uses a status-aware label in the failure note
+- G1: ``_auto_generate_report`` uses a state-aware label in the failure note
 - G2: ``_auto_generate_report`` returns ``(payload, summary_failed)``; the
   ack-turn offers the regen affordance only when ``summary_failed=True``
 - RG3: ``_handle_runbook_creation`` success path re-offers
@@ -24,7 +24,7 @@ import pytest
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -69,7 +69,7 @@ def _make_resolved_case(case_id: str = "case_aabb11223344") -> Case:
         organization_id="o1",
         title="Pool timeout resolved",
         description="DB queries timing out",
-        status=CaseStatus.INVESTIGATING,
+        state=CaseState.INVESTIGATING,
         problem_verification=ProblemVerification(
             symptom_statement="Timeout errors",
             severity="HIGH",
@@ -81,7 +81,7 @@ def _make_resolved_case(case_id: str = "case_aabb11223344") -> Case:
         ),
     )
     now = datetime.now(timezone.utc)
-    object.__setattr__(case, "status", CaseStatus.RESOLVED)
+    object.__setattr__(case, "state", CaseState.RESOLVED)
     object.__setattr__(case, "resolved_at", now)
     object.__setattr__(case, "closed_at", now)
     return case
@@ -119,7 +119,7 @@ def _make_runbook_ready(case: Case) -> None:
 
 
 # =============================================================================
-# G1 + G2: _auto_generate_report tuple return + status-aware failure note
+# G1 + G2: _auto_generate_report tuple return + state-aware failure note
 # =============================================================================
 
 
@@ -128,7 +128,7 @@ class TestAutoGenerateReportTupleReturn:
 
     Returns ``(payload, summary_failed)`` so the ack-turn can decide
     whether to offer the regen affordance (G2). The failure note uses a
-    status-aware label (G1).
+    state-aware label (G1).
     """
 
     @pytest.mark.asyncio
@@ -194,7 +194,7 @@ class TestAutoGenerateReportTupleReturn:
         # Promote RESOLVED → CLOSED; clear `resolved_at` first to satisfy
         # the cross-field validator (resolved_at only valid in RESOLVED).
         object.__setattr__(case, "resolved_at", None)
-        object.__setattr__(case, "status", CaseStatus.CLOSED)
+        object.__setattr__(case, "state", CaseState.CLOSED)
         object.__setattr__(case, "closure_reason", "closed_after_investigation")
         case.evidence = [
             Evidence(
@@ -240,7 +240,7 @@ class TestAckTurnFollowUpsOnFailure:
         )
 
         case = MagicMock()
-        case.status = CaseStatus.RESOLVED
+        case.state = CaseState.RESOLVED
 
         follow_ups = _select_ack_follow_ups(case, summary_failed=False, remaining=5)
         assert follow_ups == _resolved_ack_suggestions()
@@ -251,7 +251,7 @@ class TestAckTurnFollowUpsOnFailure:
         )
 
         case = MagicMock()
-        case.status = CaseStatus.CLOSED
+        case.state = CaseState.CLOSED
 
         follow_ups = _select_ack_follow_ups(case, summary_failed=False, remaining=5)
         assert follow_ups == []
@@ -264,7 +264,7 @@ class TestAckTurnFollowUpsOnFailure:
         )
 
         case = MagicMock()
-        case.status = CaseStatus.RESOLVED
+        case.state = CaseState.RESOLVED
 
         follow_ups = _select_ack_follow_ups(case, summary_failed=True, remaining=5)
         assert follow_ups == _resolved_suggestions(remaining=5)
@@ -282,7 +282,7 @@ class TestAckTurnFollowUpsOnFailure:
         )
 
         case = MagicMock()
-        case.status = CaseStatus.CLOSED
+        case.state = CaseState.CLOSED
         case.progress = MagicMock()
         case.progress.completed_milestones = ["symptom_verified"]
         case.evidence = []
@@ -526,7 +526,7 @@ class TestDedupSkipObservability:
             organization_id="o1",
             title="Pool timeout",
             description="DB queries timing out",
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             problem_verification=ProblemVerification(
                 symptom_statement="Timeout errors",
                 severity="HIGH",

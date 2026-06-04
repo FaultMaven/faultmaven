@@ -18,7 +18,7 @@ import pytest
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
@@ -44,7 +44,7 @@ def _make_inquiry_case():
     return Case(
         case_id="case_a1b2c3d4e5f6",
         title="Alignment test",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         user_id="user_test",
         organization_id="org_test",
         description="Alignment test description",
@@ -64,7 +64,7 @@ def _make_investigating_case():
     case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
     case.inquiry.decided_to_investigate = True
     case.inquiry.decision_made_at = datetime.now(timezone.utc)
-    case.status = CaseStatus.INVESTIGATING
+    case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
     return case
 
@@ -125,12 +125,12 @@ async def test_ui_dropdown_inquiry_to_closed_emits_canonical_close_pair():
         user_message="Close this case.",
         intent_type="status_transition",
         intent_data={
-            "from_status": "inquiry",
-            "to_status": "closed",
+            "from_state": "inquiry",
+            "to_state": "closed",
             "user_confirmed": True,
         },
     )
-    assert result["case_updated"].pending_transition["to_status"] == "closed"
+    assert result["case_updated"].pending_transition["to_state"] == "closed"
     _assert_canonical_confirm_pair(result["suggested_follow_ups"], "close")
 
 
@@ -148,12 +148,12 @@ async def test_ui_dropdown_investigating_to_closed_emits_canonical_close_pair():
         user_message="Close this case as unresolved.",
         intent_type="status_transition",
         intent_data={
-            "from_status": "investigating",
-            "to_status": "closed",
+            "from_state": "investigating",
+            "to_state": "closed",
             "user_confirmed": True,
         },
     )
-    assert result["case_updated"].pending_transition["to_status"] == "closed"
+    assert result["case_updated"].pending_transition["to_state"] == "closed"
     _assert_canonical_confirm_pair(result["suggested_follow_ups"], "close")
 
 
@@ -175,13 +175,13 @@ async def test_ui_dropdown_investigating_to_resolved_ready_emits_resolve_pair():
         user_message="Mark as resolved.",
         intent_type="status_transition",
         intent_data={
-            "from_status": "investigating",
-            "to_status": "resolved",
+            "from_state": "investigating",
+            "to_state": "resolved",
             "user_confirmed": True,
         },
     )
     assert result["case_updated"].pending_transition is not None
-    assert result["case_updated"].pending_transition["to_status"] == "resolved"
+    assert result["case_updated"].pending_transition["to_state"] == "resolved"
     assert not result["case_updated"].pending_transition.get("needs_info")
     _assert_canonical_confirm_pair(result["suggested_follow_ups"], "resolved")
 
@@ -206,14 +206,14 @@ async def test_ui_dropdown_resolve_pivots_to_close_when_thin():
         user_message="Mark as resolved.",
         intent_type="status_transition",
         intent_data={
-            "from_status": "investigating",
-            "to_status": "resolved",
+            "from_state": "investigating",
+            "to_state": "resolved",
             "user_confirmed": True,
         },
     )
     pending = result["case_updated"].pending_transition
     assert pending is not None
-    assert pending["to_status"] == "closed"
+    assert pending["to_state"] == "closed"
     # closure_reason engine-derived: investigating + no mitigation
     assert pending.get("closure_reason") == "closed_after_investigation"
     _assert_canonical_confirm_pair(result["suggested_follow_ups"], "close")
@@ -244,14 +244,14 @@ async def test_ui_dropdown_close_pivots_to_resolve_when_resolution_grade():
         user_message="Close this case.",
         intent_type="status_transition",
         intent_data={
-            "from_status": "investigating",
-            "to_status": "closed",
+            "from_state": "investigating",
+            "to_state": "closed",
             "user_confirmed": True,
         },
     )
     pending = result["case_updated"].pending_transition
     assert pending is not None
-    assert pending["to_status"] == "resolved", (
+    assert pending["to_state"] == "resolved", (
         "Dropdown SUGGEST_RESOLVE pivot did not fire: the user clicked "
         "Close but the case has root cause + solution. Engine should "
         "have pivoted to propose RESOLVED so the user's confirm "
@@ -299,14 +299,14 @@ async def test_ui_dropdown_resolve_needs_info_keeps_resolve_pair():
         user_message="Mark as resolved.",
         intent_type="status_transition",
         intent_data={
-            "from_status": "investigating",
-            "to_status": "resolved",
+            "from_state": "investigating",
+            "to_state": "resolved",
             "user_confirmed": True,
         },
     )
     pending = result["case_updated"].pending_transition
     assert pending is not None
-    assert pending["to_status"] == "resolved"
+    assert pending["to_state"] == "resolved"
     assert pending.get("needs_info") is True
     _assert_canonical_confirm_pair(result["suggested_follow_ups"], "resolved")
 
@@ -340,7 +340,7 @@ async def test_check_automatic_transitions_sets_override_for_resolved():
 
     fake_response = MagicMock()
     fake_response.state_updates.proposed_transition = MagicMock(
-        to_status="resolved",
+        to_state="resolved",
         evidence_ids=[],
     )
     metadata: dict = {"response_obj": fake_response}
@@ -350,7 +350,7 @@ async def test_check_automatic_transitions_sets_override_for_resolved():
     )
 
     assert case.pending_transition is not None
-    assert case.pending_transition["to_status"] == "resolved"
+    assert case.pending_transition["to_state"] == "resolved"
     assert metadata.get("transition_proposed") is True
     _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved")
 
@@ -366,7 +366,7 @@ async def test_check_automatic_transitions_sets_override_for_closed():
 
     fake_response = MagicMock()
     fake_response.state_updates.proposed_transition = MagicMock(
-        to_status="closed",
+        to_state="closed",
         evidence_ids=[],
     )
     metadata: dict = {"response_obj": fake_response}
@@ -376,9 +376,9 @@ async def test_check_automatic_transitions_sets_override_for_closed():
     )
 
     assert case.pending_transition is not None
-    assert case.pending_transition["to_status"] == "closed"
+    assert case.pending_transition["to_state"] == "closed"
     # Regression guard: closure_reason is engine-derived from
-    # (case.status, mitigation_verified). Investigating + no mitigation
+    # (case.state, mitigation_verified). Investigating + no mitigation
     # → closed_after_investigation.
     assert case.pending_transition.get("closure_reason") == "closed_after_investigation"
     _assert_canonical_confirm_pair(metadata["override_suggestions"], "close")
@@ -397,7 +397,7 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
 
     fake_response = MagicMock()
     fake_response.state_updates.proposed_transition = MagicMock(
-        to_status="closed",
+        to_state="closed",
         evidence_ids=[],
     )
     metadata: dict = {"response_obj": fake_response}
@@ -407,7 +407,7 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
     )
 
     assert case.pending_transition is not None
-    assert case.pending_transition["to_status"] == "closed"
+    assert case.pending_transition["to_state"] == "closed"
     assert case.pending_transition.get("closure_reason") == "inquiry_only"
 
 
@@ -440,7 +440,7 @@ async def test_check_automatic_transitions_closure_reason_mitigation_sufficient(
 
     fake_response = MagicMock()
     fake_response.state_updates.proposed_transition = MagicMock(
-        to_status="closed",
+        to_state="closed",
         evidence_ids=[],
     )
     metadata: dict = {"response_obj": fake_response}
@@ -450,7 +450,7 @@ async def test_check_automatic_transitions_closure_reason_mitigation_sufficient(
     )
 
     assert case.pending_transition is not None
-    assert case.pending_transition["to_status"] == "closed"
+    assert case.pending_transition["to_state"] == "closed"
     assert case.pending_transition.get("closure_reason") == "mitigation_sufficient"
 
 
@@ -471,7 +471,7 @@ async def test_llm_emit_resolved_pivots_to_close_when_thin():
 
     fake_response = MagicMock()
     fake_response.state_updates.proposed_transition = MagicMock(
-        to_status="resolved",
+        to_state="resolved",
         evidence_ids=[],
     )
     metadata: dict = {"response_obj": fake_response}
@@ -481,7 +481,7 @@ async def test_llm_emit_resolved_pivots_to_close_when_thin():
     )
 
     assert case.pending_transition is not None
-    assert case.pending_transition["to_status"] == "closed"
+    assert case.pending_transition["to_state"] == "closed"
     assert case.pending_transition.get("closure_reason") == "closed_after_investigation"
     # NEEDS_INFO first-pass flag must NOT be set on a SUGGEST_CLOSE pivot —
     # the response builder distinguishes the two paths.
@@ -507,7 +507,7 @@ async def test_llm_emit_closed_pivots_to_resolved_when_resolution_grade():
 
     fake_response = MagicMock()
     fake_response.state_updates.proposed_transition = MagicMock(
-        to_status="closed",
+        to_state="closed",
         evidence_ids=[],
     )
     metadata: dict = {"response_obj": fake_response}
@@ -517,7 +517,7 @@ async def test_llm_emit_closed_pivots_to_resolved_when_resolution_grade():
     )
 
     assert case.pending_transition is not None
-    assert case.pending_transition["to_status"] == "resolved", (
+    assert case.pending_transition["to_state"] == "resolved", (
         "LLM-emit SUGGEST_RESOLVE pivot did not fire: the agent proposed "
         "CLOSED but the case has root cause + solution. Engine should "
         "have pivoted to propose RESOLVED so the user's confirm preserves "
@@ -560,7 +560,7 @@ async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
 
     fake_response = MagicMock()
     fake_response.state_updates.proposed_transition = MagicMock(
-        to_status="resolved",
+        to_state="resolved",
         evidence_ids=[],
     )
     metadata: dict = {"response_obj": fake_response}
@@ -570,7 +570,7 @@ async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
     )
 
     assert case.pending_transition is not None
-    assert case.pending_transition["to_status"] == "resolved"
+    assert case.pending_transition["to_state"] == "resolved"
     assert case.pending_transition.get("needs_info") is True
     assert metadata.get("resolution_needs_info_first_pass") is True
     assert metadata.get("resolution_needs_info_message")
@@ -593,7 +593,7 @@ async def test_llm_emit_resolved_ready_keeps_resolve_pair():
 
     fake_response = MagicMock()
     fake_response.state_updates.proposed_transition = MagicMock(
-        to_status="resolved",
+        to_state="resolved",
         evidence_ids=[],
     )
     metadata: dict = {"response_obj": fake_response}
@@ -603,7 +603,7 @@ async def test_llm_emit_resolved_ready_keeps_resolve_pair():
     )
 
     assert case.pending_transition is not None
-    assert case.pending_transition["to_status"] == "resolved"
+    assert case.pending_transition["to_state"] == "resolved"
     assert not case.pending_transition.get("needs_info")
     assert not metadata.get("resolution_needs_info_first_pass")
     _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved")

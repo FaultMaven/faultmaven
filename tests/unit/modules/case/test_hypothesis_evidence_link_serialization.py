@@ -22,7 +22,7 @@ from faultmaven.modules.case.domain.models import (
     HypothesisCategory,
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
-    HypothesisStatus,
+    HypothesisState,
 )
 
 
@@ -199,7 +199,7 @@ class TestHypothesisEvidenceLinkSerialization:
             hypothesis_id="hyp_0123456789ab",
             statement="Database connection pool exhaustion",
             category=HypothesisCategory.DATABASE,
-            status=HypothesisStatus.ACTIVE,
+            state=HypothesisState.ACTIVE,
             likelihood=0.8,
             initial_likelihood=0.5,
             evidence_links=[
@@ -248,7 +248,7 @@ class TestHypothesisEvidenceLinkSerialization:
             hypothesis_id="hyp_0123456789ab",
             statement="Test hypothesis",
             category=HypothesisCategory.CODE,
-            status=HypothesisStatus.CAPTURED,
+            state=HypothesisState.CAPTURED,
             likelihood=0.5,
             initial_likelihood=0.5,
             evidence_links=[],

@@ -10,7 +10,7 @@ import pytest
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InMemoryInvestigationSessionRepository,
 )
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 from tests.utils import generate_case_id, generate_session_id
 
 
@@ -19,7 +19,7 @@ def create_sample_session(
     case_id: str = None,
     user_id: str = "user_test123",
     organization_id: str = "org_test456",
-    status: SessionStatus = SessionStatus.ACTIVE,
+    state: SessionState = SessionState.ACTIVE,
     started_at: datetime = None,
     total_token_usage: int = 0,
     total_agent_executions: int = 0,
@@ -33,7 +33,7 @@ def create_sample_session(
         case_id=case_id or generate_case_id(),
         user_id=user_id,
         organization_id=organization_id,
-        status=status,
+        state=state,
         started_at=started_at or datetime.now(timezone.utc),
         total_token_usage=total_token_usage,
         total_agent_executions=total_agent_executions,
@@ -62,7 +62,7 @@ class TestInMemoryRepositoryCreate:
         assert result.case_id == session.case_id
         assert result.user_id == session.user_id
         assert result.organization_id == session.organization_id
-        assert result.status == SessionStatus.ACTIVE
+        assert result.state == SessionState.ACTIVE
 
     @pytest.mark.asyncio
     async def test_create_session_with_all_fields(self, repository):
@@ -163,12 +163,12 @@ class TestInMemoryRepositoryUpdate:
         session = create_sample_session()
         await repository.create(session)
 
-        session.status = SessionStatus.PAUSED
+        session.state = SessionState.PAUSED
         session.session_goal = "Updated goal"
 
         result = await repository.update(session)
 
-        assert result.status == SessionStatus.PAUSED
+        assert result.state == SessionState.PAUSED
         assert result.session_goal == "Updated goal"
 
     @pytest.mark.asyncio
@@ -203,7 +203,7 @@ class TestInMemoryRepositoryUpdate:
         await repository.create(session)
 
         # Update all fields
-        session.status = SessionStatus.COMPLETED
+        session.state = SessionState.COMPLETED
         session.ended_at = datetime.now(timezone.utc)
         session.session_goal = "Final goal"
         session.findings_summary = "Found the issue"
@@ -213,7 +213,7 @@ class TestInMemoryRepositoryUpdate:
 
         result = await repository.update(session)
 
-        assert result.status == SessionStatus.COMPLETED
+        assert result.state == SessionState.COMPLETED
         assert result.ended_at is not None
         assert result.session_goal == "Final goal"
         assert result.findings_summary == "Found the issue"
@@ -334,27 +334,27 @@ class TestInMemoryRepositoryListByCaseId:
 
     @pytest.mark.asyncio
     async def test_list_by_case_id_with_status_filter(self, repository):
-        """Test filtering by status."""
+        """Test filtering by state."""
         case_id = generate_case_id()
 
         active_session = create_sample_session(
-            case_id=case_id, status=SessionStatus.ACTIVE
+            case_id=case_id, state=SessionState.ACTIVE
         )
         paused_session = create_sample_session(
-            case_id=case_id, status=SessionStatus.PAUSED
+            case_id=case_id, state=SessionState.PAUSED
         )
         completed_session = create_sample_session(
-            case_id=case_id, status=SessionStatus.COMPLETED
+            case_id=case_id, state=SessionState.COMPLETED
         )
 
         await repository.create(active_session)
         await repository.create(paused_session)
         await repository.create(completed_session)
 
-        result = await repository.list_by_case_id(case_id, status=SessionStatus.ACTIVE)
+        result = await repository.list_by_case_id(case_id, state=SessionState.ACTIVE)
 
         assert len(result) == 1
-        assert result[0].status == SessionStatus.ACTIVE
+        assert result[0].state == SessionState.ACTIVE
 
 
 class TestInMemoryRepositoryGetActiveSession:
@@ -370,14 +370,14 @@ class TestInMemoryRepositoryGetActiveSession:
         """Test getting active session when one exists."""
         case_id = generate_case_id()
         active_session = create_sample_session(
-            case_id=case_id, status=SessionStatus.ACTIVE
+            case_id=case_id, state=SessionState.ACTIVE
         )
         await repository.create(active_session)
 
         result = await repository.get_active_session(case_id)
 
         assert result is not None
-        assert result.status == SessionStatus.ACTIVE
+        assert result.state == SessionState.ACTIVE
         assert result.session_id == active_session.session_id
 
     @pytest.mark.asyncio
@@ -385,7 +385,7 @@ class TestInMemoryRepositoryGetActiveSession:
         """Test getting active session when none is active."""
         case_id = generate_case_id()
         paused_session = create_sample_session(
-            case_id=case_id, status=SessionStatus.PAUSED
+            case_id=case_id, state=SessionState.PAUSED
         )
         await repository.create(paused_session)
 
@@ -401,12 +401,12 @@ class TestInMemoryRepositoryGetActiveSession:
 
         older_active = create_sample_session(
             case_id=case_id,
-            status=SessionStatus.ACTIVE,
+            state=SessionState.ACTIVE,
             started_at=base_time - timedelta(hours=1),
         )
         newer_active = create_sample_session(
             case_id=case_id,
-            status=SessionStatus.ACTIVE,
+            state=SessionState.ACTIVE,
             started_at=base_time,
         )
 
@@ -425,7 +425,7 @@ class TestInMemoryRepositoryGetActiveSession:
 
         # Active session for case 2
         await repository.create(
-            create_sample_session(case_id=case_id2, status=SessionStatus.ACTIVE)
+            create_sample_session(case_id=case_id2, state=SessionState.ACTIVE)
         )
 
         result = await repository.get_active_session(case_id1)

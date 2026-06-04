@@ -18,7 +18,7 @@ from faultmaven.core.investigation.milestone_engine import (
     _gate2_is_pending,
     _path_selection_suggestions,
 )
-from faultmaven.modules.case.contracts import CaseStatus
+from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models import (
     Case,
     InquiryData,
@@ -44,11 +44,11 @@ def _make_case(
     is_ongoing: bool = True,
     proposed_statement: str = "Production API is returning 500s",
     path_selection: PathSelection | None = None,
-    status: CaseStatus = CaseStatus.INQUIRY,
+    state: CaseState = CaseState.INQUIRY,
     symptom_verified: bool = False,
 ) -> Case:
     """Build a Case with controllable gate inputs. Defaults to INQUIRY
-    state; pass ``status=CaseStatus.INVESTIGATING`` to construct a
+    state; pass ``state=CaseState.INVESTIGATING`` to construct a
     post-transition case (used for the new Gate-2-in-INVESTIGATING
     state-machine timing).
     """
@@ -62,7 +62,7 @@ def _make_case(
             severity_guess="high",
             preliminary_guidance="API down",
         ),
-        decided_to_investigate=(status == CaseStatus.INVESTIGATING),
+        decided_to_investigate=(state == CaseState.INVESTIGATING),
     )
     if urgency is not None:
         inquiry.preliminary_urgency = PreliminaryUrgency(
@@ -76,7 +76,7 @@ def _make_case(
         user_id="u1",
         organization_id="o1",
         title="Test",
-        status=status,
+        state=state,
         description=proposed_statement,
         inquiry=inquiry,
         progress=InvestigationProgress(symptom_verified=symptom_verified),
@@ -160,7 +160,7 @@ class TestGate2IsPending:
 
     def test_pending_when_investigating_symptom_verified_and_no_path(self):
         case = _make_case(
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             symptom_verified=True,
             path_selection=None,
         )
@@ -171,7 +171,7 @@ class TestGate2IsPending:
         affordance has not yet opened. The agent's job is symptom
         verification first."""
         case = _make_case(
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             symptom_verified=False,
             path_selection=None,
         )
@@ -195,7 +195,7 @@ class TestGate2IsPending:
             selected_by="u1",
         )
         case = _make_case(
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             symptom_verified=True,
             path_selection=committed,
         )
@@ -282,7 +282,7 @@ class TestINV19PathSelectionAsCommitSignal:
         None; the Gate 2 affordance is not yet open (waiting for
         symptom_verified)."""
         case = _make_case(
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             symptom_verified=False,
         )
         assert case.path_selection is None
@@ -292,7 +292,7 @@ class TestINV19PathSelectionAsCommitSignal:
     def test_investigating_post_symptom_verified_is_gate2_pending(self):
         """Symptom verified, path not yet committed → Gate 2 open."""
         case = _make_case(
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             symptom_verified=True,
         )
         assert case.path_selection is None
@@ -309,7 +309,7 @@ class TestINV19PathSelectionAsCommitSignal:
             selected_by="u1",
         )
         case = _make_case(
-            status=CaseStatus.INVESTIGATING,
+            state=CaseState.INVESTIGATING,
             symptom_verified=True,
             path_selection=committed,
         )

@@ -18,7 +18,7 @@ from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.case.contracts import (
     Case,
     CaseReport,
-    CaseStatus,
+    CaseState,
     ReportRecommendation,
     ReportType,
     RunbookRecommendation,
@@ -86,7 +86,7 @@ class ReportRecommendationService:
         available_types = [
             (
                 ReportType.RESOLUTION_SUMMARY
-                if case.status == CaseStatus.RESOLVED
+                if case.state == CaseState.RESOLVED
                 else ReportType.CLOSURE_SUMMARY
             ),
         ]

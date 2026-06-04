@@ -31,7 +31,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseCheckpoint,
     CaseEntity,
-    CaseStatus,
+    CaseState,
     EntityType,
     Evidence,
     Hypothesis,
@@ -123,7 +123,7 @@ class SessionlessCaseRepository(CaseRepository):
         user_id: str,
         limit: int = 100,
         offset: int = 0,
-        status_filter: CaseStatus | None = None,
+        status_filter: CaseState | None = None,
     ) -> tuple[list[Case], int]:
         """List cases with new session per operation."""
         async with get_db_session() as session:
@@ -224,7 +224,7 @@ class SessionlessCaseRepository(CaseRepository):
             await repo.add_solution(case_id, solution)
 
     async def update_status(
-        self, case_id: str, new_status: CaseStatus, reason: str | None = None
+        self, case_id: str, new_status: CaseState, reason: str | None = None
     ) -> None:
         """Update status with new session per operation."""
         async with get_db_session() as session:
@@ -245,7 +245,7 @@ class SessionlessCaseRepository(CaseRepository):
         self,
         user_id: str | None = None,
         organization_id: str | None = None,
-        status: CaseStatus | None = None,
+        status: CaseState | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Case], int]:

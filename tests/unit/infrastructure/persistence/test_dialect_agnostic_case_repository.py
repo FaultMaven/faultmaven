@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     InquiryData,
     InvestigationProgress,
 )
@@ -56,7 +56,7 @@ def _make_test_case() -> Case:
         user_id=str(uuid4()),
         organization_id=str(uuid4()),
         title="Test Case",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
         inquiry=InquiryData(

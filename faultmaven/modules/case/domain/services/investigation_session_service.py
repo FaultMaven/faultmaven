@@ -37,7 +37,7 @@ from faultmaven.exceptions import (
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 from faultmaven.modules.case.contracts import ICaseRepository
 
 
@@ -152,7 +152,7 @@ class APIInvestigationSessionService(BaseService):
         1. Verify case exists and belongs to organization
         2. Check for existing active session (raise ConflictError if exists)
         3. Generate session_id
-        4. Create session with status=ACTIVE
+        4. Create session with state=ACTIVE
         5. Return created session
 
         Args:
@@ -220,7 +220,7 @@ class APIInvestigationSessionService(BaseService):
                 case_id=case_id,
                 user_id=user_id,
                 organization_id=organization_id,
-                status=SessionStatus.ACTIVE,
+                state=SessionState.ACTIVE,
                 started_at=now,
                 last_activity_at=now,
                 session_goal=session_goal.strip() if session_goal else None,
@@ -412,7 +412,7 @@ class APIInvestigationSessionService(BaseService):
             organization_id: Organization for authorization
 
         Returns:
-            Updated session with status=PAUSED
+            Updated session with state=PAUSED
 
         Raises:
             NotFoundError: If session not found
@@ -431,9 +431,9 @@ class APIInvestigationSessionService(BaseService):
             )
 
             # Check if session is active
-            if session.status != SessionStatus.ACTIVE:
+            if session.state != SessionState.ACTIVE:
                 raise ValidationException(
-                    f"Cannot pause session in {session.status.value} status. "
+                    f"Cannot pause session in {session.state.value} status. "
                     "Only active sessions can be paused."
                 )
 
@@ -446,7 +446,7 @@ class APIInvestigationSessionService(BaseService):
             self.log_operation(
                 "pause_session_success",
                 session_id=session_id,
-                status=saved_session.status.value,
+                state=saved_session.state.value,
             )
 
             return saved_session
@@ -474,7 +474,7 @@ class APIInvestigationSessionService(BaseService):
             organization_id: Organization for authorization
 
         Returns:
-            Updated session with status=ACTIVE
+            Updated session with state=ACTIVE
 
         Raises:
             NotFoundError: If session not found
@@ -493,9 +493,9 @@ class APIInvestigationSessionService(BaseService):
             )
 
             # Check if session is paused
-            if session.status != SessionStatus.PAUSED:
+            if session.state != SessionState.PAUSED:
                 raise ValidationException(
-                    f"Cannot resume session in {session.status.value} status. "
+                    f"Cannot resume session in {session.state.value} status. "
                     "Only paused sessions can be resumed."
                 )
 
@@ -508,7 +508,7 @@ class APIInvestigationSessionService(BaseService):
             self.log_operation(
                 "resume_session_success",
                 session_id=session_id,
-                status=saved_session.status.value,
+                state=saved_session.state.value,
             )
 
             return saved_session
@@ -546,7 +546,7 @@ class APIInvestigationSessionService(BaseService):
             findings_summary: Summary of investigation findings
 
         Returns:
-            Updated session with status=COMPLETED
+            Updated session with state=COMPLETED
 
         Raises:
             NotFoundError: If session not found
@@ -571,9 +571,9 @@ class APIInvestigationSessionService(BaseService):
             )
 
             # Check if session is already in terminal state
-            if session.status in (SessionStatus.COMPLETED, SessionStatus.ABANDONED):
+            if session.state in (SessionState.COMPLETED, SessionState.ABANDONED):
                 raise ValidationException(
-                    f"Cannot complete session in {session.status.value} status. "
+                    f"Cannot complete session in {session.state.value} status. "
                     "Session is already in a terminal state."
                 )
 
@@ -586,7 +586,7 @@ class APIInvestigationSessionService(BaseService):
             self.log_operation(
                 "complete_session_success",
                 session_id=session_id,
-                status=saved_session.status.value,
+                state=saved_session.state.value,
                 total_duration_ms=saved_session.total_duration_ms,
             )
 
@@ -615,7 +615,7 @@ class APIInvestigationSessionService(BaseService):
             organization_id: Organization for authorization
 
         Returns:
-            Updated session with status=ABANDONED
+            Updated session with state=ABANDONED
 
         Raises:
             NotFoundError: If session not found
@@ -634,9 +634,9 @@ class APIInvestigationSessionService(BaseService):
             )
 
             # Check if session is already in terminal state
-            if session.status in (SessionStatus.COMPLETED, SessionStatus.ABANDONED):
+            if session.state in (SessionState.COMPLETED, SessionState.ABANDONED):
                 raise ValidationException(
-                    f"Cannot abandon session in {session.status.value} status. "
+                    f"Cannot abandon session in {session.state.value} status. "
                     "Session is already in a terminal state."
                 )
 
@@ -649,7 +649,7 @@ class APIInvestigationSessionService(BaseService):
             self.log_operation(
                 "abandon_session_success",
                 session_id=session_id,
-                status=saved_session.status.value,
+                state=saved_session.state.value,
             )
 
             return saved_session
@@ -717,7 +717,7 @@ class APIInvestigationSessionService(BaseService):
         self,
         case_id: str,
         organization_id: str,
-        status: Optional[SessionStatus] = None,
+        state: Optional[SessionState] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> List[InvestigationSession]:
@@ -726,7 +726,7 @@ class APIInvestigationSessionService(BaseService):
         Args:
             case_id: Case ID to list sessions for
             organization_id: Organization for authorization
-            status: Optional filter by status
+            state: Optional filter by status
             limit: Max results
             offset: Pagination offset
 
@@ -741,7 +741,7 @@ class APIInvestigationSessionService(BaseService):
             "list_sessions",
             case_id=case_id,
             organization_id=organization_id,
-            status=status.value if status else None,
+            state=state.value if state else None,
             limit=limit,
             offset=offset,
         )
@@ -751,7 +751,7 @@ class APIInvestigationSessionService(BaseService):
             await self._verify_case_authorization(case_id, organization_id)
 
             # Get sessions from repository
-            sessions = await self.session_repo.list_by_case_id(case_id, status=status)
+            sessions = await self.session_repo.list_by_case_id(case_id, state=state)
 
             # Apply pagination manually since repository may not support it
             paginated = sessions[offset : offset + limit]
@@ -893,9 +893,9 @@ class APIInvestigationSessionService(BaseService):
             )
 
             # Verify session is active
-            if session.status != SessionStatus.ACTIVE:
+            if session.state != SessionState.ACTIVE:
                 raise ValidationException(
-                    f"Cannot add execution to session in {session.status.value} status. "
+                    f"Cannot add execution to session in {session.state.value} status. "
                     "Session must be active."
                 )
 
@@ -992,7 +992,7 @@ class APIInvestigationSessionService(BaseService):
                 session_id=session_id,
                 organization_id=organization_id,
             )
-            raise ServiceError(f"Failed to check budget status: {e}")
+            raise ServiceError(f"Failed to check budget state: {e}")
 
     # ============================================================
     # Statistics and Analytics
@@ -1034,7 +1034,7 @@ class APIInvestigationSessionService(BaseService):
 
             for session in sessions:
                 # Count by status
-                status_key = session.status.value
+                status_key = session.state.value
                 by_status[status_key] = by_status.get(status_key, 0) + 1
 
                 # Sum token usage

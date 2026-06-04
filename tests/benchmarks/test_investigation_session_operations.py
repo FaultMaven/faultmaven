@@ -23,10 +23,10 @@ import pytest
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
 )
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.models.investigation_session import InvestigationSession, SessionState
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
+    CaseState,
     InvestigationStrategy,
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
@@ -45,7 +45,7 @@ def create_sample_session(
     case_id: str,
     user_id: str = "benchmark-user-001",
     organization_id: str = "benchmark-org-001",
-    status: SessionStatus = SessionStatus.ACTIVE,
+    state: SessionState = SessionState.ACTIVE,
     session_goal: str = None,
     token_budget_limit: int = None,
     started_at: datetime = None,
@@ -56,7 +56,7 @@ def create_sample_session(
         case_id=case_id,
         user_id=user_id,
         organization_id=organization_id,
-        status=status,
+        state=state,
         session_goal=session_goal or "Benchmark investigation session",
         token_budget_limit=token_budget_limit,
         started_at=started_at or datetime.now(timezone.utc),
@@ -80,7 +80,7 @@ async def benchmark_case(case_repository: SQLiteCaseRepository) -> Case:
         organization_id="benchmark-org-001",
         title="Benchmark Session Case",
         description="Case for benchmarking investigation session operations",
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
     return await case_repository.save(case)
@@ -163,7 +163,7 @@ class TestSessionCreationPerformance:
                 organization_id="benchmark-org-001",
                 title=f"Batch Benchmark Case {i}",
                 description="For batch session creation benchmark",
-                status=CaseStatus.INQUIRY,
+                state=CaseState.INQUIRY,
             )
             saved = await case_repository.save(case)
             cases.append(saved)
@@ -236,7 +236,7 @@ class TestSessionRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert result.status == SessionStatus.ACTIVE
+        assert result.state == SessionState.ACTIVE
         assert (
             latency < 0.100
         ), f"Get active session latency {latency*1000:.1f}ms exceeds 100ms target"
@@ -255,8 +255,8 @@ class TestSessionRetrievalPerformance:
         """
         # Setup - Create 100 sessions with different statuses
         for i in range(100):
-            status = SessionStatus.COMPLETED if i % 2 == 0 else SessionStatus.ABANDONED
-            session = create_sample_session(benchmark_case.case_id, status=status)
+            state = SessionState.COMPLETED if i % 2 == 0 else SessionState.ABANDONED
+            session = create_sample_session(benchmark_case.case_id, state=state)
             await session_repository.create(session)
 
         # Benchmark list operation
@@ -277,22 +277,22 @@ class TestSessionRetrievalPerformance:
         benchmark_case: Case,
         benchmark_session,
     ):
-        """Measure latency of listing sessions with status filter.
+        """Measure latency of listing sessions with state filter.
 
         Target: < 150ms for filtered query
         """
-        # Setup - Create mixed status sessions
+        # Setup - Create mixed state sessions
         for i in range(50):
             session = create_sample_session(
                 benchmark_case.case_id,
-                status=SessionStatus.COMPLETED,
+                state=SessionState.COMPLETED,
             )
             await session_repository.create(session)
 
         for i in range(50):
             session = create_sample_session(
                 benchmark_case.case_id,
-                status=SessionStatus.ABANDONED,
+                state=SessionState.ABANDONED,
             )
             await session_repository.create(session)
 
@@ -300,7 +300,7 @@ class TestSessionRetrievalPerformance:
         start = time.perf_counter()
         result = await session_repository.list_by_case_id(
             benchmark_case.case_id,
-            status=SessionStatus.COMPLETED,
+            state=SessionState.COMPLETED,
         )
         latency = time.perf_counter() - start
 
@@ -331,7 +331,7 @@ class TestSessionRetrievalPerformance:
                 organization_id="benchmark-org-001",
                 title=f"User Benchmark Case {i}",
                 description="For user list benchmark",
-                status=CaseStatus.INQUIRY,
+                state=CaseState.INQUIRY,
             )
             saved = await case_repository.save(case)
 
@@ -361,7 +361,7 @@ class TestSessionUpdatePerformance:
         benchmark_case: Case,
         benchmark_session,
     ):
-        """Measure latency of updating session status.
+        """Measure latency of updating session state.
 
         Target: < 150ms
         """
@@ -369,7 +369,7 @@ class TestSessionUpdatePerformance:
         session = create_sample_session(benchmark_case.case_id)
         await session_repository.create(session)
 
-        # Update status
+        # Update state
         session.pause()
 
         # Benchmark update
@@ -378,11 +378,11 @@ class TestSessionUpdatePerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert result.status == SessionStatus.PAUSED
+        assert result.state == SessionState.PAUSED
         assert (
             latency < 0.150
         ), f"Status update latency {latency*1000:.1f}ms exceeds 150ms target"
-        print(f"\n  Session status update latency: {latency*1000:.1f}ms")
+        print(f"\n  Session state update latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
     async def test_session_completion_update_latency(
@@ -411,7 +411,7 @@ class TestSessionUpdatePerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert result.status == SessionStatus.COMPLETED
+        assert result.state == SessionState.COMPLETED
         assert (
             latency < 0.150
         ), f"Completion update latency {latency*1000:.1f}ms exceeds 150ms target"
@@ -555,7 +555,7 @@ class TestSessionMixedWorkloadPerformance:
 
         total_latency = time.perf_counter() - start
 
-        assert session.status == SessionStatus.COMPLETED
+        assert session.state == SessionState.COMPLETED
         assert (
             total_latency < 0.600
         ), f"Lifecycle workload latency {total_latency*1000:.1f}ms exceeds 600ms target"
@@ -603,7 +603,7 @@ class TestSessionMixedWorkloadPerformance:
 
         total_latency = time.perf_counter() - start
 
-        assert session.status == SessionStatus.COMPLETED
+        assert session.state == SessionState.COMPLETED
         assert (
             total_latency < 0.900
         ), f"Pause/resume workload latency {total_latency*1000:.1f}ms exceeds 900ms target"

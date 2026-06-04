@@ -31,7 +31,7 @@ from faultmaven.api.models import (
     SessionUpdateRequest,
 )
 from faultmaven.exceptions import NotFoundError
-from faultmaven.models.investigation_session import SessionStatus
+from faultmaven.models.investigation_session import SessionState
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
@@ -176,7 +176,7 @@ async def get_session(
 async def list_sessions(
     case_id: str,
     current_user: AuthenticatedUser = Depends(get_current_user),
-    status_filter: Optional[SessionStatus] = Query(None, alias="status"),
+    status_filter: Optional[SessionState] = Query(None, alias="state"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     session_service: APIInvestigationSessionService = Depends(
@@ -213,7 +213,7 @@ async def list_sessions(
     sessions = await session_service.list_sessions(
         case_id=case_id,
         organization_id=current_user.organization_id,
-        status=status_filter,
+        state=status_filter,
         limit=limit,
         offset=offset,
     )

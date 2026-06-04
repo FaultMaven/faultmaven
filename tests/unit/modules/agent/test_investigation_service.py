@@ -24,7 +24,7 @@ from faultmaven.models.api_models import (
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus
+from faultmaven.modules.case.domain.models import Case, CaseState
 
 from .conftest import (
     MockCaseRepository,
@@ -589,7 +589,7 @@ class TestInvestigationServiceIntentDispatch:
         # validation.
         intent_kwargs: dict = {"type": intent_value}
         if intent_value == IntentType.STATUS_TRANSITION:
-            intent_kwargs["to_status"] = "closed"
+            intent_kwargs["to_state"] = "closed"
         elif intent_value == IntentType.CONFIRMATION:
             intent_kwargs["confirmation_value"] = True
         elif intent_value == IntentType.HYPOTHESIS_ACTION:
@@ -708,7 +708,7 @@ class TestInvestigationServiceGetProgress:
         )
 
         assert progress["case_id"] == sample_case.case_id
-        assert progress["status"] == sample_case.status.value
+        assert progress["state"] == sample_case.state.value
         assert "current_turn" in progress
         assert (
             "milestones_completed" in progress
@@ -761,9 +761,9 @@ class TestInvestigationServiceTransitionToInvestigating:
 
     @pytest.fixture
     def inquiry_case(self):
-        """Create a case in INQUIRY status."""
+        """Create a case in INQUIRY state."""
         return create_sample_case(
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
         )
 
     @pytest.mark.asyncio
@@ -782,7 +782,7 @@ class TestInvestigationServiceTransitionToInvestigating:
             confirmed_description=confirmed_description,
         )
 
-        assert updated_case.status == CaseStatus.INVESTIGATING
+        assert updated_case.state == CaseState.INVESTIGATING
         assert updated_case.description == confirmed_description
         assert mock_case_repository.save.called
 
@@ -820,35 +820,35 @@ class TestInvestigationServiceTransitionToInvestigating:
     async def test_transition_to_investigating_invalid_status(
         self, service, mock_case_repository, sample_case, sample_user_id
     ):
-        """Test transition from non-INQUIRY status."""
-        # Pre-populate repository with case in INVESTIGATING status (cannot transition from non-INQUIRY)
-        # INVESTIGATING status requires: confirmed problem statement, decided to investigate, and description
+        """Test transition from non-INQUIRY state."""
+        # Pre-populate repository with case in INVESTIGATING state (cannot transition from non-INQUIRY)
+        # INVESTIGATING state requires: confirmed problem statement, decided to investigate, and description
         from datetime import datetime, timezone
 
         sample_case.user_id = sample_user_id
         sample_case.description = "Test description"  # Required for INVESTIGATING
-        # Set up inquiry data required for INVESTIGATING status
+        # Set up inquiry data required for INVESTIGATING state
         sample_case.inquiry.proposed_problem_statement = "Test problem statement"
         sample_case.inquiry.problem_statement_confirmed = True
         sample_case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
         sample_case.inquiry.decided_to_investigate = True
         sample_case.inquiry.decision_made_at = datetime.now(timezone.utc)
 
-        # Now set status to INVESTIGATING (all requirements are met)
-        sample_case.status = CaseStatus.INVESTIGATING
+        # Now set state to INVESTIGATING (all requirements are met)
+        sample_case.state = CaseState.INVESTIGATING
         await mock_case_repository.save(sample_case)
 
-        # Verify the case is stored with INVESTIGATING status
+        # Verify the case is stored with INVESTIGATING state
         stored_case = await mock_case_repository.get(sample_case.case_id)
         assert stored_case is not None, "Case should be stored in repository"
         assert (
-            stored_case.status == CaseStatus.INVESTIGATING
-        ), f"Case status should be INVESTIGATING, got {stored_case.status}"
+            stored_case.state == CaseState.INVESTIGATING
+        ), f"Case state should be INVESTIGATING, got {stored_case.state}"
         assert (
-            stored_case.status != CaseStatus.INQUIRY
-        ), "Case should NOT be in INQUIRY status for this test"
+            stored_case.state != CaseState.INQUIRY
+        ), "Case should NOT be in INQUIRY state for this test"
 
-        # The service should raise ServiceException when trying to transition from non-INQUIRY status
+        # The service should raise ServiceException when trying to transition from non-INQUIRY state
         with pytest.raises(ServiceException) as exc_info:
             await service.transition_to_investigating(
                 case_id=sample_case.case_id,
@@ -862,7 +862,7 @@ class TestInvestigationServiceTransitionToInvestigating:
         ), f"Exception message should contain 'Cannot transition', got: {str(exc_info.value)}"
         assert "investigating" in str(exc_info.value).lower() or "INVESTIGATING" in str(
             exc_info.value
-        ), f"Exception message should mention the current status, got: {str(exc_info.value)}"
+        ), f"Exception message should mention the current state, got: {str(exc_info.value)}"
 
 
 class TestInvestigationServiceCloseCase:
@@ -892,7 +892,7 @@ class TestInvestigationServiceCloseCase:
             closure_reason=closure_reason,
         )
 
-        assert updated_case.status == CaseStatus.CLOSED
+        assert updated_case.state == CaseState.CLOSED
         assert updated_case.closure_reason == closure_reason
         assert updated_case.closed_at is not None
         assert mock_case_repository.save.called

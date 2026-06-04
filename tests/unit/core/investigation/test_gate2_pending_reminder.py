@@ -9,7 +9,7 @@ but Gate 2 has not committed. The reminder:
 - Tells the LLM how to handle the data-without-pick failure mode
   (acknowledge briefly THEN re-assert the path question)
 
-The fire condition is narrow: INQUIRY status + Gate 1 closed +
+The fire condition is narrow: INQUIRY state + Gate 1 closed +
 path_selection is None + preliminary_urgency populated (so the
 recommendation helper returns non-None). Tests pin firing in that
 exact shape and non-firing on every other.
@@ -27,7 +27,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     InquiryData,
     InvestigationPath,
     PathSelection,
@@ -45,7 +45,7 @@ from faultmaven.modules.case.domain.models import (
 
 def _case(
     *,
-    status: CaseStatus = CaseStatus.INVESTIGATING,
+    state: CaseState = CaseState.INVESTIGATING,
     problem_statement_confirmed: bool = True,
     symptom_verified: bool = True,
     has_preliminary_urgency: bool = True,
@@ -62,7 +62,7 @@ def _case(
     inquiry = InquiryData(
         proposed_problem_statement="Production API returning 503s",
         problem_statement_confirmed=problem_statement_confirmed,
-        decided_to_investigate=(status == CaseStatus.INVESTIGATING),
+        decided_to_investigate=(state == CaseState.INVESTIGATING),
         problem_confirmation=ProblemConfirmation(
             problem_type="unavailability",
             severity_guess="high",
@@ -81,7 +81,7 @@ def _case(
         user_id="u1",
         organization_id="o1",
         title="Test",
-        status=status,
+        state=state,
         description="Production API returning 503s",
         inquiry=inquiry,
         progress=InvestigationProgress(symptom_verified=symptom_verified),
@@ -99,7 +99,7 @@ def _inquiry_case(
     path_selection: PathSelection | None = None,
 ) -> Case:
     return _case(
-        status=CaseStatus.INQUIRY,
+        state=CaseState.INQUIRY,
         problem_statement_confirmed=problem_statement_confirmed,
         symptom_verified=False,
         has_preliminary_urgency=has_preliminary_urgency,
@@ -203,7 +203,7 @@ class TestConditionalInjection:
         it isn't. The reminder must NOT fire in INQUIRY regardless of
         Gate 1 state. Prevents premature firing."""
         case = _case(
-            status=CaseStatus.INQUIRY,
+            state=CaseState.INQUIRY,
             problem_statement_confirmed=True,
             symptom_verified=False,  # symptom_verified is INVESTIGATING-stage
         )
@@ -241,7 +241,7 @@ class TestConditionalInjection:
         assert self._REMINDER_OPEN_TAG not in rendered
 
     # NOTE: Pre-redesign there was a ``test_reminder_absent_outside_inquiry_status``
-    # case that pinned an INQUIRY-stage status check. Post-redesign,
+    # case that pinned an INQUIRY-stage state check. Post-redesign,
     # ``test_reminder_absent_in_inquiry`` above covers the equivalent
     # invariant (reminder must not fire in INQUIRY). The original test
     # has been replaced.

@@ -32,7 +32,7 @@ from faultmaven.core.investigation.milestone_engine import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseStatus,
+    CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceNeed,
@@ -40,12 +40,12 @@ from faultmaven.modules.case.contracts import (
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
-    HypothesisStatus,
+    HypothesisState,
     InquiryData,
     InvestigationPath,
     NeedPriority,
     NeedPurpose,
-    NeedStatus,
+    NeedState,
     PathSelection,
     UploadedFile,
 )
@@ -60,7 +60,7 @@ _USE_DEFAULT_PATH = object()
 
 def _make_case(
     *,
-    status: CaseStatus = CaseStatus.INVESTIGATING,
+    state: CaseState = CaseState.INVESTIGATING,
     path_selection=_USE_DEFAULT_PATH,
     symptom_verified: bool = True,
 ) -> Case:
@@ -76,7 +76,7 @@ def _make_case(
     inquiry.problem_statement_confirmed = True
     inquiry.decided_to_investigate = True
 
-    if path_selection is _USE_DEFAULT_PATH and status == CaseStatus.INVESTIGATING:
+    if path_selection is _USE_DEFAULT_PATH and state == CaseState.INVESTIGATING:
         path_selection = PathSelection(
             path=InvestigationPath.ROOT_CAUSE,
             auto_selected=False,
@@ -93,12 +93,12 @@ def _make_case(
         organization_id="org_test",
         title="Test case",
         description="Test problem",
-        status=status,
+        state=state,
         inquiry=inquiry,
         path_selection=path_selection,
     )
     case.current_turn = 5
-    if status == CaseStatus.INVESTIGATING:
+    if state == CaseState.INVESTIGATING:
         case.progress.symptom_verified = symptom_verified
     return case
 
@@ -107,13 +107,13 @@ def _make_hypothesis(
     case: Case,
     *,
     hyp_id: str | None = None,
-    status: HypothesisStatus = HypothesisStatus.ACTIVE,
+    state: HypothesisState = HypothesisState.ACTIVE,
 ) -> Hypothesis:
     h = Hypothesis(
         hypothesis_id=hyp_id or f"hyp_{uuid4().hex[:12]}",
         statement="Test hypothesis",
         category=HypothesisCategory.DATABASE,
-        status=status,
+        state=state,
         likelihood=0.6,
         initial_likelihood=0.6,
         generated_at_turn=case.current_turn,
@@ -152,7 +152,7 @@ def _make_update(**overrides):
         request_text="kubectl get pods",
         rationale="confirm symptom",
         priority=NeedPriority.MEDIUM,
-        status=None,
+        state=None,
         motivating_hypothesis_ids=[],
         fulfilling_evidence_ids=[],
         superseded_reason=None,
@@ -208,7 +208,7 @@ class TestEvidenceNeedUpdateApplyLayer:
         assert len(case.evidence_needs) == 1
         n = case.evidence_needs[0]
         assert n.purpose == NeedPurpose.SYMPTOM_VERIFICATION
-        assert n.status == NeedStatus.PENDING
+        assert n.state == NeedState.PENDING
         assert n.motivating_hypothesis_ids == []
         assert n.fulfilling_evidence_ids == []
         # Metadata tracking — for Phase 6 _resolve_id_ref on suggestions
@@ -298,7 +298,7 @@ class TestEvidenceNeedUpdateApplyLayer:
             request_text="x",
             rationale="y",
             motivating_hypothesis_ids=[h1.hypothesis_id],
-            status=NeedStatus.SUPERSEDED,
+            state=NeedState.SUPERSEDED,
             superseded_reason="prior reason",
             created_at_turn=case.current_turn,
         )
@@ -314,14 +314,14 @@ class TestEvidenceNeedUpdateApplyLayer:
                     purpose=NeedPurpose.CAUSAL_VERIFICATION,
                     request_text="x",
                     rationale="y",
-                    status=NeedStatus.PENDING,
+                    state=NeedState.PENDING,
                 )
             ],
             meta,
             case.current_turn,
         )
         # Status stays SUPERSEDED
-        assert case.evidence_needs[0].status == NeedStatus.SUPERSEDED
+        assert case.evidence_needs[0].state == NeedState.SUPERSEDED
         assert any("resurrection" in r for r in meta.get("validation_repairs", []))
 
     def test_dangling_hypothesis_id_dropped_on_symptom_need(self):
@@ -565,7 +565,7 @@ class TestNeedSupersessionOnHypothesisRetirement:
             case, h.hypothesis_id, case.current_turn
         )
         assert count == 1
-        assert case.evidence_needs[0].status == NeedStatus.SUPERSEDED
+        assert case.evidence_needs[0].state == NeedState.SUPERSEDED
         assert (
             case.evidence_needs[0].superseded_reason
             == "all motivating hypotheses retired"
@@ -590,7 +590,7 @@ class TestNeedSupersessionOnHypothesisRetirement:
             case, h1.hypothesis_id, case.current_turn
         )
         # Status unchanged (h2 still motivates)
-        assert case.evidence_needs[0].status == NeedStatus.PENDING
+        assert case.evidence_needs[0].state == NeedState.PENDING
         assert case.evidence_needs[0].motivating_hypothesis_ids == [h2.hypothesis_id]
 
     def test_symptom_needs_exempt_from_supersession(self):
@@ -612,7 +612,7 @@ class TestNeedSupersessionOnHypothesisRetirement:
         _supersede_needs_on_hypothesis_retirement(
             case, h.hypothesis_id, case.current_turn
         )
-        assert case.evidence_needs[0].status == NeedStatus.PENDING
+        assert case.evidence_needs[0].state == NeedState.PENDING
 
     def test_fulfilled_need_not_superseded_even_with_empty_motivators(self):
         """FULFILLED needs stay FULFILLED as audit trail of what was
@@ -627,7 +627,7 @@ class TestNeedSupersessionOnHypothesisRetirement:
             rationale="y",
             motivating_hypothesis_ids=[h.hypothesis_id],
             fulfilling_evidence_ids=[ev.evidence_id],
-            status=NeedStatus.FULFILLED,
+            state=NeedState.FULFILLED,
             created_at_turn=case.current_turn,
         )
         case.evidence_needs.append(need)
@@ -636,7 +636,7 @@ class TestNeedSupersessionOnHypothesisRetirement:
             case, h.hypothesis_id, case.current_turn
         )
         # Status stays FULFILLED; motivators list cleared
-        assert case.evidence_needs[0].status == NeedStatus.FULFILLED
+        assert case.evidence_needs[0].state == NeedState.FULFILLED
         assert case.evidence_needs[0].motivating_hypothesis_ids == []
 
 
@@ -648,7 +648,7 @@ class TestNeedSupersessionOnHypothesisRetirement:
 @pytest.mark.unit
 class TestFulfilledDemotionOnEmptyFulfillments:
     """When all referenced ``fulfilling_evidence_ids`` are dropped as
-    dangling, FULFILLED status is demoted to PARTIALLY_MET to keep the
+    dangling, FULFILLED state is demoted to PARTIALLY_MET to keep the
     persisted ``EvidenceNeed`` consistent with its model invariant
     (FULFILLED requires non-empty fulfillment list)."""
 
@@ -661,7 +661,7 @@ class TestFulfilledDemotionOnEmptyFulfillments:
             case,
             [
                 _make_update(
-                    status=NeedStatus.FULFILLED,
+                    state=NeedState.FULFILLED,
                     fulfilling_evidence_ids=["ev_doesnotexist"],
                 )
             ],
@@ -670,7 +670,7 @@ class TestFulfilledDemotionOnEmptyFulfillments:
         )
 
         assert len(case.evidence_needs) == 1
-        assert case.evidence_needs[0].status == NeedStatus.PARTIALLY_MET
+        assert case.evidence_needs[0].state == NeedState.PARTIALLY_MET
         assert case.evidence_needs[0].fulfilling_evidence_ids == []
         assert any(
             "Demoted FULFILLED→PARTIALLY_MET" in r
@@ -684,7 +684,7 @@ class TestFulfilledDemotionOnEmptyFulfillments:
             purpose=NeedPurpose.SYMPTOM_VERIFICATION,
             request_text="x",
             rationale="y",
-            status=NeedStatus.PENDING,
+            state=NeedState.PENDING,
             created_at_turn=case.current_turn,
         )
         case.evidence_needs.append(existing)
@@ -696,7 +696,7 @@ class TestFulfilledDemotionOnEmptyFulfillments:
             [
                 _make_update(
                     need_id=existing.need_id,
-                    status=NeedStatus.FULFILLED,
+                    state=NeedState.FULFILLED,
                     fulfilling_evidence_ids=["ev_doesnotexist"],
                 )
             ],
@@ -704,7 +704,7 @@ class TestFulfilledDemotionOnEmptyFulfillments:
             case.current_turn,
         )
 
-        assert case.evidence_needs[0].status == NeedStatus.PARTIALLY_MET
+        assert case.evidence_needs[0].state == NeedState.PARTIALLY_MET
         assert case.evidence_needs[0].fulfilling_evidence_ids == []
         assert any(
             "Demoted FULFILLED→PARTIALLY_MET" in r
@@ -721,7 +721,7 @@ class TestFulfilledDemotionOnEmptyFulfillments:
             purpose=NeedPurpose.SYMPTOM_VERIFICATION,
             request_text="x",
             rationale="y",
-            status=NeedStatus.PARTIALLY_MET,
+            state=NeedState.PARTIALLY_MET,
             fulfilling_evidence_ids=[ev_prior.evidence_id],
             created_at_turn=case.current_turn,
         )
@@ -734,7 +734,7 @@ class TestFulfilledDemotionOnEmptyFulfillments:
             [
                 _make_update(
                     need_id=existing.need_id,
-                    status=NeedStatus.FULFILLED,
+                    state=NeedState.FULFILLED,
                     fulfilling_evidence_ids=["ev_doesnotexist"],
                 )
             ],
@@ -743,7 +743,7 @@ class TestFulfilledDemotionOnEmptyFulfillments:
         )
 
         # Prior fulfillment survives; new dangling ID dropped; no demotion.
-        assert case.evidence_needs[0].status == NeedStatus.FULFILLED
+        assert case.evidence_needs[0].state == NeedState.FULFILLED
         assert case.evidence_needs[0].fulfilling_evidence_ids == [ev_prior.evidence_id]
 
 
@@ -761,8 +761,8 @@ class TestPriorTurnRetiredMotivatorFiltered:
 
     def test_retired_motivator_dropped_on_create(self):
         case = _make_case()
-        h_retired = _make_hypothesis(case, status=HypothesisStatus.RETIRED)
-        h_active = _make_hypothesis(case, status=HypothesisStatus.ACTIVE)
+        h_retired = _make_hypothesis(case, state=HypothesisState.RETIRED)
+        h_active = _make_hypothesis(case, state=HypothesisState.ACTIVE)
         engine = _make_engine()
         meta = _empty_metadata()
 
@@ -796,7 +796,7 @@ class TestPriorTurnRetiredMotivatorFiltered:
         cleans up needs whose motivator retired *this turn*, so a
         need born empty would live forever."""
         case = _make_case()
-        h_retired = _make_hypothesis(case, status=HypothesisStatus.RETIRED)
+        h_retired = _make_hypothesis(case, state=HypothesisState.RETIRED)
         engine = _make_engine()
         meta = _empty_metadata()
 
@@ -870,7 +870,7 @@ class TestPriorTurnRetiredMotivatorFiltered:
 
     def test_retired_motivator_dropped_on_update(self):
         case = _make_case()
-        h_retired = _make_hypothesis(case, status=HypothesisStatus.RETIRED)
+        h_retired = _make_hypothesis(case, state=HypothesisState.RETIRED)
         existing = EvidenceNeed(
             case_id=case.case_id,
             purpose=NeedPurpose.CAUSAL_VERIFICATION,
@@ -911,7 +911,7 @@ class TestSnapshotDiffBookendIntegration:
     snapshot or post-turn diff is refactored away, this fails.
 
     The integration shape under test:
-        pre  = {h_id : h.status == RETIRED} captured before update apply
+        pre  = {h_id : h.state == RETIRED} captured before update apply
         post = same set computed after update apply
         newly_retired = post - pre
         for each in newly_retired: _supersede_needs_on_hypothesis_retirement(...)
@@ -922,7 +922,7 @@ class TestSnapshotDiffBookendIntegration:
         # A causal need motivated by h_will_retire; the snapshot taken
         # before retirement does NOT include h_will_retire in the
         # retired set, so the post-update diff will flag it.
-        h_will_retire = _make_hypothesis(case, status=HypothesisStatus.ACTIVE)
+        h_will_retire = _make_hypothesis(case, state=HypothesisState.ACTIVE)
         need = EvidenceNeed(
             case_id=case.case_id,
             purpose=NeedPurpose.CAUSAL_VERIFICATION,
@@ -937,18 +937,18 @@ class TestSnapshotDiffBookendIntegration:
         pre_retired = {
             h_id
             for h_id, h in case.hypotheses.items()
-            if h.status == HypothesisStatus.RETIRED
+            if h.state == HypothesisState.RETIRED
         }
 
         # Simulate the engine flipping the hypothesis during this turn.
-        case.hypotheses[h_will_retire.hypothesis_id].status = HypothesisStatus.RETIRED
+        case.hypotheses[h_will_retire.hypothesis_id].state = HypothesisState.RETIRED
 
         # Post-turn diff — the integration logic exactly as wired in
         # _process_turn_impl.
         newly_retired = {
             h_id
             for h_id, h in case.hypotheses.items()
-            if h.status == HypothesisStatus.RETIRED
+            if h.state == HypothesisState.RETIRED
         } - pre_retired
 
         assert newly_retired == {h_will_retire.hypothesis_id}
@@ -959,25 +959,25 @@ class TestSnapshotDiffBookendIntegration:
             )
 
         # Need was superseded because its sole motivator retired this turn.
-        assert case.evidence_needs[0].status == NeedStatus.SUPERSEDED
+        assert case.evidence_needs[0].state == NeedState.SUPERSEDED
 
     def test_diff_skips_prior_turn_retirements(self):
         """A hypothesis that was already RETIRED in the pre-turn
         snapshot does not appear in newly_retired and is not handed to
         the supersession helper a second time."""
         case = _make_case()
-        h_already_retired = _make_hypothesis(case, status=HypothesisStatus.RETIRED)
+        h_already_retired = _make_hypothesis(case, state=HypothesisState.RETIRED)
 
         pre_retired = {
             h_id
             for h_id, h in case.hypotheses.items()
-            if h.status == HypothesisStatus.RETIRED
+            if h.state == HypothesisState.RETIRED
         }
         # No mutation this turn.
         post_retired = {
             h_id
             for h_id, h in case.hypotheses.items()
-            if h.status == HypothesisStatus.RETIRED
+            if h.state == HypothesisState.RETIRED
         }
         newly_retired = post_retired - pre_retired
 
@@ -1045,7 +1045,7 @@ class TestApplyLayerSeedsMetadataKey:
             request_text="existing need",
             rationale="seeded",
             priority=NeedPriority.MEDIUM,
-            status=NeedStatus.PENDING,
+            state=NeedState.PENDING,
             created_at_turn=1,
         )
         case.evidence_needs.append(existing)
@@ -1056,19 +1056,19 @@ class TestApplyLayerSeedsMetadataKey:
             updates_list=[
                 _make_update(
                     need_id=existing.need_id,
-                    status=NeedStatus.PARTIALLY_MET,
+                    state=NeedState.PARTIALLY_MET,
                 )
             ],
             metadata=meta,
             current_turn=case.current_turn,
         )
 
-        assert existing.status == NeedStatus.PARTIALLY_MET
+        assert existing.state == NeedState.PARTIALLY_MET
         assert existing.need_id in meta["evidence_needs_updated"]
 
 
 # ============================================================
-# Regression: bare fulfill/status update (create-only fields omitted)
+# Regression: bare fulfill/state update (create-only fields omitted)
 # ============================================================
 
 
@@ -1076,7 +1076,7 @@ class TestApplyLayerSeedsMetadataKey:
 class TestFulfillUpdateOmittedCreateOnlyFields:
     """Regression for the fulfill-path crash (fix/evidence-need-fulfill-path).
 
-    A validated ``EvidenceNeedUpdate`` on a fulfill/status update carries
+    A validated ``EvidenceNeedUpdate`` on a fulfill/state update carries
     ``None`` for the create-only fields (``purpose`` / ``request_text`` /
     ``rationale`` / ``priority``) — the LLM omits them because they are
     immutable on the update path. Before the fix the apply-layer:
@@ -1086,7 +1086,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
 
     These tests drive the bare fulfill THROUGH ``_apply_evidence_need_updates``
     (not just schema validation) and assert the existing need's create-only
-    fields are preserved and status flips to FULFILLED.
+    fields are preserved and state flips to FULFILLED.
     """
 
     def _pending_causal_need(self, case) -> EvidenceNeed:
@@ -1096,7 +1096,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
             request_text="EXPLAIN ANALYZE output for the audit_events query",
             rationale="confirm the unindexed Seq Scan is holding pool connections",
             priority=NeedPriority.HIGH,
-            status=NeedStatus.PENDING,
+            state=NeedState.PENDING,
             motivating_hypothesis_ids=[],
             created_at_turn=case.current_turn,
         )
@@ -1111,7 +1111,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
         engine = _make_engine()
         meta = _empty_metadata()
         # Exactly what a validated EvidenceNeedUpdate carries on a fulfill:
-        # need_id + status + fulfilling_evidence_ids; everything else None.
+        # need_id + state + fulfilling_evidence_ids; everything else None.
         engine._apply_evidence_need_updates(
             case=case,
             updates_list=[
@@ -1121,7 +1121,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
                     request_text=None,
                     rationale=None,
                     priority=None,
-                    status=NeedStatus.FULFILLED,
+                    state=NeedState.FULFILLED,
                     fulfilling_evidence_ids=[ev.evidence_id],
                 )
             ],
@@ -1130,8 +1130,8 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
         )
 
         updated = case.evidence_needs[0]
-        # status flipped, evidence linked
-        assert updated.status == NeedStatus.FULFILLED
+        # state flipped, evidence linked
+        assert updated.state == NeedState.FULFILLED
         assert ev.evidence_id in updated.fulfilling_evidence_ids
         # create-only fields PRESERVED (not nulled / not downgraded)
         assert (
@@ -1164,7 +1164,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
                     request_text=None,
                     rationale=None,
                     priority=None,
-                    status=NeedStatus.PARTIALLY_MET,
+                    state=NeedState.PARTIALLY_MET,
                     fulfilling_evidence_ids=[ev.evidence_id],
                 )
             ],
@@ -1173,7 +1173,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
         )
 
         updated = case.evidence_needs[0]
-        assert updated.status == NeedStatus.PARTIALLY_MET
+        assert updated.state == NeedState.PARTIALLY_MET
         assert updated.priority == NeedPriority.HIGH
         assert updated.request_text.startswith("EXPLAIN ANALYZE")
 
@@ -1209,7 +1209,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
                     request_text="revised: also capture pg_stat_statements",
                     rationale=None,
                     priority=NeedPriority.MEDIUM,
-                    status=None,
+                    state=None,
                 )
             ],
             metadata=meta,
@@ -1244,7 +1244,7 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
                     request_text="",
                     rationale="",
                     priority=None,
-                    status=None,
+                    state=None,
                 )
             ],
             metadata=meta,
