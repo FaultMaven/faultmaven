@@ -120,7 +120,12 @@ class GeminiProvider(BaseLLMProvider):
             if rf.get("type") == "json_schema":
                 generation_config["response_mime_type"] = "application/json"
                 if "json_schema" in rf and "schema" in rf["json_schema"]:
-                    generation_config["response_schema"] = rf["json_schema"]["schema"]
+                    # Gemini's response_schema (OpenAPI-3.0 subset) rejects
+                    # $ref/$defs/anyOf that Pydantic emits for nested/Optional/
+                    # Union models. Inline+convert them, same as the tool path.
+                    generation_config["response_schema"] = (
+                        self._resolve_refs_for_gemini(rf["json_schema"]["schema"])
+                    )
             elif rf.get("type") == "json_object":
                 generation_config["response_mime_type"] = "application/json"
 
