@@ -14,13 +14,13 @@
 
 ## 1. Three-Template System
 
-FaultMaven uses three top-level prompt templates, dispatched by case status:
+FaultMaven uses three top-level prompt templates, dispatched by case state:
 
 | Template | Used when | Stage instructions |
 | --- | --- | --- |
-| `INQUIRY_TEMPLATE` | `case.status == INQUIRY` | Self-contained (problem detection, formalization, confirmation handshake) |
-| `INVESTIGATION_BASE` | `case.status == INVESTIGATING` | Adaptive — see §3 |
-| `TERMINAL_TEMPLATE` | `case.status in {RESOLVED, CLOSED}` | Self-contained (read-only Q&A, report regeneration acknowledgment) |
+| `INQUIRY_TEMPLATE` | `case.state == INQUIRY` | Self-contained (problem detection, formalization, confirmation handshake) |
+| `INVESTIGATION_BASE` | `case.state == INVESTIGATING` | Adaptive — see §3 |
+| `TERMINAL_TEMPLATE` | `case.state in {RESOLVED, CLOSED}` | Self-contained (read-only Q&A, report regeneration acknowledgment) |
 
 Fallback variants (`FALLBACK_INQUIRY_TEMPLATE`, `FALLBACK_INVESTIGATION_TEMPLATE`, `FALLBACK_TERMINAL_TEMPLATE`) are used only when the primary assembly fails (token limit overflow or provider error).
 
@@ -171,7 +171,7 @@ When `processing_mode == "knowledge_query"`, the user is asking a general techni
 The single entry point is `templates.get_prompt_for_case(case, user_message, ...)`. It:
 
 1. Builds the dynamic context via `build_investigation_context(...)` from `prompts/context_builder.py`.
-2. Selects the template based on `case.status`:
+2. Selects the template based on `case.state`:
    - `INQUIRY` → `INQUIRY_TEMPLATE.format(**ctx)`
    - `INVESTIGATING` → see step 3
    - `RESOLVED` / `CLOSED` → `TERMINAL_TEMPLATE.format(...)`

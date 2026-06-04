@@ -223,14 +223,6 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             await repo.add_solution(case_id, solution)
 
-    async def update_status(
-        self, case_id: str, new_status: CaseState, reason: str | None = None
-    ) -> None:
-        """Update status with new session per operation."""
-        async with get_db_session() as session:
-            repo = get_repository_for_session(session)
-            await repo.update_status(case_id, new_status, reason)
-
     async def get_by_ids(self, case_ids: list[str]) -> list[Case]:
         """Bulk get cases with new session per operation."""
         async with get_db_session() as session:

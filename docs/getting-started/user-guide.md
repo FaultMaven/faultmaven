@@ -106,7 +106,7 @@ curl -X POST \
 
 # Response includes:
 # - case_id: Your case identifier
-# - status: Case status (OPEN)
+# - state: Case state (e.g. investigating)
 ```
 
 ### Step 3: Upload Data (Optional)

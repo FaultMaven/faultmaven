@@ -2164,7 +2164,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         for solution in solutions_list:
             applied_at = solution.applied_at
             verified_at = solution.verified_at
-            state = self._derive_solution_status(solution)
+            state = self._derive_solution_state(solution)
 
             query = text("""
                 INSERT INTO solutions (
@@ -2243,7 +2243,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     @staticmethod
-    def _derive_solution_status(solution: Solution) -> str:
+    def _derive_solution_state(solution: Solution) -> str:
         """Map Pydantic Solution lifecycle fields to the schema's
         state CHECK vocabulary. Mirrors the SQLite repo logic.
         """

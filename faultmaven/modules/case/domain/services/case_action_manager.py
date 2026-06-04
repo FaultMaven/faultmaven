@@ -45,7 +45,7 @@ ALLOWED_ACTIONS = {
 ALLOWED_TRANSITIONS = ALLOWED_ACTIONS
 
 
-# Map: (old_status, new_status) → agent message
+# Map: (old_state, new_state) → agent message
 # These messages are sent to agent as if user typed them
 CASE_ACTION_MESSAGES = {
     # Phase transition: INQUIRY → INVESTIGATING
@@ -71,7 +71,6 @@ CASE_ACTION_MESSAGES = {
 }
 
 # Backward compatibility alias
-STATUS_CHANGE_MESSAGES = CASE_ACTION_MESSAGES
 
 
 class CaseActionManager:
@@ -82,9 +81,9 @@ class CaseActionManager:
     """
 
     @staticmethod
-    def is_terminal_state(status: CaseState) -> bool:
-        """Check if status is a disposition (terminal, cannot be changed)."""
-        return status in [CaseState.RESOLVED, CaseState.CLOSED]
+    def is_terminal_state(state: CaseState) -> bool:
+        """Check if state is a disposition (terminal, cannot be changed)."""
+        return state in [CaseState.RESOLVED, CaseState.CLOSED]
 
     @staticmethod
     def get_agent_message(
@@ -109,8 +108,8 @@ class CaseActionManager:
         Build case action audit record.
 
         Args:
-            old_status: Previous status
-            new_status: New status
+            old_status: Previous state
+            new_state: New state
             user_id: User ID who initiated the action
             auto: True if system auto-triggered, False if user action
             reason: Optional reason for the action
@@ -136,7 +135,7 @@ class CaseActionManager:
         Get fields to update for disposition (terminal) states.
 
         Args:
-            new_status: New disposition status
+            new_status: New disposition state
             user_id: User ID
 
         Returns:
@@ -162,7 +161,7 @@ class CaseActionManager:
 
     @staticmethod
     def get_allowed_actions(current_status: CaseState) -> list[CaseState]:
-        """Get list of allowed case actions from current status."""
+        """Get list of allowed case actions from current state."""
         return ALLOWED_ACTIONS.get(current_status, [])
 
     # Backward compatibility alias
@@ -170,4 +169,3 @@ class CaseActionManager:
 
 
 # Backward compatibility alias
-CaseStatusManager = CaseActionManager

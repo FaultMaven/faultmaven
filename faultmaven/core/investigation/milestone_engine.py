@@ -906,7 +906,7 @@ def _supersede_needs_on_hypothesis_retirement(
     becomes empty AND the need is causal-purpose AND not FULFILLED,
     mark the need SUPERSEDED.
 
-    Returns the count of needs whose status was flipped to SUPERSEDED.
+    Returns the count of needs whose state was flipped to SUPERSEDED.
 
     Per evidence-needs-design.md §7.4:
 
@@ -1599,7 +1599,7 @@ class MilestoneEngine:
             report_label = "Closure summary"
         else:
             logger.warning(
-                f"Unexpected status {case.state} for auto-summary on case {case.case_id}"
+                f"Unexpected state {case.state} for auto-summary on case {case.case_id}"
             )
             return None, False
 
@@ -6629,7 +6629,7 @@ class MilestoneEngine:
             # FULFILLED→PARTIALLY_MET demotion when the post-merge
             # fulfilling list is still empty. ``validate_assignment``
             # is off on EvidenceNeed, so in-place mutation bypasses
-            # ``_validate_status_consistency`` — without this guard a
+            # ``_validate_state_consistency`` — without this guard a
             # bad LLM emission could leave the need in FULFILLED+[]
             # state that raises on next reconstruction.
             effective_status = update.state

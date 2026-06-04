@@ -1229,7 +1229,7 @@ class DIContainer(BaseDIContainer):
 
             async def update_case_status(self, case_id, status):
                 if case_id in self.cases:
-                    self.cases[case_id].status = status
+                    self.cases[case_id].state = status
                     self.cases[case_id].updated_at = datetime.now(timezone.utc)
                     return True
                 return False

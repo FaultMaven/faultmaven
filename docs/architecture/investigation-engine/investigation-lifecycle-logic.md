@@ -456,16 +456,16 @@ The valid-action graph below is realized in code as `ALLOWED_ACTIONS` in `case_a
 
 ```python
 ALLOWED_ACTIONS = {
-    CaseStatus.INQUIRY: [
-        CaseStatus.INVESTIGATING,   # Start formal investigation (always required, even for KB-matched cases)
-        CaseStatus.CLOSED           # Inquiry-only, no investigation
+    CaseState.INQUIRY: [
+        CaseState.INVESTIGATING,   # Start formal investigation (always required, even for KB-matched cases)
+        CaseState.CLOSED           # Inquiry-only, no investigation
     ],
-    CaseStatus.INVESTIGATING: [
-        CaseStatus.RESOLVED,        # Solution verified (terminal) — includes the same-turn KB-resolution variant
-        CaseStatus.CLOSED           # Abandoned (terminal)
+    CaseState.INVESTIGATING: [
+        CaseState.RESOLVED,        # Solution verified (terminal) — includes the same-turn KB-resolution variant
+        CaseState.CLOSED           # Abandoned (terminal)
     ],
-    CaseStatus.RESOLVED: [],        # DISPOSITION - no further case actions
-    CaseStatus.CLOSED: []           # DISPOSITION - no further case actions
+    CaseState.RESOLVED: [],        # DISPOSITION - no further case actions
+    CaseState.CLOSED: []           # DISPOSITION - no further case actions
 }
 ```
 
@@ -550,11 +550,11 @@ Every load-bearing lifecycle rule has at least one enforcement surface: code, sc
 | INV-11 | Auto-generated `CLOSURE_SUMMARY` is gated on **investigation substance** (`evidence>0` OR `hypotheses>0` OR `completed_milestones>0`). The verdict is stable post-closure because all three signals are immutable in CLOSED state. `RESOLUTION_SUMMARY` always generates. | §1.7.3, §4.5.0 | **Code-guarded** — `should_generate_terminal_summary` in `terminal_transitions.py` | `test_milestone_engine::test_summary_guardrail_*`; `::test_skip_reason_*` |
 | INV-12 | Free-typed paraphrases of regen/runbook intent ("recap", "summarize", "new runbook please") route to terminal Q&A and **never** produce a persisted Report or Runbook side effect. Only **exact-match** of the COOPERATIVE-suggestion payload triggers a persisted side effect. | §1.7.3 *Regeneration* (free-text routes to Q&A) | **Code-guarded** — `_REPORT_REGEN_PATTERNS` and `_RUNBOOK_CREATION_PATTERNS` use exact-match (`msg_lower in patterns`); paraphrases fall through to `_process_terminal_qa`. | `test_inv12_*` in `test_lifecycle_invariants.py` (4 tests: exact payload triggers regen; free-typed recap/summarize paraphrases route to Q&A; runbook paraphrases route to Q&A; pattern tuples stay in lockstep with COOPERATIVE-suggestion payload constants) |
 | INV-13 | The closure-acknowledgment turn's suggestion set depends on whether summary generation succeeded. **Success path**: RESOLVED offers the runbook affordance only (no regen); CLOSED is silent. The freshly-rendered inline summary is right above; regen alongside would be noise. **Failure path**: regen IS offered on the ack-turn — `_select_ack_follow_ups` returns `_resolved_suggestions()` (regen + runbook) for RESOLVED and `_closed_suggestions(case)` (regen, since substance had to PASS for generation to be attempted) for CLOSED. Regen is otherwise offered on subsequent terminal Q&A turns when the substance gate would PASS. | §1.7.3 *Regeneration: Where it's offered* | **Code-guarded** — `_select_ack_follow_ups` in `milestone_engine.py` switches on the `summary_failed` flag returned by `_auto_generate_report`. All three ack-turn call sites (explicit confirm, dropdown second-click, LLM-driven transition) route through this single helper. | `test_inv13_*` in `test_lifecycle_invariants.py` (4 tests pin the helper contracts on the success path: resolved-ack offers runbook only with no regen; resolved Q&A offers both regen + runbook; closed Q&A offers regen only when substance gate passes, never runbook; ack ⊂ Q&A by construction) + `test_runbook_completion_and_summary_failure.py::TestAckTurnFollowUpsOnFailure` (4 tests pin the failure-path branch of `_select_ack_follow_ups`) |
-| INV-14 | Manual case-action requests (status dropdown) flow through the same confirmation pattern as natural progression — they cannot bypass the User-Agent Handshake. | §1.5 *Core Principle* — "all case actions require explicit user confirmation" | **Structural** — the UI sends a system message that routes through `submit_turn` + the standard `pending_transition` mechanism. *Composition seam:* dropdown-driven dispositions inherit the same confirmation-pair UX seam as INV-03 — the dropdown's system message (from `CASE_ACTION_MESSAGES` in `case_action_manager.py`) is a fixed string, but the LLM's `agent_response` is expected to surface a "please confirm" cue per `_AMBIGUITY_FIRST_RULE` alongside the engine-emitted override suggestions. Audit the same surfaces as INV-03. | `test_inv14_*` in `test_lifecycle_invariants.py` (4 tests pin that dropdown-initiated INQUIRY→CLOSED / INVESTIGATING→CLOSED / INVESTIGATING→RESOLVED writes pending_transition and leaves `case.status` unchanged this turn); cross-references: `test_transition_alignment.py::test_ui_dropdown_*` (canonical confirmation-pair emission) and `test_investigation_lifecycle.py::test_explicit_ui_resolve_proposes_then_confirms` (two-turn end-to-end) |
+| INV-14 | Manual case-action requests (status dropdown) flow through the same confirmation pattern as natural progression — they cannot bypass the User-Agent Handshake. | §1.5 *Core Principle* — "all case actions require explicit user confirmation" | **Structural** — the UI sends a system message that routes through `submit_turn` + the standard `pending_transition` mechanism. *Composition seam:* dropdown-driven dispositions inherit the same confirmation-pair UX seam as INV-03 — the dropdown's system message (from `CASE_ACTION_MESSAGES` in `case_action_manager.py`) is a fixed string, but the LLM's `agent_response` is expected to surface a "please confirm" cue per `_AMBIGUITY_FIRST_RULE` alongside the engine-emitted override suggestions. Audit the same surfaces as INV-03. | `test_inv14_*` in `test_lifecycle_invariants.py` (4 tests pin that dropdown-initiated INQUIRY→CLOSED / INVESTIGATING→CLOSED / INVESTIGATING→RESOLVED writes pending_transition and leaves `case.state` unchanged this turn); cross-references: `test_transition_alignment.py::test_ui_dropdown_*` (canonical confirmation-pair emission) and `test_investigation_lifecycle.py::test_explicit_ui_resolve_proposes_then_confirms` (two-turn end-to-end) |
 | INV-15 | The agent is an **ADVISOR** — it never runs commands, accesses systems, or makes infrastructure changes. Stated in the agent's vocabulary constraint (banned/required phrase table). | §1.6 *Agent Role Constraints* | **Prompt-only** + light vocabulary check. The runtime scan (`_completion_phrases` at `milestone_engine.py:3186`, consumed at `:3246`) is deliberately narrow — it covers the highest-stakes drift (false completion claims like *"case closed"*, *"marking as resolved"*) where the signal/noise ratio is strongest. Action-claim phrases from `_ADVISOR_ROLE_CONSTRAINT` (*"Let me check"*, *"I will run"*) are not scanned — they have higher false-positive rates in legitimate context (quoting the user, hedge phrases). Broader advisor-role drift detection is deferred to a separate `advisor_role_compliance` telemetry signal if/when operational evidence warrants it. | `test_inv15_*` in `test_lifecycle_invariants.py` |
 | INV-16 | The LLM is the **sole authority** for milestone advancement. `validate_milestone_claims` in the evidence processor is read-only — it returns validation results but never writes to `case.progress.*`. Milestone state changes flow ONLY from the LLM's structured output through the milestone engine. | §3.1 *Issue A* (keyword-discovery dual pathway removed) | **Code-guarded by construction** — `validate_milestone_claims` returns `List[MilestoneValidationResult]` and contains no `case.progress.<field> =` assignments. Static-source guard pins this so any future regression (a refactor reintroducing a write inside the evidence processor) breaks the test. | `test_inv16_*` in `test_lifecycle_invariants.py` |
 | INV-17 | An LLM must not classify evidence as `causal_evidence` unless at least one hypothesis exists on the case — causal claims presuppose a hypothesis to attach to. | §4.3 line 1801 (bolded "**Constraint**") | **Prompt-only, enforced across the path-conditional dispatch:** (1) The canonical ban lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (in `templates.py`), composed into `_RCA_DIAGNOSIS_BLOCK` and reached by ROOT_CAUSE and MITIGATION_FIRST post-Gate-3 cases. (2) Pre-mitigation MITIGATION_FIRST cases see `_SYMPTOM_VALIDATION_BLOCK` instead, which explicitly forbids BOTH `hypotheses_to_add` and `causal_evidence` emission — same INV-17 outcome via the no-hypothesis-no-causal-evidence chain (since causal_evidence presupposes a hypothesis, banning hypothesis emission transitively bans causal_evidence). The rule is restated as a SAFETY RULE in `FALLBACK_INVESTIGATION_TEMPLATE` for the degraded-prompt path. No Pydantic validator on `EvidenceToAdd` rejects this combination; the invariant is prompt-enforced at every dispatch branch. | `test_inv17_*` in `test_lifecycle_invariants.py`; `TestBlockIsolation` in `test_path_conditional_diagnosis_prompts.py` |
-| INV-18 | Runbook generation is RESOLVED-only. CLOSED cases are not eligible regardless of `closure_reason`. Both the chat-side dispatcher and the API endpoint reject non-RESOLVED cases. | §4.5.1 line 1971 — *"Eligibility: RESOLVED cases only."* | **Code-guarded at two layers** — (1) Engine: `_process_terminal_turn` gates dispatch on `case.status == CaseStatus.RESOLVED`; non-RESOLVED falls through to terminal Q&A. (2) API: `POST /knowledge/convert-from-case` returns HTTP 400 when `case_status != "resolved"` (`conversion_routes.py:511`). | `test_inv18_*` in `test_lifecycle_invariants.py` |
+| INV-18 | Runbook generation is RESOLVED-only. CLOSED cases are not eligible regardless of `closure_reason`. Both the chat-side dispatcher and the API endpoint reject non-RESOLVED cases. | §4.5.1 line 1971 — *"Eligibility: RESOLVED cases only."* | **Code-guarded at two layers** — (1) Engine: `_process_terminal_turn` gates dispatch on `case.state == CaseState.RESOLVED`; non-RESOLVED falls through to terminal Q&A. (2) API: `POST /knowledge/convert-from-case` returns HTTP 400 when `case_status != "resolved"` (`conversion_routes.py:511`). | `test_inv18_*` in `test_lifecycle_invariants.py` |
 | INV-19 | **Gate 2 (path selection) fires inside INVESTIGATING after `symptom_verified=True`, not at INQUIRY.** Post-redesign, the INQUIRY → INVESTIGATING transition requires Gate 1 only (problem statement confirmed). Once the case has transitioned, the agent works through symptom validation; when it sets `symptom_verified=True`, the deterministic Gate 2 affordance pair surfaces. Existence of `case.path_selection` IS the Gate 2 commit — the field is only written by the Gate 2 click handler in `milestone_engine` and never auto-populated. The recommendation that powers the Gate 2 affordance pair is computed on-demand by `recommend_investigation_path_for_case` (in `modules/case/domain/services/investigation_router.py`) at suggestion-render and prompt-context-build time; it is NOT stored on the case. The user resolves Gate 2 by clicking one of the two COOPERATIVE path suggestions (or by typing a `PATH_SELECTION` intent). **What this timing change does and does not deliver:** the user now sees the agent's symptom-validation work (data inspection, evidence rows, prose framing) in the transcript before committing to a path, so they have transcript-visible context for whether to follow the recommendation or override it. The recommendation algorithm itself is unchanged — `recommend_investigation_path_for_case` still reads only `case.inquiry.preliminary_urgency`, i.e., the "Recommended" label on the Gate 2 button is computed from the same INQUIRY-time user-claimed urgency as before. The win is in *override context*, not in the recommendation. Migrating the recommendation itself to derive urgency from post-`symptom_verified` evidence (symptom-row count, agent-inferred severity, source-type distribution) is **deferred follow-up** — it's its own design problem (input set, sparse-evidence handling, severity heuristic) and would have made this refactor too large. | docs/working/WIP-investigation-gates-implementation.md (slice 2 / Three gates); path-selection commit-timing refactor (2026-05-23); Move-Gate-2-to-INVESTIGATING refactor (2026-05-25) | **Code-guarded at four layers** — (1) `_check_automatic_transitions` fires `INQUIRY → INVESTIGATING` on Gate 1 alone; it no longer requires `path_selection`. (2) `_transition_to_investigating` raises a `RuntimeError` if it reaches the transition with `path_selection is not None` — surfacing premature path writes (e.g., the old auto-create site or a bad test fixture) loudly. (3) `_gate2_is_pending` fires only on `INVESTIGATING + symptom_verified + path_selection is None`; the deterministic path-selection suggestion pair is emitted by the response builder whenever the predicate is True. (4) The Gate 2 click handler accepts `path_selection` intents only when `status == INVESTIGATING` and `symptom_verified is True`, blocking premature clicks. **Prompt-layer reinforcement:** when Gate 2 is pending, `context_builder` injects a `<path_selection_state>` block followed by `_GATE2_PENDING_REMINDER` (sibling `<gate2_pending_instructions>` envelope) into the INVESTIGATING template's `{gate2_state}` slot — instructing the LLM (a) not to emit `hypotheses_to_add` / `causal_evidence` / `solutions_to_add` while the gate is open, and (b) on the data-without-pick failure mode, to acknowledge briefly then re-assert the path question. **Engine-side backstop:** the same restriction is enforced structurally via `_is_pre_path_investigating(case)` → `_path_conditional_emission_restriction` → reject-and-resurface in `_apply_investigation_updates`, so a non-compliant LLM cannot corrupt the case during the pre-path window. *Composition seam:* the dispatcher (`_select_diagnosis_block` routes path=None → `_PRE_PATH_DIAGNOSIS_BLOCK`), the deterministic affordance pair, the `<path_selection_state>` prompt block, the `_GATE2_PENDING_REMINDER` appendix, and the engine-side rejection backstop are all tied. Removing or weakening any one of them does not break the invariant (the next layer catches the failure) but degrades UX in characteristic ways. Audit `templates.py:_select_diagnosis_block`, `context_builder.py:gate2_state_str`, `milestone_engine.py:_gate2_is_pending`, and `milestone_engine.py:_is_pre_path_investigating` together when any changes. | `TestINV19PathSelectionAsCommitSignal` and `TestGate2IsPending` in `tests/unit/core/investigation/test_investigation_gates.py`; `TestEngineOwnedAffordances::test_gate2_pending_returns_path_selection_pair` in `tests/unit/core/investigation/test_engine_owned_affordances.py`; `TestReminderContent` and `TestConditionalInjection` in `tests/unit/core/investigation/test_gate2_pending_reminder.py`; `TestDispatcher::test_path_selection_none_routes_to_pre_path_block` in `tests/unit/core/investigation/test_path_conditional_diagnosis_prompts.py`; `TestStatePredicates::test_pre_path_*`, `TestHypothesesRejection::test_pre_path_*`, `TestCausalEvidenceRejection::test_pre_path_*`, `TestRootCauseIdentifiedRejection::test_pre_path_*`, `TestSolutionsRejectedInPrePath` in `tests/unit/core/investigation/test_path_conditional_emission_backstop.py` |
 | ~~INV-20~~ | **REMOVED (2026-05-23).** The mutation watcher that cleared `case.path_selection` on urgency-signal change was deleted in the path-selection commit-timing refactor. Under the new design `case.path_selection` is never written during INQUIRY at all (Gate 2 click is the sole creation site), so urgency-signal mutations *before* Gate 2 simply re-flow through the on-demand recommendation helper on the next render. After Gate 2 commits, the case has already transitioned to INVESTIGATING and `case.path_selection` is now immutable commitment — urgency-signal changes at that point are out of scope for Gate 2 re-evaluation. The watcher's purpose collapsed when the field stopped being pre-computed. | — | n/a (removed) | n/a (removed) |
 | INV-21 | Gate 3 — on a mitigation-first case after `mitigation_verified` first becomes True, RCA-side milestone advances (`root_cause_identified`) are blocked until the user explicitly confirms continuation via the `POST_MITIGATION_CHOICE` intent (`path_selection.rca_after_mitigation_confirmed = True`). The alternative outcome is a `STATUS_TRANSITION` to CLOSED with `closure_reason = mitigation_sufficient`. Either path closes Gate 3; until one fires, RCA cannot silently resume. | docs/working/WIP-investigation-gates-implementation.md (slice 3 / Gate 3) | **Code-guarded at three layers** — (1) `_apply_stage_gate_side_effects` sets `case.path_selection.mitigation_completed_at_turn` the first turn `mitigation_verified` is completed (the durable Gate 3 boundary marker). Mitigation gate flags are **set-once** under the forward-only design — neither `mitigation_accepted` nor `mitigation_verified` is reset by the engine; the case naturally transitions from MITIGATION back to DIAGNOSIS via the `current_stage` property's fall-through (the MITIGATION branch requires `NOT mitigation_verified`). The "at Gate 3" condition is read from `path_selection.{mitigation_completed_at_turn, rca_after_mitigation_confirmed}`, not from the transient flag state. (2) `_apply_investigation_updates` checks `_path_conditional_emission_restriction(case)` and rejects RCA-side milestone updates with a WARNING log + `system_feedback` re-surface while the gate is open. The same predicate also rejects them in pre-mitigation MITIGATION_FIRST cases (where `_SYMPTOM_VALIDATION_BLOCK` issues the same prohibition) AND in pre-path INVESTIGATING cases (where `_PRE_PATH_DIAGNOSIS_BLOCK` issues the same prohibition under INV-19); the path-restricted predicate now covers three states under one helper: `pre_path_investigating`, `pre_mitigation_mitigation_first`, and `gate3_pending`. INV-21's milestone-block enforcement is one consumer of that predicate. (3) The response builder forces `_post_mitigation_suggestions()` whenever `_gate3_is_pending(case)` is True and `rca_infeasible` did not already produce override suggestions, so the user has a clickable path regardless of LLM compliance with the GATE 3 PENDING prompt block. *Composition seam:* the deterministic suggestion emission and the prompt-side `GATE 3 PENDING` DIAGNOSIS-template injection are tied — removing the prompt injection does not break the invariant (suggestions still emit) but does degrade UX. Audit `templates.py:DIAGNOSIS dispatcher` and `milestone_engine.py:_post_mitigation_suggestions` together when either changes. *Outcome telemetry:* `faultmaven_inquiry_gate3_reached_total` (gate opens) paired with `faultmaven_inquiry_gate3_resolved_total{outcome}` (user resolved by continuing to RCA or closing as mitigation-sufficient). A growing gap signals stranded post-mitigation cases. | `TestINV21Gate3MilestoneGuard`, `TestPostMitigationSuggestions`, `TestGate3IntentHandler` in `tests/unit/core/investigation/test_investigation_gates_post_mitigation.py` |
@@ -684,19 +684,19 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
     Trigger: User action (not automatic)
     Disposition: Yes (irreversible)
     """
-    if case.status != CaseStatus.INVESTIGATING:
+    if case.state != CaseState.INVESTIGATING:
         raise ValueError("Can only force-close from INVESTIGATING status")
 
     case.atomic_update(
-        status=CaseStatus.CLOSED,
+        status=CaseState.CLOSED,
         closed_at=datetime.now(UTC),
         closure_reason=reason,  # engine-derived: "closed_after_investigation" | "mitigation_sufficient"
     )
     # Note: "mitigation_sufficient" is used when user closes after mitigation
     # without pursuing RCA. UI renders as "Closed - Mitigated".
     case.action_history.append(CaseAction(
-        from_status=CaseStatus.INVESTIGATING,
-        to_status=CaseStatus.CLOSED,
+        from_status=CaseState.INVESTIGATING,
+        to_status=CaseState.CLOSED,
         triggered_at=datetime.now(UTC),
         triggered_by=user_id,
         reason=f"User force-closed: {reason}"
@@ -713,17 +713,17 @@ def close_from_inquiry(case: Case, user_id: str):
     Trigger: User action (not automatic)
     Disposition: Yes (irreversible)
     """
-    if case.status != CaseStatus.INQUIRY:
+    if case.state != CaseState.INQUIRY:
         raise ValueError("Can only close-from-inquiry when in INQUIRY status")
 
     case.atomic_update(
-        status=CaseStatus.CLOSED,
+        status=CaseState.CLOSED,
         closed_at=datetime.now(UTC),
         closure_reason="inquiry_only",
     )
     case.action_history.append(CaseAction(
-        from_status=CaseStatus.INQUIRY,
-        to_status=CaseStatus.CLOSED,
+        from_status=CaseState.INQUIRY,
+        to_status=CaseState.CLOSED,
         triggered_at=datetime.now(UTC),
         triggered_by=user_id,
         reason="User closed after inquiry only"
@@ -927,7 +927,7 @@ Let me start by verifying the scope and impact. What services are affected?"
 ```
 
 **Backend updates**:
-- `case.status = CaseStatus.INVESTIGATING`
+- `case.state = CaseState.INVESTIGATING`
 - `case.problem_verification = ProblemVerification(symptom_statement=...)`
 - `case.action_history.append(CaseAction(...))`
 
@@ -1179,7 +1179,7 @@ When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine
 @property
 def is_terminal(self) -> bool:
     """Case has reached a disposition (RESOLVED or CLOSED)."""
-    return self.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
+    return self.status in [CaseState.RESOLVED, CaseState.CLOSED]
 ```
 
 #### 1.7.2 Terminal Mode
@@ -1271,11 +1271,11 @@ The runbook affordance on the RESOLVED ack-turn is a separate downstream artifac
 When a case transitions to a terminal state, all active sessions are gracefully completed:
 
 ```python
-# In terminal_transitions.py, after case status update:
+# In terminal_transitions.py, after case state update:
 active_sessions = await session_repo.get_active_sessions(case.case_id)
 for session in active_sessions:
     session.complete(
-        findings_summary=f"Case {case.status.value}: {closure_reason}"
+        findings_summary=f"Case {case.state.value}: {closure_reason}"
     )
     await session_repo.update(session)
 ```
@@ -1765,7 +1765,7 @@ async def record_turn(
     # - Progress milestone transitions False → True (e.g., symptom_verified)
     # - Evidence is added to the case
     # - New hypothesis is generated
-    # - Hypothesis status changes (ACTIVE → VALIDATED/REFUTED)
+    # - Hypothesis state changes (ACTIVE → VALIDATED/REFUTED)
     # - ProposedAction is created (agent proposed something actionable)
     # - User confirms problem statement or path selection
     # - Files uploaded
@@ -1826,7 +1826,7 @@ def determine_turn_outcome(case: Case, progress_made: bool) -> TurnOutcome:
 
     # Disposition action
     if case.is_terminal:
-        return TurnOutcome.CASE_RESOLVED if case.status == CaseStatus.RESOLVED else TurnOutcome.OTHER
+        return TurnOutcome.CASE_RESOLVED if case.state == CaseState.RESOLVED else TurnOutcome.OTHER
 
     # Milestone completed
     if any(milestone_completed_this_turn(case)):
@@ -1980,7 +1980,7 @@ lead here:
 *   `solution_accepted`: **Not set** (user closed before proposing permanent solution).
 *   `solution_verified`: **Not set** (no permanent fix).
 
-**Closure**: `CaseStatus.CLOSED` with `closure_reason="mitigation_sufficient"`.
+**Closure**: `CaseState.CLOSED` with `closure_reason="mitigation_sufficient"`.
 UI renders as "Closed - Mitigated" (distinct from "Closed - Abandoned").
 
 **Post-terminal**: Agent offers runbook generation (see §4.5.1).
@@ -2046,13 +2046,13 @@ occurred, either read `mitigation_accepted` directly or query the
 | `root_cause_identified` | True | May be partial | True |
 | `path_selection.mitigation_completed_at_turn` | Set | Set | None |
 | `path_selection.rca_after_mitigation_confirmed` | True | False | N/A |
-| `CaseStatus` | RESOLVED | CLOSED | RESOLVED |
+| `CaseState` | RESOLVED | CLOSED | RESOLVED |
 | `closure_reason` | None | "mitigation_sufficient" | None |
 | `rca_infeasible` | False | True or False | False |
 | `action_attempts` has MITIGATION | Yes | Yes | No |
 | **Knowledge artifact** | **Runbook** | **Closure Summary only** | **Runbook** |
 
-The combination of `CaseStatus`, `closure_reason`, and (where the distinction
+The combination of `CaseState`, `closure_reason`, and (where the distinction
 matters) `path_selection.rca_after_mitigation_confirmed` provides the full
 classification. `derive_closure_reason` (in `terminal_transitions.py`) keys
 off the at-Gate-3 condition — `mitigation_completed_at_turn is not None AND

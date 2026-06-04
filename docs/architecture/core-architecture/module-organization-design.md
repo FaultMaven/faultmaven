@@ -851,7 +851,7 @@ These modules implement **business capabilities** and should have full vertical 
   ```
 
 #### 2. **`modules/case/`** ✅ **VERTICAL** (Schema-Verified)
-- **Business Logic**: Case lifecycle, investigation sessions, case status management
+- **Business Logic**: Case lifecycle, investigation sessions, case state management
 - **Owns Data**: the case-domain PostgreSQL tables — `cases`, `evidence`, `hypotheses`, `solutions`, `case_messages`, `uploaded_files`, `case_actions` (audit table; Python alias `CaseStatusTransitionModel`), `case_checkpoints`, `reports`, and related high-cardinality tables
 - **Schema Reference**: See `../data-and-storage/schemas/case-schema.md` Section 4.1 (hybrid schema)
 - **Key Insight**: Evidence table has `FK → cases(case_id) ON DELETE CASCADE` - evidence is owned by Case module

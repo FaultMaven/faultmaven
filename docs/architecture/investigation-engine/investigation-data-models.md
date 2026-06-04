@@ -59,10 +59,10 @@ These field names are deprecated and should not be used in new code:
 
 ## 1. Core Data Models
 
-### 1.1 CaseStatus
+### 1.1 CaseState
 
 ```python
-class CaseStatus(str, Enum):
+class CaseState(str, Enum):
     """
     Case lifecycle status (4 values: 2 phases + 2 dispositions).
     Two dispositions: RESOLVED (with solution) and CLOSED (without solution).
@@ -465,7 +465,7 @@ class Case(BaseModel):
     # ============================================================
     # Status (PRIMARY - User-Facing Lifecycle)
     # ============================================================
-    status: CaseStatus = Field(default=CaseStatus.INQUIRY)
+    state: CaseState = Field(default=CaseState.INQUIRY)
 
     action_history: List[CaseAction] = Field(
         default_factory=list,
@@ -560,7 +560,7 @@ class Case(BaseModel):
     @property
     def current_stage(self) -> Optional[InvestigationStage]:
         """Investigation stage (only when INVESTIGATING)"""
-        if self.status != CaseStatus.INVESTIGATING:
+        if self.status != CaseState.INVESTIGATING:
             return None
         return self.progress.current_stage
 
@@ -570,7 +570,7 @@ class Case(BaseModel):
     @property
     def is_terminal(self) -> bool:
         """Check if case has reached a disposition (terminal)"""
-        return self.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
+        return self.status in [CaseState.RESOLVED, CaseState.CLOSED]
 
     @property
     def time_to_resolution(self) -> Optional[timedelta]:
@@ -581,8 +581,8 @@ class Case(BaseModel):
 
 class CaseAction(BaseModel):
     """Record of a case action (phase transition or disposition change)"""
-    from_status: CaseStatus
-    to_status: CaseStatus
+    from_state: CaseState
+    to_state: CaseState
     triggered_at: datetime
     triggered_by: str
     reason: str
@@ -1564,7 +1564,7 @@ class Hypothesis(BaseModel):
     hypothesis_id: str = Field(default_factory=lambda: f"hyp_{uuid4().hex[:12]}")
     statement: str
     category: HypothesisCategory
-    status: HypothesisStatus
+    state: HypothesisState
     likelihood: float = Field(ge=0.0, le=1.0)
 
     # Evidence relationships (many-to-many via HypothesisEvidenceLink)
@@ -1606,7 +1606,7 @@ class HypothesisCategory(str, Enum):
     HUMAN = "human"
     OTHER = "other"  # Doesn't fit above categories
 
-class HypothesisStatus(str, Enum):
+class HypothesisState(str, Enum):
     CAPTURED = "captured"       # Initial state, just recorded
     ACTIVE = "active"           # Under active investigation
     VALIDATED = "validated"     # likelihood ≥ 0.70 + 2+ supporting evidence
@@ -1615,7 +1615,7 @@ class HypothesisStatus(str, Enum):
     RETIRED = "retired"         # Abandoned without disproof — set by LLM, system thresholds, or user intent (see transition table)
 ```
 
-**Hypothesis status transitions — LLM-driven, system-automated, and user-intent paths:**
+**Hypothesis state transitions — LLM-driven, system-automated, and user-intent paths:**
 
 `ACTIVE → RETIRED` is the one transition with multiple legitimate paths. The LLM picks RETIRED for "no disproof" cases (`HypothesisUpdate` schema accepts this — see the schema's `refutation_reason` docstring). The system auto-retires on low confidence, anchoring drift, and deadlock repair. The engine sets RETIRED when the user explicitly clicks a retire COOPERATIVE suggestion. All five paths converge on the same final state; only the rationale and the actor differ.
 

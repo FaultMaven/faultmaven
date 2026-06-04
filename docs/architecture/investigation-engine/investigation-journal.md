@@ -23,7 +23,7 @@ The context builder can only fit a fraction of the agent's memory into each LLM 
 | Rejected reasoning | When conversation turns are summarized | Agent may re-propose a hypothesis it already refuted |
 | User-provided context | When conversation turns are evicted | "We deployed last Tuesday," "this only happens in EU region" |
 
-The existing durable artifacts (evidence summaries, hypothesis status, working conclusion) each carry part of the picture, but none provides a structured chronological record of what the investigation has established and why.
+The existing durable artifacts (evidence summaries, hypothesis state, working conclusion) each carry part of the picture, but none provides a structured chronological record of what the investigation has established and why.
 
 ---
 
@@ -227,7 +227,7 @@ Budget impact: +500 chars (~125 tokens) in the worst case. Negligible compared t
 
 ### 3. Hypothesis Refutation Reason
 
-**Problem:** When a hypothesis is refuted, its status changes to REFUTED but the *reasoning* is in a conversation turn that gets evicted. The agent may re-propose a similar hypothesis because it can't see why the original was refuted.
+**Problem:** When a hypothesis is refuted, its state changes to REFUTED but the *reasoning* is in a conversation turn that gets evicted. The agent may re-propose a similar hypothesis because it can't see why the original was refuted.
 
 **Fix:** Add `refutation_reason` to the Hypothesis model:
 
@@ -236,7 +236,7 @@ class Hypothesis(BaseModel):
     ...
     refutation_reason: Optional[str] = Field(
         default=None,
-        description="Why this hypothesis was refuted (set when status → REFUTED)",
+        description="Why this hypothesis was refuted (set when state → REFUTED)",
         max_length=200
     )
 ```
@@ -255,7 +255,7 @@ class HypothesisUpdate(BaseModel):
     ...
     refutation_reason: Optional[str] = Field(
         default=None,
-        description="Why this hypothesis is being refuted (required when setting status to REFUTED)"
+        description="Why this hypothesis is being refuted (required when setting state to REFUTED)"
     )
 ```
 

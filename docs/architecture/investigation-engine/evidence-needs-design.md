@@ -635,8 +635,8 @@ def on_hypothesis_retired(case: Case, retired_hyp_id: str):
             need.motivating_hypothesis_ids.remove(retired_hyp_id)
             if (not need.motivating_hypothesis_ids
                     and need.purpose == NeedPurpose.CAUSAL_VERIFICATION
-                    and need.status != NeedStatus.FULFILLED):
-                need.status = NeedStatus.SUPERSEDED
+                    and need.state != NeedState.FULFILLED):
+                need.state = NeedState.SUPERSEDED
                 need.superseded_reason = "all motivating hypotheses retired"
 ```
 
@@ -1183,7 +1183,7 @@ Copilot is already live.
 
 | Concern | Location |
 |---|---|
-| Domain model `EvidenceNeed` + `NeedPurpose`/`NeedStatus`/`NeedPriority` | `faultmaven/modules/case/domain/models.py` (`EvidenceNeed` ~`:1954`; enums ~`:1901`–`:1941`) |
+| Domain model `EvidenceNeed` + `NeedPurpose`/`NeedState`/`NeedPriority` | `faultmaven/modules/case/domain/models.py` (`EvidenceNeed` ~`:1954`; enums ~`:1901`–`:1941`) |
 | `EvidenceCategory` enum | `faultmaven/modules/case/domain/models.py:1221` |
 | LLM schema `EvidenceNeedUpdate` + stage hooks | `faultmaven/core/investigation/schemas.py:501`; `evidence_need_updates` on Diagnosis/Mitigation/Treatment/General state-updates (~`:1044`–`:1194`); **absent from `InquiryStateUpdate` by design (INV-07)** |
 | `SuggestedFollowUp.evidence_need_id` + validators | `faultmaven/core/investigation/schemas.py:897`–`929` |

@@ -613,7 +613,7 @@ Baseline `001_clean_baseline` (revision `c4689af8aa3f`) creates 32 tables + RBAC
 
 The investigation engine uses a **data-driven, milestone-based** approach:
 
-**Status Lifecycle:** INQUIRY → INVESTIGATING → RESOLVED/CLOSED
+**State Lifecycle:** INQUIRY → INVESTIGATING → RESOLVED/CLOSED
 
 **Investigation Stages (within INVESTIGATING):**
 1. **SYMPTOM_VERIFICATION** - Verify symptoms, assess scope, establish timeline
@@ -623,7 +623,7 @@ The investigation engine uses a **data-driven, milestone-based** approach:
 
 **Key Characteristics:**
 - **Opportunistic completion** - Multiple milestones can complete in a single turn
-- **Data-driven transitions** - Status changes when evidence thresholds are met
+- **Data-driven transitions** - State changes when evidence thresholds are met
 - **Hypothesis lifecycle** - CAPTURED → ACTIVE → VALIDATED/REFUTED/RETIRED
 - **Confidence decay** - Stagnant hypotheses decay via `0.85^iterations` formula
 - **Anchoring detection** - Prevents fixation on weak theories

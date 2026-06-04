@@ -1,7 +1,7 @@
 """Checkpoint Service for Investigation Engine
 
 Centralizes checkpoint creation logic for case state snapshots.
-Checkpoints are created after turn completion and before status transitions.
+Checkpoints are created after turn completion and before state transitions.
 
 Usage:
     service = CheckpointService(case_repo)

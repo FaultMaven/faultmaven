@@ -26,16 +26,16 @@ This section defines the phase structure, phase markers, and transition mechanis
 
 ### Phase Definitions
 
-A **phase** is a distinct operational mode of the investigation. Each phase has a specific prompt assembly and a distinct set of agent duties. The active phase is identified by two signals: the `case.status` field (the authoritative top-level discriminator) and, within INVESTIGATING, a **phase marker**.
+A **phase** is a distinct operational mode of the investigation. Each phase has a specific prompt assembly and a distinct set of agent duties. The active phase is identified by two signals: the `case.state` field (the authoritative top-level discriminator) and, within INVESTIGATING, a **phase marker**.
 
-| `case.status` | Phase Marker | Phase Name | Prompt Assembly |
+| `case.state` | Phase Marker | Phase Name | Prompt Assembly |
 | ------------- | ------------ | ---------- | --------------- |
 | `INQUIRY` | *(none — starting phase)* | INQUIRY | `INQUIRY_TEMPLATE` |
 | `INVESTIGATING` | `problem_statement_confirmed = True` | DIAGNOSIS | `INVESTIGATION_BASE` + path-conditional block (see §5 *Path-conditional DIAGNOSIS dispatch*) |
 | `INVESTIGATING` | `mitigation_accepted = True` | MITIGATION | `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS` |
 | `INVESTIGATING` | `solution_accepted = True` | TREATMENT | `INVESTIGATION_BASE` + `TREATMENT_INSTRUCTIONS` |
-| `RESOLVED` | *(none — `case.status` is authoritative)* | TERMINAL | `TERMINAL_TEMPLATE` |
-| `CLOSED` | *(none — `case.status` is authoritative)* | TERMINAL | `TERMINAL_TEMPLATE` |
+| `RESOLVED` | *(none — `case.state` is authoritative)* | TERMINAL | `TERMINAL_TEMPLATE` |
+| `CLOSED` | *(none — `case.state` is authoritative)* | TERMINAL | `TERMINAL_TEMPLATE` |
 
 TERMINAL is not a phase — it is a final state. RESOLVED and CLOSED differ in their generated summary type and runbook eligibility, but share the same prompt template.
 
@@ -481,7 +481,7 @@ Verify that the applied fix resolves the problem. If it does not, diagnose the f
 
 ### TERMINAL State
 
-**Phase marker:** None — `case.status = RESOLVED` or `case.status = CLOSED` is authoritative  
+**Phase marker:** None — `case.state = RESOLVED` or `case.state = CLOSED` is authoritative  
 **Prompt assembly:** `TERMINAL_TEMPLATE`
 
 | Terminal sub-state | Trigger | Summary type | Runbook eligible |

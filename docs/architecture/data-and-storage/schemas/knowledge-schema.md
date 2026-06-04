@@ -163,7 +163,7 @@ results = await knowledge_vector_store.search(
 # Case lifecycle integration — live implementation
 async def close_case(case_id: str):
     case = await case_repository.get(case_id)
-    case.status = CaseStatus.RESOLVED
+    case.state = CaseState.RESOLVED
     case.resolved_at = datetime.now(timezone.utc)
     await case_repository.save(case)
 

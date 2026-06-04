@@ -60,6 +60,8 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | 008 | `317a8c329673` | `case_actions`: add `triggered_by VARCHAR(50) NOT NULL` (drop existing rows, no backfill) |
 | 009 | `4b7e2f9d3a18` | Evidence/Solution coherence: `evidence` adds `primary_purpose`, `analysis`, `processing_mode`, `advances_milestones`, `collected_by`; `solutions` drops dead `created_by`/`updated_by`, renames `implemented_at`→`applied_at` and `verification_timestamp`→`verified_at`, adds `proposed_by`, `applied_by`, `verification_method`, `verification_evidence_id` (FK), `effectiveness` |
 | 010 | `0b5e8c4f7d29` | Strict evidence-model redesign: collapse the dual evidence-creation paths. `uploaded_files` adds `summary`, `structural_index`, `data_type`, `coverage_start_ts`, `coverage_end_ts` (preprocessing artifacts move here from the auto-DOCUMENT Evidence rows). `evidence` drops `form` column and adds `evidence_source_invariant` CHECK: `source_file_id IS NOT NULL OR source_type = 'user_description'` — every Evidence row has a known source. All existing evidence rows are dropped (pre-production; their `extract` carried structural-index dumps incompatible with the new claim-anchored semantics). Pydantic ``EvidenceCategory`` collapses to 4 values (drops `CONTEXTUAL_EVIDENCE` and `REJECTED`); ``EvidenceSourceType`` gains `USER_DESCRIPTION` (the chat-quote case). |
+| 011–014 | … | (rows omitted — see alembic/versions for evidence-needs and related migrations) |
+| 015 | `f015a7b2c3d4` | Rename case-lifecycle `status`→`state`: `cases`/`hypotheses`/`solutions`/`evidence_needs`/`investigation_sessions` columns + CHECK constraints + indexes; `case_actions.from_status`/`to_status`→`from_state`/`to_state`. Projection columns (`agent_executions.status`, `reports.generation_status`, etc.) intentionally keep `status`. |
 
 **Active Implementations**:
 
@@ -284,7 +286,7 @@ class Case(BaseModel):
     # ============================================================
     # Status & Lifecycle
     # ============================================================
-    status: CaseStatus              # inquiry | investigating | resolved | closed
+    state: CaseState              # inquiry | investigating | resolved | closed
     # action_history (CaseAction) is persisted to the case_actions table.
     closure_reason: Optional[str]
 
@@ -375,7 +377,7 @@ The `cases` table is the aggregate root of the case domain. It carries first-cla
 **Description CHECK semantics** (migration 005, `cases_description_required_for_investigation`):
 
 ```text
-status IN ('inquiry', 'closed') OR LENGTH(TRIM(description)) > 0
+state IN ('inquiry', 'closed') OR LENGTH(TRIM(description)) > 0
 ```
 
 `description` is the confirmed problem statement. INVESTIGATING and RESOLVED both require it (entry gate / resolved-cases-must-have-a-known-problem invariant). INQUIRY allows empty (still being formulated). CLOSED allows empty because the inquiry → closed early-abandon path is legitimate. The Pydantic Case model mirrors this rule for INVESTIGATING and RESOLVED.
@@ -395,7 +397,7 @@ CREATE TABLE cases (
     -- ============================================================
     -- Status & Lifecycle
     -- ============================================================
-    status VARCHAR(50) NOT NULL DEFAULT 'inquiry',
+    state VARCHAR(50) NOT NULL DEFAULT 'inquiry',
     closure_reason VARCHAR(100),
 
     -- ============================================================
@@ -437,11 +439,11 @@ CREATE TABLE cases (
     -- ============================================================
     CONSTRAINT cases_title_not_empty
         CHECK (LENGTH(TRIM(title)) > 0),
-    CONSTRAINT cases_status_check
-        CHECK (status IN ('inquiry', 'investigating', 'resolved', 'closed')),
+    CONSTRAINT cases_state_check
+        CHECK (state IN ('inquiry', 'investigating', 'resolved', 'closed')),
     -- Migration 005 (24a5adc58c77): description required for INVESTIGATING and RESOLVED.
     CONSTRAINT cases_description_required_for_investigation
-        CHECK (status IN ('inquiry', 'closed') OR LENGTH(TRIM(description)) > 0),
+        CHECK (state IN ('inquiry', 'closed') OR LENGTH(TRIM(description)) > 0),
     CONSTRAINT cases_current_turn_nonnegative
         CHECK (current_turn >= 0),
     CONSTRAINT cases_turns_without_progress_nonnegative
@@ -454,7 +456,7 @@ CREATE TABLE cases (
 CREATE INDEX ix_cases_organization_id ON cases(organization_id);
 CREATE INDEX ix_cases_team_id ON cases(team_id);
 CREATE INDEX ix_cases_user_id ON cases(user_id);
-CREATE INDEX ix_cases_status ON cases(status);
+CREATE INDEX ix_cases_state ON cases(state);
 CREATE INDEX ix_cases_last_activity_at ON cases(last_activity_at);
 CREATE INDEX ix_cases_closed_at ON cases(closed_at);
 CREATE INDEX ix_cases_created_at ON cases(created_at);
@@ -679,8 +681,8 @@ CREATE TABLE hypotheses (
     case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
     statement TEXT NOT NULL,
-    -- HypothesisStatus enum: captured | active | validated | refuted | inconclusive | retired
-    status VARCHAR(20) NOT NULL DEFAULT 'captured',
+    -- HypothesisState enum: captured | active | validated | refuted | inconclusive | retired
+    state VARCHAR(20) NOT NULL DEFAULT 'captured',
     likelihood NUMERIC(3, 2) DEFAULT 0.5,           -- 0..1
     initial_likelihood NUMERIC(3, 2) DEFAULT 0.5,
     category VARCHAR(50) NOT NULL,
@@ -709,15 +711,15 @@ CREATE TABLE hypotheses (
     -- Mirrored at the Pydantic layer in Hypothesis._statement_not_empty
     CONSTRAINT hypotheses_statement_not_empty
         CHECK (LENGTH(TRIM(statement)) > 0),
-    CONSTRAINT hypotheses_status_check
-        CHECK (status IN ('captured', 'active', 'validated', 'refuted', 'inconclusive', 'retired')),
+    CONSTRAINT hypotheses_state_check
+        CHECK (state IN ('captured', 'active', 'validated', 'refuted', 'inconclusive', 'retired')),
     CONSTRAINT hypotheses_likelihood_range
         CHECK (likelihood IS NULL OR (likelihood >= 0 AND likelihood <= 1))
 );
 
 CREATE INDEX ix_hypotheses_case_id ON hypotheses(case_id);
 CREATE INDEX ix_hypotheses_organization_id ON hypotheses(organization_id);
-CREATE INDEX ix_hypotheses_status ON hypotheses(status);
+CREATE INDEX ix_hypotheses_state ON hypotheses(state);
 CREATE INDEX ix_hypotheses_category ON hypotheses(category);
 CREATE INDEX ix_hypotheses_created_by ON hypotheses(created_by);
 
@@ -767,10 +769,10 @@ CREATE TABLE solutions (
     title VARCHAR(500) NOT NULL,
     description TEXT NOT NULL,
     solution_type VARCHAR(30) NOT NULL DEFAULT 'other',
-    -- SolutionStatus enum: proposed | accepted | rejected | implemented | verified.
+    -- SolutionState enum: proposed | accepted | rejected | implemented | verified.
     -- Repository derives this from lifecycle fields: verified_at set -> 'verified',
     -- applied_at set -> 'implemented', otherwise 'proposed'.
-    status VARCHAR(20) NOT NULL DEFAULT 'proposed',
+    state VARCHAR(20) NOT NULL DEFAULT 'proposed',
     risk_level VARCHAR(20),                          -- low | medium | high | critical when set
     estimated_effort VARCHAR(50),
     immediate_action TEXT,
@@ -803,8 +805,8 @@ CREATE TABLE solutions (
 
     CONSTRAINT solutions_description_not_empty
         CHECK (LENGTH(TRIM(description)) > 0),
-    CONSTRAINT solutions_status_check
-        CHECK (status IN ('proposed', 'accepted', 'rejected', 'implemented', 'verified')),
+    CONSTRAINT solutions_state_check
+        CHECK (state IN ('proposed', 'accepted', 'rejected', 'implemented', 'verified')),
     CONSTRAINT solutions_risk_level_check
         CHECK (risk_level IS NULL OR risk_level IN ('low', 'medium', 'high', 'critical')),
     CONSTRAINT solutions_effectiveness_range
@@ -814,7 +816,7 @@ CREATE TABLE solutions (
 CREATE INDEX ix_solutions_case_id ON solutions(case_id);
 CREATE INDEX ix_solutions_organization_id ON solutions(organization_id);
 CREATE INDEX ix_solutions_hypothesis_id ON solutions(hypothesis_id);
-CREATE INDEX ix_solutions_status ON solutions(status);
+CREATE INDEX ix_solutions_state ON solutions(state);
 
 COMMENT ON TABLE solutions IS 'Proposed and verified solutions';
 ```
@@ -959,8 +961,8 @@ CREATE TABLE case_actions (
     -- ============================================================
     -- Transition Data
     -- ============================================================
-    from_status VARCHAR(50),                    -- nullable: NULL on case creation
-    to_status VARCHAR(50) NOT NULL,
+    from_state VARCHAR(50),                    -- nullable: NULL on case creation
+    to_state VARCHAR(50) NOT NULL,
     reason TEXT,                                -- free-form prose
 
     -- Free-form actor identifier. Heterogeneous value space:
@@ -1003,7 +1005,7 @@ COMMENT ON TABLE case_actions IS 'Audit trail of case actions and status transit
 
 **Pydantic mapping**: `CaseAction` (`models.py:172`) carries
 `triggered_by: str` as a required field. The `from_status` /
-`to_status` enum coercion happens in `CaseStatus(row.value)` at the
+`to_status` enum coercion happens in `CaseState(row.value)` at the
 boundary; `triggered_by` round-trips verbatim.
 
 ### 4.9 case_checkpoints (High-Cardinality Table)
@@ -1475,7 +1477,7 @@ PostgreSQL handles this easily with proper indexing.
 UPDATE evidence SET status = 'verified' WHERE evidence_id = 'evi_123';
 -- ✅ Other evidence updates can proceed
 
--- Update case status: Row-level lock on cases table only
+-- Update case state: Row-level lock on cases table only
 UPDATE cases SET status = 'investigating' WHERE case_id = 'case_123';
 -- ✅ Evidence/hypothesis updates can proceed concurrently
 
@@ -2039,7 +2041,7 @@ Aligned doc with the live ORM in `faultmaven/infrastructure/persistence/models.p
 - §4.2 `cases`: `description` is a first-class column with the migration-005 CHECK (`status IN ('inquiry','closed') OR LENGTH(TRIM(description)) > 0`); `current_turn`, `turns_without_progress`, `version` promoted to first-class columns; `is_archived`/`archived_at` removed (not in the live ORM).
 - §4.3 `evidence`: rewritten around `summary` (NOT NULL) and `extract` (nullable); `form` column dropped (migration 010); `evidence_source_invariant` CHECK added; file metadata lives on `uploaded_files` (linked via `source_file_id`).
 - §4.4 `hypotheses`: dropped `evidence_links` JSON blob; added `hypothesis_evidence` junction table (§4.4-bis).
-- §4.5 `solutions`: `SolutionStatus` corrected to `proposed | accepted | rejected | implemented | verified`.
+- §4.5 `solutions`: `SolutionState` corrected to `proposed | accepted | rejected | implemented | verified`.
 - §4.6 `uploaded_files`: renamed `content_ref` → `storage_ref` and `source_type` → `upload_source`; FK ordering and ON DELETE rules aligned with ORM; preprocessing artifacts (`summary`, `structural_index`, `data_type`, `coverage_*`) added (migration 010) so the file row is the canonical home for file-level metadata.
 - §4.10 `reports`: `report_type` CHECK restricted to `resolution_summary` and `closure_summary` (no `runbook`, `incident_report`, `post_mortem`).
 - §4.12: added Enterprise Tier section documenting the Enterprise → Organization → Team → User hierarchy and the migration-006 NOT NULL invariant on `users.enterprise_id` and `organizations.enterprise_id`, including the default enterprise UUID `00000000-0000-0000-0000-000000000002`.

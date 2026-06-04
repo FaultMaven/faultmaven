@@ -55,7 +55,7 @@ class HypothesisManager:
     - Apply confidence decay for stagnation
     - Detect and prevent anchoring bias
     - Track hypothesis testing
-    - Auto-transition status (VALIDATED/REFUTED)
+    - Auto-transition state (VALIDATED/REFUTED)
     - Evidence linking and ratio calculation
     """
 
@@ -269,8 +269,8 @@ class HypothesisManager:
             },
         )
 
-        # Check if hypothesis should transition status
-        self._check_status_transition(hypothesis, turn)
+        # Check if hypothesis should transition state
+        self._check_state_transition(hypothesis, turn)
 
     def update_hypothesis_likelihood(
         self,
@@ -308,17 +308,17 @@ class HypothesisManager:
                 f"iterations_without_progress={hypothesis.iterations_without_progress}"
             )
 
-        # Check status transition
-        self._check_status_transition(hypothesis, current_turn)
+        # Check state transition
+        self._check_state_transition(hypothesis, current_turn)
 
         return hypothesis
 
-    def _check_status_transition(
+    def _check_state_transition(
         self,
         hypothesis: Hypothesis,
         turn: int,
     ) -> None:
-        """Check if hypothesis should transition status.
+        """Check if hypothesis should transition state.
 
         Transition criteria:
         - VALIDATED: likelihood >= 0.70 and at least 2 supporting evidence
@@ -442,7 +442,7 @@ class HypothesisManager:
         Returns:
             Refuted hypothesis
         """
-        # Set refutation_reason BEFORE status so the pair invariant is
+        # Set refutation_reason BEFORE state so the pair invariant is
         # satisfied if this object is ever re-validated.
         hypothesis.refutation_reason = (reason or "refuted by evidence")[:200]
         hypothesis.state = HypothesisState.REFUTED
@@ -610,7 +610,7 @@ class HypothesisManager:
 
         Priority:
         1. Highest likelihood
-        2. Active status (ready for testing)
+        2. Active state (ready for testing)
         3. Has supporting evidence
 
         Args:

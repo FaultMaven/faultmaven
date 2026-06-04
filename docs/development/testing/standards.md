@@ -64,7 +64,7 @@ Avoid real-LLM tests for behaviors already pinned at the schema, structural, or 
 Good assertions:
 
 ```python
-assert case.status == CaseStatus.INVESTIGATING
+assert case.state == CaseState.INVESTIGATING
 assert case.inquiry.problem_statement_confirmed is True
 assert any(f["intent"]["confirmation_value"] is True for f in follow_ups)
 ```
@@ -82,7 +82,7 @@ Outcome-based helpers live in `tests/integration/real_llm/helpers.py` — extend
 
 1. Use `temperature=0` where the provider supports deterministic output (most chat providers do).
 2. Scope each test to one decision point. Multi-turn tests compound stochasticity.
-3. Assert on the strongest signal available — prefer `case.status` over `metadata["transition_proposed"]`, prefer presence of intent-typed suggestions over message text.
+3. Assert on the strongest signal available — prefer `case.state` over `metadata["transition_proposed"]`, prefer presence of intent-typed suggestions over message text.
 4. When a test flakes, the first response should be tightening the assertion or scoping the scenario, **not** adding retries. Retries hide the signal that the prompt-LLM interaction has weakened.
 5. If retries are genuinely needed, prefer a smaller scenario over `pytest-rerunfailures` — moving the test to a tighter scenario is a real improvement, retries are a bandage.
 
