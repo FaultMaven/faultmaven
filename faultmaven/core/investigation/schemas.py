@@ -413,7 +413,7 @@ class HypothesisUpdate(BaseModel):
     @classmethod
     def validate_status(cls, v):
         """
-        Validate hypothesis status against HypothesisState enum.
+        Validate hypothesis state against HypothesisState enum.
 
         Maps known LLM aliases (e.g., "TESTING" -> ACTIVE) and rejects
         unrecognized values by returning None (no status update).
@@ -433,7 +433,7 @@ class HypothesisUpdate(BaseModel):
 
                 logger = logging.getLogger(__name__)
                 logger.warning(
-                    f"LLM returned unrecognized hypothesis status '{v}', "
+                    f"LLM returned unrecognized hypothesis state '{v}', "
                     f"ignoring status update",
                     extra={
                         "status_attempted": v,
@@ -995,7 +995,7 @@ class BaseInteractionResponse(BaseModel):
 
 
 class InquiryResponse(BaseInteractionResponse):
-    """Response schema for INQUIRY status."""
+    """Response schema for INQUIRY state."""
 
     class InquiryStateUpdate(BaseModel):
         # Pydantic policy: extra='ignore' (the v2 default) is deliberate.
@@ -1048,7 +1048,7 @@ class InquiryResponse(BaseInteractionResponse):
 
 
 class TerminalResponse(BaseInteractionResponse):
-    """Response schema for RESOLVED/CLOSED status."""
+    """Response schema for RESOLVED/CLOSED state."""
 
     class TerminalStateUpdate(BaseModel):
         final_summary_update: Optional[str] = None

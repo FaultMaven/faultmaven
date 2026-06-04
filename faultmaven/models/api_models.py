@@ -73,7 +73,7 @@ class CaseUpdateRequest(BaseModel):
     )
 
     state: Optional[CaseState] = Field(
-        default=None, description="Updated status (admin only)"
+        default=None, description="Updated state (admin only)"
     )
 
 
@@ -109,7 +109,7 @@ class CaseSummary(BaseModel):
     # Status transitions
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed status transitions from current state for user-initiated changes",
+        description="Allowed state transitions from current state for user-initiated changes",
     )
 
     @classmethod
@@ -177,7 +177,7 @@ class CaseDetail(BaseModel):
     # Status transitions
     valid_next_states: List[str] = Field(
         default_factory=list,
-        description="Allowed status transitions from current state for user-initiated changes",
+        description="Allowed state transitions from current state for user-initiated changes",
     )
 
     @classmethod
@@ -229,7 +229,7 @@ class CaseListFilter(BaseModel):
         default=None, description="Filter by organization ID"
     )
 
-    state: Optional[CaseState] = Field(default=None, description="Filter by status")
+    state: Optional[CaseState] = Field(default=None, description="Filter by state")
 
     created_after: Optional[datetime] = Field(
         default=None, description="Cases created after this date"
@@ -290,7 +290,7 @@ class CaseSearchRequest(BaseModel):
         default=None, description="Limit to organization's cases"
     )
 
-    state: Optional[CaseState] = Field(default=None, description="Filter by status")
+    state: Optional[CaseState] = Field(default=None, description="Filter by state")
 
     limit: int = Field(default=20, ge=1, le=100, description="Maximum results")
 
@@ -354,11 +354,11 @@ class QueryIntent(BaseModel):
 
     # Additional intent-specific fields (vary by type)
     from_state: Optional[CaseState] = Field(
-        default=None, description="For status_transition: source status (validation)"
+        default=None, description="For status_transition: source state (validation)"
     )
     to_state: Optional[CaseState] = Field(
         default=None,
-        description="For status_transition: target status (REQUIRED for status_transition)",
+        description="For status_transition: target state (REQUIRED for status_transition)",
     )
     user_confirmed: Optional[bool] = Field(
         default=None,

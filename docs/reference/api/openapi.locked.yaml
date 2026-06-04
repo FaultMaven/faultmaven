@@ -7439,7 +7439,7 @@ components:
           default: ''
         state:
           $ref: '#/components/schemas/CaseState'
-          description: Current lifecycle status (phase or disposition)
+          description: Current lifecycle state (phase or disposition)
           default: inquiry
         action_history:
           items:
@@ -7564,7 +7564,7 @@ components:
           default: post_mortem
         inquiry:
           $ref: '#/components/schemas/InquiryData'
-          description: Pre-investigation INQUIRY status data
+          description: Pre-investigation INQUIRY state data
         problem_verification:
           anyOf:
           - $ref: '#/components/schemas/ProblemVerification'
@@ -7677,7 +7677,7 @@ components:
             format: date-time
           - type: 'null'
           title: Resolved At
-          description: When case reached RESOLVED status
+          description: When case reached RESOLVED state
         closed_at:
           anyOf:
           - type: string
@@ -7872,7 +7872,7 @@ components:
             type: string
           type: array
           title: Valid Next States
-          description: Allowed status transitions from current state for user-initiated
+          description: Allowed state transitions from current state for user-initiated
             changes
       type: object
       required:
@@ -8108,7 +8108,7 @@ components:
           anyOf:
           - $ref: '#/components/schemas/CaseState'
           - type: 'null'
-          description: Filter by status
+          description: Filter by state
         limit:
           type: integer
           maximum: 100.0
@@ -8129,7 +8129,7 @@ components:
       - resolved
       - closed
       title: CaseState
-      description: "Case lifecycle status \u2014 passive label describing a case's\
+      description: "Case lifecycle state \u2014 passive label describing a case's\
         \ current condition.\n\nValues fall into two categories:\n- **Phases** (active\
         \ work): INQUIRY, INVESTIGATING\n- **Dispositions** (terminal resolution):\
         \ RESOLVED, CLOSED\n\nCase Actions (phase transitions and dispositions):\n\
@@ -8206,7 +8206,7 @@ components:
             type: string
           type: array
           title: Valid Next States
-          description: Allowed status transitions from current state for user-initiated
+          description: Allowed state transitions from current state for user-initiated
             changes
       type: object
       required:
@@ -8271,7 +8271,7 @@ components:
             type: string
           type: array
           title: Valid Next States
-          description: Allowed status transitions from current state for user-initiated
+          description: Allowed state transitions from current state for user-initiated
             changes
         disposition_eligibility:
           anyOf:
@@ -8370,7 +8370,7 @@ components:
             type: string
           type: array
           title: Valid Next States
-          description: Allowed status transitions from current state for user-initiated
+          description: Allowed state transitions from current state for user-initiated
             changes
         disposition_eligibility:
           anyOf:
@@ -8484,7 +8484,7 @@ components:
           - resolved
           - closed
           title: State
-          description: 'Case terminal status: ''resolved'' (with solution) or ''closed''
+          description: 'Case terminal state: ''resolved'' (with solution) or ''closed''
             (without investigation)'
         title:
           type: string
@@ -8521,7 +8521,7 @@ components:
             type: string
           type: array
           title: Valid Next States
-          description: Allowed status transitions from current state for user-initiated
+          description: Allowed state transitions from current state for user-initiated
             changes
         disposition_eligibility:
           anyOf:
@@ -8620,7 +8620,7 @@ components:
           anyOf:
           - $ref: '#/components/schemas/CaseState'
           - type: 'null'
-          description: Updated status (admin only)
+          description: Updated state (admin only)
       type: object
       title: CaseUpdateRequest
       description: Request to update an existing case.
@@ -9380,8 +9380,8 @@ components:
           description: "Evidence rows that fulfill this need. Multiple entries may\
             \ accumulate across stages: presence evidence collected during DIAGNOSIS\
             \ plus absence evidence collected during MITIGATION/TREATMENT. The list\
-            \ is append-only in practice \u2014 the need's status stays FULFILLED\
-            \ once fulfilled even when post-fix absence evidence is added."
+            \ is append-only in practice \u2014 the need's state stays FULFILLED once\
+            \ fulfilled even when post-fix absence evidence is added."
         superseded_reason:
           anyOf:
           - type: string
@@ -9423,7 +9423,7 @@ components:
         \ a hard\nownership association.\n\nLifecycle (see evidence-needs-design.md\
         \ \xA77):\n\n- Created by the LLM via ``EvidenceNeedUpdate`` emissions at\n\
         \  problem-statement confirmation (symptom needs) and at hypothesis\n  creation\
-        \ (causal needs).\n- Updated by the LLM as evidence arrives (status, fulfilling\n\
+        \ (causal needs).\n- Updated by the LLM as evidence arrives (state, fulfilling\n\
         \  evidence linkage, motivating hypothesis IDs).\n- Auto-superseded by the\
         \ engine on hypothesis retirement when the\n  motivating list becomes empty\
         \ AND purpose is CAUSAL_VERIFICATION\n  AND status is not FULFILLED. Symptom\
@@ -9617,7 +9617,7 @@ components:
           description: Hypothesis category (for anchoring detection)
         state:
           $ref: '#/components/schemas/HypothesisState'
-          description: Current hypothesis status
+          description: Current hypothesis state
           default: captured
         likelihood:
           type: number
@@ -9813,7 +9813,7 @@ components:
       - inconclusive
       - retired
       title: HypothesisState
-      description: Hypothesis lifecycle status
+      description: Hypothesis lifecycle state
     HypothesisSummary:
       properties:
         hypothesis_id:
@@ -9947,7 +9947,7 @@ components:
           type: integer
           minimum: 0.0
           title: Inquiry Turns
-          description: Number of turns spent in INQUIRY status
+          description: Number of turns spent in INQUIRY state
           default: 0
         knowledge_matches:
           items:
@@ -9967,7 +9967,7 @@ components:
           description: Early urgency assessment
       type: object
       title: InquiryData
-      description: 'Pre-investigation INQUIRY status data.
+      description: 'Pre-investigation INQUIRY state data.
 
         Captures early problem exploration before formal investigation commitment.'
     InquiryResponseData:
@@ -10993,9 +10993,9 @@ components:
         \ A causal_verification need produces\nCAUSAL_EVIDENCE (presence) initially\
         \ and CAUSAL_ABSENCE_EVIDENCE\n(absence) on re-check after solution.\n\nThe\
         \ same need produces multiple evidence rows of different\ncategories across\
-        \ the case's lifetime; the need's status stays\nFULFILLED once fulfilled \u2014\
+        \ the case's lifetime; the need's state stays\nFULFILLED once fulfilled \u2014\
         \ re-check evidence is appended via\n``fulfilling_evidence_ids``, it does\
-        \ not reset the status."
+        \ not reset the state."
     NeedState:
       type: string
       enum:
