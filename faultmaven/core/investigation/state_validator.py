@@ -30,6 +30,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisState,
     InvestigationProgress,
 )
+from faultmaven.modules.case.domain.models import CauseState
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ class StateValidator:
             )
 
         # root_cause_identified should have likelihood
-        if progress.root_cause_identified:
+        if progress.cause_state == CauseState.IDENTIFIED:
             likelihood = getattr(progress, "root_cause_likelihood", None)
             if likelihood is None or likelihood == 0.0:
                 issues.append(

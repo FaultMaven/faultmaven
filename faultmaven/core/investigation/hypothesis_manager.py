@@ -64,6 +64,30 @@ class HypothesisManager:
         pass
 
     @staticmethod
+    def active_hypotheses(case: "Case") -> List[Hypothesis]:
+        """Return the case's ACTIVE hypotheses.
+
+        ACTIVE = the LLM is still testing the theory (not CAPTURED/VALIDATED/
+        REFUTED/RETIRED). This is the single source of truth for the
+        ``cause_state=CANDIDATES`` derivation (redesign R1 / Q4) — do not
+        re-implement the count elsewhere.
+        """
+        return [
+            h for h in case.hypotheses.values() if h.state == HypothesisState.ACTIVE
+        ]
+
+    @staticmethod
+    def count_active_hypotheses(case: "Case") -> int:
+        """Count ACTIVE hypotheses. ``>= 2`` derives ``cause_state=CANDIDATES``.
+
+        Coupling caveat (redesign §4.1): the LLM must reliably emit hypotheses
+        when the cause is uncertain, or this count under-fires and a genuinely
+        ambiguous case reads as UNKNOWN. The prompt mandate that forces
+        hypothesis emission under uncertainty ships with this derivation.
+        """
+        return len(HypothesisManager.active_hypotheses(case))
+
+    @staticmethod
     def calculate_evidence_ratio(hypothesis: Hypothesis) -> float:
         """Compute supporting/(supporting+refuting) evidence ratio.
 

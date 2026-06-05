@@ -23,7 +23,6 @@ from faultmaven.modules.case.domain.models import (
     Hypothesis,
     InquiryData,
     InvestigationProgress,
-    PathSelection,
     ProblemVerification,
     RootCauseConclusion,
     Solution,

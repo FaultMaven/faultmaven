@@ -372,8 +372,6 @@ _INTENT_DISPATCH: Dict[IntentType, _IntentDispatchKind] = {
     IntentType.HYPOTHESIS_ACTION: _IntentDispatchKind.SERVICE,
     IntentType.GREETING: _IntentDispatchKind.SERVICE,
     IntentType.CONVERSATION: _IntentDispatchKind.ENGINE,
-    IntentType.PATH_SELECTION: _IntentDispatchKind.ENGINE,
-    IntentType.POST_MITIGATION_CHOICE: _IntentDispatchKind.ENGINE,
     # EVIDENCE_NEED (renamed from EVIDENCE_REQUEST in Phase 2 of the
     # evidence-needs redesign) is in the IntentType enum and has a
     # QueryIntent validator requiring evidence_need_id, but no handler
@@ -670,8 +668,7 @@ class InvestigationService:
             elif dispatch_kind == _IntentDispatchKind.ENGINE:
                 # Engine-routed: thread intent_type + intent_data through
                 # to ``engine.process_turn``, which dispatches internally
-                # to the per-intent handler (e.g., path_selection,
-                # post_mitigation_choice handlers in milestone_engine).
+                # to the per-intent handler in milestone_engine.
                 # Build attachment metadata for the engine. Post-010:
                 # uploads create only an UploadedFile (no auto-Evidence),
                 # so the metadata is sourced directly from those rows.
@@ -1358,10 +1355,6 @@ class InvestigationService:
             # Update case
             case.description = confirmed_description
             case.state = CaseState.INVESTIGATING
-
-            # Path selection is now DEFERRED until symptom verification (Bug #3 fix)
-            # Logic moved to MilestoneEngine._process_response_structured via automatic check
-            case.path_selection = None
 
             # Save
             updated_case = await self.repository.save(case)

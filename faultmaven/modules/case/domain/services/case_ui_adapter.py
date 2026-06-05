@@ -280,7 +280,6 @@ def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
         updated_at=case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
         inquiry=inquiry_data,
-        path_selection=case.path_selection,
         valid_next_states=[
             status.value
             for status in CaseActionManager.get_allowed_transitions(case.state)
@@ -406,7 +405,6 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         created_at=case.created_at,
         updated_at=case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
-        path_selection=case.path_selection,
         problem_statement=(case.description or None),
         working_conclusion=working_conclusion,
         progress=progress,
@@ -549,7 +547,6 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         updated_at=case.updated_at,
         resolved_at=case.resolved_at if case.resolved_at else case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
-        path_selection=case.path_selection,
         problem_statement=(case.description or None),
         root_cause=root_cause,
         solution_applied=solution_applied,

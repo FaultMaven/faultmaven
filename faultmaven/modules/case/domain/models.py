@@ -312,10 +312,12 @@ class InvestigationStrategy(str, Enum):
 # Sub-categorization of CLOSED state. Engine-derived from case state at
 # transition time. None for non-terminal and RESOLVED cases.
 #
-# All three values are programmatic — derived from (from_state, mitigation_verified):
-#   - inquiry_only: INQUIRY → CLOSED
-#   - mitigation_sufficient: INVESTIGATING → CLOSED, mitigation_verified=True
-#   - closed_after_investigation: INVESTIGATING → CLOSED, mitigation_verified=False
+# Both values are programmatic — derived from the state the case was closed from
+# (unified opportunistic flow, no path fork):
+#   - inquiry_only: INQUIRY → CLOSED (no investigation started)
+#   - closed_after_investigation: INVESTIGATING → CLOSED. Folds in the former
+#     `mitigation_sufficient`: a case stabilized then closed is simply an
+#     investigation that closed; the documented stabilization is preserved.
 #
 # The LLM does NOT emit closure_reason; user-motivation context (e.g., "we're
 # escalating") lives in the LLM-authored persistent Report's free-form summary.
@@ -323,13 +325,101 @@ class InvestigationStrategy(str, Enum):
 VALID_CLOSURE_REASONS: set[str] = {
     "inquiry_only",
     "closed_after_investigation",
-    "mitigation_sufficient",
 }
 
 
 # ============================================================
 # Investigation Progress Models (Section 3)
 # ============================================================
+
+
+class CauseState(str, Enum):
+    """Engine-derived knowledge state of the root cause (assessment variable).
+
+    Recomputed every turn from the LLM's grounded cause-identification signal
+    plus the active-hypothesis count (see investigation-flow-redesign.md R1).
+    NEVER path-stripped — recording a cause the engine legitimately knows is a
+    truth signal, not an earned process milestone. Drives whether the diagnostic
+    machinery (hypothesis formulation + evidence-needs) runs this turn.
+    """
+
+    UNKNOWN = "unknown"
+    """No cause hypothesis yet. Diagnostic machinery active."""
+
+    CANDIDATES = "candidates"
+    """Multiple plausible causes (≥2 ACTIVE hypotheses). Diagnostic machinery active."""
+
+    IDENTIFIED = "identified"
+    """Single cause known with grounded confidence. Diagnostic machinery skipped."""
+
+
+class SolutionState(str, Enum):
+    """Engine-derived knowledge state of the fix (assessment variable).
+
+    UNKNOWN | SELECTED only this round. CANDIDATES (multi-solution deliberation,
+    redesign §6) is reserved for the follow-on that reuses the hypothesis machinery
+    and is intentionally not produced yet.
+    """
+
+    UNKNOWN = "unknown"
+    """No solution chosen yet."""
+
+    CANDIDATES = "candidates"
+    """Multiple/complex candidate solutions needing deliberation. RESERVED — see redesign §6 follow-on; not produced this round."""
+
+    SELECTED = "selected"
+    """A single solution has been chosen."""
+
+
+class SolutionFeasible(str, Enum):
+    """Whether the SELECTED solution can be applied within this session.
+
+    LLM-settable. DEFERRED routes to CLOSE-with-documented-solution (redesign §6 Q2).
+    """
+
+    NOW = "now"
+    """Solution can be implemented during this troubleshooting session."""
+
+    DEFERRED = "deferred"
+    """Solution is known but implementation takes time / happens out-of-band."""
+
+
+class StabilizationRecord(BaseModel):
+    """A single forward-only stabilization (the inserted "stop the bleeding" move).
+
+    Replaces the path-coupled mitigation gates + ``path_selection.mitigation_completed_at_turn``
+    (redesign R2). The engine materializes this record from the LLM's accept/verify
+    gate signals plus the workaround ProposedAction:
+    - ``proposed_at_turn`` is set when a ``solution_type=workaround`` action is created.
+    - ``accepted`` / ``verified`` mirror the LLM gate signals (compliance detection).
+    - ``completed_at_turn`` is set the turn ``verified`` flips True (the boundary for
+      up-weighting pre-stabilization evidence in any later RCA).
+
+    Single record per investigation for now (redesign §3.2.1); the flow stays open
+    to user-led action so a non-stabilizing insert is never a dead-end.
+    """
+
+    proposed_at_turn: Optional[int] = Field(
+        default=None, description="Turn a workaround stabilization was first proposed"
+    )
+    accepted: bool = Field(
+        default=False, description="User complied with the proposed stabilization"
+    )
+    verified: bool = Field(
+        default=False, description="User confirmed the stabilization stabilized the situation"
+    )
+    completed_at_turn: Optional[int] = Field(
+        default=None, description="Turn `verified` flipped True (Gate-3-equivalent boundary)"
+    )
+
+    @model_validator(mode="after")
+    def _verified_requires_accepted(self) -> "StabilizationRecord":
+        """A stabilization cannot be verified before it was accepted."""
+        if self.verified and not self.accepted:
+            raise ValueError(
+                "stabilization.verified=True requires stabilization.accepted=True"
+            )
+        return self
 
 
 class InvestigationProgress(BaseModel):
@@ -348,19 +438,13 @@ class InvestigationProgress(BaseModel):
     # STAGE-GATE MILESTONES (drive stage transitions)
     # Set by the LLM in structured output (Framework §4.1).
     # ============================================================
-    mitigation_accepted: bool = Field(
-        default=False,
+    stabilization: Optional[StabilizationRecord] = Field(
+        default=None,
         description=(
-            "User complied with proposed temp fix (inferred from submission). "
-            "Triggers DIAGNOSIS → MITIGATION transition."
-        ),
-    )
-
-    mitigation_verified: bool = Field(
-        default=False,
-        description=(
-            "User confirmed mitigation worked. "
-            "Triggers MITIGATION → DIAGNOSIS return for RCA."
+            "Stabilization insert record (redesign R2). Materialized by the "
+            "engine from the LLM's stabilization accept/verify gate signals "
+            "plus the workaround ProposedAction. Replaces the mitigation_* "
+            "booleans + path_selection.mitigation_completed_at_turn."
         ),
     )
 
@@ -390,11 +474,6 @@ class InvestigationProgress(BaseModel):
         description="Symptom confirmed with concrete evidence (logs, metrics, user reports)",
     )
 
-    root_cause_identified: bool = Field(
-        default=False,
-        description="Root cause determined (directly or via hypothesis validation)",
-    )
-
     solution_proposed: bool = Field(
         default=False,
         description=(
@@ -404,7 +483,41 @@ class InvestigationProgress(BaseModel):
     )
 
     # ============================================================
-    # Root Cause Metadata (populated when root_cause_identified=True)
+    # ASSESSMENT VARIABLES (engine-derived knowledge state)
+    # Truth signals, recomputed every turn, NEVER path-stripped.
+    # See investigation-flow-redesign.md §4.1, R1.
+    # ============================================================
+    cause_state: CauseState = Field(
+        default=CauseState.UNKNOWN,
+        description=(
+            "Engine-derived knowledge state of the root cause "
+            "(UNKNOWN | CANDIDATES | IDENTIFIED). Replaces the boolean "
+            "root_cause_identified. IDENTIFIED is the grounded cause-known "
+            "signal; CANDIDATES is derived from >=2 ACTIVE hypotheses. Drives "
+            "whether the diagnostic machinery runs. Recomputed each turn by the "
+            "engine; never path-stripped."
+        ),
+    )
+
+    solution_state: SolutionState = Field(
+        default=SolutionState.UNKNOWN,
+        description=(
+            "Knowledge state of the fix (UNKNOWN | SELECTED). CANDIDATES "
+            "(multi-solution deliberation) is reserved for a follow-on and not "
+            "produced this round."
+        ),
+    )
+
+    solution_feasible: SolutionFeasible = Field(
+        default=SolutionFeasible.NOW,
+        description=(
+            "Whether the SELECTED solution can be applied this session "
+            "(NOW | DEFERRED). DEFERRED routes to CLOSE-with-documented-solution."
+        ),
+    )
+
+    # ============================================================
+    # Root Cause Metadata (populated when cause_state=IDENTIFIED)
     # ============================================================
     root_cause_likelihood: float = Field(
         default=0.0,
@@ -440,62 +553,49 @@ class InvestigationProgress(BaseModel):
     @property
     def current_stage(self) -> "InvestigationStage":
         """
-        Compute investigation stage from STAGE-GATE MILESTONES only.
-        Progress indicators do NOT affect stage computation.
+        Compute investigation stage as a derived UI view (redesign R4).
+        The stage no longer drives prompt dispatch — it is a pure display
+        label re-derived from the action-compliance gates.
 
         Returns one of 3 InvestigationStage enum values:
-        - DIAGNOSIS: Understanding, diagnosing, proposing actions
-        - MITIGATION: Applying and verifying temporary fix
-        - TREATMENT: Applying permanent fix, verifying resolution
-
-        Forward-only semantics: gate milestones are set-once under the
-        current design. Once ``mitigation_verified=True``, the MITIGATION
-        branch's ``NOT mitigation_verified`` clause fails and the property
-        falls through to DIAGNOSIS — that's the post-mitigation cause-phase
-        DIAGNOSIS. The case does not re-enter MITIGATION on the same
-        investigation.
+        - MITIGATION: a stabilization is accepted but not yet verified
+        - TREATMENT: solution accepted but not yet verified
+        - DIAGNOSIS: everything else (default investigating view)
 
         DIAGNOSIS is one stage with two phases distinguished by
-        ``symptom_verified``, not by the stage enum:
-        - ``symptom_verified=False`` → symptom-focus phase
-        - ``symptom_verified=True``  → cause-focus phase
-
-        Both MITIGATION_FIRST and ROOT_CAUSE paths traverse both phases.
-        MITIGATION_FIRST inserts the MITIGATION detour between them.
-        Callers needing the phase distinction must consult
-        ``progress.symptom_verified`` (the canonical signal) — the stage
-        enum does not differentiate, by design.
+        ``symptom_verified`` / ``cause_state``, not by the stage enum.
+        Callers needing the phase distinction must consult those signals.
         """
+        # MITIGATION: stabilization accepted but not yet verified.
+        if (
+            self.stabilization is not None
+            and self.stabilization.accepted
+            and not self.stabilization.verified
+        ):
+            return InvestigationStage.MITIGATION
+
         # TREATMENT: solution_accepted but not yet verified
         if self.solution_accepted and not self.solution_verified:
             return InvestigationStage.TREATMENT
 
-        # MITIGATION: mitigation_accepted but not yet verified.
-        # Once mitigation_verified=True, this branch fails and the property
-        # falls through to DIAGNOSIS (post-mitigation cause phase).
-        if self.mitigation_accepted and not self.mitigation_verified:
-            return InvestigationStage.MITIGATION
-
-        # Default: DIAGNOSIS. Covers (a) initial symptom phase before any
-        # mitigation, and (b) post-mitigation cause phase. Distinguish via
-        # symptom_verified if needed.
+        # Default: DIAGNOSIS. Distinguish sub-phase via symptom_verified /
+        # cause_state if needed.
         return InvestigationStage.DIAGNOSIS
 
     @property
     def stage_display_name(self) -> str:
         """
-        User-facing stage name for UI display.
+        User-facing stage name for UI display (redesign R4).
 
-        1:1 mapping (no collapsing needed):
-        - DIAGNOSIS → "Diagnosing"
-        - MITIGATION → "Mitigating"
+        - DIAGNOSIS → "Investigating"
+        - MITIGATION → "Stabilizing"
         - TREATMENT → "Resolving"
         """
         stage = self.current_stage
         if stage == InvestigationStage.DIAGNOSIS:
-            return "Diagnosing"
+            return "Investigating"
         elif stage == InvestigationStage.MITIGATION:
-            return "Mitigating"
+            return "Stabilizing"
         else:  # TREATMENT
             return "Resolving"
 
@@ -507,7 +607,7 @@ class InvestigationProgress(BaseModel):
     @property
     def investigation_complete(self) -> bool:
         """Check if investigation progress indicators completed."""
-        return self.root_cause_identified
+        return self.cause_state == CauseState.IDENTIFIED
 
     @property
     def resolution_complete(self) -> bool:
@@ -519,13 +619,17 @@ class InvestigationProgress(BaseModel):
         """Get list of completed milestone and indicator names."""
         milestone_map = {
             # Stage-gate milestones
-            "mitigation_accepted": self.mitigation_accepted,
-            "mitigation_verified": self.mitigation_verified,
+            "mitigation_accepted": bool(
+                self.stabilization is not None and self.stabilization.accepted
+            ),
+            "mitigation_verified": bool(
+                self.stabilization is not None and self.stabilization.verified
+            ),
             "solution_accepted": self.solution_accepted,
             "solution_verified": self.solution_verified,
             # Progress indicators
             "symptom_verified": self.symptom_verified,
-            "root_cause_identified": self.root_cause_identified,
+            "root_cause_identified": self.cause_state == CauseState.IDENTIFIED,
             "solution_proposed": self.solution_proposed,
         }
         return [name for name, completed in milestone_map.items() if completed]
@@ -535,7 +639,7 @@ class InvestigationProgress(BaseModel):
         """Get list of pending progress indicator names."""
         indicator_map = {
             "symptom_verified": self.symptom_verified,
-            "root_cause_identified": self.root_cause_identified,
+            "root_cause_identified": self.cause_state == CauseState.IDENTIFIED,
             "solution_proposed": self.solution_proposed,
         }
         return [name for name, completed in indicator_map.items() if not completed]
@@ -562,33 +666,33 @@ class InvestigationProgress(BaseModel):
 
     @model_validator(mode="after")
     def root_cause_consistency(self):
-        """Ensure root cause fields are consistent"""
-        identified = self.root_cause_identified
+        """Ensure root cause fields are consistent with cause_state."""
+        identified = self.cause_state == CauseState.IDENTIFIED
         likelihood = self.root_cause_likelihood
         method = self.root_cause_method
 
         if identified:
             if likelihood == 0.0:
                 raise ValueError(
-                    "root_cause_likelihood must be > 0 when root_cause_identified=True"
+                    "root_cause_likelihood must be > 0 when cause_state=IDENTIFIED"
                 )
             if method is None:
                 raise ValueError(
-                    "root_cause_method must be set when root_cause_identified=True"
+                    "root_cause_method must be set when cause_state=IDENTIFIED"
                 )
 
         return self
 
     @model_validator(mode="after")
     def solution_ordering(self):
-        """Ensure solution milestones are ordered correctly."""
+        """Ensure solution milestones are ordered correctly.
+
+        The stabilization verified⇒accepted ordering is enforced by
+        StabilizationRecord's own validator, not here (redesign R3).
+        """
         # solution_verified requires solution_accepted
         if self.solution_verified and not self.solution_accepted:
             raise ValueError("Cannot verify solution without acceptance first")
-
-        # mitigation_verified requires mitigation_accepted
-        if self.mitigation_verified and not self.mitigation_accepted:
-            raise ValueError("Cannot verify mitigation without acceptance first")
 
         return self
 
@@ -3059,152 +3163,6 @@ class TurnProgress(BaseModel):
         frozen = True  # Immutable once created
 
 
-# ============================================================
-# Path Selection Models (Section 9)
-# ============================================================
-
-
-class InvestigationPath(str, Enum):
-    """
-    Investigation routing strategy (2-stage model with mitigation detour).
-
-    Path is SYSTEM-RECOMMENDED from the (temporal_state x urgency_level) matrix
-    and USER-CONFIRMED via Gate 2. The LLM provides inputs (temporal_state,
-    urgency_level) during inquiry; the router in investigation_router.py
-    produces a deterministic recommendation from those user-stated inputs;
-    the user accepts or overrides via a COOPERATIVE suggestion (Gate 2).
-    Post-INV-19 redesign, Gate 2 fires inside INVESTIGATING after the agent
-    sets ``symptom_verified=True``, so the user's accept/override decision
-    happens with the agent's symptom-validation work visible in the
-    transcript. The recommendation algorithm itself is unchanged — it
-    still reads ``case.inquiry.preliminary_urgency``; what the timing
-    move changed is the *override context the user sees*. Making the
-    recommendation evidence-derived is deferred follow-up. LLM does NOT
-    choose the path directly.
-    """
-
-    MITIGATION_FIRST = "mitigation_first"
-    """
-    Mitigation-first path: stop the bleeding, then find root cause.
-
-    Stage Flow: DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT
-    - DIAGNOSIS: Verify symptoms, assess urgency, propose temp fix
-    - MITIGATION: Apply and verify temporary fix
-    - DIAGNOSIS: Return for root cause analysis, propose permanent fix
-    - TREATMENT: Apply and verify permanent fix
-
-    Recommended When: ONGOING + HIGH/CRITICAL urgency
-    - Problem is happening NOW
-    - User needs immediate restoration
-    - But also wants to prevent recurrence
-    """
-
-    ROOT_CAUSE = "root_cause"
-    """
-    Direct root cause analysis path.
-
-    Stage Flow: DIAGNOSIS → TREATMENT
-    - DIAGNOSIS: Verify symptoms, diagnose root cause, propose fix
-    - TREATMENT: Apply and verify permanent fix
-
-    Recommended When: HISTORICAL + any urgency, or ONGOING + LOW/MEDIUM urgency.
-    Also the safe default for ambiguous inputs (missing temporal, UNKNOWN urgency).
-    """
-
-
-class PathSelection(BaseModel):
-    """
-    Path selection details.
-    Records how investigation path was chosen.
-
-    IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
-    LLM provides inputs (temporal_state, urgency_level) during verification.
-    System calls determine_investigation_path() to select path deterministically.
-    LLM does NOT choose the path directly!
-    """
-
-    path: InvestigationPath = Field(
-        description="Selected investigation path (system-determined from matrix)"
-    )
-
-    auto_selected: bool = Field(
-        description="True if system auto-selected, False if user chose"
-    )
-
-    rationale: str = Field(description="Why this path was selected", max_length=500)
-
-    alternate_path: Optional[InvestigationPath] = Field(
-        default=None,
-        description="Alternative path user could have chosen (if auto-selected)",
-    )
-
-    selected_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
-        description="When path was selected",
-    )
-
-    selected_by: str = Field(
-        default="system",
-        description="Who selected: 'system' for auto, or user_id for manual",
-    )
-
-    # ============================================================
-    # Gate 2 (investigation path) commit semantic
-    # ============================================================
-    # The existence of this PathSelection row IS the commitment — it is
-    # created exclusively by the Gate 2 click handler in milestone_engine,
-    # never auto-computed pre-commit. Recommendation is computed on-demand
-    # at button-render time via ``recommend_investigation_path_for_case``;
-    # only the user's click materializes a PathSelection on the case.
-    # ``selected_at`` and ``selected_by`` (above) carry the audit trail.
-    # See INV-19.
-
-    # ============================================================
-    # Post-Mitigation Continuation (Gate 3: RCA-or-close after mitigation)
-    # ============================================================
-    # Meaningful only when path == MITIGATION_FIRST. Once mitigation_verified
-    # becomes True, the engine sets mitigation_completed_at_turn and surfaces
-    # Gate 3: the user picks "continue with RCA" (sets
-    # rca_after_mitigation_confirmed=True) or closes the case with
-    # closure_reason=mitigation_sufficient. RCA-side milestones cannot
-    # progress on a mitigation-first case until Gate 3 passes. See INV-21.
-    rca_after_mitigation_confirmed: bool = Field(
-        default=False,
-        description="User has confirmed continuing to RCA after mitigation "
-        "verified (Gate 3). Mitigation-first path only.",
-    )
-
-    rca_after_mitigation_confirmed_at_turn: Optional[int] = Field(
-        default=None,
-        description="Turn number when the user confirmed post-mitigation RCA.",
-    )
-
-    mitigation_completed_at_turn: Optional[int] = Field(
-        default=None,
-        description="Turn at which mitigation_verified first became True. "
-        "Boundary for the pre-mitigation evidence window used by the "
-        "context builder on post-mitigation RCA runs.",
-    )
-
-    # ============================================================
-    # Decision Inputs
-    # ============================================================
-    temporal_state: Optional[TemporalState] = Field(
-        default=None, description="Temporal state used in decision"
-    )
-
-    urgency_level: Optional[UrgencyLevel] = Field(
-        default=None, description="Urgency level used in decision"
-    )
-
-    # ============================================================
-    # Configuration
-    # ============================================================
-    class Config:
-        frozen = (
-            True  # Immutable once created — use model_copy(update=...) to advance gates
-        )
-
 
 # ============================================================
 # Conclusion Models (Section 10)
@@ -3810,13 +3768,8 @@ class Case(BaseModel):
     )
 
     # ============================================================
-    # Investigation Path & Strategy
+    # Investigation Strategy
     # ============================================================
-    path_selection: Optional[PathSelection] = Field(
-        default=None,
-        description="Selected investigation path (MITIGATION vs ROOT_CAUSE)",
-    )
-
     investigation_strategy: InvestigationStrategy = Field(
         default=InvestigationStrategy.POST_MORTEM,
         description="Investigation approach: ACTIVE_INCIDENT (speed) vs POST_MORTEM (thoroughness)",

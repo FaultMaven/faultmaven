@@ -27,6 +27,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationMomentum,
     WorkingConclusion,
 )
+from faultmaven.modules.case.domain.models import CauseState
 
 
 @dataclass
@@ -327,7 +328,7 @@ def _generate_next_steps(
 
     if not progress.symptom_verified:
         steps.append("Verify symptom with concrete evidence")
-    elif not progress.root_cause_identified:
+    elif progress.cause_state != CauseState.IDENTIFIED:
         if evidence_completeness < 0.70:
             steps.append("Collect more evidence to test hypotheses")
         else:
@@ -381,7 +382,7 @@ def _create_early_stage_conclusion(
     # Generate statement based on current stage
     if not progress.symptom_verified:
         statement = "Verifying symptom - problem understanding in progress"
-    elif not progress.root_cause_identified:
+    elif progress.cause_state != CauseState.IDENTIFIED:
         statement = "Investigating potential causes - awaiting hypothesis generation"
     else:
         statement = "Investigation in progress"

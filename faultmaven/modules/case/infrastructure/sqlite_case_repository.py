@@ -56,7 +56,6 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
     NeedState,
-    PathSelection,
     ProblemVerification,
     ProposedAction,
     ReportStatus,
@@ -2053,7 +2052,6 @@ class SQLiteCaseRepository(CaseRepository):
                 problem_verification = :problem_verification,
                 working_conclusion = :working_conclusion,
                 root_cause_conclusion = :root_cause_conclusion,
-                path_selection = :path_selection,
                 escalation_state = :escalation_state,
                 documentation = :documentation,
                 progress = :progress,
@@ -2091,7 +2089,7 @@ class SQLiteCaseRepository(CaseRepository):
                     closure_reason, last_activity_at, resolved_at, closed_at,
                     disposition_eligibility,
                     inquiry, problem_verification, working_conclusion,
-                    root_cause_conclusion, path_selection,
+                    root_cause_conclusion,
                     escalation_state, documentation, progress, metadata,
                     version
                 ) VALUES (
@@ -2101,7 +2099,7 @@ class SQLiteCaseRepository(CaseRepository):
                     :closure_reason, :last_activity_at, :resolved_at, :closed_at,
                     :disposition_eligibility,
                     :inquiry, :problem_verification, :working_conclusion,
-                    :root_cause_conclusion, :path_selection,
+                    :root_cause_conclusion,
                     :escalation_state, :documentation, :progress, :metadata,
                     1
                 )
@@ -2167,11 +2165,6 @@ class SQLiteCaseRepository(CaseRepository):
             "root_cause_conclusion": (
                 json.dumps(to_json_compatible(case.root_cause_conclusion.model_dump()))
                 if case.root_cause_conclusion
-                else None
-            ),
-            "path_selection": (
-                json.dumps(to_json_compatible(case.path_selection.model_dump()))
-                if case.path_selection
                 else None
             ),
             "escalation_state": (
@@ -2900,11 +2893,6 @@ class SQLiteCaseRepository(CaseRepository):
             if row.root_cause_conclusion
             else None
         )
-        path_selection = (
-            PathSelection(**json.loads(row.path_selection))
-            if row.path_selection
-            else None
-        )
         escalation_state = (
             EscalationState(**json.loads(row.escalation_state))
             if row.escalation_state
@@ -2977,7 +2965,6 @@ class SQLiteCaseRepository(CaseRepository):
                 if metadata.get("action_attempts")
                 else []
             ),
-            "path_selection": path_selection,
             "inquiry": inquiry,
             "problem_verification": problem_verification,
             "uploaded_files": uploaded_files,

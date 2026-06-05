@@ -50,7 +50,6 @@ from faultmaven.modules.case.domain.models import (
     NeedPriority,
     NeedPurpose,
     NeedState,
-    PathSelection,
     ProblemVerification,
     ProposedAction,
     RootCauseConclusion,
@@ -1683,7 +1682,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 problem_verification = :problem_verification{jsonb},
                 working_conclusion = :working_conclusion{jsonb},
                 root_cause_conclusion = :root_cause_conclusion{jsonb},
-                path_selection = :path_selection{jsonb},
                 escalation_state = :escalation_state{jsonb},
                 documentation = :documentation{jsonb},
                 progress = :progress{jsonb},
@@ -1712,7 +1710,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     created_at, updated_at, last_activity_at, resolved_at, closed_at,
                     disposition_eligibility,
                     inquiry, problem_verification, working_conclusion,
-                    root_cause_conclusion, path_selection,
+                    root_cause_conclusion,
                     escalation_state, documentation, progress, metadata,
                     version
                 ) VALUES (
@@ -1721,7 +1719,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
                     :disposition_eligibility,
                     :inquiry{jsonb}, :problem_verification{jsonb}, :working_conclusion{jsonb},
-                    :root_cause_conclusion{jsonb}, :path_selection{jsonb},
+                    :root_cause_conclusion{jsonb},
                     :escalation_state{jsonb}, :documentation{jsonb}, :progress{jsonb}, :metadata{jsonb},
                     1
                 )
@@ -1788,11 +1786,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             "root_cause_conclusion": (
                 json.dumps(case.root_cause_conclusion.model_dump(mode="json"))
                 if case.root_cause_conclusion
-                else None
-            ),
-            "path_selection": (
-                json.dumps(case.path_selection.model_dump(mode="json"))
-                if case.path_selection
                 else None
             ),
             "escalation_state": (
@@ -2508,11 +2501,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if row.root_cause_conclusion
             else None
         )
-        path_selection = (
-            PathSelection(**_maybe_load(row.path_selection))
-            if row.path_selection
-            else None
-        )
         escalation_state = (
             EscalationState(**_maybe_load(row.escalation_state))
             if row.escalation_state
@@ -2606,7 +2594,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 if metadata.get("action_attempts")
                 else []
             ),
-            "path_selection": path_selection,
             "inquiry": inquiry,
             "problem_verification": problem_verification,
             "uploaded_files": uploaded_files,
