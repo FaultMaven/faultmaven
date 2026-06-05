@@ -245,7 +245,7 @@ class TestUpdateCase:
         mock_repo.get.return_value = self._make_closed_case()
         result = await service.update_case(
             "case_abc123abc123",
-            {"closure_reason": "mitigation_sufficient"},
+            {"closure_reason": "closed_after_investigation"},
         )
         assert result is True
         mock_repo.save.assert_awaited()
@@ -257,7 +257,7 @@ class TestUpdateCase:
         mock_repo.get.return_value = self._make_closed_case()
         result = await service.update_case(
             "case_abc123abc123",
-            {"title": "New", "closure_reason": "mitigation_sufficient"},
+            {"title": "New", "closure_reason": "closed_after_investigation"},
         )
         assert result is True
         mock_repo.save.assert_awaited()

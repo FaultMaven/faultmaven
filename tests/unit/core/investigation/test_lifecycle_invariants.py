@@ -409,22 +409,28 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
         # And critically: no pending_transition is involved for stage state
         assert case.pending_transition is None
 
-    def test_inv05_mitigation_accepted_advances_stage_immediately(self):
-        """Setting ``mitigation_accepted=True`` advances ``current_stage``
-        to MITIGATION immediately. No propose+confirm round-trip; no
-        pending_transition is written; no user-confirmation turn is
-        required. Asymmetric with INV-03's disposition handshake.
+    def test_inv05_stabilization_accepted_advances_stage_immediately(self):
+        """An accepted-but-unverified stabilization advances
+        ``current_stage`` to MITIGATION immediately. No propose+confirm
+        round-trip; no pending_transition is written; no user-confirmation
+        turn is required. Asymmetric with INV-03's disposition handshake.
         """
-        from faultmaven.modules.case.domain.models import InvestigationStage
+        from faultmaven.modules.case.domain.models import (
+            InvestigationStage,
+            StabilizationRecord,
+        )
 
         case = _make_investigating_case()
         assert case.current_stage == InvestigationStage.DIAGNOSIS
 
-        # LLM-emitted gate milestone — engine sets the flag directly
-        case.progress.mitigation_accepted = True
+        # Engine materializes the stabilization record from the LLM's
+        # accept gate signal.
+        case.progress.stabilization = StabilizationRecord(
+            proposed_at_turn=case.current_turn, accepted=True
+        )
 
-        # Stage advances immediately (computed from flags, no state
-        # machine in between)
+        # Stage advances immediately (computed from the gate record, no
+        # state machine in between)
         assert case.current_stage == InvestigationStage.MITIGATION
         # Critically: no handshake artifacts
         assert case.pending_transition is None
@@ -1732,12 +1738,9 @@ class TestINV16_LLMSoleAuthorityForMilestoneAdvancement:
 
         # Every progress field is unchanged
         assert case.progress.symptom_verified == progress_before.symptom_verified
-        assert (
-            case.progress.root_cause_identified == progress_before.root_cause_identified
-        )
+        assert case.progress.cause_state == progress_before.cause_state
         assert case.progress.solution_proposed == progress_before.solution_proposed
-        assert case.progress.mitigation_accepted == progress_before.mitigation_accepted
-        assert case.progress.mitigation_verified == progress_before.mitigation_verified
+        assert case.progress.stabilization == progress_before.stabilization
         assert case.progress.solution_accepted == progress_before.solution_accepted
         assert case.progress.solution_verified == progress_before.solution_verified
 
@@ -1778,65 +1781,12 @@ class TestINV16_LLMSoleAuthorityForMilestoneAdvancement:
 
 
 # =============================================================================
-# INV-17: Hypothesis must exist before evidence can be classified as
-#         causal_evidence
+# INV-17 (RETIRED): "Hypothesis must exist before evidence can be classified
+# as causal_evidence" was retired by the investigation-flow redesign (§7 / R6).
+# The path-conditional structural guards it accompanied were removed; the
+# remaining hypothesis-emission guidance is prompt-only and covered by the
+# evidence-needs prompt-directive tests. No invariant test here.
 # =============================================================================
-#
-# Source: §4.3 line 1801 (bolded "Constraint") + templates.py:1886
-# Statement: An LLM must not classify evidence as causal_evidence
-#   unless at least one hypothesis exists on the case.
-# Enforcement: **Prompt-only**. The INVESTIGATION_BASE template's
-#   SAFETY RULES include the explicit ban; there is no code-level or
-#   schema-level validator that rejects causal_evidence without a
-#   hypothesis.
-#
-# Drift surfaced: the design uses the word "Constraint" (bolded) at
-# §4.3 line 1801, which suggests stronger enforcement than prompt-only.
-# A reviewer reading just the design might expect a Pydantic validator
-# on EvidenceToAdd; verifying the code confirms NO such validator
-# exists. This is structurally similar to INV-15 — a "Constraint" that
-# in practice depends on LLM prompt compliance. Open follow-up: decide
-# whether to add a code-level gate (engine could reject causal_evidence
-# in evidence_to_add when case.hypotheses is empty).
-
-
-class TestINV17_HypothesisBeforeCausalEvidence:
-    """INV-17: causal_evidence presupposes a hypothesis (prompt-only)."""
-
-    def test_inv17_investigation_template_bans_causal_evidence_without_hypothesis(
-        self,
-    ):
-        """The INVESTIGATION_BASE template's SAFETY RULES must explicitly
-        ban classifying evidence as causal_evidence without a prior
-        hypothesis. This is the SOLE enforcement surface (no code/schema
-        check); removing it from the prompt removes the invariant
-        entirely.
-        """
-        from faultmaven.core.investigation.prompts import templates as tmpl
-
-        # The exact rule lives in INVESTIGATION_BASE / FALLBACK_INVESTIGATION_TEMPLATE.
-        # Check at least one investigation-stage template contains the ban.
-        candidates = []
-        for name in (
-            "INVESTIGATION_BASE",
-            "FALLBACK_INVESTIGATION_TEMPLATE",
-        ):
-            tmpl_text = getattr(tmpl, name, None)
-            if tmpl_text:
-                candidates.append((name, tmpl_text))
-        assert candidates, (
-            "Neither INVESTIGATION_BASE nor FALLBACK_INVESTIGATION_TEMPLATE "
-            "exists — INV-17's prompt-side enforcement surface is gone."
-        )
-
-        # The canonical phrasing in templates.py:1886.
-        marker = "causal_evidence without a hypothesis"
-        assert any(marker in text for _, text in candidates), (
-            f"INV-17 violation: no investigation template contains the "
-            f"phrase '{marker}'. The hypothesis-before-causal-evidence "
-            f"constraint is prompt-only (no code/schema check); removing "
-            f"this phrase removes the only enforcement surface."
-        )
 
 
 # =============================================================================

@@ -1950,10 +1950,13 @@ def build_investigation_context(
     if case.state == CaseState.INVESTIGATING:
         p = case.progress
 
-        # Stage-gate milestones (drive transitions)
+        # Stage-gate milestones (drive transitions). Post-redesign the
+        # mitigation gates live on the stabilization record, not progress
+        # booleans; derive the same telemetry symbols from it.
+        _stab = p.stabilization
         stage_gates = {
-            "mitigation_accepted": p.mitigation_accepted,
-            "mitigation_verified": p.mitigation_verified,
+            "mitigation_accepted": bool(_stab is not None and _stab.accepted),
+            "mitigation_verified": bool(_stab is not None and _stab.verified),
             "solution_accepted": p.solution_accepted,
             "solution_verified": p.solution_verified,
         }

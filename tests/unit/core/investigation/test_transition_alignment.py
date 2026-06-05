@@ -23,9 +23,7 @@ from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
-    InvestigationPath,
     InvestigationProgress,
-    PathSelection,
     ProblemVerification,
     RootCauseConclusion,
     Solution,
@@ -412,30 +410,25 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
 
 
 @pytest.mark.asyncio
-async def test_check_automatic_transitions_closure_reason_mitigation_sufficient():
-    """Regression guard for the mitigation-sufficient case: closing a case
-    at Gate 3 (mitigation verified, user has not chosen to continue with RCA)
-    must yield closure_reason='mitigation_sufficient' (engine-derived). This
-    gates the runbook-generation suggestion downstream.
-
-    ``derive_closure_reason`` keys off ``path_selection.{mitigation_completed_at_turn,
-    rca_after_mitigation_confirmed}``, not ``mitigation_verified``, so the test
-    populates the at-Gate-3 path_selection state directly."""
+async def test_check_automatic_transitions_closure_reason_stabilized_investigation():
+    """A case stabilized then closed from INVESTIGATING yields the unified
+    closure reason 'closed_after_investigation' (the redesign folds the
+    former 'mitigation_sufficient' reason into this one). The stabilization
+    record marks the case as stabilized; closure_reason is engine-derived
+    from case.state."""
     engine = MilestoneEngine(
         MagicMock(),
         _make_repo(),
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
-    case.progress.mitigation_accepted = True
-    case.progress.mitigation_verified = True
-    case.path_selection = PathSelection(
-        path=InvestigationPath.MITIGATION_FIRST,
-        auto_selected=True,
-        rationale="ongoing critical",
-        selected_by="u1",
-        mitigation_completed_at_turn=case.current_turn,
-        # rca_after_mitigation_confirmed default False → at Gate 3
+    from faultmaven.modules.case.domain.models import StabilizationRecord
+
+    case.progress.stabilization = StabilizationRecord(
+        proposed_at_turn=case.current_turn,
+        accepted=True,
+        verified=True,
+        completed_at_turn=case.current_turn,
     )
 
     fake_response = MagicMock()
@@ -451,7 +444,9 @@ async def test_check_automatic_transitions_closure_reason_mitigation_sufficient(
 
     assert case.pending_transition is not None
     assert case.pending_transition["to_state"] == "closed"
-    assert case.pending_transition.get("closure_reason") == "mitigation_sufficient"
+    assert (
+        case.pending_transition.get("closure_reason") == "closed_after_investigation"
+    )
 
 
 @pytest.mark.asyncio

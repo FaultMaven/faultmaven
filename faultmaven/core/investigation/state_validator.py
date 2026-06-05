@@ -139,14 +139,16 @@ class StateValidator:
                 )
             )
 
-        # mitigation_verified requires mitigation_accepted (stage-gate dependency)
-        if progress.mitigation_verified and not progress.mitigation_accepted:
+        # stabilization verified requires accepted (stage-gate dependency).
+        # Post-redesign the mitigation gates live on the stabilization record.
+        _stab = progress.stabilization
+        if _stab is not None and _stab.verified and not _stab.accepted:
             issues.append(
                 ValidationIssue(
                     code="MILESTONE_ORDER_004",
                     message="mitigation_verified=True but mitigation_accepted=False",
                     severity=ValidationSeverity.ERROR,
-                    field="progress.mitigation_verified",
+                    field="progress.stabilization",
                     suggested_fix="Set mitigation_accepted=True or reset mitigation_verified=False",
                 )
             )

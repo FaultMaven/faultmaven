@@ -580,12 +580,11 @@ class TestInquiryTransitionLogic:
         )
 
         # Turn 2: Gate 1 closed → transition to INVESTIGATING.
-        # path_selection is None (Gate 2 deferred to after symptom_verified).
+        # Post-redesign there is no path fork to commit.
         case_after_turn2 = result2["case_updated"]
         assert case_after_turn2.state == CaseState.INVESTIGATING
         assert case_after_turn2.inquiry.problem_statement_confirmed is True
         assert case_after_turn2.inquiry.decided_to_investigate is True
-        assert case_after_turn2.path_selection is None
         assert result2["metadata"]["status_transitioned"] is True
 
     @pytest.mark.asyncio
@@ -793,11 +792,10 @@ class TestInquiryTransitionLogic:
         result2 = await engine.process_turn(case_after_turn1, "yes")
 
         case_after_turn2 = result2["case_updated"]
-        # INV-01 (Gate 1) passes → transition fires. path_selection is None;
-        # Gate 2 will fire after symptom_verified.
+        # INV-01 (Gate 1) passes → transition fires. Post-redesign there is
+        # no path fork to commit.
         assert case_after_turn2.state == CaseState.INVESTIGATING
         assert case_after_turn2.inquiry.problem_statement_confirmed is True
-        assert case_after_turn2.path_selection is None
         assert case_after_turn2.inquiry.decided_to_investigate is True
 
 

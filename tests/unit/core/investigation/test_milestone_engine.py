@@ -16,9 +16,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     InquiryData,
-    InvestigationPath,
     InvestigationStage,
-    PathSelection,
     ProblemVerification,
 )
 
@@ -69,12 +67,7 @@ def mock_repo():
 
 @pytest.fixture
 def base_case():
-    # Fully-pathed INVESTIGATING case (Gate 2 already committed) so tests
-    # exercising post-path behavior don't need to walk the pre-path
-    # window themselves. Post-INV-19 redesign, an INVESTIGATING case CAN
-    # legitimately have ``path_selection=None`` — that's the pre-path
-    # window between INQUIRY transition and Gate 2 click. Tests that
-    # need that shape construct it explicitly.
+    # INVESTIGATING case in the unified opportunistic flow (no path fork).
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
@@ -93,13 +86,6 @@ def base_case():
             decided_to_investigate=True,
             thread_id="thread_123",
             proposed_problem_statement="Test symptom",
-        ),
-        path_selection=PathSelection(
-            path=InvestigationPath.MITIGATION_FIRST,
-            auto_selected=True,
-            rationale="ongoing high impact",
-            alternate_path=InvestigationPath.ROOT_CAUSE,
-            selected_by="user_123",
         ),
     )
 
@@ -335,9 +321,10 @@ class TestMilestoneEngine:
             ),
         )
 
-        is_valid, errors = validate_reasoning_first(response, base_case)
+        is_valid, errors, offending = validate_reasoning_first(response, base_case)
         assert is_valid
         assert len(errors) == 0
+        assert offending == set()
 
     @pytest.mark.asyncio
     async def test_reasoning_validation_failure_no_justification(self, base_case):
@@ -359,7 +346,7 @@ class TestMilestoneEngine:
             ),
         )
 
-        is_valid, errors = validate_reasoning_first(response, base_case)
+        is_valid, errors, offending = validate_reasoning_first(response, base_case)
         assert not is_valid
         assert len(errors) > 0
         assert "internal_reasoning" in errors[0].lower()
@@ -793,14 +780,12 @@ class TestMilestoneEngine:
 
         updated_case = result["case_updated"]
 
-        # Gate 1 closes → case transitions to INVESTIGATING immediately
-        # (post-redesign: Gate 2 no longer gates the transition).
-        # path_selection is None; Gate 2 will fire later after
-        # symptom_verified.
+        # Gate 1 closes → case transitions to INVESTIGATING immediately.
+        # Post-redesign there is no path fork; the case simply enters the
+        # unified opportunistic flow.
         assert updated_case.state == CaseState.INVESTIGATING
         assert updated_case.inquiry.problem_statement_confirmed is True
         assert updated_case.inquiry.decided_to_investigate is True
-        assert updated_case.path_selection is None
 
         # Should have called LLM (not bypassed)
         assert mock_llm.generate.called
@@ -1080,81 +1065,6 @@ class TestMilestoneEngine:
         assert not mock_llm.generate.called
 
 
-class TestGate2SetOnceSemantic:
-    """Pin the behavioral promise: once ``case.path_selection`` is committed,
-    a subsequent ``path_selection`` intent is silently ignored — the committed
-    path is NOT overwritten. This is the only enforcement of "click once"
-    semantics; without this test, a future maintainer could rewrite the
-    warning-log path in ``milestone_engine`` to apply the re-commit, silently
-    changing the semantic. Companion to INV-19 (existence == commit) pinned
-    in test_investigation_gates.py::TestINV19PathSelectionAsCommitSignal.
-    """
-
-    @pytest.mark.asyncio
-    async def test_gate2_re_commitment_is_ignored_after_first_click(
-        self, mock_llm, mock_repo
-    ):
-        """A second path_selection intent on a case with a committed
-        path_selection must NOT overwrite the first commit. The handler logs
-        a warning and skips; the case retains the original path.
-        """
-        engine = MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-        )
-
-        # Construct an INVESTIGATING case past symptom_verified with a
-        # path_selection ALREADY committed (e.g., user clicked Gate 2 on a
-        # prior turn). Post-redesign, Gate 2 commits inside INVESTIGATING
-        # after symptom_verified — INQUIRY never carries a path_selection.
-        from faultmaven.modules.case.contracts import InvestigationProgress
-
-        original_commit = PathSelection(
-            path=InvestigationPath.ROOT_CAUSE,
-            auto_selected=True,
-            rationale="historical low urgency",
-            alternate_path=InvestigationPath.MITIGATION_FIRST,
-            selected_by="user_123",
-        )
-        case = Case(
-            case_id="case_aaaaaaaaaaab",
-            title="Re-commit test",
-            state=CaseState.INVESTIGATING,
-            user_id="user_123",
-            organization_id="org_123",
-            description="Test description",
-            inquiry=InquiryData(
-                problem_statement_confirmed=True,
-                decided_to_investigate=True,
-                thread_id="thread_123",
-                proposed_problem_statement="Test symptom",
-            ),
-            progress=InvestigationProgress(symptom_verified=True),
-            path_selection=original_commit,
-        )
-        original_selected_at = case.path_selection.selected_at
-
-        mock_llm.generate.return_value = json.dumps(
-            {"agent_response": "noop", "state_updates": {}}
-        )
-
-        # Fire a second path_selection intent picking the OTHER path.
-        result = await engine.process_turn(
-            case=case,
-            user_message="Actually let's do mitigation-first.",
-            intent_type="path_selection",
-            intent_data={"investigation_path": "mitigation_first"},
-        )
-
-        updated = result["case_updated"]
-
-        # The original commit must survive — neither path nor metadata flipped.
-        assert updated.path_selection is not None
-        assert updated.path_selection.path == InvestigationPath.ROOT_CAUSE
-        assert updated.path_selection.selected_at == original_selected_at
-
-
 class TestInquiryConfirmation:
     """Test that INQUIRY→INVESTIGATING transition relies on the LLM setting
     user_confirmed_investigation=True. No mechanical keyword fallback."""
@@ -1277,12 +1187,10 @@ class TestInquiryConfirmation:
 
         updated_case = result["case_updated"]
         # Gate 1 closed via the LLM path (problem_statement_confirmed=True)
-        # → case transitions to INVESTIGATING (post-redesign: Gate 2 fires
-        # later in INVESTIGATING after symptom_verified, so it no longer
-        # gates the INQUIRY → INVESTIGATING transition).
+        # → case transitions to INVESTIGATING. Post-redesign there is no
+        # path fork gating the INQUIRY → INVESTIGATING transition.
         assert updated_case.inquiry.problem_statement_confirmed is True
         assert updated_case.state == CaseState.INVESTIGATING
-        assert updated_case.path_selection is None
 
 
 # =============================================================================
@@ -1889,8 +1797,12 @@ class TestRootCauseConclusionPersistence:
             investigation_tools=MagicMock(),
         )
 
+        from faultmaven.modules.case.contracts import CauseState
+
         base_case.progress.symptom_verified = True
-        base_case.progress.root_cause_identified = True
+        base_case.progress.root_cause_likelihood = 0.85
+        base_case.progress.root_cause_method = "direct_analysis"
+        base_case.progress.cause_state = CauseState.IDENTIFIED
 
         mock_llm.generate.return_value = json.dumps(
             {
@@ -2246,64 +2158,11 @@ class TestNeedsInfoFollowupProposesClose:
         # The propose-close path did NOT fire
         assert metadata.get("resolution_suggest_close") is not True
 
-    @pytest.mark.asyncio
-    async def test_closure_reason_mitigation_sufficient_on_gate3(self):
-        """When the case is at Gate 3 (mitigation_first path, mitigation
-        verified, RCA not yet committed), the auto-derived closure_reason
-        is 'mitigation_sufficient' rather than 'closed_after_investigation'."""
-        from faultmaven.modules.case.contracts import (
-            Evidence,
-            EvidenceCategory,
-            EvidenceSourceType,
-            InvestigationPath,
-            PathSelection,
-            RootCauseConclusion,
-        )
-
-        engine = self._make_engine()
-        case = self._make_case_with_pending_resolve_needs_info()
-        case.path_selection = PathSelection(
-            path=InvestigationPath.MITIGATION_FIRST,
-            auto_selected=True,
-            rationale="ongoing + high",
-            selected_by="u1",  # path existence = Gate 2 committed
-            mitigation_completed_at_turn=5,
-            rca_after_mitigation_confirmed=False,  # Gate 3 still open
-        )
-        case.root_cause_conclusion = RootCauseConclusion(
-            root_cause="Misconfigured connection pool",
-            confidence_level="verified",
-            likelihood=0.9,
-            mechanism="Pool timeout too short",
-        )
-        case.evidence.append(
-            Evidence(
-                evidence_id="ev_001122334455",
-                summary="Test",
-                category=EvidenceCategory.SYMPTOM_EVIDENCE,
-                source_type=EvidenceSourceType.LOGS,
-                source_file_id="file_aabbccdd1122",
-                primary_purpose="Test",
-                collected_by="user_123",
-                collected_at_turn=1,
-                collected_at=datetime.now(UTC),
-            )
-        )
-        # No Solution row → readiness verdict NEEDS_INFO
-        metadata = {}
-        await engine._check_automatic_transitions(case, metadata, user_message="ok")
-
-        assert case.pending_transition is not None
-        assert case.pending_transition["to_state"] == "closed"
-        # Gate 3 open → closure_reason is mitigation_sufficient
-        assert case.pending_transition["closure_reason"] == "mitigation_sufficient"
-
-
 class TestCreateTurnRecordSystemFeedbackTruncation:
     """Regression: ``TurnProgress.system_feedback`` has a 1000-char Pydantic
-    cap. Multiple backstops (path-conditional emission rejection, milestone
-    ordering guards, data-quality blockers, etc.) each append independently
-    to ``metadata["system_feedback"]``. When 4+ backstops fire in one turn
+    cap. Multiple backstops (milestone ordering guards, evidence-need
+    rejections, data-quality blockers, etc.) each append independently to
+    ``metadata["system_feedback"]``. When several backstops fire in one turn
     the accumulated text overflowed the cap and crashed the turn save with
     a 500. ``_create_turn_record`` is the single chokepoint where all
     system_feedback values are written into the TurnProgress, so truncation
@@ -2343,34 +2202,35 @@ class TestCreateTurnRecordSystemFeedbackTruncation:
         assert record.system_feedback == short_feedback
 
     def test_oversized_system_feedback_is_truncated_with_marker(self):
-        """Simulate the multi-backstop pile-up from the eval failure:
-        four path-conditional rejection messages concatenated push past
-        1000 chars. Without truncation, TurnProgress validation crashes."""
+        """Simulate a multi-backstop pile-up: several rejection messages
+        concatenated push past 1000 chars. Without truncation, TurnProgress
+        validation crashes."""
         from faultmaven.modules.case.contracts import TurnOutcome
 
         engine = self._make_engine()
-        # Each path-conditional rejection message is ~300-400 chars.
-        # Four firing in one turn (rejected RCA milestone + causal_evidence
-        # + hypotheses_to_add + solutions_to_add in pre_path_investigating)
-        # easily exceeds 1000.
+        # Each rejection message is ~300-400 chars. Several firing in one
+        # turn easily exceeds 1000.
         oversized_feedback = (
-            "PATH-CONDITIONAL MILESTONE ERROR: You set ``root_cause_identified=True`` "
-            "in a state where the _PRE_PATH_DIAGNOSIS_BLOCK prompt directive forbids "
-            "RCA-side milestones. Root-cause work is deferred until the user commits "
-            "an investigation path (Gate 2). Do not re-emit ``root_cause_identified=True`` "
-            "until the case reaches a state where RCA is in scope.\n"
-            "PATH-CONDITIONAL EMISSION ERROR: You classified evidence as "
-            "``causal_evidence`` in a state where the _PRE_PATH_DIAGNOSIS_BLOCK "
-            "prompt directive explicitly forbids this category. Causal claims "
-            "presuppose a hypothesis to attach to (INV-17), and hypothesis formation "
-            "is gated in this state. Use ``symptom_evidence`` instead.\n"
-            "PATH-CONDITIONAL EMISSION ERROR: You emitted ``hypotheses_to_add`` "
-            "(2 record(s)) in a state where the _PRE_PATH_DIAGNOSIS_BLOCK prompt "
-            "directive forbids structured hypothesis emission. Hypothesis formation "
-            "is deferred until the case reaches a state where it is in scope.\n"
-            "PATH-CONDITIONAL EMISSION ERROR: You emitted ``solutions_to_add`` "
-            "(1 record(s)) before the user committed an investigation path (Gate 2). "
-            "Mitigation and solution proposals only belong inside the chosen path."
+            "MILESTONE ORDER ERROR: You set mitigation_verified=True without "
+            "first setting mitigation_accepted=True. Verification presupposes "
+            "acceptance — set mitigation_accepted=True (based on the user's "
+            "confirmation signals) before mitigation_verified=True. Set BOTH "
+            "milestones in the same response if both happened this turn.\n"
+            "EVIDENCE NEED REJECTION: A causal-purpose evidence_need was emitted "
+            "with no valid motivating hypothesis. Causal needs are motivated by "
+            "hypotheses; create the hypothesis first, then attach the need to "
+            "it via motivating_hypothesis_ids.\n"
+            "DATA QUALITY: The submitted log file could not be parsed into "
+            "structured records. Re-check the format and resubmit, or describe "
+            "the relevant lines directly so the symptom can be verified.\n"
+            "HYPOTHESIS STATE: A REFUTED hypothesis update was emitted without a "
+            "refutation_reason. state=REFUTED and refutation_reason travel "
+            "together as a pair — an update carrying one without the other is "
+            "rejected and re-surfaced here for retry.\n"
+            "SOLUTION ORDERING: solution_verified=True was emitted before "
+            "solution_accepted=True. Verification presupposes acceptance — set "
+            "solution_accepted first, then verify once the user confirms the fix "
+            "worked. Both may be set in one response if both happened this turn."
         )
         assert len(oversized_feedback) > 1000  # sanity: the test setup is real
 
@@ -2392,7 +2252,7 @@ class TestCreateTurnRecordSystemFeedbackTruncation:
         assert len(record.system_feedback) <= 1000
         assert "[truncated]" in record.system_feedback
         # First backstop's content is preserved (truncation is tail-cut).
-        assert "PATH-CONDITIONAL MILESTONE ERROR" in record.system_feedback
+        assert "MILESTONE ORDER ERROR" in record.system_feedback
 
     def test_none_system_feedback_remains_none(self):
         from faultmaven.modules.case.contracts import TurnOutcome

@@ -97,8 +97,10 @@ class TestMilestoneOrdering:
         assert errors[0].code == "MILESTONE_ORDER_002"
 
     def test_root_cause_without_likelihood(self, validator, base_case):
-        """root_cause_identified should have root_cause_likelihood set."""
-        base_case.progress.root_cause_identified = True
+        """cause_state=IDENTIFIED should have root_cause_likelihood set."""
+        from faultmaven.modules.case.contracts import CauseState
+
+        base_case.progress.cause_state = CauseState.IDENTIFIED
         base_case.progress.root_cause_likelihood = None
 
         issues = validator._validate_milestone_ordering(base_case.progress)

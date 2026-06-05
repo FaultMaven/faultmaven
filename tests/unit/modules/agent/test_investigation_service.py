@@ -464,20 +464,17 @@ class TestInvestigationServiceProcessTurn:
 
 
 class TestInvestigationServiceIntentDispatch:
-    """Pins the dispatch wiring for gate-confirmation intents.
+    """Pins the dispatch wiring for intents.
 
-    The slice 1 PR (#316) added PATH_SELECTION and POST_MITIGATION_CHOICE
-    to the ``IntentType`` enum; slice 2 / slice 3 added the engine-side
-    handlers; but the investigation_service dispatcher was left without
-    routes for these types, causing them to hit ``raise ValueError("Unknown
-    intent type: ...")`` and surface as 500 to the simulator. Exposed by
-    the post-Fix-2 eval run on 2026-05-20 — every persona Gate 2 click
-    returned 500, which the simulator's api_driver fallback masked by
-    hardcoding ``case_status="investigating"`` in the response stub, making
-    the case appear to oscillate.
+    The investigation_service dispatcher must route every ``IntentType``
+    enum value (either to ``engine.process_turn`` or to a ValidationException
+    for not-yet-implemented intents), never hitting a 500-class
+    ``raise ValueError("Unknown intent type: ...")``.
 
-    These tests verify the dispatcher routes both new intent types to the
-    engine (which then dispatches internally to the per-gate handler).
+    NOTE (investigation-flow redesign): the PATH_SELECTION (Gate 2) and
+    POST_MITIGATION_CHOICE (Gate 3) intents were removed with the path
+    fork, so their dispatch tests are gone — the exhaustiveness test below
+    is the surviving guard.
     """
 
     @pytest.fixture
@@ -486,75 +483,6 @@ class TestInvestigationServiceIntentDispatch:
             milestone_engine=mock_milestone_engine,
             case_repository=mock_case_repository,
         )
-
-    @pytest.mark.asyncio
-    async def test_path_selection_intent_reaches_engine(
-        self,
-        service,
-        mock_case_repository,
-        mock_milestone_engine,
-        sample_case,
-        sample_user_id,
-    ):
-        """PATH_SELECTION (Gate 2) intent must dispatch to engine.process_turn
-        with the intent_type and investigation_path threaded through."""
-        sample_case.user_id = sample_user_id
-        await mock_case_repository.save(sample_case)
-
-        payload = TurnPayload(
-            query="Let's start with mitigation-first.",
-            intent=QueryIntent(
-                type=IntentType.PATH_SELECTION,
-                investigation_path="mitigation_first",
-            ),
-        )
-
-        # Should NOT raise "Unknown intent type".
-        await service.process_turn(
-            case_id=sample_case.case_id,
-            user_id=sample_user_id,
-            payload=payload,
-        )
-
-        # Engine was called with the intent_type passed through; the
-        # engine's internal dispatcher routes to the path_selection handler.
-        call_kwargs = mock_milestone_engine.process_turn.call_args
-        assert call_kwargs.kwargs.get("intent_type") == "path_selection"
-        intent_data = call_kwargs.kwargs.get("intent_data") or {}
-        assert intent_data.get("investigation_path") == "mitigation_first"
-
-    @pytest.mark.asyncio
-    async def test_post_mitigation_choice_intent_reaches_engine(
-        self,
-        service,
-        mock_case_repository,
-        mock_milestone_engine,
-        sample_case,
-        sample_user_id,
-    ):
-        """POST_MITIGATION_CHOICE (Gate 3) intent must dispatch to engine
-        with the intent_type and continue_to_rca threaded through."""
-        sample_case.user_id = sample_user_id
-        await mock_case_repository.save(sample_case)
-
-        payload = TurnPayload(
-            query="Let's continue with root-cause analysis.",
-            intent=QueryIntent(
-                type=IntentType.POST_MITIGATION_CHOICE,
-                continue_to_rca=True,
-            ),
-        )
-
-        await service.process_turn(
-            case_id=sample_case.case_id,
-            user_id=sample_user_id,
-            payload=payload,
-        )
-
-        call_kwargs = mock_milestone_engine.process_turn.call_args
-        assert call_kwargs.kwargs.get("intent_type") == "post_mitigation_choice"
-        intent_data = call_kwargs.kwargs.get("intent_data") or {}
-        assert intent_data.get("continue_to_rca") is True
 
     @pytest.mark.parametrize("intent_value", list(IntentType))
     @pytest.mark.asyncio
@@ -597,10 +525,6 @@ class TestInvestigationServiceIntentDispatch:
             intent_kwargs["action"] = "accept"
         elif intent_value == IntentType.EVIDENCE_NEED:
             intent_kwargs["evidence_need_id"] = "eneed_test12345"
-        elif intent_value == IntentType.PATH_SELECTION:
-            intent_kwargs["investigation_path"] = "mitigation_first"
-        elif intent_value == IntentType.POST_MITIGATION_CHOICE:
-            intent_kwargs["continue_to_rca"] = True
 
         payload = TurnPayload(query="test", intent=QueryIntent(**intent_kwargs))
 

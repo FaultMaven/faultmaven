@@ -42,12 +42,11 @@ from faultmaven.modules.case.contracts import (
     EvidenceNeed,
     EvidenceSourceType,
     InquiryData,
-    InvestigationPath,
     InvestigationStage,
     NeedPriority,
     NeedPurpose,
     NeedState,
-    PathSelection,
+    StabilizationRecord,
 )
 
 # ============================================================
@@ -59,21 +58,18 @@ def _make_case(
     *,
     state: CaseState = CaseState.INVESTIGATING,
     stage: InvestigationStage = InvestigationStage.DIAGNOSIS,
-    path: InvestigationPath = InvestigationPath.ROOT_CAUSE,
 ) -> Case:
+    """Build a Case in the unified opportunistic flow (no path fork).
+
+    The display stage (DIAGNOSIS / MITIGATION / TREATMENT) is derived
+    from the action-compliance gates: MITIGATION when a stabilization is
+    accepted-but-not-verified, TREATMENT when a solution is
+    accepted-but-not-verified, else DIAGNOSIS.
+    """
     inquiry = InquiryData()
     inquiry.proposed_problem_statement = "Test problem"
     inquiry.problem_statement_confirmed = True
     inquiry.decided_to_investigate = True
-
-    path_selection = None
-    if state == CaseState.INVESTIGATING:
-        path_selection = PathSelection(
-            path=path,
-            auto_selected=False,
-            rationale="test fixture",
-            selected_by="user_test",
-        )
 
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
@@ -83,13 +79,14 @@ def _make_case(
         description="Test problem",
         state=state,
         inquiry=inquiry,
-        path_selection=path_selection,
     )
     case.current_turn = 5
     if state == CaseState.INVESTIGATING:
         case.progress.symptom_verified = True
         if stage == InvestigationStage.MITIGATION:
-            case.progress.mitigation_accepted = True
+            case.progress.stabilization = StabilizationRecord(
+                proposed_at_turn=case.current_turn, accepted=True
+            )
         elif stage == InvestigationStage.TREATMENT:
             case.progress.solution_accepted = True
     return case
@@ -240,7 +237,6 @@ class TestPostDiagnosisReVerificationException:
     def test_presence_evidence_surfaces_in_mitigation(self):
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
-            path=InvestigationPath.MITIGATION_FIRST,
         )
         ev = _make_evidence(case, category=EvidenceCategory.SYMPTOM_EVIDENCE)
         out = _build_evidence_needs_block(case)
@@ -285,7 +281,6 @@ class TestPostDiagnosisReVerificationException:
     def test_superseded_need_still_excluded_in_mitigation(self):
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
-            path=InvestigationPath.MITIGATION_FIRST,
         )
         superseded = _make_need(case, state=NeedState.SUPERSEDED)
         pending = _make_need(case, state=NeedState.PENDING)
@@ -437,7 +432,6 @@ class TestOutstandingVsReVerificationSplit:
     def test_mitigation_with_only_reverification_omits_outstanding_section(self):
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
-            path=InvestigationPath.MITIGATION_FIRST,
         )
         # A confirmed finding (presence-evidence row) but no PENDING need.
         _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
@@ -448,7 +442,6 @@ class TestOutstandingVsReVerificationSplit:
     def test_mitigation_with_only_outstanding_omits_reverification_section(self):
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
-            path=InvestigationPath.MITIGATION_FIRST,
         )
         _make_need(case, state=NeedState.PENDING)
         out = _build_evidence_needs_block(case)
@@ -458,7 +451,6 @@ class TestOutstandingVsReVerificationSplit:
     def test_mitigation_with_both_renders_both_sections_in_order(self):
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
-            path=InvestigationPath.MITIGATION_FIRST,
         )
         pending = _make_need(case, state=NeedState.PENDING, request_text="open work")
         finding = _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
@@ -499,7 +491,6 @@ class TestAntiAnchoringFraming:
     def test_framing_present_in_mitigation_outstanding_only(self):
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
-            path=InvestigationPath.MITIGATION_FIRST,
         )
         _make_need(case, state=NeedState.PENDING)
         out = _build_evidence_needs_block(case)
@@ -508,7 +499,6 @@ class TestAntiAnchoringFraming:
     def test_framing_present_in_mitigation_reverification_only(self):
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
-            path=InvestigationPath.MITIGATION_FIRST,
         )
         _make_evidence(case, category=EvidenceCategory.SYMPTOM_EVIDENCE)
         out = _build_evidence_needs_block(case)
@@ -517,7 +507,6 @@ class TestAntiAnchoringFraming:
     def test_framing_present_in_mitigation_both_sections(self):
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
-            path=InvestigationPath.MITIGATION_FIRST,
         )
         _make_need(case, state=NeedState.PENDING)
         _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
@@ -532,7 +521,6 @@ class TestAntiAnchoringFraming:
         depends on (LLM sees framing before parsing entries)."""
         case = _make_case(
             stage=InvestigationStage.MITIGATION,
-            path=InvestigationPath.MITIGATION_FIRST,
         )
         _make_need(case, state=NeedState.PENDING)
         _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)

@@ -624,7 +624,10 @@ class ProgressMonitor:
             return False
 
         if action_type == "mitigation":
-            verified = case.progress.mitigation_verified
+            # Post-redesign the mitigation verify gate lives on the
+            # stabilization record, not a progress boolean.
+            _stab = case.progress.stabilization
+            verified = bool(_stab is not None and _stab.verified)
         elif action_type == "solution":
             verified = case.progress.solution_verified
         else:
