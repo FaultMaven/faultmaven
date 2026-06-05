@@ -95,6 +95,7 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
     RootCauseConclusion,
     Solution,
+    SolutionFeasible,
     SolutionState,
     SolutionType,
     StabilizationRecord,
@@ -639,12 +640,16 @@ def _recompute_assessment_state(case: "Case") -> None:
     ``_apply_investigation_updates`` so hypotheses/solutions added this turn
     are reflected.
 
-    - ``cause_state``: ``IDENTIFIED`` is sticky/forward-only (the grounded
-      cause-identification signal is honored in the milestone apply loop). Until
-      then it derives from the active-hypothesis count: ``>= 2`` ACTIVE
-      hypotheses → ``CANDIDATES`` (the diagnostic machinery should keep running),
-      else ``UNKNOWN``. Single source of truth:
-      ``HypothesisManager.count_active_hypotheses``.
+    - ``cause_state``: ``IDENTIFIED`` is sticky/forward-only. It is reached
+      either from the LLM's grounded ``root_cause_identified`` signal (honored
+      in the milestone apply loop) OR derived here from observable grounding —
+      a high ``root_cause_likelihood`` (>= 0.7) backed by causal evidence, or a
+      recorded ``RootCauseConclusion``. Deriving it (not depending solely on the
+      LLM setting a separate milestone) keeps cause_state a robust engine-owned
+      truth signal (R1): the LLM routinely expresses high confidence + files
+      causal evidence without also toggling the milestone flag. Until
+      IDENTIFIED, it derives from the active-hypothesis count: ``>= 2`` ACTIVE
+      hypotheses → ``CANDIDATES``, else ``UNKNOWN``.
     - ``solution_state``: ``SELECTED`` once a permanent SOLUTION has been
       proposed (or a Solution record exists). ``CANDIDATES`` (multi-solution
       deliberation) is reserved for a follow-on and not produced here.
@@ -652,7 +657,18 @@ def _recompute_assessment_state(case: "Case") -> None:
     p = case.progress
 
     if p.cause_state != CauseState.IDENTIFIED:
-        if HypothesisManager.count_active_hypotheses(case) >= 2:
+        has_causal_evidence = any(
+            e.category == EvidenceCategory.CAUSAL_EVIDENCE for e in case.evidence
+        )
+        has_root_cause_conclusion = bool(
+            case.root_cause_conclusion
+            and getattr(case.root_cause_conclusion, "root_cause", None)
+        )
+        if (
+            p.root_cause_likelihood >= 0.7 and has_causal_evidence
+        ) or has_root_cause_conclusion:
+            p.cause_state = CauseState.IDENTIFIED
+        elif HypothesisManager.count_active_hypotheses(case) >= 2:
             p.cause_state = CauseState.CANDIDATES
         else:
             p.cause_state = CauseState.UNKNOWN
@@ -660,6 +676,49 @@ def _recompute_assessment_state(case: "Case") -> None:
     if p.solution_state != SolutionState.SELECTED:
         if p.solution_proposed or bool(case.solutions):
             p.solution_state = SolutionState.SELECTED
+
+
+def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
+    """Deferred-implementation disposition (redesign §3.1 row 3 / §6 Q2).
+
+    When the cause + fix are known but the fix cannot be applied or verified
+    this session (``solution_feasible == DEFERRED`` — e.g. it needs an
+    out-of-band change request, a maintenance window, or another team), the
+    case should be CLOSED with the solution documented rather than held open
+    waiting indefinitely (the failure mode observed in validation run 2).
+
+    The engine proposes the close DETERMINISTICALLY: the LLM does not reliably
+    drive to close on its own when implementation is deferred. The user still
+    confirms via the standard disposition handshake, and the documented
+    root cause + solution are preserved on the closed case
+    (``closure_reason=closed_after_investigation``).
+    """
+    p = case.progress
+    if p.solution_feasible != SolutionFeasible.DEFERRED:
+        return
+    # Only meaningful once a fix is actually on record.
+    if not (p.solution_proposed or case.solutions):
+        return
+    # Don't clobber an in-flight handshake, and never on a terminal case.
+    if getattr(case, "pending_transition", None) or case.is_terminal:
+        return
+
+    closure_message = (
+        "The root cause and fix are documented, but the fix can't be applied "
+        "or verified during this session — it needs out-of-band implementation "
+        "(a change request, maintenance window, or another team). Shall I close "
+        "this case with the solution documented for your team to apply?"
+    )
+    from faultmaven.core.investigation.terminal_transitions import propose_transition
+
+    propose_transition(case=case, to_state="closed", summary=closure_message)
+    metadata["transition_proposed"] = True
+    metadata["override_suggestions"] = _close_confirmation_suggestions()
+    metadata["deferred_solution_closure_message"] = closure_message
+    logger.info(
+        f"Proposed CLOSED transition for case {case.case_id} "
+        f"(solution_feasible=DEFERRED; closure preserves the documented solution)"
+    )
 
 
 def _supersede_needs_on_hypothesis_retirement(
@@ -5354,6 +5413,8 @@ class MilestoneEngine:
 
             if m.root_cause_likelihood is not None:
                 p.root_cause_likelihood = m.root_cause_likelihood
+            if getattr(m, "solution_feasible", None) is not None:
+                p.solution_feasible = SolutionFeasible(m.solution_feasible)
             _valid_methods = {
                 "direct_analysis",
                 "hypothesis_validation",
@@ -5737,6 +5798,10 @@ class MilestoneEngine:
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).
         _recompute_assessment_state(case)
+
+        # Deferred-implementation disposition: if the fix is known but can't be
+        # applied this session, propose CLOSE-with-documented-solution (§3.1 row 3).
+        _maybe_propose_deferred_close(case, metadata)
 
         # Bug #4: Evidence-Milestone Linking (Moved here to ensure evidence exists)
         if metadata["milestones_completed"] and metadata["evidence_added"]:

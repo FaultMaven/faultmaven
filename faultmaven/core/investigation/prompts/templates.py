@@ -1574,6 +1574,15 @@ evidence directly. You may do several in one turn if the evidence supports it.
    - The user's response determines what happens next:
      → If they execute and submit results → transitions to TREATMENT (inferred acceptance)
      → If they question or refuse → stay in DIAGNOSIS and address their concern
+     → If they say the fix CANNOT be applied or verified during this session —
+       it needs an out-of-band change request, a maintenance window, approval,
+       or another team (e.g. "this goes through our GitOps pipeline, 2-4 hour
+       lead time", "I'll file a change ticket", "the platform team deploys it") —
+       set ``solution_feasible="deferred"`` in your milestone updates. Do NOT
+       keep the case open waiting for an implementation that won't land this
+       session. The system will offer to close the case with the root cause and
+       fix documented for the user's team to apply; acknowledge the constraint,
+       confirm the documented fix, and let the close proceed.
 
 **COMPLIANCE DETECTION — recognizing that the user executed your proposed action:**
 ✅ User provides NEW evidence/output from AFTER the proposed action (logs, metrics, command output)

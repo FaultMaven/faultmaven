@@ -24,7 +24,9 @@ from faultmaven.core.investigation.schemas import InternalReasoning, MilestoneUp
 from faultmaven.modules.case.contracts import (
     CaseState,
     CauseState,
+    EvidenceCategory,
     InvestigationProgress,
+    SolutionFeasible,
     SolutionState,
 )
 
@@ -103,7 +105,7 @@ class TestSurgicalStrip:
 
 
 class TestCauseStateDerivation:
-    def _case_with_hyps(self, n_active: int):
+    def _case_with_hyps(self, n_active: int, *, causal_evidence=0, conclusion=False):
         hm = create_hypothesis_manager()
         hyps = {}
         for i in range(n_active):
@@ -115,7 +117,18 @@ class TestCauseStateDerivation:
             )
             hyps[h.hypothesis_id] = h
         progress = InvestigationProgress()
-        return SimpleNamespace(progress=progress, hypotheses=hyps, solutions=[])
+        evidence = [
+            SimpleNamespace(category=EvidenceCategory.CAUSAL_EVIDENCE)
+            for _ in range(causal_evidence)
+        ]
+        rcc = SimpleNamespace(root_cause="the cause") if conclusion else None
+        return SimpleNamespace(
+            progress=progress,
+            hypotheses=hyps,
+            solutions=[],
+            evidence=evidence,
+            root_cause_conclusion=rcc,
+        )
 
     def test_unknown_with_fewer_than_two_active(self):
         case = self._case_with_hyps(1)
@@ -126,6 +139,25 @@ class TestCauseStateDerivation:
         case = self._case_with_hyps(2)
         _recompute_assessment_state(case)
         assert case.progress.cause_state == CauseState.CANDIDATES
+
+    def test_identified_derived_from_likelihood_plus_causal_evidence(self):
+        # Follow-on B: high confidence + causal evidence -> IDENTIFIED even
+        # though the LLM never set the root_cause_identified milestone.
+        case = self._case_with_hyps(2, causal_evidence=1)  # would be CANDIDATES
+        case.progress.root_cause_likelihood = 0.8
+        _recompute_assessment_state(case)
+        assert case.progress.cause_state == CauseState.IDENTIFIED
+
+    def test_high_likelihood_without_causal_evidence_is_not_identified(self):
+        case = self._case_with_hyps(0, causal_evidence=0)
+        case.progress.root_cause_likelihood = 0.9
+        _recompute_assessment_state(case)
+        assert case.progress.cause_state == CauseState.UNKNOWN
+
+    def test_identified_derived_from_root_cause_conclusion(self):
+        case = self._case_with_hyps(0, conclusion=True)
+        _recompute_assessment_state(case)
+        assert case.progress.cause_state == CauseState.IDENTIFIED
 
     def test_identified_is_sticky(self):
         case = self._case_with_hyps(3)  # would be CANDIDATES
@@ -141,3 +173,71 @@ class TestCauseStateDerivation:
         case.progress.solution_proposed = True
         _recompute_assessment_state(case)
         assert case.progress.solution_state == SolutionState.SELECTED
+
+
+class TestDeferredImplementationClose:
+    """Follow-on A: solution_feasible=DEFERRED proposes CLOSE-with-documented-solution."""
+
+    def _case(self, *, feasible, solution_proposed, pending=None, terminal=False):
+        progress = InvestigationProgress()
+        progress.solution_feasible = feasible
+        progress.solution_proposed = solution_proposed
+        case = SimpleNamespace(
+            progress=progress,
+            solutions=[],
+            pending_transition=pending,
+            is_terminal=terminal,
+            state=CaseState.INVESTIGATING,
+            case_id="case_test",
+        )
+        return case
+
+    def test_no_proposal_when_feasible_now(self):
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+
+        case = self._case(feasible=SolutionFeasible.NOW, solution_proposed=True)
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert "transition_proposed" not in meta
+        assert case.pending_transition is None
+
+    def test_no_proposal_when_deferred_but_no_solution(self):
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=False)
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert "transition_proposed" not in meta
+
+    def test_proposes_close_when_deferred_with_solution(self):
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert meta.get("transition_proposed") is True
+        assert case.pending_transition is not None
+        assert case.pending_transition["to_state"] == "closed"
+        assert meta.get("override_suggestions")
+
+    def test_no_proposal_when_handshake_in_flight(self):
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+
+        case = self._case(
+            feasible=SolutionFeasible.DEFERRED,
+            solution_proposed=True,
+            pending={"to_state": "resolved"},
+        )
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        # existing pending transition must not be clobbered
+        assert case.pending_transition == {"to_state": "resolved"}
+        assert "transition_proposed" not in meta
