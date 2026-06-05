@@ -112,26 +112,17 @@ evidence_need_status_changed_total = Counter(
     ["from_state", "to_state"],
 )
 
-evidence_need_rejected_total = Counter(
-    "faultmaven_evidence_need_rejected_total",
-    "EvidenceNeedUpdate emissions rejected by the path-conditional "
-    "emission backstop. Labels: state "
-    "(pre_path_investigating | pre_mitigation_mitigation_first | "
-    "gate3_pending). Parallel to the existing causal_evidence and "
-    "hypotheses_to_add rejection counters. A sustained nonzero rate "
-    "means the prompt-side guidance is weakening — prompt blocks for "
-    "the restricted state need to be tightened.",
-    ["state"],
-)
+# NOTE: the former ``evidence_need_rejected_total`` counter was removed with
+# the path-conditional emission backstop (unified opportunistic flow): the
+# apply-layer no longer rejects EvidenceNeedUpdate emissions by investigation
+# state, so there is nothing to count.
 
 
 # Phase 6 response-flattening seam. Counts ``SuggestedFollowUp.evidence_need_id``
 # values that ``_flatten_follow_ups`` drops because the ``new_index_N``
 # placeholder didn't resolve against this turn's
-# ``metadata["evidence_needs_updated"]`` list. Symmetric with
-# ``evidence_need_rejected_total`` (apply-layer rejections) so all drops
-# along the evidence-needs pipeline are observable as ratios, not just
-# log greps.
+# ``metadata["evidence_needs_updated"]`` list. Observable as a ratio so drops
+# along the evidence-needs suggestion seam surface without log greps.
 #
 # Healthy-system expectation: near zero. A sustained nonzero rate signals
 # the LLM is emitting stale or mis-indexed ``new_index_N`` references on
@@ -147,8 +138,7 @@ evidence_need_id_dropped_total = Counter(
     "faultmaven_evidence_need_id_dropped_total",
     "SuggestedFollowUp.evidence_need_id values dropped at the response-"
     "flattening seam because the new_index_N placeholder didn't resolve. "
-    "Symmetric with ``evidence_need_rejected_total``. A sustained nonzero "
-    "rate means the LLM is emitting stale same-turn ID references on the "
-    "suggestion side.",
+    "A sustained nonzero rate means the LLM is emitting stale same-turn ID "
+    "references on the suggestion side.",
     ["reason"],
 )

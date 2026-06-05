@@ -28,7 +28,7 @@ import logging
 import re
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any
 from uuid import uuid4
 
 # Module initialization
@@ -62,7 +62,6 @@ from faultmaven.core.investigation.state_validator import (
     ValidationSeverity,
 )
 from faultmaven.core.investigation.working_conclusion_generator import (
-    ProgressMetrics,
     calculate_progress_metrics,
     generate_working_conclusion,
 )
@@ -76,12 +75,10 @@ from faultmaven.modules.case.contracts import (
     CaseAction,
     CaseState,
     CauseState,
-    SolutionState,
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceNeed,
-    EvidenceSourceType,
     EvidenceStance,
     HypothesisState,
     InvestigationActionType,
@@ -98,6 +95,7 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
     RootCauseConclusion,
     Solution,
+    SolutionState,
     SolutionType,
     StabilizationRecord,
     TemporalState,
@@ -478,7 +476,6 @@ def validate_reasoning_first(
     # Check 1.5: Warn if trying to complete milestones with no actionable evidence.
     # Contextual evidence (raw uploads) cannot justify milestones — only
     # LLM-classified evidence (symptom, causal, mitigation, solution) counts.
-    from faultmaven.modules.case.contracts import EvidenceCategory
 
     evidence_being_added = (
         getattr(response_obj.state_updates, "evidence_to_add", []) or []
@@ -777,8 +774,8 @@ def _gate1_is_pending(case: "Case") -> bool:
 
 
 def engine_owned_affordances(
-    case: "Case", metadata: Optional[dict[str, Any]] = None
-) -> Optional[tuple[str, list]]:
+    case: "Case", metadata: dict[str, Any] | None = None
+) -> tuple[str, list] | None:
     """Return ``(gate_name, affordance_list)`` when a state-machine gate is pending.
 
     The state machine has a small enumerable set of gates: imperative
@@ -994,7 +991,7 @@ def _runbook_suggestion() -> dict:
     }
 
 
-def _regenerate_resolution_summary_suggestion(remaining: int) -> Optional[dict]:
+def _regenerate_resolution_summary_suggestion(remaining: int) -> dict | None:
     """Regenerate-resolution-summary COOPERATIVE suggestion.
 
     Returns None when ``remaining <= 0`` so the caller can drop the
@@ -3851,7 +3848,7 @@ class MilestoneEngine:
                 self._vectorize_evidence(evidence_id, tool_context),
                 timeout=reactive_timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Reactive vectorization timed out for %s after %ss "
                 "(trigger=%s). Agent proceeds without semantic search "
@@ -5644,7 +5641,7 @@ class MilestoneEngine:
 
                 # Gap 0: Create ProposedAction for compliance detection chain
                 action_type = _determine_action_type(case, s_item.solution_type)
-                downgrade_reason: Optional[str] = None
+                downgrade_reason: str | None = None
 
                 # 3C: Hypothesis gate — SOLUTION requires at least one hypothesis.
                 # If no hypotheses exist, downgrade to DIAGNOSTIC to prevent
@@ -5812,7 +5809,7 @@ class MilestoneEngine:
                 self._resolve_id_ref(ev_ref, metadata.get("evidence_added", []), "ev")
                 for ev_ref in (update.fulfilling_evidence_ids or [])
             ]
-            resolved_need_id: Optional[str] = None
+            resolved_need_id: str | None = None
             if update.need_id is not None:
                 resolved_need_id = self._resolve_id_ref(
                     update.need_id, needs_created_in_this_loop, "eneed"
@@ -6183,9 +6180,7 @@ class MilestoneEngine:
         # The INQUIRY → INVESTIGATING transition carries Gate 1
         # (problem-statement confirmation) only. There is no path fork
         # (redesign R5) — the investigation proceeds opportunistically.
-        logger.info(
-            f"Case {case.case_id}: transitioning to INVESTIGATING"
-        )
+        logger.info(f"Case {case.case_id}: transitioning to INVESTIGATING")
 
         # Post-010: no retroactive milestone attribution at INQUIRY→
         # INVESTIGATING. INQUIRY no longer creates Evidence rows, so
@@ -6303,7 +6298,7 @@ class MilestoneEngine:
             # Don't confirm a transition that was just proposed in this same turn
             elif metadata.get("transition_proposed_this_turn", False):
                 logger.info(
-                    f"Skipping confirmation check - transition was just proposed this turn"
+                    "Skipping confirmation check - transition was just proposed this turn"
                 )
             elif case.pending_transition.get("needs_info"):
                 # User was told what's missing and has now responded.

@@ -31,7 +31,9 @@ from faultmaven.modules.case.contracts import (
 
 def _response(milestones: MilestoneUpdates, justifications: dict):
     """Minimal duck-typed investigation response (not Inquiry/Terminal)."""
-    ir = InternalReasoning(milestone_justifications=justifications, evidence_analyzed=[])
+    ir = InternalReasoning(
+        milestone_justifications=justifications, evidence_analyzed=[]
+    )
     state_updates = SimpleNamespace(milestones=milestones, evidence_to_add=[])
     return SimpleNamespace(internal_reasoning=ir, state_updates=state_updates)
 

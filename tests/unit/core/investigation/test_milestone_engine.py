@@ -2158,6 +2158,7 @@ class TestNeedsInfoFollowupProposesClose:
         # The propose-close path did NOT fire
         assert metadata.get("resolution_suggest_close") is not True
 
+
 class TestCreateTurnRecordSystemFeedbackTruncation:
     """Regression: ``TurnProgress.system_feedback`` has a 1000-char Pydantic
     cap. Multiple backstops (milestone ordering guards, evidence-need

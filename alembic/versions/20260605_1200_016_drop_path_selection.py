@@ -18,8 +18,9 @@ Create Date: 2026-06-05 12:00:00.000000
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
+
+from alembic import op
 
 revision: str = "0a1b2c3d4e5f"
 down_revision: Union[str, Sequence[str], None] = "f015a7b2c3d4"

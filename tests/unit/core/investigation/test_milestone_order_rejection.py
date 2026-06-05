@@ -191,7 +191,6 @@ def _llm_response_setting_milestones(
 # ---------------------------------------------------------------------------
 
 
-
 class TestRejectionWhenPrerequisiteMissing:
     """When the LLM emits ``mitigation_verified=True`` without
     ``mitigation_accepted`` already True, the engine rejects the update,
@@ -277,7 +276,6 @@ class TestRejectionWhenPrerequisiteMissing:
 # ---------------------------------------------------------------------------
 # Pass-through paths — these must NOT be rejected
 # ---------------------------------------------------------------------------
-
 
 
 class TestPrerequisiteSatisfiedPasses:

@@ -406,10 +406,12 @@ class StabilizationRecord(BaseModel):
         default=False, description="User complied with the proposed stabilization"
     )
     verified: bool = Field(
-        default=False, description="User confirmed the stabilization stabilized the situation"
+        default=False,
+        description="User confirmed the stabilization stabilized the situation",
     )
     completed_at_turn: Optional[int] = Field(
-        default=None, description="Turn `verified` flipped True (Gate-3-equivalent boundary)"
+        default=None,
+        description="Turn `verified` flipped True (Gate-3-equivalent boundary)",
     )
 
     @model_validator(mode="after")
@@ -3161,7 +3163,6 @@ class TurnProgress(BaseModel):
     # ============================================================
     class Config:
         frozen = True  # Immutable once created
-
 
 
 # ============================================================

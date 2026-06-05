@@ -444,9 +444,7 @@ async def test_check_automatic_transitions_closure_reason_stabilized_investigati
 
     assert case.pending_transition is not None
     assert case.pending_transition["to_state"] == "closed"
-    assert (
-        case.pending_transition.get("closure_reason") == "closed_after_investigation"
-    )
+    assert case.pending_transition.get("closure_reason") == "closed_after_investigation"
 
 
 @pytest.mark.asyncio

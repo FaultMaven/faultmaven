@@ -2340,7 +2340,9 @@ Symptoms are confirmed. When evaluating evidence, focus on hypotheses
 explaining the root cause. Causal evidence linking changes to symptoms
 advances root_cause_identified.
 """
-    elif progress.cause_state == CauseState.IDENTIFIED and not progress.solution_proposed:
+    elif (
+        progress.cause_state == CauseState.IDENTIFIED and not progress.solution_proposed
+    ):
         return """
 **INVESTIGATION PROGRESS: Solution needed**
 Root cause is identified. A concrete, executable fix with specific commands
