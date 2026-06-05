@@ -4177,9 +4177,9 @@ class MilestoneEngine:
             root_defs=schema_dict.get("$defs"),
         )
 
-        # Validate with Pydantic
-        content = json.dumps(content_obj)
-        parsed = schema_model.model_validate_json(content)
+        # Validate with Pydantic, degrading gracefully instead of 500ing on a
+        # single malformed sub-record (parse-time cross-field validators).
+        parsed = self._validate_with_degradation(content_obj, schema_model)
 
         # Dropped-field detection: compare what the LLM emitted to what the
         # schema accepted. Any key the LLM put in the dict that isn't a
@@ -4189,6 +4189,110 @@ class MilestoneEngine:
         # via behavioral eval — see ADR / docs.
         self._log_dropped_fields(content_obj, parsed, schema_model)
         return parsed
+
+    def _validate_with_degradation(self, content_obj, schema_model):
+        """Validate LLM structured output, degrading gracefully instead of 500ing.
+
+        Parse-time cross-field validators (e.g. ``evidence_to_add.source_file_id``
+        is required unless ``USER_DESCRIPTION``; ``evidence_need_updates`` state
+        ``FULFILLED`` requires ``fulfilling_evidence_ids``) reject the WHOLE
+        response object when a single sub-record is malformed — which 500s the
+        turn before any milestone logic runs (the surgical strip can't help: that
+        operates post-parse). This is the general never-500 backstop for that
+        class (redesign §9 / the deferred "S4" item):
+
+        1. Try to validate as-is.
+        2. On failure, PRUNE the specific list entries the ValidationError points
+           at (keyed off the error ``loc`` paths — general, not per-invariant)
+           and re-validate. The bad sub-records are quarantined; everything else
+           on the turn survives.
+        3. If it still fails (a top-level / non-list error), drop ``state_updates``
+           entirely and keep the conversational ``agent_response`` — the turn
+           survives as a conversational reply rather than a 500.
+        4. If even that fails, re-raise the original error (truly unrecoverable).
+
+        Upstream remains the real fix: provider-native constrained generation so
+        the LLM cannot emit the invalid shape ([[project-llm-structured-output-strategy]]).
+        This is the backstop, not a per-variant patch.
+        """
+        from pydantic import ValidationError
+
+        try:
+            return schema_model.model_validate_json(json.dumps(content_obj))
+        except ValidationError as original_error:
+            pruned, dropped = self._prune_invalid_list_entries(
+                content_obj, original_error
+            )
+            if dropped:
+                try:
+                    parsed = schema_model.model_validate_json(json.dumps(pruned))
+                    logger.warning(
+                        "structured_output_degraded: pruned invalid sub-record(s) "
+                        f"{dropped} from {schema_model.__name__} and continued "
+                        "(parse-time validator). Turn preserved.",
+                        extra={"schema": schema_model.__name__, "pruned": dropped},
+                    )
+                    return parsed
+                except ValidationError:
+                    pass  # fall through to the conversational fallback
+
+            # Last resort: keep the response text, drop all structured updates.
+            if isinstance(content_obj, dict) and content_obj.get("state_updates"):
+                fallback = {**content_obj, "state_updates": {}}
+                try:
+                    parsed = schema_model.model_validate_json(json.dumps(fallback))
+                    logger.warning(
+                        "structured_output_degraded: dropped all state_updates from "
+                        f"{schema_model.__name__} after an unrepairable validation "
+                        "error — conversational fallback (no 500).",
+                        extra={"schema": schema_model.__name__},
+                    )
+                    return parsed
+                except ValidationError:
+                    pass
+
+            raise original_error
+
+    @staticmethod
+    def _prune_invalid_list_entries(content_obj, error):
+        """Remove the list entries a ValidationError flags. Returns (obj, [paths]).
+
+        Each ValidationError ``loc`` for a list sub-record looks like
+        ``('state_updates', 'evidence_to_add', 0, 'source_file_id')`` or
+        ``(..., 0)``. We take the deepest int in the loc as the offending list
+        index and drop that entry from the corresponding list. General across any
+        list field (evidence_to_add, evidence_need_updates, hypotheses_to_add, …).
+        """
+        import copy
+
+        obj = copy.deepcopy(content_obj)
+        to_remove: dict[tuple, set] = {}
+        for err in error.errors():
+            loc = err.get("loc", ())
+            int_positions = [i for i, part in enumerate(loc) if isinstance(part, int)]
+            if not int_positions:
+                continue  # top-level / non-list error — not prunable here
+            last = int_positions[-1]
+            list_path = loc[:last]
+            to_remove.setdefault(list_path, set()).add(loc[last])
+
+        dropped: list[str] = []
+        for list_path, indices in to_remove.items():
+            node = obj
+            ok = True
+            for key in list_path:
+                if isinstance(node, dict) and key in node:
+                    node = node[key]
+                else:
+                    ok = False
+                    break
+            if ok and isinstance(node, list):
+                for idx in sorted(indices, reverse=True):
+                    if 0 <= idx < len(node):
+                        del node[idx]
+                        path_str = ".".join(str(p) for p in list_path)
+                        dropped.append(f"{path_str}[{idx}]")
+        return obj, dropped
 
     def _log_dropped_fields(
         self,
@@ -4292,7 +4396,7 @@ class MilestoneEngine:
             schema_dict,
             root_defs=schema_dict.get("$defs"),
         )
-        parsed = schema_model.model_validate_json(json.dumps(content_obj))
+        parsed = self._validate_with_degradation(content_obj, schema_model)
         self._log_dropped_fields(content_obj, parsed, schema_model)
 
         # Semantic guard: agent_response is the user-facing payload of every

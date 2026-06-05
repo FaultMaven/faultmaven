@@ -241,3 +241,89 @@ class TestDeferredImplementationClose:
         # existing pending transition must not be clobbered
         assert case.pending_transition == {"to_state": "resolved"}
         assert "transition_proposed" not in meta
+
+
+class TestStructuredOutputDegradation:
+    """Follow-on C: parse-time cross-field validation errors degrade gracefully
+    (prune the offending sub-record / conversational fallback) instead of 500ing.
+    """
+
+    def _engine(self):
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+        return MilestoneEngine.__new__(MilestoneEngine)
+
+    def test_prunes_invalid_evidence_keeps_valid(self):
+        from faultmaven.core.investigation.schemas import (
+            InvestigationResponse_Diagnosis,
+        )
+
+        eng = self._engine()
+        content = {
+            "agent_response": "Here is my analysis.",
+            "state_updates": {
+                "evidence_to_add": [
+                    # invalid: source_type=text without source_file_id (the S4 trigger)
+                    {
+                        "summary": "bad",
+                        "extract": "x",
+                        "category": "solution_evidence",
+                        "source_type": "text",
+                    },
+                    # valid: source_file_id present
+                    {
+                        "summary": "good",
+                        "extract": "y",
+                        "category": "symptom_evidence",
+                        "source_type": "text",
+                        "source_file_id": "file_123",
+                    },
+                ]
+            },
+        }
+        parsed = eng._validate_with_degradation(
+            content, InvestigationResponse_Diagnosis
+        )
+        assert parsed.agent_response == "Here is my analysis."
+        # the invalid entry is pruned; the valid one survives
+        summaries = [e.summary for e in parsed.state_updates.evidence_to_add]
+        assert summaries == ["good"]
+
+    def test_valid_response_passes_unchanged(self):
+        from faultmaven.core.investigation.schemas import (
+            InvestigationResponse_Diagnosis,
+        )
+
+        eng = self._engine()
+        content = {"agent_response": "All good.", "state_updates": {}}
+        parsed = eng._validate_with_degradation(
+            content, InvestigationResponse_Diagnosis
+        )
+        assert parsed.agent_response == "All good."
+
+    def test_conversational_fallback_drops_state_updates(self):
+        # All evidence entries invalid -> after pruning, state_updates still has
+        # the (now empty) list; the turn survives with the response text intact.
+        from faultmaven.core.investigation.schemas import (
+            InvestigationResponse_Diagnosis,
+        )
+
+        eng = self._engine()
+        content = {
+            "agent_response": "Survives as conversation.",
+            "state_updates": {
+                "evidence_to_add": [
+                    {
+                        "summary": "bad",
+                        "extract": "x",
+                        "category": "solution_evidence",
+                        "source_type": "text",
+                    }
+                ]
+            },
+        }
+        parsed = eng._validate_with_degradation(
+            content, InvestigationResponse_Diagnosis
+        )
+        assert parsed.agent_response == "Survives as conversation."
+        assert parsed.state_updates.evidence_to_add == []
