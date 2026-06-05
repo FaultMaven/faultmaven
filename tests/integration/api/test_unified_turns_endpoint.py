@@ -332,8 +332,6 @@ class TestEndpointValidation:
             "evidence_need",
             "confirmation",
             "greeting",
-            "path_selection",
-            "post_mitigation_choice",
         ]
         for t in valid_types:
             intent_type = IntentType(t)
