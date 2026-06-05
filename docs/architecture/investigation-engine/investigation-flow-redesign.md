@@ -1,10 +1,22 @@
 # Investigation Flow Redesign — Unified Opportunistic Flow with Stabilization-as-Insert
 
-**Status: DRAFT / PROPOSAL** (2026-06-05) — not yet ratified. Supersedes the
-`mitigation_first` vs `root_cause` path fork and the path-conditional RCA
-emission ban (INV-17, INV-21, `_SYMPTOM_VALIDATION_BLOCK`). Pairs with
-[investigation-lifecycle-logic.md](./investigation-lifecycle-logic.md) (whose
-§1.2 path model this replaces) and [investigation-data-models.md](./investigation-data-models.md).
+**Status: SHIPPED / AS-BUILT** (branch `refactor/investigation-flow-redesign`,
+2026-06-05). This is the design rationale for the unified opportunistic flow that
+replaced the `mitigation_first` vs `root_cause` path fork and the path-conditional
+RCA emission ban (retired INV-17, INV-21; removed `_SYMPTOM_VALIDATION_BLOCK` and
+the three path blocks). The locked implementation refinements **R1–R6** are folded
+into the body below, with **as-built deviation** call-outs where the shipped code
+differs from the original proposal. Pairs with
+[investigation-lifecycle-logic.md](./investigation-lifecycle-logic.md) (whose §2 is
+now the unified-flow spec) and [investigation-data-models.md](./investigation-data-models.md).
+
+**As-built reconciliation (read first):**
+
+- **No engine GATE on hypothesis emission.** The proposal framed the diagnostic-machinery rule (§2) as something the engine could enforce. As built, the engine **removed the path-conditional emission ban entirely** — the `cause_state` rule is **prompt-guided**, not a hard engine reject. `cause_state` is still recomputed and never path-stripped (the truth-signal linchpin holds), but "run hypothesis work iff cause uncertain" is guidance, not a backstop. This is the deliberate R6 tier shift.
+- **Schema kept the `mitigation_accepted` / `mitigation_verified` emission names.** The LLM-facing `MilestoneUpdates` schema did **not** rename them to `stabilization_*` (R2 anticipated a rename). The engine materializes those existing emission symbols into the `StabilizationRecord`.
+- **`StabilizationRecord` lives on `progress`.** It is `InvestigationProgress.stabilization`, persisted inside the `progress` JSON (no new DB column). Migration 016 only **drops** `cases.path_selection`.
+- **Prompt dispatcher kept its old name.** `_select_diagnosis_block(case)` survives as a thin wrapper returning `focus_emphasis + _RCA_DIAGNOSIS_BLOCK`; it is no longer a path selector. `investigation_router.py` was deleted.
+- **`SolutionState.CANDIDATES` is reserved, not produced.** Only `UNKNOWN | SELECTED` ship this round (R3).
 
 ---
 
@@ -192,6 +204,15 @@ prompt reliably forces hypothesis emission when the cause is uncertain. **The
 derivation and the prompt change ship together** — a derived signal over an
 unreliable producer is worse than the boolean it replaces.
 
+**As-built (R1) — `cause_state` is engine-derived, recomputed every turn.** The
+LLM is not a raw setter of the enum; it keeps emitting a *grounded* "cause
+identified" signal (the old `root_cause_identified` emission). The engine computes
+the stored enum each turn in `_recompute_assessment_state`: **`IDENTIFIED`** if the
+grounded signal is set and passes the self-naming-aware justification, **else
+`CANDIDATES`** if `count_active_hypotheses(case) >= 2`, **else `UNKNOWN`**.
+`IDENTIFIED` is forward-only (sticky once set). This reconciles "derive CANDIDATES
+from hypothesis_manager" (Q4) with "the LLM still tells us when it knows the cause."
+
 ### 4.2 Action-compliance gates — track user compliance, gate nothing about RCA
 
 These track whether the user accepted/verified a *proposed action*. They drive
@@ -200,12 +221,15 @@ work** (that is gated by `cause_state` per §2).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `stabilization` | optional record `{proposed_at_turn, accepted, verified, completed_at_turn}` | A stabilization insert. Its *existence* marks the case "stabilized". `completed_at_turn` (set when `verified`) is the boundary for up-weighting pre-stabilization evidence in later RCA. Replaces `mitigation_accepted` / `mitigation_verified` / `path_selection.mitigation_completed_at_turn`. |
+| `stabilization` | optional record `{proposed_at_turn, accepted, verified, completed_at_turn}` on `progress` (R2) | A stabilization insert. Its *existence* marks the case "stabilized". `completed_at_turn` (set when `verified`) is the boundary for up-weighting pre-stabilization evidence in later RCA. Replaces `mitigation_accepted` / `mitigation_verified` / `path_selection.mitigation_completed_at_turn`. Its own validator enforces `verified ⇒ accepted` (forward-only). |
 | `solution_accepted` | bool | User accepted the permanent solution → "Resolving" |
 | `solution_verified` | bool | User confirmed the permanent solution worked → RESOLVED |
 
-`solution_proposed` becomes derived: `solution_state == SELECTED` AND a Solution
-record exists.
+**As-built (R2):** the LLM still **emits** `mitigation_accepted` / `mitigation_verified`
+in `MilestoneUpdates` (the schema names were *not* renamed to `stabilization_*`);
+the engine materializes the `StabilizationRecord` from those emission symbols plus
+the `solution_type=workaround` ProposedAction. `solution_proposed` is derived:
+`solution_state == SELECTED` AND a Solution record exists.
 
 ### 4.3 Removed / re-derived
 
@@ -216,9 +240,16 @@ record exists.
   assessment (§3.2) no longer materializes a path; it may surface a
   stabilization _proposal_.
 - **`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`,
-  `pre_mitigation_mitigation_first` state, the path-conditional emission
-  backstop** — all removed. The diagnostic-machinery gate (§2 rule) and the
-  forwarding table (§3.1) replace them.
+  `_PRE_PATH_DIAGNOSIS_BLOCK`, `pre_*` restricted states, the path-conditional emission
+  backstop (`_path_conditional_emission_restriction` / `_RESTRICTED_STATE_BLOCK_NAMES`)** —
+  all removed. The diagnostic-machinery rule (§2) and the forwarding table (§3.1)
+  replace them. **As-built (R6):** the §2 rule is **prompt-guided**, not a hard engine
+  reject — the engine no longer bans hypothesis / causal-evidence emission by state.
+- **`investigation_router.py` (urgency path recommender) + `test_investigation_router.py`** —
+  deleted outright (R5). Stabilization is proposed by the LLM in-prompt, not via a
+  user fork; there is no recommendation to compute.
+- **Intents `PATH_SELECTION` / `POST_MITIGATION_CHOICE`** — removed from `IntentType`,
+  along with the Gate 2/Gate 3 affordances, predicates, and metrics (R5).
 - **`current_stage` (DIAGNOSIS/MITIGATION/TREATMENT)** — re-derived as a pure UI
   view:
   - `stabilization.accepted && !stabilization.verified` → "Stabilizing"
@@ -301,31 +332,40 @@ lost.
 
 ---
 
-## 7. Migration / blast radius (high level)
+## 7. What shipped (blast radius)
 
-Pre-production, no back-compat required ([feedback_no_backcompat_pre_data]):
-collapse to the clean model rather than stacking shims.
+Pre-production, no back-compat ([feedback_no_backcompat_pre_data]): the change
+collapsed to the clean model rather than stacking shims. As built:
 
-- **Schema:** add `cause_state`, `solution_state`, `solution_feasible`,
-  `stabilization`; drop `path_selection`, `InvestigationPath`,
-  `mitigation_*`/`pre_mitigation` machinery. **Cut `root_cause_identified`
-  cleanly** — no compat shim (per [feedback_no_backcompat_pre_data]); update read
-  sites to `cause_state == IDENTIFIED` in the same change.
-- **Engine (`milestone_engine.py`):** make the `validate_reasoning_first` strip
-  per-milestone surgical; delete the path-conditional emission backstop; gate
-  the diagnostic machinery on `cause_state`; replace Gate-2/Gate-3 handlers with
-  the stabilization assessment + forwarding table. (Parse-time validation
-  hardening is **out of scope** — see §9.)
-- **Prompts (`templates.py`):** delete the four path blocks; one
-  `INVESTIGATION` block whose stage guidance is selected by `cause_state` /
-  `solution_state` / `stabilization`, not by path.
-- **Recommender (`investigation_router.py`):** the urgency-only path recommender
-  is removed; the stabilization assessment is cause/impact-aware by
-  construction.
-- **Invariants:** retire INV-17, INV-21; revise INV-04/05/06 references to the
-  fork; INV-03 (disposition handshake) and the close-anytime rule are unchanged.
-- **Docs:** update `investigation-lifecycle-logic.md` §1.2, the stage docstrings
-  in `models.py`, `agent-stage-playbook.md`.
+- **Schema:** added `CauseState` / `SolutionState` / `SolutionFeasible` enums and
+  `StabilizationRecord`; added `cause_state` / `solution_state` /
+  `solution_feasible` / `stabilization` to `InvestigationProgress` (all inside the
+  `progress` JSON). Cut `root_cause_identified` boolean cleanly — read sites use
+  `cause_state == IDENTIFIED`. `InvestigationPath` / `PathSelection` / the
+  `mitigation_*` booleans / `pre_*` machinery removed. **Migration 016
+  (`0a1b2c3d4e5f`) drops the `cases.path_selection` column** — the only DDL change.
+- **Engine (`milestone_engine.py`):** `validate_reasoning_first` returns the *set*
+  of offending milestones and the caller strips only those (per-milestone surgical
+  strip). The path-conditional emission backstop is **deleted** (not replaced with
+  a `cause_state` reject — the rule is prompt-guided). `_recompute_assessment_state`
+  derives `cause_state` / `solution_state` each turn. The stabilization side-effects
+  materialize `StabilizationRecord` from the `mitigation_*` emissions; the §3.1
+  forwarding is prose-guided. (Parse-time validation hardening remains out of scope — §9.)
+- **Prompts (`templates.py`):** the four path blocks are deleted; DIAGNOSIS assembles
+  one block (`focus_emphasis + _RCA_DIAGNOSIS_BLOCK`). `_select_diagnosis_block` kept
+  its name as a thin wrapper. The hypothesis-emission-under-uncertainty mandate lives
+  in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` inside the single block.
+- **Recommender:** `investigation_router.py` **deleted** (R5).
+- **Closure:** reasons collapsed to `{inquiry_only, closed_after_investigation}` —
+  `mitigation_sufficient` dropped and folded into `closed_after_investigation`
+  (`derive_closure_reason` in `terminal_transitions.py`).
+- **Invariants:** retired INV-17, INV-19, INV-20, INV-21; added INV-22
+  (`cause_state` never path-stripped), INV-23 (surgical strip), INV-24
+  (single forward-only stabilization). Revised INV-05 to the stabilization record.
+  INV-03 (disposition handshake) and the close-anytime rule are unchanged.
+- **Docs:** synced `investigation-lifecycle-logic.md` (§1.x, §2, §4), the stage
+  docstrings in `models.py`, `investigation-data-models.md`, `agent-stage-playbook.md`,
+  `agent-behavioral-rules.md`, `evidence-needs-design.md`, `case-schema.md`.
 
 ---
 

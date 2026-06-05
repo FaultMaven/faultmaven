@@ -113,6 +113,8 @@ The three-step framework is an internal reasoning scaffold, not an output format
 - NEVER state that a problem is resolved, fixed, or root-caused without verification evidence (post-fix telemetry, user confirmation, successful test). Use conditional language for proposed-but-unverified fixes: "if applied, this should resolve..." rather than "this resolves..."
 - NEVER cite evidence IDs (like `ev_a1b2c3d4e5f6`) in `agent_response` — reference evidence by its label (filename, description) instead
 
+**Applies to stabilization, too (path-independent)**: Proposing a stabilization (a temporary "stop the bleeding" fix) does not exempt the agent from symptom grounding. Before proposing *any* remediation — stabilization or permanent solution — the agent must have at least one SYMPTOM_EVIDENCE row attributable to the current incident and a specific failing component identified from it. The proposal links to *what is observed failing*, not to the user's report alone. (A causal hypothesis is not required to propose a stabilization — that is cause-phase work governed by `cause_state`.) This is a single evidence-grounding rule that holds whether or not a stabilization is inserted; there is no path under which "prioritize stopping the impact" licenses skipping symptom confirmation — it only licenses *deferring causal-hypothesis work* until after stabilization.
+
 **Prohibited patterns**:
 
 | Pattern | Why it's bad |
@@ -402,7 +404,7 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 
 Two pieces of rule-adjacent content are injected at runtime:
 
-1. **Focus Zone Emphasis** — a progress milestone-driven priority signal computed by `_get_diagnosis_focus_emphasis()` and prepended to `_RCA_DIAGNOSIS_BLOCK` on RCA-side dispatch branches (ROOT_CAUSE; MITIGATION_FIRST post-Gate-3). The emphasis is omitted from `_SYMPTOM_VALIDATION_BLOCK` and `_GATE3_PENDING_BLOCK` — Zone 2's "focus on hypotheses for root cause" would mislead pre-mitigation or gate-pending LLMs. See [Evidence-Driven Investigation Framework §8.5](./evidence-driven-investigation-framework.md#85-focus-zone-emphasis-progress-milestone-driven).
+1. **Focus Zone Emphasis** — a priority signal computed by `_get_diagnosis_focus_emphasis()` and prepended to the single `_RCA_DIAGNOSIS_BLOCK` (unified flow — no path branches). It maps `symptom_verified` / `cause_state` / `solution_proposed` to the current zone's emphasis (symptom verification → root-cause analysis while the cause is uncertain → solution). See [Evidence-Driven Investigation Framework §8.5](./evidence-driven-investigation-framework.md#85-focus-zone-emphasis-progress-milestone-driven).
 
 2. **INQUIRY State** — an `<inquiry_state>` XML block injected into the INQUIRY template by `_build_context()` when a proposed problem statement exists but hasn't been confirmed. It switches between two modes: (a) `NOT_YET_CONFIRMED` — the default, which instructs the LLM not to re-propose the same statement and to focus on the user's current message; (b) `HANDSHAKE_DEFERRED` — fires only on the turn immediately following a same-turn-confirmation guard fire (see [INV-01 in the Invariant Enforcement Matrix](./investigation-lifecycle-logic.md#131-invariant-enforcement-matrix)), instructing the LLM to re-present the statement and ask for confirmation explicitly. The two modes are mutually exclusive and the switch is keyed on `case.inquiry.handshake_deferred_at_turn`.
 
@@ -462,7 +464,7 @@ EVIDENCE SUMMARY QUALITY                                Long-term memory for evi
 INVESTIGATION JOURNAL                                   journal_entries schema + entry types
 PROACTIVE BLOCKER DETECTION                             missing_critical_data emission
 YOUR TASK: {adaptive_instructions}                      Focus Zone prepended here for DIAGNOSIS only
-                                                        MITIGATION_FIRST path note scoped to DIAGNOSIS branch
+                                                        Stabilization guidance applies when an Axis-B gap exists
 KEY PRINCIPLES (Rules 4, 5)                             Evidence-Driven Progress, NAME THE NEXT DATA POINT,
                                                         Graceful Pivot, Acknowledge Corrections, Check Back
                                                         on Suggested Actions, Work With What You Get

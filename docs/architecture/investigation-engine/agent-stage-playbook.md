@@ -14,7 +14,8 @@ Both operate together. A rule says "never claim to execute code." The playbook s
 **Related Documents**:
 
 - [Agent Behavioral Rules](./agent-behavioral-rules.md) — Cross-cutting behavioral constraints (Rules 1–8)
-- [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) — State transitions, gate milestones, path selection
+- [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) — State transitions, gate milestones, the unified opportunistic flow
+- [Investigation Flow Redesign](./investigation-flow-redesign.md) — Design rationale for the unified flow + assessment variables (supersedes the former path fork)
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) — Evidence classification design
 - [Prompt Templates](./prompt-templates.md) — Where this playbook's content is encoded
 
@@ -31,8 +32,8 @@ A **phase** is a distinct operational mode of the investigation. Each phase has 
 | `case.state` | Phase Marker | Phase Name | Prompt Assembly |
 | ------------- | ------------ | ---------- | --------------- |
 | `INQUIRY` | *(none — starting phase)* | INQUIRY | `INQUIRY_TEMPLATE` |
-| `INVESTIGATING` | `problem_statement_confirmed = True` | DIAGNOSIS | `INVESTIGATION_BASE` + path-conditional block (see §5 *Path-conditional DIAGNOSIS dispatch*) |
-| `INVESTIGATING` | `mitigation_accepted = True` | MITIGATION | `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS` |
+| `INVESTIGATING` | `problem_statement_confirmed = True` | DIAGNOSIS | `INVESTIGATION_BASE` + the unified investigation guidance, selected by `cause_state` / `solution_state` / `stabilization` (see §5 *cause_state-driven investigation guidance*) |
+| `INVESTIGATING` | `stabilization.accepted = True` | MITIGATION (display: "Stabilizing") | `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS` (stabilization guidance) |
 | `INVESTIGATING` | `solution_accepted = True` | TREATMENT | `INVESTIGATION_BASE` + `TREATMENT_INSTRUCTIONS` |
 | `RESOLVED` | *(none — `case.state` is authoritative)* | TERMINAL | `TERMINAL_TEMPLATE` |
 | `CLOSED` | *(none — `case.state` is authoritative)* | TERMINAL | `TERMINAL_TEMPLATE` |
@@ -106,13 +107,13 @@ The GPS map. At any turn the agent reads this table to know where the investigat
 | ----- | ------ | - | -------- | ---- | ------------- | ---------- | - |
 | INQUIRY | `INQUIRY_TEMPLATE` | — | — | — | Starting phase — no gate to enter | — | [INQUIRY](#inquiry-phase) |
 | | | G | `problem_statement_confirmed` | Gate | User confirms problem statement | COOPERATIVE → INVESTIGATING | [INQUIRY](#inquiry-phase) |
-| DIAGNOSIS | path-conditional (`_RCA_DIAGNOSIS_BLOCK` or `_SYMPTOM_VALIDATION_BLOCK`) | 1 | `symptom_verified` | Diagnostic | User submits symptom evidence | EVIDENCE | [Zone 1](#zone-1-symptom-verification) |
-| | | 8 | Hypothesis state | Analytical | Row 1 true — agent reasons from context + KB | — | [Zone 2](#zone-2-root-cause-analysis) |
-| | | 2 | `root_cause_identified` | Diagnostic | User submits causal evidence | EVIDENCE | [Zone 2](#zone-2-root-cause-analysis) |
+| DIAGNOSIS | unified investigation guidance (selected by `cause_state` / `solution_state` / `stabilization`) | 1 | `symptom_verified` | Diagnostic | User submits symptom evidence | EVIDENCE | [Zone 1](#zone-1-symptom-verification) |
+| | | 8 | Hypothesis state | Analytical | Row 1 true ∧ cause uncertain — agent reasons from context + KB | — | [Zone 2](#zone-2-root-cause-analysis) |
+| | | 2 | grounded cause signal (→ `cause_state=IDENTIFIED`) | Diagnostic | User submits causal evidence (or the error is self-naming) | EVIDENCE | [Zone 2](#zone-2-root-cause-analysis) |
 | | | 3 | `solution_proposed` | Action | Row 2 true — agent reasons to fix | — | [Zone 3](#zone-3-solution-proposal) |
-| | | 4 | `mitigation_accepted` | Trigger | User acknowledges executing temp fix | COOPERATIVE → MITIGATION | [Zone 3](#zone-3-solution-proposal) |
+| | | 4 | `mitigation_accepted` (→ `stabilization.accepted`) | Trigger | User acknowledges executing the stabilization | COOPERATIVE → Stabilizing | [Zone 3](#zone-3-solution-proposal) |
 | | | 6 | `solution_accepted` | Trigger | User acknowledges executing fix | COOPERATIVE → TREATMENT | [Zone 3](#zone-3-solution-proposal) |
-| MITIGATION | `MITIGATION_INSTRUCTIONS` | 5 | `mitigation_verified` | Gate | User confirms mitigation worked | EVIDENCE → DIAGNOSIS | [MITIGATION](#mitigation-stage) |
+| MITIGATION ("Stabilizing") | `MITIGATION_INSTRUCTIONS` | 5 | `mitigation_verified` (→ `stabilization.verified`) | Gate | User confirms the stabilization worked | EVIDENCE → DIAGNOSIS | [MITIGATION](#mitigation-stage) |
 | TREATMENT | `TREATMENT_INSTRUCTIONS` | 7 | `solution_verified` | Gate | User confirms solution worked | COOPERATIVE → TERMINAL | [TREATMENT](#treatment-stage) |
 | TERMINAL | `TERMINAL_TEMPLATE` | — | — | — | No milestone tracking | — | [TERMINAL](#terminal-state) |
 
@@ -205,9 +206,9 @@ Establish a shared understanding of the problem before investigation begins. The
 ### DIAGNOSIS Stage
 
 **Phase marker:** `problem_statement_confirmed = True`  
-**Prompt assembly:** `INVESTIGATION_BASE` + `_select_diagnosis_block(case)` — path-conditional dispatch that selects either `_SYMPTOM_VALIDATION_BLOCK` (pre-mitigation MITIGATION_FIRST) or `_RCA_DIAGNOSIS_BLOCK` (ROOT_CAUSE, or MITIGATION_FIRST post-Gate-3), with `_GATE3_PENDING_BLOCK` as a self-contained variant during the Gate 3 hand-off. See §5 *Path-conditional DIAGNOSIS dispatch* for the full routing table.
+**Prompt assembly:** `INVESTIGATION_BASE` + the unified investigation guidance, selected by `cause_state` / `solution_state` / `stabilization` (no path fork). See §5 *cause_state-driven investigation guidance* for the routing.
 
-DIAGNOSIS has three internal zones. Zone membership is determined by the diagnostic variables; the agent reads the current state and applies the corresponding zone duties. The MITIGATION_FIRST path's pre-mitigation segment is restricted to Zone 1 (symptom verification) — Zone 2 (hypothesis formation) is gated behind Gate 3 and only fires after the user opts to continue with RCA.
+DIAGNOSIS has three internal zones. Zone membership is determined by the diagnostic variables; the agent reads the current state and applies the corresponding zone duties. The single rule that governs the zones: **hypothesis formation (Zone 2) runs iff the cause is uncertain** (`cause_state ∈ {UNKNOWN, CANDIDATES}`). When `cause_state == IDENTIFIED` — including self-naming errors where the cause is known at Zone 1 — the agent skips straight to solution work (Zone 3). There is no pre-mitigation restriction and no Gate-3 gating; a stabilization, when inserted, does not change which zones are reachable.
 
 ---
 
@@ -261,10 +262,10 @@ DIAGNOSIS has three internal zones. Zone membership is determined by the diagnos
 
 #### Zone 2: Root Cause Analysis
 
-**Target variable:** `root_cause_identified` (via hypothesis state)  
+**Target:** the grounded cause signal — the LLM still emits "root cause identified" (kept as an emission symbol), which the engine materializes into `cause_state = IDENTIFIED`. **This zone runs only while the cause is uncertain** (`cause_state ∈ {UNKNOWN, CANDIDATES}`); for a self-naming error the engine may set `cause_state = IDENTIFIED` directly and the agent skips to Zone 3.  
 **Evidence type:** `causal_evidence`
 
-**Hypothesis state** is the analytical bridge between `symptom_verified` and `root_cause_identified`. It is not a boolean — it is a lifecycle with confidence scoring.
+**Hypothesis state** is the analytical bridge between `symptom_verified` and the grounded cause signal (`cause_state = IDENTIFIED`). It is not a boolean — it is a lifecycle with confidence scoring. When ≥2 hypotheses stay ACTIVE, the engine derives `cause_state = CANDIDATES`.
 
 **Hypothesis formation:** after `symptom_verified = True`. Each hypothesis must state: suspected cause, proposed mechanism, what evidence would confirm it, and what would refute it.
 
@@ -394,32 +395,32 @@ A well-documented partial investigation that narrows the problem is a valid outc
 
 ---
 
-### MITIGATION Stage
+### MITIGATION Stage — the Stabilization Insert (display: "Stabilizing")
 
-**Phase marker:** `mitigation_accepted = True`  
-**Prompt assembly:** `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS`
+**Phase marker:** `stabilization.accepted = True` (materialized from the `mitigation_accepted` emission)  
+**Prompt assembly:** `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS` (the stabilization-guidance block; symbol name retained from the pre-redesign code)
 
-Apply a temporary fix to reduce immediate impact while root cause analysis is blocked or pending. Goal is stabilization, not resolution.
+The **stabilization insert** (formerly "mitigation"): apply a temporary fix to stop active impact when an Axis-B gap exists — something is hurting now that can't be fully resolved this session. Goal is stabilization, not resolution. This is an optional inserted sub-activity in the one unified flow, not a path (see lifecycle §2).
 
 **Agent Duties:**
 
-1. **Search KB first** — call `kb_qa` for the symptom to find known mitigation procedures or workarounds before suggesting steps. If a match is found, follow those steps. If not, proceed with general knowledge for the technology stack.
+1. **Search KB first** — call `kb_qa` for the symptom to find known stabilization procedures or workarounds before suggesting steps. If a match is found, follow those steps. If not, proceed with general knowledge for the technology stack.
 2. Provide numbered steps framed as user instructions, not agent actions.
 3. State rollback: what to do if the fix makes things worse. State the fix is temporary.
 4. Request `mitigation_evidence` — post-fix metrics, error rates, user observation.
-5. Accept subjective confirmation for `mitigation_verified`. When confirmed: (1) create a `mitigation_evidence` record in `evidence_to_add`, (2) set `mitigation_verified=True`.
-6. Iterate if ineffective — propose a modified approach, stay in MITIGATION.
-7. Do not form hypotheses or classify `causal_evidence` here.
+5. Accept subjective confirmation for `stabilization.verified`. When confirmed: (1) create a `mitigation_evidence` record in `evidence_to_add`, (2) emit `mitigation_verified=True` (materializes `stabilization.verified` + `completed_at_turn`).
+6. Iterate if ineffective — propose a modified approach, stay in the stabilization insert.
+7. Whether to form hypotheses here follows the single rule: do so iff `cause_state ∈ {UNKNOWN, CANDIDATES}`. There is no separate ban tied to being mid-stabilization.
 
-**`mitigation_verified`** — Set when the user confirms stabilization. Subjective confirmation is sufficient: "it's better", "errors dropped", "seems stable". Specific metric values are not required. Set-once: stays True for the rest of the investigation. The case transitions back to DIAGNOSIS via the `current_stage` property's fall-through (MITIGATION branch requires `NOT mitigation_verified`); no flag reset.
+**`mitigation_verified`** — Emitted when the user confirms stabilization. Subjective confirmation is sufficient: "it's better", "errors dropped", "seems stable". Specific metric values are not required. Forward-only: `stabilization.accepted`/`.verified` are never reset. The case returns to DIAGNOSIS via the `current_stage` property's fall-through (the "Stabilizing" branch requires `NOT stabilization.verified`).
 
-**When mitigation stalls:** If multiple attempts have failed and safe options are exhausted, do not continue proposing variants. Offer exactly two COOPERATIVE suggestions: (1) "Accept current state and proceed to root cause" — creates a `mitigation_evidence` record (source_type: text) and sets `mitigation_verified=True` to return to DIAGNOSIS even with partial stabilization; (2) "Escalate to a human expert" — acknowledges the investigation has reached its limit.
+**When stabilization stalls:** If multiple attempts have failed and safe options are exhausted, do not continue proposing variants. The single-record constraint is not a dead-end (lifecycle §2.3, INV-24): offer exactly two COOPERATIVE suggestions — (1) "Accept current state and continue" — creates a `mitigation_evidence` record (source_type: text) and emits `mitigation_verified=True` to return to DIAGNOSIS even with partial stabilization; (2) "Escalate to a human expert" — acknowledges the investigation has reached its limit.
 
 **Gate Conditions:**
 
 | To | Mechanism | Condition |
 | -- | --------- | --------- |
-| DIAGNOSIS (Zone 2 or 3) | Inference-based | `mitigation_verified = True` — set-once; the MITIGATION property branch fails its `NOT mitigation_verified` clause and the case falls through to DIAGNOSIS for cause-phase work. Gate 3 (`path_selection.rca_after_mitigation_confirmed`) blocks RCA-side milestone advances until the user confirms. |
+| DIAGNOSIS (Zone 2 or 3) | Inference-based | `mitigation_verified = True` → `stabilization.verified` — forward-only; the "Stabilizing" property branch fails its `NOT stabilization.verified` clause and the case falls through to DIAGNOSIS. Forwarding after stabilization follows the §2.3 table (cause uncertain → RCA; cause + solution known → propose solution / close). No Gate-3 gating — the cause_state rule alone governs whether hypothesis work resumes. |
 | TERMINAL (CLOSED) | User-Agent Handshake | User selects escalation from stall-breaker or abandons |
 
 **Anti-Patterns:**
@@ -534,11 +535,8 @@ There is no single complete prompt. Each turn assembles a prompt from a fixed ou
 | Stage / Mode | Outer shell | Behavioral blocks embedded | Stage instruction block | Evidence grounding | Diagnostic reasoning |
 | --- | --- | --- | --- | --- | --- |
 | INQUIRY | `INQUIRY_TEMPLATE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | (built into shell) | ✗ | ✗ |
-| DIAGNOSIS (ROOT_CAUSE path) | `INVESTIGATION_BASE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
-| DIAGNOSIS (MITIGATION_FIRST, pre-mitigation) | `INVESTIGATION_BASE` | same | `_SYMPTOM_VALIDATION_BLOCK` (no hypothesis mandate; `focus_emphasis()` omitted — RCA-flavored emphasis would mislead) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
-| DIAGNOSIS (MITIGATION_FIRST, Gate 3 pending) | `INVESTIGATION_BASE` | same | `_GATE3_PENDING_BLOCK` (self-contained; no RCA block underneath) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
-| DIAGNOSIS (MITIGATION_FIRST, post-Gate-3) | `INVESTIGATION_BASE` | same | `_POST_MITIGATION_RCA_PREFIX` + `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
-| MITIGATION | `INVESTIGATION_BASE` | same | `MITIGATION_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| DIAGNOSIS (unified — no path fork) | `INVESTIGATION_BASE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` (single block; carries `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| MITIGATION ("Stabilizing") | `INVESTIGATION_BASE` | same | `MITIGATION_INSTRUCTIONS` (stabilization guidance) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
 | TREATMENT | `INVESTIGATION_BASE` | same | `TREATMENT_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
 | Knowledge query (mode bypass) | `INVESTIGATION_BASE` | same | `KNOWLEDGE_QUERY_INSTRUCTIONS` | ✗ (suppressed) | ✗ (suppressed) |
 | TERMINAL | `TERMINAL_TEMPLATE` | `_ADVISOR_ROLE` only | (built into shell) | ✗ | ✗ |
@@ -559,36 +557,36 @@ Stage instructions are injected as `{adaptive_instructions}` in `INVESTIGATION_B
 | Stage | Instruction block | Note |
 | ----- | ----------------- | ---- |
 | INQUIRY | `INQUIRY_TEMPLATE` (YOUR TASK section) | Self-contained shell |
-| DIAGNOSIS | `_select_diagnosis_block(case)` | Path-conditional dispatch (see below) |
+| DIAGNOSIS | `_select_diagnosis_block(case)` | cause_state-driven (see below); single block |
 | MITIGATION | `MITIGATION_INSTRUCTIONS` | Injected as `{adaptive_instructions}` |
 | TREATMENT | `TREATMENT_INSTRUCTIONS` | Injected as `{adaptive_instructions}` |
 | TERMINAL | `TERMINAL_TEMPLATE` | Self-contained shell |
 | Knowledge query | `KNOWLEDGE_QUERY_INSTRUCTIONS` | Replaces stage dispatch entirely |
 
-#### Path-conditional DIAGNOSIS dispatch
+#### cause_state-driven investigation guidance
 
-`_select_diagnosis_block(case)` chooses the DIAGNOSIS prompt content based on `case.path_selection`. The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is physically contained inside `_RCA_DIAGNOSIS_BLOCK` exclusively — pre-path and pre-mitigation cases never see it. This isolation is the structural fix for the conflicting-signal problem (the prompt cannot mandate hypothesis creation on a path where the engine forbids it).
+Post-redesign there is **no path fork**. `_select_diagnosis_block(case)` returns a
+single block — `_get_diagnosis_focus_emphasis(case.progress)` prepended to
+`_RCA_DIAGNOSIS_BLOCK`. The hypothesis-creation mandate
+(`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) lives inside `_RCA_DIAGNOSIS_BLOCK` and is
+always present; the agent applies it **iff the cause is uncertain**
+(`cause_state ∈ {UNKNOWN, CANDIDATES}`) per the single diagnostic-machinery rule.
+The four path-conditional blocks (`_PRE_PATH_DIAGNOSIS_BLOCK`,
+`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`,
+`_POST_MITIGATION_RCA_PREFIX`) and the three path-conditional emission bans are
+**removed** — the prompt no longer needs to suppress hypothesis creation per-state,
+because the engine no longer forbids it. **As-built note:** the dispatcher function
+keeps its pre-redesign name `_select_diagnosis_block`; it is now a thin wrapper, not
+a path selector.
 
-| `case.path_selection` state | Block selected | Includes hypothesis mandate? |
-| --------------------------- | -------------- | ---------------------------- |
-| `None` (Gate 2 not yet committed — INVESTIGATING + pre-`symptom_verified` or awaiting Gate 2 click) | `_PRE_PATH_DIAGNOSIS_BLOCK` (symptom validation only; forbids `hypotheses_to_add`, `causal_evidence`, AND `solutions_to_add` emission) | ✗ |
-| ROOT_CAUSE | `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` | ✓ |
-| MITIGATION_FIRST, pre-mitigation (`mitigation_completed_at_turn is None`) | `_SYMPTOM_VALIDATION_BLOCK` (symptom validation only; forbids `hypotheses_to_add` and `causal_evidence` — solutions are allowed for mitigation discovery) | ✗ |
-| MITIGATION_FIRST, Gate 3 pending (mitigation verified, user hasn't chosen continue-vs-close) | `_GATE3_PENDING_BLOCK` (self-contained; the LLM is gated this turn — no RCA block underneath) | ✗ |
-| MITIGATION_FIRST, post-Gate-3 (user opted to continue RCA) | `_POST_MITIGATION_RCA_PREFIX` + `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` | ✓ |
-| Unknown enum value (defensive fallback) | `_PRE_PATH_DIAGNOSIS_BLOCK` (strictest stance) | ✗ |
-
-All three symptom-validation-style blocks (`_PRE_PATH_DIAGNOSIS_BLOCK`, `_SYMPTOM_VALIDATION_BLOCK`, `_RCA_DIAGNOSIS_BLOCK`) compose from the shared sub-blocks (`_DIAGNOSIS_ZONES_PREAMBLE`, `_EVIDENCE_REQUEST_FORMAT_BLOCK`, `_URGENCY_RECOGNITION_BLOCK`) so changes to shared concerns propagate to all consumers. RCA-only sub-blocks (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`, KB-runbook authority, RCA progression, decision tree, refinement, stall handoff) live inside `_RCA_DIAGNOSIS_BLOCK` only.
-
-`_get_diagnosis_focus_emphasis()` is included on RCA-side branches (ROOT_CAUSE, MITIGATION_FIRST post-Gate-3) but omitted from `_PRE_PATH_DIAGNOSIS_BLOCK`, `_SYMPTOM_VALIDATION_BLOCK`, and `_GATE3_PENDING_BLOCK` — Zone 2's "focus on hypotheses for root cause" would mislead pre-path, pre-mitigation, or gate-pending LLMs.
-
-`_get_diagnosis_focus_emphasis()` maps the three DIAGNOSIS zones plus the pending state to a contextual status signal prepended to the RCA block:
+`_get_diagnosis_focus_emphasis()` maps the DIAGNOSIS zones plus the pending state to
+a contextual status signal prepended to the block:
 
 | Zone | Condition | Emphasis |
 | ---- | --------- | -------- |
 | Zone 1 | `symptom_verified = False` | "Symptom verification pending — search for evidence the problem exists" |
-| Zone 2 | `symptom_verified = True`, `root_cause_identified = False` | "Root cause analysis — form hypotheses, search for causal evidence" |
-| Zone 3 | `root_cause_identified = True`, `solution_proposed = False` | "Solution needed — propose a concrete, executable fix" |
+| Zone 2 | `symptom_verified = True`, `cause_state ∈ {UNKNOWN, CANDIDATES}` | "Root cause analysis — form hypotheses, search for causal evidence" |
+| Zone 3 | `cause_state = IDENTIFIED`, `solution_proposed = False` | "Solution needed — propose a concrete, executable fix" |
 | Pending | `solution_proposed = True` | "Solution proposal issued — awaiting execution. Do not request further evidence or introduce alternative proposals." |
 
 **`knowledge_query` mode bypass:** When `processing_mode == "knowledge_query"`, stage dispatch is skipped entirely. `KNOWLEDGE_QUERY_INSTRUCTIONS` replaces `adaptive_instructions`, and both `_EVIDENCE_GROUNDING_BLOCK` and `_DIAGNOSTIC_REASONING_BLOCK` are passed as `""`. The two waived rule blocks are absent from the rendered prompt entirely (rather than sandwiching an exemption clause between active rules). This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver: "The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply."
