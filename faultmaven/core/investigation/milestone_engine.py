@@ -5505,9 +5505,17 @@ class MilestoneEngine:
             )
             for result in validation_results:
                 if not result.is_valid:
-                    # Revert the milestone — evidence doesn't support the claim
-                    setattr(case.progress, result.milestone, False)
-                    metadata["milestones_completed"].remove(result.milestone)
+                    # Revert the milestone — evidence doesn't support the claim.
+                    # ``root_cause_identified`` is no longer a bool field; it maps
+                    # to the engine-derived ``cause_state`` enum. Un-identify here;
+                    # _recompute_assessment_state (end of apply) re-derives
+                    # CANDIDATES/UNKNOWN from the active-hypothesis count.
+                    if result.milestone == "root_cause_identified":
+                        case.progress.cause_state = CauseState.UNKNOWN
+                    elif hasattr(case.progress, result.milestone):
+                        setattr(case.progress, result.milestone, False)
+                    if result.milestone in metadata["milestones_completed"]:
+                        metadata["milestones_completed"].remove(result.milestone)
                     logger.warning(
                         f"Milestone '{result.milestone}' REVERTED: claimed with insufficient evidence "
                         f"({result.cited_count}/{result.expected_min} required). "
