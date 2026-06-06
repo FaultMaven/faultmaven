@@ -362,13 +362,26 @@ class TestStageEvidenceTypeListingsIncludeAbsence:
         assert "causal_absence_evidence" in TREATMENT_INSTRUCTIONS
 
     def test_absence_variants_appear_under_evidence_types_heading(self):
-        """The mention must be in the ``EVIDENCE TYPES FOR THIS STAGE:``
-        block (where the LLM looks for "what categories are valid
-        here"), not just incidentally elsewhere in the dispatch."""
+        """Both absence variants must appear within the ``EVIDENCE TYPES FOR
+        THIS STAGE:`` enumeration (where the LLM looks for "what categories
+        are valid here"), not just incidentally elsewhere in the dispatch.
+
+        The section is delimited by the heading and the next bold ``**...**``
+        sub-heading — the absence bullets are each described in detail now
+        (causal_absence is the required RESOLVED proof in TREATMENT), so the
+        listing is longer than a fixed-width window would capture.
+        """
+        heading = "**EVIDENCE TYPES FOR THIS STAGE:**"
         for block in (MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS):
-            heading_idx = block.find("**EVIDENCE TYPES FOR THIS STAGE:**")
+            heading_idx = block.find(heading)
             assert heading_idx != -1
-            # Search within the ~600 chars immediately after the heading
-            section = block[heading_idx : heading_idx + 600]
+            body_start = heading_idx + len(heading)
+            # The enumeration runs until the next bold sub-heading.
+            next_heading = block.find("\n**", body_start)
+            section = (
+                block[body_start:next_heading]
+                if next_heading != -1
+                else block[body_start:]
+            )
             assert "symptom_absence_evidence" in section
             assert "causal_absence_evidence" in section

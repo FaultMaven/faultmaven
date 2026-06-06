@@ -861,18 +861,33 @@ an evidence row.
    Post-mitigation action → mitigation_evidence
    Post-solution action   → solution_evidence
 
-4. Is this evidence the result of RE-CHECKING a previously verified
-   symptom or cause to confirm a fix held (MITIGATION / TREATMENT
-   re-verification)?
-   Symptom no longer present → symptom_absence_evidence
-   Cause no longer present   → causal_absence_evidence
-   Both absence categories are STAND-ALONE resolution audit rows
-   (`source_file_id` + the re-checked extract). Do NOT link them to a
-   hypothesis: a successful fix CONFIRMS the root-cause hypothesis, so a
-   confidence-bearing link would erode the very hypothesis it proves.
-   Re-verification records that the fix held; it does not re-litigate
-   the diagnosis. Without the absence row, the case has no positive
-   proof of resolution.
+4. Is this evidence RE-CHECKING a previously verified symptom or cause to
+   confirm a fix held (re-verification)? Two distinct outcomes — the
+   difference decides RESOLVED vs CLOSED, so classify carefully:
+   - **Symptom no longer present** (service restored, errors stopped) →
+     `symptom_absence_evidence`. A STABILIZATION — failover, workaround,
+     traffic-shift, scale-out, restart — produces THIS: the symptom is
+     relieved but the underlying cause may still be present (e.g. failover
+     restores writes while the failed hardware is still failed). Emit
+     symptom_absence; do NOT emit causal_absence for a stabilization.
+   - **The cause itself is gone** (the permanent fix ELIMINATED the root
+     cause — the specific thing you identified as the cause is verifiably no
+     longer present, not merely worked around) → `causal_absence_evidence`.
+     This is the ONLY positive proof a case is RESOLVED: the system marks a
+     case RESOLVED only when a `causal_absence_evidence` row is on record.
+     Without it the case can only be CLOSED (with the documented or deferred
+     solution preserved).
+   When the user confirms a PERMANENT fix worked — the original error is gone
+   after correcting the actual cause, post-fix logs/status show it no longer
+   occurs — you MUST record a `causal_absence_evidence` row; do not merely
+   narrate it. If instead service was restored via a stabilization while the
+   real fix is still pending, or the cause persists, record ONLY
+   symptom_absence — that case CLOSES with the solution documented, it does
+   not resolve.
+   Both absence categories are STAND-ALONE audit rows (`source_file_id` + the
+   re-checked extract). Do NOT link them to a hypothesis: a successful fix
+   CONFIRMS the root-cause hypothesis, so a confidence-bearing link would
+   erode the very hypothesis it proves.
 
 CREATING EVIDENCE RECORDS (evidence_to_add):
 When your analysis discovers a claim-relevant slice not already
@@ -1782,13 +1797,16 @@ Do NOT continue proposing mitigation variants after offering this choice.
 **EVIDENCE TYPES FOR THIS STAGE:**
 - **mitigation_evidence**: Data showing whether the temporary fix worked
   (post-mitigation metrics, error rates, user confirmation of improvement)
-- **symptom_absence_evidence** / **causal_absence_evidence**: Re-verification
-  rows confirming a previously verified symptom or cause is no longer
-  present. Both are stand-alone resolution audit rows (`source_file_id`
-  + extract) — do NOT link them to a hypothesis (a fix confirms the
-  cause; a confidence-bearing link would erode it).
-  Emit per the decision-tree step 4 and the re-verification addendum
-  when re-checking the findings established earlier in DIAGNOSIS.
+- **symptom_absence_evidence**: Re-verification row confirming the symptom is
+  no longer present after the stabilization (service restored). This is the
+  absence category that belongs to a STABILIZATION — it relieves the symptom.
+  Do NOT emit `causal_absence_evidence` here: a stabilization (failover/
+  workaround) does NOT eliminate the root cause, so the cause is still present.
+  `causal_absence_evidence` is recorded only in TREATMENT, when the PERMANENT
+  fix has eliminated the cause — and only that row qualifies a case for
+  RESOLVED. A stabilized case CLOSES (with the fix documented), it does not
+  resolve. Stand-alone audit row (`source_file_id` + extract); do NOT link it
+  to a hypothesis.
 
 **CRITICAL REMINDERS:**
 - This is a TEMPORARY fix — always communicate this to the user
@@ -1992,14 +2010,20 @@ The process:
 **EVIDENCE TYPES FOR THIS STAGE:**
 - **solution_evidence**: Data showing whether a fix worked
   (post-fix metrics, error rates, user confirmation, clean logs)
-- **symptom_absence_evidence** / **causal_absence_evidence**: Re-verification
-  rows confirming a previously verified symptom or cause is no longer
-  present. Primary-path artifact — both are stand-alone resolution
-  audit rows (`source_file_id` + extract); do NOT link them to a
-  hypothesis (a fix confirms the cause; a confidence-bearing link would
-  erode it). Emit per the decision-tree step 4 and the re-verification
-  addendum. Without these the case has no
-  positive proof of resolution.
+- **causal_absence_evidence**: Re-verification row confirming the ROOT CAUSE
+  itself is no longer present after the permanent fix (the specific cause you
+  identified is verifiably gone — not just the symptom relieved). This is the
+  REQUIRED positive proof of resolution: the system marks a case RESOLVED only
+  when this row is on record. When the user confirms the permanent fix worked
+  (post-fix logs/status show the cause no longer occurs), you MUST record this
+  row — do not merely narrate it. Without it the case can only be CLOSED.
+- **symptom_absence_evidence**: Re-verification row confirming the symptom is
+  gone. Necessary but NOT sufficient for RESOLVED — a stabilization produces
+  symptom_absence while the cause persists. Pair it with causal_absence only
+  when the cause itself was eliminated.
+  Both absence categories are stand-alone audit rows (`source_file_id` +
+  extract); do NOT link them to a hypothesis (a fix confirms the cause; a
+  confidence-bearing link would erode it).
 - **symptom_evidence**: New symptoms that emerge after a failed fix
   (new errors, changed behavior, unexpected side effects)
 - **causal_evidence**: Data revealing the actual root cause after a theory is disproven

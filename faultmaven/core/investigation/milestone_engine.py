@@ -6550,11 +6550,14 @@ class MilestoneEngine:
                     # suggestion with no pending transition to confirm.
                     cancel_pending_transition(case)
                     close_message = (
-                        "I understand you don't have additional details. "
-                        "Without a documented solution, I can't mark this "
-                        "as **resolved**.\n\n"
+                        "I understand. Without confirmation that the root cause "
+                        "was **eliminated** (e.g. the original error is now "
+                        "absent after the fix), I can't mark this as "
+                        "**resolved** — a restored-but-stabilized or "
+                        "deferred-fix case isn't a resolution.\n\n"
                         "You can **close** the case instead — this preserves "
-                        "the root cause analysis and investigation history."
+                        "the root cause analysis and the documented (or "
+                        "deferred) solution."
                     )
                     propose_transition(
                         case=case,

@@ -31,7 +31,25 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
     CaseState,
+    EvidenceCategory,
 )
+
+
+def _has_causal_absence(case: "Case") -> bool:
+    """Whether a ``causal_absence_evidence`` row is on the case.
+
+    This is the ground-truth signal that the root cause was confirmed
+    ELIMINATED — not merely that the symptom was relieved (a stabilization /
+    failover / traffic-shift produces ``symptom_absence_evidence`` while the
+    cause persists). It is the discriminator between RESOLVED (cause gone) and
+    CLOSED-with-documented-solution (stabilized, deferred, or unfixed). See
+    investigation-flow-redesign.md §11 and intent-resolution.md §8.
+    """
+    return any(
+        getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+        for e in (case.evidence or [])
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -444,89 +462,78 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     Returns:
         ResolutionReadiness with verdict, user-facing message, and missing items list
     """
-    missing = []
-
-    # Check 1: Problem verification (basic — should always exist if INVESTIGATING)
-    has_problem = bool(
-        case.problem_verification
-        and getattr(case.problem_verification, "symptom_statement", None)
-    )
-    if not has_problem:
-        missing.append("problem statement")
-
-    # Check 2: Root cause identified
-    has_root_cause = bool(
-        case.root_cause_conclusion
-        and getattr(case.root_cause_conclusion, "root_cause", None)
-    )
-    has_working_conclusion = bool(
-        case.working_conclusion
-        and getattr(case.working_conclusion, "statement", None)
-        and getattr(case.working_conclusion, "likelihood", 0) >= 0.6
-    )
-    has_cause = has_root_cause or has_working_conclusion
-    if not has_cause:
-        missing.append("root cause")
-
-    # Check 3: At least one solution
-    has_solution = bool(case.solutions and len(case.solutions) > 0)
-    if not has_solution:
-        missing.append("solution")
-
-    # Check 4: Any evidence collected
-    has_evidence = bool(case.evidence and len(case.evidence) > 0)
-    if not has_evidence:
-        missing.append("evidence")
-
-    # Determine verdict
-    critical_missing = [m for m in missing if m in ("root cause", "solution")]
-
-    if not missing:
-        # Everything present
+    # THE gate: the root cause must be confirmed ELIMINATED, recorded as a
+    # ``causal_absence_evidence`` row (the original error/cause is gone AFTER the
+    # fix). A case where service was only STABILIZED (failover / workaround /
+    # traffic-shift — which produce ``symptom_absence_evidence`` while the cause
+    # persists), or where the permanent fix is DEFERRED, does NOT qualify for
+    # RESOLVED. It should be CLOSED with the findings documented.
+    if _has_causal_absence(case):
         return ResolutionReadiness(
             verdict=ResolutionReadiness.READY,
             message="",
             missing=[],
         )
 
-    if len(critical_missing) >= 2 and not has_evidence:
-        # No root cause, no solution, no evidence — this isn't a resolved case
-        return ResolutionReadiness(
-            verdict=ResolutionReadiness.SUGGEST_CLOSE,
-            message=(
-                "This case doesn't have enough information to be marked as **resolved**. "
-                "There's no identified root cause, no solution on record, and no evidence collected.\n\n"
-                "If the issue is no longer relevant, you can **close** the case instead "
-                "(abandoned, escalated, or mitigation sufficient).\n\n"
-                "If the issue was actually resolved, please describe:\n"
-                "1. What was the root cause?\n"
-                "2. What fixed it?"
-            ),
-            missing=missing,
-        )
+    # Root cause not confirmed eliminated. Decide between asking the user to
+    # confirm elimination (the re-check loop, intent-resolution.md §8, then lets
+    # the agent record the absence) and suggesting Close outright.
+    has_cause = bool(
+        case.root_cause_conclusion
+        and getattr(case.root_cause_conclusion, "root_cause", None)
+    ) or bool(
+        case.working_conclusion
+        and getattr(case.working_conclusion, "statement", None)
+        and getattr(case.working_conclusion, "likelihood", 0) >= 0.6
+    )
+    has_solution = bool(case.solutions and len(case.solutions) > 0)
+    has_evidence = bool(case.evidence and len(case.evidence) > 0)
 
-    if critical_missing:
-        # Partially ready — ask for the missing pieces
-        missing_desc = []
-        if "root cause" in critical_missing:
-            missing_desc.append("- **Root cause**: What caused the problem?")
-        if "solution" in critical_missing:
-            missing_desc.append("- **Solution**: What action resolved the issue?")
-
+    # "Substance" = we know the cause AND some remediation/evidence exists — so
+    # it's reasonable to ask the user to confirm the fix actually eliminated it.
+    has_substance = has_cause and (has_solution or has_evidence)
+    if has_substance:
+        missing = ["confirmation the root cause is eliminated"]
+        if not has_solution:
+            missing.append("solution")
         return ResolutionReadiness(
             verdict=ResolutionReadiness.NEEDS_INFO,
             message=(
-                "Before I can mark this as resolved, I need a bit more detail:\n\n"
-                + "\n".join(missing_desc)
-                + "\n\nPlease provide this information so I can properly document the resolution."
+                "Before I can mark this **resolved**, I need to confirm the fix "
+                "actually **eliminated the root cause** — that the original "
+                "error/symptom is now **absent after the permanent fix**, not "
+                "just that service was restored.\n\n"
+                "Can you confirm the underlying cause is gone — e.g. share the "
+                "post-fix status/logs showing it no longer occurs?\n\n"
+                "If the service was only **stabilized** (a failover, workaround, "
+                "or traffic shift) and the underlying cause isn't fixed, or the "
+                "permanent fix is **deferred** (hardware RMA, a change window, "
+                "another team), then **close** the case instead. Closing keeps "
+                "the full root-cause analysis and the documented (or deferred) "
+                "solution on record — it just doesn't claim the problem is "
+                "permanently fixed."
             ),
             missing=missing,
         )
 
-    # Non-critical items missing (just evidence or problem statement) — still ready
+    # Too thin to be a resolved case — no confirmed elimination and not enough
+    # substance to ask about it.
+    missing = ["confirmation the root cause is eliminated"]
+    if not has_cause:
+        missing.append("root cause")
+    if not has_solution:
+        missing.append("solution")
     return ResolutionReadiness(
-        verdict=ResolutionReadiness.READY,
-        message="",
+        verdict=ResolutionReadiness.SUGGEST_CLOSE,
+        message=(
+            "This case doesn't have enough on record to be marked as "
+            "**resolved** — there's no confirmation that the root cause was "
+            "eliminated.\n\n"
+            "If the issue is no longer relevant, you can **close** the case "
+            "(abandoned, escalated, or stabilized).\n\n"
+            "If it was actually resolved, tell me what the root cause was and "
+            "how you confirmed it's now gone."
+        ),
         missing=missing,
     )
 
@@ -615,15 +622,21 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     # criteria assess_resolution_readiness uses for READY). Closing would
     # discard the resolution attribution. Engine pivots; user still confirms.
     # Symmetric to ResolutionReadiness.SUGGEST_CLOSE.
-    if has_root_cause and has_solutions:
+    #
+    # Gate on causal_absence (cause confirmed ELIMINATED), the same bar as
+    # assess_resolution_readiness — NOT merely "has a solution row". A case that
+    # was only stabilized (failover/workaround) has a solution on record but the
+    # cause persists; closing it is correct and must NOT pivot to resolve.
+    if has_root_cause and has_solutions and _has_causal_absence(case):
         rc = getattr(case.root_cause_conclusion, "root_cause", "")
         sol_titles = _solution_display_titles(case.solutions)
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
             message=(
-                "This case has a documented root cause and solution — it "
-                "qualifies for **resolved** status rather than closed. "
-                "Closing it would discard the resolution attribution.\n\n"
+                "This case has a documented root cause and a fix confirmed to "
+                "have eliminated it — it qualifies for **resolved** status "
+                "rather than closed. Closing it would discard the resolution "
+                "attribution.\n\n"
                 f"- **Root cause**: {rc}\n"
                 f"- **Solution**: {', '.join(sol_titles)}\n\n"
                 "Would you like to mark it **resolved** instead?"
