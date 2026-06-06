@@ -644,11 +644,20 @@ def _cause_state_grounded(case: "Case") -> bool:
     The engine-owned truth bar (R1), shared by ``_recompute_assessment_state``
     (which derives cause_state) and the milestone-claim REVERT path (which must
     not strip a cause that is grounded case-wide) so the two cannot disagree
-    within a turn. Bar: a high ``root_cause_likelihood`` (>= 0.7) backed by >= 2
-    causal-evidence rows — matching the milestone-claim validator's
-    ``MILESTONE_EVIDENCE_EXPECTATIONS["root_cause_identified"].min_evidence`` —
-    OR a recorded ``RootCauseConclusion``. Case-wide (not current-turn-only): a
-    cause grounded over several turns stays grounded.
+    within a turn. Bar: a high ``root_cause_likelihood`` (>= 0.7) backed by at
+    least ONE causal-evidence row, OR a recorded ``RootCauseConclusion``.
+    Case-wide (not current-turn-only): a cause grounded over several turns stays
+    grounded.
+
+    The ``>= 1`` (not ``>= 2``) causal bar matches the redesign's self-naming
+    premise — a cause can be identified from a single self-evident observation
+    (the error that names it). The ``likelihood >= 0.7`` gate is the confidence
+    guard, not the evidence count. The milestone-claim validator still requires
+    ``>= 2`` and will flag a 1-causal claim, but the REVERT is skipped when this
+    returns True (a confidently-grounded cause is not torn down) — so there is no
+    revert-churn and no spurious "insufficient evidence" warning for the common
+    self-naming case. A 1-causal claim with low likelihood (< 0.7) is NOT grounded
+    here, so the validator's revert proceeds and the cause is correctly held back.
     """
     p = case.progress
     causal_count = sum(
@@ -659,7 +668,7 @@ def _cause_state_grounded(case: "Case") -> bool:
         and getattr(case.root_cause_conclusion, "root_cause", None)
     )
     return (
-        p.root_cause_likelihood >= 0.7 and causal_count >= 2
+        p.root_cause_likelihood >= 0.7 and causal_count >= 1
     ) or has_root_cause_conclusion
 
 
