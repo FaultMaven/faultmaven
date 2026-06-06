@@ -657,15 +657,20 @@ def _recompute_assessment_state(case: "Case") -> None:
     p = case.progress
 
     if p.cause_state != CauseState.IDENTIFIED:
-        has_causal_evidence = any(
-            e.category == EvidenceCategory.CAUSAL_EVIDENCE for e in case.evidence
+        # Evidence bar matches the milestone-claim validator
+        # (MILESTONE_EVIDENCE_EXPECTATIONS["root_cause_identified"].min_evidence = 2),
+        # so a claim reverted for insufficient evidence is not re-granted here.
+        causal_count = sum(
+            1
+            for e in case.evidence
+            if e.category == EvidenceCategory.CAUSAL_EVIDENCE
         )
         has_root_cause_conclusion = bool(
             case.root_cause_conclusion
             and getattr(case.root_cause_conclusion, "root_cause", None)
         )
         if (
-            p.root_cause_likelihood >= 0.7 and has_causal_evidence
+            p.root_cause_likelihood >= 0.7 and causal_count >= 2
         ) or has_root_cause_conclusion:
             p.cause_state = CauseState.IDENTIFIED
         elif HypothesisManager.count_active_hypotheses(case) >= 2:

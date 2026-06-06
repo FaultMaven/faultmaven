@@ -348,9 +348,11 @@ collapsed to the clean model rather than stacking shims. As built:
   of offending milestones and the caller strips only those (per-milestone surgical
   strip). The path-conditional emission backstop is **deleted** (not replaced with
   a `cause_state` reject — the rule is prompt-guided). `_recompute_assessment_state`
-  derives `cause_state` / `solution_state` each turn. The stabilization side-effects
-  materialize `StabilizationRecord` from the `mitigation_*` emissions; the §3.1
-  forwarding is prose-guided. (Parse-time validation hardening remains out of scope — §9.)
+  derives `cause_state` / `solution_state` each turn (see §10 for the IDENTIFIED
+  derivation). The stabilization side-effects materialize `StabilizationRecord` from
+  the `mitigation_*` emissions; the §3.1 forwarding row 3 (deferred implementation)
+  is engine-proposed (§10-A). Parse-time validation hardening **shipped** as a
+  general never-500 backstop (§10-C / §9).
 - **Prompts (`templates.py`):** the four path blocks are deleted; DIAGNOSIS assembles
   one block (`focus_emphasis + _RCA_DIAGNOSIS_BLOCK`). `_select_diagnosis_block` kept
   its name as a thin wrapper. The hypothesis-emission-under-uncertainty mandate lives
@@ -390,11 +392,17 @@ collapsed to the clean model rather than stacking shims. As built:
 
 ---
 
-## 9. Out of scope: parse-time structured-output robustness (track separately)
+## 9. Parse-time structured-output robustness (S4) — backstop SHIPPED (§10-C)
 
-This redesign addresses **post-parse** failures — milestone application, the
-collateral strip, and path-conditional bans (the S1 trap). It does **not** touch
-a distinct, earlier failure layer surfaced by the QA campaign (**S4**):
+> **Update 2026-06-06:** the never-500 backstop described below **shipped** as
+> part of validation hardening — see §10-C. This section is retained for the
+> problem statement and the upstream direction. The core redesign still only
+> addresses **post-parse** failures; the parse-time backstop is the separate
+> layer, now implemented.
+
+This redesign's core addresses **post-parse** failures — milestone application, the
+collateral strip, and path-conditional bans (the S1 trap). The distinct, earlier
+failure layer surfaced by the QA campaign (**S4**):
 
 > The LLM emits a structured sub-record that violates a cross-field Pydantic
 > validator — e.g. `evidence_need_updates{state: FULFILLED}` with no
@@ -412,7 +420,65 @@ the whole turn. This is the same class as the prior-session `source_file_id` 500
 and is systemic across **any** schema with cross-field validators; removing the
 path fork does not touch it.
 
-**Action: tracked as a separate robustness item**, not folded into this redesign.
-See [project-llm-structured-output-strategy] (provider-native constrained
-generation is the upstream mitigation; graceful parse-time recovery is the
-backstop).
+**Backstop shipped (§10-C).** The graceful parse-time recovery is now implemented.
+Provider-native constrained generation remains the **upstream** mitigation
+([project-llm-structured-output-strategy]); the backstop is the safety net, not a
+per-variant patch.
+
+---
+
+## 10. Post-ship enhancements (validation-driven, 2026-06-05/06)
+
+These landed during end-to-end validation of the shipped redesign (the
+k8s-pvc-pending trap scenario re-run across four runs). They refine the model;
+none reopens the path fork. All are unit-tested in
+`tests/unit/core/investigation/test_surgical_strip_and_cause_state.py`.
+
+**Regression caught by validation (fixed):** the milestone-claim **revert** path
+(`validate_milestone_claims` → `setattr(progress, milestone, False)`) still wrote
+the removed `root_cause_identified` bool → `AttributeError` → 500 on every turn
+that identified a cause with <2 causal rows. A _dynamic_ `setattr` the static
+sweep couldn't see; only a live run exposed it. Revert now maps to
+`cause_state = UNKNOWN` with a `hasattr` guard.
+
+**A — Deferred-implementation disposition (forwarding-table row 3 / §6).** When the
+cause + fix are known but the fix can't be applied/verified this session (an
+out-of-band change request, maintenance window, or another team), the LLM emits
+`solution_feasible="deferred"` (new `MilestoneUpdates` field), and the engine
+**deterministically proposes CLOSE-with-documented-solution**
+(`_maybe_propose_deferred_close`, mirroring the `rca_infeasible` pattern) — the LLM
+does not reliably drive to close on its own. Guarded against clobbering an in-flight
+handshake; the documented root cause + solution are preserved on close
+(`closure_reason = closed_after_investigation`). Prompt guidance added in
+`_RCA_DIAGNOSIS_BLOCK`.
+
+**B — `cause_state = IDENTIFIED` is engine-derived, not LLM-milestone-dependent.**
+Validation showed the LLM routinely sets `root_cause_likelihood` (high) but skips
+the `root_cause_identified` milestone, leaving `cause_state` stuck at UNKNOWN and
+the prompt stuck in RCA-mode. `_recompute_assessment_state` now also derives
+IDENTIFIED from observable grounding: **`root_cause_likelihood ≥ 0.7` AND ≥2 causal
+evidence rows**, OR a recorded `RootCauseConclusion`. The evidence bar (≥2 causal)
+**matches the milestone-claim validator** (`MILESTONE_EVIDENCE_EXPECTATIONS`), so a
+claim reverted for insufficient evidence is not re-granted by derivation. IDENTIFIED
+remains forward-only sticky. This makes `cause_state` a robust engine-owned truth
+signal (R1) rather than a fragile dependency on a milestone the LLM may not set.
+
+**C — Never-500 backstop for parse-time validation errors (S4 / §9).** A single
+malformed sub-record (e.g. `evidence_to_add` with `source_type=text` and no
+`source_file_id`; `evidence_need_updates{FULFILLED}` with no `fulfilling_evidence_id`)
+made the _whole_ `InvestigationResponse_*` fail `model_validate_json` → 500, before
+any milestone logic. `_validate_with_degradation` (general, not per-invariant):
+(1) validate as-is; (2) on failure, **prune the exact list entries the
+`ValidationError` loc points at** (general across `evidence_to_add` /
+`evidence_need_updates` / `hypotheses_to_add` / any list field) and re-validate —
+bad sub-records quarantined + logged (`structured_output_degraded`), the rest
+survives; (3) else drop `state_updates` entirely and keep the conversational
+`agent_response`; (4) else re-raise. Wired into both the schema-tool-call and
+text-fallback parse paths. The cross-field invariants themselves stay (they gate on
+real facts); upstream constrained generation remains the real fix.
+
+**Harness note (not a FaultMaven defect):** the validation runs reported
+"UNRESOLVED" even on a clean resolve because the fm-sre-simulator reads a stale
+`case_status` key while the API returns `case_state` (post the #405 status→state
+rename). The case genuinely transitions to RESOLVED in the DB; the harness can't
+see it. Fix belongs in the simulator.

@@ -141,15 +141,17 @@ class TestCauseStateDerivation:
         assert case.progress.cause_state == CauseState.CANDIDATES
 
     def test_identified_derived_from_likelihood_plus_causal_evidence(self):
-        # Follow-on B: high confidence + causal evidence -> IDENTIFIED even
+        # Follow-on B: high confidence + >=2 causal evidence -> IDENTIFIED even
         # though the LLM never set the root_cause_identified milestone.
-        case = self._case_with_hyps(2, causal_evidence=1)  # would be CANDIDATES
+        case = self._case_with_hyps(2, causal_evidence=2)  # would be CANDIDATES
         case.progress.root_cause_likelihood = 0.8
         _recompute_assessment_state(case)
         assert case.progress.cause_state == CauseState.IDENTIFIED
 
-    def test_high_likelihood_without_causal_evidence_is_not_identified(self):
-        case = self._case_with_hyps(0, causal_evidence=0)
+    def test_high_likelihood_below_evidence_bar_is_not_identified(self):
+        # Matches the milestone bar (>=2 causal): one causal row is not enough,
+        # so a milestone reverted for insufficient evidence is not re-granted.
+        case = self._case_with_hyps(0, causal_evidence=1)
         case.progress.root_cause_likelihood = 0.9
         _recompute_assessment_state(case)
         assert case.progress.cause_state == CauseState.UNKNOWN
