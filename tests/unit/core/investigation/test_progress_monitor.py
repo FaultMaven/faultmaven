@@ -176,7 +176,11 @@ class TestProgressTransparency:
             create_turn(4, milestones_completed=["mitigation_accepted"]),
             create_turn(5, outcome=TurnOutcome.DATA_PROVIDED, evidence_added=["ev_5"]),
         ]
-        base_case.progress.mitigation_accepted = True
+        from faultmaven.modules.case.contracts import StabilizationRecord
+
+        base_case.progress.stabilization = StabilizationRecord(
+            proposed_at_turn=4, accepted=True
+        )
 
         # Only 1 investigative turn after the stage transition; below threshold.
         result = monitor.check_progress(base_case)

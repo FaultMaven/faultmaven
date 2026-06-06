@@ -54,44 +54,6 @@ inquiry_handshake_recovered_total = Counter(
 )
 
 
-# Gate 2 outcome telemetry — measures whether the router's
-# recommendation is empirically right. High override rate (alternate
-# path chosen over recommended) signals the Urgency × Temporal matrix
-# is mis-classifying cases; the user is bringing out-of-band context
-# the data can't see. See investigation-gates design (slice 2) and
-# INV-19 in investigation-lifecycle-logic.md.
-inquiry_gate2_confirmed_total = Counter(
-    "faultmaven_inquiry_gate2_confirmed_total",
-    "INV-19: Gate 2 confirmations. Labels: outcome (recommended | override).",
-    ["outcome"],
-)
-
-
-# Gate 3 outcome telemetry — measures the mitigation → RCA seam. The
-# three signals are paired:
-#   reached_total            — gate fires (mitigation_verified completed)
-#   resolved_total{outcome}  — gate resolved by user click
-#                              (continued_to_rca | closed_mitigation_sufficient)
-#   stalled                  — gauge of cases sitting at Gate 3 with no
-#                              resolution (computed by a periodic sweep)
-# The ratio resolved_total / reached_total should be close to 1.0 in a
-# healthy system. A growing gap surfaces stranded post-mitigation cases
-# — the failure mode the gate exists to prevent.
-inquiry_gate3_reached_total = Counter(
-    "faultmaven_inquiry_gate3_reached_total",
-    "INV-21: mitigation_verified completed on a mitigation-first case "
-    "(Gate 3 opens). Pairs with faultmaven_inquiry_gate3_resolved_total.",
-)
-
-inquiry_gate3_resolved_total = Counter(
-    "faultmaven_inquiry_gate3_resolved_total",
-    "INV-21: Gate 3 resolved by user click. Labels: outcome "
-    "(continued_to_rca | closed_mitigation_sufficient). Compare against "
-    "faultmaven_inquiry_gate3_reached_total to detect stranded cases.",
-    ["outcome"],
-)
-
-
 # Engine-owned-affordance telemetry. Fires every turn where the response
 # builder substituted the canonical gate-affordance pair for the LLM's own
 # suggestions. The label identifies which gate; collectively the counter
@@ -103,8 +65,6 @@ inquiry_gate3_resolved_total = Counter(
 # Healthy-system expectations (rough, subject to scenario mix):
 #   gate1 — fires on the first INQUIRY turn after a problem statement is
 #           proposed, repeats until Gate 1 closes
-#   gate2 — fires on the turn Gate 1 closes, until path is confirmed
-#   gate3 — fires when mitigation_verified completes on mitigation-first
 #   disposition — fires whenever propose_transition emits override_suggestions
 #
 # Failure-mode signal: a sustained zero rate on `gate1` while INQUIRY turn
@@ -114,7 +74,7 @@ inquiry_gate3_resolved_total = Counter(
 engine_owned_affordance_served_total = Counter(
     "faultmaven_engine_owned_affordance_served_total",
     "Engine-owned gate affordances served. Labels: gate "
-    "(gate1 | gate2 | gate3 | disposition). Counts turns where the engine "
+    "(gate1 | disposition). Counts turns where the engine "
     "substituted the canonical clickable affordance pair for a pending "
     "state-machine gate, regardless of LLM compliance with the prompt's "
     "suggestion-emission directives.",
@@ -152,26 +112,17 @@ evidence_need_status_changed_total = Counter(
     ["from_state", "to_state"],
 )
 
-evidence_need_rejected_total = Counter(
-    "faultmaven_evidence_need_rejected_total",
-    "EvidenceNeedUpdate emissions rejected by the path-conditional "
-    "emission backstop. Labels: state "
-    "(pre_path_investigating | pre_mitigation_mitigation_first | "
-    "gate3_pending). Parallel to the existing causal_evidence and "
-    "hypotheses_to_add rejection counters. A sustained nonzero rate "
-    "means the prompt-side guidance is weakening — prompt blocks for "
-    "the restricted state need to be tightened.",
-    ["state"],
-)
+# NOTE: the former ``evidence_need_rejected_total`` counter was removed with
+# the path-conditional emission backstop (unified opportunistic flow): the
+# apply-layer no longer rejects EvidenceNeedUpdate emissions by investigation
+# state, so there is nothing to count.
 
 
 # Phase 6 response-flattening seam. Counts ``SuggestedFollowUp.evidence_need_id``
 # values that ``_flatten_follow_ups`` drops because the ``new_index_N``
 # placeholder didn't resolve against this turn's
-# ``metadata["evidence_needs_updated"]`` list. Symmetric with
-# ``evidence_need_rejected_total`` (apply-layer rejections) so all drops
-# along the evidence-needs pipeline are observable as ratios, not just
-# log greps.
+# ``metadata["evidence_needs_updated"]`` list. Observable as a ratio so drops
+# along the evidence-needs suggestion seam surface without log greps.
 #
 # Healthy-system expectation: near zero. A sustained nonzero rate signals
 # the LLM is emitting stale or mis-indexed ``new_index_N`` references on
@@ -187,8 +138,7 @@ evidence_need_id_dropped_total = Counter(
     "faultmaven_evidence_need_id_dropped_total",
     "SuggestedFollowUp.evidence_need_id values dropped at the response-"
     "flattening seam because the new_index_N placeholder didn't resolve. "
-    "Symmetric with ``evidence_need_rejected_total``. A sustained nonzero "
-    "rate means the LLM is emitting stale same-turn ID references on the "
-    "suggestion side.",
+    "A sustained nonzero rate means the LLM is emitting stale same-turn ID "
+    "references on the suggestion side.",
     ["reason"],
 )

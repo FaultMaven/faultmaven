@@ -658,7 +658,6 @@ class CaseModel(Base):
     problem_verification = Column(JsonBlob, nullable=True)
     working_conclusion = Column(JsonBlob, nullable=True)
     root_cause_conclusion = Column(JsonBlob, nullable=True)
-    path_selection = Column(JsonBlob, nullable=True)
     escalation_state = Column(JsonBlob, nullable=True)
     documentation = Column(JsonBlob, nullable=False, server_default="{}")
     progress = Column(JsonBlob, nullable=False, server_default="{}")

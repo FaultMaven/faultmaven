@@ -127,28 +127,27 @@ Items 6–9 form a progression: user **can't** → user **contradicts** → user
 
 ### 3.2 Adaptive instructions
 
-The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(case)` on DIAGNOSIS turns (path-conditional dispatch) and by stage-specific constants elsewhere:
+The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(case)` on DIAGNOSIS turns and by stage-specific constants elsewhere. Under the unified opportunistic flow ([investigation-flow-redesign.md](./investigation-flow-redesign.md)) the path fork is retired: `_select_diagnosis_block` is now a thin wrapper that always assembles the single unified DIAGNOSIS block (it kept its name but no longer selects a path).
 
 | Stage / mode | Adaptive instructions |
 | --- | --- |
-| DIAGNOSIS (ROOT_CAUSE) | `_get_diagnosis_focus_emphasis(progress)` + `_RCA_DIAGNOSIS_BLOCK` |
-| DIAGNOSIS (MITIGATION_FIRST, pre-mitigation) | `_SYMPTOM_VALIDATION_BLOCK` (hypothesis emission explicitly forbidden; `focus_emphasis` omitted) |
-| DIAGNOSIS (MITIGATION_FIRST, Gate 3 pending) | `_GATE3_PENDING_BLOCK` (self-contained — the LLM is gated this turn) |
-| DIAGNOSIS (MITIGATION_FIRST, post-Gate-3) | `_POST_MITIGATION_RCA_PREFIX` + `_get_diagnosis_focus_emphasis(progress)` + `_RCA_DIAGNOSIS_BLOCK` |
+| DIAGNOSIS | `_get_diagnosis_focus_emphasis(progress)` + `_RCA_DIAGNOSIS_BLOCK` |
 | MITIGATION | `MITIGATION_INSTRUCTIONS` |
 | TREATMENT | `TREATMENT_INSTRUCTIONS` |
 | Knowledge query | `KNOWLEDGE_QUERY_INSTRUCTIONS` |
 
-`_RCA_DIAGNOSIS_BLOCK` and `_SYMPTOM_VALIDATION_BLOCK` are both composed from a shared vocabulary of sub-blocks (`_DIAGNOSIS_ZONES_PREAMBLE`, `_EVIDENCE_REQUEST_FORMAT_BLOCK`, `_URGENCY_RECOGNITION_BLOCK`). The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is contained inside `_RCA_DIAGNOSIS_BLOCK` exclusively — pre-mitigation MITIGATION_FIRST cases never see it. See `agent-stage-playbook.md` §5 *Path-conditional DIAGNOSIS dispatch* for the full routing rationale.
+`_RCA_DIAGNOSIS_BLOCK` is composed from a shared vocabulary of sub-blocks (`_DIAGNOSIS_ZONES_PREAMBLE`, `_EVIDENCE_REQUEST_FORMAT_BLOCK`, `_URGENCY_RECOGNITION_BLOCK`). The hypothesis-creation mandate (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) is contained inside it and reached on every DIAGNOSIS turn — the former path-conditional blocks (`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`) and their pre-mitigation emission ban were removed. See `agent-stage-playbook.md` for the current DIAGNOSIS routing.
 
 `_get_diagnosis_focus_emphasis(progress)` prepends a Zone-aware progress signal:
 
 | Zone | Condition | Prepended emphasis |
 | --- | --- | --- |
 | Zone 1 | `symptom_verified=False` | "Symptom verification pending — search for evidence the problem exists" |
-| Zone 2 | `symptom_verified=True, root_cause_identified=False` | "Root cause analysis — form hypotheses, search for causal evidence" |
-| Zone 3 | `root_cause_identified=True, solution_proposed=False` | "Solution needed — propose a concrete, executable fix" |
+| Zone 2 | `symptom_verified=True`, `cause_state != IDENTIFIED` | "Root cause analysis — form hypotheses, search for causal evidence" |
+| Zone 3 | `cause_state == IDENTIFIED`, `solution_proposed=False` | "Solution needed — propose a concrete, executable fix" |
 | Zone 3 pending | `solution_proposed=True` | "Solution proposal issued — awaiting execution. Do not request further evidence or introduce alternative proposals." |
+
+(The zone conditions now read the engine-derived `cause_state` enum, not the removed `root_cause_identified` boolean.)
 
 ---
 

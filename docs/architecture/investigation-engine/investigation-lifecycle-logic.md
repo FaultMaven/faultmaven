@@ -1,8 +1,9 @@
 # Investigation Lifecycle Logic
 
-This document defines the state transitions, path routing, and turn tracking logic for FaultMaven's evidence-driven investigation framework.
+This document defines the state transitions, the unified opportunistic flow, and turn tracking logic for FaultMaven's evidence-driven investigation framework.
 
 **Related Documents**:
+- [Investigation Flow Redesign](./investigation-flow-redesign.md) - Design rationale for the unified flow, assessment variables, and stabilization-as-insert (supersedes the former path fork)
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) - Overview and philosophy
 - [Investigation Data Models](./investigation-data-models.md) - Core data structures
 
@@ -11,7 +12,7 @@ This document defines the state transitions, path routing, and turn tracking log
 ## Table of Contents
 
 1. [Investigation Lifecycle](#1-investigation-lifecycle)
-2. [Path Selection & Routing](#2-path-selection--routing)
+2. [Stabilization as an Insert](#2-stabilization-as-an-insert)
 3. [Turn Progress Tracking](#3-turn-progress-tracking)
 4. [Supported Case Lifecycles](#4-supported-case-lifecycles)
 
@@ -34,8 +35,8 @@ This document defines the state transitions, path routing, and turn tracking log
        │                              ┌────────────────────┐
        │                              │   INVESTIGATING    │
        │                              │                    │
-       │                              │ Diagnosing         │
-       │                              │ Mitigating         │
+       │                              │ Investigating      │
+       │                              │ Stabilizing        │
        │                              │ Resolving          │
        │                              └─────────┬──────────┘
        │                                        │
@@ -43,7 +44,7 @@ This document defines the state transitions, path routing, and turn tracking log
        │                              │                    │
        │                   (solution_verified)    (no solution,
        │                              │            abandoned/escalated/
-       │                              │            mitigation_sufficient)
+       │                              │            stabilized-then-closed)
        │                              ▼                    ▼
        │                      ┌──────────────┐    ┌──────────────┐
        │                      │   RESOLVED   │    │    CLOSED    │
@@ -429,7 +430,7 @@ propose_transition(
     to_status="closed",
     summary=closure.message,
     # closure_reason derived by engine via derive_closure_reason():
-    # "inquiry_only" | "closed_after_investigation" | "mitigation_sufficient"
+    # "inquiry_only" | "closed_after_investigation"
 )
 # User confirms → _execute_closed_transition(case, user_id, closure_reason)
 ```
@@ -486,8 +487,8 @@ There is no `INQUIRY → RESOLVED` edge. KB-driven cases route through INVESTIGA
        │                             ┌────────────────────┐
        │                             │   INVESTIGATING    │
        │                             │                    │
-       │                             │ Diagnosing         │
-       │                             │ Mitigating         │
+       │                             │ Investigating      │
+       │                             │ Stabilizing        │
        │                             │ Resolving          │
        │                             │                    │
        │                             │ (collapses to 1–2  │
@@ -541,7 +542,7 @@ Every load-bearing lifecycle rule has at least one enforcement surface: code, sc
 | INV-02 | INQUIRY → INVESTIGATING never auto-fires on CRITICAL/HIGH urgency alone — confirmation is still required regardless of severity. | §1.2 *Two-Step Confirmation Flow* — "Even for CRITICAL + ongoing issues" | **Code-guarded** — the urgency branch in `_apply_inquiry_updates` logs only; the transition gate still requires explicit `user_confirmed_investigation=True`. | `test_inquiry_transition::test_critical_outage_stays_inquiry_until_confirmed` |
 | INV-03 | Disposition transitions (INVESTIGATING → RESOLVED, INVESTIGATING → CLOSED, INQUIRY → CLOSED) NEVER auto-fire. The agent emits `ProposedTransition`; the user confirms on a subsequent turn. | §1.2 *INVESTIGATING → RESOLVED (Disposition)*; §1.4 line 488 ("Disposition actions are NEVER automatic") | **Structural** — `propose_transition` writes `pending_transition`; only `confirm_pending_transition` executes the state change. The two functions cannot be called within the same `process_turn` invocation without an intervening case save and LLM turn. *Composition seam:* the structural propose+confirm split preserves the no-auto-fire invariant regardless of prompt behavior, but the user-facing confirmation UX depends on (a) the engine setting `metadata["override_suggestions"]` at `propose_transition` call sites and (b) the LLM surfacing a "please confirm" cue in `agent_response` per `_AMBIGUITY_FIRST_RULE`. Removing the prompt rule does not break the invariant (buttons still emit deterministically; users can still confirm by typing) but does degrade UX: the buttons appear next to a response that doesn't acknowledge them. Audit `propose_transition` call sites in `milestone_engine.py` and the `_AMBIGUITY_FIRST_RULE` block in `templates.py` together when either changes. | `test_inv03_*` in `test_lifecycle_invariants.py` (5 tests pin the function-level contract: propose writes pending only, confirm-without-propose is a no-op, full handshake executes only via explicit confirm, decline clears pending) |
 | INV-04 | INQUIRY → RESOLVED has no direct edge. Every RESOLVED case flows through INVESTIGATING — even KB-matched cases. | §1.3 (line 442); `ALLOWED_ACTIONS` dict + `is_valid_action()` | **Schema** (`is_valid_action()` in `models.py` runs as a Pydantic model_validator on every `CaseAction` instantiation — `CaseAction` is `frozen=True` so the audit history cannot record the forbidden transition) + **Code-guarded** (`_execute_resolved_transition` raises `ValueError` on non-INVESTIGATING input — runtime backstop). `ALLOWED_ACTIONS` in `case_action_manager.py` is UI-affordance only (drives `get_allowed_transitions`). | `test_inv04_*` in `test_lifecycle_invariants.py` |
-| INV-05 | Stage transitions within INVESTIGATING (DIAGNOSIS → MITIGATION → TREATMENT) are AUTOMATIC when the LLM sets the corresponding gate milestone — NO User-Agent Handshake. This is the only place where LLM-emitted state changes proceed without explicit user confirmation, by design. | §1.4 line 488 | **Prompt-only via gate milestone semantics** — the engine acts directly on whichever gate milestone the LLM emits. `InvestigationProgress.current_stage` is a pure computed property over gate flags, with no handshake plumbing. | `test_inv05_*` in `test_lifecycle_invariants.py` (4 tests: initial stage is DIAGNOSIS; mitigation_accepted advances to MITIGATION immediately with no pending_transition; solution_accepted advances to TREATMENT immediately; static guard that the property body contains no handshake tokens) |
+| INV-05 | The derived stage label within INVESTIGATING (Investigating / Stabilizing / Resolving) follows the action-compliance gates AUTOMATICALLY — NO User-Agent Handshake. The "Stabilizing" label is driven by the single `progress.stabilization` record (accepted ∧ ¬verified), not by `mitigation_*` booleans. This is the only place where LLM-emitted compliance signals change derived state without explicit user confirmation, by design. | §1.4; §2 | **Schema-derived** — `InvestigationProgress.current_stage` is a pure computed property over the stabilization record + `solution_accepted`/`solution_verified`, with no handshake plumbing. The stabilization record's own validator enforces `verified ⇒ accepted`. | `test_inv05_*` in `test_lifecycle_invariants.py` (initial stage is Investigating; an accepted-but-unverified stabilization shows Stabilizing with no pending_transition; solution_accepted shows Resolving; static guard that the property body contains no handshake tokens) |
 | INV-06 | The KB-Resolution same-turn collapse (INVESTIGATING → RESOLVED in one turn for runbook-matched cases) goes through `propose_transition` + `confirm_pending_transition` — the same mechanism as the multi-turn path. The engine fires confirm in the same turn ONLY when both `transition_proposed_this_turn` and `knowledge_resolution_signalled` metadata flags are set; the user's runbook-confirmation message ("it worked") is the implicit disposition acknowledgment. Every other ProposedTransition emission still follows the standard 2-turn handshake. | §1.2 *KB-Resolution Path* (lines 380-385); §4.2 | **Structural** — uses the same `pending_transition` mechanism as the multi-turn path. The same-turn collapse is the only deviation, scoped via metadata-flag conjunction. *Composition seam:* the same-turn collapse trigger depends on the LLM emitting `knowledge_resolution` in `state_updates` when a runbook fix is acknowledged — the engine's conjunction in `_check_automatic_transitions` cannot fire without the prompt-driven signal. Removing the prompt instruction to emit `knowledge_resolution` does not break the invariant (multi-turn fallback works; cases reach RESOLVED via the standard 2-turn handshake) but defeats the KB-resolution UX optimization. Audit the `knowledge_resolution` emission rule in `INVESTIGATION_BASE` (`templates.py`) and the conjunction gate in `milestone_engine.py:_check_automatic_transitions` together when either changes. | `test_inv06_*` in `test_lifecycle_invariants.py` |
 | INV-07 | Evidence rows are born only during INVESTIGATING. No Evidence creation during INQUIRY — `InquiryStateUpdate` has no `evidence_to_add` field. Uploads during INQUIRY persist as `UploadedFile` only. | §1.2.1 *Core principles* | **Schema** — `InquiryStateUpdate` Pydantic model does not declare `evidence_to_add`; engine `_apply_inquiry_updates` has no evidence-creation branch. The model uses `extra='ignore'` (Pydantic default) deliberately — LLM emissions of unknown fields are silently dropped to preserve graceful degradation rather than failing the turn; the invariant is enforced by field absence, not by rejecting strays. | `test_inv07_*` in `test_lifecycle_invariants.py` |
 | INV-08 | Every Evidence row has a known source: `source_file_id` set, **or** `source_type=USER_DESCRIPTION` for chat-quote evidence. There is no escape hatch. | §1.2.1 lines 215-222 | **Schema + DB** — Pydantic validators on `Evidence` and `EvidenceToAdd`; DB CHECK constraint `evidence_source_invariant` (migration 010). | exhaustive evidence-model tests |
@@ -553,11 +554,10 @@ Every load-bearing lifecycle rule has at least one enforcement surface: code, sc
 | INV-14 | Manual case-action requests (status dropdown) flow through the same confirmation pattern as natural progression — they cannot bypass the User-Agent Handshake. | §1.5 *Core Principle* — "all case actions require explicit user confirmation" | **Structural** — the UI sends a system message that routes through `submit_turn` + the standard `pending_transition` mechanism. *Composition seam:* dropdown-driven dispositions inherit the same confirmation-pair UX seam as INV-03 — the dropdown's system message (from `CASE_ACTION_MESSAGES` in `case_action_manager.py`) is a fixed string, but the LLM's `agent_response` is expected to surface a "please confirm" cue per `_AMBIGUITY_FIRST_RULE` alongside the engine-emitted override suggestions. Audit the same surfaces as INV-03. | `test_inv14_*` in `test_lifecycle_invariants.py` (4 tests pin that dropdown-initiated INQUIRY→CLOSED / INVESTIGATING→CLOSED / INVESTIGATING→RESOLVED writes pending_transition and leaves `case.state` unchanged this turn); cross-references: `test_transition_alignment.py::test_ui_dropdown_*` (canonical confirmation-pair emission) and `test_investigation_lifecycle.py::test_explicit_ui_resolve_proposes_then_confirms` (two-turn end-to-end) |
 | INV-15 | The agent is an **ADVISOR** — it never runs commands, accesses systems, or makes infrastructure changes. Stated in the agent's vocabulary constraint (banned/required phrase table). | §1.6 *Agent Role Constraints* | **Prompt-only** + light vocabulary check. The runtime scan (`_completion_phrases` at `milestone_engine.py:3186`, consumed at `:3246`) is deliberately narrow — it covers the highest-stakes drift (false completion claims like *"case closed"*, *"marking as resolved"*) where the signal/noise ratio is strongest. Action-claim phrases from `_ADVISOR_ROLE_CONSTRAINT` (*"Let me check"*, *"I will run"*) are not scanned — they have higher false-positive rates in legitimate context (quoting the user, hedge phrases). Broader advisor-role drift detection is deferred to a separate `advisor_role_compliance` telemetry signal if/when operational evidence warrants it. | `test_inv15_*` in `test_lifecycle_invariants.py` |
 | INV-16 | The LLM is the **sole authority** for milestone advancement. `validate_milestone_claims` in the evidence processor is read-only — it returns validation results but never writes to `case.progress.*`. Milestone state changes flow ONLY from the LLM's structured output through the milestone engine. | §3.1 *Issue A* (keyword-discovery dual pathway removed) | **Code-guarded by construction** — `validate_milestone_claims` returns `List[MilestoneValidationResult]` and contains no `case.progress.<field> =` assignments. Static-source guard pins this so any future regression (a refactor reintroducing a write inside the evidence processor) breaks the test. | `test_inv16_*` in `test_lifecycle_invariants.py` |
-| INV-17 | An LLM must not classify evidence as `causal_evidence` unless at least one hypothesis exists on the case — causal claims presuppose a hypothesis to attach to. | §4.3 line 1801 (bolded "**Constraint**") | **Prompt-only, enforced across the path-conditional dispatch:** (1) The canonical ban lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (in `templates.py`), composed into `_RCA_DIAGNOSIS_BLOCK` and reached by ROOT_CAUSE and MITIGATION_FIRST post-Gate-3 cases. (2) Pre-mitigation MITIGATION_FIRST cases see `_SYMPTOM_VALIDATION_BLOCK` instead, which explicitly forbids BOTH `hypotheses_to_add` and `causal_evidence` emission — same INV-17 outcome via the no-hypothesis-no-causal-evidence chain (since causal_evidence presupposes a hypothesis, banning hypothesis emission transitively bans causal_evidence). The rule is restated as a SAFETY RULE in `FALLBACK_INVESTIGATION_TEMPLATE` for the degraded-prompt path. No Pydantic validator on `EvidenceToAdd` rejects this combination; the invariant is prompt-enforced at every dispatch branch. | `test_inv17_*` in `test_lifecycle_invariants.py`; `TestBlockIsolation` in `test_path_conditional_diagnosis_prompts.py` |
-| INV-18 | Runbook generation is RESOLVED-only. CLOSED cases are not eligible regardless of `closure_reason`. Both the chat-side dispatcher and the API endpoint reject non-RESOLVED cases. | §4.5.1 line 1971 — *"Eligibility: RESOLVED cases only."* | **Code-guarded at two layers** — (1) Engine: `_process_terminal_turn` gates dispatch on `case.state == CaseState.RESOLVED`; non-RESOLVED falls through to terminal Q&A. (2) API: `POST /knowledge/convert-from-case` returns HTTP 400 when `case_status != "resolved"` (`conversion_routes.py:511`). | `test_inv18_*` in `test_lifecycle_invariants.py` |
-| INV-19 | **Gate 2 (path selection) fires inside INVESTIGATING after `symptom_verified=True`, not at INQUIRY.** Post-redesign, the INQUIRY → INVESTIGATING transition requires Gate 1 only (problem statement confirmed). Once the case has transitioned, the agent works through symptom validation; when it sets `symptom_verified=True`, the deterministic Gate 2 affordance pair surfaces. Existence of `case.path_selection` IS the Gate 2 commit — the field is only written by the Gate 2 click handler in `milestone_engine` and never auto-populated. The recommendation that powers the Gate 2 affordance pair is computed on-demand by `recommend_investigation_path_for_case` (in `modules/case/domain/services/investigation_router.py`) at suggestion-render and prompt-context-build time; it is NOT stored on the case. The user resolves Gate 2 by clicking one of the two COOPERATIVE path suggestions (or by typing a `PATH_SELECTION` intent). **What this timing change does and does not deliver:** the user now sees the agent's symptom-validation work (data inspection, evidence rows, prose framing) in the transcript before committing to a path, so they have transcript-visible context for whether to follow the recommendation or override it. The recommendation algorithm itself is unchanged — `recommend_investigation_path_for_case` still reads only `case.inquiry.preliminary_urgency`, i.e., the "Recommended" label on the Gate 2 button is computed from the same INQUIRY-time user-claimed urgency as before. The win is in *override context*, not in the recommendation. Migrating the recommendation itself to derive urgency from post-`symptom_verified` evidence (symptom-row count, agent-inferred severity, source-type distribution) is **deferred follow-up** — it's its own design problem (input set, sparse-evidence handling, severity heuristic) and would have made this refactor too large. | docs/working/WIP-investigation-gates-implementation.md (slice 2 / Three gates); path-selection commit-timing refactor (2026-05-23); Move-Gate-2-to-INVESTIGATING refactor (2026-05-25) | **Code-guarded at four layers** — (1) `_check_automatic_transitions` fires `INQUIRY → INVESTIGATING` on Gate 1 alone; it no longer requires `path_selection`. (2) `_transition_to_investigating` raises a `RuntimeError` if it reaches the transition with `path_selection is not None` — surfacing premature path writes (e.g., the old auto-create site or a bad test fixture) loudly. (3) `_gate2_is_pending` fires only on `INVESTIGATING + symptom_verified + path_selection is None`; the deterministic path-selection suggestion pair is emitted by the response builder whenever the predicate is True. (4) The Gate 2 click handler accepts `path_selection` intents only when `status == INVESTIGATING` and `symptom_verified is True`, blocking premature clicks. **Prompt-layer reinforcement:** when Gate 2 is pending, `context_builder` injects a `<path_selection_state>` block followed by `_GATE2_PENDING_REMINDER` (sibling `<gate2_pending_instructions>` envelope) into the INVESTIGATING template's `{gate2_state}` slot — instructing the LLM (a) not to emit `hypotheses_to_add` / `causal_evidence` / `solutions_to_add` while the gate is open, and (b) on the data-without-pick failure mode, to acknowledge briefly then re-assert the path question. **Engine-side backstop:** the same restriction is enforced structurally via `_is_pre_path_investigating(case)` → `_path_conditional_emission_restriction` → reject-and-resurface in `_apply_investigation_updates`, so a non-compliant LLM cannot corrupt the case during the pre-path window. *Composition seam:* the dispatcher (`_select_diagnosis_block` routes path=None → `_PRE_PATH_DIAGNOSIS_BLOCK`), the deterministic affordance pair, the `<path_selection_state>` prompt block, the `_GATE2_PENDING_REMINDER` appendix, and the engine-side rejection backstop are all tied. Removing or weakening any one of them does not break the invariant (the next layer catches the failure) but degrades UX in characteristic ways. Audit `templates.py:_select_diagnosis_block`, `context_builder.py:gate2_state_str`, `milestone_engine.py:_gate2_is_pending`, and `milestone_engine.py:_is_pre_path_investigating` together when any changes. | `TestINV19PathSelectionAsCommitSignal` and `TestGate2IsPending` in `tests/unit/core/investigation/test_investigation_gates.py`; `TestEngineOwnedAffordances::test_gate2_pending_returns_path_selection_pair` in `tests/unit/core/investigation/test_engine_owned_affordances.py`; `TestReminderContent` and `TestConditionalInjection` in `tests/unit/core/investigation/test_gate2_pending_reminder.py`; `TestDispatcher::test_path_selection_none_routes_to_pre_path_block` in `tests/unit/core/investigation/test_path_conditional_diagnosis_prompts.py`; `TestStatePredicates::test_pre_path_*`, `TestHypothesesRejection::test_pre_path_*`, `TestCausalEvidenceRejection::test_pre_path_*`, `TestRootCauseIdentifiedRejection::test_pre_path_*`, `TestSolutionsRejectedInPrePath` in `tests/unit/core/investigation/test_path_conditional_emission_backstop.py` |
-| ~~INV-20~~ | **REMOVED (2026-05-23).** The mutation watcher that cleared `case.path_selection` on urgency-signal change was deleted in the path-selection commit-timing refactor. Under the new design `case.path_selection` is never written during INQUIRY at all (Gate 2 click is the sole creation site), so urgency-signal mutations *before* Gate 2 simply re-flow through the on-demand recommendation helper on the next render. After Gate 2 commits, the case has already transitioned to INVESTIGATING and `case.path_selection` is now immutable commitment — urgency-signal changes at that point are out of scope for Gate 2 re-evaluation. The watcher's purpose collapsed when the field stopped being pre-computed. | — | n/a (removed) | n/a (removed) |
-| INV-21 | Gate 3 — on a mitigation-first case after `mitigation_verified` first becomes True, RCA-side milestone advances (`root_cause_identified`) are blocked until the user explicitly confirms continuation via the `POST_MITIGATION_CHOICE` intent (`path_selection.rca_after_mitigation_confirmed = True`). The alternative outcome is a `STATUS_TRANSITION` to CLOSED with `closure_reason = mitigation_sufficient`. Either path closes Gate 3; until one fires, RCA cannot silently resume. | docs/working/WIP-investigation-gates-implementation.md (slice 3 / Gate 3) | **Code-guarded at three layers** — (1) `_apply_stage_gate_side_effects` sets `case.path_selection.mitigation_completed_at_turn` the first turn `mitigation_verified` is completed (the durable Gate 3 boundary marker). Mitigation gate flags are **set-once** under the forward-only design — neither `mitigation_accepted` nor `mitigation_verified` is reset by the engine; the case naturally transitions from MITIGATION back to DIAGNOSIS via the `current_stage` property's fall-through (the MITIGATION branch requires `NOT mitigation_verified`). The "at Gate 3" condition is read from `path_selection.{mitigation_completed_at_turn, rca_after_mitigation_confirmed}`, not from the transient flag state. (2) `_apply_investigation_updates` checks `_path_conditional_emission_restriction(case)` and rejects RCA-side milestone updates with a WARNING log + `system_feedback` re-surface while the gate is open. The same predicate also rejects them in pre-mitigation MITIGATION_FIRST cases (where `_SYMPTOM_VALIDATION_BLOCK` issues the same prohibition) AND in pre-path INVESTIGATING cases (where `_PRE_PATH_DIAGNOSIS_BLOCK` issues the same prohibition under INV-19); the path-restricted predicate now covers three states under one helper: `pre_path_investigating`, `pre_mitigation_mitigation_first`, and `gate3_pending`. INV-21's milestone-block enforcement is one consumer of that predicate. (3) The response builder forces `_post_mitigation_suggestions()` whenever `_gate3_is_pending(case)` is True and `rca_infeasible` did not already produce override suggestions, so the user has a clickable path regardless of LLM compliance with the GATE 3 PENDING prompt block. *Composition seam:* the deterministic suggestion emission and the prompt-side `GATE 3 PENDING` DIAGNOSIS-template injection are tied — removing the prompt injection does not break the invariant (suggestions still emit) but does degrade UX. Audit `templates.py:DIAGNOSIS dispatcher` and `milestone_engine.py:_post_mitigation_suggestions` together when either changes. *Outcome telemetry:* `faultmaven_inquiry_gate3_reached_total` (gate opens) paired with `faultmaven_inquiry_gate3_resolved_total{outcome}` (user resolved by continuing to RCA or closing as mitigation-sufficient). A growing gap signals stranded post-mitigation cases. | `TestINV21Gate3MilestoneGuard`, `TestPostMitigationSuggestions`, `TestGate3IntentHandler` in `tests/unit/core/investigation/test_investigation_gates_post_mitigation.py` |
+| INV-18 | Runbook generation is RESOLVED-only. CLOSED cases are not eligible regardless of `closure_reason`. Both the chat-side dispatcher and the API endpoint reject non-RESOLVED cases. | §4.5.1 — *"Eligibility: RESOLVED cases only."* | **Code-guarded at two layers** — (1) Engine: `_process_terminal_turn` gates dispatch on `case.state == CaseState.RESOLVED`; non-RESOLVED falls through to terminal Q&A. (2) API: `POST /knowledge/convert-from-case` returns HTTP 400 when `case_status != "resolved"` (`conversion_routes.py:511`). | `test_inv18_*` in `test_lifecycle_invariants.py` |
+| INV-22 | **`cause_state` is an engine-derived truth signal that is NEVER path/state-stripped.** It records *what the engine knows about the cause* — recomputed every INVESTIGATING turn from the LLM's grounded cause signal plus the active-hypothesis count, independent of stage or any (now-removed) path. There is no window in which a legitimately-known cause is suppressed; this is the linchpin that dissolved the old self-naming-error trap (a case that identified its cause at turn 5 but stayed UNRESOLVED because the path forbade RCA-side emissions). | §2; [investigation-flow-redesign.md §4.1, R1](./investigation-flow-redesign.md) | **Code-guarded** — `_recompute_assessment_state(case)` in `milestone_engine.py` is called at the end of `_apply_investigation_updates` on every turn and sets `cause_state` from `HypothesisManager.count_active_hypotheses` + the grounded signal. The reasoning-validation strip (INV-23) operates on emitted milestones, never on the recomputed assessment enum. The justification bar accepts a self-naming-error extract as a valid basis for IDENTIFIED. | `tests/unit/core/investigation/test_surgical_strip_and_cause_state.py` (cause_state derivation across 0/1/≥2 hypotheses + grounded signal; self-naming-error acceptance) |
+| INV-23 | **The reasoning-validation strip is per-milestone surgical.** When `validate_reasoning_first` rejects an emission for missing justification, only the *offending* milestones are reset to None — co-emitted valid milestones survive. A single unjustified milestone never wipes the others. (Global failures — no `internal_reasoning`, no actionable evidence — still implicate every completed milestone; turn-reference format errors implicate none.) | §2; [investigation-flow-redesign.md §5](./investigation-flow-redesign.md) | **Code-guarded** — `validate_reasoning_first` returns the *set* of offending milestone names; the apply-path caller in `milestone_engine.py` strips only that set. Replaces the prior wholesale-wipe degradation branch that destroyed valid `mitigation_accepted` / `mitigation_verified` alongside one forbidden emission (the S1 collateral-wipe bug). | `tests/unit/core/investigation/test_surgical_strip_and_cause_state.py` (surgical strip preserves co-emitted valid gates) |
+| INV-24 | **The stabilization record is a single forward-only insert.** There is one `progress.stabilization: StabilizationRecord` per investigation; its own validator enforces `verified ⇒ accepted`. Acceptance/verification are never reset (no MITIGATION re-entry). `completed_at_turn` is stamped once when `verified` first flips True (the boundary for up-weighting pre-stabilization evidence in later RCA). A non-stabilizing insert is not a dead-end — the flow stays open to user-led action (alternative fix in prose, escalate, new data, or CLOSE). | §2; [investigation-flow-redesign.md §3.2.1, R2](./investigation-flow-redesign.md) | **Schema** — `StabilizationRecord._verified_requires_accepted` model_validator. **Code-guarded** — the engine materializes the record from the LLM gate signals and stamps `completed_at_turn` idempotently; `solution_ordering` on `InvestigationProgress` keeps `solution_verified ⇒ solution_accepted`. | `test_inv05_*` / stabilization-lifecycle tests in `test_lifecycle_invariants.py`; `StabilizationRecord` `verified ⇒ accepted` validator tests in `tests/unit/core/investigation/test_milestone_order_rejection.py` |
 
 **Drift notes (as of this writing):**
 
@@ -574,7 +574,7 @@ Every load-bearing lifecycle rule has at least one enforcement surface: code, sc
 - **INV-14** *(resolved)*: previously two drift notes lived here — (a) §1.5.2 still described the deprecated plain-text `/queries` mechanism, and (b) §1.5.2 didn't surface the RESOLVED dropdown's three-branch behavior (`READY` / `SUGGEST_CLOSE` / `NEEDS_INFO`). Both gaps are now closed: §1.5.2 Step 2 describes the structured-intent payload (`intent_type="status_transition"` + `intent_data`) and Step 3 carries the three-branch table.
 - **INV-15** (advisor role) is acceptable as prompt-only because the worst-case symptom is the agent suggesting it ran a command (it didn't — there's no execution surface in the codebase to do so). The constraint is stylistic; violations are caught in compliance review, not at runtime.
 - **INV-15** scan scope *(decided — keep narrow, defer broader signal)*: the runtime `_completion_phrases` scan (defined at `milestone_engine.py:3186`, consumed at `:3246`) covers the high-stakes transition-completion phrases (*"case closed"*, *"marking as resolved"*) where the signal/noise ratio is strongest. The broader `_ADVISOR_ROLE_CONSTRAINT` banned-phrase list (*"Let me check"*, *"I will run"*, *"Let me look at"*, *"I'll execute"*) is deliberately NOT in the runtime scan — these phrases are generic enough to appear in benign context (the agent quoting the user, hedge phrasing like *"Let me look at this from your angle..."*) where false positives would dilute the telemetry signal. If broader advisor-role drift detection becomes valuable, add a separately-tagged `advisor_role_compliance` signal alongside the existing `transition_compliance` scan — distinct log key so analytics can pivot on each independently. Deferred until operational evidence warrants it.
-- **INV-17** enforcement-category surprise: §4.3 line 1801 uses the word **"Constraint"** (bolded) for the hypothesis-before-causal-evidence rule, which reads as if it were schema- or code-enforced. Verifying the code shows the rule is **prompt-only**. The canonical ban lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (composed into `_RCA_DIAGNOSIS_BLOCK`); pre-mitigation MITIGATION_FIRST cases get the same outcome via `_SYMPTOM_VALIDATION_BLOCK`'s explicit ban on `hypotheses_to_add` and `causal_evidence` emission. `FALLBACK_INVESTIGATION_TEMPLATE` restates the rule as a SAFETY RULE. There is no Pydantic validator on `EvidenceToAdd` or `Evidence` that rejects `category=causal_evidence` when `case.hypotheses` is empty. This is structurally similar to INV-15 (a "Constraint" backed by prompt compliance, not by the runtime). The matrix row above now classifies it correctly as Prompt-only. Open follow-up: decide whether the design intent justifies adding a code-level gate (engine could reject `causal_evidence` in `evidence_to_add` when `case.hypotheses` is empty, downgrading to `general_evidence`) — the LLM-only path means a single prompt drift can let the rule lapse silently.
+- **INV-17 / INV-19 / INV-20 / INV-21 retired (2026-06-05, flow redesign):** these rows enforced the path fork and its emission bans — INV-17 (hypothesis-before-causal-evidence, enforced across the path-conditional dispatch), INV-19 (Gate 2 path-selection commit), INV-20 (already removed), and INV-21 (Gate 3 post-mitigation RCA guard). The unified opportunistic flow removes `InvestigationPath` / `PathSelection`, Gate 2, Gate 3, and the three path-conditional emission bans entirely. **R6 tier shift (deliberate):** retiring INV-17 and INV-21 drops two *structural/code* guards. They are replaced by (a) the `cause_state` gate — run the diagnostic machinery iff `cause_state ∈ {UNKNOWN, CANDIDATES}` (a prompt-guided rule, no longer a hard engine ban on hypothesis/causal-evidence emission), (b) the per-milestone surgical strip (INV-23), and (c) the coupled prompt mandate that forces hypothesis emission under uncertainty (the producer of derived `CANDIDATES`). The self-naming simulation campaign is the safety net for this tier change. The hypothesis-before-causal-evidence ordering survives as prompt guidance in the unified INVESTIGATION block, not as an engine reject-and-resurface backstop.
 
 **How to use this matrix:**
 
@@ -690,10 +690,11 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
     case.atomic_update(
         status=CaseState.CLOSED,
         closed_at=datetime.now(UTC),
-        closure_reason=reason,  # engine-derived: "closed_after_investigation" | "mitigation_sufficient"
+        closure_reason=reason,  # engine-derived: "closed_after_investigation"
     )
-    # Note: "mitigation_sufficient" is used when user closes after mitigation
-    # without pursuing RCA. UI renders as "Closed - Mitigated".
+    # Note: a case stabilized then closed is simply "closed_after_investigation"
+    # (the former "mitigation_sufficient" reason was folded in). The documented
+    # stabilization is preserved on the closed case.
     case.action_history.append(CaseAction(
         from_status=CaseState.INVESTIGATING,
         to_status=CaseState.CLOSED,
@@ -742,19 +743,20 @@ State updates occur at specific points within a turn to ensure consistency:
 | `proposed_problem_statement` | — | During INQUIRY turn | LLM generates from conversation |
 | `problem_statement_confirmed` | — | After user confirmation | User says "Yes" or equivalent |
 | `symptom_verified` | Progress indicator | After evidence processing | LLM sets in structured output when symptoms confirmed |
-| `root_cause_identified` | Progress indicator | After hypothesis validation | LLM sets when hypothesis validated with high confidence |
+| `cause_state` | Assessment (engine-derived) | End of each INVESTIGATING turn | Engine recomputes via `_recompute_assessment_state`: IDENTIFIED if the LLM's grounded cause signal passes justification; else CANDIDATES if ≥2 ACTIVE hypotheses; else UNKNOWN. Replaces the boolean `root_cause_identified`. Never path-stripped. |
+| `solution_state` / `solution_feasible` | Assessment (engine-derived / LLM-settable) | End of each INVESTIGATING turn / LLM output | `solution_state=SELECTED` once a permanent SOLUTION is proposed; `solution_feasible` defaults NOW, LLM sets DEFERRED. |
 | `solution_proposed` | Progress indicator | After LLM proposes action | Set when ProposedAction with action_type=SOLUTION is created |
-| `path_selection` | — | On Gate 2 click during INVESTIGATING after `symptom_verified=True` (sole creation site) | User-driven via `PATH_SELECTION` intent. Recommendation is computed on-demand by `recommend_investigation_path_for_case`; the field is never written before Gate 2 commit (existence == commit). Post-redesign: Gate 2 fires inside INVESTIGATING (not INQUIRY) so the user clicks with the agent's symptom-validation work visible in the transcript. The recommendation algorithm itself is unchanged — it still reads `case.inquiry.preliminary_urgency`. |
-| `mitigation_accepted` | Gate milestone | LLM structured output | User acknowledges executing proposed temp fix |
-| `mitigation_verified` | Gate milestone | LLM structured output | User confirms mitigation worked (subjective confirmation sufficient) → return to DIAGNOSIS |
+| `mitigation_accepted` | Stabilization gate signal | LLM structured output | User acknowledges executing the proposed stabilization → materializes `stabilization.accepted` |
+| `mitigation_verified` | Stabilization gate signal | LLM structured output | User confirms the stabilization stabilized the situation → materializes `stabilization.verified` + `completed_at_turn` |
 | `solution_accepted` | Gate milestone | LLM structured output | User acknowledges executing proposed solution |
 | `solution_verified` | Gate milestone | After user confirms fix | User confirms problem resolved (User-Agent Handshake) |
 | Disposition action | — | End of turn | After all other processing |
 
-**Gate milestones vs Progress milestones**:
+**Gate signals vs Progress indicators vs Assessment variables**:
 
-- **Gate milestones** (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`): Drive stage transitions. Set by the LLM in structured output when it detects user compliance with a ProposedAction. The LLM is the compliance detector — the user's action is the trigger; the LLM recognizes it (Framework §4.1).
-- **Progress indicators** (`symptom_verified`, `root_cause_identified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions.
+- **Gate signals** (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`): Drive the derived stage label + resolution handshake. Set by the LLM in structured output when it detects user compliance with a ProposedAction (Framework §4.1). The stabilization pair (`mitigation_accepted`/`mitigation_verified`) materializes into the single `progress.stabilization` record rather than booleans.
+- **Progress indicators** (`symptom_verified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions.
+- **Assessment variables** (`cause_state`, `solution_state`, `solution_feasible`): Engine-derived truth signals recomputed each turn. `cause_state` (not a gate, not a path) is what drives whether the diagnostic machinery runs. Never path-stripped.
 
 **Order of Operations Within a Turn**:
 
@@ -1233,7 +1235,7 @@ When a case reaches a terminal state, the system synchronously generates a light
 
 | Case Status | Report Type | Content Focus |
 |-------------|-------------|---------------|
-| RESOLVED | `RESOLUTION_SUMMARY` | What the problem was, root cause, solution applied, confirming evidence, timeline, milestones reached, investigation path used |
+| RESOLVED | `RESOLUTION_SUMMARY` | What the problem was, root cause, solution applied, confirming evidence, timeline, milestones reached, whether a stabilization was inserted |
 | CLOSED | `CLOSURE_SUMMARY` | What the problem was, investigation state at closure, approaches attempted, closure reason, leading hypotheses with confidence, mitigation status, recommendation for next investigator (if escalated) |
 
 **Generation approach**:
@@ -1284,311 +1286,104 @@ Uses the existing `InvestigationSession.complete()` method. No new session statu
 
 ---
 
-## 2. Path Selection & Routing
+## 2. Stabilization as an Insert
 
-### 2.0 Path Selection Timeline (3 Phases)
+There is **one opportunistic INVESTIGATING flow** — no prospective path fork, no
+merge. The former `mitigation_first` vs `root_cause` path selection (Gate 2), the
+post-mitigation choice (Gate 3), and the urgency-based path recommender are all
+**removed**. See [investigation-flow-redesign.md](./investigation-flow-redesign.md)
+for the full design rationale; this section describes the resulting behavior.
 
-Path selection happens in THREE distinct phases to balance early urgency detection with accurate routing:
+### 2.1 Two orthogonal axes (why the fork was wrong)
 
-#### Phase 1: Preliminary Assessment (INQUIRY Status)
+The single fork conflated two independent questions:
 
-**When**: Turn 1-2, during problem confirmation
+- **Axis A — Certainty.** Do we know the cause? the solution? Tracked by the
+  engine-derived assessment variables `cause_state` and `solution_state`. Drives
+  whether diagnostic *labor* (hypothesis formulation, causal evidence-needs) is
+  needed.
+- **Axis B — Stabilization gap.** Is something hurting *now* that we cannot fully
+  resolve this session? Drives whether a **stabilization** is inserted.
 
-**Purpose**: Early urgency detection for user awareness
+The two axes are independent. The old fork forced an Axis-B answer ("mitigate
+first") that wrongly *implied* an Axis-A answer ("cause unknown, RCA deferred") —
+which is what trapped self-naming-error cases (the cause is in the log; forbidding
+the agent from recording it left the case permanently pre-mitigation).
 
-**Output**: `preliminary_urgency` (stored but not used for routing yet)
+**Diagnostic-machinery rule (replaces the entire path-conditional RCA ban):** run
+hypothesis formulation + evidence-needs **iff the cause is uncertain**
+(`cause_state ∈ {UNKNOWN, CANDIDATES}`) — *not* because a stabilization was or
+wasn't inserted. When `cause_state == IDENTIFIED`, skip straight to solution work.
+This rule is prompt-guided in the unified INVESTIGATION block; the engine no longer
+hard-rejects hypothesis / causal-evidence emission by stage or path.
 
-```python
-def assess_preliminary_urgency(case: Case) -> PreliminaryUrgency:
-    """
-    Early urgency assessment during INQUIRY.
-    Provides early warning but does NOT determine path yet.
+### 2.2 The unified flow
 
-    Called: During first turn when problem_confirmation is created
-    """
-    return PreliminaryUrgency(
-        level=llm_assess_urgency(case.inquiry.problem_confirmation),
-        is_ongoing=llm_detect_temporal_state(case.inquiry.problem_confirmation),
-        impact_assessment="Business impact description",
-        mitigation_hint="Optional quick mitigation suggestion"
-    )
+```text
+INQUIRY ──confirm problem (Gate 1)──▶ INVESTIGATING ─────────────────▶ RESOLVED / CLOSED
+                                  │
+                                  │  opportunistically record what we learn:
+                                  │   symptom_verified, cause_state, solution_state, solution_feasible
+                                  │
+                                  ├─(Axis-B gap detected, any turn)─▶ [STABILIZATION insert]
+                                  │        propose → accept → verify → return to flow
+                                  │
+                                  └─(CLOSE available at ANY point: abandon, or data/impl. limit)
 ```
 
-**CRITICAL Signals**:
-- "revenue loss", "production downtime", "data loss/corruption"
-- "100% error rate", "total service failure", "security breach"
+A **stabilization** (formerly "mitigation") is an *optional inserted sub-activity*
+that buys time when an Axis-B gap exists. A case is described retrospectively as
+**direct** (no stabilization) or **stabilized** (`progress.stabilization is not
+None`) — descriptions of what happened, not paths chosen upfront. The
+INQUIRY → INVESTIGATING transition requires **Gate 1 only** (problem-statement
+confirmation); there is no second gate before investigating.
 
-**HIGH Signals**:
-- "customers affected", "checkout failing", "payments broken"
-- "30%+ of requests failing", "customer complaints", "SLA violation"
+### 2.3 Stabilization triggers and forwarding
 
-**MEDIUM Signals**:
-- "intermittent issues", "some users affected", "partial failure"
-- "slow but functional", "degraded experience", "occasional errors"
-- "10-30% failure rate", "performance issues", "latency spike"
+A stabilization is proposed when an Axis-B gap exists. The first and most common
+assessment point is immediately after `symptom_verified` (the same point the old
+Gate 2 fired) — the agent asks "is there an impact-now gap that can't close this
+session?" and, if so, *proposes* a stabilization (user accepts → insert; declines
+→ continue). The assessment is **re-evaluable** — a stabilization can also be
+proposed later (RCA stalls, situation deteriorates). It is never an irreversible
+commitment.
 
-**LOW Signals**:
-- "historical investigation", "post-mortem", "retrospective"
-- "optimization opportunity", "nice to have", "not urgent"
-- "minor bug", "cosmetic issue", "edge case"
+The three triggering circumstances each leave a *different* thing unresolved,
+which determines the forwarding path **after** the stabilization verifies (this is
+the answer to "what happens after mitigation?" — it is **not** uniformly "continue
+to RCA"; that was only row 1 of the old Gate-3 assumption):
 
-**Detection Timing**: Urgency signals should be detected in Turn 1 and acknowledged immediately in agent response. Don't wait for formal path selection to recognize urgency.
+| Trigger for inserting a stabilization | cause_state | solution_state | Forwarding after stabilization |
+|---|---|---|---|
+| **(1)** cause unknown / multiple candidates needing different fixes | UNKNOWN / CANDIDATES | UNKNOWN | **RCA** — hypothesis formulation + evidence-needs |
+| **(2)** cause known, solution unclear / multiple complex options | IDENTIFIED | CANDIDATES (reserved) | **Solution deliberation** (follow-on; reuses hypothesis machinery) |
+| **(3)** cause + solution known, implementation takes time | IDENTIFIED | SELECTED, `solution_feasible=DEFERRED` | **Handoff / schedule** — CLOSE-with-documented-solution |
 
-**Early Path Hint** (during INQUIRY):
-If CRITICAL/HIGH + ONGOING detected, agent offers:
-> "This sounds like it's actively impacting users. Should I focus on quick
-> mitigation first, then investigate root cause after?"
+If **no** Axis-B gap exists (cause known, solution known, implementable now), the
+flow is **direct**: verify → propose solution → accept → verify → RESOLVED. No
+stabilization, no hypothesis machinery. (This is the case the old model trapped.)
 
-This accelerates path selection without waiting for full verification.
+**Single insert, never a dead-end.** The engine models **one** stabilization per
+investigation (forward-only). If the first stabilization doesn't stabilize, the
+flow stays open to user-led action: the agent acknowledges it didn't work, may
+propose an alternative *in prose / as a fresh proposed action*, and the case
+continues opportunistically (or closes). The single-record constraint is a
+data-model simplification, not a cap on remediation attempts (INV-24).
 
-#### Phase 2: Formal Path Selection (Gate 2 Commit, inside INVESTIGATING after `symptom_verified`)
+**Close-anytime.** CLOSE is always available from any point in the flow — the user
+may abandon, or progress may be blocked by data limits (can't obtain the evidence)
+or implementation limits (fix can't be applied here). This is the existing
+INVESTIGATING → CLOSED disposition handshake, now reachable without a path gate.
 
-**When**: On the Gate 2 click during INVESTIGATING, after the agent has set `symptom_verified=True` based on real evidence. The INQUIRY → INVESTIGATING transition fires on Gate 1 alone; Gate 2 opens later, once the agent has shown its symptom-validation work in the transcript.
+### 2.3.1 Derived stage label
 
-**Purpose**: Commit the user's investigation-path choice. Path-selection commit happens inside INVESTIGATING (DIAGNOSIS stage), with the agent's symptom-validation work visible in the transcript so the user has context for whether to follow the recommendation or override it. **Note:** the recommendation algorithm itself still reads `case.inquiry.preliminary_urgency` (user-claimed at INQUIRY) — the timing move affects *override context*, not the recommendation. Making the recommendation evidence-derived is deferred follow-up.
+The UI stage label is a pure derived view over the action-compliance gates
+(redesign R4), not a driver:
 
-**Output**: `case.path_selection` (existence == Gate 2 commit; used for routing in INVESTIGATING)
-
-```python
-# Pure recommendation helper — does NOT mutate the case.
-# Lives in modules/case/domain/services/investigation_router.py.
-def recommend_investigation_path_for_case(case: Case) -> Optional[PathSelection]:
-    """Compute the Gate 2 recommendation on demand.
-
-    Called from two places, both read-only:
-      1. _path_selection_suggestions  — to render the Gate 2 affordance pair
-      2. context_builder              — to inject <path_selection_state> into the LLM prompt
-
-    Returns None if Gate 1 hasn't passed or preliminary_urgency isn't populated.
-    """
-    if not case.inquiry or not case.inquiry.problem_statement_confirmed:
-        return None
-    pu = case.inquiry.preliminary_urgency
-    if pu is None or pu.level is None:
-        return None
-    verification = ProblemVerification(...)  # transient, not persisted
-    return determine_investigation_path(verification)
-
-
-# Gate 2 click handler in milestone_engine — the SOLE creation site for
-# case.path_selection. Existence on the case IS the Gate 2 commit signal.
-def _handle_path_selection_intent(case: Case, chosen_path: InvestigationPath):
-    recommendation = recommend_investigation_path_for_case(case)
-    case.path_selection = PathSelection(
-        path=chosen_path,
-        auto_selected=(recommendation and recommendation.path == chosen_path),
-        rationale=...,
-        alternate_path=...,
-        selected_by=case.user_id,
-    )
-    # _check_automatic_transitions immediately sees Gate 1 + Gate 2 both
-    # closed and fires INQUIRY → INVESTIGATING on this same turn.
-```
-
-#### Phase 3: Path-Guided Agent Behavior (INVESTIGATING Status)
-
-**When**: After path selection, throughout DIAGNOSIS
-
-**Purpose**: Path determines whether the agent proactively offers mitigation during DIAGNOSIS
-
-**Behavior**: The path is **advisory, not structural** — it influences what the agent proposes, not which milestones are available.
-
-```python
-def apply_path_guidance(case: Case):
-    """
-    Path guides agent behavior during DIAGNOSIS.
-
-    InvestigationPath is binary — MITIGATION_FIRST or ROOT_CAUSE. There is
-    no USER_CHOICE path; the router always returns one of the two, and the
-    user accepts or overrides the recommendation via Gate 2 (a COOPERATIVE
-    suggestion pair) before INQUIRY → INVESTIGATING. By the time this
-    function runs, case.path_selection is guaranteed non-None (its existence
-    IS the Gate 2 commit signal — INV-19 enforces this at the transition
-    and at INVESTIGATING-side milestone progression).
-
-    For MITIGATION_FIRST: Agent proactively offers temp fix during DIAGNOSIS.
-        Actual entry to MITIGATION stage is inferred from user compliance.
-    For ROOT_CAUSE: Agent proceeds with root cause analysis. Mitigation not
-        offered unless user requests it.
-    """
-    if case.path_selection.path == InvestigationPath.MITIGATION_FIRST:
-        # Agent prompt includes urgency context and mitigation guidance.
-        # Agent proposes a concrete temp fix action during DIAGNOSIS.
-        # If user complies (executes and submits results) → system infers
-        # DIAGNOSIS → MITIGATION transition via mitigation_accepted milestone.
-        pass
-    elif case.path_selection.path == InvestigationPath.ROOT_CAUSE:
-        # Agent proceeds directly to root cause analysis in DIAGNOSIS.
-        # No mitigation offered unless user explicitly requests it.
-        pass
-```
-
-**Timeline Diagram**:
-
-```
-Turn 1 (INQUIRY):     proposed_problem_statement emitted; preliminary_urgency assessed
-Turn 2 (INQUIRY):     Gate 1 (user confirms problem statement) closes; Gate 2 opens — recommendation rendered on-demand into the COOPERATIVE suggestion pair
-Turn 3 (INQUIRY→INVESTIGATING): Gate 2 click — case.path_selection created → both gates closed → status transitions; case enters DIAGNOSIS stage with the chosen path already committed
-Turn 4+ (INVESTIGATING/DIAGNOSIS): symptom_verified set; agent behavior guided by the already-committed path
-Turn N (INVESTIGATING/DIAGNOSIS): Agent proposes action → user complies → inferred transition to MITIGATION or TREATMENT
-```
-
-### 2.1 Path Selection Matrix
-
-Based on **temporal_state × urgency_level**. `InvestigationPath` is binary (`MITIGATION_FIRST`, `ROOT_CAUSE`); there is no `USER_CHOICE` path. The user accepts or overrides the recommendation via Gate 2 before the path commits — Gate 2 is the user-choice surface, not a separate path.
-
-| Temporal State | Urgency | Recommended Path | Rationale |
-|----------------|---------|------|-----------|
-| **Ongoing** | CRITICAL | MITIGATION_FIRST (auto) | Production broken NOW — stop impact, RCA later |
-| **Ongoing** | HIGH | MITIGATION_FIRST (auto) | Significant active impact — stop bleeding first |
-| **Ongoing** | MEDIUM | ROOT_CAUSE (auto) | Active but not urgent — afford a thorough investigation |
-| **Ongoing** | LOW | ROOT_CAUSE (auto) | Active but not urgent — afford a thorough investigation |
-| **Historical** | CRITICAL | ROOT_CAUSE (auto) | Past issue — immediate impact has subsided, focus on permanent fix |
-| **Historical** | HIGH | ROOT_CAUSE (auto) | Past issue — immediate impact has subsided, focus on permanent fix |
-| **Historical** | MEDIUM | ROOT_CAUSE (auto) | Standard post-mortem — find root cause |
-| **Historical** | LOW | ROOT_CAUSE (auto) | Thorough investigation — permanent solution |
-| missing signal / UNKNOWN urgency | — | ROOT_CAUSE (default, `auto_selected=False`) | Safe default for non-emergency; user overrides via Gate 2 if active impact isn't captured in the data |
-
-### 2.2 Path Selection Logic
-
-Implemented in [`faultmaven/modules/case/domain/services/investigation_router.py`](../../../faultmaven/modules/case/domain/services/investigation_router.py). The router returns a `PathSelection` recommendation; the user confirms or overrides via Gate 2 before INQUIRY → INVESTIGATING.
-
-```python
-def determine_investigation_path(verification: ProblemVerification) -> PathSelection:
-    """Determine investigation path recommendation from the Urgency × Temporal matrix.
-
-    Matrix outcomes (all auto_selected=True unless noted):
-    - ONGOING + CRITICAL/HIGH   -> MITIGATION_FIRST
-    - ONGOING + MEDIUM/LOW      -> ROOT_CAUSE
-    - HISTORICAL + any urgency  -> ROOT_CAUSE
-    - missing/UNKNOWN signals   -> ROOT_CAUSE (auto_selected=False — safe default)
-
-    The router never returns USER_CHOICE — Gate 2 is the user-choice surface.
-    """
-    temporal = verification.temporal_state
-    urgency = verification.urgency_level
-
-    # Ambiguous: missing temporal or unknown urgency → ROOT_CAUSE (safe default),
-    # user overrides via Gate 2 if they have context the data doesn't capture.
-    if not temporal or urgency == UrgencyLevel.UNKNOWN:
-        return PathSelection(
-            path=InvestigationPath.ROOT_CAUSE,
-            auto_selected=False,
-            rationale="Urgency or temporal signal missing — defaulting to root-cause "
-                      "analysis. Switch to mitigation-first if you have active impact "
-                      "the data doesn't capture.",
-            alternate_path=InvestigationPath.MITIGATION_FIRST,
-        )
-
-    # AUTO: Ongoing + High/Critical → MITIGATION_FIRST (stop the bleeding first)
-    if temporal == TemporalState.ONGOING and urgency in [UrgencyLevel.CRITICAL, UrgencyLevel.HIGH]:
-        return PathSelection(
-            path=InvestigationPath.MITIGATION_FIRST,
-            auto_selected=True,
-            rationale=f"Ongoing {urgency.value} impact — recommend mitigating first, "
-                      "RCA after stabilization.",
-            alternate_path=InvestigationPath.ROOT_CAUSE,
-        )
-
-    # AUTO: Ongoing + Low/Medium → ROOT_CAUSE (active but not urgent)
-    if temporal == TemporalState.ONGOING and urgency in [UrgencyLevel.LOW, UrgencyLevel.MEDIUM]:
-        return PathSelection(
-            path=InvestigationPath.ROOT_CAUSE,
-            auto_selected=True,
-            rationale=f"Ongoing but {urgency.value} urgency — recommend root-cause "
-                      "analysis for a permanent fix.",
-            alternate_path=InvestigationPath.MITIGATION_FIRST,
-        )
-
-    # AUTO: Historical + any urgency → ROOT_CAUSE (immediate impact subsided)
-    if temporal == TemporalState.HISTORICAL:
-        return PathSelection(
-            path=InvestigationPath.ROOT_CAUSE,
-            auto_selected=True,
-            rationale=f"Historical {urgency.value} issue — recommend root-cause analysis "
-                      "since immediate impact has subsided.",
-            alternate_path=InvestigationPath.MITIGATION_FIRST,
-        )
-```
-
-### 2.3 Path Impact on Investigation
-
-The path determines **whether the agent proactively offers mitigation** during DIAGNOSIS. Both paths use the same 2-stage model with mitigation detour (DIAGNOSIS → TREATMENT, with optional MITIGATION detour), but differ in agent behavior.
-
----
-
-**Path (a): MITIGATION_FIRST**
-
-MITIGATION is a **distinct stage** — a controlled detour to stabilize the situation before root cause analysis.
-
-- **DIAGNOSIS** (initial — symptom phase)
-  - Agent detects urgency from problem verification
-  - **Minimum-evidence discipline before mitigation proposal.** Even on MITIGATION_FIRST, the agent must complete symptom-phase grounding before proposing a temp fix. The proposal must be linked to *what is observed failing*, not to the user's report alone. Required signals:
-    - (a) **Symptom confirmation grounded in case evidence** — at least one SYMPTOM_EVIDENCE row attributable to the current incident (pod logs / status / metrics / config snapshot inspected). The user's *claim* alone is not sufficient — it is unverified until confirmed against case data.
-    - (b) **A specific failing component identified from that evidence** — the thing the proposed mitigation targets.
-    - A causal hypothesis is **not** required at this point. Hypothesis formation is cause-phase work that happens in post-mitigation DIAGNOSIS; requiring it here would push the agent toward premature causal commitment. The mitigation links to observed symptoms (SYMPTOM_EVIDENCE), not to a hypothesized cause (CAUSAL_EVIDENCE, which by [INV-17](#13-valid-transitions-summary) cannot exist without a hypothesis anyway).
-  - This rule is the MITIGATION_FIRST application of [Behavioral Rule 2 (Evidence-Grounded)](./agent-behavioral-rules.md#rule-2-evidence-grounded). The path's *"prioritize stopping the impact"* framing is **not** license to skip symptom confirmation — it is license to defer causal-hypothesis work until after stabilization.
-  - Agent proposes a concrete temp fix action (e.g., "Run `kubectl rollout undo deployment/payment-api`") grounded in (a) + (b)
-  - If user complies (executes and submits results) → **inferred transition to MITIGATION**
-  - If user questions or refuses → stays in DIAGNOSIS, agent refines approach
-
-- **MITIGATION** (stabilize)
-  - Agent verifies whether the temp fix worked (asks for metrics/logs)
-  - If mitigation insufficient → agent adjusts approach, iterates within MITIGATION
-  - Once user verifies mitigation is effective → **post-mitigation behavior depends on `rca_infeasible`** (see §2.4)
-
-- **DIAGNOSIS** (resumed)
-  - Agent resumes root cause analysis with reduced pressure (service stable)
-  - Forms hypotheses, tests against evidence, identifies root cause
-  - Proposes permanent solution action
-  - If user complies → **inferred transition to TREATMENT**
-
-- **TREATMENT**
-  - Agent verifies fix worked
-  - If fix failed → extended diagnosis within TREATMENT (failure analysis → new evidence → new hypothesis → revised fix)
-  - If fix worked → user confirms via User-Agent Handshake → **RESOLVED**
-
-**Stage flow**: DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT → RESOLVED
-
-**Gate milestones**: `mitigation_accepted` → `mitigation_verified` → `solution_accepted` → `solution_verified`
-
-**Progress indicators** (non-driving): `symptom_verified`, `root_cause_identified`, `solution_proposed`
-
----
-
-**Path (b): ROOT_CAUSE**
-
-Direct root cause analysis — no mitigation detour.
-
-- **DIAGNOSIS**
-  - Verify symptoms, scope, timeline (no active impact or low urgency)
-  - Form hypotheses, test against evidence
-  - Identify root cause with sufficient confidence
-  - Propose permanent solution action
-  - If user complies → **inferred transition to TREATMENT**
-
-- **TREATMENT**
-  - Agent verifies fix worked
-  - If fix failed → extended diagnosis within TREATMENT
-  - If fix worked → user confirms via User-Agent Handshake → **RESOLVED**
-
-**Stage flow**: DIAGNOSIS → TREATMENT → RESOLVED
-
-**Gate milestones**: `solution_accepted` → `solution_verified`
-
-**Progress indicators** (non-driving): `symptom_verified`, `root_cause_identified`, `solution_proposed`
-
----
-
-**Key Differences**:
-
-| Aspect | MITIGATION_FIRST | ROOT_CAUSE |
-|--------|------------------|------------|
-| Stage flow | DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT | DIAGNOSIS → TREATMENT |
-| Mitigation | Agent proactively offers temp fix in DIAGNOSIS | Not offered unless user requests |
-| Stage transitions | Inference-based (user compliance) | Inference-based (user compliance) |
-| Pressure | Reduced early via MITIGATION detour | Full pressure until resolution |
-| Use case | ONGOING + HIGH/CRITICAL | ONGOING + LOW/MEDIUM; HISTORICAL + any urgency; missing/UNKNOWN signals (safe default) |
+- `stabilization.accepted ∧ ¬stabilization.verified` → **"Stabilizing"**
+- `solution_accepted ∧ ¬solution_verified` → **"Resolving"**
+- else → **"Investigating"** (sub-phase distinguished by `symptom_verified` /
+  `cause_state`, not by the stage enum)
 
 ### 2.4 Diagnostic Feasibility (Advisory Signal)
 
@@ -1609,18 +1404,18 @@ The LLM sets `rca_infeasible=True` and populates `rca_infeasible_rationale` with
 
 #### 2.4.2 What It Does NOT Do
 
-- **Does not affect path selection.** The urgency × temporal matrix is unchanged. A case with `rca_infeasible=True` and `ONGOING + CRITICAL` still routes to `MITIGATION_FIRST`. A case with `rca_infeasible=True` and `HISTORICAL + LOW` still routes to `ROOT_CAUSE`.
-- **Does not force a path.** The user can always request RCA even when the signal is set.
+- **Does not select a path.** There is no path fork to influence (unified opportunistic flow).
+- **Does not force closure.** The user can always request RCA even when the signal is set.
 - **Does not skip hypothesis formulation.** Even for external dependencies, lightweight hypotheses have diagnostic value (e.g., "the 503s correlate with our request rate exceeding their undocumented limit" is testable).
 
-#### 2.4.3 What It Does: Post-Mitigation Behavior
+#### 2.4.3 What It Does: Post-Stabilization Behavior
 
-The signal's effect is narrow and specific — it changes what the agent does after `mitigation_verified`:
+The signal's effect is narrow and specific — when a stabilization has been verified but the cause remains uncertain, it changes whether the agent pushes RCA or offers closure:
 
-| `rca_infeasible` | Post-mitigation agent behavior |
+| `rca_infeasible` | Post-stabilization agent behavior |
 | --- | --- |
-| `False` (default) | Agent pushes toward RCA: *"The mitigation is working. Now let's investigate the root cause to prevent recurrence."* |
-| `True` | Agent proposes closure: *"The mitigation is verified. Since [rationale], shall we close this as mitigated?"* Uses User-Agent Handshake — user must confirm. |
+| `False` (default) | Agent pushes toward RCA: *"The stabilization is working. Now let's investigate the root cause to prevent recurrence."* |
+| `True` | Agent proposes closure: *"The stabilization is verified. Since [rationale], shall we close this case?"* Uses User-Agent Handshake — user must confirm. |
 
 If `rca_infeasible=True` but the user says "actually, let's dig deeper" — the agent proceeds with RCA. The signal is advisory, not binding.
 
@@ -1629,9 +1424,9 @@ If `rca_infeasible=True` but the user says "actually, let's dig deeper" — the 
 Cases closed via this path use the existing terminal state:
 
 - `status = CLOSED`
-- `closure_reason = "mitigation_sufficient"`
+- `closure_reason = "closed_after_investigation"` (the documented stabilization is preserved on the closed case)
 
-`RESOLVED` remains pristine — it always means a permanent fix with verified root cause. See §4.5.1 for runbook generation from mitigated cases.
+`RESOLVED` remains pristine — it always means a permanent fix with verified root cause. See §4.5.1 for runbook generation.
 
 ---
 
@@ -1716,9 +1511,12 @@ async def record_turn(
     progress_after = case.progress.dict()
     evidence_count_after = len(case.evidence)
 
-    # Detect state changes (both gate milestones and progress milestones)
+    # Detect state changes (gate signals and progress indicators)
+    # NOTE: the stabilization pair (mitigation_accepted/mitigation_verified) are
+    # LLM emission symbols that materialize into the single progress.stabilization
+    # record; cause_state is engine-derived (recomputed, not boolean-diffed here).
     STAGE_GATE_MILESTONES = {"mitigation_accepted", "mitigation_verified", "solution_accepted", "solution_verified"}
-    PROGRESS_INDICATORS = {"symptom_verified", "root_cause_identified", "solution_proposed"}
+    PROGRESS_INDICATORS = {"symptom_verified", "solution_proposed"}
 
     all_changed = [
         key for key in progress_before
@@ -1899,171 +1697,98 @@ This is not a separate lifecycle edge — it is the standard `INQUIRY → INVEST
 
 ---
 
-### 4.3 Standard Investigation (Root Cause Path)
-**User Goal**: Diagnosing a new or complex issue to find the root cause and fix it permanently.
-**Flow**: `INQUIRY` → `INVESTIGATING` (DIAGNOSIS → TREATMENT) → `RESOLVED`
+### 4.3 Direct Investigation (no stabilization)
+**User Goal**: Diagnose an issue, find the root cause, and fix it permanently — with no impact-now gap that requires a stabilization detour.
+**Flow**: `INQUIRY` → `INVESTIGATING` → `RESOLVED`
+
+This is the common case: cause known or discoverable, solution implementable now.
 
 #### Workflow Steps & Milestones
 
 **Phase 1: Inquiry**
 *   **Goal**: Establish problem statement.
-*   **Transition Trigger**: User confirms problem statement and decides to investigate.
+*   **Transition Trigger**: User confirms problem statement (Gate 1) and decides to investigate.
 
-**Phase 2: Investigation**
+**Phase 2: Investigation** (one opportunistic flow)
 
-*   **DIAGNOSIS Stage** (natural flow, not sequential sub-stages)
-    *   Agent verifies symptoms using evidence
+*   Agent verifies symptoms using evidence
     *   Progress indicator: `symptom_verified` (LLM sets when symptoms confirmed)
-    *   Agent forms hypotheses, tests against evidence
-    *   Progress indicator: `root_cause_identified` (when hypothesis validated with high confidence)
-    *   Agent proposes concrete solution action
-    *   Progress indicator: `solution_proposed` (when ProposedAction with action_type=SOLUTION created)
-    *   **Constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`
-
-*   **DIAGNOSIS → TREATMENT transition** (inference-based)
-    *   User complies with proposed solution (executes and submits results)
-    *   System infers acceptance → gate milestone: `solution_accepted`
-    *   If user questions or refuses → stays in DIAGNOSIS, agent refines approach
-
-*   **TREATMENT Stage** (iterative resolution)
-    *   Agent verifies whether fix worked from submitted evidence
+*   Diagnostic machinery runs **iff the cause is uncertain** (`cause_state ∈ {UNKNOWN, CANDIDATES}`):
+    *   Agent forms hypotheses, tests against evidence; when ≥2 plausible causes remain active the engine derives `cause_state=CANDIDATES`
+    *   When a single cause is established (or the error is self-naming), the engine records `cause_state=IDENTIFIED`. For self-naming errors this can happen as early as turn 1 — the engine records the cause it legitimately knows; it is never path-stripped.
+    *   Hypothesis-before-causal-evidence ordering is prompt guidance in the unified INVESTIGATION block (a causal claim presupposes a hypothesis to attach to)
+*   Agent proposes a concrete solution action
+    *   Progress indicator: `solution_proposed`; assessment: `solution_state=SELECTED` (`solution_feasible=NOW`)
+*   **Solution accepted → "Resolving"** (inference-based)
+    *   User complies with the proposed solution → gate milestone `solution_accepted`
+    *   If user questions or refuses → continues investigating, agent refines approach
+*   **Resolution verification** (iterative)
+    *   Agent verifies whether the fix worked from submitted evidence
     *   If fix worked → agent proposes resolution via User-Agent Handshake
-    *   If fix failed → extended diagnosis within TREATMENT:
-        *   Failure analysis → gap identification → targeted evidence request → new hypothesis → revised fix
-        *   New evidence required (the original evidence produced a failed solution)
-        *   Escalation when no viable options remain (agent communicates limitations naturally)
+    *   If fix failed → extended investigation: failure analysis → gap identification → targeted evidence request → new hypothesis → revised fix; escalation when no viable options remain
 
 **Phase 3: Resolution**
-*   **Transition Trigger**: User confirms fix worked via User-Agent Handshake → gate milestone: `solution_verified`
+*   **Transition Trigger**: User confirms fix worked via User-Agent Handshake → gate milestone `solution_verified`
 *   **State**: `RESOLVED`.
 
 ---
 
-### 4.4 Mitigation-First Investigation (Ongoing Outage)
-**User Goal**: Restore service availability immediately.
-**Trigger**: High Severity + Ongoing Outage (auto-selected or user-chosen path).
+### 4.4 Stabilized Investigation (impact-now gap)
+**User Goal**: Stop active impact quickly, then continue the investigation.
+**Trigger**: An Axis-B stabilization gap — something is hurting now that can't be fully resolved this session. The agent *proposes* a stabilization in-prompt (no path is chosen upfront); the user accepts or declines.
 
-After mitigation is verified, the system's behavior depends on `rca_infeasible` (see §2.4).
-By default (`rca_infeasible=False`), the agent pushes toward RCA. When `rca_infeasible=True`,
-the agent proposes closure instead. The user can always close via UI at any point.
+A stabilization is an **insert** into the same unified flow, not a separate path
+(§2.3). After it verifies, forwarding depends on what is still unresolved (§2.3
+forwarding table): cause uncertain → RCA; cause known / solution unclear →
+solution deliberation; cause + solution known but deferred → CLOSE-with-documented-solution.
 
-#### Full Path (Mitigation + RCA → RESOLVED)
-**Flow**: `INQUIRY` → `INVESTIGATING` (DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT) → `RESOLVED`
+#### Stabilized → RESOLVED
+**Flow**: `INQUIRY` → `INVESTIGATING` (stabilization insert, then RCA + permanent fix) → `RESOLVED`
 
-**Gate milestones**:
+**Gate signals / record**:
 
-*   `mitigation_accepted`: User acknowledges executing proposed temp fix.
-*   `mitigation_verified`: Mitigation verified effective → return to DIAGNOSIS.
-*   `solution_accepted`: User acknowledges executing proposed solution.
-*   `solution_verified`: Permanent fix validated (via User-Agent Handshake).
+*   `mitigation_accepted` (LLM emission) → materializes `stabilization.accepted`: user acknowledged executing the proposed stabilization.
+*   `mitigation_verified` (LLM emission) → materializes `stabilization.verified` + `completed_at_turn`: the stabilization stabilized the situation. The case continues opportunistically (the "Stabilizing" label clears).
+*   `solution_accepted`: user acknowledged executing the permanent solution → "Resolving".
+*   `solution_verified`: permanent fix validated (User-Agent Handshake) → RESOLVED.
 
-**Progress indicators** (non-driving):
+#### Stabilized → CLOSED
+**Flow**: `INQUIRY` → `INVESTIGATING` (stabilization insert) → `CLOSED`
 
-*   `symptom_verified`: Set during DIAGNOSIS when symptoms confirmed.
-*   `root_cause_identified`: Set when hypothesis validated with high confidence.
-*   `solution_proposed`: Set when ProposedAction with action_type=SOLUTION created.
+The user decides the stabilization is sufficient (or RCA is infeasible, see §2.4) and does not pursue a permanent fix. Two paths lead here:
 
-#### Mitigation-Only Closure (→ CLOSED)
+1. **Agent-proposed** (when `rca_infeasible=True` and the cause remains uncertain): after the stabilization verifies, the agent proposes closure via User-Agent Handshake instead of pushing RCA.
+2. **User-initiated** (any case): the user closes via UI at any time (close-anytime, §2.3).
 
-**Flow**: `INQUIRY` → `INVESTIGATING` (DIAGNOSIS → MITIGATION) → `CLOSED`
+**Closure**: `CaseState.CLOSED` with `closure_reason="closed_after_investigation"`. The documented stabilization (and any partial findings) is preserved on the closed case.
 
-The user decides the mitigation is sufficient and does not want RCA. Two paths
-lead here:
+**Post-terminal**: agent offers runbook generation only for RESOLVED cases (§4.5.1); CLOSED cases get the closure summary only.
 
-1. **Agent-proposed** (when `rca_infeasible=True`): After `mitigation_verified`, the agent proposes closure via User-Agent Handshake instead of pushing RCA.
-2. **User-initiated** (any case): The user closes via UI at any time, regardless of `rca_infeasible`.
+#### Stabilization Is Iterative, Forward-Only
 
-**Gate milestones**:
-
-*   `mitigation_accepted`: User complied with proposed temp fix.
-*   `mitigation_verified`: Mitigation verified effective.
-*   `solution_accepted`: **Not set** (user closed before proposing permanent solution).
-*   `solution_verified`: **Not set** (no permanent fix).
-
-**Closure**: `CaseState.CLOSED` with `closure_reason="mitigation_sufficient"`.
-UI renders as "Closed - Mitigated" (distinct from "Closed - Abandoned").
-
-**Post-terminal**: Agent offers runbook generation (see §4.5.1).
-
-#### Agent Behavior After Mitigation
-
-After `mitigation_verified` is set, the agent's behavior depends on `rca_infeasible`:
-
-**Default (`rca_infeasible=False`)**: Agent pushes toward RCA:
-
-> "The mitigation is working — [specific metric showing improvement]. Now let's
-> investigate the root cause to prevent recurrence. What additional data can you
-> share about what changed before this started?"
-
-The user can always close via UI if they decide the mitigation is sufficient.
-
-**When `rca_infeasible=True`**: Agent proposes closure instead of pushing RCA:
-
-> "The mitigation is verified and [specific metric] is stable. Since [rca_infeasible_rationale],
-> shall we close this case as mitigated?"
-
-This follows the User-Agent Handshake pattern — the agent proposes, the user confirms.
-If the user declines and wants RCA anyway, the agent proceeds with DIAGNOSIS as normal.
-
-#### MITIGATION Is Iterative
-
-Mitigation is not assumed to be one-shot. Within the MITIGATION stage, the agent
-may adjust its approach and propose multiple temp fix attempts until the user
-verifies stabilization. Each accepted attempt is recorded in `action_attempts`;
-`mitigation_accepted` becomes True on the first accepted attempt and stays True
-across subsequent attempts. The stage exits the moment `mitigation_verified`
-first becomes True.
-
-**Set-once semantics under forward-only design**: Mitigation gate milestones
-(`mitigation_accepted`, `mitigation_verified`) are set-once — once True, the
-engine does not reset them. The case naturally transitions from MITIGATION
-back to DIAGNOSIS (post-mitigation cause phase) via the `current_stage`
-property's fall-through: the MITIGATION branch requires `NOT mitigation_verified`,
-so both flags being True yields DIAGNOSIS. No re-entry to MITIGATION on the
-same investigation — regressions are handled as in-stage actions within
-post-mitigation DIAGNOSIS (analogous to how TREATMENT failures stay within
-TREATMENT) or as a new linked case.
-
-Engine consumers that need "is this case at Gate 3?" semantics read
-`path_selection.{mitigation_completed_at_turn, rca_after_mitigation_confirmed}`,
-not `mitigation_verified` directly. The boundary marker
-`mitigation_completed_at_turn` is stamped once (idempotent via an `is None`
-guard) when `mitigation_verified` first fires.
+A stabilization is not assumed one-shot. The agent may adjust its approach and propose multiple attempts until the user verifies stabilization; each accepted attempt is recorded in `action_attempts`. The `stabilization` record itself is **single and forward-only** (INV-24): `accepted` / `verified` are never reset, and `completed_at_turn` is stamped once when `verified` first flips True (the boundary for up-weighting pre-stabilization evidence in later RCA). If a stabilization fails to stabilize, the flow stays open to user-led action — the agent acknowledges it didn't work and may propose an alternative in prose, or the user closes (§2.3, the no-dead-end rule).
 
 #### How the System Distinguishes Outcomes (Retrospectively)
 
-The boolean milestone flags reflect the case's progress as a monotonic record.
-Once a gate milestone is True, it stays True. To determine whether mitigation
-occurred, either read `mitigation_accepted` directly or query the
-`action_attempts` list for entries with `action_type=MITIGATION`.
+The retrospective shape is **direct** vs **stabilized**, derived from
+`progress.stabilization is None`:
 
-| Field | Full Path (RESOLVED) | Mitigation-Only (CLOSED) | No Mitigation (RESOLVED) |
-| ----- | ------------------- | ------------------------ | ------------------------ |
-| `mitigation_accepted` | True | True | False |
-| `mitigation_verified` | True | True | False |
-| `solution_accepted` | True | False | True |
-| `solution_verified` | True | False | True |
-| `root_cause_identified` | True | May be partial | True |
-| `path_selection.mitigation_completed_at_turn` | Set | Set | None |
-| `path_selection.rca_after_mitigation_confirmed` | True | False | N/A |
+| Field | Stabilized → RESOLVED | Stabilized → CLOSED | Direct → RESOLVED |
+| ----- | ------------------- | ------------------- | ----------------- |
+| `stabilization` present | Yes | Yes | No |
+| `stabilization.accepted` / `.verified` | True / True | True / True | n/a |
+| `solution_accepted` / `solution_verified` | True / True | False / False | True / True |
+| `cause_state` | IDENTIFIED | May be UNKNOWN/CANDIDATES | IDENTIFIED |
 | `CaseState` | RESOLVED | CLOSED | RESOLVED |
-| `closure_reason` | None | "mitigation_sufficient" | None |
-| `rca_infeasible` | False | True or False | False |
-| `action_attempts` has MITIGATION | Yes | Yes | No |
+| `closure_reason` | None | `closed_after_investigation` | None |
 | **Knowledge artifact** | **Runbook** | **Closure Summary only** | **Runbook** |
 
-The combination of `CaseState`, `closure_reason`, and (where the distinction
-matters) `path_selection.rca_after_mitigation_confirmed` provides the full
-classification. `derive_closure_reason` (in `terminal_transitions.py`) keys
-off the at-Gate-3 condition — `mitigation_completed_at_turn is not None AND
-NOT rca_after_mitigation_confirmed` — to choose `mitigation_sufficient` vs
-`closed_after_investigation`, so a user who continued to RCA and later
-abandoned correctly gets `closed_after_investigation` (not
-`mitigation_sufficient`).
-
 `closure_reason` is `None` for all RESOLVED cases — resolution itself is the
-categorization. Only CLOSED cases carry a `closure_reason` value
-(`inquiry_only`, `closed_after_investigation`, or `mitigation_sufficient`).
+categorization. Only CLOSED cases carry a `closure_reason` value (`inquiry_only`
+or `closed_after_investigation`). `derive_closure_reason` (in
+`terminal_transitions.py`) returns `inquiry_only` when the case never left INQUIRY,
+otherwise `closed_after_investigation` — the former `mitigation_sufficient` reason
+was folded into the latter.
 
 ---
 
@@ -2083,7 +1808,7 @@ After a case reaches RESOLVED or CLOSED, the system auto-generates a terminal su
 
 | Case Status | Report Type | Content Structure |
 |-------------|-------------|-------------------|
-| RESOLVED | `RESOLUTION_SUMMARY` | Problem Statement, Root Cause (from validated hypotheses), Solution Applied, Confirming Evidence, Timeline, Milestones Reached, Investigation Path |
+| RESOLVED | `RESOLUTION_SUMMARY` | Problem Statement, Root Cause (from validated hypotheses), Solution Applied, Confirming Evidence, Timeline, Milestones Reached, Stabilization (if any) |
 | CLOSED | `CLOSURE_SUMMARY` | Problem Statement, Investigation State (milestones/evidence/hypotheses counts), Closure Reason, Leading Hypotheses (top 5 by confidence), Mitigation Status, Timeline, Recommendation (for escalated/abandoned cases) |
 
 Summaries are built from case data fields (hypotheses, solutions, evidence, milestones, timestamps). Stored as `CaseReport` records with `auto_generated=True`. Duration is calculated from `created_at` to `resolved_at` or `closed_at`.
@@ -2213,17 +1938,17 @@ Independent of post-terminal operations. User can archive any terminal case via 
 **Flow**: `INQUIRY` → `INVESTIGATING` → `CLOSED`
 
 #### Workflow Steps
-1.  **Investigation Starts**: Gate milestones and progress milestones partially set.
+1.  **Investigation Starts**: Gates and progress indicators partially set.
 2.  **Stall/Escalation**:
     *   Agent cannot find root cause (no viable options — communicates limitations and suggests escalation).
     *   User stops responding.
     *   User explicitly requests escalation.
-    *   User closes after mitigation without pursuing RCA (`closure_reason="mitigation_sufficient"`, UI renders as "Closed - Mitigated").
-3.  **Closure**: Case marked `CLOSED` with reason (e.g., `escalated`, `abandoned`, `mitigation_sufficient`).
+    *   User closes after a stabilization without pursuing RCA (the documented stabilization is preserved on the closed case).
+3.  **Closure**: Case marked `CLOSED` with `closure_reason="closed_after_investigation"` (covers escalated, abandoned, and stabilized-then-closed alike).
 
 #### Milestones
 
-*   Partial completion of progress indicators (symptom_verified, root_cause_identified, solution_proposed).
-*   Gate milestones may be partially set (e.g., mitigation_accepted/verified if mitigation was performed).
+*   Partial progress: `symptom_verified`; `cause_state` may be UNKNOWN/CANDIDATES/IDENTIFIED; `solution_proposed`.
+*   The stabilization record may be present (`accepted`/`verified`) if a stabilization was performed.
 *   `working_conclusion`: Summary of findings up to the point of closure.
-*   `action_attempts`: Complete record of all mitigation and solution actions attempted.
+*   `action_attempts`: Complete record of all stabilization and solution actions attempted.

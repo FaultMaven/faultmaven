@@ -28,22 +28,21 @@ import logging
 import re
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any
 from uuid import uuid4
 
 # Module initialization
 logger = logging.getLogger(__name__)
 
-from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
+from faultmaven.core.investigation.hypothesis_manager import (
+    HypothesisManager,
+    create_hypothesis_manager,
+)
 from faultmaven.core.investigation.lifecycle_metrics import (
     engine_owned_affordance_served_total,
     evidence_need_created_total,
     evidence_need_id_dropped_total,
-    evidence_need_rejected_total,
     evidence_need_status_changed_total,
-    inquiry_gate2_confirmed_total,
-    inquiry_gate3_reached_total,
-    inquiry_gate3_resolved_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
 )
@@ -63,7 +62,6 @@ from faultmaven.core.investigation.state_validator import (
     ValidationSeverity,
 )
 from faultmaven.core.investigation.working_conclusion_generator import (
-    ProgressMetrics,
     calculate_progress_metrics,
     generate_working_conclusion,
 )
@@ -76,16 +74,15 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
     CaseState,
+    CauseState,
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceNeed,
-    EvidenceSourceType,
     EvidenceStance,
     HypothesisState,
     InvestigationActionType,
     InvestigationMomentum,
-    InvestigationPath,
     InvestigationProgress,
     InvestigationStage,
     JournalEntry,
@@ -98,15 +95,14 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
     RootCauseConclusion,
     Solution,
+    SolutionFeasible,
+    SolutionState,
     SolutionType,
+    StabilizationRecord,
     TemporalState,
     TurnOutcome,
     TurnProgress,
     UrgencyLevel,
-)
-from faultmaven.modules.case.domain.services.investigation_router import (
-    determine_investigation_path,
-    recommend_investigation_path_for_case,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
@@ -188,23 +184,19 @@ def _determine_action_type(
     Determine whether a proposed solution is a MITIGATION or SOLUTION action.
 
     Used when creating ProposedAction from SolutionToAdd. The action_type
-    determines which stage-gate milestone is set by compliance detection:
-    - MITIGATION → mitigation_accepted → enters MITIGATION stage
+    determines which stage-gate behavior follows:
+    - MITIGATION → stabilization insert (Stabilizing)
     - SOLUTION → solution_accepted → enters TREATMENT stage
 
     Logic:
-    1. WORKAROUND solution_type → always MITIGATION (explicitly temporary)
-    2. MITIGATION_FIRST path + no mitigation accepted yet → MITIGATION
-    3. Otherwise → SOLUTION
+    1. WORKAROUND solution_type → MITIGATION (explicitly temporary stabilization)
+    2. Otherwise → SOLUTION
+
+    The old MITIGATION_FIRST-path branch is removed (redesign R5): there is
+    no prospective path fork. A stabilization is an opportunistic insert
+    driven by the prompt, surfaced via a WORKAROUND solution_type.
     """
     if solution_type == SolutionType.WORKAROUND:
-        return InvestigationActionType.MITIGATION
-
-    if (
-        case.path_selection
-        and case.path_selection.path == InvestigationPath.MITIGATION_FIRST
-        and not case.progress.mitigation_accepted
-    ):
         return InvestigationActionType.MITIGATION
 
     return InvestigationActionType.SOLUTION
@@ -250,47 +242,27 @@ def _apply_stage_gate_side_effects(
             f"type={pending_action.action_type.value})"
         )
 
-    # 3B: Mitigation-verified side effects (Gate 3 boundary + optional auto-close)
+    # 3B: Stabilization-verified side effects (optional propose-close).
     #
-    # The mitigation gate milestones (mitigation_accepted, mitigation_verified)
-    # are set-once under the forward-only design: once True, they stay True.
-    # The case never re-enters MITIGATION on the same investigation — the
-    # stage property correctly falls through to DIAGNOSIS for cause-phase
-    # work once mitigation_verified=True (the MITIGATION branch requires
-    # NOT mitigation_verified, so both flags being True yields DIAGNOSIS).
-    #
-    # Downstream "is this case at Gate 3?" decisions consult
-    # path_selection.{mitigation_completed_at_turn, rca_after_mitigation_confirmed}
-    # rather than relying on the transient flag state of mitigation_verified.
+    # Redesign R5: there is no Gate-3 post-mitigation choice. After a
+    # stabilization verifies, the case simply continues opportunistically.
+    # The pre-stabilization evidence boundary is carried by
+    # ``progress.stabilization.completed_at_turn`` (set in the apply-loop where
+    # the record is materialized), not a separate path_selection field.
     if "mitigation_verified" in completed_gates:
-        # Gate 3 boundary marker: capture the turn mitigation completed so
-        # post-mitigation RCA prompts can up-weight pre-mitigation evidence
-        # and so derive_closure_reason can recognize "at Gate 3" closures.
-        # Set ONCE (idempotent via the is-None guard).
-        # See INV-21 in investigation-lifecycle-logic.md and slice 3 of
-        # docs/working/WIP-investigation-gates-implementation.md.
-        if (
-            case.path_selection is not None
-            and case.path_selection.mitigation_completed_at_turn is None
-        ):
-            case.path_selection = case.path_selection.model_copy(
-                update={"mitigation_completed_at_turn": case.current_turn}
-            )
-            logger.info(
-                f"Case {case.case_id}: mitigation_completed_at_turn set to "
-                f"{case.current_turn} (Gate 3 boundary)"
-            )
-            # Outcome telemetry: every case that reaches mitigation_verified
-            # on the mitigation-first path passes through Gate 3.
-            inquiry_gate3_reached_total.inc()
-
-        # rca_infeasible advisory signal: propose closure as mitigated rather
+        # rca_infeasible advisory signal: propose closure as stabilized rather
         # than push RCA on a problem the LLM has flagged as intractable.
         # Reference: investigation-lifecycle-logic.md §2.4.
         rca_infeasible = case.problem_verification and getattr(
             case.problem_verification, "rca_infeasible", False
         )
-        if rca_infeasible:
+        # Don't clobber an in-flight disposition handshake, and never on a
+        # terminal case (symmetric with _maybe_propose_deferred_close).
+        if (
+            rca_infeasible
+            and not getattr(case, "pending_transition", None)
+            and not case.is_terminal
+        ):
             rationale = (
                 getattr(case.problem_verification, "rca_infeasible_rationale", None)
                 or "root cause analysis is not feasible for this problem"
@@ -313,8 +285,8 @@ def _apply_stage_gate_side_effects(
             metadata["rca_infeasible_closure_message"] = closure_message
             logger.info(
                 f"Proposed CLOSED transition for case {case.case_id} "
-                f"(rca_infeasible=True, closure_reason=mitigation_sufficient, "
-                f"rationale: {rationale})"
+                f"(rca_infeasible=True; closure_reason derived as "
+                f"closed_after_investigation, rationale: {rationale})"
             )
 
     metadata["compliance_detected"] = True
@@ -397,7 +369,7 @@ def _infer_milestones(
 
 def validate_reasoning_first(
     response_obj: BaseInteractionResponse, case: Case
-) -> tuple[bool, list[str]]:
+) -> tuple[bool, list[str], set[str]]:
     """
     Validate that milestone completions are justified with internal reasoning.
 
@@ -417,14 +389,22 @@ def validate_reasoning_first(
         case: Current case state
 
     Returns:
-        (is_valid, error_messages): Tuple of validation result and list of error messages
+        (is_valid, error_messages, offending_milestones): validation result, the
+        error messages, and the SET of milestone names that failed validation.
+        The caller strips ONLY ``offending_milestones`` from the emission — a
+        single unjustified milestone no longer wipes co-emitted valid ones
+        (the S1 collateral-wipe fix; redesign §5). Global failures (no
+        internal_reasoning, no actionable evidence) implicate every completed
+        milestone; per-milestone justification gaps implicate only that one.
+        Turn-reference format errors implicate no milestone (advisory only).
 
     Skip Conditions (validation bypassed):
         1. Response is InquiryResponse or TerminalResponse (no investigation milestones)
         2. Case is already in terminal state (RESOLVED or CLOSED)
         3. Case has a pending_transition (user confirmation in progress)
     """
-    errors = []
+    errors: list[str] = []
+    offending: set[str] = set()
 
     # Debug logging for Turn 2 issue
     logger.debug(
@@ -437,12 +417,12 @@ def validate_reasoning_first(
     # Only validate investigation responses (not INQUIRY or TERMINAL)
     if isinstance(response_obj, (InquiryResponse, TerminalResponse)):
         logger.debug("Skipping reasoning validation (INQUIRY or TERMINAL response)")
-        return True, []
+        return True, [], set()
 
     # Skip validation if case is already in terminal state
     if case.is_terminal:
         logger.debug("Skipping reasoning validation (case already in terminal state)")
-        return True, []
+        return True, [], set()
 
     # Check if response has internal_reasoning field
     internal_reasoning = getattr(response_obj, "internal_reasoning", None)
@@ -450,7 +430,7 @@ def validate_reasoning_first(
 
     if not milestones:
         # No milestones being completed, no validation needed
-        return True, []
+        return True, [], set()
 
     # Get list of milestone fields being completed (set to True)
     completed_milestones = []
@@ -461,7 +441,7 @@ def validate_reasoning_first(
 
     if not completed_milestones:
         # No milestones actually completed, no validation needed
-        return True, []
+        return True, [], set()
 
     # ===== TERMINAL TRANSITION EXCEPTION =====
     # Skip validation if case has a pending transition (User-Agent Handshake in progress).
@@ -476,19 +456,22 @@ def validate_reasoning_first(
                 f"Skipping reasoning validation (terminal transition in progress: "
                 f"pending={has_pending}, solution_verified={already_solution_verified})"
             )
-            return True, []
+            return True, [], set()
 
-    # If milestones are being completed, internal_reasoning is REQUIRED
+    # If milestones are being completed, internal_reasoning is REQUIRED.
+    # Global failure: none of the completed milestones are justified.
     if not internal_reasoning:
         errors.append(
             f"Milestones {completed_milestones} completed without internal_reasoning. "
             "You MUST provide internal_reasoning with justifications when completing milestones."
         )
-        return False, errors
+        return False, errors, set(completed_milestones)
 
-    # Check 1: All completed milestones must have justifications
+    # Check 1: All completed milestones must have justifications.
+    # Per-milestone failure: only the unjustified milestone is offending.
     for milestone in completed_milestones:
         if milestone not in internal_reasoning.milestone_justifications:
+            offending.add(milestone)
             errors.append(
                 f"Milestone '{milestone}' completed without justification. "
                 f"You MUST add an entry to internal_reasoning.milestone_justifications. "
@@ -500,7 +483,6 @@ def validate_reasoning_first(
     # Check 1.5: Warn if trying to complete milestones with no actionable evidence.
     # Contextual evidence (raw uploads) cannot justify milestones — only
     # LLM-classified evidence (symptom, causal, mitigation, solution) counts.
-    from faultmaven.modules.case.contracts import EvidenceCategory
 
     evidence_being_added = (
         getattr(response_obj.state_updates, "evidence_to_add", []) or []
@@ -509,6 +491,8 @@ def validate_reasoning_first(
     has_actionable_evidence = bool(case.evidence) or bool(evidence_being_added)
 
     if internal_reasoning.milestone_justifications and not has_actionable_evidence:
+        # Global failure: with no actionable evidence, no milestone is justifiable.
+        offending.update(completed_milestones)
         errors.append(
             "Cannot complete milestones when no actionable evidence has been collected. "
             "You must first analyze and classify evidence before completing milestones."
@@ -533,7 +517,9 @@ def validate_reasoning_first(
                     f"Invalid turn reference format: '{ref}'. Expected format: 'turn_N' where N is a number"
                 )
 
-    return len(errors) == 0, errors
+    # Turn-reference errors are advisory and implicate no milestone — they do
+    # not add to `offending`, so they never strip a validated milestone.
+    return len(errors) == 0, errors, offending
 
 
 def _post_process_llm_response(
@@ -652,249 +638,108 @@ def _investigation_confirmation_suggestions() -> list:
     ]
 
 
-def _path_selection_suggestions(case: "Case") -> list:
-    """Generate COOPERATIVE follow-up suggestions for Gate 2 (path confirmation).
+def _cause_state_grounded(case: "Case") -> bool:
+    """Whether the root cause is grounded enough to record ``cause_state=IDENTIFIED``.
 
-    Surfaces the router's recommended path alongside its alternate, both as
-    PATH_SELECTION intents. The recommended option appears first and is
-    decorated in its body text so the frontend can emphasize it; both options
-    commit the path on click — the user can either accept the recommendation
-    or override to the alternate.
-
-    The recommendation is computed on-demand via
-    ``recommend_investigation_path_for_case`` — not read from
-    ``case.path_selection``, which exists only after the user has clicked
-    (commitment, not recommendation). See INV-19.
+    The engine-owned truth bar (R1), shared by ``_recompute_assessment_state``
+    (which derives cause_state) and the milestone-claim REVERT path (which must
+    not strip a cause that is grounded case-wide) so the two cannot disagree
+    within a turn. Bar: a high ``root_cause_likelihood`` (>= 0.7) backed by >= 2
+    causal-evidence rows — matching the milestone-claim validator's
+    ``MILESTONE_EVIDENCE_EXPECTATIONS["root_cause_identified"].min_evidence`` —
+    OR a recorded ``RootCauseConclusion``. Case-wide (not current-turn-only): a
+    cause grounded over several turns stays grounded.
     """
-    ps = recommend_investigation_path_for_case(case)
-    if ps is None or ps.alternate_path is None:
-        # Defensive: caller should gate on Gate 2 being pending. Return empty
-        # so the engine doesn't emit malformed suggestions if invariants are
-        # violated (e.g., recommendation prerequisites not met).
-        return []
-
-    recommended_label = (
-        "Mitigation-first"
-        if ps.path == InvestigationPath.MITIGATION_FIRST
-        else "Root-cause analysis"
+    p = case.progress
+    causal_count = sum(
+        1 for e in case.evidence if e.category == EvidenceCategory.CAUSAL_EVIDENCE
     )
-    alternate_label = (
-        "Mitigation-first"
-        if ps.alternate_path == InvestigationPath.MITIGATION_FIRST
-        else "Root-cause analysis"
+    has_root_cause_conclusion = bool(
+        case.root_cause_conclusion
+        and getattr(case.root_cause_conclusion, "root_cause", None)
     )
-    recommended_body = (
-        f"Recommended. {ps.rationale}"
-        if ps.auto_selected
-        else f"Default. {ps.rationale}"
-    )
-    alternate_body_descriptions = {
-        InvestigationPath.MITIGATION_FIRST: (
-            "Apply a quick workaround to stop the impact first, then return "
-            "for root-cause analysis after the system is stable."
-        ),
-        InvestigationPath.ROOT_CAUSE: (
-            "Skip mitigation and go straight to root-cause analysis for a "
-            "permanent fix."
-        ),
-    }
-    return [
-        {
-            "label": recommended_label,
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
-            "payload": f"Let's start with {recommended_label.lower()}.",
-            "body": recommended_body,
-            "intent": {
-                "type": "path_selection",
-                "investigation_path": ps.path.value,
-            },
-        },
-        {
-            "label": alternate_label,
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
-            "payload": f"I'd prefer {alternate_label.lower()}.",
-            "body": alternate_body_descriptions[ps.alternate_path],
-            "intent": {
-                "type": "path_selection",
-                "investigation_path": ps.alternate_path.value,
-            },
-        },
-    ]
-
-
-def _post_mitigation_suggestions() -> list:
-    """Generate COOPERATIVE follow-up suggestions for Gate 3.
-
-    Surfaces the two post-mitigation outcomes:
-      1. Continue with root-cause analysis (POST_MITIGATION_CHOICE intent)
-      2. Close the case as mitigation-sufficient (STATUS_TRANSITION intent
-         to CLOSED with closure_reason=mitigation_sufficient — reuses
-         the existing closure-summary path; the substance gate produces
-         a coherent summary or marks the report as skipped per
-         closure_summary_redesign).
-
-    The close-branch body text mentions the runbook implication so the
-    user understands the trade-off at the click moment: closing as
-    mitigation-sufficient does NOT generate a root-cause runbook (only
-    RESOLVED cases do, per INV-18).
-
-    See INV-21 in investigation-lifecycle-logic.md.
-    """
-    return [
-        {
-            "label": "Continue with root-cause analysis",
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
-            "payload": "Mitigation worked — let's continue with root-cause analysis.",
-            "body": (
-                "Recommended. The system is stable but the underlying cause "
-                "is still unknown — RCA produces a permanent fix and a "
-                "runbook for next time."
-            ),
-            "intent": {
-                "type": "post_mitigation_choice",
-                "continue_to_rca": True,
-            },
-        },
-        {
-            "label": "Mitigation is sufficient, close case",
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
-            "payload": "The mitigation is sufficient — let's close this case.",
-            "body": (
-                "Close the case without further investigation. Note: no "
-                "root-cause runbook will be generated — only a mitigation "
-                "summary."
-            ),
-            "intent": {
-                "type": "status_transition",
-                "to_state": "closed",
-                "closure_reason": "mitigation_sufficient",
-                "user_confirmed": True,
-            },
-        },
-    ]
-
-
-def _gate3_is_pending(case: "Case") -> bool:
-    """Whether Gate 3 (post-mitigation continuation) is open for this case.
-
-    Returns True when:
-      - path == MITIGATION_FIRST
-      - mitigation_completed_at_turn is set (mitigation was verified)
-      - rca_after_mitigation_confirmed is False (user has not yet chosen)
-      - case is still in INVESTIGATING (not yet closed)
-
-    Used by both the deterministic suggestion-emission backstop and the
-    INV-21 milestone guard. See investigation-lifecycle-logic.md INV-21.
-    """
-    if case.state != CaseState.INVESTIGATING:
-        return False
-    ps = case.path_selection
-    if ps is None or ps.path != InvestigationPath.MITIGATION_FIRST:
-        return False
-    if ps.mitigation_completed_at_turn is None:
-        return False
-    return not ps.rca_after_mitigation_confirmed
-
-
-def _is_pre_mitigation_mitigation_first(case: "Case") -> bool:
-    """Whether the case is on MITIGATION_FIRST path and mitigation has
-    not yet been verified.
-
-    This is the state where ``_select_diagnosis_block`` returns
-    ``_SYMPTOM_VALIDATION_BLOCK`` — the prompt forbids RCA-side
-    emissions (no ``hypotheses_to_add``, no ``causal_evidence``).
-    Used by the path-conditional emission backstop to enforce those
-    bans at the engine layer when the LLM disregards the prompt.
-    """
-    if case.state != CaseState.INVESTIGATING:
-        return False
-    ps = case.path_selection
-    if ps is None or ps.path != InvestigationPath.MITIGATION_FIRST:
-        return False
-    return ps.mitigation_completed_at_turn is None
-
-
-def _is_pre_path_investigating(case: "Case") -> bool:
-    """Whether the case is in INVESTIGATING with Gate 2 not yet committed.
-
-    Post-redesign Gate 2 commits inside INVESTIGATING after
-    ``symptom_verified``; until the user clicks a path button,
-    ``case.path_selection is None`` and the LLM is in pre-path mode.
-    The dispatcher routes this state to ``_PRE_PATH_DIAGNOSIS_BLOCK``,
-    which forbids hypothesis/causal_evidence/solution emission. The
-    engine backstop mirrors that prompt-side ban.
-    """
-    if case.state != CaseState.INVESTIGATING:
-        return False
-    return case.path_selection is None
-
-
-def _path_conditional_emission_restriction(case: "Case") -> Optional[str]:
-    """Return a state label when the case is in a state where the
-    prompt forbids RCA-side structured emissions (``hypotheses_to_add``,
-    ``causal_evidence``, and — for pre-path — ``solutions_to_add``),
-    else ``None``.
-
-    States covered:
-      - ``"pre_path_investigating"`` — INVESTIGATING + no path commit.
-        ``_PRE_PATH_DIAGNOSIS_BLOCK`` is rendered. Additionally forbids
-        ``solutions_to_add`` because mitigation/solution proposals only
-        belong inside a committed path.
-      - ``"pre_mitigation_mitigation_first"`` —
-        ``_SYMPTOM_VALIDATION_BLOCK`` is the rendered dispatch block.
-      - ``"gate3_pending"`` — ``_GATE3_PENDING_BLOCK`` is rendered.
-
-    All three states share the same RCA-side emission ban; the
-    pre-path state adds the solution ban. The engine backstop mirrors
-    the prompt-side bans so a non-compliant LLM cannot corrupt the
-    case with persistent invalid records.
-
-    Returns the label so callers can build state-specific system_feedback
-    that names which prompt block the LLM violated.
-    """
-    if _is_pre_path_investigating(case):
-        return "pre_path_investigating"
-    if _is_pre_mitigation_mitigation_first(case):
-        return "pre_mitigation_mitigation_first"
-    if _gate3_is_pending(case):
-        return "gate3_pending"
-    return None
-
-
-# Single source of truth for state-label → prompt-block-name mapping used
-# by the three engine-side backstop sites
-# (``_apply_investigation_updates`` rejects hypotheses_to_add /
-# causal_evidence / RCA-side milestones). Keeps the three error messages
-# in sync with the predicate's state vocabulary — a future fourth state
-# is added in exactly one place.
-_RESTRICTED_STATE_BLOCK_NAMES: dict[str, str] = {
-    "pre_path_investigating": "_PRE_PATH_DIAGNOSIS_BLOCK",
-    "pre_mitigation_mitigation_first": "_SYMPTOM_VALIDATION_BLOCK",
-    "gate3_pending": "_GATE3_PENDING_BLOCK",
-}
-
-
-def _restricted_state_deferral_clause(restricted_state: str, *, work: str) -> str:
-    """Build a state-specific "when does this become allowed again" clause.
-
-    ``work`` is a noun phrase naming what's deferred ("Hypothesis formation",
-    "Causal evidence", "Root-cause work"). Pre-path and the two mitigation-
-    path restricted states unblock at different gates (Gate 2 click vs
-    Gate 3 click), so the clause differs by state. Centralized here so
-    the three backstop sites stay phrased consistently.
-    """
-    if restricted_state == "pre_path_investigating":
-        return (
-            f"{work} is deferred until the user commits an investigation "
-            f"path (Gate 2)."
-        )
     return (
-        f"{work} is deferred until the user opts to continue past Gate 3 "
-        f"(MITIGATION_FIRST path)."
+        p.root_cause_likelihood >= 0.7 and causal_count >= 2
+    ) or has_root_cause_conclusion
+
+
+def _recompute_assessment_state(case: "Case") -> None:
+    """Recompute the engine-owned assessment variables each INVESTIGATING turn.
+
+    Assessment variables are TRUTH signals the engine derives — never
+    path-stripped (redesign R1). Called at the end of
+    ``_apply_investigation_updates`` so hypotheses/solutions added this turn
+    are reflected.
+
+    - ``cause_state``: ``IDENTIFIED`` is sticky/forward-only. It is reached
+      either from the LLM's grounded ``root_cause_identified`` signal (honored
+      in the milestone apply loop) OR derived here from observable grounding —
+      a high ``root_cause_likelihood`` (>= 0.7) backed by causal evidence, or a
+      recorded ``RootCauseConclusion``. Deriving it (not depending solely on the
+      LLM setting a separate milestone) keeps cause_state a robust engine-owned
+      truth signal (R1): the LLM routinely expresses high confidence + files
+      causal evidence without also toggling the milestone flag. Until
+      IDENTIFIED, it derives from the active-hypothesis count: ``>= 2`` ACTIVE
+      hypotheses → ``CANDIDATES``, else ``UNKNOWN``.
+    - ``solution_state``: ``SELECTED`` once a permanent SOLUTION has been
+      proposed (or a Solution record exists). ``CANDIDATES`` (multi-solution
+      deliberation) is reserved for a follow-on and not produced here.
+    """
+    p = case.progress
+
+    if p.cause_state != CauseState.IDENTIFIED:
+        if _cause_state_grounded(case):
+            p.cause_state = CauseState.IDENTIFIED
+        elif HypothesisManager.count_active_hypotheses(case) >= 2:
+            p.cause_state = CauseState.CANDIDATES
+        else:
+            p.cause_state = CauseState.UNKNOWN
+
+    if p.solution_state != SolutionState.SELECTED:
+        if p.solution_proposed or bool(case.solutions):
+            p.solution_state = SolutionState.SELECTED
+
+
+def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
+    """Deferred-implementation disposition (redesign §3.1 row 3 / §6 Q2).
+
+    When the cause + fix are known but the fix cannot be applied or verified
+    this session (``solution_feasible == DEFERRED`` — e.g. it needs an
+    out-of-band change request, a maintenance window, or another team), the
+    case should be CLOSED with the solution documented rather than held open
+    waiting indefinitely (the failure mode observed in validation run 2).
+
+    The engine proposes the close DETERMINISTICALLY: the LLM does not reliably
+    drive to close on its own when implementation is deferred. The user still
+    confirms via the standard disposition handshake, and the documented
+    root cause + solution are preserved on the closed case
+    (``closure_reason=closed_after_investigation``).
+    """
+    p = case.progress
+    if p.solution_feasible != SolutionFeasible.DEFERRED:
+        return
+    # Only meaningful once a fix is actually on record.
+    if not (p.solution_proposed or case.solutions):
+        return
+    # Don't clobber an in-flight handshake, and never on a terminal case.
+    if getattr(case, "pending_transition", None) or case.is_terminal:
+        return
+
+    closure_message = (
+        "The root cause and fix are documented, but the fix can't be applied "
+        "or verified during this session — it needs out-of-band implementation "
+        "(a change request, maintenance window, or another team). Shall I close "
+        "this case with the solution documented for your team to apply?"
+    )
+    from faultmaven.core.investigation.terminal_transitions import propose_transition
+
+    propose_transition(case=case, to_state="closed", summary=closure_message)
+    metadata["transition_proposed"] = True
+    metadata["override_suggestions"] = _close_confirmation_suggestions()
+    metadata["deferred_solution_closure_message"] = closure_message
+    logger.info(
+        f"Proposed CLOSED transition for case {case.case_id} "
+        f"(solution_feasible=DEFERRED; closure preserves the documented solution)"
     )
 
 
@@ -1009,71 +854,35 @@ def _gate1_is_pending(case: "Case") -> bool:
     return not inq.problem_statement_confirmed
 
 
-def _gate2_is_pending(case: "Case") -> bool:
-    """Whether Gate 2 (investigation-path selection) is open for this case.
-
-    Returns True when the case has transitioned into INVESTIGATING,
-    ``symptom_verified`` is True (the agent's symptom-validation work
-    is in the transcript), and the user has not yet committed a path
-    (``case.path_selection`` is None). The user's path commit happens
-    after they have transcript-visible evidence of what the agent saw
-    in the data, so they can override the recommendation with that
-    context — see INV-19.
-
-    The path-selection commit happens exclusively at the Gate 2 click
-    handler; the recommendation is computed on-demand at button-render
-    time via ``recommend_investigation_path_for_case`` rather than stored
-    pre-commit. Note: that helper still reads only
-    ``case.inquiry.preliminary_urgency`` — the recommendation algorithm
-    is user-claim-based; what this gate's timing changes is the
-    *override context the user sees*, not the algorithm itself. Making
-    the recommendation itself evidence-derived is deferred follow-up.
-    """
-    if case.state != CaseState.INVESTIGATING:
-        return False
-    if not case.progress.symptom_verified:
-        return False
-    return case.path_selection is None
-
-
 def engine_owned_affordances(
-    case: "Case", metadata: Optional[dict[str, Any]] = None
-) -> Optional[tuple[str, list]]:
+    case: "Case", metadata: dict[str, Any] | None = None
+) -> tuple[str, list] | None:
     """Return ``(gate_name, affordance_list)`` when a state-machine gate is pending.
 
     The state machine has a small enumerable set of gates: imperative
     pending_transition (set by ``propose_transition`` via
-    ``metadata['override_suggestions']``), Gate 3 (post-mitigation
-    continuation), Gate 2 (investigation path), Gate 1 (problem-statement
-    confirmation). When any gate is pending, the engine knows the canonical
+    ``metadata['override_suggestions']``) and Gate 1 (problem-statement
+    confirmation). When a gate is pending, the engine knows the canonical
     affordance pair; the LLM cannot add value there and shouldn't try.
+
+    Gate 2 (investigation path) and Gate 3 (post-mitigation continuation)
+    were removed (redesign R5): there is no prospective path fork, and a
+    stabilization simply continues the flow when verified.
 
     Returns ``None`` when no gate is pending — the LLM's own COOPERATIVE /
     EVIDENCE / FREE_SPEECH suggestions pass through unmodified.
 
     Gate identifiers (telemetry-stable labels):
       - ``"disposition"`` — pending_transition / propose_transition override
-      - ``"gate3"`` — post-mitigation continuation
-      - ``"gate2"`` — investigation-path selection
       - ``"gate1"`` — problem-statement confirmation
 
-    Priority order matches the identifier order above. Gates 1/2/3 are
-    mutually exclusive by case-state construction (each depends on a
-    different combination of inquiry/path_selection flags), so the ordering
-    between them is defensive rather than load-bearing. The disposition
-    branch sits above the gates because pending_transition can fire while a
-    gate is technically open (e.g., user proposes closing during Gate 2).
+    The disposition branch sits above gate1 because pending_transition can
+    fire while gate1 is technically open.
     """
     md = metadata or {}
 
     if md.get("override_suggestions"):
         return ("disposition", md["override_suggestions"])
-
-    if _gate3_is_pending(case) and not md.get("rca_infeasible_closure_message"):
-        return ("gate3", _post_mitigation_suggestions())
-
-    if _gate2_is_pending(case):
-        return ("gate2", _path_selection_suggestions(case))
 
     if _gate1_is_pending(case):
         return ("gate1", _investigation_confirmation_suggestions())
@@ -1212,8 +1021,6 @@ def _terminal_confirmation_response(case) -> str:
         return "Case closed without investigation."
     if closure_reason == "closed_after_investigation":
         return "Case closed without resolution. Investigation history preserved."
-    if closure_reason == "mitigation_sufficient":
-        return "Case closed; mitigation deemed sufficient."
     return "Case closed."
 
 
@@ -1265,7 +1072,7 @@ def _runbook_suggestion() -> dict:
     }
 
 
-def _regenerate_resolution_summary_suggestion(remaining: int) -> Optional[dict]:
+def _regenerate_resolution_summary_suggestion(remaining: int) -> dict | None:
     """Regenerate-resolution-summary COOPERATIVE suggestion.
 
     Returns None when ``remaining <= 0`` so the caller can drop the
@@ -2296,34 +2103,7 @@ class MilestoneEngine:
                                 },
                             )
 
-                        # Gate 3 outcome telemetry: capture whether this
-                        # close resolves a pending Gate 3 with
-                        # mitigation_sufficient. Read state BEFORE confirm
-                        # fires (the closure_reason lives on pending_transition;
-                        # path_selection state is unchanged by the confirm call).
-                        _gate3_close = (
-                            case.path_selection is not None
-                            and case.path_selection.path
-                            == InvestigationPath.MITIGATION_FIRST
-                            and case.path_selection.mitigation_completed_at_turn
-                            is not None
-                            and not case.path_selection.rca_after_mitigation_confirmed
-                            and (case.pending_transition or {}).get("closure_reason")
-                            == "mitigation_sufficient"
-                            and (case.pending_transition or {}).get("to_state")
-                            == "closed"
-                        )
-
                         confirm_pending_transition(case, case.user_id)
-
-                        if _gate3_close:
-                            inquiry_gate3_resolved_total.labels(
-                                outcome="closed_mitigation_sufficient"
-                            ).inc()
-                            logger.info(
-                                f"Case {case.case_id}: Gate 3 resolved by "
-                                f"close as mitigation-sufficient."
-                            )
 
                         # Persist the terminal status before generating the
                         # summary — the Report row FKs to case_id.
@@ -2768,8 +2548,9 @@ class MilestoneEngine:
                         f"Received confirmation intent for case {case.case_id} but no proposed problem statement exists"
                     )
                 else:
-                    # Gate 1 commit. Path selection is owned by Gate 2 — see
-                    # the path_selection intent branch below.
+                    # Gate 1 commit (problem-statement confirmation). There is
+                    # no path fork (redesign R5) — the investigation proceeds
+                    # opportunistically once INVESTIGATING begins.
                     case.inquiry.problem_statement_confirmed = True
                     case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
                     case.inquiry.decided_to_investigate = True
@@ -2777,173 +2558,11 @@ class MilestoneEngine:
 
                     logger.info(
                         f"Case {case.case_id}: Gate 1 confirmed via confirmation intent "
-                        f"(transitioning to INVESTIGATING; Gate 2 path selection fires "
-                        f"later, after symptom_verified)"
+                        f"(transitioning to INVESTIGATING)"
                     )
 
                     # Do NOT transition here — _check_automatic_transitions
-                    # fires INQUIRY -> INVESTIGATING on Gate 1 alone (INV-19,
-                    # post-redesign). Gate 2 opens inside INVESTIGATING after
-                    # the agent sets symptom_verified=True.
-
-            elif intent_type == "path_selection":
-                # Gate 2 commit. User clicked one of the two path COOPERATIVE
-                # suggestions; intent_data.investigation_path is either the
-                # recommended path or the alternate. This is the SOLE site
-                # where ``case.path_selection`` is created — recommendation
-                # is computed on-demand here (not pre-stored), then composed
-                # with the user's choice to produce the committed selection.
-                logger.info(
-                    f"Explicit path_selection intent for case {case.case_id} "
-                    f"(intent_data={intent_data})"
-                )
-
-                if case.state != CaseState.INVESTIGATING:
-                    logger.warning(
-                        f"Received path_selection intent for case {case.case_id} "
-                        f"but status is {case.state.value}"
-                    )
-                elif not case.progress.symptom_verified:
-                    logger.warning(
-                        f"Received path_selection intent for case {case.case_id} "
-                        f"but symptom_verified is False — Gate 2 has not yet opened"
-                    )
-                elif case.path_selection is not None:
-                    logger.warning(
-                        f"Received path_selection intent for case {case.case_id} "
-                        f"but path_selection is already committed "
-                        f"(path={case.path_selection.path.value}). "
-                        f"Re-commitment is not supported; click ignored."
-                    )
-                elif not intent_data or "investigation_path" not in intent_data:
-                    logger.warning(
-                        f"path_selection intent missing investigation_path payload "
-                        f"for case {case.case_id}"
-                    )
-                else:
-                    chosen_path_str = intent_data["investigation_path"]
-                    try:
-                        chosen_path = InvestigationPath(chosen_path_str)
-                    except ValueError:
-                        logger.warning(
-                            f"path_selection intent with unknown path value "
-                            f"{chosen_path_str!r} for case {case.case_id}"
-                        )
-                    else:
-                        # Compute the recommendation on-demand to get
-                        # rationale and alternate_path context. Then compose
-                        # with the user's choice to produce the committed
-                        # PathSelection.
-                        recommendation = recommend_investigation_path_for_case(case)
-                        if recommendation is None:
-                            logger.warning(
-                                f"path_selection intent for case {case.case_id} "
-                                f"but recommendation prerequisites not met "
-                                f"(Gate 1 passed? preliminary_urgency populated?). "
-                                f"Click ignored."
-                            )
-                        else:
-                            if chosen_path == recommendation.path:
-                                # User accepted the recommendation as-is.
-                                # auto_selected=True records "user chose the
-                                # system's recommended path."
-                                case.path_selection = recommendation.model_copy(
-                                    update={
-                                        "auto_selected": True,
-                                        "selected_at": datetime.now(UTC),
-                                        "selected_by": case.user_id,
-                                    }
-                                )
-                            else:
-                                # User picked the alternate. Swap path/
-                                # alternate_path so the committed selection
-                                # reflects what was chosen and what the
-                                # alternative was.
-                                case.path_selection = recommendation.model_copy(
-                                    update={
-                                        "path": chosen_path,
-                                        "alternate_path": recommendation.path,
-                                        "auto_selected": False,
-                                        "selected_at": datetime.now(UTC),
-                                        "selected_by": case.user_id,
-                                    }
-                                )
-                            logger.info(
-                                f"Case {case.case_id}: Gate 2 committed via "
-                                f"path_selection intent. path={chosen_path.value}, "
-                                f"override={chosen_path != recommendation.path}"
-                            )
-
-                            # Don't transition here — _check_automatic_transitions
-                            # picks up the state change and fires the transition.
-
-                            # Gate 2 outcome telemetry.
-                            inquiry_gate2_confirmed_total.labels(
-                                outcome=(
-                                    "override"
-                                    if chosen_path != recommendation.path
-                                    else "recommended"
-                                )
-                            ).inc()
-
-            elif intent_type == "post_mitigation_choice":
-                # Gate 3 confirmation. User clicked the "Continue with RCA"
-                # suggestion (the "close as mitigation-sufficient" branch
-                # uses STATUS_TRANSITION instead — handled above).
-                logger.info(
-                    f"Explicit post_mitigation_choice intent for case "
-                    f"{case.case_id} (intent_data={intent_data})"
-                )
-
-                if case.state != CaseState.INVESTIGATING:
-                    logger.warning(
-                        f"Received post_mitigation_choice intent for case "
-                        f"{case.case_id} but status is {case.state.value}"
-                    )
-                elif not _gate3_is_pending(case):
-                    logger.warning(
-                        f"Received post_mitigation_choice intent for case "
-                        f"{case.case_id} but Gate 3 is not pending "
-                        f"(path={case.path_selection.path.value if case.path_selection else None}, "
-                        f"mitigation_completed_at_turn="
-                        f"{case.path_selection.mitigation_completed_at_turn if case.path_selection else None}, "
-                        f"rca_after_mitigation_confirmed="
-                        f"{case.path_selection.rca_after_mitigation_confirmed if case.path_selection else None})"
-                    )
-                elif not intent_data or "continue_to_rca" not in intent_data:
-                    logger.warning(
-                        f"post_mitigation_choice intent missing continue_to_rca "
-                        f"payload for case {case.case_id}"
-                    )
-                else:
-                    continue_to_rca = bool(intent_data["continue_to_rca"])
-                    ps = case.path_selection
-                    if continue_to_rca:
-                        case.path_selection = ps.model_copy(
-                            update={
-                                "rca_after_mitigation_confirmed": True,
-                                "rca_after_mitigation_confirmed_at_turn": case.current_turn,
-                            }
-                        )
-                        inquiry_gate3_resolved_total.labels(
-                            outcome="continued_to_rca"
-                        ).inc()
-                        logger.info(
-                            f"Case {case.case_id}: Gate 3 confirmed — "
-                            f"continuing with RCA. INV-21 guard now allows "
-                            f"root_cause_identified."
-                        )
-                    else:
-                        # continue_to_rca=False is informational only — the
-                        # close branch uses STATUS_TRANSITION (which fires
-                        # the gate3_resolved_total{closed_mitigation_sufficient}
-                        # counter at the transition site). Logging here for
-                        # observability if the frontend ever emits this branch.
-                        logger.info(
-                            f"Case {case.case_id}: post_mitigation_choice "
-                            f"intent with continue_to_rca=False — expected "
-                            f"path is STATUS_TRANSITION to CLOSED."
-                        )
+                    # fires INQUIRY -> INVESTIGATING on Gate 1 alone.
 
             # ============================================================
             # HYPOTHESIS ACTION - Explicit Intent (Frontend/IntentResolver)
@@ -4310,7 +3929,7 @@ class MilestoneEngine:
                 self._vectorize_evidence(evidence_id, tool_context),
                 timeout=reactive_timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Reactive vectorization timed out for %s after %ss "
                 "(trigger=%s). Agent proceeds without semantic search "
@@ -4580,9 +4199,9 @@ class MilestoneEngine:
             root_defs=schema_dict.get("$defs"),
         )
 
-        # Validate with Pydantic
-        content = json.dumps(content_obj)
-        parsed = schema_model.model_validate_json(content)
+        # Validate with Pydantic, degrading gracefully instead of 500ing on a
+        # single malformed sub-record (parse-time cross-field validators).
+        parsed = self._validate_with_degradation(content_obj, schema_model)
 
         # Dropped-field detection: compare what the LLM emitted to what the
         # schema accepted. Any key the LLM put in the dict that isn't a
@@ -4592,6 +4211,110 @@ class MilestoneEngine:
         # via behavioral eval — see ADR / docs.
         self._log_dropped_fields(content_obj, parsed, schema_model)
         return parsed
+
+    def _validate_with_degradation(self, content_obj, schema_model):
+        """Validate LLM structured output, degrading gracefully instead of 500ing.
+
+        Parse-time cross-field validators (e.g. ``evidence_to_add.source_file_id``
+        is required unless ``USER_DESCRIPTION``; ``evidence_need_updates`` state
+        ``FULFILLED`` requires ``fulfilling_evidence_ids``) reject the WHOLE
+        response object when a single sub-record is malformed — which 500s the
+        turn before any milestone logic runs (the surgical strip can't help: that
+        operates post-parse). This is the general never-500 backstop for that
+        class (redesign §9 / the deferred "S4" item):
+
+        1. Try to validate as-is.
+        2. On failure, PRUNE the specific list entries the ValidationError points
+           at (keyed off the error ``loc`` paths — general, not per-invariant)
+           and re-validate. The bad sub-records are quarantined; everything else
+           on the turn survives.
+        3. If it still fails (a top-level / non-list error), drop ``state_updates``
+           entirely and keep the conversational ``agent_response`` — the turn
+           survives as a conversational reply rather than a 500.
+        4. If even that fails, re-raise the original error (truly unrecoverable).
+
+        Upstream remains the real fix: provider-native constrained generation so
+        the LLM cannot emit the invalid shape ([[project-llm-structured-output-strategy]]).
+        This is the backstop, not a per-variant patch.
+        """
+        from pydantic import ValidationError
+
+        try:
+            return schema_model.model_validate_json(json.dumps(content_obj))
+        except ValidationError as original_error:
+            pruned, dropped = self._prune_invalid_list_entries(
+                content_obj, original_error
+            )
+            if dropped:
+                try:
+                    parsed = schema_model.model_validate_json(json.dumps(pruned))
+                    logger.warning(
+                        "structured_output_degraded: pruned invalid sub-record(s) "
+                        f"{dropped} from {schema_model.__name__} and continued "
+                        "(parse-time validator). Turn preserved.",
+                        extra={"schema": schema_model.__name__, "pruned": dropped},
+                    )
+                    return parsed
+                except ValidationError:
+                    pass  # fall through to the conversational fallback
+
+            # Last resort: keep the response text, drop all structured updates.
+            if isinstance(content_obj, dict) and content_obj.get("state_updates"):
+                fallback = {**content_obj, "state_updates": {}}
+                try:
+                    parsed = schema_model.model_validate_json(json.dumps(fallback))
+                    logger.warning(
+                        "structured_output_degraded: dropped all state_updates from "
+                        f"{schema_model.__name__} after an unrepairable validation "
+                        "error — conversational fallback (no 500).",
+                        extra={"schema": schema_model.__name__},
+                    )
+                    return parsed
+                except ValidationError:
+                    pass
+
+            raise original_error
+
+    @staticmethod
+    def _prune_invalid_list_entries(content_obj, error):
+        """Remove the list entries a ValidationError flags. Returns (obj, [paths]).
+
+        Each ValidationError ``loc`` for a list sub-record looks like
+        ``('state_updates', 'evidence_to_add', 0, 'source_file_id')`` or
+        ``(..., 0)``. We take the deepest int in the loc as the offending list
+        index and drop that entry from the corresponding list. General across any
+        list field (evidence_to_add, evidence_need_updates, hypotheses_to_add, …).
+        """
+        import copy
+
+        obj = copy.deepcopy(content_obj)
+        to_remove: dict[tuple, set] = {}
+        for err in error.errors():
+            loc = err.get("loc", ())
+            int_positions = [i for i, part in enumerate(loc) if isinstance(part, int)]
+            if not int_positions:
+                continue  # top-level / non-list error — not prunable here
+            last = int_positions[-1]
+            list_path = loc[:last]
+            to_remove.setdefault(list_path, set()).add(loc[last])
+
+        dropped: list[str] = []
+        for list_path, indices in to_remove.items():
+            node = obj
+            ok = True
+            for key in list_path:
+                if isinstance(node, dict) and key in node:
+                    node = node[key]
+                else:
+                    ok = False
+                    break
+            if ok and isinstance(node, list):
+                for idx in sorted(indices, reverse=True):
+                    if 0 <= idx < len(node):
+                        del node[idx]
+                        path_str = ".".join(str(p) for p in list_path)
+                        dropped.append(f"{path_str}[{idx}]")
+        return obj, dropped
 
     def _log_dropped_fields(
         self,
@@ -4695,7 +4418,7 @@ class MilestoneEngine:
             schema_dict,
             root_defs=schema_dict.get("$defs"),
         )
-        parsed = schema_model.model_validate_json(json.dumps(content_obj))
+        parsed = self._validate_with_degradation(content_obj, schema_model)
         self._log_dropped_fields(content_obj, parsed, schema_model)
 
         # Semantic guard: agent_response is the user-facing payload of every
@@ -5299,27 +5022,36 @@ class MilestoneEngine:
             )
 
         # Validate reasoning-first requirement (AFTER post-processing to allow fallback evidence creation)
-        is_valid, validation_errors = validate_reasoning_first(response_obj, case)
+        is_valid, validation_errors, offending_milestones = validate_reasoning_first(
+            response_obj, case
+        )
         if not is_valid:
             error_msg = "Reasoning validation failed:\n" + "\n".join(validation_errors)
             logger.warning(
                 f"Reasoning validation failed for case {case.case_id}: {error_msg}"
             )
-            # Degrade gracefully: strip milestone completions and continue with the response
-            # instead of crashing with a 500 error
-            if (
-                hasattr(response_obj, "internal_reasoning")
-                and response_obj.internal_reasoning
-            ):
-                response_obj.internal_reasoning.milestone_justifications = {}
-            if hasattr(response_obj, "state_updates"):
-                milestones = getattr(response_obj.state_updates, "milestones", None)
-                if milestones:
-                    # Reset all milestone booleans to None (uncompleted)
-                    for field_name in milestones.model_fields:
+            # Degrade gracefully: strip ONLY the milestones that actually failed
+            # validation, preserving co-emitted valid ones. A single unjustified
+            # milestone (e.g. a reflexive root_cause_identified) must NOT wipe a
+            # validated mitigation/solution gate emitted the same turn — that
+            # all-or-nothing wipe was the S1 trap mechanism (redesign §1.1, §5).
+            milestones = getattr(
+                getattr(response_obj, "state_updates", None), "milestones", None
+            )
+            stripped: list[str] = []
+            if milestones and offending_milestones:
+                for field_name in offending_milestones:
+                    if hasattr(milestones, field_name):
                         setattr(milestones, field_name, None)
+                        stripped.append(field_name)
+                # Drop only the stripped milestones' justifications; keep the rest.
+                ir = getattr(response_obj, "internal_reasoning", None)
+                if ir and getattr(ir, "milestone_justifications", None):
+                    for field_name in stripped:
+                        ir.milestone_justifications.pop(field_name, None)
             logger.info(
-                f"Stripped invalid milestones for case {case.case_id}, continuing with response"
+                f"Surgically stripped {stripped or 'no'} milestone(s) for case "
+                f"{case.case_id}; preserved the rest. Continuing with response."
             )
 
         # Dispatch based on response type
@@ -5580,10 +5312,6 @@ class MilestoneEngine:
         user_message: str = "",
     ) -> None:
         """Apply updates during INVESTIGATING phase."""
-        from faultmaven.modules.case.domain.services.investigation_router import (
-            determine_investigation_path,
-        )
-
         # 0. Check for Proactive Blocker Detection — surface as system feedback
         if hasattr(updates, "missing_critical_data") and updates.missing_critical_data:
             blocker = updates.missing_critical_data
@@ -5675,6 +5403,10 @@ class MilestoneEngine:
             # (alphabetical sort, regrouping) would silently shift the
             # same-turn case onto the rejection path. See the ordering
             # guard inside the loop below.
+            # Stabilization signals (mitigation_accepted / mitigation_verified)
+            # are NOT plain progress booleans anymore (redesign R2). They are
+            # routed into progress.stabilization below, after the generic loop.
+            # The LLM-facing MilestoneUpdates field NAMES are unchanged.
             milestone_fields = [
                 # Progress indicators (LLM context, non-stage-driving)
                 "symptom_verified",
@@ -5682,13 +5414,9 @@ class MilestoneEngine:
                 # solution_proposed — set programmatically at ProposedAction creation (3F)
                 # solution_verified — requires User-Agent Handshake
                 # Stage-gate milestones (LLM detects user compliance — Framework §4.1)
-                "mitigation_accepted",
-                "mitigation_verified",
                 "solution_accepted",
             ]
             stage_gate_fields = {
-                "mitigation_accepted",
-                "mitigation_verified",
                 "solution_accepted",
             }
 
@@ -5699,18 +5427,14 @@ class MilestoneEngine:
                 a.state == "pending" for a in case.proposed_actions
             )
 
-            # Path-conditional RCA-milestone restriction. Both
-            # ``_SYMPTOM_VALIDATION_BLOCK`` (pre-mitigation MITIGATION_FIRST)
-            # and ``_GATE3_PENDING_BLOCK`` (Gate 3 pending) explicitly
-            # forbid setting RCA-side milestones — RCA work is deferred to
-            # post-Gate-3 on the MITIGATION_FIRST path. Single predicate
-            # covers both states (INV-21 was Gate-3-specific; this extends
-            # the same enforcement to pre-mitigation, where the LLM
-            # disregarding _SYMPTOM_VALIDATION_BLOCK's "DO NOT set
-            # root_cause_identified" directive would otherwise corrupt the
-            # case with a premature root-cause attribution).
-            path_restricted_state = _path_conditional_emission_restriction(case)
-            rca_side_milestones = {"root_cause_identified"}
+            # NOTE (redesign R1): the cause-identification signal
+            # ``root_cause_identified`` → ``cause_state=IDENTIFIED`` is a TRUTH
+            # signal and is NEVER rejected by investigation state. The former
+            # path-conditional RCA-milestone ban (which rejected it in
+            # ``pre_mitigation_mitigation_first`` / Gate-3-pending states) was
+            # the S1 trap mechanism and has been removed. Whether the diagnostic
+            # *labor* (hypotheses/causal_evidence) runs is gated on cause
+            # uncertainty, handled where those emissions are applied.
 
             for field in milestone_fields:
                 if getattr(m, field, False):
@@ -5721,92 +5445,102 @@ class MilestoneEngine:
                             f"{case.case_id}: no pending ProposedAction exists"
                         )
                         continue
-                    # Path-conditional RCA-milestone guard (covers INV-21
-                    # Gate-3-pending case + the pre-mitigation
-                    # MITIGATION_FIRST case under the same predicate).
-                    if (
-                        path_restricted_state is not None
-                        and field in rca_side_milestones
-                    ):
-                        block_name = _RESTRICTED_STATE_BLOCK_NAMES[
-                            path_restricted_state
-                        ]
-                        deferral_clause = _restricted_state_deferral_clause(
-                            path_restricted_state, work="Root-cause work"
-                        )
-                        logger.warning(
-                            f"Rejected RCA-side milestone '{field}' for case "
-                            f"{case.case_id}: forbidden in state "
-                            f"'{path_restricted_state}' (the {block_name} "
-                            f"prompt directive forbids setting RCA-side "
-                            f"milestones in this state)."
-                        )
-                        current_feedback = metadata.get("system_feedback") or ""
-                        metadata["system_feedback"] = (
-                            f"{current_feedback}\n"
-                            "PATH-CONDITIONAL MILESTONE ERROR: You set "
-                            f"``{field}=True`` in a state where the "
-                            f"{block_name} prompt directive forbids "
-                            f"RCA-side milestones. {deferral_clause} Do not "
-                            f"re-emit ``{field}=True`` until the case "
-                            "reaches a state where RCA is in scope."
-                        ).strip()
-                        metadata.setdefault("validation_repairs", []).append(
-                            f"Rejected {field} in {path_restricted_state} state"
-                        )
-                        continue
-                    # Stage-gate ordering guard: reject ``mitigation_verified``
-                    # when ``mitigation_accepted`` is not yet set. Pydantic's
-                    # ``InvestigationProgress.solution_ordering`` validator
-                    # rejects this combination at save time, crashing the turn
-                    # with a 500. Catching it here surfaces the violation to
-                    # the LLM via ``system_feedback`` for next-turn retry,
-                    # instead of losing the turn. If the LLM emits both
-                    # milestones in one response, the ``mitigation_accepted``
-                    # iteration runs first (per ``milestone_fields`` order)
-                    # and this check passes naturally.
-                    if field == "mitigation_verified" and not p.mitigation_accepted:
-                        logger.warning(
-                            f"Rejected stage-gate milestone 'mitigation_verified' "
-                            f"for case {case.case_id}: prerequisite "
-                            f"'mitigation_accepted' is not set (state-machine "
-                            f"ordering)."
-                        )
-                        current_feedback = metadata.get("system_feedback") or ""
-                        metadata["system_feedback"] = (
-                            f"{current_feedback}\n"
-                            "MILESTONE ORDER ERROR: You set "
-                            "mitigation_verified=True without first setting "
-                            "mitigation_accepted=True. Verification "
-                            "presupposes acceptance — set "
-                            "mitigation_accepted=True (based on the user's "
-                            "confirmation signals) before "
-                            "mitigation_verified=True. Set BOTH milestones "
-                            "in the same response if both happened this "
-                            "turn, OR set mitigation_accepted=True first "
-                            "and verify on a follow-up turn after the user "
-                            "confirms."
-                        ).strip()
-                        metadata.setdefault("validation_repairs", []).append(
-                            "Rejected mitigation_verified "
-                            "(prerequisite mitigation_accepted not set)"
-                        )
-                        continue
+                    # R1: the LLM's grounded "root_cause_identified" signal
+                    # maps to the engine-owned cause_state enum, never a raw
+                    # bool field. cause_state is recomputed each turn (see
+                    # _recompute_cause_state); here we honor the grounded
+                    # IDENTIFIED signal. The milestone SYMBOL stays
+                    # "root_cause_identified" for downstream maps/telemetry.
+                    if field == "root_cause_identified":
+                        if p.cause_state != CauseState.IDENTIFIED:
+                            p.cause_state = CauseState.IDENTIFIED
+                            metadata["milestones_completed"].append(field)
                     # Only append if transitioning from False to True
-                    if not getattr(p, field, False):
+                    elif not getattr(p, field, False):
                         setattr(p, field, True)
                         metadata["milestones_completed"].append(field)
 
-            # Post-INV-19 redesign: Gate 2 fires INSIDE INVESTIGATING after
-            # symptom_verified. The state (state=INVESTIGATING,
-            # symptom_verified=True, path_selection=None) is the
-            # Gate-2-pending shape — expected, not an invariant violation.
-            # The dispatcher routes this state to _PRE_PATH_DIAGNOSIS_BLOCK
-            # and the engine-side backstop in _path_conditional_emission_restriction
-            # keeps RCA-side emissions from corrupting the case.
+            # Stabilization signals (redesign R2): the LLM still emits the
+            # ``mitigation_accepted`` / ``mitigation_verified`` MilestoneUpdates
+            # fields (compliance detection); the engine materializes the
+            # progress.stabilization record from them rather than setting
+            # progress booleans. The milestone NAMEs are still appended to
+            # ``milestones_completed`` (telemetry symbol unchanged).
+            stab_accepted_signal = bool(getattr(m, "mitigation_accepted", False))
+            stab_verified_signal = bool(getattr(m, "mitigation_verified", False))
+
+            if stab_accepted_signal or stab_verified_signal:
+                # Guard: stabilization signals require a pending ProposedAction
+                # (no hallucinated compliance).
+                if not has_pending_action:
+                    logger.warning(
+                        f"Rejected stabilization signal(s) for case "
+                        f"{case.case_id}: no pending ProposedAction exists"
+                    )
+                else:
+                    if stab_accepted_signal:
+                        if p.stabilization is None:
+                            # proposed_at_turn = the turn the latest workaround
+                            # ProposedAction was proposed, else current_turn.
+                            proposed_turn = case.current_turn
+                            for action in reversed(case.proposed_actions):
+                                if (
+                                    action.action_type
+                                    == InvestigationActionType.MITIGATION
+                                ):
+                                    proposed_turn = action.proposed_in_turn
+                                    break
+                            p.stabilization = StabilizationRecord(
+                                proposed_at_turn=proposed_turn
+                            )
+                        if not p.stabilization.accepted:
+                            p.stabilization.accepted = True
+                            metadata["milestones_completed"].append(
+                                "mitigation_accepted"
+                            )
+
+                    if stab_verified_signal:
+                        # Ordering guard: verification presupposes acceptance.
+                        # If accept wasn't signalled (now or earlier), reject and
+                        # surface to the LLM via system_feedback for retry,
+                        # instead of crashing the turn on the record validator.
+                        if p.stabilization is None or not p.stabilization.accepted:
+                            logger.warning(
+                                f"Rejected stabilization 'mitigation_verified' "
+                                f"for case {case.case_id}: prerequisite "
+                                f"'mitigation_accepted' is not set "
+                                f"(state-machine ordering)."
+                            )
+                            current_feedback = metadata.get("system_feedback") or ""
+                            metadata["system_feedback"] = (
+                                f"{current_feedback}\n"
+                                "MILESTONE ORDER ERROR: You set "
+                                "mitigation_verified=True without first setting "
+                                "mitigation_accepted=True. Verification "
+                                "presupposes acceptance — set "
+                                "mitigation_accepted=True (based on the user's "
+                                "confirmation signals) before "
+                                "mitigation_verified=True. Set BOTH milestones "
+                                "in the same response if both happened this "
+                                "turn, OR set mitigation_accepted=True first "
+                                "and verify on a follow-up turn after the user "
+                                "confirms."
+                            ).strip()
+                            metadata.setdefault("validation_repairs", []).append(
+                                "Rejected mitigation_verified "
+                                "(prerequisite mitigation_accepted not set)"
+                            )
+                        elif not p.stabilization.verified:
+                            p.stabilization.verified = True
+                            p.stabilization.completed_at_turn = case.current_turn
+                            metadata["milestones_completed"].append(
+                                "mitigation_verified"
+                            )
 
             if m.root_cause_likelihood is not None:
                 p.root_cause_likelihood = m.root_cause_likelihood
+            if getattr(m, "solution_feasible", None) is not None:
+                p.solution_feasible = SolutionFeasible(m.solution_feasible)
             _valid_methods = {
                 "direct_analysis",
                 "hypothesis_validation",
@@ -5825,9 +5559,9 @@ class MilestoneEngine:
                     )
                     p.root_cause_method = "other"
 
-            # Ensure consistency: if root_cause_identified was just set,
+            # Ensure consistency: if cause_state was just set to IDENTIFIED,
             # root_cause_method and root_cause_likelihood must also be set
-            if p.root_cause_identified:
+            if p.cause_state == CauseState.IDENTIFIED:
                 if not p.root_cause_method:
                     p.root_cause_method = m.root_cause_method or "direct_analysis"
                 if p.root_cause_likelihood == 0.0:
@@ -5891,51 +5625,12 @@ class MilestoneEngine:
             # through unchanged — no turn-file fallback, because that
             # would silently mis-attribute a chat-extracted USER_DESCRIPTION
             # quote to whatever file happens to be in the same turn.
-            # Path-conditional emission backstop: when the dispatcher
-            # renders _SYMPTOM_VALIDATION_BLOCK or _GATE3_PENDING_BLOCK,
-            # those prompt blocks explicitly forbid causal_evidence
-            # classification. If the LLM disregards the prompt, the
-            # engine would silently persist invalid evidence —
-            # corrupting the audit trail (downstream KB conversion /
-            # report generation / replay would see a causal_evidence
-            # row attached to a state where no hypothesis exists).
-            # Drop the offending items and re-surface to the LLM via
-            # system_feedback. Partial-accept semantics: other
-            # categories in the same response are accepted normally.
-            restricted_state = _path_conditional_emission_restriction(case)
+            #
+            # Redesign R5/§2: the former path-conditional causal_evidence ban
+            # is removed. Whether RCA-side work runs is decided by the prompt
+            # (gated on cause uncertainty), not by an engine emission ban —
+            # causal_evidence is always allowed during INVESTIGATING.
             for ev_item in updates.evidence_to_add:
-                if (
-                    restricted_state is not None
-                    and ev_item.category == EvidenceCategory.CAUSAL_EVIDENCE
-                ):
-                    block_name = _RESTRICTED_STATE_BLOCK_NAMES[restricted_state]
-                    deferral_clause = _restricted_state_deferral_clause(
-                        restricted_state, work="Causal evidence"
-                    )
-                    logger.warning(
-                        f"Rejected causal_evidence emission for case "
-                        f"{case.case_id}: forbidden in state "
-                        f"'{restricted_state}' (the {block_name} prompt "
-                        f"directive explicitly bans this category). "
-                        f"summary={ev_item.summary[:80]!r}"
-                    )
-                    current_feedback = metadata.get("system_feedback") or ""
-                    metadata["system_feedback"] = (
-                        f"{current_feedback}\n"
-                        "PATH-CONDITIONAL EMISSION ERROR: You classified "
-                        "evidence as ``causal_evidence`` in a state where "
-                        f"the {block_name} prompt directive explicitly "
-                        "forbids this category. Causal claims presuppose "
-                        "a hypothesis to attach to (INV-17), and "
-                        "hypothesis formation is gated in this state. "
-                        "Use ``symptom_evidence`` (verifying the problem) "
-                        f"instead. {deferral_clause}"
-                    ).strip()
-                    metadata.setdefault("validation_repairs", []).append(
-                        f"Rejected causal_evidence in {restricted_state} state"
-                    )
-                    continue
-
                 # Infer milestone attribution (Tier 2 + Tier 3)
                 # Tier 2: System infers from category + milestones completed this turn
                 # Tier 3: LLM can override via advances_milestones field
@@ -5994,9 +5689,26 @@ class MilestoneEngine:
             )
             for result in validation_results:
                 if not result.is_valid:
-                    # Revert the milestone — evidence doesn't support the claim
-                    setattr(case.progress, result.milestone, False)
-                    metadata["milestones_completed"].remove(result.milestone)
+                    # Revert the milestone — evidence doesn't support the claim.
+                    # ``root_cause_identified`` is no longer a bool field; it maps
+                    # to the engine-derived ``cause_state`` enum.
+                    if result.milestone == "root_cause_identified":
+                        # cause_state is engine-owned (R1). If the cause is
+                        # grounded CASE-WIDE, _recompute would immediately
+                        # re-derive IDENTIFIED — so reverting here would only
+                        # oscillate the state and tear the milestone out of
+                        # ``milestones_completed`` with a misleading
+                        # "insufficient evidence" warning (the validator counts
+                        # current-turn evidence only). Skip the revert; let
+                        # _recompute own it. Only un-identify when genuinely
+                        # ungrounded case-wide.
+                        if _cause_state_grounded(case):
+                            continue
+                        case.progress.cause_state = CauseState.UNKNOWN
+                    elif hasattr(case.progress, result.milestone):
+                        setattr(case.progress, result.milestone, False)
+                    if result.milestone in metadata["milestones_completed"]:
+                        metadata["milestones_completed"].remove(result.milestone)
                     logger.warning(
                         f"Milestone '{result.milestone}' REVERTED: claimed with insufficient evidence "
                         f"({result.cited_count}/{result.expected_min} required). "
@@ -6007,58 +5719,22 @@ class MilestoneEngine:
                     )
 
         # 3. Add/Update Hypotheses
+        #
+        # Redesign R5/§2: the former path-conditional hypothesis ban is
+        # removed. Hypothesis formation is always allowed during
+        # INVESTIGATING; the prompt (gated on cause uncertainty) decides when
+        # the diagnostic machinery runs, not an engine emission ban.
         if hasattr(updates, "hypotheses_to_add") and updates.hypotheses_to_add:
-            # Path-conditional emission backstop: ``_SYMPTOM_VALIDATION_BLOCK``
-            # and ``_GATE3_PENDING_BLOCK`` both explicitly forbid hypothesis
-            # emission ("DO NOT emit ``hypotheses_to_add``"). If the LLM
-            # disregards the prompt, the engine would silently persist
-            # hypotheses attributed to a state where the framework says
-            # none should exist — degrading the audit trail and any
-            # downstream consumer (KB conversion, report generation,
-            # replay analysis). Reject-all semantics: hypotheses are
-            # categorically banned in these states, so there's no "good"
-            # hypothesis emission to preserve.
-            restricted_state = _path_conditional_emission_restriction(case)
-            if restricted_state is not None:
-                block_name = _RESTRICTED_STATE_BLOCK_NAMES[restricted_state]
-                deferral_clause = _restricted_state_deferral_clause(
-                    restricted_state, work="Hypothesis formation"
+            for h_item in updates.hypotheses_to_add:
+                h = self.hypothesis_manager.create_hypothesis(
+                    statement=h_item.statement,
+                    category=h_item.category,
+                    initial_likelihood=h_item.likelihood,
+                    current_turn=case.current_turn,
+                    state=HypothesisState.ACTIVE,
                 )
-                count = len(updates.hypotheses_to_add)
-                logger.warning(
-                    f"Rejected hypotheses_to_add emission "
-                    f"({count} record(s)) for case {case.case_id}: "
-                    f"forbidden in state '{restricted_state}' (the "
-                    f"{block_name} prompt directive explicitly bans "
-                    f"structured hypothesis emission)."
-                )
-                current_feedback = metadata.get("system_feedback") or ""
-                metadata["system_feedback"] = (
-                    f"{current_feedback}\n"
-                    "PATH-CONDITIONAL EMISSION ERROR: You emitted "
-                    f"``hypotheses_to_add`` ({count} record(s)) in a state "
-                    f"where the {block_name} prompt directive forbids "
-                    f"structured hypothesis emission. {deferral_clause} "
-                    "You may discuss possible causes in prose — "
-                    "conversational hypothesizing is allowed — but do not "
-                    "re-emit ``hypotheses_to_add`` until the case reaches "
-                    "a state where hypothesis work is in scope."
-                ).strip()
-                metadata.setdefault("validation_repairs", []).append(
-                    f"Rejected hypotheses_to_add ({count} record(s)) "
-                    f"in {restricted_state} state"
-                )
-            else:
-                for h_item in updates.hypotheses_to_add:
-                    h = self.hypothesis_manager.create_hypothesis(
-                        statement=h_item.statement,
-                        category=h_item.category,
-                        initial_likelihood=h_item.likelihood,
-                        current_turn=case.current_turn,
-                        state=HypothesisState.ACTIVE,
-                    )
-                    case.hypotheses[h.hypothesis_id] = h
-                    metadata["hypotheses_generated"].append(h.hypothesis_id)
+                case.hypotheses[h.hypothesis_id] = h
+                metadata["hypotheses_generated"].append(h.hypothesis_id)
 
         # 4. Link Evidence (Partial Application Check)
         # Note: Hypothesis-evidence linking is best-effort. The LLM may reference
@@ -6140,45 +5816,11 @@ class MilestoneEngine:
             )
 
         # 5. Solutions
-        if hasattr(updates, "solutions_to_add") and updates.solutions_to_add:
-            # Path-conditional emission backstop (pre-path only):
-            # ``_PRE_PATH_DIAGNOSIS_BLOCK`` explicitly forbids
-            # ``solutions_to_add`` because mitigation/solution proposals
-            # only belong inside a committed path. Reject-all semantics:
-            # the prompt categorically bans solution emission in this
-            # state, so there's no "good" subset to preserve. The other
-            # restricted states (pre_mitigation_mitigation_first,
-            # gate3_pending) DO allow solution emission for mitigation
-            # discovery / acknowledgement, so the ban applies only to
-            # ``pre_path_investigating``.
-            if _is_pre_path_investigating(case):
-                count = len(updates.solutions_to_add)
-                logger.warning(
-                    f"Rejected solutions_to_add emission ({count} record(s)) "
-                    f"for case {case.case_id}: forbidden in state "
-                    f"'pre_path_investigating' (the _PRE_PATH_DIAGNOSIS_BLOCK "
-                    f"prompt directive explicitly bans structured solution "
-                    f"emission)."
-                )
-                current_feedback = metadata.get("system_feedback") or ""
-                metadata["system_feedback"] = (
-                    f"{current_feedback}\n"
-                    "PATH-CONDITIONAL EMISSION ERROR: You emitted "
-                    f"``solutions_to_add`` ({count} record(s)) before the "
-                    "user committed an investigation path (Gate 2). "
-                    "Mitigation and solution proposals only belong inside "
-                    "a committed path. Complete symptom validation first "
-                    "(set ``symptom_verified=True``), then the user picks "
-                    "mitigation-first vs root-cause-first; structured "
-                    "solution emission becomes available inside the chosen "
-                    "path."
-                ).strip()
-                metadata.setdefault("validation_repairs", []).append(
-                    f"Rejected solutions_to_add ({count} record(s)) "
-                    f"in pre_path_investigating state"
-                )
-                updates.solutions_to_add = []
-
+        # 5. Solutions
+        #
+        # Redesign R5/§2: the former pre-path solutions ban is removed. There
+        # is no path commit gate; solution/workaround proposals are allowed
+        # opportunistically during INVESTIGATING.
         if hasattr(updates, "solutions_to_add") and updates.solutions_to_add:
             for s_item in updates.solutions_to_add:
                 sol = Solution(
@@ -6195,7 +5837,7 @@ class MilestoneEngine:
 
                 # Gap 0: Create ProposedAction for compliance detection chain
                 action_type = _determine_action_type(case, s_item.solution_type)
-                downgrade_reason: Optional[str] = None
+                downgrade_reason: str | None = None
 
                 # 3C: Hypothesis gate — SOLUTION requires at least one hypothesis.
                 # If no hypotheses exist, downgrade to DIAGNOSTIC to prevent
@@ -6288,6 +5930,14 @@ class MilestoneEngine:
                 f"(total: {len(case.investigation_journal)})"
             )
 
+        # Recompute engine-owned assessment vars (cause_state / solution_state)
+        # now that this turn's hypotheses and solutions are applied (redesign R1).
+        _recompute_assessment_state(case)
+
+        # Deferred-implementation disposition: if the fix is known but can't be
+        # applied this session, propose CLOSE-with-documented-solution (§3.1 row 3).
+        _maybe_propose_deferred_close(case, metadata)
+
         # Bug #4: Evidence-Milestone Linking (Moved here to ensure evidence exists)
         if metadata["milestones_completed"] and metadata["evidence_added"]:
             for ev_id in metadata["evidence_added"]:
@@ -6324,17 +5974,14 @@ class MilestoneEngine:
         - ``need_id`` → in-loop list of need IDs created earlier in
           this same ``updates_list``
 
-        Path-conditional emission backstop: causal-purpose updates are
-        rejected in restricted states (parallels the existing
-        causal_evidence rejection — same predicate, same helpers,
-        same system_feedback / validation_repairs surface). Symptom-
-        purpose updates are always allowed (symptom-validation work
-        is the *expected* activity in pre_path_investigating).
+        Redesign R5/§2: the former path-conditional causal-purpose ban is
+        removed — causal-verification needs are allowed opportunistically
+        during INVESTIGATING; the prompt (gated on cause uncertainty) decides
+        when causal work runs, not an engine emission ban.
 
         See ``docs/architecture/investigation-engine/evidence-needs-design.md``
-        §5.3 (out-of-order arrival), §7.3 (engine backstop).
+        §5.3 (out-of-order arrival).
         """
-        restricted_state = _path_conditional_emission_restriction(case)
         # Ensure the metadata key exists before any append. The dict built
         # in ``_process_response_structured`` (the one threaded here via
         # ``_apply_investigation_updates``) does not seed
@@ -6350,51 +5997,6 @@ class MilestoneEngine:
         needs_created_in_this_loop: list[str] = []
 
         for update in updates_list:
-            # Path-conditional rejection of causal-purpose emissions.
-            # Symptom-purpose updates are always allowed.
-            # NOTE: ``purpose`` is None on fulfill/status updates (it is
-            # create-only). ``None == CAUSAL_VERIFICATION`` is False, so this
-            # branch is correctly skipped for updates — a fulfill update is not
-            # *creating* a causal need, so the creation backstop must not fire.
-            # Do not "simplify" this guard to assume purpose is always set; the
-            # ``update.request_text[:80]`` below would then crash on None.
-            if (
-                restricted_state is not None
-                and update.purpose == NeedPurpose.CAUSAL_VERIFICATION
-            ):
-                block_name = _RESTRICTED_STATE_BLOCK_NAMES[restricted_state]
-                deferral_clause = _restricted_state_deferral_clause(
-                    restricted_state, work="Causal evidence need"
-                )
-                logger.warning(
-                    f"Rejected causal-purpose evidence_need_update for case "
-                    f"{case.case_id}: forbidden in state "
-                    f"'{restricted_state}' (the {block_name} prompt "
-                    f"directive forbids causal-side emissions). "
-                    f"request_text={update.request_text[:80]!r}"
-                )
-                current_feedback = metadata.get("system_feedback") or ""
-                metadata["system_feedback"] = (
-                    f"{current_feedback}\n"
-                    "PATH-CONDITIONAL EMISSION ERROR: You emitted an "
-                    "evidence_need_update with "
-                    "``purpose=causal_verification`` in a state where "
-                    f"the {block_name} prompt directive forbids causal "
-                    "claims. Causal needs presuppose a hypothesis to "
-                    "anchor (same INV-17 reasoning as causal_evidence). "
-                    "Use ``purpose=symptom_verification`` (verifying "
-                    f"the problem) instead. {deferral_clause}"
-                ).strip()
-                metadata.setdefault("validation_repairs", []).append(
-                    f"Rejected causal-purpose evidence_need_update in "
-                    f"{restricted_state} state"
-                )
-                try:
-                    evidence_need_rejected_total.labels(state=restricted_state).inc()
-                except Exception:
-                    pass
-                continue
-
             # Resolve new_index_N references (same pattern as
             # hypothesis_evidence_links at line ~5927 / 5931).
             resolved_motivators = [
@@ -6407,7 +6009,7 @@ class MilestoneEngine:
                 self._resolve_id_ref(ev_ref, metadata.get("evidence_added", []), "ev")
                 for ev_ref in (update.fulfilling_evidence_ids or [])
             ]
-            resolved_need_id: Optional[str] = None
+            resolved_need_id: str | None = None
             if update.need_id is not None:
                 resolved_need_id = self._resolve_id_ref(
                     update.need_id, needs_created_in_this_loop, "eneed"
@@ -6775,23 +6377,10 @@ class MilestoneEngine:
 
         case.problem_verification = ProblemVerification(**verification_kwargs)
 
-        # INV-19 (post-redesign): the INQUIRY → INVESTIGATING transition
-        # carries Gate 1 only. ``case.path_selection`` MUST be None at this
-        # point — Gate 2 commits the path later, inside INVESTIGATING, after
-        # ``symptom_verified``. Reaching this transition with a committed
-        # path means upstream code has set it prematurely (the click handler
-        # is the sole writer and only fires once Gate 2 opens).
-        if case.path_selection is not None:
-            raise RuntimeError(
-                f"INV-19 violation: case {case.case_id} entered "
-                f"INQUIRY -> INVESTIGATING with path_selection already "
-                f"committed. Path selection must happen inside "
-                f"INVESTIGATING after symptom_verified."
-            )
-        logger.info(
-            f"Case {case.case_id}: transitioning to INVESTIGATING "
-            f"(path_selection deferred to Gate 2 in INVESTIGATING)"
-        )
+        # The INQUIRY → INVESTIGATING transition carries Gate 1
+        # (problem-statement confirmation) only. There is no path fork
+        # (redesign R5) — the investigation proceeds opportunistically.
+        logger.info(f"Case {case.case_id}: transitioning to INVESTIGATING")
 
         # Post-010: no retroactive milestone attribution at INQUIRY→
         # INVESTIGATING. INQUIRY no longer creates Evidence rows, so
@@ -6909,7 +6498,7 @@ class MilestoneEngine:
             # Don't confirm a transition that was just proposed in this same turn
             elif metadata.get("transition_proposed_this_turn", False):
                 logger.info(
-                    f"Skipping confirmation check - transition was just proposed this turn"
+                    "Skipping confirmation check - transition was just proposed this turn"
                 )
             elif case.pending_transition.get("needs_info"):
                 # User was told what's missing and has now responded.

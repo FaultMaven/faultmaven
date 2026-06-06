@@ -1,18 +1,19 @@
 """Phase 3 tests: engine apply-layer for ``evidence_need_updates``.
 
-Mirrors the pattern in
-``tests/unit/core/investigation/test_path_conditional_emission_backstop.py``:
-
 - ``TestEvidenceNeedUpdateApplyLayer`` — create/update mechanics,
   same-turn ``new_index_N`` resolution, FK validation, immutable-purpose
   rule, SUPERSEDED-is-terminal.
-- ``TestCausalNeedRejectionInRestrictedStates`` — path-conditional
-  rejection in all three restricted states, symptom-purpose exempt.
 - ``TestNeedSupersessionOnHypothesisRetirement`` — deterministic engine
   rule across the four retirement sites (post-hoc snapshot-diff in
   ``_process_turn_impl``).
 - ``TestNeedFulfillmentJunctionApply`` — fulfilling_evidence_ids
   resolution + dangling-reference handling.
+
+NOTE (investigation-flow redesign): the old path-conditional causal-need
+rejection (rejected in "restricted states") was removed with the path
+fork. Orphan-causal-need rejection (a causal need with no valid
+motivating hypothesis) survives and is covered by
+``TestPriorTurnRetiredMotivatorFiltered``.
 
 Run:
     pytest tests/unit/core/investigation/test_evidence_need_apply_layer.py -v
@@ -42,11 +43,9 @@ from faultmaven.modules.case.contracts import (
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
-    InvestigationPath,
     NeedPriority,
     NeedPurpose,
     NeedState,
-    PathSelection,
     UploadedFile,
 )
 
@@ -55,37 +54,20 @@ from faultmaven.modules.case.contracts import (
 # ============================================================
 
 
-_USE_DEFAULT_PATH = object()
-
-
 def _make_case(
     *,
     state: CaseState = CaseState.INVESTIGATING,
-    path_selection=_USE_DEFAULT_PATH,
     symptom_verified: bool = True,
 ) -> Case:
-    """Build a minimal Case in INVESTIGATING with optional path commit.
+    """Build a minimal Case in INVESTIGATING (unified opportunistic flow).
 
-    Default (no ``path_selection`` kwarg) is post-Gate-2 ROOT_CAUSE
-    path — the unrestricted state. Pass ``path_selection=None``
-    explicitly for pre_path_investigating. Pass an actual
-    ``PathSelection`` to test other restricted states.
+    The path fork is gone — there is one investigation flow with no
+    prospective path commit.
     """
     inquiry = InquiryData()
     inquiry.proposed_problem_statement = "Test problem"
     inquiry.problem_statement_confirmed = True
     inquiry.decided_to_investigate = True
-
-    if path_selection is _USE_DEFAULT_PATH and state == CaseState.INVESTIGATING:
-        path_selection = PathSelection(
-            path=InvestigationPath.ROOT_CAUSE,
-            auto_selected=False,
-            rationale="test fixture: unrestricted state",
-            selected_by="user_test",
-        )
-    elif path_selection is _USE_DEFAULT_PATH:
-        # Non-INVESTIGATING case: leave path_selection=None
-        path_selection = None
 
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
@@ -95,7 +77,6 @@ def _make_case(
         description="Test problem",
         state=state,
         inquiry=inquiry,
-        path_selection=path_selection,
     )
     case.current_turn = 5
     if state == CaseState.INVESTIGATING:
@@ -452,75 +433,19 @@ class TestNewIndexResolution:
 
 
 # ============================================================
-# Path-conditional rejection
+# Causal-need creation with a valid motivator (unrestricted flow)
 # ============================================================
 
 
 @pytest.mark.unit
-class TestCausalNeedRejectionInRestrictedStates:
-    """Mirror ``TestCausalEvidenceRejection`` — causal-purpose need
-    updates are rejected in the three restricted states; symptom-purpose
-    is always allowed."""
+class TestCausalNeedCreationWithMotivator:
+    """In the unified flow a causal-purpose need is accepted whenever it
+    carries a valid motivating hypothesis (no path gate). The orphan-
+    reject path (no motivator) is covered by
+    ``TestPriorTurnRetiredMotivatorFiltered``."""
 
-    def test_reject_in_pre_path_investigating(self):
-        """Pre-path: ``path_selection is None`` and symptom_verified True."""
-        # Build a case in pre_path_investigating state (path=None,
-        # symptom_verified=True)
-        case = _make_case(symptom_verified=True, path_selection=None)
-        engine = _make_engine()
-        meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
-            case,
-            [_make_update(purpose=NeedPurpose.CAUSAL_VERIFICATION)],
-            meta,
-            case.current_turn,
-        )
-        assert case.evidence_needs == []
-        assert any(
-            "Rejected causal-purpose" in r for r in meta.get("validation_repairs", [])
-        )
-        assert "PATH-CONDITIONAL EMISSION ERROR" in (meta.get("system_feedback") or "")
-
-    def test_reject_in_pre_mitigation_mitigation_first(self):
-        ps = PathSelection(
-            path=InvestigationPath.MITIGATION_FIRST,
-            auto_selected=False,
-            rationale="test fixture",
-            selected_by="user_test",
-            # mitigation_completed_at_turn=None means pre-mitigation state
-        )
-        case = _make_case(path_selection=ps)
-        engine = _make_engine()
-        meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
-            case,
-            [_make_update(purpose=NeedPurpose.CAUSAL_VERIFICATION)],
-            meta,
-            case.current_turn,
-        )
-        assert case.evidence_needs == []
-        assert any(
-            "Rejected causal-purpose" in r for r in meta.get("validation_repairs", [])
-        )
-
-    def test_symptom_purpose_allowed_in_pre_path(self):
-        """Symptom-validation work is the EXPECTED activity in
-        pre_path_investigating — symptom needs flow normally."""
-        case = _make_case(symptom_verified=True, path_selection=None)
-        engine = _make_engine()
-        meta = _empty_metadata()
-        engine._apply_evidence_need_updates(
-            case,
-            [_make_update(purpose=NeedPurpose.SYMPTOM_VERIFICATION)],
-            meta,
-            case.current_turn,
-        )
-        assert len(case.evidence_needs) == 1
-        assert case.evidence_needs[0].purpose == NeedPurpose.SYMPTOM_VERIFICATION
-
-    def test_causal_allowed_in_root_cause_path(self):
-        """Default fixture is ROOT_CAUSE path — unrestricted."""
-        case = _make_case()  # default = ROOT_CAUSE path
+    def test_causal_allowed_with_active_motivator(self):
+        case = _make_case()
         h = _make_hypothesis(case)
         engine = _make_engine()
         meta = _empty_metadata()

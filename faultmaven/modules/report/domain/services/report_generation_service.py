@@ -29,7 +29,6 @@ from faultmaven.modules.case.contracts import (
     CaseReport,
     CaseState,
     ICaseRepository,
-    InvestigationPath,
     ReportGenerationRequest,
     ReportGenerationResponse,
     ReportStatus,
@@ -274,64 +273,12 @@ class ReportGenerationService:
     # Shared formatters
     # ============================================================
 
-    _PATH_LABELS = {
-        InvestigationPath.ROOT_CAUSE: "Root Cause (DIAGNOSIS → TREATMENT)",
-        InvestigationPath.MITIGATION_FIRST: (
-            "Mitigation First (DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT)"
-        ),
-    }
-
     _CLOSURE_REASON_LABELS = {
         "inquiry_only": "Inquiry only — no investigation started",
         "closed_after_investigation": (
             "Closed after investigation — root cause not confirmed"
         ),
-        "mitigation_sufficient": (
-            "Mitigation sufficient — no further root-cause analysis pursued"
-        ),
     }
-
-    def _format_investigation_path_section(self, case: Case) -> Optional[str]:
-        """Render the '## Investigation Path' section from case.path_selection.
-
-        Returns None when no path was selected (e.g. case closed before
-        Gate 2) so the caller can skip the section entirely rather than
-        emit an empty heading.
-
-        Each line is its own paragraph (joined with blank lines) so
-        react-markdown renders them with visible separation rather than
-        collapsing them into a single run of text.
-        """
-        ps = case.path_selection
-        if ps is None:
-            return None
-
-        path_label = self._PATH_LABELS.get(ps.path, ps.path.value)
-        paragraphs: List[str] = [
-            "## Investigation Path",
-            f"**{path_label}**",
-        ]
-        if ps.rationale:
-            paragraphs.append(ps.rationale)
-        paragraphs.append(
-            "_Auto-selected by the system._"
-            if ps.auto_selected
-            else "_Chosen by the user._"
-        )
-
-        if ps.path == InvestigationPath.MITIGATION_FIRST:
-            if ps.rca_after_mitigation_confirmed:
-                paragraphs.append(
-                    "_Post-mitigation: user continued to root-cause analysis._"
-                )
-            elif ps.mitigation_completed_at_turn is not None:
-                paragraphs.append(
-                    "_Post-mitigation: case did not continue to root-cause analysis._"
-                )
-
-        # Trailing newline so the caller's "\n".join produces \n\n
-        # between this section and the next heading.
-        return "\n\n".join(paragraphs) + "\n"
 
     def _format_closure_reason_label(self, reason: Optional[str]) -> str:
         """Map a closure_reason enum string to a human label."""
@@ -400,7 +347,6 @@ class ReportGenerationService:
 
         Content structure per investigation-lifecycle-logic.md §1.7.4:
         - Problem Statement
-        - Investigation Path (from case.path_selection)
         - Root Cause (with mechanism if available)
         - Solution Applied
         - Confirming Evidence (citation list, not a count)
@@ -427,11 +373,6 @@ class ReportGenerationService:
             "## Problem Statement\n",
             f"{description}\n",
         ]
-
-        # Investigation Path — surface the actual path_selection
-        path_section = self._format_investigation_path_section(case)
-        if path_section:
-            parts.append(path_section)
 
         # Root Cause — prefer the authoritative root_cause_conclusion,
         # fall back to validated hypotheses only when no conclusion exists.
@@ -564,11 +505,10 @@ class ReportGenerationService:
 
         Content structure per investigation-lifecycle-logic.md §1.7.4:
         - Problem Statement
-        - Investigation Path (from case.path_selection)
         - Investigation State (milestone/evidence/hypothesis counts)
         - Closure Reason (with human label)
         - Leading Hypotheses (top 5 by confidence)
-        - Mitigation Status (mitigation-first path only)
+        - Stabilization Status (when a stabilization was inserted)
         - Timeline
         - Recommendation (for closed_after_investigation only)
         """
@@ -593,12 +533,6 @@ class ReportGenerationService:
             "## Problem Statement\n",
             f"{description}\n",
         ]
-
-        # Investigation Path — same as resolution; especially informative
-        # for closures (shows whether mitigation-first was chosen).
-        path_section = self._format_investigation_path_section(case)
-        if path_section:
-            parts.append(path_section)
 
         # Investigation State — how far diagnosis progressed
         parts.append("## Investigation State\n")
@@ -640,15 +574,14 @@ class ReportGenerationService:
                 )
             parts.append("")
 
-        # Mitigation Status — only meaningful when the path actually
-        # routed through mitigation. For inquiry_only and
-        # closed_after_investigation, this section would mislead.
-        path_is_mitigation = (
-            case.path_selection is not None
-            and case.path_selection.path == InvestigationPath.MITIGATION_FIRST
+        # Stabilization Status — only meaningful when a stabilization was
+        # actually inserted (the "stop the bleeding" move). For cases that
+        # never stabilized, this section would mislead.
+        was_stabilized = (
+            case.progress is not None and case.progress.stabilization is not None
         )
-        if solutions and path_is_mitigation:
-            parts.append("## Mitigation Status\n")
+        if solutions and was_stabilized:
+            parts.append("## Stabilization Status\n")
             for i, sol in enumerate(solutions, 1):
                 parts.extend(self._format_solution_block(sol, i))
             # _format_solution_block's last line ends with \n; no extra separator needed.

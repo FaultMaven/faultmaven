@@ -20,8 +20,6 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceSourceType,
     InquiryData,
-    InvestigationPath,
-    PathSelection,
     ProblemVerification,
 )
 
@@ -65,11 +63,7 @@ def mock_repo():
 
 @pytest.fixture
 def base_case():
-    # Fully-pathed INVESTIGATING case (Gate 2 already committed) so tests
-    # exercising post-path behavior don't need to walk the pre-path
-    # window themselves. Post-INV-19 redesign, an INVESTIGATING case CAN
-    # legitimately have ``path_selection=None`` — that's the pre-path
-    # window between INQUIRY transition and Gate 2 click.
+    # INVESTIGATING case in the unified opportunistic flow (no path fork).
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
@@ -88,13 +82,6 @@ def base_case():
             decided_to_investigate=True,
             thread_id="thread_123",
             proposed_problem_statement="Test symptom",
-        ),
-        path_selection=PathSelection(
-            path=InvestigationPath.MITIGATION_FIRST,
-            auto_selected=True,
-            rationale="ongoing high impact",
-            alternate_path=InvestigationPath.ROOT_CAUSE,
-            selected_by="user_123",
         ),
     )
 

@@ -43,67 +43,7 @@ from faultmaven.modules.case.contracts import (
     NeedPurpose,
     NeedState,
 )
-from faultmaven.modules.case.domain.services.investigation_router import (
-    recommend_investigation_path_for_case,
-)
-
-# Prompt-layer reinforcement emitted as a sibling block to
-# <path_selection_state> when Gate 2 is pending. Pins two pieces the
-# state block's INSTRUCTION paragraph didn't cover:
-#
-#   (a) Structured-emission constraints: while Gate 2 is pending, the
-#       LLM must not emit ``hypotheses_to_add``, classify evidence as
-#       ``causal_evidence``, or emit ``solutions_to_add``. Post-redesign
-#       the case is in INVESTIGATING (Gate 1 has closed) but no path
-#       has been committed; deeper investigation writes are gated.
-#
-#   (b) Behavior when the user provides data without picking: tell the
-#       LLM to acknowledge briefly THEN re-assert the path question.
-#       Without this, the LLM tends to engage with the data and let
-#       the path question fade into conversation noise.
-#
-# Lives in its own XML envelope (not inside <path_selection_state>) so
-# the LLM can distinguish "case state to remember" from "behavior
-# directive for this turn" — the state block is descriptive
-# (RECOMMENDED_PATH:, AUTO_SELECTED:, RATIONALE:), the reminder is
-# imperative.
-#
-# Engine-side backstop is structurally enforced: ``_is_pre_path_investigating``
-# →  ``_path_conditional_emission_restriction`` rejects the three forbidden
-# emissions and writes ``system_feedback`` for next-turn correction.
-# ``_path_selection_suggestions`` continues to emit the deterministic
-# two-button pair every turn until the user clicks. The reminder is the
-# prompt-layer reinforcement called out in INV-19; the structural ban is
-# the load-bearing guarantee.
-#
-# Lives in context_builder (not templates.py) because templates.py
-# already imports context_builder; the reverse direction would create
-# a cycle. Single-consumer constant; tests import it from this module.
-_GATE2_PENDING_REMINDER = """\
-<gate2_pending_instructions>
-You have set ``symptom_verified=True``; Gate 2 (the path-selection
-choice) is now open. Until ``case.path_selection`` is committed, deeper
-investigation writes are out of scope:
-- DO NOT emit ``hypotheses_to_add``. Hypothesis formation belongs
-  inside a committed path, not before.
-- DO NOT classify any evidence as ``causal_evidence``. Causal claims
-  presuppose a hypothesis (INV-17), and hypothesis emission is gated
-  here. Only ``symptom_evidence`` is in scope until the path commits.
-- DO NOT emit ``solutions_to_add``. Mitigation and solution proposals
-  belong inside a committed path (the mitigation-first path proposes
-  a workaround; the root-cause-first path proposes a fix after
-  hypothesis validation).
-
-If the user provides data this turn without picking a path, acknowledge
-what they shared in ONE short sentence — do not analyze it, do not
-search it, do not categorize it — then re-assert the path question
-prominently. Example: "Thanks, I see the data you shared. Before we
-dig in, which investigation path makes sense — mitigation-first to
-stop the impact, or root-cause analysis?"
-
-The two COOPERATIVE buttons remain attached to your response
-automatically; the user clicks one to resolve Gate 2.
-</gate2_pending_instructions>"""
+from faultmaven.modules.case.domain.models import CauseState
 
 
 # =============================================================================
@@ -1018,22 +958,21 @@ def _score_evidence_for_tier_a(
     if time_window is not None and _coverage_overlaps_window(ev, time_window):
         score += 4
 
-    # Slice 3 — pre-mitigation evidence up-weight. After Gate 3 is open
-    # (mitigation_verified happened on a mitigation-first case), evidence
-    # collected before the mitigation boundary is the RCA-relevant window
-    # because telemetry collected post-mitigation typically shows a
+    # Pre-stabilization evidence up-weight. After a stabilization verifies
+    # (``progress.stabilization.completed_at_turn`` is set), evidence
+    # collected before the stabilization boundary is the RCA-relevant window
+    # because telemetry collected post-stabilization typically shows a
     # stabilized system that no longer exhibits the root cause's signature.
-    # +5 weight matches/exceeds the time-window bonus so pre-mitigation
-    # diagnostic evidence outranks post-mitigation noise during RCA. Only
-    # fires when path_selection.mitigation_completed_at_turn is set and
-    # the current turn is past that boundary — outside the post-mitigation
-    # window this is a no-op. See INV-21 in investigation-lifecycle-logic.md.
-    ps = case.path_selection
+    # +5 weight matches/exceeds the time-window bonus so pre-stabilization
+    # diagnostic evidence outranks post-stabilization noise during RCA. Only
+    # fires when ``stabilization.completed_at_turn`` is set and the current
+    # turn is past that boundary — outside that window this is a no-op.
+    stabilization = case.progress.stabilization if case.progress else None
     if (
-        ps is not None
-        and ps.mitigation_completed_at_turn is not None
-        and case.current_turn > ps.mitigation_completed_at_turn
-        and ev.collected_at_turn <= ps.mitigation_completed_at_turn
+        stabilization is not None
+        and stabilization.completed_at_turn is not None
+        and case.current_turn > stabilization.completed_at_turn
+        and ev.collected_at_turn <= stabilization.completed_at_turn
     ):
         score += 5
 
@@ -2011,10 +1950,13 @@ def build_investigation_context(
     if case.state == CaseState.INVESTIGATING:
         p = case.progress
 
-        # Stage-gate milestones (drive transitions)
+        # Stage-gate milestones (drive transitions). Post-redesign the
+        # mitigation gates live on the stabilization record, not progress
+        # booleans; derive the same telemetry symbols from it.
+        _stab = p.stabilization
         stage_gates = {
-            "mitigation_accepted": p.mitigation_accepted,
-            "mitigation_verified": p.mitigation_verified,
+            "mitigation_accepted": bool(_stab is not None and _stab.accepted),
+            "mitigation_verified": bool(_stab is not None and _stab.verified),
             "solution_accepted": p.solution_accepted,
             "solution_verified": p.solution_verified,
         }
@@ -2023,7 +1965,7 @@ def build_investigation_context(
         # Progress indicators (LLM context)
         indicators = {
             "symptom_verified": p.symptom_verified,
-            "root_cause_identified": p.root_cause_identified,
+            "root_cause_identified": p.cause_state == CauseState.IDENTIFIED,
             "solution_proposed": p.solution_proposed,
         }
         active_indicators = [k for k, v in indicators.items() if v]
@@ -2316,59 +2258,6 @@ def build_investigation_context(
                     )
             inquiry_state_str += "</inquiry_state>"
 
-    # Gate 2 pending (post-redesign): fires in INVESTIGATING after the
-    # agent has set ``symptom_verified=True`` and before the user clicks
-    # a path-selection button (``case.path_selection is None``). The user
-    # now has transcript-visible evidence of what the agent saw in the
-    # data, so they can override the recommendation with that context
-    # in view rather than acting on their own INQUIRY urgency claim (see
-    # INV-19). The recommendation algorithm itself is still
-    # ``preliminary_urgency``-based — what changed is *when* the user
-    # commits, not *how* the system computes the suggested path.
-    #
-    # Recommendation is computed on-demand here, matching what the
-    # deterministic COOPERATIVE suggestion pair surfaces
-    # (``_path_selection_suggestions`` in milestone_engine). The prompt
-    # instructs the LLM to state the recommendation conversationally and
-    # wait for the user's click — it does NOT prescribe suggestion labels.
-    gate2_state_str = ""
-    if (
-        case.state == CaseState.INVESTIGATING
-        and case.progress.symptom_verified
-        and case.path_selection is None
-    ):
-        ps = recommend_investigation_path_for_case(case)
-        if ps is not None and ps.alternate_path is not None:
-            recommended_label = (
-                "mitigation-first"
-                if ps.path.value == "mitigation_first"
-                else "root-cause analysis"
-            )
-            alternate_label = (
-                "mitigation-first"
-                if ps.alternate_path.value == "mitigation_first"
-                else "root-cause analysis"
-            )
-            gate2_state_str = (
-                "<path_selection_state>\n"
-                f"RECOMMENDED_PATH: {ps.path.value}\n"
-                f"AUTO_SELECTED: {ps.auto_selected}\n"
-                f"RATIONALE: {ps.rationale}\n"
-                f"ALTERNATE_PATH: {ps.alternate_path.value}\n"
-                "GATE_2_STATUS: pending (user has not committed a path yet)\n"
-                "INSTRUCTION: Symptom validation has completed (symptom_verified=True). "
-                "Surface the investigation-path recommendation conversationally so the "
-                "user can confirm or override before deeper diagnosis proceeds. State "
-                f"the recommendation ({recommended_label}) with a short rationale, "
-                f"and mention the alternate ({alternate_label}). Do NOT ask the user "
-                "to type their choice — the engine deterministically attaches two "
-                "COOPERATIVE suggestion buttons. The case remains in INVESTIGATING "
-                "regardless of which button the user clicks; the click commits the "
-                "path so deeper diagnosis can begin.\n"
-                "</path_selection_state>"
-                f"\n{_GATE2_PENDING_REMINDER}"
-            )
-
     # Phase 4c — entity highlights block. Pre-fetched by the milestone
     # engine from the Phase 4 ``case_entities`` registry. Empty string
     # when the flag is off, the fetch failed, or the case has no
@@ -2398,7 +2287,6 @@ def build_investigation_context(
         "conversation_history": budget.use(recent_history),
         "user_message": user_message_safe,  # Sanitized user message always included
         "inquiry_state": budget.use(inquiry_state_str),
-        "gate2_state": budget.use(gate2_state_str),
     }
 
     return ctx

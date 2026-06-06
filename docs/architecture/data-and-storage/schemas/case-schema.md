@@ -4,7 +4,7 @@
 **Status**: Authoritative Standard
 **Last Updated**: 2026-05-10
 
-> **Scope**: This document reflects the live schema as of migration `0b5e8c4f7d29` (010). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
+> **Scope**: This document reflects the live schema as of migration `0a1b2c3d4e5f` (016). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
 
 > **NOTE on `organization_id` placement**: All tenanted case-domain tables carry `organization_id NOT NULL FK` for RLS policy enforcement in PostgreSQL and direct repository-layer filtering in both dialects. The per-table DDL below reflects this placement on every tenanted table.
 
@@ -38,7 +38,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | --- | --- | --- |
 | ✅ Design | Approved | This document |
 | ✅ ORM Models | Complete | `faultmaven/infrastructure/persistence/models.py` (32 tables) |
-| ✅ Migration Chain | Complete | `alembic/versions/` — head revision `0b5e8c4f7d29` (010) |
+| ✅ Migration Chain | Complete | `alembic/versions/` — head revision `0a1b2c3d4e5f` (016) |
 | ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository.py` |
 | ✅ SQLite Repository | Complete | `sqlite_case_repository.py` |
 | ✅ SQLite Integration Tests | Complete | Tests passing with real SQLite database |
@@ -46,7 +46,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ⏳ Performance Validation | Pending | Benchmarks needed |
 | ⏳ Production Deploy | Pending | PostgreSQL not yet deployed to K8s |
 
-**Migration Chain** (linear; current head is `0b5e8c4f7d29`):
+**Migration Chain** (linear; current head is `0a1b2c3d4e5f`):
 
 | # | Revision | Description |
 | --- | --- | --- |
@@ -62,6 +62,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | 010 | `0b5e8c4f7d29` | Strict evidence-model redesign: collapse the dual evidence-creation paths. `uploaded_files` adds `summary`, `structural_index`, `data_type`, `coverage_start_ts`, `coverage_end_ts` (preprocessing artifacts move here from the auto-DOCUMENT Evidence rows). `evidence` drops `form` column and adds `evidence_source_invariant` CHECK: `source_file_id IS NOT NULL OR source_type = 'user_description'` — every Evidence row has a known source. All existing evidence rows are dropped (pre-production; their `extract` carried structural-index dumps incompatible with the new claim-anchored semantics). Pydantic ``EvidenceCategory`` collapses to 4 values (drops `CONTEXTUAL_EVIDENCE` and `REJECTED`); ``EvidenceSourceType`` gains `USER_DESCRIPTION` (the chat-quote case). |
 | 011–014 | … | (rows omitted — see alembic/versions for evidence-needs and related migrations) |
 | 015 | `f015a7b2c3d4` | Rename case-lifecycle `status`→`state`: `cases`/`hypotheses`/`solutions`/`evidence_needs`/`investigation_sessions` columns + CHECK constraints + indexes; `case_actions.from_status`/`to_status`→`from_state`/`to_state`. Projection columns (`agent_executions.status`, `reports.generation_status`, etc.) intentionally keep `status`. |
+| 016 | `0a1b2c3d4e5f` | Investigation-flow redesign: drop the `cases.path_selection` column (the `InvestigationPath` / `PathSelection` fork is removed). The unified opportunistic flow stores the new assessment variables (`cause_state`, `solution_state`, `solution_feasible`) and the `stabilization` record inside the existing `progress` JSON — no new columns. |
 
 **Active Implementations**:
 
@@ -313,7 +314,8 @@ class Case(BaseModel):
     problem_verification: Optional[ProblemVerification]   # JSONB nullable
     working_conclusion: Optional[WorkingConclusion]       # JSONB nullable
     root_cause_conclusion: Optional[RootCauseConclusion]  # JSONB nullable
-    path_selection: Optional[PathSelection]               # JSONB nullable
+    # path_selection REMOVED (migration 016) — the InvestigationPath fork is gone.
+    # The unified flow's assessment vars + stabilization record live in `progress`.
     escalation_state: Optional[EscalationState]           # JSONB nullable
     documentation: DocumentationData                      # JSONB NOT NULL
     progress: InvestigationProgress                       # JSONB NOT NULL
@@ -428,7 +430,7 @@ CREATE TABLE cases (
     problem_verification JSONB,
     working_conclusion JSONB,
     root_cause_conclusion JSONB,
-    path_selection JSONB,
+    -- path_selection JSONB column DROPPED in migration 016 (0a1b2c3d4e5f)
     escalation_state JSONB,
     documentation JSONB NOT NULL DEFAULT '{}'::jsonb,
     progress JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -462,8 +464,7 @@ CREATE INDEX ix_cases_closed_at ON cases(closed_at);
 CREATE INDEX ix_cases_created_at ON cases(created_at);
 
 -- Tier 2 (PostgreSQL-only) — JSONB expression indexes (deferred; no migration yet)
--- CREATE INDEX idx_cases_path ON cases((path_selection->>'path'))
---     WHERE path_selection IS NOT NULL;
+-- (The former idx_cases_path on path_selection->>'path' is gone — column dropped in migration 016.)
 -- CREATE INDEX idx_cases_urgency ON cases((problem_verification->>'urgency_level'))
 --     WHERE problem_verification IS NOT NULL;
 
@@ -1300,10 +1301,9 @@ SELECT * FROM cases c
   LEFT JOIN problem_verification pv ON c.case_id = pv.case_id
   LEFT JOIN working_conclusion wc ON c.case_id = wc.case_id
   LEFT JOIN root_cause_conclusion rc ON c.case_id = rc.case_id
-  LEFT JOIN path_selection ps ON c.case_id = ps.case_id
   LEFT JOIN progress pr ON c.case_id = pr.case_id
   LEFT JOIN documentation d ON c.case_id = d.case_id
--- Result: 8-way JOIN for every case fetch!
+-- Result: many-way JOIN for every case fetch!
 ```
 
 ✅ **JSONB advantages**:
@@ -1560,8 +1560,10 @@ The options below are retained for historical reference only — they document w
 - `problem_verification` — set once per milestone
 - `working_conclusion` — updated during investigation
 - `root_cause_conclusion` — set once at resolution
-- `path_selection` — set once
-- `progress` — updated frequently (contains investigation journal)
+- `progress` — updated frequently (contains the investigation journal plus the
+  assessment variables `cause_state`/`solution_state`/`solution_feasible` and the
+  `stabilization` record introduced by the flow redesign; `path_selection` was
+  dropped in migration 016)
 - `documentation` — updated occasionally
 
 **Historical options considered (not implemented)**:
@@ -1666,8 +1668,7 @@ async def update_conclusion_safely(case_id: str, conclusion: dict):
 | `problem_verification` | Once per milestone | Optimistic locking | Infrequent but critical |
 | `working_conclusion` | Frequent (every few turns) | **JSONB merge (`\|\|`)** | Independent field updates |
 | `root_cause_conclusion` | Once (resolution) | Optimistic locking | One-time critical update |
-| `path_selection` | Once (path choice) | None needed | Set once, rarely changed |
-| `progress` | Very frequent (every turn) | **JSONB merge (`\|\|`)** | High concurrency, independent updates |
+| `progress` | Very frequent (every turn) | **JSONB merge (`\|\|`)** | High concurrency, independent updates; now also holds the assessment vars + `stabilization` record |
 | `documentation` | Occasional | JSONB merge | Append-only, low conflict |
 
 **Best Practice**:
@@ -1743,7 +1744,7 @@ Before deploying PostgreSQLHybridCaseRepository to production, validate the foll
 # Deploy PostgreSQL to K8s (if not already running)
 kubectl apply -f faultmaven-k8s-infra/applications/postgresql/
 
-# Apply migrations via alembic (chain head: 4b7e2f9d3a18)
+# Apply migrations via alembic (chain head: 0a1b2c3d4e5f)
 alembic upgrade head
 
 # Verify all tables created

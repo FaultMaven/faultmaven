@@ -1,9 +1,14 @@
 """Tests for the rca_infeasible propose-closure flow.
 
-When the LLM marks rca_infeasible=True on ProblemVerification and
-mitigation_verified later fires as a stage-gate, the engine must propose
-closing the case as mitigated (User-Agent Handshake). Reference:
-investigation-lifecycle-logic.md §2.4.
+When the LLM marks rca_infeasible=True on ProblemVerification and the
+``mitigation_verified`` stabilization gate later fires, the engine must
+propose closing the case as stabilized (User-Agent Handshake).
+Reference: investigation-lifecycle-logic.md §2.4.
+
+Post-redesign (unified opportunistic flow, no path fork): there is no
+Gate 3 and no ``path_selection``. Closing from INVESTIGATING yields the
+unified closure reason ``closed_after_investigation`` (which folds in the
+former ``mitigation_sufficient`` reason).
 """
 
 import pytest
@@ -20,10 +25,9 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     InquiryData,
-    InvestigationPath,
     InvestigationProgress,
-    PathSelection,
     ProblemVerification,
+    StabilizationRecord,
 )
 
 
@@ -34,11 +38,12 @@ def _make_case(
     mitigation_verified: bool = True,
     no_problem_verification: bool = False,
 ) -> Case:
-    """Build a Case with mitigation_verified set and an optional rca_infeasible signal.
+    """Build a Case with a verified stabilization and an optional
+    rca_infeasible signal.
 
-    Includes a MITIGATION_FIRST ``path_selection`` so the rca_infeasible
-    closure flow can stamp ``mitigation_completed_at_turn`` and so
-    ``derive_closure_reason`` recognizes the case as at-Gate-3.
+    The unified flow tracks the stabilization via
+    ``progress.stabilization`` (a forward-only record) rather than the old
+    mitigation booleans + ``path_selection``.
     """
     pv = (
         None
@@ -52,6 +57,12 @@ def _make_case(
             rca_infeasible_rationale=rationale,
         )
     )
+    stabilization = StabilizationRecord(
+        proposed_at_turn=1,
+        accepted=True,
+        verified=mitigation_verified,
+        completed_at_turn=1 if mitigation_verified else None,
+    )
     return Case(
         case_id="case_1234567890ab",
         title="Test Case",
@@ -60,16 +71,7 @@ def _make_case(
         organization_id="org_123",
         description="Test description",
         problem_verification=pv,
-        progress=InvestigationProgress(
-            mitigation_accepted=True,
-            mitigation_verified=mitigation_verified,
-        ),
-        path_selection=PathSelection(
-            path=InvestigationPath.MITIGATION_FIRST,
-            auto_selected=True,
-            rationale="ongoing critical",
-            selected_by="u1",
-        ),
+        progress=InvestigationProgress(stabilization=stabilization),
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
@@ -80,11 +82,11 @@ def _make_case(
 
 
 def test_rca_infeasible_creates_pending_closure():
-    """mitigation_verified + rca_infeasible=True → pending_transition to CLOSED.
+    """mitigation_verified gate + rca_infeasible=True → pending_transition
+    to CLOSED.
 
-    closure_reason is derived from ``path_selection`` at-Gate-3 state:
-    ``mitigation_completed_at_turn`` is set + ``rca_after_mitigation_confirmed``
-    is False → ``mitigation_sufficient``.
+    closure_reason is engine-derived from case state: closing from
+    INVESTIGATING → ``closed_after_investigation``.
     """
     case = _make_case(rca_infeasible=True, rationale="third-party API outage")
     metadata: dict = {}
@@ -95,7 +97,7 @@ def test_rca_infeasible_creates_pending_closure():
 
     assert case.pending_transition is not None
     assert case.pending_transition["to_state"] == "closed"
-    assert case.pending_transition["closure_reason"] == "mitigation_sufficient"
+    assert case.pending_transition["closure_reason"] == "closed_after_investigation"
     assert "third-party API outage" in case.pending_transition["summary"]
     assert (
         "shall we close this case as mitigated?" in case.pending_transition["summary"]
@@ -107,22 +109,13 @@ def test_rca_infeasible_creates_pending_closure():
         metadata["rca_infeasible_closure_message"] == case.pending_transition["summary"]
     )
 
-    # Mitigation gate flags are set-once under forward-only semantics —
-    # they stay True after the side effect runs. The case's at-Gate-3
-    # status is read from path_selection, not from these flags.
-    assert case.progress.mitigation_verified is True
-    assert case.progress.mitigation_accepted is True
-    # The Gate 3 boundary marker is stamped on path_selection.
-    assert case.path_selection.mitigation_completed_at_turn is not None
+    # The stabilization stays verified (forward-only).
+    assert case.progress.stabilization.verified is True
+    assert case.progress.stabilization.accepted is True
 
 
 def test_rca_infeasible_false_does_not_propose_closure():
-    """mitigation_verified + rca_infeasible=False → no pending_transition.
-
-    Mitigation gate flags stay True (set-once under forward-only); the
-    Gate 3 boundary marker is stamped on path_selection so the engine can
-    later recognize an at-Gate-3 close as ``mitigation_sufficient``.
-    """
+    """mitigation_verified gate + rca_infeasible=False → no pending_transition."""
     case = _make_case(rca_infeasible=False)
     metadata: dict = {}
 
@@ -132,9 +125,8 @@ def test_rca_infeasible_false_does_not_propose_closure():
 
     assert case.pending_transition is None
     assert "rca_infeasible_closure_message" not in metadata
-    assert case.progress.mitigation_verified is True
-    assert case.progress.mitigation_accepted is True
-    assert case.path_selection.mitigation_completed_at_turn is not None
+    assert case.progress.stabilization.verified is True
+    assert case.progress.stabilization.accepted is True
 
 
 def test_no_problem_verification_does_not_propose_closure():
@@ -150,8 +142,9 @@ def test_no_problem_verification_does_not_propose_closure():
     assert "rca_infeasible_closure_message" not in metadata
 
 
-def test_confirm_pending_transition_closes_with_mitigation_sufficient():
-    """User confirmation drives CLOSED with closure_reason=mitigation_sufficient."""
+def test_confirm_pending_transition_closes_after_investigation():
+    """User confirmation drives CLOSED with
+    closure_reason=closed_after_investigation."""
     case = _make_case(rca_infeasible=True, rationale="deprecated legacy system")
     _apply_stage_gate_side_effects(case, {"mitigation_verified"}, "ok", {})
 
@@ -159,7 +152,7 @@ def test_confirm_pending_transition_closes_with_mitigation_sufficient():
 
     assert confirmed is True
     assert case.state == CaseState.CLOSED
-    assert case.closure_reason == "mitigation_sufficient"
+    assert case.closure_reason == "closed_after_investigation"
     assert case.pending_transition is None
 
 

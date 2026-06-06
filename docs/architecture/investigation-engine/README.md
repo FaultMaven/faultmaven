@@ -12,6 +12,10 @@ For understanding the investigation system, read in this order:
 4. **[Prompt Templates](./prompt-templates.md)** — *(outdated — historical reference only; authoritative sources are `templates.py`, `agent-stage-playbook.md`, and `agent-behavioral-rules.md`)*
 5. **[Agent Behavioral Rules](./agent-behavioral-rules.md)** — 8 prompt-injected rules that constrain agent output and shape input reading
 
+## Proposals
+
+- **[Investigation Flow Redesign](./investigation-flow-redesign.md)** — *(DRAFT)* Unified opportunistic flow; replaces the `mitigation_first`/`root_cause` path fork with two orthogonal axes (certainty × stabilization gap), stabilization-as-insert, and an assessment (state) vs action-gate variable split. Supersedes INV-17/INV-21 when ratified.
+
 ## Reference
 
 - **[Evidence Needs Design](./evidence-needs-design.md)** — Demand-side pool of outstanding evidence asks: creation triggers, lifecycle, engine backstop, context block, suggestion linkage. §11 is the as-built map (file:line, metrics, wire seam) for debugging the shipped feature.

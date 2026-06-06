@@ -1,21 +1,22 @@
 """Phase 5 tests: evidence-needs prompt directives.
 
-Pins the per-block composition of the four evidence-needs prompt
-fragments introduced in Phase 5:
+Pins the per-block composition of the evidence-needs prompt fragments:
 
-- ``_EVIDENCE_NEEDS_LIFECYCLE_BLOCK`` — universal, in all 5
-  INVESTIGATING dispatch blocks.
-- ``_EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM`` — symptom-only stages
-  (``_PRE_PATH_DIAGNOSIS_BLOCK`` and ``_SYMPTOM_VALIDATION_BLOCK``).
-- ``_EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK`` — RCA only.
-- ``_EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM`` — MITIGATION and
-  TREATMENT.
+- ``_EVIDENCE_NEEDS_LIFECYCLE_BLOCK`` — universal, in every INVESTIGATING
+  dispatch block.
+- ``_EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK`` — RCA (DIAGNOSIS) only.
+- ``_EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM`` — MITIGATION and TREATMENT.
 
 The tests use substring matches against the block constants so a
 future refactor that moves text around without losing meaning still
 passes. What we want to catch: a block dropping out of a dispatch
 block entirely, or the directive vocabulary drifting away from what
 the schema apply-layer expects.
+
+NOTE (investigation-flow redesign): the old symptom-only addendum and
+the ``_PRE_PATH_DIAGNOSIS_BLOCK`` / ``_SYMPTOM_VALIDATION_BLOCK`` path
+fragments were removed with the path fork. There is now a single
+``_RCA_DIAGNOSIS_BLOCK`` DIAGNOSIS dispatch block in the unified flow.
 
 Run:
     pytest tests/unit/core/investigation/test_evidence_needs_prompt_directives.py -v
@@ -29,10 +30,7 @@ from faultmaven.core.investigation.prompts.templates import (
     _EVIDENCE_NEEDS_LIFECYCLE_BLOCK,
     _EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK,
     _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM,
-    _EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM,
-    _PRE_PATH_DIAGNOSIS_BLOCK,
     _RCA_DIAGNOSIS_BLOCK,
-    _SYMPTOM_VALIDATION_BLOCK,
     INVESTIGATION_BASE,
     MITIGATION_INSTRUCTIONS,
     TREATMENT_INSTRUCTIONS,
@@ -42,13 +40,12 @@ from faultmaven.core.investigation.prompts.templates import (
 # "is this block composed in?" probe. Chosen to be unique enough that
 # unrelated text won't accidentally match.
 _LIFECYCLE_PROBE = "EVIDENCE NEEDS (demand-side pool)"
-_SYMPTOM_ONLY_PROBE = "EVIDENCE NEEDS — symptom-only stage"
 _POOL_EVAL_PROBE = "POOL EVALUATION (at hypothesis creation)"
 _REVERIFICATION_PROBE = "RE-VERIFICATION:"
 
 
 # ============================================================
-# Lifecycle block — present in all 5 INVESTIGATING dispatch blocks
+# Lifecycle block — present in every INVESTIGATING dispatch block
 # ============================================================
 
 
@@ -64,8 +61,6 @@ class TestLifecycleBlockComposedInAllDispatchBlocks:
         "block,block_name",
         [
             (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
-            (_PRE_PATH_DIAGNOSIS_BLOCK, "_PRE_PATH_DIAGNOSIS_BLOCK"),
-            (_SYMPTOM_VALIDATION_BLOCK, "_SYMPTOM_VALIDATION_BLOCK"),
             (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
             (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
         ],
@@ -82,8 +77,6 @@ class TestLifecycleBlockComposedInAllDispatchBlocks:
         signals if one copy drifted. Single emission per block."""
         for block, name in [
             (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
-            (_PRE_PATH_DIAGNOSIS_BLOCK, "_PRE_PATH_DIAGNOSIS_BLOCK"),
-            (_SYMPTOM_VALIDATION_BLOCK, "_SYMPTOM_VALIDATION_BLOCK"),
             (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
             (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
         ]:
@@ -149,51 +142,6 @@ class TestLifecycleBlockContent:
 
 
 # ============================================================
-# Symptom-only addendum — only in symptom-validation stages
-# ============================================================
-
-
-@pytest.mark.unit
-class TestSymptomOnlyAddendumLocation:
-    """Symptom-only stages (Gate 2 pending, pre-mitigation
-    MITIGATION_FIRST) emit only symptom needs — causal-purpose
-    emissions are rejected by the engine backstop. The addendum
-    must appear in those two blocks and stay out of the RCA-side
-    blocks."""
-
-    @pytest.mark.parametrize(
-        "block,block_name",
-        [
-            (_PRE_PATH_DIAGNOSIS_BLOCK, "_PRE_PATH_DIAGNOSIS_BLOCK"),
-            (_SYMPTOM_VALIDATION_BLOCK, "_SYMPTOM_VALIDATION_BLOCK"),
-        ],
-    )
-    def test_addendum_present_in_symptom_only_stages(self, block, block_name):
-        assert _SYMPTOM_ONLY_PROBE in block
-
-    @pytest.mark.parametrize(
-        "block,block_name",
-        [
-            (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
-            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
-            (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
-        ],
-    )
-    def test_addendum_absent_from_non_symptom_only_stages(self, block, block_name):
-        """Adding the symptom-only constraint to RCA stages would
-        falsely restrict causal-need creation. MITIGATION has its own
-        causal-gating note inline at the existing 'do not form
-        hypotheses' anchor; the symptom-only addendum doesn't fit."""
-        assert _SYMPTOM_ONLY_PROBE not in block
-
-    def test_addendum_references_engine_backstop(self):
-        """The engine enforces the gate structurally — calling that
-        out tells the LLM the constraint isn't just advisory."""
-        assert "engine backstop" in _EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM
-        assert "hypotheses_to_add" in _EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM
-
-
-# ============================================================
 # RCA pool-evaluation block — only in _RCA_DIAGNOSIS_BLOCK
 # ============================================================
 
@@ -210,15 +158,14 @@ class TestPoolEvalBlockLocation:
     @pytest.mark.parametrize(
         "block,block_name",
         [
-            (_PRE_PATH_DIAGNOSIS_BLOCK, "_PRE_PATH_DIAGNOSIS_BLOCK"),
-            (_SYMPTOM_VALIDATION_BLOCK, "_SYMPTOM_VALIDATION_BLOCK"),
             (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
+            (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
         ],
     )
     def test_pool_eval_absent_from_non_rca_blocks(self, block, block_name):
-        """Hypothesis creation is gated outside RCA — pool evaluation
-        would emit causal needs that the engine then rejects, wasting
-        a turn."""
+        """Hypothesis creation is gated outside DIAGNOSIS — pool
+        evaluation would emit causal needs that the engine then
+        rejects, wasting a turn."""
         assert _POOL_EVAL_PROBE not in block
 
 
@@ -270,19 +217,11 @@ class TestReVerificationAddendumLocation:
     def test_reverification_present_in_post_diagnosis_stages(self, block, block_name):
         assert _REVERIFICATION_PROBE in block
 
-    @pytest.mark.parametrize(
-        "block,block_name",
-        [
-            (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
-            (_PRE_PATH_DIAGNOSIS_BLOCK, "_PRE_PATH_DIAGNOSIS_BLOCK"),
-            (_SYMPTOM_VALIDATION_BLOCK, "_SYMPTOM_VALIDATION_BLOCK"),
-        ],
-    )
-    def test_reverification_absent_from_diagnosis_stages(self, block, block_name):
-        """DIAGNOSIS-stage blocks don't render FULFILLED needs — the
-        re-verification framing would describe a checklist that
+    def test_reverification_absent_from_diagnosis_block(self):
+        """The DIAGNOSIS dispatch block doesn't render FULFILLED needs —
+        the re-verification framing would describe a checklist that
         isn't there."""
-        assert _REVERIFICATION_PROBE not in block
+        assert _REVERIFICATION_PROBE not in _RCA_DIAGNOSIS_BLOCK
 
     def test_addendum_does_not_claim_causal_gating(self):
         """Causal-need gating is stage-specific (gated in MITIGATION,
@@ -429,7 +368,7 @@ class TestStageEvidenceTypeListingsIncludeAbsence:
         for block in (MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS):
             heading_idx = block.find("**EVIDENCE TYPES FOR THIS STAGE:**")
             assert heading_idx != -1
-            # Search within the ~500 chars immediately after the heading
+            # Search within the ~600 chars immediately after the heading
             section = block[heading_idx : heading_idx + 600]
             assert "symptom_absence_evidence" in section
             assert "causal_absence_evidence" in section

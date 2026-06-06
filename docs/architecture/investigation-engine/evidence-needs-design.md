@@ -255,15 +255,15 @@ not the same as *"the bad config has been corrected."*
 To make the presence/absence distinction structural rather than
 inferred, `EvidenceCategory` carries four categories:
 
-| Category | Polarity | Drives milestone | Example |
+| Category | Polarity | Drives milestone / signal | Example |
 |---|---|---|---|
 | `SYMPTOM_EVIDENCE` | presence | `symptom_verified` | `kubectl get pods` shows `CrashLoopBackOff` |
-| `CAUSAL_EVIDENCE` | presence | `root_cause_identified` | `cat config.yaml` shows `max_connections=1` |
-| `SYMPTOM_ABSENCE_EVIDENCE` | absence | `mitigation_verified` (and contributes to `solution_verified`) | `kubectl get pods` shows `Running` |
+| `CAUSAL_EVIDENCE` | presence | grounded cause signal (→ `cause_state=IDENTIFIED`) | `cat config.yaml` shows `max_connections=1` |
+| `SYMPTOM_ABSENCE_EVIDENCE` | absence | `mitigation_verified` → `stabilization.verified` (and contributes to `solution_verified`) | `kubectl get pods` shows `Running` |
 | `CAUSAL_ABSENCE_EVIDENCE` | absence | `solution_verified` | `cat config.yaml` shows `max_connections=100` |
 
-Gate milestones (`mitigation_verified`, `solution_verified`) remain
-LLM-set judgment calls. The new categories give the gate decision a
+Gate signals (`mitigation_verified` → `stabilization.verified`,
+`solution_verified`) remain LLM-set judgment calls. The new categories give the gate decision a
 structural audit trail and let downstream consumers (e.g., the
 runbook-generation pipeline's `Verification` section) extract
 verification evidence by category.
@@ -332,12 +332,9 @@ the trigger and persists the result. This mirrors the existing
 ### 5.1 Trigger 1: Symptom-Validation Work → Symptom Needs
 
 When INQUIRY → INVESTIGATING fires (user confirms the problem
-statement at Gate 1), the case enters the `pre_path_investigating`
-state — INVESTIGATING with `path_selection is None` and Gate 2 still
-pending (per INV-19, Gate 2 commits after `symptom_verified=True`).
-This is where the LLM does symptom-validation work using the
-`_PRE_PATH_DIAGNOSIS_BLOCK` dispatch block; it is also where the LLM
-emits symptom needs.
+statement at Gate 1), the case enters INVESTIGATING. Early on — while
+`symptom_verified` is still False — the LLM does symptom-validation work
+and emits symptom needs.
 
 ```
 Input:  Confirmed problem statement + initial symptoms + urgency context
@@ -349,14 +346,11 @@ Each symptom need carries `purpose=symptom_verification` and an empty
 the case, motivated by the problem statement rather than by any
 hypothesis. They are not subject to hypothesis-retirement supersession.
 
-**Why `pre_path_investigating`, not "first INVESTIGATING turn".** The
-engine's [path-conditional emission backstop](#73-engine-backstop)
-rejects RCA-side emissions (`hypotheses_to_add`, `causal_evidence`,
-`solutions_to_add`) before Gate 2 commits, but symptom-side work — and
-symptom-need emission — is the *expected* activity in this window. The
-window can span multiple turns (the agent may need several rounds of
-data inspection to set `symptom_verified=True`); symptom-need
-emission/refinement is allowed across all of them.
+Symptom-need emission/refinement can span multiple turns (the agent may
+need several rounds of data inspection to set `symptom_verified=True`).
+Under the unified opportunistic flow there is no path gate on this window
+— causal-side work simply follows the `cause_state` rule (it runs while
+the cause is uncertain), not a path commit.
 
 ### 5.2 Trigger 2: Hypothesis Created → Pool Evaluation
 
@@ -383,16 +377,14 @@ The hypothesis-need relationship is **discovered**, not declared at
 creation. There is no duplication: an existing relevant need is shared
 across hypotheses by appending IDs to `motivating_hypothesis_ids`.
 
-**Path-conditional gating.** `hypotheses_to_add` is itself
-path-restricted: per INV-19/INV-21, the engine backstop rejects
-hypothesis emissions in the three restricted states
-(`pre_path_investigating`, `pre_mitigation_mitigation_first`,
-`gate3_pending`). Causal-purpose `evidence_need_updates` ride with the
-same gate — they may only be emitted in states where hypothesis
-creation is allowed (currently `_RCA_DIAGNOSIS_BLOCK` dispatch:
-`ROOT_CAUSE` path, or `MITIGATION_FIRST` after Gate 3). The engine
-backstop (§7.3) enforces this structurally so a non-compliant LLM
-cannot create orphan causal needs during a path-restricted window.
+**No path gate (unified flow).** The former path-conditional emission
+backstop (INV-19 / INV-21) is removed. Hypothesis emission — and the
+causal-purpose `evidence_need_updates` that ride with it — is no longer
+hard-gated by engine state; it is prompt-guided to run while the cause is
+uncertain (`cause_state ∈ {UNKNOWN, CANDIDATES}`). Orphan-need avoidance
+now rests on the prompt mandate that pairs hypothesis emission with the
+uncertainty signal, plus the per-milestone surgical strip, rather than a
+reject-and-resurface backstop.
 
 **Same-turn ID resolution.** When the LLM creates a hypothesis and the
 need that anchors to it in the same turn, the hypothesis has no DB ID
@@ -458,9 +450,8 @@ The evidence needs pool has three consumers.
 
 A new `<evidence_needs>` section is added to the existing
 `INVESTIGATION_BASE` prompt template. It slots between `{evidence}` and
-`{entity_highlights}` (analogous to how `{gate2_state}` is hooked in
-for the Gate 2 reminder — a new named placeholder added to the
-template body and populated by the context builder):
+`{entity_highlights}` — a named placeholder added to the template body
+and populated by the context builder:
 
 ```text
 …
@@ -571,58 +562,24 @@ calls. See §10.4.
 | Solution applied | LLM re-checks confirmed `CAUSAL_EVIDENCE` rows by attempting to extract `CAUSAL_ABSENCE_EVIDENCE` (stand-alone audit row — not linked to a hypothesis; a fix confirms the cause), and refreshes symptom-absence |
 | LLM judges a need irrelevant | LLM emits update: status → `SUPERSEDED` (any time) |
 
-### 7.3 Engine Backstop
+### 7.3 No Path Backstop (unified flow)
 
-The engine apply-layer for `evidence_need_updates` integrates with the
-existing `_path_conditional_emission_restriction(case)` predicate in
-[`milestone_engine.py`](../../../faultmaven/core/investigation/milestone_engine.py)
-(the same predicate that gates `hypotheses_to_add`, `causal_evidence`,
-and RCA-side milestone updates per INV-19 / INV-21).
+The former path-conditional engine backstop for `evidence_need_updates`
+is **removed** along with `_path_conditional_emission_restriction` and the
+three restricted states (`pre_path_investigating`,
+`pre_mitigation_mitigation_first`, `gate3_pending`). Under the unified
+opportunistic flow there is no window in which causal-purpose needs are
+hard-rejected by engine state.
 
-**Purpose-aware rejection rule.** Not all `evidence_need_updates` are
-RCA-side claims — symptom needs are emitted during the very window
-where the restriction fires (`pre_path_investigating` is precisely the
-symptom-validation window per §5.1). The apply-layer therefore must
-distinguish by `purpose`:
-
-```python
-restricted_state = _path_conditional_emission_restriction(case)
-for update in evidence_need_updates:
-    if restricted_state is not None and update.purpose == NeedPurpose.CAUSAL_VERIFICATION:
-        # Causal needs ride with hypotheses; same restriction applies.
-        # Reject and re-surface in system_feedback so the LLM sees
-        # the rejection on the next turn (mirrors the existing
-        # hypotheses_to_add rejection path).
-        block_name = _RESTRICTED_STATE_BLOCK_NAMES[restricted_state]
-        deferral_clause = _restricted_state_deferral_clause(
-            restricted_state, work="Causal evidence need"
-        )
-        _record_rejection(case, restricted_state, "evidence_need_updates",
-                          purpose="causal_verification",
-                          block_name=block_name,
-                          deferral_clause=deferral_clause)
-        continue
-    apply_update(update)
-```
-
-Symptom-purpose emissions are always allowed; causal-purpose
-emissions are rejected (and re-surfaced) whenever the predicate
-returns one of `pre_path_investigating`,
-`pre_mitigation_mitigation_first`, or `gate3_pending`. The rejection
-message uses the same `_RESTRICTED_STATE_BLOCK_NAMES` and
-`_restricted_state_deferral_clause` helpers already centralized in
-the milestone engine so error phrasing stays consistent with the
-existing `hypotheses_to_add` rejection messages.
-
-**Why backstop instead of pure prompt rule.** Prompt instructions are
-necessary but not sufficient — per the existing path-restricted-state
-composition seam (INV-19's "audit `templates.py:_select_diagnosis_block`,
-`context_builder.py:gate2_state_str`, `milestone_engine.py:_gate2_is_pending`,
-and `milestone_engine.py:_is_pre_path_investigating` together"), the
-engine backstop is what prevents a non-compliant LLM from corrupting
-the case during a restricted window. Evidence needs inherit the same
-seam: prompt-side restriction lives in the dispatch blocks (§5
-Phase 5 of the plan); the engine backstop catches a slip-through.
+Causal-purpose `evidence_need_updates` ride with hypothesis emission,
+which is **prompt-guided** to run while the cause is uncertain
+(`cause_state ∈ {UNKNOWN, CANDIDATES}`). Symptom-purpose needs are
+emitted freely during early INVESTIGATING (§5.1). Orphan-need avoidance
+now rests on the prompt mandate that couples hypothesis emission to the
+uncertainty signal, plus the per-milestone surgical reasoning strip,
+rather than on a reject-and-resurface backstop. This is the intentional
+tier shift documented as R6 in [investigation-flow-redesign.md](./investigation-flow-redesign.md)
+and the INV-17/INV-21 retirement note in the lifecycle invariant matrix.
 
 ### 7.4 Hypothesis Retirement → Motivator-Based Supersession
 
@@ -708,12 +665,18 @@ CATEGORY_MILESTONE_MAP = {
 }
 ```
 
+The map keys are the LLM **emission symbols** (`root_cause_identified` is
+the grounded cause signal that the engine materializes into
+`cause_state=IDENTIFIED`; `mitigation_verified` materializes into
+`stabilization.verified`) — the schema retained these names through the
+flow redesign.
+
 **Attribution, not auto-advancement.** The map is consumed via
 intersection with milestones the LLM has *already completed this turn*
 (via `MilestoneUpdates`). It does not cause the engine to advance a
-milestone on evidence emission alone — gate milestones
-(`mitigation_verified`, `solution_verified`) remain LLM-set via the
-compliance-detection / handshake mechanism documented in
+milestone on evidence emission alone — the stabilization/solution gate
+signals (`mitigation_verified`, `solution_verified`) remain LLM-set via
+the compliance-detection / handshake mechanism documented in
 investigation-lifecycle-logic.md §1.4. The map answers *"when the LLM
 completes milestone M and emits evidence of category C, can this row
 claim attribution?"* The combination of LLM-set completion + map
@@ -867,10 +830,10 @@ Stage hooks — `evidence_need_updates` is added to each of:
 - `InvestigationResponse_General.GeneralStateUpdate`
 
 `InquiryStateUpdate` deliberately does **not** carry the field —
-INQUIRY creates no evidence-side state per INV-07. Pre-path symptom
-needs surface via `DiagnosisStateUpdate` (the `_PRE_PATH_DIAGNOSIS_BLOCK`
-dispatch is still inside the DIAGNOSIS stage; only the rendered prompt
-block changes by path).
+INQUIRY creates no evidence-side state per INV-07. Early-INVESTIGATING
+symptom needs surface via `DiagnosisStateUpdate` (symptom-validation work
+is the DIAGNOSIS stage's first zone; there is no separate path-conditional
+dispatch block).
 
 **No `mentioned_need_ids` field.** Mention-decay is fully prompt-only
 in the new design (§9.7) — the LLM relies on conversation history,
@@ -1188,7 +1151,7 @@ Copilot is already live.
 | LLM schema `EvidenceNeedUpdate` + stage hooks | `faultmaven/core/investigation/schemas.py:501`; `evidence_need_updates` on Diagnosis/Mitigation/Treatment/General state-updates (~`:1044`–`:1194`); **absent from `InquiryStateUpdate` by design (INV-07)** |
 | `SuggestedFollowUp.evidence_need_id` + validators | `faultmaven/core/investigation/schemas.py:897`–`929` |
 | Engine apply-layer `_apply_evidence_need_updates` | `faultmaven/core/investigation/milestone_engine.py:6310`–`6637` (invoked ~`:6137`) |
-| Engine backstop (path-conditional rejection) | `milestone_engine.py:6349`–`6384` (reuses `_path_conditional_emission_restriction` / `_RESTRICTED_STATE_BLOCK_NAMES`) |
+| ~~Engine backstop (path-conditional rejection)~~ | **Removed in the flow redesign** — `_path_conditional_emission_restriction` / `_RESTRICTED_STATE_BLOCK_NAMES` deleted; causal-need gating is now prompt-guided by `cause_state` (§7.3). |
 | Hypothesis-retirement supersession | `milestone_engine.py:_supersede_needs_on_hypothesis_retirement` ~`:901`–`989` |
 | Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine.py:_flatten_follow_ups` ~`:7476`–`7530` |
 | Context block `<evidence_needs>` | `context_builder.py:_build_evidence_needs_block` ~`:1753`–`1892` (line render ~`:1737`) |
@@ -1209,7 +1172,7 @@ the **first things to check when debugging Evidence Needs behavior**:
 |---|---|---|
 | `faultmaven_evidence_need_created_total{purpose}` | A need is created in the apply-layer | Baseline volume; sudden zero ⇒ LLM stopped emitting `evidence_need_updates` |
 | `faultmaven_evidence_need_status_changed_total` | A need transitions status (incl. → SUPERSEDED) | Lifecycle churn; supersession spikes ⇒ hypothesis thrash |
-| `faultmaven_evidence_need_rejected_total{state}` | Apply-layer rejects a need (causal need in a path-restricted state) | Prompt not respecting the symptom-only gate; symmetric with the dropped counter below |
+| `faultmaven_evidence_need_rejected_total{state}` | **Now inert** — fired only from the path-conditional backstop, which the flow redesign removed | The counter symbol still exists in `lifecycle_metrics.py` but no longer increments; a sustained zero is expected, not a signal. Causal-need gating is now prompt-guided by `cause_state`. |
 | `faultmaven_evidence_need_id_dropped_total{reason}` | A `SuggestedFollowUp.evidence_need_id` can't be resolved at the flattening seam (`reason=out_of_range` \| `missing_metadata`) | LLM emitted a stale/mis-indexed `new_index_N` suggestion ref; sustained nonzero ⇒ Phase-5 same-turn-ID prompt rule needs sharpening |
 
 ### 11.4 The wire-flattening seam (Phase 6 detail)

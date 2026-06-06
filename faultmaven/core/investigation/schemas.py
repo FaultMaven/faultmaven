@@ -223,6 +223,21 @@ class MilestoneUpdates(BaseModel):
         description="How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | user_provided | other",
     )
 
+    # Implementation feasibility of the SELECTED solution (assessment signal).
+    # Set to "deferred" when the cause + fix are known but the fix cannot be
+    # applied/verified during this session (e.g. it needs an out-of-band change
+    # request, a maintenance window, or another team). "deferred" routes the
+    # case to CLOSE-with-documented-solution (redesign §3.1 row 3 / §6 Q2).
+    solution_feasible: Optional[Literal["now", "deferred"]] = Field(
+        None,
+        description=(
+            "Whether the selected solution can be applied this session: 'now' "
+            "(default) or 'deferred' (known fix, but implementation happens "
+            "out-of-band / takes time). 'deferred' means the case should be "
+            "closed with the solution documented, not held open waiting."
+        ),
+    )
+
     # Stage-gate milestones (LLM-settable, drive stage transitions)
     # The LLM sets these when it detects user compliance with a pending
     # ProposedAction — the user's action is the trigger, the LLM recognizes it.

@@ -18,7 +18,6 @@ from faultmaven.modules.case.domain.models import (
     ConfidenceLevel,
     HypothesisState,
     InvestigationStage,
-    PathSelection,
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
     CaseActionManager,
@@ -290,14 +289,13 @@ class InquiryResponseData(BaseModel):
     )
 
 
-# InvestigationStrategyData removed (slice 2 cleanup, completed alongside
-# the path_selection exposure): the descriptive `approach` string was the
-# regex bait that fed the frontend's `getApproachHint` helper. With that
-# helper removed in slice 4 and the structured `path_selection` field now
-# exposed on CaseUIResponse_*, neither field had any remaining consumer.
-# The model class and its `investigation_strategy` field on
-# CaseUIResponse_Investigating are removed entirely; clients that want
-# path information read `path_selection` instead.
+# InvestigationStrategyData removed (slice 2 cleanup): the descriptive
+# `approach` string was the regex bait that fed the frontend's
+# `getApproachHint` helper. With that helper removed in slice 4, the field
+# had no remaining consumer. The model class and its
+# `investigation_strategy` field on CaseUIResponse_Investigating are removed
+# entirely. Post path-fork removal there is no prospective path to expose;
+# the case shape (direct vs stabilized) is derived retrospectively.
 
 
 class TemporalStateData(BaseModel):
@@ -426,19 +424,6 @@ class CaseUIResponse_Inquiry(BaseModel):
         ),
     )
 
-    path_selection: Optional[PathSelection] = Field(
-        default=None,
-        description=(
-            "Investigation path commitment. Post-INV-19 redesign Gate 2 "
-            "fires inside INVESTIGATING after ``symptom_verified=True``, "
-            "so INQUIRY-stage cases ALWAYS have ``path_selection=None`` — "
-            "the field is never written during INQUIRY. Existence of this "
-            "field IS the Gate 2 commit; the recommendation that powers "
-            "the Gate 2 chip is computed on-demand by the engine and "
-            "rendered into the affordance pair, never stored on the case."
-        ),
-    )
-
     # ============================================================
     # Inquiry-Specific Fields (Nested)
     # ============================================================
@@ -511,21 +496,6 @@ class CaseUIResponse_Investigating(BaseModel):
     # ============================================================
     # Investigation-Specific Fields
     # ============================================================
-    path_selection: Optional[PathSelection] = Field(
-        default=None,
-        description=(
-            "Investigation path commitment + Gate-3 state. Post-INV-19 "
-            "redesign Gate 2 fires INSIDE INVESTIGATING after "
-            "``symptom_verified=True``, so this field is ``None`` during "
-            "the pre-path window (INVESTIGATING + symptom_verified=False, "
-            "and the brief INVESTIGATING + symptom_verified=True window "
-            "before the user clicks a Gate 2 button). Existence of this "
-            "field IS the commit signal. mitigation_completed_at_turn is "
-            "set after mitigation_verified; rca_after_mitigation_confirmed "
-            "drives Gate 3 prompts on the mitigation-first path."
-        ),
-    )
-
     working_conclusion: Optional[WorkingConclusionSummary] = Field(
         default=None, description="Agent's current understanding of the problem"
     )
@@ -553,9 +523,8 @@ class CaseUIResponse_Investigating(BaseModel):
     # ============================================================
     # Additional Investigation Data (from BACKEND_REMAINING_WORK)
     # ============================================================
-    # `investigation_strategy` removed — replaced by the structured
-    # `path_selection` field above. See InvestigationStrategyData comment
-    # earlier in this file for the rationale.
+    # `investigation_strategy` removed. See InvestigationStrategyData
+    # comment earlier in this file for the rationale.
 
     problem_verification: Optional[ProblemVerificationData] = Field(
         default=None,
@@ -636,16 +605,6 @@ class CaseUIResponse_Resolved(BaseModel):
     # ============================================================
     # Resolution-Specific Fields
     # ============================================================
-    path_selection: Optional[PathSelection] = Field(
-        default=None,
-        description=(
-            "Investigation path that was followed. Lets the terminal UI "
-            "display 'Mitigation-first' or 'Root-cause' retrospectively, "
-            "and exposes mitigation_completed_at_turn for resolved cases "
-            "that detoured through MITIGATION."
-        ),
-    )
-
     root_cause: RootCauseSummary = Field(description="What caused the problem")
 
     solution_applied: SolutionSummary = Field(

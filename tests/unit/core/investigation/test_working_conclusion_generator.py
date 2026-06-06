@@ -264,8 +264,10 @@ class TestNextStepsGeneration:
 
     def test_suggests_solution_after_root_cause(self, base_case):
         """Should suggest solution after root cause identified."""
+        from faultmaven.modules.case.contracts import CauseState
+
         base_case.progress.symptom_verified = True
-        base_case.progress.root_cause_identified = True
+        base_case.progress.cause_state = CauseState.IDENTIFIED
         base_case.progress.solution_proposed = False
 
         metrics = calculate_progress_metrics(base_case, current_turn=1)
