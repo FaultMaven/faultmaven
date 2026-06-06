@@ -377,3 +377,35 @@ class TestStructuredOutputDegradation:
         )
         assert parsed.agent_response == "Survives as conversation."
         assert parsed.state_updates.evidence_to_add == []
+
+    def test_fallback_logs_non_prunable_errors(self, caplog):
+        # A NON-prunable error (loc has no list index) forces the conversational
+        # fallback; that branch must log the offending loc/msg so each fallback is
+        # self-diagnosing (S4 observability). Here evidence_to_add is the wrong
+        # TYPE (a string, not a list) -> loc ('state_updates','evidence_to_add')
+        # has no int index -> not prunable.
+        import logging
+
+        from faultmaven.core.investigation.schemas import (
+            InvestigationResponse_Diagnosis,
+        )
+
+        eng = self._engine()
+        content = {
+            "agent_response": "hi",
+            "state_updates": {"evidence_to_add": "should-be-a-list"},
+        }
+        with caplog.at_level(
+            logging.WARNING, logger="faultmaven.core.investigation.milestone_engine"
+        ):
+            parsed = eng._validate_with_degradation(
+                content, InvestigationResponse_Diagnosis
+            )
+        assert parsed.agent_response == "hi"  # turn survives, no 500
+        degraded = [
+            r for r in caplog.records if "structured_output_degraded" in r.getMessage()
+        ]
+        assert degraded, "fallback must emit a degraded warning"
+        non_prunable = getattr(degraded[0], "non_prunable_errors", None)
+        assert non_prunable, "fallback must log the non-prunable errors"
+        assert any("evidence_to_add" in loc for loc, _msg in non_prunable)

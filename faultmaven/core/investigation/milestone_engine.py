@@ -4263,11 +4263,25 @@ class MilestoneEngine:
                 fallback = {**content_obj, "state_updates": {}}
                 try:
                     parsed = schema_model.model_validate_json(json.dumps(fallback))
+                    # The prune path already logs its locs ("Turn preserved"); this
+                    # branch is reached only when a NON-prunable (non-list-indexed)
+                    # validator error remains — log exactly those so each fallback
+                    # is self-diagnosing (was it correctly non-prunable, or a prune
+                    # gap?). Reference: S4 backstop observability.
+                    non_prunable = [
+                        (list(e.get("loc", ())), e.get("msg", ""))
+                        for e in original_error.errors()
+                        if not any(isinstance(p, int) for p in e.get("loc", ()))
+                    ]
                     logger.warning(
                         "structured_output_degraded: dropped all state_updates from "
                         f"{schema_model.__name__} after an unrepairable validation "
-                        "error — conversational fallback (no 500).",
-                        extra={"schema": schema_model.__name__},
+                        f"error — conversational fallback (no 500). "
+                        f"Non-prunable errors: {non_prunable}",
+                        extra={
+                            "schema": schema_model.__name__,
+                            "non_prunable_errors": non_prunable,
+                        },
                     )
                     return parsed
                 except ValidationError:
