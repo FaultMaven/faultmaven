@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "f015a7b2c3d4"  # current head (015 — status->state rename)
+HEAD_REVISION = "0a1b2c3d4e5f"  # current head (016 — drop path_selection column)
 
 
 @pytest.fixture(scope="function")
