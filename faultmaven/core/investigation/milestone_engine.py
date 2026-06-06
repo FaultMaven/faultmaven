@@ -256,7 +256,13 @@ def _apply_stage_gate_side_effects(
         rca_infeasible = case.problem_verification and getattr(
             case.problem_verification, "rca_infeasible", False
         )
-        if rca_infeasible:
+        # Don't clobber an in-flight disposition handshake, and never on a
+        # terminal case (symmetric with _maybe_propose_deferred_close).
+        if (
+            rca_infeasible
+            and not getattr(case, "pending_transition", None)
+            and not case.is_terminal
+        ):
             rationale = (
                 getattr(case.problem_verification, "rca_infeasible_rationale", None)
                 or "root cause analysis is not feasible for this problem"
@@ -632,6 +638,31 @@ def _investigation_confirmation_suggestions() -> list:
     ]
 
 
+def _cause_state_grounded(case: "Case") -> bool:
+    """Whether the root cause is grounded enough to record ``cause_state=IDENTIFIED``.
+
+    The engine-owned truth bar (R1), shared by ``_recompute_assessment_state``
+    (which derives cause_state) and the milestone-claim REVERT path (which must
+    not strip a cause that is grounded case-wide) so the two cannot disagree
+    within a turn. Bar: a high ``root_cause_likelihood`` (>= 0.7) backed by >= 2
+    causal-evidence rows — matching the milestone-claim validator's
+    ``MILESTONE_EVIDENCE_EXPECTATIONS["root_cause_identified"].min_evidence`` —
+    OR a recorded ``RootCauseConclusion``. Case-wide (not current-turn-only): a
+    cause grounded over several turns stays grounded.
+    """
+    p = case.progress
+    causal_count = sum(
+        1 for e in case.evidence if e.category == EvidenceCategory.CAUSAL_EVIDENCE
+    )
+    has_root_cause_conclusion = bool(
+        case.root_cause_conclusion
+        and getattr(case.root_cause_conclusion, "root_cause", None)
+    )
+    return (
+        p.root_cause_likelihood >= 0.7 and causal_count >= 2
+    ) or has_root_cause_conclusion
+
+
 def _recompute_assessment_state(case: "Case") -> None:
     """Recompute the engine-owned assessment variables each INVESTIGATING turn.
 
@@ -657,21 +688,7 @@ def _recompute_assessment_state(case: "Case") -> None:
     p = case.progress
 
     if p.cause_state != CauseState.IDENTIFIED:
-        # Evidence bar matches the milestone-claim validator
-        # (MILESTONE_EVIDENCE_EXPECTATIONS["root_cause_identified"].min_evidence = 2),
-        # so a claim reverted for insufficient evidence is not re-granted here.
-        causal_count = sum(
-            1
-            for e in case.evidence
-            if e.category == EvidenceCategory.CAUSAL_EVIDENCE
-        )
-        has_root_cause_conclusion = bool(
-            case.root_cause_conclusion
-            and getattr(case.root_cause_conclusion, "root_cause", None)
-        )
-        if (
-            p.root_cause_likelihood >= 0.7 and causal_count >= 2
-        ) or has_root_cause_conclusion:
+        if _cause_state_grounded(case):
             p.cause_state = CauseState.IDENTIFIED
         elif HypothesisManager.count_active_hypotheses(case) >= 2:
             p.cause_state = CauseState.CANDIDATES
@@ -5674,10 +5691,19 @@ class MilestoneEngine:
                 if not result.is_valid:
                     # Revert the milestone — evidence doesn't support the claim.
                     # ``root_cause_identified`` is no longer a bool field; it maps
-                    # to the engine-derived ``cause_state`` enum. Un-identify here;
-                    # _recompute_assessment_state (end of apply) re-derives
-                    # CANDIDATES/UNKNOWN from the active-hypothesis count.
+                    # to the engine-derived ``cause_state`` enum.
                     if result.milestone == "root_cause_identified":
+                        # cause_state is engine-owned (R1). If the cause is
+                        # grounded CASE-WIDE, _recompute would immediately
+                        # re-derive IDENTIFIED — so reverting here would only
+                        # oscillate the state and tear the milestone out of
+                        # ``milestones_completed`` with a misleading
+                        # "insufficient evidence" warning (the validator counts
+                        # current-turn evidence only). Skip the revert; let
+                        # _recompute own it. Only un-identify when genuinely
+                        # ungrounded case-wide.
+                        if _cause_state_grounded(case):
+                            continue
                         case.progress.cause_state = CauseState.UNKNOWN
                     elif hasattr(case.progress, result.milestone):
                         setattr(case.progress, result.milestone, False)

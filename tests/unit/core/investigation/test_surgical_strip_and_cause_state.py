@@ -177,6 +177,54 @@ class TestCauseStateDerivation:
         assert case.progress.solution_state == SolutionState.SELECTED
 
 
+class TestCauseGroundedSharedBar:
+    """F1: the revert path and _recompute share one grounding bar so they cannot
+    disagree within a turn (no IDENTIFIED->UNKNOWN->IDENTIFIED oscillation)."""
+
+    def _case(self, *, likelihood, causal, conclusion=False):
+        progress = InvestigationProgress()
+        progress.root_cause_likelihood = likelihood
+        evidence = [
+            SimpleNamespace(category=EvidenceCategory.CAUSAL_EVIDENCE)
+            for _ in range(causal)
+        ]
+        rcc = SimpleNamespace(root_cause="cause") if conclusion else None
+        return SimpleNamespace(
+            progress=progress, evidence=evidence, root_cause_conclusion=rcc
+        )
+
+    def test_grounded_high_likelihood_two_causal(self):
+        from faultmaven.core.investigation.milestone_engine import (
+            _cause_state_grounded,
+        )
+
+        assert _cause_state_grounded(self._case(likelihood=0.8, causal=2)) is True
+
+    def test_not_grounded_one_causal(self):
+        from faultmaven.core.investigation.milestone_engine import (
+            _cause_state_grounded,
+        )
+
+        assert _cause_state_grounded(self._case(likelihood=0.9, causal=1)) is False
+
+    def test_not_grounded_low_likelihood(self):
+        from faultmaven.core.investigation.milestone_engine import (
+            _cause_state_grounded,
+        )
+
+        assert _cause_state_grounded(self._case(likelihood=0.5, causal=3)) is False
+
+    def test_grounded_by_conclusion_regardless_of_evidence(self):
+        from faultmaven.core.investigation.milestone_engine import (
+            _cause_state_grounded,
+        )
+
+        assert (
+            _cause_state_grounded(self._case(likelihood=0.0, causal=0, conclusion=True))
+            is True
+        )
+
+
 class TestDeferredImplementationClose:
     """Follow-on A: solution_feasible=DEFERRED proposes CLOSE-with-documented-solution."""
 
