@@ -54,9 +54,9 @@ class TestResolutionGate:
             )
         )
         assert r.verdict == ResolutionReadiness.NEEDS_INFO
-        # the ask is about eliminating the cause, and offers Close for a
-        # stabilized/deferred case
-        assert "eliminated" in r.message.lower()
+        # asks the user to fill the documentation gap (confirmation it's
+        # resolved) and offers Close as the fallback for a stabilized case
+        assert "confirmation the problem is now resolved" in r.missing
         assert "close" in r.message.lower()
 
     def test_solution_row_without_absence_is_not_ready(self):
