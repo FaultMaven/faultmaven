@@ -644,11 +644,20 @@ def _cause_state_grounded(case: "Case") -> bool:
     The engine-owned truth bar (R1), shared by ``_recompute_assessment_state``
     (which derives cause_state) and the milestone-claim REVERT path (which must
     not strip a cause that is grounded case-wide) so the two cannot disagree
-    within a turn. Bar: a high ``root_cause_likelihood`` (>= 0.7) backed by >= 2
-    causal-evidence rows — matching the milestone-claim validator's
-    ``MILESTONE_EVIDENCE_EXPECTATIONS["root_cause_identified"].min_evidence`` —
-    OR a recorded ``RootCauseConclusion``. Case-wide (not current-turn-only): a
-    cause grounded over several turns stays grounded.
+    within a turn. Bar: a high ``root_cause_likelihood`` (>= 0.7) backed by at
+    least ONE causal-evidence row, OR a recorded ``RootCauseConclusion``.
+    Case-wide (not current-turn-only): a cause grounded over several turns stays
+    grounded.
+
+    The ``>= 1`` (not ``>= 2``) causal bar matches the redesign's self-naming
+    premise — a cause can be identified from a single self-evident observation
+    (the error that names it). The ``likelihood >= 0.7`` gate is the confidence
+    guard, not the evidence count. The milestone-claim validator still requires
+    ``>= 2`` and will flag a 1-causal claim, but the REVERT is skipped when this
+    returns True (a confidently-grounded cause is not torn down) — so there is no
+    revert-churn and no spurious "insufficient evidence" warning for the common
+    self-naming case. A 1-causal claim with low likelihood (< 0.7) is NOT grounded
+    here, so the validator's revert proceeds and the cause is correctly held back.
     """
     p = case.progress
     causal_count = sum(
@@ -659,7 +668,7 @@ def _cause_state_grounded(case: "Case") -> bool:
         and getattr(case.root_cause_conclusion, "root_cause", None)
     )
     return (
-        p.root_cause_likelihood >= 0.7 and causal_count >= 2
+        p.root_cause_likelihood >= 0.7 and causal_count >= 1
     ) or has_root_cause_conclusion
 
 
@@ -4263,11 +4272,25 @@ class MilestoneEngine:
                 fallback = {**content_obj, "state_updates": {}}
                 try:
                     parsed = schema_model.model_validate_json(json.dumps(fallback))
+                    # The prune path already logs its locs ("Turn preserved"); this
+                    # branch is reached only when a NON-prunable (non-list-indexed)
+                    # validator error remains — log exactly those so each fallback
+                    # is self-diagnosing (was it correctly non-prunable, or a prune
+                    # gap?). Reference: S4 backstop observability.
+                    non_prunable = [
+                        (list(e.get("loc", ())), e.get("msg", ""))
+                        for e in original_error.errors()
+                        if not any(isinstance(p, int) for p in e.get("loc", ()))
+                    ]
                     logger.warning(
                         "structured_output_degraded: dropped all state_updates from "
                         f"{schema_model.__name__} after an unrepairable validation "
-                        "error — conversational fallback (no 500).",
-                        extra={"schema": schema_model.__name__},
+                        f"error — conversational fallback (no 500). "
+                        f"Non-prunable errors: {non_prunable}",
+                        extra={
+                            "schema": schema_model.__name__,
+                            "non_prunable_errors": non_prunable,
+                        },
                     )
                     return parsed
                 except ValidationError:

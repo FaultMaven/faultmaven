@@ -140,19 +140,28 @@ class TestCauseStateDerivation:
         _recompute_assessment_state(case)
         assert case.progress.cause_state == CauseState.CANDIDATES
 
-    def test_identified_derived_from_likelihood_plus_causal_evidence(self):
-        # Follow-on B: high confidence + >=2 causal evidence -> IDENTIFIED even
-        # though the LLM never set the root_cause_identified milestone.
-        case = self._case_with_hyps(2, causal_evidence=2)  # would be CANDIDATES
+    def test_identified_derived_from_likelihood_plus_one_causal(self):
+        # Follow-on B + self-naming premise: high confidence + a SINGLE causal
+        # row -> IDENTIFIED even though the LLM never set the milestone. One
+        # self-evident observation identifies a self-naming cause.
+        case = self._case_with_hyps(2, causal_evidence=1)  # would be CANDIDATES
         case.progress.root_cause_likelihood = 0.8
         _recompute_assessment_state(case)
         assert case.progress.cause_state == CauseState.IDENTIFIED
 
-    def test_high_likelihood_below_evidence_bar_is_not_identified(self):
-        # Matches the milestone bar (>=2 causal): one causal row is not enough,
-        # so a milestone reverted for insufficient evidence is not re-granted.
-        case = self._case_with_hyps(0, causal_evidence=1)
+    def test_high_likelihood_zero_causal_is_not_identified(self):
+        # The floor: confidence alone, with no causal evidence at all, is not
+        # enough — derivation requires at least one causal row (or a conclusion).
+        case = self._case_with_hyps(0, causal_evidence=0)
         case.progress.root_cause_likelihood = 0.9
+        _recompute_assessment_state(case)
+        assert case.progress.cause_state == CauseState.UNKNOWN
+
+    def test_low_likelihood_with_causal_is_not_identified(self):
+        # The confidence guard: causal evidence with sub-threshold likelihood
+        # (< 0.7) does not ground IDENTIFIED.
+        case = self._case_with_hyps(0, causal_evidence=2)
+        case.progress.root_cause_likelihood = 0.5
         _recompute_assessment_state(case)
         assert case.progress.cause_state == CauseState.UNKNOWN
 
@@ -193,19 +202,21 @@ class TestCauseGroundedSharedBar:
             progress=progress, evidence=evidence, root_cause_conclusion=rcc
         )
 
-    def test_grounded_high_likelihood_two_causal(self):
+    def test_grounded_high_likelihood_one_causal(self):
+        # Self-naming premise: a single causal row + high confidence grounds.
         from faultmaven.core.investigation.milestone_engine import (
             _cause_state_grounded,
         )
 
-        assert _cause_state_grounded(self._case(likelihood=0.8, causal=2)) is True
+        assert _cause_state_grounded(self._case(likelihood=0.8, causal=1)) is True
 
-    def test_not_grounded_one_causal(self):
+    def test_not_grounded_zero_causal(self):
+        # The floor: high confidence but no causal evidence is not grounded.
         from faultmaven.core.investigation.milestone_engine import (
             _cause_state_grounded,
         )
 
-        assert _cause_state_grounded(self._case(likelihood=0.9, causal=1)) is False
+        assert _cause_state_grounded(self._case(likelihood=0.9, causal=0)) is False
 
     def test_not_grounded_low_likelihood(self):
         from faultmaven.core.investigation.milestone_engine import (
@@ -377,3 +388,35 @@ class TestStructuredOutputDegradation:
         )
         assert parsed.agent_response == "Survives as conversation."
         assert parsed.state_updates.evidence_to_add == []
+
+    def test_fallback_logs_non_prunable_errors(self, caplog):
+        # A NON-prunable error (loc has no list index) forces the conversational
+        # fallback; that branch must log the offending loc/msg so each fallback is
+        # self-diagnosing (S4 observability). Here evidence_to_add is the wrong
+        # TYPE (a string, not a list) -> loc ('state_updates','evidence_to_add')
+        # has no int index -> not prunable.
+        import logging
+
+        from faultmaven.core.investigation.schemas import (
+            InvestigationResponse_Diagnosis,
+        )
+
+        eng = self._engine()
+        content = {
+            "agent_response": "hi",
+            "state_updates": {"evidence_to_add": "should-be-a-list"},
+        }
+        with caplog.at_level(
+            logging.WARNING, logger="faultmaven.core.investigation.milestone_engine"
+        ):
+            parsed = eng._validate_with_degradation(
+                content, InvestigationResponse_Diagnosis
+            )
+        assert parsed.agent_response == "hi"  # turn survives, no 500
+        degraded = [
+            r for r in caplog.records if "structured_output_degraded" in r.getMessage()
+        ]
+        assert degraded, "fallback must emit a degraded warning"
+        non_prunable = getattr(degraded[0], "non_prunable_errors", None)
+        assert non_prunable, "fallback must log the non-prunable errors"
+        assert any("evidence_to_add" in loc for loc, _msg in non_prunable)
