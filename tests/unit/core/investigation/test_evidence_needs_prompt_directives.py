@@ -385,3 +385,64 @@ class TestStageEvidenceTypeListingsIncludeAbsence:
             )
             assert "symptom_absence_evidence" in section
             assert "causal_absence_evidence" in section
+
+
+# ============================================================
+# Resolve-proposal sites must require causal_absence emission
+# ============================================================
+
+
+@pytest.mark.unit
+class TestResolveProposalRequiresCausalAbsence:
+    """Every prompt site that tells the agent to propose ``to_state:
+    resolved`` MUST, in the same turn, require a ``causal_absence_evidence``
+    row — the engine gate (``assess_resolution_readiness``) marks a case
+    RESOLVED only when that row is present. A proposal site that omits the
+    requirement makes the engine bounce the transition into a NEEDS_INFO
+    loop (suggest-then-bounce). The user's verbal confirmation is an allowed
+    source (``user_description``) so the out-of-band path needs no file.
+
+    These pin the two proposal sites in TREATMENT_INSTRUCTIONS:
+      - the KB-RESOLUTION same-turn variant, and
+      - the generic COMPLETION handshake.
+    """
+
+    def test_kb_variant_requires_causal_absence(self):
+        # The same-turn KB-resolution checklist must list causal_absence as a
+        # required emission alongside the resolved proposal.
+        variant_start = TREATMENT_INSTRUCTIONS.index("KB-RESOLUTION VARIANT")
+        variant = TREATMENT_INSTRUCTIONS[variant_start : variant_start + 4500]
+        assert "causal_absence_evidence" in variant, (
+            "KB-RESOLUTION VARIANT proposes resolved but no longer requires "
+            "causal_absence_evidence — the engine will bounce the transition."
+        )
+        assert "user_description" in variant, (
+            "KB-RESOLUTION VARIANT must accept the user's verbal confirmation "
+            "as the causal_absence source (no file demand)."
+        )
+
+    def test_completion_block_requires_causal_absence_for_resolved(self):
+        # The governing COMPLETION rule must tie any resolved proposal to a
+        # causal_absence emission and accept a verbal source.
+        assert "RESOLVED REQUIRES CAUSAL-ABSENCE" in TREATMENT_INSTRUCTIONS, (
+            "COMPLETION lost the governing rule that every resolved proposal "
+            "must emit causal_absence_evidence."
+        )
+        rule_start = TREATMENT_INSTRUCTIONS.index("RESOLVED REQUIRES CAUSAL-ABSENCE")
+        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1500]
+        assert "causal_absence_evidence" in rule
+        assert "user_description" in rule, (
+            "The COMPLETION rule must accept the user's verbal confirmation "
+            "(out-of-band fix) as a valid source — do not demand a file."
+        )
+
+    def test_stabilization_proposes_closed_not_resolved(self):
+        # The same rule must route a stabilization to symptom_absence + closed,
+        # so the agent only proposes the transition the case can complete.
+        rule_start = TREATMENT_INSTRUCTIONS.index("RESOLVED REQUIRES CAUSAL-ABSENCE")
+        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1500]
+        assert "symptom_absence_evidence" in rule
+        assert "closed" in rule, (
+            "A stabilization must propose closed (not resolved); the rule no "
+            "longer states that routing."
+        )

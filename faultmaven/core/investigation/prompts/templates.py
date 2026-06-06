@@ -1918,12 +1918,28 @@ REQUIRED EMISSIONS IN THE SAME TURN:
    signal). The engine handles the other two gate milestones automatically:
    `solution_proposed` is set when the engine processes the SolutionToAdd
    record from step 3, and `solution_verified` is set when the user
-   confirms the proposed_transition in step 5 below (see
+   confirms the proposed_transition in step 6 below (see
    investigation-lifecycle-logic.md §1.4.1). Do NOT set those two
    yourself — `MilestoneUpdates` rejects `solution_verified`, and
    `solution_proposed` would double-set.
 
-5. **`state_updates.proposed_transition`** — `{{ "to_state": "resolved" }}`
+5. **`state_updates.evidence_to_add`** — a `causal_absence_evidence` row, the
+   positive proof the case RESOLVES (the engine marks a case RESOLVED only when
+   this row is present). The user's confirmation that the runbook fix worked is
+   a sufficient source on its own — do NOT demand logs or a file:
+   ```
+   summary: "<the attributed Cause> is no longer present after the fix"
+   category: "causal_absence_evidence"
+   source_type: "user_description"   (the user's confirmation IS the source)
+   source_file_id: null              (omit — verbal confirmation needs no file)
+   extract: the user's exact confirmation, quoted
+   ```
+   This is correct here because the runbook Cause's fix is the PERMANENT remedy
+   that eliminates the cause. (Had the user only stabilized — failover/workaround
+   with the cause still present — you would emit `symptom_absence_evidence` and
+   propose `closed`, not resolved.)
+
+6. **`state_updates.proposed_transition`** — `{{ "to_state": "resolved" }}`
    as documented in COMPLETION below. The user's "it worked" message
    serves as the disposition confirmation; no additional confirmation
    turn is needed.
@@ -2046,6 +2062,29 @@ emissions (knowledge_resolution + root_cause_conclusion + solutions_to_add +
 solution_accepted=True) are **additive** to the proposed_transition emitted here —
 not alternative. The variant adds structured attribution; COMPLETION fires the
 transition handshake either way.
+
+**RESOLVED REQUIRES CAUSAL-ABSENCE (applies to every `to_state: resolved` below):**
+Whenever you emit `proposed_transition = {{ "to_state": "resolved" }}`, you MUST
+in the SAME turn emit a `causal_absence_evidence` row in
+`state_updates.evidence_to_add` — it is the positive proof the engine requires
+to mark a case RESOLVED. Without it the transition bounces back asking for it.
+The user's confirmation that the cause is gone is a sufficient source on its
+own — do NOT demand logs or files (an out-of-band fix the user simply reports is
+valid; their word is the source):
+  - summary: "<the root cause you identified> is no longer present after the fix"
+  - category: "causal_absence_evidence"
+  - source_type: "user_description" (the user's confirmation is the source; if
+    they pasted post-fix output, use that file and its real source_type instead)
+  - source_file_id: null when the source is the user's verbal confirmation
+  - extract: the user's exact words, or the post-fix line showing the cause is gone
+Emit causal_absence ONLY when the CAUSE itself is eliminated. If the fix was a
+stabilization (failover/workaround while the cause persists, or the real fix is
+deferred), emit `symptom_absence_evidence` instead and propose `closed`, not
+`resolved` — a stabilized/deferred case closes with its solution documented (see
+the MITIGATION stabilization rule and decision-tree step 4). Do not propose
+`resolved` for a case you cannot record causal-absence for: only propose the
+transition the case can actually complete, so the proposal and the engine gate
+stay in lockstep.
 
 This is a two-step process. You MUST follow these steps exactly:
 
