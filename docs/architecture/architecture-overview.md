@@ -153,7 +153,7 @@ See `.importlinter` at repo root for the current contracts. Architecture princip
 |------------------|------|
 | How the system boots and wires dependencies | `faultmaven/main.py`, `faultmaven/container/`, Principle 5 |
 | How investigation turns are processed | [Investigation Lifecycle Logic](investigation-engine/investigation-lifecycle-logic.md) |
-| How prompts are assembled | [Prompt Templates](investigation-engine/prompt-templates.md) + [Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md) |
+| How prompts are assembled | [Prompt Assembly Architecture](investigation-engine/prompt-assembly-architecture.md) + [Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md) |
 | How evidence is classified and preprocessed | [data-processing/](data-processing/) |
 | How the KB retrieves across scopes | [Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md) |
 | How LLM calls are routed and cached | `faultmaven/infrastructure/llm/` |

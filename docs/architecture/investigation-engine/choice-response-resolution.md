@@ -1,8 +1,9 @@
-# Intent Resolution
+# Choice-Response Resolution
 
-How FaultMaven ensures that close-ended choices presented to the user result in unambiguous state changes, regardless of whether the user clicks a suggestion or types a response.
+How FaultMaven resolves a user's **response to an agent-offered choice** — whether the user clicks the suggestion or types a reply — into an unambiguous deterministic state change.
 
 **Related Documents**:
+
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) - State transitions, path routing
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) - Overview and philosophy
 
@@ -74,7 +75,7 @@ The case model does not track "pending choices." The agent's last response and i
 
 ## 3. Two-Path Architecture
 
-```
+```text
 User submits message
        |
        v
@@ -125,7 +126,7 @@ User submits message
 
 ### Classifier Input
 
-```
+```text
 The assistant just offered these choices:
 
 1. "Yes, let's investigate" - Confirm the problem statement and start the investigation.

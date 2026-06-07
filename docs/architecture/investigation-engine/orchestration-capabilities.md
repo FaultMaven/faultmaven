@@ -10,9 +10,9 @@ FaultMaven uses a **Turn-Based Checkpointing** system to keep investigation stat
 
 ### 1.1 Mechanism
 
-*   **Construction & persistence**: [`checkpoint_service.py:57`](../../../faultmaven/core/investigation/checkpoint_service.py) builds a `CaseCheckpoint` from `case.model_dump()`, computes a SHA-256 hash of the JSON snapshot, and persists via `case_repo.create_checkpoint(...)`.
-*   **Storage**: `CaseCheckpoint` rows live in `case_checkpoints`. PostgreSQL uses `JSONB` for efficient querying; SQLite (dev) uses `Text` for compatibility.
-*   **Immutability**: Checkpoints are append-only. The checkpoint_id is `{case_id}:turn:{current_turn}:{trigger}`, so a given `(case, turn, trigger)` tuple is unique.
+- **Construction & persistence**: [`checkpoint_service.py:57`](../../../faultmaven/core/investigation/checkpoint_service.py) builds a `CaseCheckpoint` from `case.model_dump()`, computes a SHA-256 hash of the JSON snapshot, and persists via `case_repo.create_checkpoint(...)`.
+- **Storage**: `CaseCheckpoint` rows live in `case_checkpoints`. PostgreSQL uses `JSONB` for efficient querying; SQLite (dev) uses `Text` for compatibility.
+- **Immutability**: Checkpoints are append-only. The checkpoint_id is `{case_id}:turn:{current_turn}:{trigger}`, so a given `(case, turn, trigger)` tuple is unique.
 
 ### 1.2 Trigger Sites
 
@@ -42,42 +42,49 @@ The `pre_case_action` snapshots make every state change reversible at the data l
 The design includes **Read-Only Time Travel**, allowing users and developers to inspect the exact state of an investigation at any previous turn.
 
 ### 2.1 State Restoration (Design)
-*   **Functionality**: Would reconstruct a full `Case` object from a historical checkpoint.
-*   **API Endpoint**: `GET /cases/{case_id}/snapshot/{turn_number}` (not yet implemented)
-*   **Frontend Use Case**:
-    *   "View History": Allow users to click on a past message and see the "Context" (Hypotheses, Evidence, Status) as it existed *at that moment*.
-    *   **Read-Only**: Restored cases are for inspection only. You cannot "resume" from a past state (no forking supported in v1).
+
+- **Functionality**: Would reconstruct a full `Case` object from a historical checkpoint.
+- **API Endpoint**: `GET /cases/{case_id}/snapshot/{turn_number}` (not yet implemented)
+- **Frontend Use Case**:
+  - "View History": Allow users to click on a past message and see the "Context" (Hypotheses, Evidence, Status) as it existed *at that moment*.
+  - **Read-Only**: Restored cases are for inspection only. You cannot "resume" from a past state (no forking supported in v1).
 
 ### 2.2 Semantic Diffing (Design)
-*   **Functionality**: Would compute the semantic difference between two investigation states (e.g., Turn 2 vs Turn 5).
-*   **Logic**: Recursive comparison of fields, highlighting added hypotheses, status changes, or modified evidence.
-*   **API Endpoint**: `GET /cases/{case_id}/diff?from={t1}&to={t2}` (not yet implemented)
-*   **Frontend Use Case**:
-    *   "What Changed?": detailed view showing exactly what the agent concluded between two points in time.
+
+- **Functionality**: Would compute the semantic difference between two investigation states (e.g., Turn 2 vs Turn 5).
+- **Logic**: Recursive comparison of fields, highlighting added hypotheses, status changes, or modified evidence.
+- **API Endpoint**: `GET /cases/{case_id}/diff?from={t1}&to={t2}` (not yet implemented)
+- **Frontend Use Case**:
+  - "What Changed?": detailed view showing exactly what the agent concluded between two points in time.
 
 ## 3. Interrupt & Resume (Human-in-the-Loop)
 
 Human-in-the-Loop (HIL) is enforced via **Design Pattern** rather than explicit "Suspend/Resume" backend states.
 
 ### 3.1 The "Read-Only" Agent
-*   **Current State**: The Agent has **zero autonomy** to execute destructive actions (e.g., restarting servers, modifying code, deleting data). All available tools (`read_file`, `list_evidence`, `search_knowledge`) are **safe** and **read-only**.
-*   **Future Remediation**: When write-capable remediation tools are added, the **"Recommend-Verify-Act"** pattern (Section 3.2) becomes the primary safety enforcement mechanism. Prompt engineering must strictly enforce this pattern to prevent autonomous destructive actions.
+
+- **Current State**: The Agent has **zero autonomy** to execute destructive actions (e.g., restarting servers, modifying code, deleting data). All available tools (`read_file`, `list_evidence`, `search_knowledge`) are **safe** and **read-only**.
+- **Future Remediation**: When write-capable remediation tools are added, the **"Recommend-Verify-Act"** pattern (Section 3.2) becomes the primary safety enforcement mechanism. Prompt engineering must strictly enforce this pattern to prevent autonomous destructive actions.
 
 ### 3.2 The "Recommend-Verify-Act" Workflow
+
 Instead of the Agent executing a fix (especially with future write-capable tools), the workflow forces user interaction:
-1.  **Recommend**: Agent proposes a specific action during DIAGNOSIS (e.g., "Run `kubectl rollout undo deployment/payment-api`").
-2.  **Verify**: The Agent provides the reasoning and evidence for this recommendation.
-3.  **Act**: The **User** must physically perform the action and submit results. User compliance (executing and pasting output) triggers inference-based stage transitions (DIAGNOSIS → TREATMENT or DIAGNOSIS → MITIGATION).
+
+1. **Recommend**: Agent proposes a specific action during DIAGNOSIS (e.g., "Run `kubectl rollout undo deployment/payment-api`").
+2. **Verify**: The Agent provides the reasoning and evidence for this recommendation.
+3. **Act**: The **User** must physically perform the action and submit results. User compliance (executing and pasting output) triggers inference-based stage transitions (DIAGNOSIS → TREATMENT or DIAGNOSIS → MITIGATION).
 
 ### 3.3 Frontend Implementation
-*   **No "Resume" API needed**: The frontend does not need to "resume" a suspended thread.
-*   **Confirmation UI**: Disposition case actions (RESOLVED/CLOSED) use the User-Agent Handshake pattern — the agent proposes resolution and the user confirms via standard message. Intermediate stage transitions (DIAGNOSIS → TREATMENT, DIAGNOSIS → MITIGATION) are inference-based — the user's compliance (executing an action and submitting results) IS acceptance, no explicit confirmation step required.
+
+- **No "Resume" API needed**: The frontend does not need to "resume" a suspended thread.
+- **Confirmation UI**: Disposition case actions (RESOLVED/CLOSED) use the User-Agent Handshake pattern — the agent proposes resolution and the user confirms via standard message. Intermediate stage transitions (DIAGNOSIS → TREATMENT, DIAGNOSIS → MITIGATION) are inference-based — the user's compliance (executing an action and submitting results) IS acceptance, no explicit confirmation step required.
 
 ## 4. Streaming Support
 
 The engine supports real-time streaming of agent execution events to provide a responsive UI.
 
 ### 4.1 Event Stream
+
 The `execute_agent` method yields `ExecutionEvent` objects via an `AsyncGenerator`.
 
 | Event Type | Description | Frontend Handling |
@@ -90,8 +97,9 @@ The `execute_agent` method yields `ExecutionEvent` objects via an `AsyncGenerato
 | `completed` | Turn finished | Finalize UI state, enable input. |
 
 ### 4.2 Integration
-*   **Protocol**: Server-Sent Events (SSE) or standard HTTP streaming response.
-*   **Route**: `POST /sessions/{session_id}/message?stream=true`
+
+- **Protocol**: Server-Sent Events (SSE) or standard HTTP streaming response.
+- **Route**: `POST /sessions/{session_id}/message?stream=true`
 
 ## 5. Orchestration Hardening (Mechanical Safety Nets)
 
@@ -167,10 +175,10 @@ Tools are registered conditionally — only available tools appear in the LLM's 
 
 **DA System Instruction (Type A/B/C question routing)**: The system instruction injected for DA turns includes:
 
-* **TYPE A — Case question**: Questions about THIS case's evidence (IPs, errors, timestamps, patterns). Agent MUST search evidence (`search_file`, `deep_analysis`) before responding. The structural indexes are summaries — they lack specific values needed for grounded analysis.
-* **TYPE B — Knowledge question**: General technical questions not answerable from case evidence. Agent answers from own knowledge, optionally using `web_search` or `kb_qa` for supplementary detail. Connect to case context when relevant.
-* **TYPE C — Hybrid**: Questions bridging case data and external knowledge (e.g., "Is our Redis config following best practices?"). Agent searches evidence first, then applies knowledge/KB context for the reference baseline.
-* **Default**: When uncertain, treat as Type A — evidence search is always safe. Only skip evidence search when the question clearly cannot be answered from log files, configs, or other submitted data.
+- **TYPE A — Case question**: Questions about THIS case's evidence (IPs, errors, timestamps, patterns). Agent MUST search evidence (`search_file`, `deep_analysis`) before responding. The structural indexes are summaries — they lack specific values needed for grounded analysis.
+- **TYPE B — Knowledge question**: General technical questions not answerable from case evidence. Agent answers from own knowledge, optionally using `web_search` or `kb_qa` for supplementary detail. Connect to case context when relevant.
+- **TYPE C — Hybrid**: Questions bridging case data and external knowledge (e.g., "Is our Redis config following best practices?"). Agent searches evidence first, then applies knowledge/KB context for the reference baseline.
+- **Default**: When uncertain, treat as Type A — evidence search is always safe. Only skip evidence search when the question clearly cannot be answered from log files, configs, or other submitted data.
 
 **Tool priority guidance** in the DA system instruction:
 
@@ -180,11 +188,11 @@ Tools are registered conditionally — only available tools appear in the LLM's 
 
 **Additional DA system instruction elements:**
 
-* **Searchable evidence flag**: Evidence items in `<evidence_collected>` are tagged with `searchable="true"` when they have raw files on disk (`form=document` + valid `content_ref`). The instruction tells the LLM to only call `search_file` on evidence with this flag — other evidence items are investigation notes with no file to search.
-* **Entity-first search**: Extract specific entities (IPs, usernames, timestamps, error codes) from the user's question and search for those exact terms
-* **Keyword-first search mode**: Use `search_type: "keyword"` by default; fall back to regex only for pattern matching
-* **PII token warnings**: Explicit instruction that PII tokens (IPs, hostnames, usernames) in uploaded evidence are NOT real PII and must not be redacted from tool calls
-* **RESPONSE FORMAT**: OBSERVATION section must cite filename and line numbers from search results (e.g., "In data_6-1.log, line 42: ..."). ANALYSIS section explains significance with causal language.
+- **Searchable evidence flag**: Evidence items in `<evidence_collected>` are tagged with `searchable="true"` when they have raw files on disk (`form=document` + valid `content_ref`). The instruction tells the LLM to only call `search_file` on evidence with this flag — other evidence items are investigation notes with no file to search.
+- **Entity-first search**: Extract specific entities (IPs, usernames, timestamps, error codes) from the user's question and search for those exact terms
+- **Keyword-first search mode**: Use `search_type: "keyword"` by default; fall back to regex only for pattern matching
+- **PII token warnings**: Explicit instruction that PII tokens (IPs, hostnames, usernames) in uploaded evidence are NOT real PII and must not be redacted from tool calls
+- **RESPONSE FORMAT**: OBSERVATION section must cite filename and line numbers from search results (e.g., "In data_6-1.log, line 42: ..."). ANALYSIS section explains significance with causal language.
 
 **Evidence Resolution** (3 paths, tried in order): The `search_file` tool resolves evidence content through:
 
@@ -204,11 +212,11 @@ Evidence is user-submitted case data (logs, metrics, configs) — only user-subm
 
 **Key characteristics:**
 
-* Zero additional LLM calls for mechanical tools (search_file, web_search are $0)
-* KB synthesis costs ~$0.01 per call (vector search + LLM synthesis, max_tokens=2000)
-* `tool_choice="auto"` for non-DA turns adds zero overhead when LLM doesn't need tools
-* Falls back gracefully to single-shot on loop exhaustion or provider incompatibility
-* `kb_qa` results are formatted with relay instructions and source citation guidance
+- Zero additional LLM calls for mechanical tools (search_file, web_search are $0)
+- KB synthesis costs ~$0.01 per call (vector search + LLM synthesis, max_tokens=2000)
+- `tool_choice="auto"` for non-DA turns adds zero overhead when LLM doesn't need tools
+- Falls back gracefully to single-shot on loop exhaustion or provider incompatibility
+- `kb_qa` results are formatted with relay instructions and source citation guidance
 
 See [Data Preprocessing Design §5.0](../data-processing/data-preprocessing-design-specification.md) for the scenario-driven processing model that determines when DA mode is selected.
 

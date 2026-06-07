@@ -6,7 +6,7 @@ This document defines the behavioral policy for the FaultMaven agent at the prom
 
 **Related Documents**:
 
-- [Prompt Templates](./prompt-templates.md) — Where rules are encoded into LLM prompts
+- [Prompt Assembly Architecture](./prompt-assembly-architecture.md) — Where rules are encoded into LLM prompts
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) — Architecture and design (§8.5: Focus Zone Emphasis)
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) — State transitions and stage logic
 - [Agent Stage Playbook](./agent-stage-playbook.md) — What the agent must accomplish at each stage (complements these cross-cutting rules)
@@ -406,7 +406,7 @@ Two pieces of rule-adjacent content are injected at runtime:
 
 1. **Focus Zone Emphasis** — a priority signal computed by `_get_diagnosis_focus_emphasis()` and prepended to the single `_RCA_DIAGNOSIS_BLOCK` (unified flow — no path branches). It maps `symptom_verified` / `cause_state` / `solution_proposed` to the current zone's emphasis (symptom verification → root-cause analysis while the cause is uncertain → solution). See [Evidence-Driven Investigation Framework §8.5](./evidence-driven-investigation-framework.md#85-focus-zone-emphasis-progress-milestone-driven).
 
-2. **INQUIRY State** — an `<inquiry_state>` XML block injected into the INQUIRY template by `_build_context()` when a proposed problem statement exists but hasn't been confirmed. It switches between two modes: (a) `NOT_YET_CONFIRMED` — the default, which instructs the LLM not to re-propose the same statement and to focus on the user's current message; (b) `HANDSHAKE_DEFERRED` — fires only on the turn immediately following a same-turn-confirmation guard fire (see [INV-01 in the Invariant Enforcement Matrix](./investigation-lifecycle-logic.md#131-invariant-enforcement-matrix)), instructing the LLM to re-present the statement and ask for confirmation explicitly. The two modes are mutually exclusive and the switch is keyed on `case.inquiry.handshake_deferred_at_turn`.
+2. **INQUIRY State** — an `<inquiry_state>` XML block injected into the INQUIRY template by `_build_context()` when a proposed problem statement exists but hasn't been confirmed. It switches between two modes: (a) `NOT_YET_CONFIRMED` — the default, which instructs the LLM not to re-propose the same statement and to focus on the user's current message; (b) `HANDSHAKE_DEFERRED` — fires only on the turn immediately following a same-turn-confirmation guard fire (see [INV-01 in the Invariant Enforcement Matrix](./investigation-invariants.md#invariant-enforcement-matrix)), instructing the LLM to re-present the statement and ask for confirmation explicitly. The two modes are mutually exclusive and the switch is keyed on `case.inquiry.handshake_deferred_at_turn`.
 
 Neither is a behavioral rule; both are system-computed adaptive context that modifies what the LLM *sees* rather than constraining what it *does*.
 
@@ -550,7 +550,7 @@ The current state ships neither. If a Rule-2 compliance signal is needed in the 
 
 ## What Is NOT a Behavioral Rule
 
-**Stage-specific prompt routing** is system architecture, not an LLM instruction. The Python logic in `get_prompt_for_case()` selects which template to serve based on investigation stage (DIAGNOSIS, MITIGATION, TREATMENT). Telling the LLM "you receive different prompts based on stage" is meta-information it cannot act on — the stage-specific prompt *is* the enforcement. This routing is documented in [Prompt Templates](./prompt-templates.md) and [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md).
+**Stage-specific prompt routing** is system architecture, not an LLM instruction. The Python logic in `get_prompt_for_case()` selects which template to serve based on investigation stage (DIAGNOSIS, MITIGATION, TREATMENT). Telling the LLM "you receive different prompts based on stage" is meta-information it cannot act on — the stage-specific prompt *is* the enforcement. This routing is documented in [Prompt Assembly Architecture](./prompt-assembly-architecture.md) and [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md).
 
 **Post-generation validators** (regex checks, keyword matchers, semantic scoring on the rendered response, schema coercion) are not behavioral rules. A behavioral rule is a prescription injected into the prompt *before* generation; a post-generation validator is a heuristic check applied *after* generation. They have different failure modes (prompt rules fail by being ambiguous or ignored; validators fail by being brittle, phase-blind, or whack-a-mole-tuned) and different remediation paths. The system currently runs no post-generation validator on agent responses; the [Post-Generation Validators (Historical Case Study)](#post-generation-validators-historical-case-study) section preserves the architectural reasoning from a removed implementation.
 

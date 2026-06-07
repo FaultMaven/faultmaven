@@ -3,6 +3,7 @@
 **Status**: Design — Approved 2026-05-22, Implementation Pending
 **Date**: 2026-05-22 (revised after design review)
 **Related Documents**:
+
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md)
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md)
 - [Investigation Data Models](./investigation-data-models.md)
@@ -36,6 +37,7 @@
 places in the codebase:
 
 **API contract** (`IntentType` enum + `QueryIntent` validator):
+
 ```python
 class IntentType(str, Enum):
     EVIDENCE_REQUEST = "evidence_request"  # Request specific evidence
@@ -48,6 +50,7 @@ class QueryIntent(BaseModel):
 
 **LLM response schema** (`EvidenceRequestToAdd` in
 [`llm_schemas.py`](../../../faultmaven/models/llm_schemas.py)):
+
 ```python
 class EvidenceRequestToAdd(BaseModel):
     request_text: str = Field(max_length=500)
@@ -61,6 +64,7 @@ class InvestigationStateUpdate(BaseModel):
 
 **Dispatch** (in
 [`investigation_service.py`](../../../faultmaven/modules/agent/domain/services/investigation_service.py)):
+
 ```python
 IntentType.EVIDENCE_REQUEST: _IntentDispatchKind.NOT_IMPLEMENTED,
 ```
@@ -138,7 +142,7 @@ specific hypotheses. The hypothesis-evidence relationship is
 established at evidence-collection time through the existing
 `hypothesis_evidence` junction.
 
-```
+```text
 Investigation Pool
 ├── Symptom needs (motivated by the problem statement)
 │   ├── [eneed_001] Response time metrics from API gateway     [PENDING]
@@ -273,7 +277,7 @@ verification evidence by category.
 The same need produces evidence rows of different categories at
 different stages:
 
-```
+```text
 Need: "API response time metrics from gateway"  (purpose=symptom_verification)
 ├── Turn 5 (DIAGNOSIS):    Evidence E1  category=SYMPTOM_EVIDENCE          → need FULFILLED
 ├── Turn 12 (MITIGATION):  Evidence E2  category=SYMPTOM_ABSENCE_EVIDENCE  → need stays FULFILLED
@@ -336,7 +340,7 @@ statement at Gate 1), the case enters INVESTIGATING. Early on — while
 `symptom_verified` is still False — the LLM does symptom-validation work
 and emits symptom needs.
 
-```
+```text
 Input:  Confirmed problem statement + initial symptoms + urgency context
 Output: List of symptom-verification needs (motivating_hypothesis_ids=[])
 ```
@@ -358,7 +362,7 @@ When the LLM emits `hypotheses_to_add`, the same turn it evaluates the
 new hypothesis against the existing evidence and needs pool. The output
 shape is **pool-based**, not single-anchored:
 
-```
+```text
 For each new hypothesis hyp_new:
   1. Scan existing evidence — does anything in the pool already
      speak to hyp_new?
@@ -522,7 +526,7 @@ replacement of the suggestion mechanism.
 
 The pool provides a granular signal below milestones:
 
-```
+```text
 Symptom needs:  1 / 3 fulfilled
 Causal needs:   1 / 3 fulfilled
 ```
@@ -578,7 +582,7 @@ emitted freely during early INVESTIGATING (§5.1). Orphan-need avoidance
 now rests on the prompt mandate that couples hypothesis emission to the
 uncertainty signal, plus the per-milestone surgical reasoning strip,
 rather than on a reject-and-resurface backstop. This is the intentional
-tier shift documented as R6 in [investigation-flow-redesign.md](./investigation-flow-redesign.md)
+tier shift documented in [investigation-lifecycle-logic.md §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert)
 and the INV-17/INV-21 retirement note in the lifecycle invariant matrix.
 
 ### 7.4 Hypothesis Retirement → Motivator-Based Supersession

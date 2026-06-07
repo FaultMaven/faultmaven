@@ -1,0 +1,13 @@
+{
+  // Project markdown-lint ruleset for FaultMaven docs.
+  // Structural rules (blank lines around lists/headings/fences, fenced-code
+  // language, single trailing newline) are enforced. Purely cosmetic / prose
+  // rules with no project standard are disabled to avoid churn:
+  "default": true,
+  "MD013": false,                      // line length — long prose lines & wide tables are fine
+  "MD060": false,                      // table pipe spacing — author discretion, no project standard
+  "MD033": false,                      // inline HTML — docs use HTML comments, <details>, <br>
+  "MD036": false,                      // emphasis-as-heading — intentional bold labels (e.g. **Why:**)
+  "MD024": { "siblings_only": true },  // repeated headings allowed under different parents
+  "MD004": { "style": "dash" }         // match the docs' existing dash bullets
+}

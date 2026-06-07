@@ -1,4 +1,4 @@
-# Prompt Templates Reference
+# Prompt Assembly Architecture
 
 > **Authoritative source:** `faultmaven/core/investigation/prompts/templates.py`
 >
@@ -127,7 +127,7 @@ Items 6–9 form a progression: user **can't** → user **contradicts** → user
 
 ### 3.2 Adaptive instructions
 
-The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(case)` on DIAGNOSIS turns and by stage-specific constants elsewhere. Under the unified opportunistic flow ([investigation-flow-redesign.md](./investigation-flow-redesign.md)) the path fork is retired: `_select_diagnosis_block` is now a thin wrapper that always assembles the single unified DIAGNOSIS block (it kept its name but no longer selects a path).
+The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(case)` on DIAGNOSIS turns and by stage-specific constants elsewhere. Under the unified opportunistic flow ([investigation-lifecycle-logic.md §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert)) the path fork is retired: `_select_diagnosis_block` is now a thin wrapper that always assembles the single unified DIAGNOSIS block (it kept its name but no longer selects a path).
 
 | Stage / mode | Adaptive instructions |
 | --- | --- |

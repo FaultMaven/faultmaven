@@ -3,9 +3,11 @@
 This document defines the state transitions, the unified opportunistic flow, and turn tracking logic for FaultMaven's evidence-driven investigation framework.
 
 **Related Documents**:
-- [Investigation Flow Redesign](./investigation-flow-redesign.md) - Design rationale for the unified flow, assessment variables, and stabilization-as-insert (supersedes the former path fork)
+
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) - Overview and philosophy
 - [Investigation Data Models](./investigation-data-models.md) - Core data structures
+
+§2 below is the canonical specification *and* design rationale for the unified opportunistic flow (the former `mitigation_first` / `root_cause` path fork, retired). It absorbs the shipped flow-redesign in full — Axis-A/Axis-B split, stabilization-as-insert, assessment-vs-gate variables, and the resolved design decisions (§2.5).
 
 ---
 
@@ -22,7 +24,7 @@ This document defines the state transitions, the unified opportunistic flow, and
 
 ### 1.1 Case Action Map
 
-```
+```text
 ┌──────────────┐
 │    INQUIRY   │
 │              │
@@ -87,18 +89,21 @@ Confirmations reduce errors but create friction. Use conditional logic:
 2. User explicitly confirms with Yes/No buttons or typed response
 
 **Natural flow (Section 1.2)**:
+
 - Turn N: User says "let's investigate"
 - Turn N response: Agent presents problem statement + [Yes/No]
 - Turn N+1: User clicks [Yes] or types confirmation
 - Turn N+1 response: Agent transitions status
 
 **Deferred recovery (when the LLM tries to collapse the handshake)**:
+
 - Turn N: LLM emits proposed_problem_statement AND `user_confirmed_investigation=True` in one shot
 - Engine: same-turn-confirmation guard rejects (see INV-01); sets `handshake_deferred_at_turn = N`
 - Turn N+1 context: `<inquiry_state>` switches from `NOT_YET_CONFIRMED` to `HANDSHAKE_DEFERRED` — LLM is told to re-present
 - Turn N+1 response: engine deterministically attaches the [Yes/No] confirmation suggestions, so the user has a clickable path regardless of LLM compliance with the re-present instruction
 
 **Manual flow (Section 1.5)**:
+
 - User clicks status dropdown → modal
 - User confirms modal → sends system message
 - Agent receives system message → presents statement + [Yes/No]
@@ -276,6 +281,7 @@ Disposition actions are NEVER automatic. The agent proposes resolution, and the
 user must explicitly confirm before the case action executes.
 
 **Flow**:
+
 1. Agent detects solution effectiveness → includes `ProposedTransition` in response
 2. System stores `pending_transition` on case (does NOT execute)
 3. Agent's response asks user: "Should I mark this case as resolved?"
@@ -344,6 +350,7 @@ chance to see what was accomplished before committing to an irreversible action.
 `needs_info` and `suggests_alternative` are kept as distinct values rather than overloading one label, because they drive different UX patterns (add-data vs reconsider-action). The column is maintained at the **single chokepoint `CaseRepository.save()`** (pattern P3) — every save calls the derive helper and rewrites the column, so the value can never drift from current case content without per-mutation-site update burden. The UI adapter passes the column through to all three `CaseUIResponse_*` variants; the frontend renders the dropdown menu against `disposition_eligibility`, not just `valid_next_states` (the structural action graph). Distinction: `valid_next_states` answers *which edges exist*; `disposition_eligibility` answers *which edges make sense given current content*.
 
 **needs_info flag for RESOLVED:** When resolution readiness returns `NEEDS_INFO`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, the system re-evaluates readiness via `assess_resolution_readiness()`:
+
 - **READY** → clears `needs_info`, overrides LLM response with confirmation prompt
 - **Still not ready** → cancels pending transition, suggests Close instead (no re-ask loop — the user was already asked once and couldn't provide the info). The resulting CLOSE proposal is terminal-clean: the root-cause analysis and full history are preserved.
 
@@ -353,6 +360,7 @@ chance to see what was accomplished before committing to an irreversible action.
 
 **Pending transition confirmation — all paths deterministic:** When a `pending_transition`
 exists (not `needs_info`), the user's response is handled without LLM involvement:
+
 - **Clear yes** (pattern match or intent metadata) → execute transition
 - **Clear no** (pattern match or intent metadata) → cancel transition, acknowledge
 - **Anything else** (ambiguous, long message, unrelated question) → re-present the
@@ -395,7 +403,7 @@ class KnowledgeResolution(BaseModel):
 
 **Engine behavior on `knowledge_resolution`** (during INVESTIGATING turn processing):
 
-1. **Attribute the active Cause.** Engine runs [Indicator resolution](./indicator-resolution.md) against current case state to identify which `### Cause <X>` from the matched runbook applies. If `verdict="single"`, proceed. If `verdict="multiple"`, defer the collapse: agent asks for a disambiguating Diagnostic Step finding before completing the transition. If `verdict="none"`, the fallback Cause is selected.
+1. **Attribute the active Cause.** Engine runs [Runbook cause matching](./runbook-cause-matching.md) against current case state to identify which `### Cause <X>` from the matched runbook applies. If `verdict="single"`, proceed. If `verdict="multiple"`, defer the collapse: agent asks for a disambiguating Diagnostic Step finding before completing the transition. If `verdict="none"`, the fallback Cause is selected.
 2. **Populate `RootCauseConclusion`** by direct field copy from the attributed Cause's ChromaDB metadata (no LLM extraction call):
    - `root_cause` ← Cause `Statement` (≤300 chars)
    - `mechanism` ← Cause `Mechanism` (≤800 chars)
@@ -474,7 +482,7 @@ There is no `INQUIRY → RESOLVED` edge. KB-driven cases route through INVESTIGA
 
 **Case Action Diagram**:
 
-```
+```text
 ┌──────────────┐
 │    INQUIRY   │
 │              │
@@ -516,72 +524,9 @@ There is no `INQUIRY → RESOLVED` edge. KB-driven cases route through INVESTIGA
 
 ### 1.3.1 Invariant Enforcement Matrix
 
-Every load-bearing lifecycle rule has at least one enforcement surface: code, schema, API, or prompt. The categories below carry *decreasing* strength — what's *structural* cannot be violated by construction; what's *prompt-only* depends on LLM compliance, which is stochastic and prone to drift across model versions and prompt edits.
+The full invariant registry — every load-bearing lifecycle rule (INV-01 … INV-24) with its enforcement-tier classification, pinning tests, and drift notes — lives in its own reference document: **[Investigation Invariant Enforcement Matrix](./investigation-invariants.md)**.
 
-**What this matrix is.** A compact index of lifecycle invariants with their enforcement-tier classification and pinning tests. It serves three functions:
-
-1. **Risk catalog** — the Enforcement column tells you at a glance which invariants are weakest (Prompt-only > Code-guarded > Schema > Structural). Weaker-tier invariants warrant more test investment and more careful PR review.
-2. **Test registry** — every row commits to at least one mechanical pin. Writing a row forces the question "what test pins this?"; gaps are visible.
-3. **Single-diff change surface** — when a refactor moves an invariant to a weaker tier, the diff is visible in one place. Code review can catch the regression risk explicitly.
-
-**What this matrix is not.** It is not a drift detector. Tables don't fire — they index. Drift detection happens at test-execution time (mechanical pins), in PR review (when the matrix surfaces tier changes), and via runtime telemetry (separately scoped). Re-reading the matrix doesn't catch a system that has silently stopped achieving its design goal — see *dynamic drift* below.
-
-**Dynamic drift.** A failure-mode class where the system as a whole stops achieving its design goal while every individual piece (matrix row, test, doc section, code, prompt) looks locally correct. It arises from cooperation between enforcement tiers — a code-guarded check depending on a prompt rule that has independently drifted, or two prompt rules with an implicit contract that one of them breaks. No static instrument catches this class: tests pass, the matrix stays consistent, code review is clean. Only runtime mitigations catch dynamic drift: real-LLM integration tests at PR time, outcome telemetry post-deploy (e.g., a *guard-fired-to-transition* ratio), and happy-path canary probes. At design time, the one static instrument that helps is **naming composition seams explicitly** — see the *Composition seam* line on rows where enforcement crosses tiers. Future audits can then verify both sides of the dependency rather than discovering it post-regression.
-
-**Enforcement legend:**
-
-- **Structural** — impossible to violate by construction (e.g., a state change that requires two separate function calls separated by case persistence and an LLM turn).
-- **Code-guarded** — an explicit `if` / assertion in the engine blocks the bad path.
-- **Schema** — Pydantic validator or DB CHECK constraint.
-- **API-level** — middleware or route-handler rejects the bad request.
-- **Prompt-only** — the LLM is instructed but the engine doesn't enforce. Weakest category; should be reserved for stylistic rules or rules with downstream code/structural backstops.
-
-| # | Invariant | Source | Enforcement | Test |
-|---|---|---|---|---|
-| INV-01 | INQUIRY → INVESTIGATING requires the user to confirm a `proposed_problem_statement` that was presented on a **prior** turn. The LLM cannot collapse the handshake into a single turn. | §1.2 *Two-Step Confirmation Flow* (above); `INQUIRY_TEMPLATE` ("Never set `user_confirmed_investigation=True` on the same turn you first present the problem statement") | **Code-guarded at three layers.** (1) Same-turn guard: `_apply_inquiry_updates` captures `_statement_existed_before_turn` and gates the confirmation branch on it. Same-turn confirmations log a WARNING, set `case.inquiry.handshake_deferred_at_turn = current_turn`, and are deferred. (2) Context-side recovery: on the turn immediately after a guard fire, `context_builder` switches the inquiry_state block from `NOT_YET_CONFIRMED` to `HANDSHAKE_DEFERRED` (instructing the LLM to re-present + ask). (3) Engine-owned Gate 1 affordance: `engine_owned_affordances(case, metadata)` in `milestone_engine.py` returns `("gate1", _investigation_confirmation_suggestions())` on **every** Gate-1-pending turn — not only the handshake-deferred recovery turn. This is the architectural completion that makes Gate 1 symmetric with Gate 2 and Gate 3: the engine owns the canonical clickable affordance whenever a `proposed_problem_statement` awaits confirmation, regardless of whether the LLM emits its own confirmation-shaped suggestions or LLM provider drift affects optional output fields like `intent`. *Composition seam:* the prompt-side `HANDSHAKE_DEFERRED` re-present instruction and the engine-side affordance emission are tied — removing or weakening the prompt block does not break the invariant (buttons still emit, user can still click) but degrades UX: confirmation buttons appear next to a response that doesn't ask the question. Audit `context_builder.py:inquiry_state_str` and `milestone_engine.py:engine_owned_affordances` together when either changes. *Outcome telemetry:* `faultmaven_inquiry_handshake_deferred_total` paired with `faultmaven_inquiry_handshake_recovered_total` (recovery ratio for the same-turn-guard fire path); `faultmaven_engine_owned_affordance_served_total{gate="gate1"}` counts every turn where the engine substituted the Gate-1 affordance pair — a sustained zero on `gate1` with non-zero INQUIRY volume signals the predicate or consolidator has regressed silently. See [`docs/operations/monitoring/lifecycle-metrics.md`](../../operations/monitoring/lifecycle-metrics.md). | `test_inquiry_transition::test_same_turn_confirmation_is_rejected`; `::test_confirmation_accepted_when_statement_persisted_across_turns`; `TestHandshakeDeferredRecovery::test_handshake_deferred_block_injected_on_recovery_turn`; `::test_not_yet_confirmed_block_used_when_flag_is_stale`; `::test_deterministic_confirmation_suggestions_on_recovery_turn`; `TestEngineOwnedGate1OnFirstDetect::test_first_detect_turn_emits_deterministic_confirmation_pair`; `test_engine_owned_affordances::TestGate1Predicate::*`; `test_engine_owned_affordances::TestEngineOwnedAffordances::test_gate1_pending_returns_confirmation_pair` |
-| INV-02 | INQUIRY → INVESTIGATING never auto-fires on CRITICAL/HIGH urgency alone — confirmation is still required regardless of severity. | §1.2 *Two-Step Confirmation Flow* — "Even for CRITICAL + ongoing issues" | **Code-guarded** — the urgency branch in `_apply_inquiry_updates` logs only; the transition gate still requires explicit `user_confirmed_investigation=True`. | `test_inquiry_transition::test_critical_outage_stays_inquiry_until_confirmed` |
-| INV-03 | Disposition transitions (INVESTIGATING → RESOLVED, INVESTIGATING → CLOSED, INQUIRY → CLOSED) NEVER auto-fire. The agent emits `ProposedTransition`; the user confirms on a subsequent turn. | §1.2 *INVESTIGATING → RESOLVED (Disposition)*; §1.4 line 488 ("Disposition actions are NEVER automatic") | **Structural** — `propose_transition` writes `pending_transition`; only `confirm_pending_transition` executes the state change. The two functions cannot be called within the same `process_turn` invocation without an intervening case save and LLM turn. *Composition seam:* the structural propose+confirm split preserves the no-auto-fire invariant regardless of prompt behavior, but the user-facing confirmation UX depends on (a) the engine setting `metadata["override_suggestions"]` at `propose_transition` call sites and (b) the LLM surfacing a "please confirm" cue in `agent_response` per `_AMBIGUITY_FIRST_RULE`. Removing the prompt rule does not break the invariant (buttons still emit deterministically; users can still confirm by typing) but does degrade UX: the buttons appear next to a response that doesn't acknowledge them. Audit `propose_transition` call sites in `milestone_engine.py` and the `_AMBIGUITY_FIRST_RULE` block in `templates.py` together when either changes. | `test_inv03_*` in `test_lifecycle_invariants.py` (5 tests pin the function-level contract: propose writes pending only, confirm-without-propose is a no-op, full handshake executes only via explicit confirm, decline clears pending) |
-| INV-04 | INQUIRY → RESOLVED has no direct edge. Every RESOLVED case flows through INVESTIGATING — even KB-matched cases. | §1.3 (line 442); `ALLOWED_ACTIONS` dict + `is_valid_action()` | **Schema** (`is_valid_action()` in `models.py` runs as a Pydantic model_validator on every `CaseAction` instantiation — `CaseAction` is `frozen=True` so the audit history cannot record the forbidden transition) + **Code-guarded** (`_execute_resolved_transition` raises `ValueError` on non-INVESTIGATING input — runtime backstop). `ALLOWED_ACTIONS` in `case_action_manager.py` is UI-affordance only (drives `get_allowed_transitions`). | `test_inv04_*` in `test_lifecycle_invariants.py` |
-| INV-05 | The derived stage label within INVESTIGATING (Investigating / Stabilizing / Resolving) follows the action-compliance gates AUTOMATICALLY — NO User-Agent Handshake. The "Stabilizing" label is driven by the single `progress.stabilization` record (accepted ∧ ¬verified), not by `mitigation_*` booleans. This is the only place where LLM-emitted compliance signals change derived state without explicit user confirmation, by design. | §1.4; §2 | **Schema-derived** — `InvestigationProgress.current_stage` is a pure computed property over the stabilization record + `solution_accepted`/`solution_verified`, with no handshake plumbing. The stabilization record's own validator enforces `verified ⇒ accepted`. | `test_inv05_*` in `test_lifecycle_invariants.py` (initial stage is Investigating; an accepted-but-unverified stabilization shows Stabilizing with no pending_transition; solution_accepted shows Resolving; static guard that the property body contains no handshake tokens) |
-| INV-06 | The KB-Resolution same-turn collapse (INVESTIGATING → RESOLVED in one turn for runbook-matched cases) goes through `propose_transition` + `confirm_pending_transition` — the same mechanism as the multi-turn path. The engine fires confirm in the same turn ONLY when both `transition_proposed_this_turn` and `knowledge_resolution_signalled` metadata flags are set; the user's runbook-confirmation message ("it worked") is the implicit disposition acknowledgment. Every other ProposedTransition emission still follows the standard 2-turn handshake. | §1.2 *KB-Resolution Path* (lines 380-385); §4.2 | **Structural** — uses the same `pending_transition` mechanism as the multi-turn path. The same-turn collapse is the only deviation, scoped via metadata-flag conjunction. *Composition seam:* the same-turn collapse trigger depends on the LLM emitting `knowledge_resolution` in `state_updates` when a runbook fix is acknowledged — the engine's conjunction in `_check_automatic_transitions` cannot fire without the prompt-driven signal. Removing the prompt instruction to emit `knowledge_resolution` does not break the invariant (multi-turn fallback works; cases reach RESOLVED via the standard 2-turn handshake) but defeats the KB-resolution UX optimization. Audit the `knowledge_resolution` emission rule in `INVESTIGATION_BASE` (`templates.py`) and the conjunction gate in `milestone_engine.py:_check_automatic_transitions` together when either changes. | `test_inv06_*` in `test_lifecycle_invariants.py` |
-| INV-07 | Evidence rows are born only during INVESTIGATING. No Evidence creation during INQUIRY — `InquiryStateUpdate` has no `evidence_to_add` field. Uploads during INQUIRY persist as `UploadedFile` only. | §1.2.1 *Core principles* | **Schema** — `InquiryStateUpdate` Pydantic model does not declare `evidence_to_add`; engine `_apply_inquiry_updates` has no evidence-creation branch. The model uses `extra='ignore'` (Pydantic default) deliberately — LLM emissions of unknown fields are silently dropped to preserve graceful degradation rather than failing the turn; the invariant is enforced by field absence, not by rejecting strays. | `test_inv07_*` in `test_lifecycle_invariants.py` |
-| INV-08 | Every Evidence row has a known source: `source_file_id` set, **or** `source_type=USER_DESCRIPTION` for chat-quote evidence. There is no escape hatch. | §1.2.1 lines 215-222 | **Schema + DB** — Pydantic validators on `Evidence` and `EvidenceToAdd`; DB CHECK constraint `evidence_source_invariant` (migration 010). | exhaustive evidence-model tests |
-| INV-09 | Terminal cases (RESOLVED/CLOSED) are immutable: no new evidence, no transitions, no milestone updates. Only text Q&A, report regeneration, and runbook creation are permitted. | §1.7 *Terminal Mode* (lines 1039-1080) | **API-level** — `require_case_not_terminal()` helper function (used at the case-update endpoint; other write endpoints inline the `case.is_terminal` check). **Code-guarded** — `_process_turn_impl` short-circuits to `_process_terminal_turn` for terminal cases, bypassing the milestone-engine state-mutation pipeline. | `test_inv09_*` in `test_lifecycle_invariants.py` |
-| INV-10 | `submit_turn` on a terminal case: text query → routed to terminal Q&A; files / pasted content → 409 Conflict; status-transition intent → 409 Conflict. | §1.7 *Terminal Mode* (lines 1072-1078) | **API-level** — `submit_turn` endpoint inspects payload kind. | `test_inv10_*` in `test_lifecycle_invariants.py` (3 static-source guards on `routes.submit_turn`: files/pasted_content + 409 rejection block; status_transition + 409 rejection block; no unconditional rejection of text queries) |
-| INV-11 | Auto-generated `CLOSURE_SUMMARY` is gated on **investigation substance** (`evidence>0` OR `hypotheses>0` OR `completed_milestones>0`). The verdict is stable post-closure because all three signals are immutable in CLOSED state. `RESOLUTION_SUMMARY` always generates. | §1.7.3, §4.5.0 | **Code-guarded** — `should_generate_terminal_summary` in `terminal_transitions.py` | `test_milestone_engine::test_summary_guardrail_*`; `::test_skip_reason_*` |
-| INV-12 | Free-typed paraphrases of regen/runbook intent ("recap", "summarize", "new runbook please") route to terminal Q&A and **never** produce a persisted Report or Runbook side effect. Only **exact-match** of the COOPERATIVE-suggestion payload triggers a persisted side effect. | §1.7.3 *Regeneration* (free-text routes to Q&A) | **Code-guarded** — `_REPORT_REGEN_PATTERNS` and `_RUNBOOK_CREATION_PATTERNS` use exact-match (`msg_lower in patterns`); paraphrases fall through to `_process_terminal_qa`. | `test_inv12_*` in `test_lifecycle_invariants.py` (4 tests: exact payload triggers regen; free-typed recap/summarize paraphrases route to Q&A; runbook paraphrases route to Q&A; pattern tuples stay in lockstep with COOPERATIVE-suggestion payload constants) |
-| INV-13 | The closure-acknowledgment turn's suggestion set depends on whether summary generation succeeded. **Success path**: RESOLVED offers the runbook affordance only (no regen); CLOSED is silent. The freshly-rendered inline summary is right above; regen alongside would be noise. **Failure path**: regen IS offered on the ack-turn — `_select_ack_follow_ups` returns `_resolved_suggestions()` (regen + runbook) for RESOLVED and `_closed_suggestions(case)` (regen, since substance had to PASS for generation to be attempted) for CLOSED. Regen is otherwise offered on subsequent terminal Q&A turns when the substance gate would PASS. | §1.7.3 *Regeneration: Where it's offered* | **Code-guarded** — `_select_ack_follow_ups` in `milestone_engine.py` switches on the `summary_failed` flag returned by `_auto_generate_report`. All three ack-turn call sites (explicit confirm, dropdown second-click, LLM-driven transition) route through this single helper. | `test_inv13_*` in `test_lifecycle_invariants.py` (4 tests pin the helper contracts on the success path: resolved-ack offers runbook only with no regen; resolved Q&A offers both regen + runbook; closed Q&A offers regen only when substance gate passes, never runbook; ack ⊂ Q&A by construction) + `test_runbook_completion_and_summary_failure.py::TestAckTurnFollowUpsOnFailure` (4 tests pin the failure-path branch of `_select_ack_follow_ups`) |
-| INV-14 | Manual case-action requests (status dropdown) flow through the same confirmation pattern as natural progression — they cannot bypass the User-Agent Handshake. | §1.5 *Core Principle* — "all case actions require explicit user confirmation" | **Structural** — the UI sends a system message that routes through `submit_turn` + the standard `pending_transition` mechanism. *Composition seam:* dropdown-driven dispositions inherit the same confirmation-pair UX seam as INV-03 — the dropdown's system message (from `CASE_ACTION_MESSAGES` in `case_action_manager.py`) is a fixed string, but the LLM's `agent_response` is expected to surface a "please confirm" cue per `_AMBIGUITY_FIRST_RULE` alongside the engine-emitted override suggestions. Audit the same surfaces as INV-03. | `test_inv14_*` in `test_lifecycle_invariants.py` (4 tests pin that dropdown-initiated INQUIRY→CLOSED / INVESTIGATING→CLOSED / INVESTIGATING→RESOLVED writes pending_transition and leaves `case.state` unchanged this turn); cross-references: `test_transition_alignment.py::test_ui_dropdown_*` (canonical confirmation-pair emission) and `test_investigation_lifecycle.py::test_explicit_ui_resolve_proposes_then_confirms` (two-turn end-to-end) |
-| INV-15 | The agent is an **ADVISOR** — it never runs commands, accesses systems, or makes infrastructure changes. Stated in the agent's vocabulary constraint (banned/required phrase table). | §1.6 *Agent Role Constraints* | **Prompt-only** + light vocabulary check. The runtime scan (`_completion_phrases` at `milestone_engine.py:3186`, consumed at `:3246`) is deliberately narrow — it covers the highest-stakes drift (false completion claims like *"case closed"*, *"marking as resolved"*) where the signal/noise ratio is strongest. Action-claim phrases from `_ADVISOR_ROLE_CONSTRAINT` (*"Let me check"*, *"I will run"*) are not scanned — they have higher false-positive rates in legitimate context (quoting the user, hedge phrases). Broader advisor-role drift detection is deferred to a separate `advisor_role_compliance` telemetry signal if/when operational evidence warrants it. | `test_inv15_*` in `test_lifecycle_invariants.py` |
-| INV-16 | The LLM is the **sole authority** for milestone advancement. `validate_milestone_claims` in the evidence processor is read-only — it returns validation results but never writes to `case.progress.*`. Milestone state changes flow ONLY from the LLM's structured output through the milestone engine. | §3.1 *Issue A* (keyword-discovery dual pathway removed) | **Code-guarded by construction** — `validate_milestone_claims` returns `List[MilestoneValidationResult]` and contains no `case.progress.<field> =` assignments. Static-source guard pins this so any future regression (a refactor reintroducing a write inside the evidence processor) breaks the test. | `test_inv16_*` in `test_lifecycle_invariants.py` |
-| INV-18 | Runbook generation is RESOLVED-only. CLOSED cases are not eligible regardless of `closure_reason`. Both the chat-side dispatcher and the API endpoint reject non-RESOLVED cases. | §4.5.1 — *"Eligibility: RESOLVED cases only."* | **Code-guarded at two layers** — (1) Engine: `_process_terminal_turn` gates dispatch on `case.state == CaseState.RESOLVED`; non-RESOLVED falls through to terminal Q&A. (2) API: `POST /knowledge/convert-from-case` returns HTTP 400 when `case_status != "resolved"` (`conversion_routes.py:511`). | `test_inv18_*` in `test_lifecycle_invariants.py` |
-| INV-22 | **`cause_state` is an engine-derived truth signal that is NEVER path/state-stripped.** It records *what the engine knows about the cause* — recomputed every INVESTIGATING turn from the LLM's grounded cause signal plus the active-hypothesis count, independent of stage or any (now-removed) path. There is no window in which a legitimately-known cause is suppressed; this is the linchpin that dissolved the old self-naming-error trap (a case that identified its cause at turn 5 but stayed UNRESOLVED because the path forbade RCA-side emissions). | §2; [investigation-flow-redesign.md §4.1, R1](./investigation-flow-redesign.md) | **Code-guarded** — `_recompute_assessment_state(case)` in `milestone_engine.py` is called at the end of `_apply_investigation_updates` on every turn and sets `cause_state` from `HypothesisManager.count_active_hypotheses` + the grounded signal. The reasoning-validation strip (INV-23) operates on emitted milestones, never on the recomputed assessment enum. The justification bar accepts a self-naming-error extract as a valid basis for IDENTIFIED. | `tests/unit/core/investigation/test_surgical_strip_and_cause_state.py` (cause_state derivation across 0/1/≥2 hypotheses + grounded signal; self-naming-error acceptance) |
-| INV-23 | **The reasoning-validation strip is per-milestone surgical.** When `validate_reasoning_first` rejects an emission for missing justification, only the *offending* milestones are reset to None — co-emitted valid milestones survive. A single unjustified milestone never wipes the others. (Global failures — no `internal_reasoning`, no actionable evidence — still implicate every completed milestone; turn-reference format errors implicate none.) | §2; [investigation-flow-redesign.md §5](./investigation-flow-redesign.md) | **Code-guarded** — `validate_reasoning_first` returns the *set* of offending milestone names; the apply-path caller in `milestone_engine.py` strips only that set. Replaces the prior wholesale-wipe degradation branch that destroyed valid `mitigation_accepted` / `mitigation_verified` alongside one forbidden emission (the S1 collateral-wipe bug). | `tests/unit/core/investigation/test_surgical_strip_and_cause_state.py` (surgical strip preserves co-emitted valid gates) |
-| INV-24 | **The stabilization record is a single forward-only insert.** There is one `progress.stabilization: StabilizationRecord` per investigation; its own validator enforces `verified ⇒ accepted`. Acceptance/verification are never reset (no MITIGATION re-entry). `completed_at_turn` is stamped once when `verified` first flips True (the boundary for up-weighting pre-stabilization evidence in later RCA). A non-stabilizing insert is not a dead-end — the flow stays open to user-led action (alternative fix in prose, escalate, new data, or CLOSE). | §2; [investigation-flow-redesign.md §3.2.1, R2](./investigation-flow-redesign.md) | **Schema** — `StabilizationRecord._verified_requires_accepted` model_validator. **Code-guarded** — the engine materializes the record from the LLM gate signals and stamps `completed_at_turn` idempotently; `solution_ordering` on `InvestigationProgress` keeps `solution_verified ⇒ solution_accepted`. | `test_inv05_*` / stabilization-lifecycle tests in `test_lifecycle_invariants.py`; `StabilizationRecord` `verified ⇒ accepted` validator tests in `tests/unit/core/investigation/test_milestone_order_rejection.py` |
-
-**Drift notes (as of this writing):**
-
-- **INV-01** historical drift: the design previously described a mechanical regex fallback (`user_confirms()`) inside `_apply_inquiry_updates` as the second confirmation path. That fallback was deliberately removed in commit `06cfa834` (2026-03-17) in favor of intent-routing for explicit clicks. The pseudocode at the top of §1.2 still references the old fallback and should be updated separately. The same-turn-confirmation guard documented in INV-01 was added in `13ff2eae` after the gap was observed in production.
-- **INV-01** deferral-without-recovery gap *(resolved)*: when commit `13ff2eae` added the same-turn-confirmation guard, its commit message stated *"the transition is deferred to the next turn (where the LLM re-presents the statement and the user confirms explicitly)."* That deferral assumption was never code-backed. The recovery turn's context still carried the `NOT_YET_CONFIRMED` block from `16bb0912` (2026-04-23), which actively instructs the LLM *"Do NOT re-propose the same statement."* When the guard fired, the case stalled silently — statement persisted, no LLM re-present, no clickable affordance. Observed on case `case_bb917dcd5bb2` (turn 14 "Yes, let's investigate this"): guard fired, user moved on to other questions, case never transitioned. Fix: `case.inquiry.handshake_deferred_at_turn` flag set at the guard site; `context_builder` switches to `HANDSHAKE_DEFERRED` on the recovery turn; engine deterministically emits the canonical confirmation suggestions. The matrix row above now lists both Code-guarded layers (deferral + recovery affordance) so future audits surface the prompt-code dependency before a similar regression slips through.
-- **INV-04** matrix-text drift *(resolved)*: the INV-04 row now names the real symbols (`ALLOWED_ACTIONS` + `is_valid_action()`), and §1.3's pseudocode block now uses `ALLOWED_ACTIONS` instead of the non-existent `VALID_TRANSITIONS`. The duplication-risk note below is the remaining open item — graph still lives in three places, gated by `test_inv04_valid_action_graphs_agree_across_definitions`.
-- **INV-04** duplication risk: the valid-action graph is duplicated across **three** locations — `ALLOWED_ACTIONS` (case_action_manager.py), `valid_actions` (inside `is_valid_action()` in models.py), and implicit in the `_execute_*_transition` runtime preconditions in `terminal_transitions.py`. They currently agree, but no single source of truth means a future single-sided edit would let the forbidden edge slip through one enforcement surface while the others still reject it. `test_inv04_valid_action_graphs_agree_across_definitions` is the consistency guard until consolidation; the cleanup itself is separate work.
-- **INV-04** dead code *(resolved)*: `CaseActionManager.validate_action` (and its `validate_transition` alias) had zero production callers and was deleted. `ALLOWED_ACTIONS` is now used only by the UI adapter for `get_allowed_transitions` (dropdown affordance), which was always its only real purpose.
-- **INV-04** doc-doc contradiction *(resolved)*: `agent-stage-playbook.md` previously declared an `INQUIRY → TERMINAL (RESOLVED)` "Fast-track: KB match" edge in three places (§1 transition table, phase diagram, and INQUIRY-stage Gate Conditions table). The edge does not exist — INV-04's Pydantic validator + `_execute_resolved_transition`'s precondition reject it at construction time. The playbook was describing the **UX appearance** ("inquiry resolved fast") while the code implements INV-06's same-turn KB-Resolution collapse (INQUIRY → DIAGNOSIS → RESOLVED, one turn, but still passing through INVESTIGATING). Doc-behind-code drift; playbook updated to remove the fast-path with explanatory call-outs pointing readers at the canonical spec here. Surfaced by a separate design-check that streamed the finding but did not save it to the audit report — also a reminder that the saved report is not always a complete record of the streamed audit.
-- **INV-05** (stage gates) intentionally relies on prompt-only enforcement. The blast radius is bounded — stage transitions within INVESTIGATING don't change disposition or commit anything irreversible. A premature gate at most miscategorizes the current investigation phase; it cannot leak a case into a terminal state. Documented here so the asymmetry with INV-03 is deliberate, not accidental.
-- **INV-06** *(resolved)*: the prior drift between §1.2's claim of a same-turn user-side collapse and the engine's `transition_proposed_this_turn` guard has been closed. The engine now fires `confirm_pending_transition` in the same turn ONLY when both `transition_proposed_this_turn` and `knowledge_resolution_signalled` are set in the turn's metadata — the well-scoped KB-resolution path. Every other ProposedTransition emission still follows the standard 2-turn handshake. As a side effect, `metadata["knowledge_resolution_signalled"]` (previously dead) is now load-bearing as the conjunction gate. Decision history: Option B from the cluster-2 audit follow-up; recency of design (2026-05-11) over code (2026-02-12) + recoverability of the code change (no edge-case dead end) drove the choice to update code rather than weaken the design.
-- **INV-07** schema permissiveness *(decided — keep current)*: `InquiryStateUpdate` uses Pydantic's default `extra='ignore'`. An LLM emitting `evidence_to_add` (or any other invalid field) in an INQUIRY response has the field silently dropped, not rejected. The invariant holds (no Evidence row created — the engine has no creation branch either). Switching to `extra='forbid'` was considered and rejected: the invariant is enforced by **field absence**, not by rejecting strays; switching to `forbid` would convert benign LLM drift into user-facing turn failures (the `_generate_structured_output` retry chain might recover, but each occurrence costs latency + cost or surfaces as an error) with no improvement to the invariant. If LLM drift becomes a concern, add a separate passive observability signal (e.g., log unknown fields at the structured-output parse step) — not a Pydantic config tightening.
-- **INV-09** terminology drift *(resolved)*: the INV-09 row now describes the mechanism accurately as "`require_case_not_terminal()` helper function (used at the case-update endpoint; other write endpoints inline the `case.is_terminal` check)". A future consolidation pass via a FastAPI dependency-injection layer remains deferred — the protection is consistent in intent across endpoints today, only the mechanism varies.
-- **INV-14** *(resolved)*: previously two drift notes lived here — (a) §1.5.2 still described the deprecated plain-text `/queries` mechanism, and (b) §1.5.2 didn't surface the RESOLVED dropdown's three-branch behavior (`READY` / `SUGGEST_CLOSE` / `NEEDS_INFO`). Both gaps are now closed: §1.5.2 Step 2 describes the structured-intent payload (`intent_type="status_transition"` + `intent_data`) and Step 3 carries the three-branch table.
-- **INV-15** (advisor role) is acceptable as prompt-only because the worst-case symptom is the agent suggesting it ran a command (it didn't — there's no execution surface in the codebase to do so). The constraint is stylistic; violations are caught in compliance review, not at runtime.
-- **INV-15** scan scope *(decided — keep narrow, defer broader signal)*: the runtime `_completion_phrases` scan (defined at `milestone_engine.py:3186`, consumed at `:3246`) covers the high-stakes transition-completion phrases (*"case closed"*, *"marking as resolved"*) where the signal/noise ratio is strongest. The broader `_ADVISOR_ROLE_CONSTRAINT` banned-phrase list (*"Let me check"*, *"I will run"*, *"Let me look at"*, *"I'll execute"*) is deliberately NOT in the runtime scan — these phrases are generic enough to appear in benign context (the agent quoting the user, hedge phrasing like *"Let me look at this from your angle..."*) where false positives would dilute the telemetry signal. If broader advisor-role drift detection becomes valuable, add a separately-tagged `advisor_role_compliance` signal alongside the existing `transition_compliance` scan — distinct log key so analytics can pivot on each independently. Deferred until operational evidence warrants it.
-- **INV-17 / INV-19 / INV-20 / INV-21 retired (2026-06-05, flow redesign):** these rows enforced the path fork and its emission bans — INV-17 (hypothesis-before-causal-evidence, enforced across the path-conditional dispatch), INV-19 (Gate 2 path-selection commit), INV-20 (already removed), and INV-21 (Gate 3 post-mitigation RCA guard). The unified opportunistic flow removes `InvestigationPath` / `PathSelection`, Gate 2, Gate 3, and the three path-conditional emission bans entirely. **R6 tier shift (deliberate):** retiring INV-17 and INV-21 drops two *structural/code* guards. They are replaced by (a) the `cause_state` gate — run the diagnostic machinery iff `cause_state ∈ {UNKNOWN, CANDIDATES}` (a prompt-guided rule, no longer a hard engine ban on hypothesis/causal-evidence emission), (b) the per-milestone surgical strip (INV-23), and (c) the coupled prompt mandate that forces hypothesis emission under uncertainty (the producer of derived `CANDIDATES`). The self-naming simulation campaign is the safety net for this tier change. The hypothesis-before-causal-evidence ordering survives as prompt guidance in the unified INVESTIGATION block, not as an engine reject-and-resurface backstop.
-
-**How to use this matrix:**
-
-1. When a PR touches any code referenced under "Enforcement", verify the corresponding row's classification still holds — a row that moves to a weaker category is a deliberate design change requiring a doc update.
-2. When writing tests, prefer pinning invariants over pinning behaviors. A test named after an INV-XX is robust against incidental refactors; a test named after the function under test is not.
-3. When the design evolves, add or remove rows. The matrix is not a frozen artifact — but each change should be visible in a single doc diff.
-4. When introducing a new cross-tier dependency (one tier's enforcement cooperates with another tier's behavior to achieve the design goal), add a `*Composition seam:*` annotation to the row's Enforcement column. The annotation names the dependency, states what removing/weakening one side would do (distinguishing invariant violation from design-goal degradation), and points to the symbols future audits should verify together. See INV-01, INV-03, INV-06, INV-14 for examples. Absence of the annotation on a row means the invariant was reviewed and found to be single-tier or to have intra-tier concerns captured in the drift notes.
+It was extracted from this section so the matrix can be maintained and audited independently. The invariants index the rules defined throughout §1–§4 of this document; the *Source* column there points back here by section number.
 
 ### 1.4 Automatic Milestone Tracking and Stage Transitions
 
@@ -783,6 +728,7 @@ State updates occur at specific points within a turn to ensure consistency:
 **Location**: Case header (collapsed view)
 
 **Behavior**:
+
 - Shows current status with dropdown indicator
 - Displays only **forward transitions** (case actions are irreversible)
 - Dispositions (RESOLVED, CLOSED) have dropdown disabled
@@ -806,7 +752,7 @@ State updates occur at specific points within a turn to ensure consistency:
 
 User selects new status from dropdown → Frontend shows confirmation modal:
 
-```
+```text
 ⚠️ Request Case Action
 
 This will ask the agent to transition the case to [NEW_STATUS].
@@ -837,6 +783,7 @@ Body (multipart/form-data):
 ```
 
 **API Endpoint**: `POST /api/v1/cases/{case_id}/turns`
+
 - **Purpose**: Submit a turn — query text, attachments, and/or structured intent.
 - **Auth**: Requires Bearer token + X-Session-Id.
 - **Returns**: `TurnResponse` with the agent's reply.
@@ -883,21 +830,25 @@ decline, or refine.
 **Step 4: User Confirms (3 Options)**
 
 **Option A: Click [✅ Yes]**
+
 - Frontend sends system-generated message: `"Yes"`
 - Agent immediately transitions status
 - Agent responds with acknowledgment
 
 **Option B: Click [❌ No]**
+
 - Frontend sends system-generated message: `"No"`
 - Agent cancels request, stays in current status
 - Agent asks what user wants to do next
 
 **Option C: Type qualified answer**
+
 - User types: "Not 30%, more like 50%, and started 3 hours ago"
 - Agent refines understanding
 - Agent presents confirmation question again with updated context
 
 **API Call for all options**:
+
 ```typescript
 POST /api/v1/cases/{case_id}/queries
 Body: {
@@ -918,7 +869,7 @@ If user confirmed (Option A or refined via Option C), agent:
 
 **Example response** (INQUIRY → INVESTIGATING):
 
-```
+```text
 "Understood. Transitioning to formal investigation now.
 
 Based on our discussion, the problem is:
@@ -929,6 +880,7 @@ Let me start by verifying the scope and impact. What services are affected?"
 ```
 
 **Backend updates**:
+
 - `case.state = CaseState.INVESTIGATING`
 - `case.problem_verification = ProblemVerification(symptom_statement=...)`
 - `case.action_history.append(CaseAction(...))`
@@ -939,7 +891,7 @@ Let me start by verifying the scope and impact. What services are affected?"
 
 **Visual Design** (in chat conversation):
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
 │ Agent:                                   2:45 PM│
 │                                                 │
@@ -1130,18 +1082,21 @@ All manual case actions use **existing endpoints** - no new APIs required:
 #### 1.5.6 Design Rationale
 
 **Why dropdown menu instead of pure chat?**
+
 - **Discoverability**: Users see available case actions
 - **Clarity**: Visual indicator of current status + forward-only options
 - **Efficiency**: One click vs composing message
 - **Removes ambiguity**: "Let's investigate" could mean many things
 
 **Why agent confirmation instead of direct case action?**
+
 - **Consistency**: Same pattern as natural progression (all case actions require confirmation)
 - **Safety**: Agent can validate prerequisites and catch mistakes
 - **Context**: Agent ensures mutual understanding before transition
 - **Audit**: Full conversation record of why the case action occurred
 
 **Why buttons + typed fallback?**
+
 - **Efficiency**: Most cases are simple yes/no
 - **Flexibility**: User can elaborate when needed
 - **Natural**: Matches existing confirmation pattern in natural progression
@@ -1162,7 +1117,7 @@ When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine
 
 #### 1.7.1 Case Interaction Modes
 
-```
+```text
 ┌─────────────┐   terminal    ┌──────────────┐   user        ┌──────────┐
 │   ACTIVE    │──transition──►│   TERMINAL   │──archives───► │ ARCHIVED │──retention──► removed
 │             │               │              │               │          │   expires
@@ -1291,8 +1246,8 @@ Uses the existing `InvestigationSession.complete()` method. No new session statu
 There is **one opportunistic INVESTIGATING flow** — no prospective path fork, no
 merge. The former `mitigation_first` vs `root_cause` path selection (Gate 2), the
 post-mitigation choice (Gate 3), and the urgency-based path recommender are all
-**removed**. See [investigation-flow-redesign.md](./investigation-flow-redesign.md)
-for the full design rationale; this section describes the resulting behavior.
+**removed**. This section is the canonical home for both the design rationale and
+the resulting behavior; the resolved design decisions are in §2.5.
 
 ### 2.1 Two orthogonal axes (why the fork was wrong)
 
@@ -1428,6 +1383,18 @@ Cases closed via this path use the existing terminal state:
 
 `RESOLVED` remains pristine — it always means a permanent fix with verified root cause. See §4.5.1 for runbook generation.
 
+### 2.5 Design decisions and open follow-ons
+
+The unified flow was ratified with the following decisions (resolved 2026-06-05):
+
+1. **Solution-space deliberation reuses the hypothesis / evidence-needs machinery.** Candidate solutions are enumerated, compared, and selected through the same propose/evidence/converge loop that drives causal hypotheses, rather than a parallel structure — a dedicated structure is introduced only if a clear advantage emerges. This is the genuinely under-built surface today: the current SOLUTION stage assumes a *single obvious fix* to propose-and-verify and has no notion of deliberating across a solution space (trade-offs, workaround-vs-permanent, design choices). `solution_state = CANDIDATES` is the reserved hook for this; the deliberation-loop design (what "evidence" means for a solution choice, and how `solution_state` advances UNKNOWN→CANDIDATES→SELECTED) is the highest-value follow-on work.
+2. **Deferred-implementation disposition is CLOSE-with-documented-solution** (forwarding row 3 in §2.3) — no third terminal state unless analytics genuinely need to separate "resolved-pending-impl" from "abandoned." The documented root cause + selected fix are preserved on the closed case (`closure_reason = closed_after_investigation`).
+3. **One stabilization record for now** (forward-only), but the flow must stay open to user-led action so a non-stabilizing insert is never a dead-end (§2.3; INV-24). Multiple structured stabilization records are a possible future extension.
+4. **`cause_state = CANDIDATES` is derived** from the active-hypothesis count (≥2 ACTIVE hypotheses), not a second stored field — coupled to the prompt change that forces hypothesis emission under uncertainty (they ship together; see §1.4.1 and INV-22). A derived signal over an unreliable producer is worse than the boolean it replaced, so the derivation and the prompt mandate are not separable.
+5. **Resolution-gate interaction** (`solution_verified` ↔ the absence-evidence end-state) is revisited *after* this redesign rather than folded in — see the resolution-gate notes and the `resolution_suggest_close` guard in §1.2.
+
+Parse-time robustness for malformed LLM structured output (the general never-500 backstop) is a separate layer, specified in [error-handling-and-recovery.md §3.4](./error-handling-and-recovery.md#34-never-500-backstop-for-parse-time-validation-errors).
+
 ---
 
 ## 3. Turn Progress Tracking
@@ -1489,7 +1456,7 @@ See [Evidence Model](./evidence-driven-investigation-framework.md#5-evidence-mod
 | `MITIGATION_EVIDENCE` | Data showing whether the temporary fix worked | MITIGATION |
 | `SOLUTION_EVIDENCE` | Data showing whether the permanent fix worked | TREATMENT |
 
-```
+```text
 
 ### 3.2 Turn Recording and Progress Detection
 
@@ -1661,16 +1628,19 @@ See **[Agent Behavioral Rules — Rule 2: Evidence-Grounded](./agent-behavioral-
 This section outlines all possible case lifecycles and their associated milestones.
 
 ### 4.1 Inquiry-Only Lifecycle (No Investigation)
+
 **User Goal**: Ask a quick question or get clarification without starting a formal investigation.
 **Flow**: `INQUIRY` → `CLOSED`
 
 #### Workflow Steps
-1.  **User Inquiry**: User asks a question (e.g., "How do I check logs?").
-2.  **Agent Response**: Agent answers the question.
-3.  **Closure**: User leaves or explicitly closes the session.
+
+1. **User Inquiry**: User asks a question (e.g., "How do I check logs?").
+2. **Agent Response**: Agent answers the question.
+3. **Closure**: User leaves or explicitly closes the session.
 
 #### Milestones
-*   None (Investigation milestones do not start).
+
+- None (Investigation milestones do not start).
 
 ---
 
@@ -1683,21 +1653,22 @@ This is not a separate lifecycle edge — it is the standard `INQUIRY → INVEST
 
 #### Workflow Steps
 
-1.  **Detection (during INQUIRY)**: Agent calls `kb_qa` for the symptom and identifies a high-confidence runbook match. KB match is held back from the user until problem statement is confirmed.
-2.  **Problem confirmation (INQUIRY → INVESTIGATING)**: Agent presents problem statement; user confirms. Standard INQUIRY → INVESTIGATING transition fires.
-3.  **Cause attribution (early INVESTIGATING)**: Engine runs [Indicator resolution](./indicator-resolution.md) against current case state to attribute the active `### Cause <X>` from the retrieved runbook. If attribution is unambiguous, agent proposes the Cause's `Mitigation` + `Resolution` to the user.
-4.  **User applies the fix and confirms** ("That fixed it" / "It worked"). LLM emits `knowledge_resolution` in `state_updates`.
-5.  **Same-turn milestone collapse**: Engine populates `RootCauseConclusion` (Statement → `root_cause`, Mechanism → `mechanism`), creates `Solution` (Mitigation → `immediate_action`, Resolution → `longterm_fix`), and sets `root_cause_identified`, `solution_accepted`, `solution_verified`.
-6.  **Standard RESOLVED handshake**: LLM emits `ProposedTransition`; user's same confirmation message is recognized as the disposition acknowledgment; transition executes.
+1. **Detection (during INQUIRY)**: Agent calls `kb_qa` for the symptom and identifies a high-confidence runbook match. KB match is held back from the user until problem statement is confirmed.
+2. **Problem confirmation (INQUIRY → INVESTIGATING)**: Agent presents problem statement; user confirms. Standard INQUIRY → INVESTIGATING transition fires.
+3. **Cause attribution (early INVESTIGATING)**: Engine runs [Runbook cause matching](./runbook-cause-matching.md) against current case state to attribute the active `### Cause <X>` from the retrieved runbook. If attribution is unambiguous, agent proposes the Cause's `Mitigation` + `Resolution` to the user.
+4. **User applies the fix and confirms** ("That fixed it" / "It worked"). LLM emits `knowledge_resolution` in `state_updates`.
+5. **Same-turn milestone collapse**: Engine populates `RootCauseConclusion` (Statement → `root_cause`, Mechanism → `mechanism`), creates `Solution` (Mitigation → `immediate_action`, Resolution → `longterm_fix`), and sets `root_cause_identified`, `solution_accepted`, `solution_verified`.
+6. **Standard RESOLVED handshake**: LLM emits `ProposedTransition`; user's same confirmation message is recognized as the disposition acknowledgment; transition executes.
 
 #### Milestones
 
-* All standard INVESTIGATING milestones populated in the collapse turn: `symptom_verified`, `root_cause_identified`, `solution_proposed`, `solution_accepted`, `solution_verified`.
-* `knowledge_resolution` signal recorded for KB-attribution metrics.
+- All standard INVESTIGATING milestones populated in the collapse turn: `symptom_verified`, `root_cause_identified`, `solution_proposed`, `solution_accepted`, `solution_verified`.
+- `knowledge_resolution` signal recorded for KB-attribution metrics.
 
 ---
 
 ### 4.3 Direct Investigation (no stabilization)
+
 **User Goal**: Diagnose an issue, find the root cause, and fix it permanently — with no impact-now gap that requires a stabilization detour.
 **Flow**: `INQUIRY` → `INVESTIGATING` → `RESOLVED`
 
@@ -1706,34 +1677,37 @@ This is the common case: cause known or discoverable, solution implementable now
 #### Workflow Steps & Milestones
 
 **Phase 1: Inquiry**
-*   **Goal**: Establish problem statement.
-*   **Transition Trigger**: User confirms problem statement (Gate 1) and decides to investigate.
+
+- **Goal**: Establish problem statement.
+- **Transition Trigger**: User confirms problem statement (Gate 1) and decides to investigate.
 
 **Phase 2: Investigation** (one opportunistic flow)
 
-*   Agent verifies symptoms using evidence
-    *   Progress indicator: `symptom_verified` (LLM sets when symptoms confirmed)
-*   Diagnostic machinery runs **iff the cause is uncertain** (`cause_state ∈ {UNKNOWN, CANDIDATES}`):
-    *   Agent forms hypotheses, tests against evidence; when ≥2 plausible causes remain active the engine derives `cause_state=CANDIDATES`
-    *   When a single cause is established (or the error is self-naming), the engine records `cause_state=IDENTIFIED`. For self-naming errors this can happen as early as turn 1 — the engine records the cause it legitimately knows; it is never path-stripped.
-    *   Hypothesis-before-causal-evidence ordering is prompt guidance in the unified INVESTIGATION block (a causal claim presupposes a hypothesis to attach to)
-*   Agent proposes a concrete solution action
-    *   Progress indicator: `solution_proposed`; assessment: `solution_state=SELECTED` (`solution_feasible=NOW`)
-*   **Solution accepted → "Resolving"** (inference-based)
-    *   User complies with the proposed solution → gate milestone `solution_accepted`
-    *   If user questions or refuses → continues investigating, agent refines approach
-*   **Resolution verification** (iterative)
-    *   Agent verifies whether the fix worked from submitted evidence
-    *   If fix worked → agent proposes resolution via User-Agent Handshake
-    *   If fix failed → extended investigation: failure analysis → gap identification → targeted evidence request → new hypothesis → revised fix; escalation when no viable options remain
+- Agent verifies symptoms using evidence
+  - Progress indicator: `symptom_verified` (LLM sets when symptoms confirmed)
+- Diagnostic machinery runs **iff the cause is uncertain** (`cause_state ∈ {UNKNOWN, CANDIDATES}`):
+  - Agent forms hypotheses, tests against evidence; when ≥2 plausible causes remain active the engine derives `cause_state=CANDIDATES`
+  - When a single cause is established (or the error is self-naming), the engine records `cause_state=IDENTIFIED`. For self-naming errors this can happen as early as turn 1 — the engine records the cause it legitimately knows; it is never path-stripped.
+  - Hypothesis-before-causal-evidence ordering is prompt guidance in the unified INVESTIGATION block (a causal claim presupposes a hypothesis to attach to)
+- Agent proposes a concrete solution action
+  - Progress indicator: `solution_proposed`; assessment: `solution_state=SELECTED` (`solution_feasible=NOW`)
+- **Solution accepted → "Resolving"** (inference-based)
+  - User complies with the proposed solution → gate milestone `solution_accepted`
+  - If user questions or refuses → continues investigating, agent refines approach
+- **Resolution verification** (iterative)
+  - Agent verifies whether the fix worked from submitted evidence
+  - If fix worked → agent proposes resolution via User-Agent Handshake
+  - If fix failed → extended investigation: failure analysis → gap identification → targeted evidence request → new hypothesis → revised fix; escalation when no viable options remain
 
 **Phase 3: Resolution**
-*   **Transition Trigger**: User confirms fix worked via User-Agent Handshake → gate milestone `solution_verified`
-*   **State**: `RESOLVED`.
+
+- **Transition Trigger**: User confirms fix worked via User-Agent Handshake → gate milestone `solution_verified`
+- **State**: `RESOLVED`.
 
 ---
 
 ### 4.4 Stabilized Investigation (impact-now gap)
+
 **User Goal**: Stop active impact quickly, then continue the investigation.
 **Trigger**: An Axis-B stabilization gap — something is hurting now that can't be fully resolved this session. The agent *proposes* a stabilization in-prompt (no path is chosen upfront); the user accepts or declines.
 
@@ -1743,16 +1717,18 @@ forwarding table): cause uncertain → RCA; cause known / solution unclear →
 solution deliberation; cause + solution known but deferred → CLOSE-with-documented-solution.
 
 #### Stabilized → RESOLVED
+
 **Flow**: `INQUIRY` → `INVESTIGATING` (stabilization insert, then RCA + permanent fix) → `RESOLVED`
 
 **Gate signals / record**:
 
-*   `mitigation_accepted` (LLM emission) → materializes `stabilization.accepted`: user acknowledged executing the proposed stabilization.
-*   `mitigation_verified` (LLM emission) → materializes `stabilization.verified` + `completed_at_turn`: the stabilization stabilized the situation. The case continues opportunistically (the "Stabilizing" label clears).
-*   `solution_accepted`: user acknowledged executing the permanent solution → "Resolving".
-*   `solution_verified`: permanent fix validated (User-Agent Handshake) → RESOLVED.
+- `mitigation_accepted` (LLM emission) → materializes `stabilization.accepted`: user acknowledged executing the proposed stabilization.
+- `mitigation_verified` (LLM emission) → materializes `stabilization.verified` + `completed_at_turn`: the stabilization stabilized the situation. The case continues opportunistically (the "Stabilizing" label clears).
+- `solution_accepted`: user acknowledged executing the permanent solution → "Resolving".
+- `solution_verified`: permanent fix validated (User-Agent Handshake) → RESOLVED.
 
 #### Stabilized → CLOSED
+
 **Flow**: `INQUIRY` → `INVESTIGATING` (stabilization insert) → `CLOSED`
 
 The user decides the stabilization is sufficient (or RCA is infeasible, see §2.4) and does not pursue a permanent fix. Two paths lead here:
@@ -1934,21 +1910,23 @@ Independent of post-terminal operations. User can archive any terminal case via 
 ---
 
 ### 4.6 Abandoned / Escalated Investigation
+
 **User Goal**: Investigation stalled or handed off to human expert.
 **Flow**: `INQUIRY` → `INVESTIGATING` → `CLOSED`
 
 #### Workflow Steps
-1.  **Investigation Starts**: Gates and progress indicators partially set.
-2.  **Stall/Escalation**:
-    *   Agent cannot find root cause (no viable options — communicates limitations and suggests escalation).
-    *   User stops responding.
-    *   User explicitly requests escalation.
-    *   User closes after a stabilization without pursuing RCA (the documented stabilization is preserved on the closed case).
-3.  **Closure**: Case marked `CLOSED` with `closure_reason="closed_after_investigation"` (covers escalated, abandoned, and stabilized-then-closed alike).
+
+1. **Investigation Starts**: Gates and progress indicators partially set.
+2. **Stall/Escalation**:
+    - Agent cannot find root cause (no viable options — communicates limitations and suggests escalation).
+    - User stops responding.
+    - User explicitly requests escalation.
+    - User closes after a stabilization without pursuing RCA (the documented stabilization is preserved on the closed case).
+3. **Closure**: Case marked `CLOSED` with `closure_reason="closed_after_investigation"` (covers escalated, abandoned, and stabilized-then-closed alike).
 
 #### Milestones
 
-*   Partial progress: `symptom_verified`; `cause_state` may be UNKNOWN/CANDIDATES/IDENTIFIED; `solution_proposed`.
-*   The stabilization record may be present (`accepted`/`verified`) if a stabilization was performed.
-*   `working_conclusion`: Summary of findings up to the point of closure.
-*   `action_attempts`: Complete record of all stabilization and solution actions attempted.
+- Partial progress: `symptom_verified`; `cause_state` may be UNKNOWN/CANDIDATES/IDENTIFIED; `solution_proposed`.
+- The stabilization record may be present (`accepted`/`verified`) if a stabilization was performed.
+- `working_conclusion`: Summary of findings up to the point of closure.
+- `action_attempts`: Complete record of all stabilization and solution actions attempted.

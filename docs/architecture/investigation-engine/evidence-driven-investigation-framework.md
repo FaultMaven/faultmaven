@@ -28,6 +28,7 @@ This document defines the investigation architecture for FaultMaven's investigat
 | **Treatment failure** | Extended diagnosis within TREATMENT (new evidence required, not reprocessing) |
 
 **What does NOT change:**
+
 - Case states: INQUIRY → INVESTIGATING → RESOLVED/CLOSED
 - INQUIRY phase and two-step confirmation for entering INVESTIGATING
 - User-Agent Handshake for disposition transitions (RESOLVED/CLOSED)
@@ -44,6 +45,7 @@ During lifecycle testing (a high-urgency, stabilization-first scenario), several
 ### 1.1 LLM "Jump Ahead" Inconsistency
 
 The SYMPTOM_VERIFICATION prompt contained contradictory instructions:
+
 - "Classify as **symptom_evidence** first" (required for early milestones)
 - "**YOU CAN JUMP AHEAD** to root_cause_identified" (requires causal_evidence)
 
@@ -75,6 +77,7 @@ The user had no say in when the investigation moves from diagnosis to solution. 
 ### 1.5 Stages Imply an Ordering That Evidence Doesn't Follow
 
 The 4-stage model assumes: verify symptoms → form hypotheses → validate hypotheses → propose solution. But in practice:
+
 - Evidence arrives in any order (user may provide causal data first)
 - Root cause can be obvious from initial evidence (no hypothesis testing needed)
 - Mitigation may be needed before diagnosis is complete
@@ -101,6 +104,7 @@ This means:
 Investigation evidence flows naturally — the agent processes whatever data the user provides, in whatever order it arrives. But **stage transitions require explicit user acceptance**.
 
 This creates a clear separation:
+
 - **Within a stage**: The agent operates autonomously, guided by evidence
 - **Between stages**: The user decides when to advance
 
@@ -124,6 +128,7 @@ Evidence drives the agent's analysis (what to focus on, which hypotheses to form
 Stage transitions are inferred from user behavior, not explicit confirmation. When the agent proposes a solution and the user responds with evidence of having executed it (command output, post-fix metrics), the system infers acceptance and transitions to TREATMENT. If the user questions or refuses, no transition occurs.
 
 This is fundamentally different from case actions that require explicit confirmation:
+
 - **INQUIRY → INVESTIGATING**: Requires two-step confirmation (changes the nature of interaction)
 - **INVESTIGATING → RESOLVED/CLOSED**: Requires User-Agent Handshake (irreversible disposition)
 - **DIAGNOSIS → TREATMENT**: Inferred from compliance (user ran the command and pasted results)
@@ -154,7 +159,7 @@ Treating mitigation as a "tool available during other stages" creates complex ro
 
 ### 3.1 Stage Overview
 
-```
+```text
                     ┌──────────────────────────────────────────────────┐
                     │               INVESTIGATING                      │
                     │                                                   │
@@ -184,6 +189,7 @@ Treating mitigation as a "tool available during other stages" creates complex ro
 **Entry**: Case transitions from INQUIRY → INVESTIGATING.
 
 **Activities** (natural flow, not sequential):
+
 1. Verify the problem — symptoms, scope, timeline
 2. Form hypotheses — theories about why the problem is happening
 3. Test hypotheses — evaluate evidence against competing theories
@@ -200,11 +206,12 @@ preprocessing artifacts and is visible to the agent via the
 structural index. No Evidence row is created until a slice is
 extracted in support of a specific claim.
 
-**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is **prompt guidance** (no Python validator rejects orphan `causal_evidence`). The runtime prompt-side guidance lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (in `templates.py`), composed into the single unified DIAGNOSIS block (`_RCA_DIAGNOSIS_BLOCK`) reached by all INVESTIGATING turns. Under the unified opportunistic flow (the path fork and its emission bans are retired — see [Investigation Flow Redesign](./investigation-flow-redesign.md) and the retirement note on INV-17/INV-21 in the [Invariant Enforcement Matrix](./investigation-lifecycle-logic.md#131-invariant-enforcement-matrix)), there is no longer a pre-mitigation block that forbids `hypotheses_to_add` / `causal_evidence` emission; the diagnostic machinery runs whenever the cause is uncertain (`cause_state ∈ {UNKNOWN, CANDIDATES}`).
+**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is **prompt guidance** (no Python validator rejects orphan `causal_evidence`). The runtime prompt-side guidance lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (in `templates.py`), composed into the single unified DIAGNOSIS block (`_RCA_DIAGNOSIS_BLOCK`) reached by all INVESTIGATING turns. Under the unified opportunistic flow (the path fork and its emission bans are retired — see [Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert) and the retirement note on INV-17/INV-21 in the [Invariant Enforcement Matrix](./investigation-invariants.md#invariant-enforcement-matrix)), there is no longer a pre-mitigation block that forbids `hypotheses_to_add` / `causal_evidence` emission; the diagnostic machinery runs whenever the cause is uncertain (`cause_state ∈ {UNKNOWN, CANDIDATES}`).
 
 **Exit conditions** (inference-based — action over words):
 
 The agent proposes a concrete action (command, config change, rollback). The user's next message determines the transition:
+
 - **Compliance**: User executes the action and submits results → system infers acceptance → enter **TREATMENT** (to verify the fix)
 - **Compliance with mitigation**: User executes a proposed temp fix and submits results → system infers acceptance → enter **MITIGATION** (for urgent, ongoing issues)
 - **Rejection/Query**: User questions, refuses, or provides unrelated data → no transition → stay in **DIAGNOSIS**
@@ -220,6 +227,7 @@ There is no separate confirmation turn. The agent proposes, the user acts (or do
 **Entry**: User complies with a proposed mitigation action during DIAGNOSIS (inferred from submitted results).
 
 **Activities**:
+
 1. Guide user through implementing the temporary fix
 2. Verify the mitigation worked (ask for metrics/logs)
 3. If mitigation is insufficient or ineffective → adjust approach and try again (iterative)
@@ -228,6 +236,7 @@ There is no separate confirmation turn. The agent proposes, the user acts (or do
 Mitigation is **not assumed to be one-shot**. It is dynamic, interactive, and potentially iterative — multiple attempts may be needed until the user verifies the situation is stabilized. The agent stays in MITIGATION and adjusts its approach based on user feedback until the mitigation is verified.
 
 **Evidence types accepted**:
+
 - `mitigation_evidence` — data showing whether the temporary fix worked
 
 **Exit condition**: User verifies mitigation is effective → post-mitigation behavior depends on `rca_infeasible` (see [Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal)). Default: return to **DIAGNOSIS** for root cause analysis. When `rca_infeasible=True`: agent proposes closure as mitigated (User-Agent Handshake). The user can always override in either direction.
@@ -245,6 +254,7 @@ Mitigation is **not assumed to be one-shot**. It is dynamic, interactive, and po
 **Core principle**: Once the investigation crosses into "fixing mode," it stays there. DIAGNOSIS is for the initial bootstrapping of understanding. TREATMENT handles everything from first fix attempt through resolution.
 
 **Primary path** (most common):
+
 1. Verify whether the applied fix worked (analyze submitted evidence)
 2. Fix worked → confirm resolution → **RESOLVED**
 
@@ -271,6 +281,7 @@ Extended diagnosis proceeds:
 Extended diagnosis may take multiple turns (e.g., requesting evidence, analyzing, requesting more) before converging on a new solution. Escalation triggers when the agent has no more viable options (cannot formulate a new hypothesis or identify new evidence to request). The agent communicates limitations naturally in its responses — explaining what has been tried, what is blocked, and suggesting alternatives or escalation. For simple lack of progress, the system injects a gentle reminder to nudge the next diagnostic step without lowering confidence — FaultMaven is a copilot; the user decides the pace.
 
 **Evidence types accepted**:
+
 - `solution_evidence` — data showing whether the fix worked (post-fix metrics, logs, user confirmation)
 - `symptom_evidence` — new symptoms discovered after fix attempt
 - `causal_evidence` — new causal insights from failure analysis (requires hypothesis)
@@ -279,7 +290,7 @@ Extended diagnosis may take multiple turns (e.g., requesting evidence, analyzing
 
 **The iterative resolution loop**:
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │                        TREATMENT                              │
 │                                                               │
@@ -303,6 +314,7 @@ Extended diagnosis may take multiple turns (e.g., requesting evidence, analyzing
 ```
 
 **Why not return to DIAGNOSIS?** Regressing to DIAGNOSIS would:
+
 - Reset the user's mental model ("I thought we were fixing this?")
 - Lose the context of what was already tried
 - Add state machine complexity with no analytical benefit
@@ -408,7 +420,7 @@ In the current model:
 
 ### 4.5 Transition Flow Diagram
 
-```
+```text
 INQUIRY ──(user confirms problem)──► DIAGNOSIS
                                         │
                                         ├──(agent proposes temp fix)
@@ -446,7 +458,7 @@ a claim-anchored extract — the LLM's deliberate decision to record a
 focused slice of system output that supports a specific claim. The
 two tables play distinct roles and never carry duplicate information.
 
-```
+```text
 ┌─────────────────────────┐         ┌─────────────────────────┐
 │ uploaded_files          │         │ evidence                │
 │ (the data)              │◄────────│ (the claim-anchored     │
@@ -529,7 +541,7 @@ invariant).
 
 ### 5.4 Evidence Creation Pipeline (single path)
 
-```
+```text
                 ┌──────────────────────────────────────┐
                 │   User submits attachment            │
                 │   (file upload / paste / page        │
@@ -585,6 +597,7 @@ unaffected by dedup).
 ### 6.1 Hypothesis Lifecycle
 
 The hypothesis lifecycle:
+
 - **CAPTURED** → **ACTIVE** → **VALIDATED** / **REFUTED** / **INCONCLUSIVE** / **RETIRED**
 - Evidence links with stances: SUPPORTS, REFUTES, NEUTRAL
 - Confidence formula: `initial + (0.15 x supporting) - (0.20 x refuting)`
@@ -596,6 +609,7 @@ The hypothesis lifecycle:
 Without this constraint, the LLM could identify root cause directly from evidence without creating a hypothesis.
 
 This model enforces the constraint: **a hypothesis must exist before evidence can be classified as `causal_evidence`**. This ensures:
+
 - Every causal claim has a testable statement attached
 - The audit trail is always complete (Evidence → Hypothesis → Solution)
 - The LLM cannot "jump" to root cause without articulating why
@@ -607,12 +621,14 @@ The single-shot validation pattern still works — the agent creates a hypothesi
 Hypotheses are created and managed during both DIAGNOSIS and TREATMENT:
 
 **In DIAGNOSIS** (initial investigation):
+
 - **Form**: Agent creates hypotheses based on symptom evidence
 - **Test**: New evidence evaluated against all active hypotheses
 - **Converge**: When one hypothesis reaches high confidence (validated), agent proposes solution
 - **Retire**: Stagnant or refuted hypotheses are cleaned up by housekeeping
 
 **In TREATMENT** (extended diagnosis):
+
 - When a solution fails, the agent performs failure analysis to determine whether the root cause was wrong
 - Extended diagnosis requires **new evidence** — the original evidence produced a failed solution and cannot be reprocessed for a different result
 - The agent requests targeted new data, then forms **new hypotheses** that account for all evidence (original + failure + new)
@@ -630,7 +646,7 @@ Hypotheses are not used during MITIGATION (focused on applying and verifying the
 
 For historical problems or cases with no impact-now gap:
 
-```
+```text
 INQUIRY → INVESTIGATING (diagnose + permanent fix) → RESOLVED
 ```
 
@@ -644,7 +660,7 @@ INQUIRY → INVESTIGATING (diagnose + permanent fix) → RESOLVED
 
 For ongoing production incidents where something is hurting now that can't be fully resolved this session:
 
-```
+```text
 INQUIRY → INVESTIGATING (stabilization insert, then RCA + permanent fix) → RESOLVED
 ```
 
@@ -691,7 +707,7 @@ See [Investigation Lifecycle Logic §1.7](./investigation-lifecycle-logic.md#17-
 
 The knowledge flywheel converts investigations into reusable knowledge. Only RESOLVED cases are eligible for runbook generation — they carry a confirmed root-cause-to-solution chain that a future investigator can apply.
 
-```
+```text
 RESOLVED case
     │
     ├──► Auto: Resolution Summary (immediate, SYNTHESIS LLM)
@@ -880,6 +896,7 @@ The problem description (ProblemVerification.symptom_statement) is set when ente
 ### 9.2 Proposed Enhancement
 
 During DIAGNOSIS, the agent should be able to refine the problem statement as understanding evolves. For example:
+
 - Initial: "Checkout is slow"
 - After evidence: "Payment gateway connection pool exhausted after v2.1.3 deploy"
 
@@ -971,7 +988,7 @@ class EvidenceCategory(str, Enum):
 
 The `InvestigationPath` enum (`MITIGATION_FIRST` / `ROOT_CAUSE`), the `PathSelection`
 row, Gate 2, and `investigation_router.py` are **all removed** under the unified
-opportunistic flow ([Investigation Flow Redesign](./investigation-flow-redesign.md)).
+opportunistic flow ([Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert)).
 There is no prospective fork: whether a stabilization is inserted is an agent
 judgment re-evaluated each turn, not a path committed up front. Migration 016 drops
 the `cases.path_selection` column.
@@ -1191,6 +1208,7 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 ### 13.3 Database Migration
 
 Existing cases with old milestone fields need migration:
+
 - Cases in INQUIRY: No change needed
 - Cases in RESOLVED/CLOSED: No change needed (terminal, immutable)
 - Cases in INVESTIGATING: Map old milestones to new fields:
@@ -1231,7 +1249,7 @@ new.action_attempts = []
 | Evidence categories | 4 types | 4 claim-attached types: symptom, causal, mitigation, solution (contextual material moves to `uploaded_files`; rejection is the absence of an Evidence row) |
 | Prompt stage instructions | 4 templates | 3 templates (TREATMENT includes extended diagnosis) |
 | Mitigation | Path modifier (one-shot) | Distinct stage (iterative until verified) |
-| Path selection | USER_CHOICE in matrix | Removed — no prospective fork. Stabilization is an opportunistic insert; `investigation_shape: DIRECT / STABILIZED` is derived retrospectively (see [Flow Redesign](./investigation-flow-redesign.md)) |
+| Path selection | USER_CHOICE in matrix | Removed — no prospective fork. Stabilization is an opportunistic insert; `investigation_shape: DIRECT / STABILIZED` is derived retrospectively (see [Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert)) |
 | Milestone validation | Consistency check (blocking) | Gate milestones inferred from behavior; progress milestones set by LLM (advisory, non-blocking) |
 | Compliance detection | N/A (explicit confirmation) | Post-LLM, default no-transition when ambiguous (Section 15, decisions 5-6) |
 | "Jump ahead" | Allowed and encouraged | Removed (no sub-stages to jump between) |
@@ -1306,4 +1324,4 @@ All open questions from the initial draft have been resolved.
 | [Investigation Data Models](./investigation-data-models.md) | Data models to be updated per Section 10 |
 | [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) | Lifecycle logic to be updated per Sections 4, 7 |
 | [Agent Behavioral Rules](./agent-behavioral-rules.md) | Prompt-injected rules that constrain agent output (replaces the former prompt engineering guide) |
-| [Prompt Templates](./prompt-templates.md) | Templates to be updated per Section 8 |
+| [Prompt Assembly Architecture](./prompt-assembly-architecture.md) | Templates to be updated per Section 8 |

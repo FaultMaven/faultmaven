@@ -1,4 +1,4 @@
-# Indicator Resolution: Matching Runbook Causes to Case Evidence
+# Runbook Cause Matching: Matching Runbook Cause Indicators to Case Evidence
 
 **Document Type:** Component Specification
 **Version:** 1.0

@@ -132,7 +132,7 @@ Chunking parameters (implemented in `kb_toolkit/core/chunker.py`):
 | Min chunk size | 100 characters | Tiny sections merged with adjacent section |
 | Fallback | Sentence-boundary splitting | For structureless text without headers |
 | Frontmatter | Stripped before chunking | Metadata stored separately in ChromaDB, not embedded |
-| HTML comments | Stripped before chunking | Predicate hints lifted to ChromaDB metadata (see [indicator-resolution.md §6](../investigation-engine/indicator-resolution.md#6-chromadb-metadata-schema)) |
+| HTML comments | Stripped before chunking | Predicate hints lifted to ChromaDB metadata (see [runbook-cause-matching.md §6](../investigation-engine/runbook-cause-matching.md#6-chromadb-metadata-schema)) |
 
 This means:
 
@@ -257,7 +257,7 @@ This section explains WHY each template section is structured the way it is. Thi
 | **Causes → `### Cause N`** | Each Cause subsection is one chunk. Retrieval surfaces a complete cause-fix tuple. Engine reads `Statement` + `Mechanism` for `RootCauseConclusion`; reads `Mitigation` / `Resolution` for `Solution`. | Per-Cause inlining of all relevant fields (statement, mechanism, indicator, mitigation, resolution, verification) keeps the chunk self-contained. Hard char limits on `Statement` (≤300) and `Mechanism` (≤800) enforce conciseness — these fields are copied verbatim into engine state, not summarized. |
 | **Causes → `Statement`** | Direct copy → `RootCauseConclusion.root_cause` at case completion. | Single declarative sentence stating the cause. Not a fix, not a symptom — the cause. ≤300 characters. |
 | **Causes → `Mechanism`** | Direct copy → `RootCauseConclusion.mechanism`. | How the cause produces the symptom — the causal chain. ≤800 characters. |
-| **Causes → `Indicator`** | Engine evaluates against case evidence to attribute the active Cause. | Bullet list referencing `[Step N]` findings or `[Symptom]` patterns. Each entry must contain at least one reference token. Use `[Default]` for the `Cause Z: Unidentified` fallback. Optional `<!-- match: ... -->` HTML comment provides a machine-readable predicate; see [indicator-resolution.md §3](../investigation-engine/indicator-resolution.md#3-predicate-vocabulary) for vocabulary. |
+| **Causes → `Indicator`** | Engine evaluates against case evidence to attribute the active Cause. | Bullet list referencing `[Step N]` findings or `[Symptom]` patterns. Each entry must contain at least one reference token. Use `[Default]` for the `Cause Z: Unidentified` fallback. Optional `<!-- match: ... -->` HTML comment provides a machine-readable predicate; see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary) for vocabulary. |
 | **Causes → `Mitigation` / `Resolution`** | `Mitigation` = quick risk-tagged fix (supports mitigation-first investigation). `Resolution` = durable fix. | Each block contains command + risk + duration (Mitigation) or command + durable change (Resolution). When the two are identical, use `**Resolution:** Same as Mitigation.` in the generation prompt; the generator expands the duplication at render time so the on-disk runbook always carries both fields populated. |
 | **Causes → `Verification`** | Cause-specific check that confirms THIS fix worked. Feeds the `solution_verified` confirmation prompt. | Specific to the Cause's fix, not generic. Per-Cause verification because "did the fix work?" is per-Cause; "is the symptom gone?" is the engine's terminal gate, not a runbook concern. |
 | **`### Cause Z: Unidentified`** | Fallback when no other Cause's Indicator matches. Engine selects this Cause when Indicator evaluation returns zero matches. | Mandatory in every runbook. Indicator is `[Default]`. Mitigation describes a safe diagnostic/escalation path; Resolution is typically "Out of scope". |
@@ -272,9 +272,9 @@ This section explains WHY each template section is structured the way it is. Thi
 4. **Each `### Cause <X>` must contain all 6 sub-fields:** `**Statement:**`, `**Mechanism:**`, `**Indicator:**`, `**Mitigation:**`, `**Resolution:**`, `**Verification:**`. Validator hard error on missing field.
 5. **Hard character limits.** `Statement` ≤300 chars, `Mechanism` ≤800 chars. Validator hard error on overflow. Generation pipeline re-prompts the LLM on overflow.
 6. **Indicator format.** Each `**Indicator:**` entry must contain at least one of `[Step N]` (N must resolve to an existing numbered Diagnostic Step), `[Symptom]` (free-form reference back to Symptom Recognition), or `[Default]` (reserved for the fallback Cause). Validator hard error on missing token.
-7. **Match-hint comments are optional but must be strict JSON when present.** The body of any `<!-- match: ... -->` block must be `json.loads()`-parseable (quoted keys, double quotes, no trailing commas, no JSON5/YAML-flow syntax) and must use a predicate from the controlled vocabulary (see [indicator-resolution.md §3](../investigation-engine/indicator-resolution.md#3-predicate-vocabulary)). Validator hard error on malformed JSON or unregistered predicate.
+7. **Match-hint comments are optional but must be strict JSON when present.** The body of any `<!-- match: ... -->` block must be `json.loads()`-parseable (quoted keys, double quotes, no trailing commas, no JSON5/YAML-flow syntax) and must use a predicate from the controlled vocabulary (see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary)). Validator hard error on malformed JSON or unregistered predicate.
 8. **Section titles must match exactly.** The quality gate linter checks for these headers. Variant names (e.g., "Troubleshooting" instead of "Diagnostic Steps") will fail validation.
-9. **Indicator overlap warning.** Validator soft warning if two Causes within the same runbook share identical Indicator sets — Indicators should typically be mutually exclusive within a runbook (multi-match policy in [indicator-resolution.md §4](../investigation-engine/indicator-resolution.md#4-multi-match-policy)).
+9. **Indicator overlap warning.** Validator soft warning if two Causes within the same runbook share identical Indicator sets — Indicators should typically be mutually exclusive within a runbook (multi-match policy in [runbook-cause-matching.md §4](../investigation-engine/runbook-cause-matching.md#4-multi-match-policy)).
 10. **Code blocks expected in Mitigation/Resolution.** Validator issues a quality warning (not a hard error) when code blocks are absent from a Cause's Mitigation or Resolution, because some fixes are procedural rather than command-based (e.g., "escalate to vendor", "failover to secondary region").
 
 ---
@@ -310,13 +310,13 @@ Validates the markdown document contains required sections, subsections, and fie
 - `Statement` ≤300 chars, `Mechanism` ≤800 chars
 - Each `**Indicator:**` entry must contain at least one of `[Step N]`, `[Symptom]`, or `[Default]`
 - `[Step N]` references must resolve to existing numbered Diagnostic Steps
-- Any `<!-- match: ... -->` HTML comment must parse as **strict JSON** (`json.loads()`-parseable; no JSON5/YAML-flow) and must use a predicate from the controlled vocabulary (see [indicator-resolution.md §3](../investigation-engine/indicator-resolution.md#3-predicate-vocabulary))
+- Any `<!-- match: ... -->` HTML comment must parse as **strict JSON** (`json.loads()`-parseable; no JSON5/YAML-flow) and must use a predicate from the controlled vocabulary (see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary))
 - No section or sub-field is empty
 
 **Quality warnings (do not block, flagged for author review):**
 
 - No fenced code blocks found in any Cause's Mitigation or Resolution (some fixes are procedural, e.g., "escalate to vendor")
-- Two Causes within the runbook share identical Indicator sets (Indicator overlap — see [indicator-resolution.md §4](../investigation-engine/indicator-resolution.md#4-multi-match-policy))
+- Two Causes within the runbook share identical Indicator sets (Indicator overlap — see [runbook-cause-matching.md §4](../investigation-engine/runbook-cause-matching.md#4-multi-match-policy))
 - Content length below 500 characters
 - No external references or links
 
@@ -404,7 +404,7 @@ This section tracks what is implemented versus planned. v3 redesign requires reg
 | Char-limit enforcement (Statement ≤300, Mechanism ≤800) | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_cause_subfields()` |
 | Indicator token validation (`[Step N]`, `[Symptom]`, `[Default]`) | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_indicator_field()` with step-number cross-reference |
 | Match-hint JSON parsing + predicate vocabulary check | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_match_hints()`; chunker metadata lift still pending |
-| Per-Cause metadata fields (`cause_statement`, `cause_mechanism`, `cause_indicators`, `match_predicates`, `cause_mitigation`, `cause_resolution`, `cause_verification`, `is_fallback_cause`) | **Pending** | `kb_toolkit/core/ingester.py` — see [indicator-resolution.md §6](../investigation-engine/indicator-resolution.md#6-chromadb-metadata-schema) |
+| Per-Cause metadata fields (`cause_statement`, `cause_mechanism`, `cause_indicators`, `match_predicates`, `cause_mitigation`, `cause_resolution`, `cause_verification`, `is_fallback_cause`) | **Pending** | `kb_toolkit/core/ingester.py` — see [runbook-cause-matching.md §6](../investigation-engine/runbook-cause-matching.md#6-chromadb-metadata-schema) |
 | FaultMaven API `runbook_validator.py` v3 update | **Pending** | `modules/knowledge/domain/services/runbook_validator.py` — still enforces v2 `REQUIRED_SECTIONS` |
 | Taxonomy fields stored in ChromaDB | Implemented | `domain`, `service`, `symptom_class`, `severity`, `scope`, `status`, `last_updated`, `tags`, `document_type` propagated per chunk |
 | Domain/service hard pre-filter | Implemented | `filter_mode="hard"` injects `domain`/`service` into ChromaDB `where` clause |
