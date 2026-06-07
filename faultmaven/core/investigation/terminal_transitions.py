@@ -493,43 +493,37 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     Returns:
         ResolutionReadiness with verdict, user-facing message, and missing items list
     """
-    # The three essentials a RESOLVED case needs — both to *document* the
-    # resolution (the resolution_summary needs root cause + what fixed it) and to
-    # confirm it actually resolved the problem:
-    #   1. root cause   — what caused the problem
-    #   2. solution     — what fixed it
-    #   3. confirmation the problem is now gone — recorded as causal_absence
-    #      (the CAUSE itself is eliminated, not merely the symptom relieved; a
-    #      mitigation/failover gives symptom_absence while the cause persists).
-    #
-    # When the user asks to RESOLVE but an essential is missing — common when the
-    # problem was fixed OUT OF BAND (someone ran commands / collected data outside
-    # this session) and the case has no documentation — we do NOT reject. We ask
-    # the user to fill the specific gaps so the resolution summary can be written
-    # (intent-resolution.md §8). The re-check loop then re-evaluates: if the user
-    # supplies the gaps (incl. confirming the original problem is gone, which the
-    # agent records as causal_absence) the case becomes READY. A case that can
-    # only be stabilized — no causal_absence after being asked — converges to
-    # Close. Close is offered up front as the alternative.
+    # THE resolution bar: the root cause is CONFIRMED eliminated — recorded as a
+    # causal_absence row. That alone makes a case RESOLVED: it implies the cause is
+    # known and a fix took effect, so it is sufficient on its own. A separate
+    # root-cause / solution *record* is for documentation quality (and the higher
+    # runbook bar), NOT a resolution gate. Critically, an out-of-band fix the user
+    # reports verbally yields causal_absence (source_type=user_description) with no
+    # SolutionToAdd — and must still resolve. Requiring a solution record here was
+    # the documented stuck-loop: the gate refused a clear "yes, it's resolved" and
+    # kept demanding a "documented solution" the user did not have, then closed.
     has_cause = _cause_identified(case)
     has_solution = bool(case.solutions and len(case.solutions) > 0)
     has_evidence = bool(case.evidence and len(case.evidence) > 0)
     has_resolution_confirmation = _has_causal_absence(case)
 
-    missing = []
-    if not has_cause:
-        missing.append("root cause")
-    if not has_solution:
-        missing.append("solution")
-    if not has_resolution_confirmation:
-        missing.append("confirmation the problem is now resolved")
-
-    if not missing:
+    if has_resolution_confirmation:
         return ResolutionReadiness(
             verdict=ResolutionReadiness.READY,
             message="",
             missing=[],
         )
+
+    # No causal_absence yet: the user wants to resolve but hasn't confirmed the
+    # cause is gone. This is the documentation-gap-fill ask (common out of band, or
+    # mid-stream) — collect what's needed to document a resolution AND confirm the
+    # cause is actually eliminated. A stabilized/deferred account never confirms it
+    # and converges to Close. Close is offered up front as the alternative.
+    missing = ["confirmation the problem is now resolved"]
+    if not has_cause:
+        missing.append("root cause")
+    if not has_solution:
+        missing.append("solution")
 
     # Genuinely nothing on record — no investigation to turn into a resolution.
     # Suggest Close rather than asking the user to reconstruct a whole case.
@@ -660,26 +654,34 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     # discard the resolution attribution. Engine pivots; user still confirms.
     # Symmetric to ResolutionReadiness.SUGGEST_CLOSE.
     #
-    # Gate on causal_absence (cause confirmed ELIMINATED), the same bar as
-    # assess_resolution_readiness — NOT merely "has a solution row". A case that
-    # was only stabilized (failover/workaround) has a solution on record but the
-    # cause persists; closing it is correct and must NOT pivot to resolve.
-    if has_root_cause and has_solutions and _has_causal_absence(case):
+    # Gate on causal_absence — the SAME bar as assess_resolution_readiness READY.
+    # A close request on a resolution-ready case pivots to resolve: "resolved" is
+    # a closed case WITH a resolution, and it is always safe to resolve a case the
+    # user moved to close. We do NOT require a separate root-cause/solution record
+    # (an out-of-band fix yields causal_absence with neither) — that was the same
+    # over-constraint the resolution gate carried. A merely stabilized case has
+    # symptom_absence but no causal_absence, so it correctly does NOT pivot.
+    if _has_causal_absence(case):
         rc = (
             getattr(case.root_cause_conclusion, "root_cause", None)
             or "the identified root cause"
         )
-        sol_titles = _solution_display_titles(case.solutions)
+        detail = f"- **Root cause**: {rc}\n"
+        if has_solutions:
+            detail += (
+                "- **Solution**: "
+                + ", ".join(_solution_display_titles(case.solutions))
+                + "\n"
+            )
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
             message=(
-                "This case has a documented root cause and a fix confirmed to "
-                "have eliminated it — it qualifies for **resolved** status "
-                "rather than closed. Closing it would discard the resolution "
-                "attribution.\n\n"
-                f"- **Root cause**: {rc}\n"
-                f"- **Solution**: {', '.join(sol_titles)}\n\n"
-                "Would you like to mark it **resolved** instead?"
+                "This case has a fix confirmed to have eliminated the root "
+                "cause — it qualifies for **resolved** status rather than "
+                "closed. Closing would record it as unresolved and discard the "
+                "resolution.\n\n"
+                + detail
+                + "\nWould you like to mark it **resolved** instead?"
             ),
         )
 

@@ -40,6 +40,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_id,
@@ -2225,10 +2226,13 @@ async def submit_turn(
             data = json.loads(intent_data) if intent_data else {}
             # Remove 'type' from data to avoid conflict with explicit type= arg
             data.pop("type", None)
-            # Defensive: an unrecognized intent_type (e.g. a suggestion
-            # action_type like 'free_speech' submitted by mistake) must not
-            # crash the turn with an unhandled ValueError -> 500. Reject it
-            # cleanly as 422 so the client can correct the request.
+            # Defensive: a malformed intent from a client must not crash the turn
+            # with an unhandled error -> 500. Two failure modes, both -> 422:
+            #   (a) an unrecognized intent_type (e.g. a suggestion action_type
+            #       like 'free_speech') -> IntentType() ValueError;
+            #   (b) a valid intent_type with invalid/missing fields (e.g. a
+            #       'status_transition' without to_state) -> QueryIntent
+            #       ValidationError.
             try:
                 parsed_intent_type = IntentType(intent_type)
             except ValueError:
@@ -2240,7 +2244,13 @@ async def submit_turn(
                         + "."
                     ),
                 )
-            intent = QueryIntent(type=parsed_intent_type, **data)
+            try:
+                intent = QueryIntent(type=parsed_intent_type, **data)
+            except (ValidationError, ValueError) as e:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid fields for intent_type={intent_type!r}: {e}",
+                )
 
         payload = TurnPayload(query=query, attachments=attachments, intent=intent)
 
