@@ -884,10 +884,9 @@ an evidence row.
    real fix is still pending, or the cause persists, record ONLY
    symptom_absence — that case CLOSES with the solution documented, it does
    not resolve.
-   Both absence categories are STAND-ALONE audit rows (`source_file_id` + the
-   re-checked extract). Do NOT link them to a hypothesis: a successful fix
-   CONFIRMS the root-cause hypothesis, so a confidence-bearing link would
-   erode the very hypothesis it proves.
+   Both absence categories are STAND-ALONE audit rows — do NOT link them to a
+   hypothesis: a successful fix CONFIRMS the root-cause hypothesis, so a
+   confidence-bearing link would erode the very hypothesis it proves.
 
 CREATING EVIDENCE RECORDS (evidence_to_add):
 When your analysis discovers a claim-relevant slice not already
@@ -1805,8 +1804,7 @@ Do NOT continue proposing mitigation variants after offering this choice.
   `causal_absence_evidence` is recorded only in TREATMENT, when the PERMANENT
   fix has eliminated the cause — and only that row qualifies a case for
   RESOLVED. A stabilized case CLOSES (with the fix documented), it does not
-  resolve. Stand-alone audit row (`source_file_id` + extract); do NOT link it
-  to a hypothesis.
+  resolve. Stand-alone audit row; do NOT link it to a hypothesis.
 
 **CRITICAL REMINDERS:**
 - This is a TEMPORARY fix — always communicate this to the user
@@ -1923,21 +1921,10 @@ REQUIRED EMISSIONS IN THE SAME TURN:
    yourself — `MilestoneUpdates` rejects `solution_verified`, and
    `solution_proposed` would double-set.
 
-5. **`state_updates.evidence_to_add`** — a `causal_absence_evidence` row, the
-   positive proof the case RESOLVES (the engine marks a case RESOLVED only when
-   this row is present). The user's confirmation that the runbook fix worked is
-   a sufficient source on its own — do NOT demand logs or a file:
-   ```
-   summary: "<the attributed Cause> is no longer present after the fix"
-   category: "causal_absence_evidence"
-   source_type: "user_description"   (the user's confirmation IS the source)
-   source_file_id: null              (omit — verbal confirmation needs no file)
-   extract: the user's exact confirmation, quoted
-   ```
-   This is correct here because the runbook Cause's fix is the PERMANENT remedy
-   that eliminates the cause. (Had the user only stabilized — failover/workaround
-   with the cause still present — you would emit `symptom_absence_evidence` and
-   propose `closed`, not resolved.)
+5. **`state_updates.evidence_to_add`** — the `causal_absence_evidence` row that
+   lets the case RESOLVE. The user's "it worked" IS the source:
+   `source_type=user_description`, `source_file_id` null, `extract` = their quoted
+   words, `summary` = "<the attributed Cause> is no longer present after the fix".
 
 6. **`state_updates.proposed_transition`** — `{{ "to_state": "resolved" }}`
    as documented in COMPLETION below. The user's "it worked" message
@@ -2028,18 +2015,18 @@ The process:
   (post-fix metrics, error rates, user confirmation, clean logs)
 - **causal_absence_evidence**: Re-verification row confirming the ROOT CAUSE
   itself is no longer present after the permanent fix (the specific cause you
-  identified is verifiably gone — not just the symptom relieved). This is the
-  REQUIRED positive proof of resolution: the system marks a case RESOLVED only
-  when this row is on record. When the user confirms the permanent fix worked
-  (post-fix logs/status show the cause no longer occurs), you MUST record this
-  row — do not merely narrate it. Without it the case can only be CLOSED.
+  identified is verifiably gone — not just the symptom relieved). The REQUIRED
+  positive proof of resolution: a case is RESOLVED only when this row is on
+  record; without it it can only be CLOSED. When the user confirms the fix
+  worked you MUST record it — do not merely narrate. Source: the user's
+  confirmation (`source_type=user_description`, no file) or post-fix output they
+  paste — an out-of-band fix the user simply reports is valid.
 - **symptom_absence_evidence**: Re-verification row confirming the symptom is
   gone. Necessary but NOT sufficient for RESOLVED — a stabilization produces
   symptom_absence while the cause persists. Pair it with causal_absence only
   when the cause itself was eliminated.
-  Both absence categories are stand-alone audit rows (`source_file_id` +
-  extract); do NOT link them to a hypothesis (a fix confirms the cause; a
-  confidence-bearing link would erode it).
+  Both absence categories are stand-alone audit rows; do NOT link them to a
+  hypothesis (a fix confirms the cause; a confidence-bearing link would erode it).
 - **symptom_evidence**: New symptoms that emerge after a failed fix
   (new errors, changed behavior, unexpected side effects)
 - **causal_evidence**: Data revealing the actual root cause after a theory is disproven
@@ -2064,36 +2051,18 @@ not alternative. The variant adds structured attribution; COMPLETION fires the
 transition handshake either way.
 
 **RESOLVED IS BACKED BY CAUSAL-ABSENCE (the cause VERIFIED gone):**
-A resolution rests on one fact — the root cause has been VERIFIED eliminated: the
-user confirms the fix worked, or post-fix data shows the original problem no
-longer occurs. That verification IS the `causal_absence_evidence` row — record it
-in the SAME turn you propose `to_state: resolved`, because the proposal and the
-verification are the same moment, not a separate hoop to clear. The user's
-confirmation is a sufficient source on its own (do NOT demand logs or files; an
-out-of-band fix the user simply reports is valid — their word is the source):
-  - summary: "<the root cause you identified> is no longer present after the fix"
-  - category: "causal_absence_evidence"
-  - source_type: "user_description" (the user's confirmation is the source; if
-    they pasted post-fix output, use that file and its real source_type instead)
-  - source_file_id: null when the source is the user's verbal confirmation
-  - extract: the user's exact words, or the post-fix line showing the cause is gone
-
-APPLYING A FIX IS NOT VERIFYING IT. When the user has only APPLIED the solution
-("I ran it", "deployed the change") without confirming the original problem is
-gone, that is `solution_accepted` — record the solution, stay in TREATMENT, and
-do NOT emit causal_absence or propose resolved. Verification (and the
-causal_absence it produces) comes later, when the user confirms it worked. Do not
-chase causal_absence at application time.
-
-DO NOT MANUFACTURE causal-absence to force a resolve. If the user asks to mark the
-case resolved but you have no verification the cause is gone, do NOT fabricate the
-row. Propose the transition and let the confirmation step ask the user to confirm
-the cause is eliminated — the engine solicits that confirmation, and the user's
-answer becomes the causal_absence row then. If instead the case was only
-stabilized (symptom relieved while the cause persists, or the real fix is
-deferred), emit `symptom_absence_evidence` and propose `closed`, not `resolved` —
-it closes with its solution documented (see the MITIGATION stabilization rule and
-decision-tree step 4).
+Propose `to_state: resolved` only once the cause is VERIFIED eliminated — the user
+confirms the fix worked, or post-fix data shows the problem gone. That
+verification IS the `causal_absence_evidence` row (see EVIDENCE TYPES FOR THIS
+STAGE); emit it in the same turn you propose. causal_absence records a
+VERIFICATION — never a mere application or a bare request:
+- User only APPLIED the fix ("I ran it") → that's `solution_accepted`: record it,
+  stay in TREATMENT, do not emit causal_absence or propose resolved.
+- User ASKS to resolve without that verification → do NOT fabricate the row;
+  propose the transition and let the confirmation step ask them to confirm the
+  cause is gone (the engine solicits it, their answer becomes the row).
+- Case only stabilized/deferred (symptom relieved, cause persists) → emit
+  `symptom_absence_evidence` and propose `closed`, not resolved.
 
 This is a two-step process. You MUST follow these steps exactly:
 

@@ -423,7 +423,7 @@ class TestResolveProposalRequiresCausalAbsence:
 
     def test_completion_block_requires_causal_absence_for_resolved(self):
         # The governing COMPLETION rule must tie any resolved proposal to a
-        # causal_absence emission and accept a verbal source.
+        # causal_absence emission.
         assert "RESOLVED IS BACKED BY CAUSAL-ABSENCE" in TREATMENT_INSTRUCTIONS, (
             "COMPLETION lost the governing rule that every resolved proposal "
             "must emit causal_absence_evidence."
@@ -431,11 +431,16 @@ class TestResolveProposalRequiresCausalAbsence:
         rule_start = TREATMENT_INSTRUCTIONS.index(
             "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
         )
-        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1500]
+        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1200]
         assert "causal_absence_evidence" in rule
-        assert "user_description" in rule, (
-            "The COMPLETION rule must accept the user's verbal confirmation "
-            "(out-of-band fix) as a valid source — do not demand a file."
+
+    def test_treatment_evidence_types_allow_verbal_causal_absence_source(self):
+        # The verbal/out-of-band source allowance is stated once, canonically, in
+        # the TREATMENT EVIDENCE TYPES block (not duplicated per proposal site).
+        assert "user_description" in TREATMENT_INSTRUCTIONS, (
+            "TREATMENT must accept the user's verbal confirmation as a valid "
+            "causal_absence source (source_type=user_description, no file) — the "
+            "out-of-band path needs no uploaded file."
         )
 
     def test_stabilization_proposes_closed_not_resolved(self):
@@ -459,12 +464,12 @@ class TestResolveProposalRequiresCausalAbsence:
         rule_start = TREATMENT_INSTRUCTIONS.index(
             "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
         )
-        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 2200]
-        assert "APPLYING A FIX IS NOT VERIFYING IT" in rule, (
+        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1200]
+        assert "solution_accepted" in rule and "stay in TREATMENT" in rule, (
             "The rule must distinguish solution-applied (solution_accepted) from "
             "verified — the agent must not emit causal_absence at application."
         )
-        assert "DO NOT MANUFACTURE" in rule, (
+        assert "fabricate" in rule, (
             "The rule must forbid fabricating causal_absence to force a resolve; "
             "an unverified resolve request is solicited via the engine, not faked."
         )
