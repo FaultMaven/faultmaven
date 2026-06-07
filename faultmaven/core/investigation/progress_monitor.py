@@ -65,8 +65,8 @@ logger = logging.getLogger(__name__)
 # matching progress-transparency.md §Transitions.
 STAGE_GATE_MILESTONES: frozenset[str] = frozenset(
     {
-        "stabilization_accepted",
-        "stabilization_verified",
+        "mitigation_accepted",
+        "mitigation_verified",
         "solution_accepted",
         "solution_verified",
     }
@@ -93,8 +93,8 @@ MILESTONE_DEPENDENCIES: Dict[str, Dict[str, str]] = {
         "description": "Propose a concrete fix based on identified root cause",
         "needs": "Sufficient confidence in root cause to propose a concrete fix",
     },
-    "stabilization_verified": {
-        "stage": "STABILIZATION",
+    "mitigation_verified": {
+        "stage": "MITIGATION",
         "description": "Verify that the temporary fix stabilized the situation",
         "needs": "User confirmation that temporary fix stabilized the situation",
     },
@@ -282,8 +282,8 @@ class ProgressMonitor:
         **Stage-scoping:** The counter resets on any entry in
         ``milestones_completed``. This includes both progress milestones (e.g.,
         ``symptom_verified``) AND stage-gate milestones
-        (``STAGE_GATE_MILESTONES``: ``stabilization_accepted``,
-        ``stabilization_verified``, ``solution_accepted``, ``solution_verified``).
+        (``STAGE_GATE_MILESTONES``: ``mitigation_accepted``,
+        ``mitigation_verified``, ``solution_accepted``, ``solution_verified``).
         Since stage transitions are always driven by a stage-gate milestone in
         the same turn, a stage transition always resets the counter. This
         matches progress-transparency.md §Transitions ("A stage transition
@@ -424,8 +424,8 @@ class ProgressMonitor:
         """
         if stage == InvestigationStage.DIAGNOSIS:
             return self._check_diagnosis_repairs(case)
-        elif stage == InvestigationStage.STABILIZATION:
-            return self._check_stabilization_repairs(case)
+        elif stage == InvestigationStage.MITIGATION:
+            return self._check_mitigation_repairs(case)
         elif stage == InvestigationStage.TREATMENT:
             return self._check_treatment_repairs(case)
         return None
@@ -446,9 +446,9 @@ class ProgressMonitor:
 
         return None
 
-    def _check_stabilization_repairs(self, case: Case) -> Optional[RepairAction]:
-        """Check repair patterns relevant to STABILIZATION stage."""
-        if self._detect_fix_failure_cycle(case, action_type="stabilization"):
+    def _check_mitigation_repairs(self, case: Case) -> Optional[RepairAction]:
+        """Check repair patterns relevant to MITIGATION stage."""
+        if self._detect_fix_failure_cycle(case, action_type="mitigation"):
             return self._repair_fix_failure_cycle(case)
 
         if self._detect_action_loop(case):
@@ -623,10 +623,10 @@ class ProgressMonitor:
         if not case.progress:
             return False
 
-        if action_type == "stabilization":
-            # Post-redesign the stabilization verify gate lives on the
-            # stabilization record, not a progress boolean.
-            _stab = case.progress.stabilization
+        if action_type == "mitigation":
+            # Post-redesign the mitigation verify gate lives on the
+            # mitigation record, not a progress boolean.
+            _stab = case.progress.mitigation
             verified = bool(_stab is not None and _stab.verified)
         elif action_type == "solution":
             verified = case.progress.solution_verified

@@ -234,7 +234,7 @@ async def test_ui_dropdown_resolve_pivots_to_close_when_thin():
     pending = result["case_updated"].pending_transition
     assert pending is not None
     assert pending["to_state"] == "closed"
-    # closure_reason engine-derived: investigating + no stabilization
+    # closure_reason engine-derived: investigating + no mitigation
     assert pending.get("closure_reason") == "closed_after_investigation"
     _assert_canonical_confirm_pair(result["suggested_follow_ups"], "close")
 
@@ -405,7 +405,7 @@ async def test_check_automatic_transitions_sets_override_for_closed():
     assert case.pending_transition is not None
     assert case.pending_transition["to_state"] == "closed"
     # Regression guard: closure_reason is engine-derived from
-    # (case.state, stabilization_verified). Investigating + no stabilization
+    # (case.state, mitigation_verified). Investigating + no mitigation
     # → closed_after_investigation.
     assert case.pending_transition.get("closure_reason") == "closed_after_investigation"
     _assert_canonical_confirm_pair(metadata["override_suggestions"], "close")
@@ -442,7 +442,7 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
 async def test_check_automatic_transitions_closure_reason_stabilized_investigation():
     """A case stabilized then closed from INVESTIGATING yields the unified
     closure reason 'closed_after_investigation' (the redesign folds the
-    former 'mitigation_sufficient' reason into this one). The stabilization
+    former 'mitigation_sufficient' reason into this one). The mitigation
     record marks the case as stabilized; closure_reason is engine-derived
     from case.state."""
     engine = MilestoneEngine(
@@ -451,9 +451,9 @@ async def test_check_automatic_transitions_closure_reason_stabilized_investigati
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
-    from faultmaven.modules.case.domain.models import StabilizationRecord
+    from faultmaven.modules.case.domain.models import MitigationRecord
 
-    case.progress.stabilization = StabilizationRecord(
+    case.progress.mitigation = MitigationRecord(
         proposed_at_turn=case.current_turn,
         accepted=True,
         verified=True,
@@ -468,7 +468,7 @@ async def test_check_automatic_transitions_closure_reason_stabilized_investigati
     metadata: dict = {"response_obj": fake_response}
 
     await engine._check_automatic_transitions(
-        case=case, metadata=metadata, user_message="ok closing — stabilization worked"
+        case=case, metadata=metadata, user_message="ok closing — mitigation worked"
     )
 
     assert case.pending_transition is not None

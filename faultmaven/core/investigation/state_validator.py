@@ -98,7 +98,7 @@ class StateValidator:
         Some milestones have logical dependencies:
         - solution_verified requires solution_proposed and solution_accepted
         - solution_accepted requires solution_proposed
-        - stabilization_verified requires stabilization_accepted
+        - mitigation_verified requires mitigation_accepted
         - root_cause_identified should have root_cause_likelihood
         """
         issues: List[ValidationIssue] = []
@@ -139,17 +139,17 @@ class StateValidator:
                 )
             )
 
-        # stabilization verified requires accepted (stage-gate dependency).
-        # Post-redesign the stabilization gates live on the stabilization record.
-        _stab = progress.stabilization
+        # mitigation verified requires accepted (stage-gate dependency).
+        # Post-redesign the mitigation gates live on the mitigation record.
+        _stab = progress.mitigation
         if _stab is not None and _stab.verified and not _stab.accepted:
             issues.append(
                 ValidationIssue(
                     code="MILESTONE_ORDER_004",
-                    message="stabilization_verified=True but stabilization_accepted=False",
+                    message="mitigation_verified=True but mitigation_accepted=False",
                     severity=ValidationSeverity.ERROR,
-                    field="progress.stabilization",
-                    suggested_fix="Set stabilization_accepted=True or reset stabilization_verified=False",
+                    field="progress.mitigation",
+                    suggested_fix="Set mitigation_accepted=True or reset mitigation_verified=False",
                 )
             )
 

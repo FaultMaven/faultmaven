@@ -7,7 +7,7 @@ and §8.4:
 - Progressive activation (design §10.6): empty pool → ``""``
 - Default filter (DIAGNOSIS): PENDING + PARTIALLY_MET needs only;
   FULFILLED and SUPERSEDED excluded.
-- STABILIZATION/TREATMENT re-verification checklist is built from the
+- MITIGATION/TREATMENT re-verification checklist is built from the
   confirmed presence-evidence rows (symptom_evidence / causal_evidence),
   NOT from FULFILLED needs (needs are gap-rare; evidence rows are
   complete). SUPERSEDED needs remain excluded from the outstanding list.
@@ -43,10 +43,10 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     InquiryData,
     InvestigationStage,
+    MitigationRecord,
     NeedPriority,
     NeedPurpose,
     NeedState,
-    StabilizationRecord,
 )
 
 # ============================================================
@@ -61,8 +61,8 @@ def _make_case(
 ) -> Case:
     """Build a Case in the unified opportunistic flow (no path fork).
 
-    The display stage (DIAGNOSIS / STABILIZATION / TREATMENT) is derived
-    from the action-compliance gates: STABILIZATION when a stabilization is
+    The display stage (DIAGNOSIS / MITIGATION / TREATMENT) is derived
+    from the action-compliance gates: MITIGATION when a mitigation is
     accepted-but-not-verified, TREATMENT when a solution is
     accepted-but-not-verified, else DIAGNOSIS.
     """
@@ -83,8 +83,8 @@ def _make_case(
     case.current_turn = 5
     if state == CaseState.INVESTIGATING:
         case.progress.symptom_verified = True
-        if stage == InvestigationStage.STABILIZATION:
-            case.progress.stabilization = StabilizationRecord(
+        if stage == InvestigationStage.MITIGATION:
+            case.progress.mitigation = MitigationRecord(
                 proposed_at_turn=case.current_turn, accepted=True
             )
         elif stage == InvestigationStage.TREATMENT:
@@ -220,13 +220,13 @@ class TestDiagnosisStageFilter:
 
 
 # ============================================================
-# STABILIZATION / TREATMENT re-verification exception
+# MITIGATION / TREATMENT re-verification exception
 # ============================================================
 
 
 @pytest.mark.unit
 class TestPostDiagnosisReVerificationException:
-    """During STABILIZATION and TREATMENT, the re-verification checklist is
+    """During MITIGATION and TREATMENT, the re-verification checklist is
     built from the confirmed presence-evidence rows
     (symptom_evidence / causal_evidence) — NOT from FULFILLED needs.
 
@@ -234,9 +234,9 @@ class TestPostDiagnosisReVerificationException:
     gap-conditional and gap-rare, so a need-anchored checklist would omit
     findings confirmed from already-available data (the common case)."""
 
-    def test_presence_evidence_surfaces_in_stabilization(self):
+    def test_presence_evidence_surfaces_in_mitigation(self):
         case = _make_case(
-            stage=InvestigationStage.STABILIZATION,
+            stage=InvestigationStage.MITIGATION,
         )
         ev = _make_evidence(case, category=EvidenceCategory.SYMPTOM_EVIDENCE)
         out = _build_evidence_needs_block(case)
@@ -278,9 +278,9 @@ class TestPostDiagnosisReVerificationException:
         out = _build_evidence_needs_block(case)
         assert "Re-verification checklist" not in out
 
-    def test_superseded_need_still_excluded_in_stabilization(self):
+    def test_superseded_need_still_excluded_in_mitigation(self):
         case = _make_case(
-            stage=InvestigationStage.STABILIZATION,
+            stage=InvestigationStage.MITIGATION,
         )
         superseded = _make_need(case, state=NeedState.SUPERSEDED)
         pending = _make_need(case, state=NeedState.PENDING)
@@ -418,7 +418,7 @@ class TestContextBuilderIntegration:
 
 @pytest.mark.unit
 class TestOutstandingVsReVerificationSplit:
-    """In STABILIZATION/TREATMENT, outstanding (PENDING/PARTIALLY_MET) and
+    """In MITIGATION/TREATMENT, outstanding (PENDING/PARTIALLY_MET) and
     FULFILLED needs render under separate section headings so the LLM
     knows which line is a hunt-for vs which is a confirm-still-true."""
 
@@ -429,9 +429,9 @@ class TestOutstandingVsReVerificationSplit:
         assert "Outstanding needs" in out
         assert "Re-verification checklist" not in out
 
-    def test_stabilization_with_only_reverification_omits_outstanding_section(self):
+    def test_mitigation_with_only_reverification_omits_outstanding_section(self):
         case = _make_case(
-            stage=InvestigationStage.STABILIZATION,
+            stage=InvestigationStage.MITIGATION,
         )
         # A confirmed finding (presence-evidence row) but no PENDING need.
         _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
@@ -439,18 +439,18 @@ class TestOutstandingVsReVerificationSplit:
         assert "Outstanding needs" not in out
         assert "Re-verification checklist" in out
 
-    def test_stabilization_with_only_outstanding_omits_reverification_section(self):
+    def test_mitigation_with_only_outstanding_omits_reverification_section(self):
         case = _make_case(
-            stage=InvestigationStage.STABILIZATION,
+            stage=InvestigationStage.MITIGATION,
         )
         _make_need(case, state=NeedState.PENDING)
         out = _build_evidence_needs_block(case)
         assert "Outstanding needs" in out
         assert "Re-verification checklist" not in out
 
-    def test_stabilization_with_both_renders_both_sections_in_order(self):
+    def test_mitigation_with_both_renders_both_sections_in_order(self):
         case = _make_case(
-            stage=InvestigationStage.STABILIZATION,
+            stage=InvestigationStage.MITIGATION,
         )
         pending = _make_need(case, state=NeedState.PENDING, request_text="open work")
         finding = _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
@@ -488,25 +488,25 @@ class TestAntiAnchoringFraming:
         out = _build_evidence_needs_block(case)
         assert _ANTI_ANCHORING_MARKER in out
 
-    def test_framing_present_in_stabilization_outstanding_only(self):
+    def test_framing_present_in_mitigation_outstanding_only(self):
         case = _make_case(
-            stage=InvestigationStage.STABILIZATION,
+            stage=InvestigationStage.MITIGATION,
         )
         _make_need(case, state=NeedState.PENDING)
         out = _build_evidence_needs_block(case)
         assert _ANTI_ANCHORING_MARKER in out
 
-    def test_framing_present_in_stabilization_reverification_only(self):
+    def test_framing_present_in_mitigation_reverification_only(self):
         case = _make_case(
-            stage=InvestigationStage.STABILIZATION,
+            stage=InvestigationStage.MITIGATION,
         )
         _make_evidence(case, category=EvidenceCategory.SYMPTOM_EVIDENCE)
         out = _build_evidence_needs_block(case)
         assert _ANTI_ANCHORING_MARKER in out
 
-    def test_framing_present_in_stabilization_both_sections(self):
+    def test_framing_present_in_mitigation_both_sections(self):
         case = _make_case(
-            stage=InvestigationStage.STABILIZATION,
+            stage=InvestigationStage.MITIGATION,
         )
         _make_need(case, state=NeedState.PENDING)
         _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)
@@ -520,7 +520,7 @@ class TestAntiAnchoringFraming:
         before any section heading. Pins the layout the design spec
         depends on (LLM sees framing before parsing entries)."""
         case = _make_case(
-            stage=InvestigationStage.STABILIZATION,
+            stage=InvestigationStage.MITIGATION,
         )
         _make_need(case, state=NeedState.PENDING)
         _make_evidence(case, category=EvidenceCategory.CAUSAL_EVIDENCE)

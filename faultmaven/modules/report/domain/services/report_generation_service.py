@@ -316,7 +316,7 @@ class ReportGenerationService:
         when the surrounding ``"\\n".join`` produces ``\\n\\n`` between
         them (every string ends with ``\\n``). Used by both the
         resolution summary's "Solution Applied" section and the closure
-        summary's "Stabilization Status" section — the rendering is
+        summary's "Mitigation Status" section — the rendering is
         identical; only the surrounding heading differs.
         """
         sol_title = getattr(sol, "title", f"Solution {index}")
@@ -407,7 +407,7 @@ class ReportGenerationService:
                         parts.append(f"{h.rationale}\n")
                 # Last line already ends with \n; no extra separator needed.
 
-        # Solution Applied — same renderer as closure's Stabilization Status.
+        # Solution Applied — same renderer as closure's Mitigation Status.
         if solutions:
             parts.append("## Solution Applied\n")
             for i, sol in enumerate(solutions, 1):
@@ -508,7 +508,7 @@ class ReportGenerationService:
         - Investigation State (milestone/evidence/hypothesis counts)
         - Closure Reason (with human label)
         - Leading Hypotheses (top 5 by confidence)
-        - Stabilization Status (when a stabilization was inserted)
+        - Mitigation Status (when a mitigation was inserted)
         - Timeline
         - Recommendation (for closed_after_investigation only)
         """
@@ -574,14 +574,14 @@ class ReportGenerationService:
                 )
             parts.append("")
 
-        # Stabilization Status — only meaningful when a stabilization was
+        # Mitigation Status — only meaningful when a mitigation was
         # actually inserted (the "stop the bleeding" move). For cases that
         # never stabilized, this section would mislead.
-        was_stabilized = (
-            case.progress is not None and case.progress.stabilization is not None
+        was_mitigated = (
+            case.progress is not None and case.progress.mitigation is not None
         )
-        if solutions and was_stabilized:
-            parts.append("## Stabilization Status\n")
+        if solutions and was_mitigated:
+            parts.append("## Mitigation Status\n")
             for i, sol in enumerate(solutions, 1):
                 parts.extend(self._format_solution_block(sol, i))
             # _format_solution_block's last line ends with \n; no extra separator needed.

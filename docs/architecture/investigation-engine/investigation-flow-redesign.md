@@ -1,4 +1,4 @@
-# Investigation Flow Redesign — Unified Opportunistic Flow with Stabilization-as-Insert
+# Investigation Flow Redesign — Unified Opportunistic Flow with Mitigation-as-Insert
 
 **Status: SHIPPED / AS-BUILT** (branch `refactor/investigation-flow-redesign`,
 2026-06-05). This is the design rationale for the unified opportunistic flow that
@@ -13,8 +13,8 @@ now the unified-flow spec) and [investigation-data-models.md](./investigation-da
 **As-built reconciliation (read first):**
 
 - **No engine GATE on hypothesis emission.** The proposal framed the diagnostic-machinery rule (§2) as something the engine could enforce. As built, the engine **removed the path-conditional emission ban entirely** — the `cause_state` rule is **prompt-guided**, not a hard engine reject. `cause_state` is still recomputed and never path-stripped (the truth-signal linchpin holds), but "run hypothesis work iff cause uncertain" is guidance, not a backstop. This is the deliberate R6 tier shift.
-- **Emission names renamed to `stabilization_accepted` / `stabilization_verified` (R2 complete).** The earlier as-built kept the legacy `mitigation_*` emission names on `MilestoneUpdates`; that deferral was reversed in a post-redesign cleanup. The LLM now emits `stabilization_*`, the `EvidenceCategory` value is `stabilization_evidence`, and the stage/action enums are `STABILIZATION` (migration 017 renames the persisted `evidence.category`). No `mitigation` identifier remains in the investigation-flow code. (The runbook "Mitigation" authoring section — a separate KB concept — is unaffected.)
-- **`StabilizationRecord` lives on `progress`.** It is `InvestigationProgress.stabilization`, persisted inside the `progress` JSON (no new DB column). Migration 016 only **drops** `cases.path_selection`.
+- **Emission names are `mitigation_accepted` / `mitigation_verified` (R2).** The LLM emits `mitigation_*` on `MilestoneUpdates`, the `EvidenceCategory` value is `mitigation_evidence`, and the stage/action enums are `MITIGATION`. The concept uses the standard incident-response term "mitigation" throughout (consistent with runbooks). (The runbook "Mitigation" authoring section — a separate KB concept — is unrelated.)
+- **`MitigationRecord` lives on `progress`.** It is `InvestigationProgress.mitigation`, persisted inside the `progress` JSON (no new DB column). Migration 016 only **drops** `cases.path_selection`.
 - **Prompt dispatcher kept its old name.** `_select_diagnosis_block(case)` survives as a thin wrapper returning `focus_emphasis + _RCA_DIAGNOSIS_BLOCK`; it is no longer a path selector. `investigation_router.py` was deleted.
 - **`SolutionState.CANDIDATES` is reserved, not produced.** Only `UNKNOWN | SELECTED` ship this round (R3).
 
@@ -78,8 +78,8 @@ The single fork conflated two independent questions. Separate them:
 
 - **Axis A — Certainty.** Do we know the cause? the solution? Drives whether
   diagnostic *labor* (hypothesis formulation, causal evidence-needs) is needed.
-- **Axis B — Stabilization gap.** Is something hurting *now* that we cannot
-  fully resolve *this session*? Drives whether a **stabilization** is inserted.
+- **Axis B — Mitigation gap.** Is something hurting *now* that we cannot
+  fully resolve *this session*? Drives whether a **mitigation** is inserted.
 
 The two axes are independent. The old fork forced an Axis-B answer
 ("mitigate first") that wrongly *implied* an Axis-A answer ("cause unknown, RCA
@@ -87,21 +87,21 @@ deferred"). Decoupling them yields the rest of this design.
 
 **Rule (diagnostic machinery):** run hypothesis formulation + evidence-needs
 **iff the cause is uncertain** (`cause_state ∈ {UNKNOWN, CANDIDATES}`) — *not*
-because a stabilization was or wasn't inserted. When the cause is `IDENTIFIED`,
+because a mitigation was or wasn't inserted. When the cause is `IDENTIFIED`,
 skip straight to solution work. This single rule replaces the entire
 path-conditional RCA ban.
 
 ---
 
-## 3. Unified flow: one investigation, stabilization as a re-evaluable insert
+## 3. Unified flow: one investigation, mitigation as a re-evaluable insert
 
 There is **one opportunistic INVESTIGATING flow**. There is **no fork and no
-merge**. A **stabilization** (formerly "mitigation") is an *optional inserted
+merge**. A **mitigation** is an *optional inserted
 sub-activity* that buys time when an Axis-B gap exists. A case is described
 retrospectively as:
 
-- **direct** — resolved with no stabilization, or
-- **stabilized** — a stabilization was inserted.
+- **direct** — resolved with no mitigation, or
+- **stabilized** — a mitigation was inserted.
 
 These are *descriptions of what happened*, not paths chosen upfront.
 
@@ -111,21 +111,21 @@ INQUIRY ──confirm problem──▶ INVESTIGATING ─────────
                                   │  opportunistically record what we learn:
                                   │   symptom_verified, cause_state, solution_state, feasibility
                                   │
-                                  ├─(Axis-B gap detected, any turn)─▶ [STABILIZATION insert]
+                                  ├─(Axis-B gap detected, any turn)─▶ [MITIGATION insert]
                                   │        propose → accept → verify → return to flow
                                   │
                                   └─(CLOSE available at ANY point: abandon, or data/impl. limit)
 ```
 
-### 3.1 Stabilization triggers and their forwarding paths
+### 3.1 Mitigation triggers and their forwarding paths
 
-A stabilization is proposed when an Axis-B gap exists. The three triggering
+A mitigation is proposed when an Axis-B gap exists. The three triggering
 circumstances each leave a *different* thing unresolved — which determines the
-forwarding path **after** the stabilization verifies. This is the answer to
+forwarding path **after** the mitigation verifies. This is the answer to
 "what happens after mitigation?" — it is **not** uniformly "continue to RCA"
 (today's Gate-3 assumption is only row 1):
 
-| Trigger for inserting a stabilization | cause_state | solution_state | Forwarding path after stabilization |
+| Trigger for inserting a mitigation | cause_state | solution_state | Forwarding path after mitigation |
 |---|---|---|---|
 | **(1)** cause unknown / multiple candidates needing different fixes | UNKNOWN / CANDIDATES | UNKNOWN | **RCA** — hypothesis formulation + evidence-needs |
 | **(2)** cause known, solution unclear / multiple complex options | IDENTIFIED | CANDIDATES | **Solution deliberation** (see §6 — under-built today) |
@@ -133,31 +133,31 @@ forwarding path **after** the stabilization verifies. This is the answer to
 
 If **no** Axis-B gap exists (cause known, solution known, implementable now),
 the flow is **direct**: verify → propose solution → accept → verify → RESOLVED.
-No stabilization, no hypothesis machinery. (This is the case that the old model
+No mitigation, no hypothesis machinery. (This is the case that the old model
 trapped.)
 
-### 3.2 When does the engine decide to insert a stabilization? (timing)
+### 3.2 When does the engine decide to insert a mitigation? (timing)
 
 Because data arrives turn-by-turn, this is an agent judgment, not a one-shot
 fork. The **first and most common assessment point is immediately after
 `symptom_verified`** (the same point the old Gate 2 fired) — the agent asks "is
 there an impact-now gap that can't close this session?" and, if so, *proposes* a
-stabilization (the user accepts → insert; declines → continue). The assessment
-is **re-evaluable**: a stabilization can also be proposed later (RCA stalls,
+mitigation (the user accepts → insert; declines → continue). The assessment
+is **re-evaluable**: a mitigation can also be proposed later (RCA stalls,
 situation deteriorates). It is never an irreversible commitment.
 
 ### 3.2.1 Single insert, but never a dead-end (§8 Q3)
 
-For now the engine models **one** stabilization per investigation (forward-only,
-simplest). But "single" must not become a new trap: if the first stabilization
+For now the engine models **one** mitigation per investigation (forward-only,
+simplest). But "single" must not become a new trap: if the first mitigation
 **doesn't stabilize** the situation, the agent must not run into a dead-end. The
 flow stays open to **user-led action** — the user can apply a different fix,
-escalate, provide new data, or CLOSE. Concretely: a stabilization that fails to
-stabilize leaves `stabilization.verified=false`; the agent acknowledges it didn't
+escalate, provide new data, or CLOSE. Concretely: a mitigation that fails to
+stabilize leaves `mitigation.verified=false`; the agent acknowledges it didn't
 work, may propose an alternative _in prose / as a fresh proposed action_, and the
 case continues opportunistically (or closes). The "single record" constraint is a
 data-model simplification, **not** a cap on how many remediation attempts the
-conversation can explore. Multiple structured stabilization records are a
+conversation can explore. Multiple structured mitigation records are a
 possible future extension (§8) but are not required to avoid the dead-end.
 
 ### 3.3 Close-anytime
@@ -221,13 +221,13 @@ work** (that is gated by `cause_state` per §2).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `stabilization` | optional record `{proposed_at_turn, accepted, verified, completed_at_turn}` on `progress` (R2) | A stabilization insert. Its *existence* marks the case "stabilized". `completed_at_turn` (set when `verified`) is the boundary for up-weighting pre-stabilization evidence in later RCA. Replaces the legacy path-coupled stabilization gates. Its own validator enforces `verified ⇒ accepted` (forward-only). |
+| `mitigation` | optional record `{proposed_at_turn, accepted, verified, completed_at_turn}` on `progress` (R2) | A mitigation insert. Its *existence* marks the case "stabilized". `completed_at_turn` (set when `verified`) is the boundary for up-weighting pre-mitigation evidence in later RCA. Replaces the legacy path-coupled mitigation gates. Its own validator enforces `verified ⇒ accepted` (forward-only). |
 | `solution_accepted` | bool | User accepted the permanent solution → "Resolving" |
 | `solution_verified` | bool | User confirmed the permanent solution worked → RESOLVED |
 
-**As-built (R2, rename complete):** the LLM **emits** `stabilization_accepted` /
-`stabilization_verified` in `MilestoneUpdates`; the engine materializes the
-`StabilizationRecord` from those emission symbols plus the
+**As-built (R2):** the LLM **emits** `mitigation_accepted` /
+`mitigation_verified` in `MilestoneUpdates`; the engine materializes the
+`MitigationRecord` from those emission symbols plus the
 `solution_type=workaround` ProposedAction. `solution_proposed` is derived:
 `solution_state == SELECTED` AND a Solution record exists.
 
@@ -235,10 +235,10 @@ work** (that is gated by `cause_state` per §2).
 
 - **`InvestigationPath` (MITIGATION_FIRST / ROOT_CAUSE)** — removed as a
   prospective fork. A retrospective descriptor `investigation_shape: DIRECT |
-  STABILIZED` is derived from `stabilization is not None`.
+  STABILIZED` is derived from `mitigation is not None`.
 - **`PathSelection` row + Gate 2 commit** — removed. The post-`symptom_verified`
   assessment (§3.2) no longer materializes a path; it may surface a
-  stabilization _proposal_.
+  mitigation _proposal_.
 - **`_SYMPTOM_VALIDATION_BLOCK`, `_GATE3_PENDING_BLOCK`, `_POST_MITIGATION_RCA_PREFIX`,
   `_PRE_PATH_DIAGNOSIS_BLOCK`, `pre_*` restricted states, the path-conditional emission
   backstop (`_path_conditional_emission_restriction` / `_RESTRICTED_STATE_BLOCK_NAMES`)** —
@@ -246,13 +246,13 @@ work** (that is gated by `cause_state` per §2).
   replace them. **As-built (R6):** the §2 rule is **prompt-guided**, not a hard engine
   reject — the engine no longer bans hypothesis / causal-evidence emission by state.
 - **`investigation_router.py` (urgency path recommender) + `test_investigation_router.py`** —
-  deleted outright (R5). Stabilization is proposed by the LLM in-prompt, not via a
+  deleted outright (R5). Mitigation is proposed by the LLM in-prompt, not via a
   user fork; there is no recommendation to compute.
 - **Intents `PATH_SELECTION` / `POST_MITIGATION_CHOICE`** — removed from `IntentType`,
   along with the Gate 2/Gate 3 affordances, predicates, and metrics (R5).
 - **`current_stage` (DIAGNOSIS/MITIGATION/TREATMENT)** — re-derived as a pure UI
   view:
-  - `stabilization.accepted && !stabilization.verified` → "Stabilizing"
+  - `mitigation.accepted && !mitigation.verified` → "Mitigating"
   - `solution_accepted && !solution_verified` → "Resolving"
   - else → "Investigating" (sub-phase from `symptom_verified` / `cause_state`)
 
@@ -271,7 +271,7 @@ Investigating ── UNKNOWN/CANDIDATES ─────────────�
       │              ▼                                           ▼
       │          handoff disposition                         RESOLVED
       │
-   [stabilization insert] ── accepted ─▶ "Stabilizing" ── verified ─▶ return to flow
+   [mitigation insert] ── accepted ─▶ "Mitigating" ── verified ─▶ return to flow
                                                                 (forwarding per §3.1)
 ```
 
@@ -296,7 +296,7 @@ knowledge and guards only the things that actually need guarding:
   user handshake (`propose_transition` + `confirm_pending_transition`, INV-03).
   Gates still require a pending `ProposedAction` (no hallucinated compliance).
 - **Guard (ordering):** `solution_verified` requires `solution_accepted`;
-  `stabilization.verified` requires `.accepted`. These survive — they are real
+  `mitigation.verified` requires `.accepted`. These survive — they are real
   state-machine orderings, not path bans.
 
 ---
@@ -338,8 +338,8 @@ Pre-production, no back-compat ([feedback_no_backcompat_pre_data]): the change
 collapsed to the clean model rather than stacking shims. As built:
 
 - **Schema:** added `CauseState` / `SolutionState` / `SolutionFeasible` enums and
-  `StabilizationRecord`; added `cause_state` / `solution_state` /
-  `solution_feasible` / `stabilization` to `InvestigationProgress` (all inside the
+  `MitigationRecord`; added `cause_state` / `solution_state` /
+  `solution_feasible` / `mitigation` to `InvestigationProgress` (all inside the
   `progress` JSON). Cut `root_cause_identified` boolean cleanly — read sites use
   `cause_state == IDENTIFIED`. `InvestigationPath` / `PathSelection` / the
   `mitigation_*` booleans / `pre_*` machinery removed. **Migration 016
@@ -349,7 +349,7 @@ collapsed to the clean model rather than stacking shims. As built:
   strip). The path-conditional emission backstop is **deleted** (not replaced with
   a `cause_state` reject — the rule is prompt-guided). `_recompute_assessment_state`
   derives `cause_state` / `solution_state` each turn (see §10 for the IDENTIFIED
-  derivation). The stabilization side-effects materialize `StabilizationRecord` from
+  derivation). The mitigation side-effects materialize `MitigationRecord` from
   the `mitigation_*` emissions; the §3.1 forwarding row 3 (deferred implementation)
   is engine-proposed (§10-A). Parse-time validation hardening **shipped** as a
   general never-500 backstop (§10-C / §9).
@@ -363,7 +363,7 @@ collapsed to the clean model rather than stacking shims. As built:
   (`derive_closure_reason` in `terminal_transitions.py`).
 - **Invariants:** retired INV-17, INV-19, INV-20, INV-21; added INV-22
   (`cause_state` never path-stripped), INV-23 (surgical strip), INV-24
-  (single forward-only stabilization). Revised INV-05 to the stabilization record.
+  (single forward-only mitigation). Revised INV-05 to the mitigation record.
   INV-03 (disposition handshake) and the close-anytime rule are unchanged.
 - **Docs:** synced `investigation-lifecycle-logic.md` (§1.x, §2, §4), the stage
   docstrings in `models.py`, `investigation-data-models.md`, `agent-stage-playbook.md`,
@@ -378,8 +378,8 @@ collapsed to the clean model rather than stacking shims. As built:
 2. **Disposition for deferred-implementation (circumstance 3).** ✅
    **CLOSE-with-documented-solution** — no third terminal state unless analytics
    require separating "resolved-pending-impl" from "abandoned."
-3. **Multiple stabilizations.** ✅ **Single record for now**, but the flow must
-   stay open to user-led action so a non-stabilizing insert is never a dead-end
+3. **Multiple mitigations.** ✅ **Single record for now**, but the flow must
+   stay open to user-led action so a non-mitigating insert is never a dead-end
    (§3.2.1). Multiple structured records are a possible future extension.
 4. **`cause_state = CANDIDATES` derivation.** ✅ **Derived from
    `hypothesis_manager`** (≥2 ACTIVE hypotheses), not a stored field. **Coupled to

@@ -1,17 +1,17 @@
 """Tests for stage-gate milestone-ordering rejection in
 ``_apply_investigation_updates``.
 
-Pins the engine-side rejection of ``stabilization_verified=True`` when the
-stabilization has not yet been accepted. Without this guard, the
+Pins the engine-side rejection of ``mitigation_verified=True`` when the
+mitigation has not yet been accepted. Without this guard, the
 out-of-order milestone update would crash the
-``StabilizationRecord._verified_requires_accepted`` validator with a
+``MitigationRecord._verified_requires_accepted`` validator with a
 500 — the turn is lost and the case enters a broken state.
 
 Post-redesign (unified opportunistic flow): the LLM still emits the
-``stabilization_accepted`` / ``stabilization_verified`` schema signals, but the
-engine routes them into ``progress.stabilization`` (a forward-only
+``mitigation_accepted`` / ``mitigation_verified`` schema signals, but the
+engine routes them into ``progress.mitigation`` (a forward-only
 record) rather than progress booleans. The ordering guard lives at the
-``stabilization.verified`` materialization step.
+``mitigation.verified`` materialization step.
 
 Design choice: REJECT + re-surface via ``system_feedback`` so the LLM
 gets explicit feedback to retry with the prerequisite in place. NOT
@@ -20,7 +20,7 @@ auto-promote (same antipattern as the deleted
 compliance signals).
 
 If the LLM emits BOTH signals in the same response,
-``stabilization_accepted`` is processed first, so ``stabilization_verified``
+``mitigation_accepted`` is processed first, so ``mitigation_verified``
 passes the check naturally.
 """
 
@@ -48,13 +48,13 @@ from faultmaven.modules.case.contracts import (
 
 def _stab_accepted(case) -> bool:
     """Read the redesign-model equivalent of the old
-    ``progress.stabilization_accepted`` boolean."""
-    stab = case.progress.stabilization
+    ``progress.mitigation_accepted`` boolean."""
+    stab = case.progress.mitigation
     return bool(stab is not None and stab.accepted)
 
 
 def _stab_verified(case) -> bool:
-    stab = case.progress.stabilization
+    stab = case.progress.mitigation
     return bool(stab is not None and stab.verified)
 
 
@@ -95,11 +95,11 @@ def mock_repo():
     return repo
 
 
-def _stabilization_case() -> Case:
-    """INVESTIGATING case with a pending stabilization ProposedAction
-    (required for the stabilization-signal guard to pass), a
+def _mitigation_case() -> Case:
+    """INVESTIGATING case with a pending mitigation ProposedAction
+    (required for the mitigation-signal guard to pass), a
     symptom_evidence row (so the reasoning validator allows milestone
-    completion), and no stabilization record yet.
+    completion), and no mitigation record yet.
     """
     from datetime import UTC, datetime
 
@@ -137,8 +137,8 @@ def _stabilization_case() -> Case:
     case.proposed_actions.append(
         ProposedAction(
             case_id=case.case_id,
-            action_type=InvestigationActionType.STABILIZATION,
-            description="Test stabilization action",
+            action_type=InvestigationActionType.MITIGATION,
+            description="Test mitigation action",
             proposed_in_turn=case.current_turn,
         )
     )
@@ -192,34 +192,34 @@ def _llm_response_setting_milestones(
 
 
 class TestRejectionWhenPrerequisiteMissing:
-    """When the LLM emits ``stabilization_verified=True`` without
-    ``stabilization_accepted`` already True, the engine rejects the update,
+    """When the LLM emits ``mitigation_verified=True`` without
+    ``mitigation_accepted`` already True, the engine rejects the update,
     appends the violation to ``system_feedback`` for the next turn, and
     does NOT crash the save."""
 
     @pytest.mark.asyncio
-    async def test_stabilization_verified_alone_is_rejected(self, mock_llm, mock_repo):
+    async def test_mitigation_verified_alone_is_rejected(self, mock_llm, mock_repo):
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _stabilization_case()
-        # Precondition: no stabilization yet
+        case = _mitigation_case()
+        # Precondition: no mitigation yet
         assert _stab_accepted(case) is False
         assert _stab_verified(case) is False
 
         mock_llm.generate.return_value = _llm_response_setting_milestones(
-            {"stabilization_verified": True}
+            {"mitigation_verified": True}
         )
 
         # Should NOT raise. Previously this crashed at save with
-        # "Cannot verify stabilization without acceptance first".
+        # "Cannot verify mitigation without acceptance first".
         result = await engine.process_turn(case, "test message")
         updated = result["case_updated"]
 
         # Verified is rejected because accept was never signalled. With no
-        # accept signal either, no stabilization record is materialized at
+        # accept signal either, no mitigation record is materialized at
         # all — nothing verified, no completed_at_turn boundary stamped.
         assert _stab_verified(updated) is False
-        if updated.progress.stabilization is not None:
-            assert updated.progress.stabilization.completed_at_turn is None
+        if updated.progress.mitigation is not None:
+            assert updated.progress.mitigation.completed_at_turn is None
 
     @pytest.mark.asyncio
     async def test_rejection_writes_system_feedback_for_next_turn(
@@ -232,10 +232,10 @@ class TestRejectionWhenPrerequisiteMissing:
         recorded and that it carries the actionable error message.
         """
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _stabilization_case()
+        case = _mitigation_case()
 
         mock_llm.generate.return_value = _llm_response_setting_milestones(
-            {"stabilization_verified": True}
+            {"mitigation_verified": True}
         )
 
         result = await engine.process_turn(case, "test message")
@@ -247,8 +247,8 @@ class TestRejectionWhenPrerequisiteMissing:
 
         # The exact phrasing is policy — we pin the load-bearing pieces:
         assert "MILESTONE ORDER ERROR" in feedback
-        assert "stabilization_verified" in feedback
-        assert "stabilization_accepted" in feedback
+        assert "mitigation_verified" in feedback
+        assert "mitigation_accepted" in feedback
         # The retry instruction (the actionable part)
         assert "BOTH" in feedback or "first" in feedback
 
@@ -261,9 +261,9 @@ class TestRejectionWhenPrerequisiteMissing:
         nothing to reject.
         """
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _stabilization_case()
+        case = _mitigation_case()
         mock_llm.generate.return_value = _llm_response_setting_milestones(
-            {"stabilization_verified": True}
+            {"mitigation_verified": True}
         )
         # The fixture mock_repo.save would surface a ValidationError if the
         # case were invalid (the real SQLite repo calls Case.model_validate).
@@ -281,21 +281,21 @@ class TestRejectionWhenPrerequisiteMissing:
 class TestPrerequisiteSatisfiedPasses:
     """Three shapes that satisfy the prerequisite must reach the setattr:
     1. Both milestones in same response (iteration order handles it)
-    2. stabilization_accepted already True from a prior turn
-    3. stabilization_accepted-only update (no ordering issue)
+    2. mitigation_accepted already True from a prior turn
+    3. mitigation_accepted-only update (no ordering issue)
     """
 
     @pytest.mark.asyncio
     async def test_both_milestones_same_response_both_set(self, mock_llm, mock_repo):
-        """If the LLM emits ``stabilization_accepted=True`` AND
-        ``stabilization_verified=True`` in one response, the iteration
-        order processes ``stabilization_accepted`` first, so the
-        ``stabilization_verified`` check sees the prerequisite met.
+        """If the LLM emits ``mitigation_accepted=True`` AND
+        ``mitigation_verified=True`` in one response, the iteration
+        order processes ``mitigation_accepted`` first, so the
+        ``mitigation_verified`` check sees the prerequisite met.
         Both get set."""
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _stabilization_case()
+        case = _mitigation_case()
         mock_llm.generate.return_value = _llm_response_setting_milestones(
-            {"stabilization_accepted": True, "stabilization_verified": True}
+            {"mitigation_accepted": True, "mitigation_verified": True}
         )
 
         result = await engine.process_turn(case, "applied + verified")
@@ -303,26 +303,26 @@ class TestPrerequisiteSatisfiedPasses:
 
         assert _stab_accepted(updated) is True
         assert _stab_verified(updated) is True
-        # Side effects ran: stabilization completion boundary stamped
-        assert updated.progress.stabilization.completed_at_turn is not None
+        # Side effects ran: mitigation completion boundary stamped
+        assert updated.progress.mitigation.completed_at_turn is not None
 
     @pytest.mark.asyncio
     async def test_verified_alone_succeeds_when_accepted_already_true(
         self, mock_llm, mock_repo
     ):
-        """When ``stabilization_accepted`` was set on a prior turn, a
+        """When ``mitigation_accepted`` was set on a prior turn, a
         verified-only update on a later turn passes the ordering check
         cleanly — no rejection, no system_feedback noise."""
-        from faultmaven.modules.case.domain.models import StabilizationRecord
+        from faultmaven.modules.case.domain.models import MitigationRecord
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _stabilization_case()
-        # Accept signalled on a prior turn -> stabilization already accepted.
-        case.progress.stabilization = StabilizationRecord(
+        case = _mitigation_case()
+        # Accept signalled on a prior turn -> mitigation already accepted.
+        case.progress.mitigation = MitigationRecord(
             proposed_at_turn=case.current_turn, accepted=True
         )
         mock_llm.generate.return_value = _llm_response_setting_milestones(
-            {"stabilization_verified": True}
+            {"mitigation_verified": True}
         )
 
         result = await engine.process_turn(case, "verified")
@@ -335,13 +335,13 @@ class TestPrerequisiteSatisfiedPasses:
 
     @pytest.mark.asyncio
     async def test_accepted_alone_is_not_affected(self, mock_llm, mock_repo):
-        """The ordering check is specifically about ``stabilization_verified``.
-        Setting just ``stabilization_accepted`` must pass through normally.
+        """The ordering check is specifically about ``mitigation_verified``.
+        Setting just ``mitigation_accepted`` must pass through normally.
         """
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _stabilization_case()
+        case = _mitigation_case()
         mock_llm.generate.return_value = _llm_response_setting_milestones(
-            {"stabilization_accepted": True}
+            {"mitigation_accepted": True}
         )
 
         result = await engine.process_turn(case, "accepted")

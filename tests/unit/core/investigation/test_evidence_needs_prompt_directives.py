@@ -5,7 +5,7 @@ Pins the per-block composition of the evidence-needs prompt fragments:
 - ``_EVIDENCE_NEEDS_LIFECYCLE_BLOCK`` — universal, in every INVESTIGATING
   dispatch block.
 - ``_EVIDENCE_NEEDS_RCA_POOL_EVAL_BLOCK`` — RCA (DIAGNOSIS) only.
-- ``_EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM`` — STABILIZATION and TREATMENT.
+- ``_EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM`` — MITIGATION and TREATMENT.
 
 The tests use substring matches against the block constants so a
 future refactor that moves text around without losing meaning still
@@ -32,7 +32,7 @@ from faultmaven.core.investigation.prompts.templates import (
     _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM,
     _RCA_DIAGNOSIS_BLOCK,
     INVESTIGATION_BASE,
-    STABILIZATION_INSTRUCTIONS,
+    MITIGATION_INSTRUCTIONS,
     TREATMENT_INSTRUCTIONS,
 )
 
@@ -61,7 +61,7 @@ class TestLifecycleBlockComposedInAllDispatchBlocks:
         "block,block_name",
         [
             (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
-            (STABILIZATION_INSTRUCTIONS, "STABILIZATION_INSTRUCTIONS"),
+            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
             (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
         ],
     )
@@ -77,7 +77,7 @@ class TestLifecycleBlockComposedInAllDispatchBlocks:
         signals if one copy drifted. Single emission per block."""
         for block, name in [
             (_RCA_DIAGNOSIS_BLOCK, "_RCA_DIAGNOSIS_BLOCK"),
-            (STABILIZATION_INSTRUCTIONS, "STABILIZATION_INSTRUCTIONS"),
+            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
             (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
         ]:
             assert block.count(_LIFECYCLE_PROBE) == 1, (
@@ -158,7 +158,7 @@ class TestPoolEvalBlockLocation:
     @pytest.mark.parametrize(
         "block,block_name",
         [
-            (STABILIZATION_INSTRUCTIONS, "STABILIZATION_INSTRUCTIONS"),
+            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
             (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
         ],
     )
@@ -197,20 +197,20 @@ class TestPoolEvalBlockContent:
 
 
 # ============================================================
-# Re-verification addendum — only in STABILIZATION and TREATMENT
+# Re-verification addendum — only in MITIGATION and TREATMENT
 # ============================================================
 
 
 @pytest.mark.unit
 class TestReVerificationAddendumLocation:
     """FULFILLED needs surface as a re-verification checklist only in
-    STABILIZATION/TREATMENT stages (design §8.4). The prompt addendum
+    MITIGATION/TREATMENT stages (design §8.4). The prompt addendum
     explains that surface to the LLM."""
 
     @pytest.mark.parametrize(
         "block,block_name",
         [
-            (STABILIZATION_INSTRUCTIONS, "STABILIZATION_INSTRUCTIONS"),
+            (MITIGATION_INSTRUCTIONS, "MITIGATION_INSTRUCTIONS"),
             (TREATMENT_INSTRUCTIONS, "TREATMENT_INSTRUCTIONS"),
         ],
     )
@@ -224,7 +224,7 @@ class TestReVerificationAddendumLocation:
         assert _REVERIFICATION_PROBE not in _RCA_DIAGNOSIS_BLOCK
 
     def test_addendum_does_not_claim_causal_gating(self):
-        """Causal-need gating is stage-specific (gated in STABILIZATION,
+        """Causal-need gating is stage-specific (gated in MITIGATION,
         permitted in TREATMENT's failure path under extended
         diagnosis). The shared addendum stays neutral; gating notes
         live at each stage's existing 'no hypothesis formation'
@@ -276,7 +276,7 @@ class TestReVerificationSuccessCaseDirective:
 
 
 # ============================================================
-# STABILIZATION causal-need gating extension at the existing anchor
+# MITIGATION causal-need gating extension at the existing anchor
 # ============================================================
 
 
@@ -315,35 +315,32 @@ class TestEvidenceClassificationDecisionTreeExtension:
 
 
 @pytest.mark.unit
-class TestStabilizationCausalNeedsGatingExtension:
-    """The existing STABILIZATION 'do not form hypotheses' line was
+class TestMitigationCausalNeedsGatingExtension:
+    """The existing MITIGATION 'do not form hypotheses' line was
     extended to also forbid causal-purpose evidence_need_updates. The
     constraint is symmetric with hypothesis gating because causal
     needs presuppose a hypothesis to anchor."""
 
     def test_causal_evidence_need_updates_explicitly_gated(self):
         assert (
-            "causal-purpose\n  evidence_need_updates" in STABILIZATION_INSTRUCTIONS
-            or "causal-purpose evidence_need_updates" in STABILIZATION_INSTRUCTIONS
+            "causal-purpose\n  evidence_need_updates" in MITIGATION_INSTRUCTIONS
+            or "causal-purpose evidence_need_updates" in MITIGATION_INSTRUCTIONS
         )
 
     def test_fresh_symptom_needs_still_allowed_clarified(self):
         """The gating note also clarifies symptom needs remain
-        allowed if new symptoms emerge during stabilization work — the
+        allowed if new symptoms emerge during mitigation work — the
         LLM shouldn't over-restrict itself."""
-        assert (
-            "symptom-purpose needs are still allowed" in STABILIZATION_INSTRUCTIONS
-            or (
-                "symptom" in STABILIZATION_INSTRUCTIONS.lower()
-                and "still allowed" in STABILIZATION_INSTRUCTIONS
-            )
+        assert "symptom-purpose needs are still allowed" in MITIGATION_INSTRUCTIONS or (
+            "symptom" in MITIGATION_INSTRUCTIONS.lower()
+            and "still allowed" in MITIGATION_INSTRUCTIONS
         )
 
 
 @pytest.mark.unit
 class TestStageEvidenceTypeListingsIncludeAbsence:
     """The per-stage ``EVIDENCE TYPES FOR THIS STAGE:`` enumerations in
-    STABILIZATION and TREATMENT must list the absence variants now that
+    MITIGATION and TREATMENT must list the absence variants now that
     re-verification emits them. Without these listings the prompt's
     descriptive surface contradicts the decision-tree step 4 directive
     in INVESTIGATION_BASE — a confused LLM might infer the stage's
@@ -352,11 +349,11 @@ class TestStageEvidenceTypeListingsIncludeAbsence:
     Pairs with the decision-tree extension pinned in
     ``TestEvidenceClassificationDecisionTreeExtension`` (Phase 5)."""
 
-    def test_stabilization_lists_symptom_absence_evidence(self):
-        assert "symptom_absence_evidence" in STABILIZATION_INSTRUCTIONS
+    def test_mitigation_lists_symptom_absence_evidence(self):
+        assert "symptom_absence_evidence" in MITIGATION_INSTRUCTIONS
 
-    def test_stabilization_lists_causal_absence_evidence(self):
-        assert "causal_absence_evidence" in STABILIZATION_INSTRUCTIONS
+    def test_mitigation_lists_causal_absence_evidence(self):
+        assert "causal_absence_evidence" in MITIGATION_INSTRUCTIONS
 
     def test_treatment_lists_symptom_absence_evidence(self):
         assert "symptom_absence_evidence" in TREATMENT_INSTRUCTIONS
@@ -375,7 +372,7 @@ class TestStageEvidenceTypeListingsIncludeAbsence:
         listing is longer than a fixed-width window would capture.
         """
         heading = "**EVIDENCE TYPES FOR THIS STAGE:**"
-        for block in (STABILIZATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS):
+        for block in (MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS):
             heading_idx = block.find(heading)
             assert heading_idx != -1
             body_start = heading_idx + len(heading)
@@ -446,8 +443,8 @@ class TestResolveProposalRequiresCausalAbsence:
             "out-of-band path needs no uploaded file."
         )
 
-    def test_stabilization_proposes_closed_not_resolved(self):
-        # The same rule must route a stabilization to symptom_absence + closed,
+    def test_mitigation_proposes_closed_not_resolved(self):
+        # The same rule must route a mitigation to symptom_absence + closed,
         # so the agent only proposes the transition the case can complete.
         rule_start = TREATMENT_INSTRUCTIONS.index(
             "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
@@ -455,7 +452,7 @@ class TestResolveProposalRequiresCausalAbsence:
         rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 2200]
         assert "symptom_absence_evidence" in rule
         assert "closed" in rule, (
-            "A stabilization must propose closed (not resolved); the rule no "
+            "A mitigation must propose closed (not resolved); the rule no "
             "longer states that routing."
         )
 

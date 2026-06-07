@@ -50,10 +50,10 @@ MILESTONE_EVIDENCE_EXPECTATIONS: Dict[str, Dict] = {
         "expected_categories": [],
         "description": "Stage-gate: LLM sets when user submits solution execution results",
     },
-    "stabilization_accepted": {
+    "mitigation_accepted": {
         "min_evidence": 0,
         "expected_categories": [],
-        "description": "Stage-gate: LLM sets when user submits stabilization execution results",
+        "description": "Stage-gate: LLM sets when user submits mitigation execution results",
     },
 }
 

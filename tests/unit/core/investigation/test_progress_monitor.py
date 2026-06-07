@@ -160,7 +160,7 @@ class TestProgressTransparency:
     def test_counter_resets_on_stage_gate_milestone(self, monitor, base_case):
         """Stage transitions reset the counter via the stage-gate milestone path.
 
-        Stage-gate milestones (stabilization_accepted, stabilization_verified,
+        Stage-gate milestones (mitigation_accepted, mitigation_verified,
         solution_accepted, solution_verified) are recorded in
         ``milestones_completed`` when they fire, so a stage transition
         resets the investigative-turn counter just like a progress
@@ -171,14 +171,14 @@ class TestProgressTransparency:
             create_turn(1, outcome=TurnOutcome.DATA_PROVIDED, evidence_added=["ev_1"]),
             create_turn(2, outcome=TurnOutcome.DATA_REQUESTED),
             create_turn(3, outcome=TurnOutcome.DATA_PROVIDED, evidence_added=["ev_3"]),
-            # Stage-gate milestone fires → DIAGNOSIS → STABILIZATION transition.
+            # Stage-gate milestone fires → DIAGNOSIS → MITIGATION transition.
             # Counter must reset here despite being mid-investigation.
-            create_turn(4, milestones_completed=["stabilization_accepted"]),
+            create_turn(4, milestones_completed=["mitigation_accepted"]),
             create_turn(5, outcome=TurnOutcome.DATA_PROVIDED, evidence_added=["ev_5"]),
         ]
-        from faultmaven.modules.case.contracts import StabilizationRecord
+        from faultmaven.modules.case.contracts import MitigationRecord
 
-        base_case.progress.stabilization = StabilizationRecord(
+        base_case.progress.mitigation = MitigationRecord(
             proposed_at_turn=4, accepted=True
         )
 

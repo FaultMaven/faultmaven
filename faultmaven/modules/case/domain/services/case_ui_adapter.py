@@ -172,7 +172,7 @@ _MILESTONE_DESCRIPTIONS = {
     "symptom_verified": "Verify the reported symptoms with evidence",
     "root_cause_identified": "Validate a hypothesis with supporting causal evidence",
     "solution_proposed": "Propose a concrete fix based on identified root cause",
-    "stabilization_verified": "Verify that the temporary fix stabilized the situation",
+    "mitigation_verified": "Verify that the temporary fix stabilized the situation",
     "solution_verified": "Verify that the permanent fix resolved the issue",
 }
 
@@ -217,7 +217,7 @@ def _compute_progress_transparency(
             "root_cause_identified",
             "solution_proposed",
         ],
-        "MITIGATION": ["stabilization_verified"],
+        "MITIGATION": ["mitigation_verified"],
         "TREATMENT": ["solution_verified"],
     }
 
@@ -293,8 +293,8 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
 
     # Build progress summary — purely descriptive, backward-looking facts
     stage_gate_names = {
-        "stabilization_accepted",
-        "stabilization_verified",
+        "mitigation_accepted",
+        "mitigation_verified",
         "solution_accepted",
         "solution_verified",
     }

@@ -374,10 +374,10 @@ class TestINV04_NoDirectInquiryToResolved:
 # =============================================================================
 #
 # Source: §1.4 line 488 — "Disposition actions are NEVER automatic."
-#   Stage transitions within INVESTIGATING (DIAGNOSIS → STABILIZATION →
+#   Stage transitions within INVESTIGATING (DIAGNOSIS → MITIGATION →
 #   TREATMENT), by contrast, ARE automatic: the engine acts directly on
 #   the gate milestone the LLM emits, without a propose/confirm round-trip.
-# Statement: Setting a stage-gate milestone (stabilization_accepted,
+# Statement: Setting a stage-gate milestone (mitigation_accepted,
 #   solution_accepted) advances ``case.current_stage`` immediately. No
 #   pending_transition is written, no user confirmation turn is required.
 # Enforcement: Prompt-only via gate milestone semantics — the engine acts
@@ -407,29 +407,29 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
         # And critically: no pending_transition is involved for stage state
         assert case.pending_transition is None
 
-    def test_inv05_stabilization_accepted_advances_stage_immediately(self):
-        """An accepted-but-unverified stabilization advances
-        ``current_stage`` to STABILIZATION immediately. No propose+confirm
+    def test_inv05_mitigation_accepted_advances_stage_immediately(self):
+        """An accepted-but-unverified mitigation advances
+        ``current_stage`` to MITIGATION immediately. No propose+confirm
         round-trip; no pending_transition is written; no user-confirmation
         turn is required. Asymmetric with INV-03's disposition handshake.
         """
         from faultmaven.modules.case.domain.models import (
             InvestigationStage,
-            StabilizationRecord,
+            MitigationRecord,
         )
 
         case = _make_investigating_case()
         assert case.current_stage == InvestigationStage.DIAGNOSIS
 
-        # Engine materializes the stabilization record from the LLM's
+        # Engine materializes the mitigation record from the LLM's
         # accept gate signal.
-        case.progress.stabilization = StabilizationRecord(
+        case.progress.mitigation = MitigationRecord(
             proposed_at_turn=case.current_turn, accepted=True
         )
 
         # Stage advances immediately (computed from the gate record, no
         # state machine in between)
-        assert case.current_stage == InvestigationStage.STABILIZATION
+        assert case.current_stage == InvestigationStage.MITIGATION
         # Critically: no handshake artifacts
         assert case.pending_transition is None
         # And disposition is unchanged — stage transition does NOT touch
@@ -439,7 +439,7 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
     def test_inv05_solution_accepted_advances_stage_immediately(self):
         """Setting ``solution_accepted=True`` advances ``current_stage``
         to TREATMENT immediately. Same auto-fire semantics as
-        stabilization_accepted; same absence of handshake artifacts.
+        mitigation_accepted; same absence of handshake artifacts.
         """
         from faultmaven.modules.case.domain.models import InvestigationStage
 
@@ -1738,7 +1738,7 @@ class TestINV16_LLMSoleAuthorityForMilestoneAdvancement:
         assert case.progress.symptom_verified == progress_before.symptom_verified
         assert case.progress.cause_state == progress_before.cause_state
         assert case.progress.solution_proposed == progress_before.solution_proposed
-        assert case.progress.stabilization == progress_before.stabilization
+        assert case.progress.mitigation == progress_before.mitigation
         assert case.progress.solution_accepted == progress_before.solution_accepted
         assert case.progress.solution_verified == progress_before.solution_verified
 
@@ -1763,8 +1763,8 @@ class TestINV16_LLMSoleAuthorityForMilestoneAdvancement:
             "case.progress.symptom_verified =",
             "case.progress.root_cause_identified =",
             "case.progress.solution_proposed =",
-            "case.progress.stabilization_accepted =",
-            "case.progress.stabilization_verified =",
+            "case.progress.mitigation_accepted =",
+            "case.progress.mitigation_verified =",
             "case.progress.solution_accepted =",
             "case.progress.solution_verified =",
         ]

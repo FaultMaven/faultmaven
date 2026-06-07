@@ -29,7 +29,7 @@ from faultmaven.core.investigation.schemas import (
     HypothesisEvidenceLinkToAdd,
     InvestigationResponse_Diagnosis,
     InvestigationResponse_General,
-    InvestigationResponse_Stabilization,
+    InvestigationResponse_Mitigation,
     InvestigationResponse_Treatment,
 )
 from faultmaven.modules.case.contracts import EvidenceStance, TurnOutcome
@@ -43,7 +43,7 @@ from faultmaven.modules.case.contracts import EvidenceStance, TurnOutcome
 # iterate every schema that carries the Optional ``outcome`` field.
 RESPONSE_CASES = [
     (InvestigationResponse_Diagnosis, "DiagnosisStateUpdate"),
-    (InvestigationResponse_Stabilization, "StabilizationStateUpdate"),
+    (InvestigationResponse_Mitigation, "MitigationStateUpdate"),
     (InvestigationResponse_Treatment, "TreatmentStateUpdate"),
     (InvestigationResponse_General, "GeneralStateUpdate"),
 ]

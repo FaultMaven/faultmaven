@@ -240,8 +240,8 @@ class MilestoneUpdates(BaseModel):
     # Stage-gate milestones (LLM-settable, drive stage transitions)
     # The LLM sets these when it detects user compliance with a pending
     # ProposedAction — the user's action is the trigger, the LLM recognizes it.
-    stabilization_accepted: Optional[bool] = None
-    stabilization_verified: Optional[bool] = None
+    mitigation_accepted: Optional[bool] = None
+    mitigation_verified: Optional[bool] = None
     solution_accepted: Optional[bool] = None
 
 
@@ -351,7 +351,7 @@ class EvidenceToAdd(BaseModel):
         at decode time by STRICT / FUNCTION_CALLING modes, so in
         practice this path is rarely hit. Valid values:
         ``symptom_evidence`` / ``causal_evidence`` /
-        ``stabilization_evidence`` / ``solution_evidence``.
+        ``mitigation_evidence`` / ``solution_evidence``.
         """
         if isinstance(v, str):
             return EvidenceCategory(v)
@@ -1130,10 +1130,10 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
     state_updates: DiagnosisStateUpdate
 
 
-class InvestigationResponse_Stabilization(BaseInteractionResponse):
-    """Schema for STABILIZATION stage — applying and verifying temporary fix."""
+class InvestigationResponse_Mitigation(BaseInteractionResponse):
+    """Schema for MITIGATION stage — applying and verifying temporary fix."""
 
-    class StabilizationStateUpdate(BaseModel):
+    class MitigationStateUpdate(BaseModel):
         milestones: Optional[MilestoneUpdates] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         evidence_need_updates: Optional[List[EvidenceNeedUpdate]] = Field(
@@ -1141,7 +1141,7 @@ class InvestigationResponse_Stabilization(BaseInteractionResponse):
             description=(
                 "Demand-side updates: typically used to mark FULFILLED "
                 "symptom needs with absence-evidence fulfillments "
-                "(SYMPTOM_ABSENCE_EVIDENCE) in STABILIZATION."
+                "(SYMPTOM_ABSENCE_EVIDENCE) in MITIGATION."
             ),
         )
         solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
@@ -1176,7 +1176,7 @@ class InvestigationResponse_Stabilization(BaseInteractionResponse):
         None,
         description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
     )
-    state_updates: StabilizationStateUpdate
+    state_updates: MitigationStateUpdate
 
 
 class InvestigationResponse_Treatment(BaseInteractionResponse):
@@ -1284,8 +1284,8 @@ def get_schema_for_stage(stage: Optional[InvestigationStage]) -> Any:
     """Factory to get the appropriate Pydantic model for the current stage."""
     if stage == InvestigationStage.DIAGNOSIS:
         return InvestigationResponse_Diagnosis
-    elif stage == InvestigationStage.STABILIZATION:
-        return InvestigationResponse_Stabilization
+    elif stage == InvestigationStage.MITIGATION:
+        return InvestigationResponse_Mitigation
     elif stage == InvestigationStage.TREATMENT:
         return InvestigationResponse_Treatment
     else:

@@ -1,9 +1,9 @@
-"""Tests for the STABILIZATION → DIAGNOSTIC evidence gate.
+"""Tests for the MITIGATION → DIAGNOSTIC evidence gate.
 
-Pins Behavioral Rule 2 (Evidence-Grounded) applied to STABILIZATION
-ProposedActions: a stabilization must target an observed failure
+Pins Behavioral Rule 2 (Evidence-Grounded) applied to MITIGATION
+ProposedActions: a mitigation must target an observed failure
 (SYMPTOM_EVIDENCE), not an unverified user claim. When the LLM emits
-a STABILIZATION SolutionToAdd on a case with no SYMPTOM_EVIDENCE, the
+a MITIGATION SolutionToAdd on a case with no SYMPTOM_EVIDENCE, the
 engine downgrades the resulting ProposedAction to DIAGNOSTIC and
 attaches a downgrade_reason that surfaces to the LLM next turn so it
 can recover.
@@ -87,7 +87,7 @@ class TestCaseHasSymptomEvidence:
         case = _make_case()
         case.evidence.append(_make_evidence(EvidenceCategory.CAUSAL_EVIDENCE, idx=1))
         case.evidence.append(
-            _make_evidence(EvidenceCategory.STABILIZATION_EVIDENCE, idx=2)
+            _make_evidence(EvidenceCategory.MITIGATION_EVIDENCE, idx=2)
         )
         assert _case_has_symptom_evidence(case) is False
 
@@ -118,7 +118,7 @@ class TestProposedActionDowngradeReason:
     def test_field_defaults_to_none(self):
         action = ProposedAction(
             case_id="case_1",
-            action_type=InvestigationActionType.STABILIZATION,
+            action_type=InvestigationActionType.MITIGATION,
             description="Roll back the deployment",
             proposed_in_turn=2,
         )
@@ -131,7 +131,7 @@ class TestProposedActionDowngradeReason:
             description="Roll back the deployment",
             proposed_in_turn=2,
             downgrade_reason=(
-                "Your previous STABILIZATION proposal was downgraded to "
+                "Your previous MITIGATION proposal was downgraded to "
                 "DIAGNOSTIC because no SYMPTOM_EVIDENCE existed on the case."
             ),
         )

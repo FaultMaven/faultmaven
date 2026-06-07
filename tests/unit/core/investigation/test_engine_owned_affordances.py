@@ -11,7 +11,7 @@ When no gate is pending, the function returns None and the LLM's exploratory
 COOPERATIVE suggestions pass through unmodified.
 
 Post-redesign (unified opportunistic flow, R5): Gate 2 (path selection) and
-Gate 3 (post-stabilization choice) were removed along with the path fork. Only
+Gate 3 (post-mitigation choice) were removed along with the path fork. Only
 Gate 1 (problem-statement confirmation) and the disposition override remain.
 """
 

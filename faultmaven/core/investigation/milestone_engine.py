@@ -88,6 +88,7 @@ from faultmaven.modules.case.contracts import (
     JournalEntry,
     KnowledgeMatch,
     KnowledgeResolution,
+    MitigationRecord,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -98,7 +99,6 @@ from faultmaven.modules.case.contracts import (
     SolutionFeasible,
     SolutionState,
     SolutionType,
-    StabilizationRecord,
     TemporalState,
     TurnOutcome,
     TurnProgress,
@@ -133,9 +133,9 @@ CATEGORY_MILESTONE_MAP = {
         "root_cause_identified",  # Demonstrates root cause
         "solution_proposed",  # Justifies proposed solution
     ],
-    EvidenceCategory.STABILIZATION_EVIDENCE: [
-        # Stabilization evidence verifies temp fix effectiveness
-        # stabilization_verified is a stage-gate milestone (set by compliance detection)
+    EvidenceCategory.MITIGATION_EVIDENCE: [
+        # Mitigation evidence verifies temp fix effectiveness
+        # mitigation_verified is a stage-gate milestone (set by compliance detection)
     ],
     EvidenceCategory.SOLUTION_EVIDENCE: [
         # Solution evidence verifies permanent fix effectiveness
@@ -143,11 +143,11 @@ CATEGORY_MILESTONE_MAP = {
     ],
     EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE: [
         # Symptom-absence evidence verifies a fix at the symptom level.
-        # Contributes to BOTH stabilization_verified (workaround masks
+        # Contributes to BOTH mitigation_verified (workaround masks
         # symptom — sufficient on its own) AND solution_verified
         # (defense in depth alongside causal absence, since a fixed
         # cause without symptom recovery means downstream debris).
-        "stabilization_verified",
+        "mitigation_verified",
         "solution_verified",
     ],
     EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE: [
@@ -168,10 +168,10 @@ CATEGORY_MILESTONE_MAP = {
 def _case_has_symptom_evidence(case: Case) -> bool:
     """Return True if the case has at least one SYMPTOM_EVIDENCE row.
 
-    Backstop for Behavioral Rule 2 applied to STABILIZATION ProposedActions:
-    a stabilization must target an observed failure (recorded as
+    Backstop for Behavioral Rule 2 applied to MITIGATION ProposedActions:
+    a mitigation must target an observed failure (recorded as
     SYMPTOM_EVIDENCE), not an unverified user claim. Used at the
-    ProposedAction-creation site to gate STABILIZATION → DIAGNOSTIC
+    ProposedAction-creation site to gate MITIGATION → DIAGNOSTIC
     downgrades. Pure over case state; no side effects.
     """
     return any(e.category == EvidenceCategory.SYMPTOM_EVIDENCE for e in case.evidence)
@@ -181,23 +181,23 @@ def _determine_action_type(
     case: Case, solution_type: SolutionType
 ) -> InvestigationActionType:
     """
-    Determine whether a proposed solution is a STABILIZATION or SOLUTION action.
+    Determine whether a proposed solution is a MITIGATION or SOLUTION action.
 
     Used when creating ProposedAction from SolutionToAdd. The action_type
     determines which stage-gate behavior follows:
-    - STABILIZATION → stabilization insert (Stabilizing)
+    - MITIGATION → mitigation insert (Mitigating)
     - SOLUTION → solution_accepted → enters TREATMENT stage
 
     Logic:
-    1. WORKAROUND solution_type → STABILIZATION (explicitly temporary)
+    1. WORKAROUND solution_type → MITIGATION (explicitly temporary)
     2. Otherwise → SOLUTION
 
-    There is no prospective path fork (redesign R5). A stabilization is an
+    There is no prospective path fork (redesign R5). A mitigation is an
     opportunistic insert driven by the prompt, surfaced via a WORKAROUND
     solution_type.
     """
     if solution_type == SolutionType.WORKAROUND:
-        return InvestigationActionType.STABILIZATION
+        return InvestigationActionType.MITIGATION
 
     return InvestigationActionType.SOLUTION
 
@@ -213,7 +213,7 @@ def _apply_stage_gate_side_effects(
     When the LLM sets a stage-gate milestone, we:
     1. Mark the corresponding pending ProposedAction as "accepted"
     2. Create an ActionAttempt audit record
-    3. Handle stabilization flag reset for re-entry (3B)
+    3. Handle mitigation flag reset for re-entry (3B)
 
     This replaces the old compliance_detector.py logic — the LLM now
     detects compliance per Framework §4.1.
@@ -242,14 +242,14 @@ def _apply_stage_gate_side_effects(
             f"type={pending_action.action_type.value})"
         )
 
-    # 3B: Stabilization-verified side effects (optional propose-close).
+    # 3B: Mitigation-verified side effects (optional propose-close).
     #
-    # Redesign R5: there is no post-stabilization path choice. After a
-    # stabilization verifies, the case simply continues opportunistically.
-    # The pre-stabilization evidence boundary is carried by
-    # ``progress.stabilization.completed_at_turn`` (set in the apply-loop where
+    # Redesign R5: there is no post-mitigation path choice. After a
+    # mitigation verifies, the case simply continues opportunistically.
+    # The pre-mitigation evidence boundary is carried by
+    # ``progress.mitigation.completed_at_turn`` (set in the apply-loop where
     # the record is materialized).
-    if "stabilization_verified" in completed_gates:
+    if "mitigation_verified" in completed_gates:
         # rca_infeasible advisory signal: propose closure as stabilized rather
         # than push RCA on a problem the LLM has flagged as intractable.
         # Reference: investigation-lifecycle-logic.md §2.4.
@@ -268,7 +268,7 @@ def _apply_stage_gate_side_effects(
                 or "root cause analysis is not feasible for this problem"
             )
             closure_message = (
-                "The stabilization is verified and stable. "
+                "The mitigation is verified and stable. "
                 f"Since {rationale}, shall we close this case as stabilized?"
             )
             from faultmaven.core.investigation.terminal_transitions import (
@@ -309,7 +309,7 @@ def _infer_milestones(
     - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md
 
     Args:
-        category: The evidence category (SYMPTOM / CAUSAL / STABILIZATION /
+        category: The evidence category (SYMPTOM / CAUSAL / MITIGATION /
             SOLUTION)
         milestones_completed_this_turn: Milestones completed this turn from MilestoneUpdates
 
@@ -333,9 +333,9 @@ def _infer_milestones(
         that turn get attributed to it. No guessing needed.
 
     Note:
-        - Post-010: 4 categories (SYMPTOM/CAUSAL/STABILIZATION/SOLUTION).
-          STABILIZATION_EVIDENCE and SOLUTION_EVIDENCE map to [] —
-          stabilization_verified / solution_verified are gate milestones
+        - Post-010: 4 categories (SYMPTOM/CAUSAL/MITIGATION/SOLUTION).
+          MITIGATION_EVIDENCE and SOLUTION_EVIDENCE map to [] —
+          mitigation_verified / solution_verified are gate milestones
           set by compliance detection, not by evidence category.
         - If category not in map, returns [] (safe fallback).
         - LLM can override by explicitly setting advances_milestones in EvidenceToAdd.
@@ -482,7 +482,7 @@ def validate_reasoning_first(
 
     # Check 1.5: Warn if trying to complete milestones with no actionable evidence.
     # Contextual evidence (raw uploads) cannot justify milestones — only
-    # LLM-classified evidence (symptom, causal, stabilization, solution) counts.
+    # LLM-classified evidence (symptom, causal, mitigation, solution) counts.
 
     evidence_being_added = (
         getattr(response_obj.state_updates, "evidence_to_add", []) or []
@@ -865,9 +865,9 @@ def engine_owned_affordances(
     confirmation). When a gate is pending, the engine knows the canonical
     affordance pair; the LLM cannot add value there and shouldn't try.
 
-    Gate 2 (investigation path) and Gate 3 (post-stabilization continuation)
+    Gate 2 (investigation path) and Gate 3 (post-mitigation continuation)
     were removed (redesign R5): there is no prospective path fork, and a
-    stabilization simply continues the flow when verified.
+    mitigation simply continues the flow when verified.
 
     Returns ``None`` when no gate is pending — the LLM's own COOPERATIVE /
     EVIDENCE / FREE_SPEECH suggestions pass through unmodified.
@@ -2991,8 +2991,8 @@ class MilestoneEngine:
                 agent_response_text = metadata["resolution_needs_info_message"]
                 follow_ups = metadata["override_suggestions"]
             elif metadata.get("rca_infeasible_closure_message"):
-                # Stage-gate side effect: stabilization_verified + rca_infeasible=True.
-                # Replace the LLM's stabilization-confirmation reply with the engine-
+                # Stage-gate side effect: mitigation_verified + rca_infeasible=True.
+                # Replace the LLM's mitigation-confirmation reply with the engine-
                 # built closure proposal so the user sees a coherent prompt + the
                 # canonical close confirm/decline pair.
                 agent_response_text = metadata["rca_infeasible_closure_message"]
@@ -5032,7 +5032,7 @@ class MilestoneEngine:
             # Degrade gracefully: strip ONLY the milestones that actually failed
             # validation, preserving co-emitted valid ones. A single unjustified
             # milestone (e.g. a reflexive root_cause_identified) must NOT wipe a
-            # validated stabilization/solution gate emitted the same turn — that
+            # validated mitigation/solution gate emitted the same turn — that
             # all-or-nothing wipe was the S1 trap mechanism (redesign §1.1, §5).
             milestones = getattr(
                 getattr(response_obj, "state_updates", None), "milestones", None
@@ -5393,18 +5393,18 @@ class MilestoneEngine:
             p = case.progress
             # Only set to True (never revert).
             #
-            # LOAD-BEARING ORDER: ``stabilization_accepted`` MUST come before
-            # ``stabilization_verified``. The ordering-rejection guard below
+            # LOAD-BEARING ORDER: ``mitigation_accepted`` MUST come before
+            # ``mitigation_verified``. The ordering-rejection guard below
             # relies on this iteration order so that when the LLM emits
-            # both milestones in one response, ``stabilization_accepted``
+            # both milestones in one response, ``mitigation_accepted``
             # is applied first and the prerequisite check for
-            # ``stabilization_verified`` then passes. Reordering this list
+            # ``mitigation_verified`` then passes. Reordering this list
             # (alphabetical sort, regrouping) would silently shift the
             # same-turn case onto the rejection path. See the ordering
             # guard inside the loop below.
-            # Stabilization signals (stabilization_accepted / stabilization_verified)
+            # Mitigation signals (mitigation_accepted / mitigation_verified)
             # are NOT plain progress booleans anymore (redesign R2). They are
-            # routed into progress.stabilization below, after the generic loop.
+            # routed into progress.mitigation below, after the generic loop.
             # The LLM-facing MilestoneUpdates field NAMES are unchanged.
             milestone_fields = [
                 # Progress indicators (LLM context, non-stage-driving)
@@ -5458,43 +5458,43 @@ class MilestoneEngine:
                         setattr(p, field, True)
                         metadata["milestones_completed"].append(field)
 
-            # Stabilization signals (redesign R2): the LLM still emits the
-            # ``stabilization_accepted`` / ``stabilization_verified`` MilestoneUpdates
+            # Mitigation signals (redesign R2): the LLM still emits the
+            # ``mitigation_accepted`` / ``mitigation_verified`` MilestoneUpdates
             # fields (compliance detection); the engine materializes the
-            # progress.stabilization record from them rather than setting
+            # progress.mitigation record from them rather than setting
             # progress booleans. The milestone NAMEs are still appended to
             # ``milestones_completed`` (telemetry symbol unchanged).
-            stab_accepted_signal = bool(getattr(m, "stabilization_accepted", False))
-            stab_verified_signal = bool(getattr(m, "stabilization_verified", False))
+            stab_accepted_signal = bool(getattr(m, "mitigation_accepted", False))
+            stab_verified_signal = bool(getattr(m, "mitigation_verified", False))
 
             if stab_accepted_signal or stab_verified_signal:
-                # Guard: stabilization signals require a pending ProposedAction
+                # Guard: mitigation signals require a pending ProposedAction
                 # (no hallucinated compliance).
                 if not has_pending_action:
                     logger.warning(
-                        f"Rejected stabilization signal(s) for case "
+                        f"Rejected mitigation signal(s) for case "
                         f"{case.case_id}: no pending ProposedAction exists"
                     )
                 else:
                     if stab_accepted_signal:
-                        if p.stabilization is None:
+                        if p.mitigation is None:
                             # proposed_at_turn = the turn the latest workaround
                             # ProposedAction was proposed, else current_turn.
                             proposed_turn = case.current_turn
                             for action in reversed(case.proposed_actions):
                                 if (
                                     action.action_type
-                                    == InvestigationActionType.STABILIZATION
+                                    == InvestigationActionType.MITIGATION
                                 ):
                                     proposed_turn = action.proposed_in_turn
                                     break
-                            p.stabilization = StabilizationRecord(
+                            p.mitigation = MitigationRecord(
                                 proposed_at_turn=proposed_turn
                             )
-                        if not p.stabilization.accepted:
-                            p.stabilization.accepted = True
+                        if not p.mitigation.accepted:
+                            p.mitigation.accepted = True
                             metadata["milestones_completed"].append(
-                                "stabilization_accepted"
+                                "mitigation_accepted"
                             )
 
                     if stab_verified_signal:
@@ -5502,37 +5502,37 @@ class MilestoneEngine:
                         # If accept wasn't signalled (now or earlier), reject and
                         # surface to the LLM via system_feedback for retry,
                         # instead of crashing the turn on the record validator.
-                        if p.stabilization is None or not p.stabilization.accepted:
+                        if p.mitigation is None or not p.mitigation.accepted:
                             logger.warning(
-                                f"Rejected stabilization 'stabilization_verified' "
+                                f"Rejected mitigation 'mitigation_verified' "
                                 f"for case {case.case_id}: prerequisite "
-                                f"'stabilization_accepted' is not set "
+                                f"'mitigation_accepted' is not set "
                                 f"(state-machine ordering)."
                             )
                             current_feedback = metadata.get("system_feedback") or ""
                             metadata["system_feedback"] = (
                                 f"{current_feedback}\n"
                                 "MILESTONE ORDER ERROR: You set "
-                                "stabilization_verified=True without first setting "
-                                "stabilization_accepted=True. Verification "
+                                "mitigation_verified=True without first setting "
+                                "mitigation_accepted=True. Verification "
                                 "presupposes acceptance — set "
-                                "stabilization_accepted=True (based on the user's "
+                                "mitigation_accepted=True (based on the user's "
                                 "confirmation signals) before "
-                                "stabilization_verified=True. Set BOTH milestones "
+                                "mitigation_verified=True. Set BOTH milestones "
                                 "in the same response if both happened this "
-                                "turn, OR set stabilization_accepted=True first "
+                                "turn, OR set mitigation_accepted=True first "
                                 "and verify on a follow-up turn after the user "
                                 "confirms."
                             ).strip()
                             metadata.setdefault("validation_repairs", []).append(
-                                "Rejected stabilization_verified "
-                                "(prerequisite stabilization_accepted not set)"
+                                "Rejected mitigation_verified "
+                                "(prerequisite mitigation_accepted not set)"
                             )
-                        elif not p.stabilization.verified:
-                            p.stabilization.verified = True
-                            p.stabilization.completed_at_turn = case.current_turn
+                        elif not p.mitigation.verified:
+                            p.mitigation.verified = True
+                            p.mitigation.completed_at_turn = case.current_turn
                             metadata["milestones_completed"].append(
-                                "stabilization_verified"
+                                "mitigation_verified"
                             )
 
             if m.root_cause_likelihood is not None:
@@ -5587,8 +5587,8 @@ class MilestoneEngine:
             # side effects: mark the pending ProposedAction as accepted and
             # create an ActionAttempt audit record.
             stage_gate_completed = {
-                "stabilization_accepted",
-                "stabilization_verified",
+                "mitigation_accepted",
+                "mitigation_verified",
                 "solution_accepted",
             } & set(metadata["milestones_completed"])
 
@@ -5850,11 +5850,11 @@ class MilestoneEngine:
                     )
                     action_type = InvestigationActionType.DIAGNOSTIC
 
-                # 3D: Symptom-evidence gate — STABILIZATION requires at least one
-                # SYMPTOM_EVIDENCE row on the case. The stabilization must target
+                # 3D: Symptom-evidence gate — MITIGATION requires at least one
+                # SYMPTOM_EVIDENCE row on the case. The mitigation must target
                 # an observed failure, not an unverified user claim. If no
                 # SYMPTOM_EVIDENCE exists, downgrade to DIAGNOSTIC so the
-                # stabilization milestone cannot fire on an ungrounded proposal.
+                # mitigation milestone cannot fire on an ungrounded proposal.
                 # The LLM receives the downgrade_reason in next-turn context
                 # and can recover by gathering symptom data and re-proposing.
                 # See Behavioral Rule 2 (Evidence-Grounded) and
@@ -5866,35 +5866,35 @@ class MilestoneEngine:
                 # below — only ``action_type`` is rewritten. The user sees
                 # the original proposal in the chat and may execute it.
                 # The gate prevents the engine from REGISTERING the
-                # stabilization (firing ``stabilization_accepted`` on the user's
-                # subsequent compliance), not from the stabilization HAPPENING
+                # mitigation (firing ``mitigation_accepted`` on the user's
+                # subsequent compliance), not from the mitigation HAPPENING
                 # in the user's environment. If the user runs the action
                 # anyway, the LLM next turn sees both the downgrade_reason
                 # and the user's report; the recovery is to file
-                # retrospective SYMPTOM_EVIDENCE (from pre-stabilization logs
+                # retrospective SYMPTOM_EVIDENCE (from pre-mitigation logs
                 # or the user's account of what changed) and then re-propose.
-                # Forward-only semantics: an ungrounded stabilization that
+                # Forward-only semantics: an ungrounded mitigation that
                 # quietly executes does not register; the case stays in
                 # DIAGNOSIS until grounding catches up — which is the
                 # correct outcome under "valid results when possible, no
                 # false progress otherwise."
                 if (
-                    action_type == InvestigationActionType.STABILIZATION
+                    action_type == InvestigationActionType.MITIGATION
                     and not _case_has_symptom_evidence(case)
                 ):
                     logger.warning(
-                        f"Downgrading STABILIZATION to DIAGNOSTIC for case {case.case_id}: "
+                        f"Downgrading MITIGATION to DIAGNOSTIC for case {case.case_id}: "
                         f"no SYMPTOM_EVIDENCE exists yet"
                     )
                     action_type = InvestigationActionType.DIAGNOSTIC
                     downgrade_reason = (
-                        "Your previous STABILIZATION proposal was downgraded to "
+                        "Your previous MITIGATION proposal was downgraded to "
                         "DIAGNOSTIC because no SYMPTOM_EVIDENCE existed on "
-                        "the case. A stabilization must target an observed "
+                        "the case. A mitigation must target an observed "
                         "failure, not an unverified user claim. Inspect the "
                         "case data (pod logs / status / metrics / config "
                         "snapshot), file SYMPTOM_EVIDENCE for what you find, "
-                        "then re-propose the stabilization grounded in that "
+                        "then re-propose the mitigation grounded in that "
                         "evidence."
                     )
 
@@ -6291,7 +6291,7 @@ class MilestoneEngine:
               The LLM reads files via ``<uploaded_file>`` context blocks.
             - Evidence is born during INVESTIGATING: the LLM extracts
               claim-anchored slices via ``evidence_to_add``, each carrying a
-              category (symptom / causal / stabilization / solution_evidence)
+              category (symptom / causal / mitigation / solution_evidence)
               and a ``source_file_id`` back to the originating file.
             - Milestones derive from evidence categories as those rows are
               created turn-by-turn, not retroactively at the transition.

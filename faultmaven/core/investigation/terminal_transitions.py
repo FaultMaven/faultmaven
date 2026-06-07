@@ -39,7 +39,7 @@ def _has_causal_absence(case: "Case") -> bool:
     """Whether a ``causal_absence_evidence`` row is on the case.
 
     This is the ground-truth signal that the root cause was confirmed
-    ELIMINATED — not merely that the symptom was relieved (a stabilization /
+    ELIMINATED — not merely that the symptom was relieved (a mitigation /
     failover / traffic-shift produces ``symptom_absence_evidence`` while the
     cause persists). It is the discriminator between RESOLVED (cause gone) and
     CLOSED-with-documented-solution (stabilized, deferred, or unfixed). See
@@ -64,7 +64,7 @@ def derive_closure_reason(case: "Case") -> str:
     - ``closed_after_investigation`` — closed from INVESTIGATING. This folds
       in the former ``mitigation_sufficient`` reason: a case stabilized and
       then closed is simply an investigation that closed. The documented
-      stabilization / solution is preserved on the closed case.
+      mitigation / solution is preserved on the closed case.
 
     The LLM never authors closure_reason; it's purely engine-derived from
     structured case state.
@@ -469,7 +469,7 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     #   2. solution     — what fixed it
     #   3. confirmation the problem is now gone — recorded as causal_absence
     #      (the CAUSE itself is eliminated, not merely the symptom relieved; a
-    #      stabilization/failover gives symptom_absence while the cause persists).
+    #      mitigation/failover gives symptom_absence while the cause persists).
     #
     # When the user asks to RESOLVE but an essential is missing — common when the
     # problem was fixed OUT OF BAND (someone ran commands / collected data outside
@@ -737,7 +737,7 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
 
     Enriches quality (not required, but flagged if missing):
     - Diagnostic Steps: evidence items with summaries
-    - Mitigation: action_attempts with STABILIZATION type, or immediate_action
+    - Mitigation: action_attempts with MITIGATION type, or immediate_action
     - Verification: verification_method on any solution
 
     Always available (LLM generates from context):
@@ -758,11 +758,11 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
     has_diagnostic_steps = evidence_count >= 1 or hypothesis_count >= 1
     coverage["diagnostic_steps"] = has_diagnostic_steps
 
-    # Mitigation ← action_attempts with STABILIZATION type, or solutions[].immediate_action
+    # Mitigation ← action_attempts with MITIGATION type, or solutions[].immediate_action
     has_mitigation = False
     if case.action_attempts:
         has_mitigation = any(
-            getattr(a, "action_type", "").upper() == "STABILIZATION"
+            getattr(a, "action_type", "").upper() == "MITIGATION"
             for a in case.action_attempts
         )
     if not has_mitigation and case.solutions:

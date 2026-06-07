@@ -2123,7 +2123,7 @@ class TestNeedsInfoFollowupProposesClose:
 
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "closed"
-        # closure_reason is auto-derived; no stabilization → closed_after_investigation
+        # closure_reason is auto-derived; no mitigation → closed_after_investigation
         assert case.pending_transition["closure_reason"] == "closed_after_investigation"
         assert metadata.get("resolution_suggest_close") is True
         assert metadata.get("transition_proposed_this_turn") is True
@@ -2245,7 +2245,7 @@ class TestCreateTurnRecordSystemFeedbackTruncation:
 
         engine = self._make_engine()
         short_feedback = (
-            "MILESTONE ORDER ERROR: stabilization_verified without acceptance."
+            "MILESTONE ORDER ERROR: mitigation_verified without acceptance."
         )
         record = engine._create_turn_record(
             turn_number=1,
@@ -2272,10 +2272,10 @@ class TestCreateTurnRecordSystemFeedbackTruncation:
         # Each rejection message is ~300-400 chars. Several firing in one
         # turn easily exceeds 1000.
         oversized_feedback = (
-            "MILESTONE ORDER ERROR: You set stabilization_verified=True without "
-            "first setting stabilization_accepted=True. Verification presupposes "
-            "acceptance — set stabilization_accepted=True (based on the user's "
-            "confirmation signals) before stabilization_verified=True. Set BOTH "
+            "MILESTONE ORDER ERROR: You set mitigation_verified=True without "
+            "first setting mitigation_accepted=True. Verification presupposes "
+            "acceptance — set mitigation_accepted=True (based on the user's "
+            "confirmation signals) before mitigation_verified=True. Set BOTH "
             "milestones in the same response if both happened this turn.\n"
             "EVIDENCE NEED REJECTION: A causal-purpose evidence_need was emitted "
             "with no valid motivating hypothesis. Causal needs are motivated by "
