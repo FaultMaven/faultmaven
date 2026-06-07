@@ -418,3 +418,60 @@ class TestTurnResponseModel:
         )
         # Default: no transparency info
         assert response.progress_transparency is None
+
+
+# ============================================================
+# Route-level: malformed intent -> 422 (not 500)  [40f17354]
+# ============================================================
+
+
+@pytest.mark.unit
+class TestSubmitTurnRejectsMalformedIntent:
+    """The /turns endpoint must reject a malformed intent with 422, never 500.
+    Calls the handler directly with mocked deps; the intent guard fires before
+    process_turn, so no real services are exercised. Closes the loop on the
+    route-level behavior that test_query_intent_schema.py only covers at the
+    schema layer.
+    """
+
+    @staticmethod
+    async def _submit(intent_type, intent_data):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fastapi import HTTPException  # noqa: F401
+
+        from faultmaven.modules.case.api.routes import submit_turn
+
+        case_service = MagicMock()
+        case_service.get_case = AsyncMock(return_value=_make_mock_case())
+        current_user = MagicMock()
+        current_user.user_id = "test-user-123"
+        return await submit_turn(
+            case_id="case_abc123def456",
+            fastapi_request=MagicMock(),
+            query="close it",
+            files=[],
+            pasted_content=None,
+            intent_type=intent_type,
+            intent_data=intent_data,
+            input_type=None,
+            source_url=None,
+            case_service=case_service,
+            investigation_service=MagicMock(),
+            current_user=current_user,
+        )
+
+    async def test_status_transition_without_to_state_returns_422(self):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc:
+            await self._submit("status_transition", "{}")  # no to_state
+        assert exc.value.status_code == 422
+
+    async def test_unknown_intent_type_returns_422(self):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc:
+            # 'free_speech' is a suggestion action_type, not an IntentType
+            await self._submit("free_speech", "{}")
+        assert exc.value.status_code == 422
