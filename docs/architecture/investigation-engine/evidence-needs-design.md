@@ -502,25 +502,34 @@ need IDs, but does not duplicate their content.
 
 ### 6.2 Suggestions — EVIDENCE Type, LLM-Emitted
 
-Evidence-gathering suggestions become **derived from the pool** rather
-than improvised. The flow stays in the existing
-[3-suggestion-type model](./investigation-data-models.md):
+Evidence-gathering suggestions **may draw from the pool** rather than
+being purely improvised — but the pool is **not** a precondition for an
+EVIDENCE suggestion. The pool's primary, load-bearing job is the
+file-search agenda (§6.1); surfacing a need as a suggestion is an
+*optional* secondary use of the same structure. The flow stays in the
+existing [3-suggestion-type model](./investigation-data-models.md):
 COOPERATIVE / EVIDENCE / FREE_SPEECH. Evidence needs map to
 **EVIDENCE-type** suggestions:
 
-- The LLM owns suggestion emission. It consults the needs pool and
-  decides which unfulfilled needs to surface this turn.
-- Each `SuggestedFollowUp` with `action_type=EVIDENCE` carries a new
-  optional field: `evidence_need_id: Optional[str]` — the persistent
-  need this suggestion derives from.
-- The frontend uses `evidence_need_id` for visual linkage (highlight,
-  dismiss, group by need). No backend click-to-upload flow yet — the
-  intent type (§9.3) stays deferred.
+- The LLM owns suggestion emission. When a pending need is worth
+  surfacing this turn it may raise it as an EVIDENCE suggestion — but it
+  may equally make a contextual EVIDENCE ask that no pool need backs
+  (the pre-evidence-needs behavior, still valid).
+- Each `SuggestedFollowUp` with `action_type=EVIDENCE` carries an
+  **optional** field: `evidence_need_id: Optional[str]` — set *only when*
+  the suggestion corresponds to a pending pool need. A purely contextual
+  EVIDENCE ask (e.g. an immediate "send me the error log" before any need
+  is recorded) leaves it `None` and is fully valid.
+- The frontend uses `evidence_need_id`, when present, for visual linkage
+  (highlight, dismiss, group by need). No backend click-to-upload flow
+  yet — the intent type (§9.3) stays deferred.
 
 General COOPERATIVE suggestions (path choices, confirmation prompts)
 and FREE_SPEECH suggestions (open-ended questions) remain unchanged.
-This is a *narrowing of the source* for EVIDENCE suggestions, not a
-replacement of the suggestion mechanism.
+Evidence needs are a *preferred source* for EVIDENCE suggestions, not a
+mandatory one and not a replacement of the suggestion mechanism — the
+LLM may always make a contextual EVIDENCE ask, leaving `evidence_need_id`
+`None` when it does.
 
 ### 6.3 Progress Tracking — Fulfillment Ratio
 
@@ -743,9 +752,10 @@ investigation — that is the intended completeness, not a regression.
 
 ### 8.5 Relationship to `suggested_follow_ups`
 
-Evidence-gathering suggestions become **derived from the pool**.
-COOPERATIVE and FREE_SPEECH suggestions remain LLM-improvised. The
-`SuggestedFollowUp` schema gains one optional field:
+Evidence-gathering suggestions **may draw from the pool** (optional — see
+§6.2; `evidence_need_id` is set only when a suggestion matches a pending
+need, else `None`). COOPERATIVE and FREE_SPEECH suggestions remain
+LLM-improvised. The `SuggestedFollowUp` schema gains one optional field:
 
 ```python
 class SuggestedFollowUp(BaseModel):
@@ -928,6 +938,20 @@ pool. No special intent type is required.
 (e.g., a "tell me more about this need" button). This avoids
 unnecessary API surface changes and keeps the intent dispatch table
 honest.
+
+**Frontend contract decision (2026-06-07).** The copilot's `IntentType`
+enum lists only the intent types the frontend actually *emits* — the
+same rule by which `greeting` (a backend-only classifier result) is
+absent from it. Because the EVIDENCE_NEED *emit* path is deferred (there
+is no click-to-upload / "tell me more" affordance yet, per §6.2), no
+copilot code path constructs this intent, so the enum member should
+**not** be carried for parity; it is added back — alongside the emitter
+and the backend dispatch flip out of `NOT_IMPLEMENTED` — when the
+feature actually ships. This is distinct from the **live**
+`SuggestedFollowUp.evidence_need_id` field (§6.2), which the frontend
+*does* use for visual linkage of EVIDENCE-type suggestions and which is
+unaffected by the deferred emit path. Removing the deferred intent
+member must not touch that display-linkage field.
 
 ### 9.4 Pool Model over Per-Hypothesis Anchoring
 
