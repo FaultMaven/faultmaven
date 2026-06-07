@@ -43,10 +43,10 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     InquiryData,
     InvestigationStage,
+    MitigationRecord,
     NeedPriority,
     NeedPurpose,
     NeedState,
-    StabilizationRecord,
 )
 
 # ============================================================
@@ -62,7 +62,7 @@ def _make_case(
     """Build a Case in the unified opportunistic flow (no path fork).
 
     The display stage (DIAGNOSIS / MITIGATION / TREATMENT) is derived
-    from the action-compliance gates: MITIGATION when a stabilization is
+    from the action-compliance gates: MITIGATION when a mitigation is
     accepted-but-not-verified, TREATMENT when a solution is
     accepted-but-not-verified, else DIAGNOSIS.
     """
@@ -84,7 +84,7 @@ def _make_case(
     if state == CaseState.INVESTIGATING:
         case.progress.symptom_verified = True
         if stage == InvestigationStage.MITIGATION:
-            case.progress.stabilization = StabilizationRecord(
+            case.progress.mitigation = MitigationRecord(
                 proposed_at_turn=case.current_turn, accepted=True
             )
         elif stage == InvestigationStage.TREATMENT:

@@ -508,7 +508,7 @@ class ReportGenerationService:
         - Investigation State (milestone/evidence/hypothesis counts)
         - Closure Reason (with human label)
         - Leading Hypotheses (top 5 by confidence)
-        - Stabilization Status (when a stabilization was inserted)
+        - Mitigation Status (when a mitigation was inserted)
         - Timeline
         - Recommendation (for closed_after_investigation only)
         """
@@ -574,14 +574,14 @@ class ReportGenerationService:
                 )
             parts.append("")
 
-        # Stabilization Status — only meaningful when a stabilization was
+        # Mitigation Status — only meaningful when a mitigation was
         # actually inserted (the "stop the bleeding" move). For cases that
         # never stabilized, this section would mislead.
-        was_stabilized = (
-            case.progress is not None and case.progress.stabilization is not None
+        was_mitigated = (
+            case.progress is not None and case.progress.mitigation is not None
         )
-        if solutions and was_stabilized:
-            parts.append("## Stabilization Status\n")
+        if solutions and was_mitigated:
+            parts.append("## Mitigation Status\n")
             for i, sol in enumerate(solutions, 1):
                 parts.extend(self._format_solution_block(sol, i))
             # _format_solution_block's last line ends with \n; no extra separator needed.

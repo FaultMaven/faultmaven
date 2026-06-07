@@ -31,7 +31,25 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
     CaseState,
+    EvidenceCategory,
 )
+
+
+def _has_causal_absence(case: "Case") -> bool:
+    """Whether a ``causal_absence_evidence`` row is on the case.
+
+    This is the ground-truth signal that the root cause was confirmed
+    ELIMINATED — not merely that the symptom was relieved (a mitigation /
+    failover / traffic-shift produces ``symptom_absence_evidence`` while the
+    cause persists). It is the discriminator between RESOLVED (cause gone) and
+    CLOSED-with-documented-solution (stabilized, deferred, or unfixed). See
+    investigation-flow-redesign.md §11 and intent-resolution.md §8.
+    """
+    return any(
+        getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+        for e in (case.evidence or [])
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +64,7 @@ def derive_closure_reason(case: "Case") -> str:
     - ``closed_after_investigation`` — closed from INVESTIGATING. This folds
       in the former ``mitigation_sufficient`` reason: a case stabilized and
       then closed is simply an investigation that closed. The documented
-      stabilization / solution is preserved on the closed case.
+      mitigation / solution is preserved on the closed case.
 
     The LLM never authors closure_reason; it's purely engine-derived from
     structured case state.
@@ -444,89 +462,94 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     Returns:
         ResolutionReadiness with verdict, user-facing message, and missing items list
     """
-    missing = []
-
-    # Check 1: Problem verification (basic — should always exist if INVESTIGATING)
-    has_problem = bool(
-        case.problem_verification
-        and getattr(case.problem_verification, "symptom_statement", None)
-    )
-    if not has_problem:
-        missing.append("problem statement")
-
-    # Check 2: Root cause identified
-    has_root_cause = bool(
+    # The three essentials a RESOLVED case needs — both to *document* the
+    # resolution (the resolution_summary needs root cause + what fixed it) and to
+    # confirm it actually resolved the problem:
+    #   1. root cause   — what caused the problem
+    #   2. solution     — what fixed it
+    #   3. confirmation the problem is now gone — recorded as causal_absence
+    #      (the CAUSE itself is eliminated, not merely the symptom relieved; a
+    #      mitigation/failover gives symptom_absence while the cause persists).
+    #
+    # When the user asks to RESOLVE but an essential is missing — common when the
+    # problem was fixed OUT OF BAND (someone ran commands / collected data outside
+    # this session) and the case has no documentation — we do NOT reject. We ask
+    # the user to fill the specific gaps so the resolution summary can be written
+    # (intent-resolution.md §8). The re-check loop then re-evaluates: if the user
+    # supplies the gaps (incl. confirming the original problem is gone, which the
+    # agent records as causal_absence) the case becomes READY. A case that can
+    # only be stabilized — no causal_absence after being asked — converges to
+    # Close. Close is offered up front as the alternative.
+    has_cause = bool(
         case.root_cause_conclusion
         and getattr(case.root_cause_conclusion, "root_cause", None)
-    )
-    has_working_conclusion = bool(
+    ) or bool(
         case.working_conclusion
         and getattr(case.working_conclusion, "statement", None)
         and getattr(case.working_conclusion, "likelihood", 0) >= 0.6
     )
-    has_cause = has_root_cause or has_working_conclusion
+    has_solution = bool(case.solutions and len(case.solutions) > 0)
+    has_evidence = bool(case.evidence and len(case.evidence) > 0)
+    has_resolution_confirmation = _has_causal_absence(case)
+
+    missing = []
     if not has_cause:
         missing.append("root cause")
-
-    # Check 3: At least one solution
-    has_solution = bool(case.solutions and len(case.solutions) > 0)
     if not has_solution:
         missing.append("solution")
-
-    # Check 4: Any evidence collected
-    has_evidence = bool(case.evidence and len(case.evidence) > 0)
-    if not has_evidence:
-        missing.append("evidence")
-
-    # Determine verdict
-    critical_missing = [m for m in missing if m in ("root cause", "solution")]
+    if not has_resolution_confirmation:
+        missing.append("confirmation the problem is now resolved")
 
     if not missing:
-        # Everything present
         return ResolutionReadiness(
             verdict=ResolutionReadiness.READY,
             message="",
             missing=[],
         )
 
-    if len(critical_missing) >= 2 and not has_evidence:
-        # No root cause, no solution, no evidence — this isn't a resolved case
+    # Genuinely nothing on record — no investigation to turn into a resolution.
+    # Suggest Close rather than asking the user to reconstruct a whole case.
+    if not (has_cause or has_solution or has_evidence):
         return ResolutionReadiness(
             verdict=ResolutionReadiness.SUGGEST_CLOSE,
             message=(
-                "This case doesn't have enough information to be marked as **resolved**. "
-                "There's no identified root cause, no solution on record, and no evidence collected.\n\n"
-                "If the issue is no longer relevant, you can **close** the case instead "
-                "(abandoned, escalated, or mitigation sufficient).\n\n"
-                "If the issue was actually resolved, please describe:\n"
-                "1. What was the root cause?\n"
-                "2. What fixed it?"
+                "This case has nothing investigated yet, so there's nothing to "
+                "document as a resolution.\n\n"
+                "If it's no longer relevant you can **close** it. If it was "
+                "actually fixed, tell me what the problem was, what caused it, "
+                "and how it was fixed, and I'll document the resolution."
             ),
             missing=missing,
         )
 
-    if critical_missing:
-        # Partially ready — ask for the missing pieces
-        missing_desc = []
-        if "root cause" in critical_missing:
-            missing_desc.append("- **Root cause**: What caused the problem?")
-        if "solution" in critical_missing:
-            missing_desc.append("- **Solution**: What action resolved the issue?")
-
-        return ResolutionReadiness(
-            verdict=ResolutionReadiness.NEEDS_INFO,
-            message=(
-                "Before I can mark this as resolved, I need a bit more detail:\n\n"
-                + "\n".join(missing_desc)
-                + "\n\nPlease provide this information so I can properly document the resolution."
-            ),
-            missing=missing,
+    # Otherwise: ask the user to fill the documentation gaps. The problem may
+    # have been resolved out of band — invite the missing essentials rather than
+    # rejecting the request.
+    asks = []
+    if "root cause" in missing:
+        asks.append("- **Root cause** — what caused the problem?")
+    if "solution" in missing:
+        asks.append("- **What fixed it** — the action that resolved it.")
+    if "confirmation the problem is now resolved" in missing:
+        asks.append(
+            "- **Confirmation it's resolved** — that the original problem is "
+            "now gone (e.g. the error no longer occurs in the latest output)."
         )
-
-    # Non-critical items missing (just evidence or problem statement) — still ready
     return ResolutionReadiness(
-        verdict=ResolutionReadiness.READY,
-        message="",
+        verdict=ResolutionReadiness.NEEDS_INFO,
+        message=(
+            "To mark this **resolved** and write up the resolution summary, I "
+            "just need a few essentials:\n\n"
+            + "\n".join(asks)
+            + "\n\nIf the problem was already fixed outside this session, just "
+            "tell me the above and I'll document it.\n\n"
+            "If it was only **stabilized** (a workaround/failover while the root "
+            "cause is still pending) or the real fix is **deferred** (a change "
+            "window, hardware RMA, another team), you can **close** the case "
+            "instead — that keeps the investigation and the documented (or "
+            "deferred) solution on record without claiming it's permanently "
+            "fixed."
+        ),
         missing=missing,
     )
 
@@ -615,15 +638,21 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     # criteria assess_resolution_readiness uses for READY). Closing would
     # discard the resolution attribution. Engine pivots; user still confirms.
     # Symmetric to ResolutionReadiness.SUGGEST_CLOSE.
-    if has_root_cause and has_solutions:
+    #
+    # Gate on causal_absence (cause confirmed ELIMINATED), the same bar as
+    # assess_resolution_readiness — NOT merely "has a solution row". A case that
+    # was only stabilized (failover/workaround) has a solution on record but the
+    # cause persists; closing it is correct and must NOT pivot to resolve.
+    if has_root_cause and has_solutions and _has_causal_absence(case):
         rc = getattr(case.root_cause_conclusion, "root_cause", "")
         sol_titles = _solution_display_titles(case.solutions)
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
             message=(
-                "This case has a documented root cause and solution — it "
-                "qualifies for **resolved** status rather than closed. "
-                "Closing it would discard the resolution attribution.\n\n"
+                "This case has a documented root cause and a fix confirmed to "
+                "have eliminated it — it qualifies for **resolved** status "
+                "rather than closed. Closing it would discard the resolution "
+                "attribution.\n\n"
                 f"- **Root cause**: {rc}\n"
                 f"- **Solution**: {', '.join(sol_titles)}\n\n"
                 "Would you like to mark it **resolved** instead?"

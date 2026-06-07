@@ -958,21 +958,21 @@ def _score_evidence_for_tier_a(
     if time_window is not None and _coverage_overlaps_window(ev, time_window):
         score += 4
 
-    # Pre-stabilization evidence up-weight. After a stabilization verifies
-    # (``progress.stabilization.completed_at_turn`` is set), evidence
-    # collected before the stabilization boundary is the RCA-relevant window
-    # because telemetry collected post-stabilization typically shows a
+    # Pre-mitigation evidence up-weight. After a mitigation verifies
+    # (``progress.mitigation.completed_at_turn`` is set), evidence
+    # collected before the mitigation boundary is the RCA-relevant window
+    # because telemetry collected post-mitigation typically shows a
     # stabilized system that no longer exhibits the root cause's signature.
-    # +5 weight matches/exceeds the time-window bonus so pre-stabilization
-    # diagnostic evidence outranks post-stabilization noise during RCA. Only
-    # fires when ``stabilization.completed_at_turn`` is set and the current
+    # +5 weight matches/exceeds the time-window bonus so pre-mitigation
+    # diagnostic evidence outranks post-mitigation noise during RCA. Only
+    # fires when ``mitigation.completed_at_turn`` is set and the current
     # turn is past that boundary — outside that window this is a no-op.
-    stabilization = case.progress.stabilization if case.progress else None
+    mitigation = case.progress.mitigation if case.progress else None
     if (
-        stabilization is not None
-        and stabilization.completed_at_turn is not None
-        and case.current_turn > stabilization.completed_at_turn
-        and ev.collected_at_turn <= stabilization.completed_at_turn
+        mitigation is not None
+        and mitigation.completed_at_turn is not None
+        and case.current_turn > mitigation.completed_at_turn
+        and ev.collected_at_turn <= mitigation.completed_at_turn
     ):
         score += 5
 
@@ -1951,9 +1951,9 @@ def build_investigation_context(
         p = case.progress
 
         # Stage-gate milestones (drive transitions). Post-redesign the
-        # mitigation gates live on the stabilization record, not progress
+        # mitigation gates live on the mitigation record, not progress
         # booleans; derive the same telemetry symbols from it.
-        _stab = p.stabilization
+        _stab = p.mitigation
         stage_gates = {
             "mitigation_accepted": bool(_stab is not None and _stab.accepted),
             "mitigation_verified": bool(_stab is not None and _stab.verified),

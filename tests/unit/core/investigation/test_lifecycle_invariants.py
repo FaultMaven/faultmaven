@@ -132,14 +132,12 @@ class TestINV03_DispositionHandshake:
 
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "closed"
-        # closure_reason is engine-derived at propose time (one of the three
-        # canonical values: inquiry_only | closed_after_investigation |
-        # mitigation_sufficient)
+        # closure_reason is engine-derived at propose time (one of the two
+        # canonical values: inquiry_only | closed_after_investigation)
         assert "closure_reason" in case.pending_transition
         assert case.pending_transition["closure_reason"] in (
             "inquiry_only",
             "closed_after_investigation",
-            "mitigation_sufficient",
         )
         # Status unchanged
         assert case.state == CaseState.INVESTIGATING
@@ -409,23 +407,23 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
         # And critically: no pending_transition is involved for stage state
         assert case.pending_transition is None
 
-    def test_inv05_stabilization_accepted_advances_stage_immediately(self):
-        """An accepted-but-unverified stabilization advances
+    def test_inv05_mitigation_accepted_advances_stage_immediately(self):
+        """An accepted-but-unverified mitigation advances
         ``current_stage`` to MITIGATION immediately. No propose+confirm
         round-trip; no pending_transition is written; no user-confirmation
         turn is required. Asymmetric with INV-03's disposition handshake.
         """
         from faultmaven.modules.case.domain.models import (
             InvestigationStage,
-            StabilizationRecord,
+            MitigationRecord,
         )
 
         case = _make_investigating_case()
         assert case.current_stage == InvestigationStage.DIAGNOSIS
 
-        # Engine materializes the stabilization record from the LLM's
+        # Engine materializes the mitigation record from the LLM's
         # accept gate signal.
-        case.progress.stabilization = StabilizationRecord(
+        case.progress.mitigation = MitigationRecord(
             proposed_at_turn=case.current_turn, accepted=True
         )
 
@@ -1740,7 +1738,7 @@ class TestINV16_LLMSoleAuthorityForMilestoneAdvancement:
         assert case.progress.symptom_verified == progress_before.symptom_verified
         assert case.progress.cause_state == progress_before.cause_state
         assert case.progress.solution_proposed == progress_before.solution_proposed
-        assert case.progress.stabilization == progress_before.stabilization
+        assert case.progress.mitigation == progress_before.mitigation
         assert case.progress.solution_accepted == progress_before.solution_accepted
         assert case.progress.solution_verified == progress_before.solution_verified
 

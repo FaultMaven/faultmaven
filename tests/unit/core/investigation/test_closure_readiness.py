@@ -96,6 +96,26 @@ def _attach_evidence(case: Case) -> None:
     )
 
 
+def _attach_causal_absence(case: Case) -> None:
+    """The required RESOLVED proof: the root cause is confirmed eliminated
+    after the fix, recorded as a ``causal_absence_evidence`` row."""
+    case.evidence.append(
+        Evidence(
+            summary="Post-fix logs confirm pool exhaustion no longer occurs",
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at=datetime.now(UTC),
+            collected_by="user_test",
+            primary_purpose="Confirm root cause eliminated",
+            preprocessed_content="no pool exhaustion after fix",
+            content_size_bytes=80,
+            preprocessing_method="manual",
+            source_file_id="file_postfix000001",
+            collected_at_turn=3,
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # SUGGEST_RESOLVE — case is resolution-grade (root cause + solution present)
 # ---------------------------------------------------------------------------
@@ -113,24 +133,32 @@ class TestSuggestResolveVerdict:
         case = _make_investigating_case()
         _attach_root_cause(case)
         _attach_solution(case)
+        # SUGGEST_RESOLVE now requires the cause confirmed eliminated, not
+        # merely a solution row on record.
+        _attach_causal_absence(case)
 
         readiness = assess_closure_readiness(case)
 
         assert readiness.verdict == ClosureReadiness.SUGGEST_RESOLVE
         # Message names the pivot rationale + presents root cause + solution
         assert "qualifies for **resolved**" in readiness.message
+        assert (
+            "confirmed to" in readiness.message
+        )  # "...a fix confirmed to have eliminated it..."
         assert "Connection pool exhaustion" in readiness.message
         assert "Increase connection pool to 100" in readiness.message
         assert "mark it **resolved** instead" in readiness.message
 
     def test_suggest_resolve_takes_priority_over_has_substance(self):
         """Even when the case has rich substance (evidence + hypotheses),
-        if root_cause + solution are present, the pivot fires — the user
-        should not be allowed to discard attribution by accident."""
+        if root_cause + solution + causal_absence are present, the pivot
+        fires — the user should not be allowed to discard attribution by
+        accident."""
         case = _make_investigating_case()
         _attach_evidence(case)
         _attach_root_cause(case)
         _attach_solution(case)
+        _attach_causal_absence(case)
 
         readiness = assess_closure_readiness(case)
 
@@ -232,6 +260,7 @@ class TestSolutionTitleFallback:
         "Solution 2", "Solution 3"."""
         case = _make_investigating_case()
         _attach_root_cause(case)
+        _attach_causal_absence(case)
         # First solution titled normally; next two bypass validation to
         # simulate the schema-bypass / future-relaxation scenario.
         case.solutions.append(

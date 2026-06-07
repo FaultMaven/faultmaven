@@ -1,7 +1,7 @@
 """Tests for the rca_infeasible propose-closure flow.
 
 When the LLM marks rca_infeasible=True on ProblemVerification and the
-``mitigation_verified`` stabilization gate later fires, the engine must
+``mitigation_verified`` mitigation gate later fires, the engine must
 propose closing the case as stabilized (User-Agent Handshake).
 Reference: investigation-lifecycle-logic.md §2.4.
 
@@ -26,8 +26,8 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     InquiryData,
     InvestigationProgress,
+    MitigationRecord,
     ProblemVerification,
-    StabilizationRecord,
 )
 
 
@@ -38,12 +38,12 @@ def _make_case(
     mitigation_verified: bool = True,
     no_problem_verification: bool = False,
 ) -> Case:
-    """Build a Case with a verified stabilization and an optional
+    """Build a Case with a verified mitigation and an optional
     rca_infeasible signal.
 
-    The unified flow tracks the stabilization via
-    ``progress.stabilization`` (a forward-only record) rather than the old
-    mitigation booleans + ``path_selection``.
+    The unified flow tracks the mitigation via
+    ``progress.mitigation`` (a forward-only record) rather than the
+    legacy path-coupled mitigation gates.
     """
     pv = (
         None
@@ -57,7 +57,7 @@ def _make_case(
             rca_infeasible_rationale=rationale,
         )
     )
-    stabilization = StabilizationRecord(
+    mitigation = MitigationRecord(
         proposed_at_turn=1,
         accepted=True,
         verified=mitigation_verified,
@@ -71,7 +71,7 @@ def _make_case(
         organization_id="org_123",
         description="Test description",
         problem_verification=pv,
-        progress=InvestigationProgress(stabilization=stabilization),
+        progress=InvestigationProgress(mitigation=mitigation),
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
@@ -100,7 +100,7 @@ def test_rca_infeasible_creates_pending_closure():
     assert case.pending_transition["closure_reason"] == "closed_after_investigation"
     assert "third-party API outage" in case.pending_transition["summary"]
     assert (
-        "shall we close this case as mitigated?" in case.pending_transition["summary"]
+        "shall we close this case as stabilized?" in case.pending_transition["summary"]
     )
 
     assert metadata["transition_proposed"] is True
@@ -109,9 +109,9 @@ def test_rca_infeasible_creates_pending_closure():
         metadata["rca_infeasible_closure_message"] == case.pending_transition["summary"]
     )
 
-    # The stabilization stays verified (forward-only).
-    assert case.progress.stabilization.verified is True
-    assert case.progress.stabilization.accepted is True
+    # The mitigation stays verified (forward-only).
+    assert case.progress.mitigation.verified is True
+    assert case.progress.mitigation.accepted is True
 
 
 def test_rca_infeasible_false_does_not_propose_closure():
@@ -125,8 +125,8 @@ def test_rca_infeasible_false_does_not_propose_closure():
 
     assert case.pending_transition is None
     assert "rca_infeasible_closure_message" not in metadata
-    assert case.progress.stabilization.verified is True
-    assert case.progress.stabilization.accepted is True
+    assert case.progress.mitigation.verified is True
+    assert case.progress.mitigation.accepted is True
 
 
 def test_no_problem_verification_does_not_propose_closure():

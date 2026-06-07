@@ -362,13 +362,114 @@ class TestStageEvidenceTypeListingsIncludeAbsence:
         assert "causal_absence_evidence" in TREATMENT_INSTRUCTIONS
 
     def test_absence_variants_appear_under_evidence_types_heading(self):
-        """The mention must be in the ``EVIDENCE TYPES FOR THIS STAGE:``
-        block (where the LLM looks for "what categories are valid
-        here"), not just incidentally elsewhere in the dispatch."""
+        """Both absence variants must appear within the ``EVIDENCE TYPES FOR
+        THIS STAGE:`` enumeration (where the LLM looks for "what categories
+        are valid here"), not just incidentally elsewhere in the dispatch.
+
+        The section is delimited by the heading and the next bold ``**...**``
+        sub-heading — the absence bullets are each described in detail now
+        (causal_absence is the required RESOLVED proof in TREATMENT), so the
+        listing is longer than a fixed-width window would capture.
+        """
+        heading = "**EVIDENCE TYPES FOR THIS STAGE:**"
         for block in (MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS):
-            heading_idx = block.find("**EVIDENCE TYPES FOR THIS STAGE:**")
+            heading_idx = block.find(heading)
             assert heading_idx != -1
-            # Search within the ~600 chars immediately after the heading
-            section = block[heading_idx : heading_idx + 600]
+            body_start = heading_idx + len(heading)
+            # The enumeration runs until the next bold sub-heading.
+            next_heading = block.find("\n**", body_start)
+            section = (
+                block[body_start:next_heading]
+                if next_heading != -1
+                else block[body_start:]
+            )
             assert "symptom_absence_evidence" in section
             assert "causal_absence_evidence" in section
+
+
+# ============================================================
+# Resolve-proposal sites must require causal_absence emission
+# ============================================================
+
+
+@pytest.mark.unit
+class TestResolveProposalRequiresCausalAbsence:
+    """Every prompt site that tells the agent to propose ``to_state:
+    resolved`` MUST, in the same turn, require a ``causal_absence_evidence``
+    row — the engine gate (``assess_resolution_readiness``) marks a case
+    RESOLVED only when that row is present. A proposal site that omits the
+    requirement makes the engine bounce the transition into a NEEDS_INFO
+    loop (suggest-then-bounce). The user's verbal confirmation is an allowed
+    source (``user_description``) so the out-of-band path needs no file.
+
+    These pin the two proposal sites in TREATMENT_INSTRUCTIONS:
+      - the KB-RESOLUTION same-turn variant, and
+      - the generic COMPLETION handshake.
+    """
+
+    def test_kb_variant_requires_causal_absence(self):
+        # The same-turn KB-resolution checklist must list causal_absence as a
+        # required emission alongside the resolved proposal.
+        variant_start = TREATMENT_INSTRUCTIONS.index("KB-RESOLUTION VARIANT")
+        variant = TREATMENT_INSTRUCTIONS[variant_start : variant_start + 4500]
+        assert "causal_absence_evidence" in variant, (
+            "KB-RESOLUTION VARIANT proposes resolved but no longer requires "
+            "causal_absence_evidence — the engine will bounce the transition."
+        )
+        assert "user_description" in variant, (
+            "KB-RESOLUTION VARIANT must accept the user's verbal confirmation "
+            "as the causal_absence source (no file demand)."
+        )
+
+    def test_completion_block_requires_causal_absence_for_resolved(self):
+        # The governing COMPLETION rule must tie any resolved proposal to a
+        # causal_absence emission.
+        assert "RESOLVED IS BACKED BY CAUSAL-ABSENCE" in TREATMENT_INSTRUCTIONS, (
+            "COMPLETION lost the governing rule that every resolved proposal "
+            "must emit causal_absence_evidence."
+        )
+        rule_start = TREATMENT_INSTRUCTIONS.index(
+            "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
+        )
+        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1200]
+        assert "causal_absence_evidence" in rule
+
+    def test_treatment_evidence_types_allow_verbal_causal_absence_source(self):
+        # The verbal/out-of-band source allowance is stated once, canonically, in
+        # the TREATMENT EVIDENCE TYPES block (not duplicated per proposal site).
+        assert "user_description" in TREATMENT_INSTRUCTIONS, (
+            "TREATMENT must accept the user's verbal confirmation as a valid "
+            "causal_absence source (source_type=user_description, no file) — the "
+            "out-of-band path needs no uploaded file."
+        )
+
+    def test_mitigation_proposes_closed_not_resolved(self):
+        # The same rule must route a mitigation to symptom_absence + closed,
+        # so the agent only proposes the transition the case can complete.
+        rule_start = TREATMENT_INSTRUCTIONS.index(
+            "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
+        )
+        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 2200]
+        assert "symptom_absence_evidence" in rule
+        assert "closed" in rule, (
+            "A mitigation must propose closed (not resolved); the rule no "
+            "longer states that routing."
+        )
+
+    def test_causal_absence_is_verification_not_application_or_fabrication(self):
+        # causal_absence is the VERIFICATION fact, distinct from applying a fix,
+        # and must never be fabricated to force a resolve. Locks in the
+        # "provoked, not solicited" semantics: applied != verified, and an
+        # unverified resolve request is solicited (NEEDS_INFO), not manufactured.
+        rule_start = TREATMENT_INSTRUCTIONS.index(
+            "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
+        )
+        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1200]
+        assert "solution_accepted" in rule and "stay in TREATMENT" in rule, (
+            "The rule must distinguish solution-applied (solution_accepted) from "
+            "verified — the agent must not emit causal_absence at application."
+        )
+        assert "fabricate" in rule, (
+            "The rule must forbid fabricating causal_absence to force a resolve; "
+            "an unverified resolve request is solicited via the engine, not faked."
+        )

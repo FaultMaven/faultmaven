@@ -176,9 +176,9 @@ class TestProgressTransparency:
             create_turn(4, milestones_completed=["mitigation_accepted"]),
             create_turn(5, outcome=TurnOutcome.DATA_PROVIDED, evidence_added=["ev_5"]),
         ]
-        from faultmaven.modules.case.contracts import StabilizationRecord
+        from faultmaven.modules.case.contracts import MitigationRecord
 
-        base_case.progress.stabilization = StabilizationRecord(
+        base_case.progress.mitigation = MitigationRecord(
             proposed_at_turn=4, accepted=True
         )
 

@@ -160,7 +160,6 @@ class PreliminaryUrgency(BaseModel):
         ),
     )
     impact_assessment: str
-    mitigation_hint: Optional[str] = None
 
 
 class KnowledgeMatch(BaseModel):

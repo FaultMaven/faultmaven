@@ -12,7 +12,7 @@ Symmetric to the pre-existing SOLUTION → DIAGNOSTIC hypothesis gate at
 the same call site in `_apply_investigation_updates`.
 
 Design reference: docs/architecture/investigation-engine/investigation-lifecycle-logic.md
-§2.3 (MITIGATION_FIRST minimum-evidence discipline) and
+§2.3 (minimum-evidence discipline) and
 docs/architecture/investigation-engine/agent-behavioral-rules.md
 (Rule 2: Evidence-Grounded).
 """

@@ -125,6 +125,27 @@ def _attach_evidence(case: Case) -> None:
     )
 
 
+def _attach_causal_absence(case: Case) -> None:
+    """The required RESOLVED proof: the root cause is confirmed eliminated
+    after the fix, recorded as a ``causal_absence_evidence`` row. Without it
+    a case with root cause + solution is only CLOSE-grade, not READY."""
+    case.evidence.append(
+        Evidence(
+            summary="Post-fix verification: root cause no longer present",
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at=datetime.now(UTC),
+            collected_by="user_test",
+            primary_purpose="Confirm root cause eliminated",
+            preprocessed_content="cause absent after fix",
+            content_size_bytes=80,
+            preprocessing_method="manual",
+            source_file_id="file_postfix000001",
+            collected_at_turn=3,
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. Pure-function derivation
 # ---------------------------------------------------------------------------
@@ -177,6 +198,7 @@ class TestDeriveDispositionEligibility:
         case = _make_investigating_case()
         _attach_root_cause(case)
         _attach_solution(case)
+        _attach_causal_absence(case)  # cause confirmed eliminated → READY
         result = derive_disposition_eligibility(case)
         assert result["resolved"] == DISPOSITION_ELIGIBILITY_READY
         assert result["closed"] == DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
@@ -251,11 +273,12 @@ class TestRepositorySaveChokepoint:
             == DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE
         )
 
-        # Now attach root cause + solution. Just calling save() again
-        # is enough — the derive helper at the chokepoint picks up the
-        # new content automatically.
+        # Now attach root cause + solution + causal_absence (cause confirmed
+        # eliminated). Just calling save() again is enough — the derive helper
+        # at the chokepoint picks up the new content automatically.
         _attach_root_cause(case)
         _attach_solution(case)
+        _attach_causal_absence(case)
         await repo.save(case)
 
         assert case.disposition_eligibility["resolved"] == DISPOSITION_ELIGIBILITY_READY
@@ -375,9 +398,11 @@ class TestLifecycleIntegration:
         )
         assert case.disposition_eligibility["closed"] == DISPOSITION_ELIGIBILITY_READY
 
-        # Stage 3: attach root cause + solution → resolution-grade.
+        # Stage 3: attach root cause + solution + causal_absence (cause
+        # confirmed eliminated) → resolution-grade.
         _attach_root_cause(case)
         _attach_solution(case)
+        _attach_causal_absence(case)
         await repo.save(case)
         assert case.disposition_eligibility["resolved"] == DISPOSITION_ELIGIBILITY_READY
         # Close warns now — SUGGEST_RESOLVE → suggests_alternative.
@@ -430,6 +455,7 @@ class TestEligibilityValuesAreSemanticallyDisjoint:
         case = _make_investigating_case()
         _attach_root_cause(case)
         _attach_solution(case)
+        _attach_causal_absence(case)  # cause confirmed eliminated → SUGGEST_RESOLVE
 
         result = derive_disposition_eligibility(case)
 

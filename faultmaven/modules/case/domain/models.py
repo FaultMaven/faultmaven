@@ -317,7 +317,7 @@ class InvestigationStrategy(str, Enum):
 #   - inquiry_only: INQUIRY → CLOSED (no investigation started)
 #   - closed_after_investigation: INVESTIGATING → CLOSED. Folds in the former
 #     `mitigation_sufficient`: a case stabilized then closed is simply an
-#     investigation that closed; the documented stabilization is preserved.
+#     investigation that closed; the documented mitigation is preserved.
 #
 # The LLM does NOT emit closure_reason; user-motivation context (e.g., "we're
 # escalating") lives in the LLM-authored persistent Report's free-form summary.
@@ -384,30 +384,30 @@ class SolutionFeasible(str, Enum):
     """Solution is known but implementation takes time / happens out-of-band."""
 
 
-class StabilizationRecord(BaseModel):
-    """A single forward-only stabilization (the inserted "stop the bleeding" move).
+class MitigationRecord(BaseModel):
+    """A single forward-only mitigation (the inserted "stop the bleeding" move).
 
-    Replaces the path-coupled mitigation gates + ``path_selection.mitigation_completed_at_turn``
+    Replaces the legacy path-coupled mitigation gates
     (redesign R2). The engine materializes this record from the LLM's accept/verify
     gate signals plus the workaround ProposedAction:
     - ``proposed_at_turn`` is set when a ``solution_type=workaround`` action is created.
     - ``accepted`` / ``verified`` mirror the LLM gate signals (compliance detection).
     - ``completed_at_turn`` is set the turn ``verified`` flips True (the boundary for
-      up-weighting pre-stabilization evidence in any later RCA).
+      up-weighting pre-mitigation evidence in any later RCA).
 
     Single record per investigation for now (redesign §3.2.1); the flow stays open
-    to user-led action so a non-stabilizing insert is never a dead-end.
+    to user-led action so a non-mitigating insert is never a dead-end.
     """
 
     proposed_at_turn: Optional[int] = Field(
-        default=None, description="Turn a workaround stabilization was first proposed"
+        default=None, description="Turn a workaround mitigation was first proposed"
     )
     accepted: bool = Field(
-        default=False, description="User complied with the proposed stabilization"
+        default=False, description="User complied with the proposed mitigation"
     )
     verified: bool = Field(
         default=False,
-        description="User confirmed the stabilization stabilized the situation",
+        description="User confirmed the mitigation stabilized the situation",
     )
     completed_at_turn: Optional[int] = Field(
         default=None,
@@ -415,11 +415,11 @@ class StabilizationRecord(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _verified_requires_accepted(self) -> "StabilizationRecord":
-        """A stabilization cannot be verified before it was accepted."""
+    def _verified_requires_accepted(self) -> "MitigationRecord":
+        """A mitigation cannot be verified before it was accepted."""
         if self.verified and not self.accepted:
             raise ValueError(
-                "stabilization.verified=True requires stabilization.accepted=True"
+                "mitigation.verified=True requires mitigation.accepted=True"
             )
         return self
 
@@ -440,13 +440,13 @@ class InvestigationProgress(BaseModel):
     # STAGE-GATE MILESTONES (drive stage transitions)
     # Set by the LLM in structured output (Framework §4.1).
     # ============================================================
-    stabilization: Optional[StabilizationRecord] = Field(
+    mitigation: Optional[MitigationRecord] = Field(
         default=None,
         description=(
-            "Stabilization insert record (redesign R2). Materialized by the "
-            "engine from the LLM's stabilization accept/verify gate signals "
-            "plus the workaround ProposedAction. Replaces the mitigation_* "
-            "booleans + path_selection.mitigation_completed_at_turn."
+            "Mitigation insert record (redesign R2). Materialized by the "
+            "engine from the LLM's mitigation accept/verify gate signals "
+            "plus the workaround ProposedAction. Replaces the legacy "
+            "path-coupled mitigation gates."
         ),
     )
 
@@ -560,7 +560,7 @@ class InvestigationProgress(BaseModel):
         label re-derived from the action-compliance gates.
 
         Returns one of 3 InvestigationStage enum values:
-        - MITIGATION: a stabilization is accepted but not yet verified
+        - MITIGATION: a mitigation is accepted but not yet verified
         - TREATMENT: solution accepted but not yet verified
         - DIAGNOSIS: everything else (default investigating view)
 
@@ -568,11 +568,11 @@ class InvestigationProgress(BaseModel):
         ``symptom_verified`` / ``cause_state``, not by the stage enum.
         Callers needing the phase distinction must consult those signals.
         """
-        # MITIGATION: stabilization accepted but not yet verified.
+        # MITIGATION: mitigation accepted but not yet verified.
         if (
-            self.stabilization is not None
-            and self.stabilization.accepted
-            and not self.stabilization.verified
+            self.mitigation is not None
+            and self.mitigation.accepted
+            and not self.mitigation.verified
         ):
             return InvestigationStage.MITIGATION
 
@@ -590,14 +590,14 @@ class InvestigationProgress(BaseModel):
         User-facing stage name for UI display (redesign R4).
 
         - DIAGNOSIS → "Investigating"
-        - MITIGATION → "Stabilizing"
+        - MITIGATION → "Mitigating"
         - TREATMENT → "Resolving"
         """
         stage = self.current_stage
         if stage == InvestigationStage.DIAGNOSIS:
             return "Investigating"
         elif stage == InvestigationStage.MITIGATION:
-            return "Stabilizing"
+            return "Mitigating"
         else:  # TREATMENT
             return "Resolving"
 
@@ -622,10 +622,10 @@ class InvestigationProgress(BaseModel):
         milestone_map = {
             # Stage-gate milestones
             "mitigation_accepted": bool(
-                self.stabilization is not None and self.stabilization.accepted
+                self.mitigation is not None and self.mitigation.accepted
             ),
             "mitigation_verified": bool(
-                self.stabilization is not None and self.stabilization.verified
+                self.mitigation is not None and self.mitigation.verified
             ),
             "solution_accepted": self.solution_accepted,
             "solution_verified": self.solution_verified,
@@ -689,8 +689,8 @@ class InvestigationProgress(BaseModel):
     def solution_ordering(self):
         """Ensure solution milestones are ordered correctly.
 
-        The stabilization verified⇒accepted ordering is enforced by
-        StabilizationRecord's own validator, not here (redesign R3).
+        The mitigation verified⇒accepted ordering is enforced by
+        MitigationRecord's own validator, not here (redesign R3).
         """
         # solution_verified requires solution_accepted
         if self.solution_verified and not self.solution_accepted:
@@ -703,23 +703,17 @@ class InvestigationStage(str, Enum):
     """
     Investigation stage within the Investigating Phase.
 
-    2-stage model with mitigation detour:
-    - DIAGNOSIS: Understand, diagnose, propose actions (core stage)
-    - TREATMENT: Verify permanent fix, resolve case (core stage)
-    - MITIGATION: Apply and verify temporary fix (optional detour)
+    These three stages are pure DERIVED DISPLAY labels in the unified
+    opportunistic flow. They are re-derived from the action-compliance
+    gates (see ``InvestigationProgress.current_stage``); they do NOT drive
+    prompt dispatch and there is NO path fork or prospective routing.
 
-    DIAGNOSIS and TREATMENT are the two core stages every investigation
-    passes through. MITIGATION is an optional detour that temporarily
-    narrows focus to "stop the bleeding" before returning to DIAGNOSIS.
+    - DIAGNOSIS → "Investigating" (default view)
+    - MITIGATION → "Mitigating" (an optional inserted sub-activity)
+    - TREATMENT → "Resolving"
 
-    Computed from stage-gate milestones. Stage transitions are
-    inference-based — user compliance with proposed actions triggers
-    transitions via compliance detection. The stage determines which
-    prompt template the LLM receives.
-
-    Investigation Paths:
-    - ROOT_CAUSE: DIAGNOSIS → TREATMENT
-    - MITIGATION_FIRST: DIAGNOSIS → MITIGATION (detour) → DIAGNOSIS → TREATMENT
+    MITIGATION is not a separate path — it is an optional "stop the
+    bleeding" insert that surfaces while the investigation continues.
     """
 
     DIAGNOSIS = "diagnosis"
@@ -781,7 +775,7 @@ class InvestigationStage(str, Enum):
 class TemporalState(str, Enum):
     """
     Problem temporal classification.
-    Used for investigation path routing.
+    Context signal only — does not drive a path fork.
     """
 
     ONGOING = "ongoing"
@@ -791,9 +785,7 @@ class TemporalState(str, Enum):
     Characteristics:
     - Active user impact
     - Real-time symptoms
-    - Urgency to mitigate
-
-    Routing: Likely MITIGATION path if high urgency
+    - Urgency to stabilize
     """
 
     HISTORICAL = "historical"
@@ -804,8 +796,6 @@ class TemporalState(str, Enum):
     - No current impact
     - Post-mortem investigation
     - Can take time for thorough RCA
-
-    Routing: Likely ROOT_CAUSE path
     """
 
 
@@ -816,15 +806,11 @@ class TemporalState(str, Enum):
 
 class UrgencyLevel(str, Enum):
     """
-    Urgency classification for path routing.
+    Urgency classification.
 
-    Used with TemporalState to recommend an investigation path:
-    - ONGOING + HIGH/CRITICAL -> MITIGATION_FIRST
-    - All other matched combinations -> ROOT_CAUSE
-    - Missing temporal or UNKNOWN urgency -> ROOT_CAUSE (with auto_selected=False)
-
-    The recommendation is surfaced through Gate 2 for user confirmation
-    before INQUIRY -> INVESTIGATING.
+    Context signal used (with TemporalState) to inform how the agent
+    prioritizes mitigation vs. root-cause work within the unified
+    opportunistic flow. It does not select a path — there is no path fork.
     """
 
     CRITICAL = "critical"
@@ -1240,8 +1226,7 @@ class ProblemVerification(BaseModel):
             "Set by the LLM during verification when the problem involves "
             "uncontrollable external dependencies, deprecated/EOL systems, "
             "or known intractable conditions where mitigation is the accepted "
-            "strategy. Does NOT affect path selection — influences post-mitigation "
-            "agent behavior only."
+            "strategy. Influences post-mitigation agent behavior only."
         ),
     )
 
@@ -1382,7 +1367,7 @@ class EvidenceCategory(str, Enum):
     - Post-mitigation metrics showing improvement
     - Error rates dropping after temporary fix
     - User confirmation that bleeding stopped
-    - Logs showing stabilization after workaround
+    - Logs showing mitigation after workaround
     """
 
     SOLUTION_EVIDENCE = "solution_evidence"
@@ -2723,7 +2708,9 @@ class Solution(BaseModel):
     title: str = Field(description="Short solution title", min_length=1, max_length=200)
 
     immediate_action: Optional[str] = Field(
-        default=None, description="Quick fix or mitigation (temporary)", max_length=2000
+        default=None,
+        description="Quick fix or mitigation (temporary)",
+        max_length=2000,
     )
 
     longterm_fix: Optional[str] = Field(

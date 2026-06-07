@@ -2,16 +2,16 @@
 ``_apply_investigation_updates``.
 
 Pins the engine-side rejection of ``mitigation_verified=True`` when the
-stabilization has not yet been accepted. Without this guard, the
+mitigation has not yet been accepted. Without this guard, the
 out-of-order milestone update would crash the
-``StabilizationRecord._verified_requires_accepted`` validator with a
+``MitigationRecord._verified_requires_accepted`` validator with a
 500 — the turn is lost and the case enters a broken state.
 
 Post-redesign (unified opportunistic flow): the LLM still emits the
 ``mitigation_accepted`` / ``mitigation_verified`` schema signals, but the
-engine routes them into ``progress.stabilization`` (a forward-only
+engine routes them into ``progress.mitigation`` (a forward-only
 record) rather than progress booleans. The ordering guard lives at the
-``stabilization.verified`` materialization step.
+``mitigation.verified`` materialization step.
 
 Design choice: REJECT + re-surface via ``system_feedback`` so the LLM
 gets explicit feedback to retry with the prerequisite in place. NOT
@@ -49,12 +49,12 @@ from faultmaven.modules.case.contracts import (
 def _stab_accepted(case) -> bool:
     """Read the redesign-model equivalent of the old
     ``progress.mitigation_accepted`` boolean."""
-    stab = case.progress.stabilization
+    stab = case.progress.mitigation
     return bool(stab is not None and stab.accepted)
 
 
 def _stab_verified(case) -> bool:
-    stab = case.progress.stabilization
+    stab = case.progress.mitigation
     return bool(stab is not None and stab.verified)
 
 
@@ -95,11 +95,11 @@ def mock_repo():
     return repo
 
 
-def _mitigation_first_case() -> Case:
+def _mitigation_case() -> Case:
     """INVESTIGATING case with a pending mitigation ProposedAction
-    (required for the stabilization-signal guard to pass), a
+    (required for the mitigation-signal guard to pass), a
     symptom_evidence row (so the reasoning validator allows milestone
-    completion), and no stabilization record yet.
+    completion), and no mitigation record yet.
     """
     from datetime import UTC, datetime
 
@@ -200,8 +200,8 @@ class TestRejectionWhenPrerequisiteMissing:
     @pytest.mark.asyncio
     async def test_mitigation_verified_alone_is_rejected(self, mock_llm, mock_repo):
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _mitigation_first_case()
-        # Precondition: no stabilization yet
+        case = _mitigation_case()
+        # Precondition: no mitigation yet
         assert _stab_accepted(case) is False
         assert _stab_verified(case) is False
 
@@ -215,11 +215,11 @@ class TestRejectionWhenPrerequisiteMissing:
         updated = result["case_updated"]
 
         # Verified is rejected because accept was never signalled. With no
-        # accept signal either, no stabilization record is materialized at
+        # accept signal either, no mitigation record is materialized at
         # all — nothing verified, no completed_at_turn boundary stamped.
         assert _stab_verified(updated) is False
-        if updated.progress.stabilization is not None:
-            assert updated.progress.stabilization.completed_at_turn is None
+        if updated.progress.mitigation is not None:
+            assert updated.progress.mitigation.completed_at_turn is None
 
     @pytest.mark.asyncio
     async def test_rejection_writes_system_feedback_for_next_turn(
@@ -232,7 +232,7 @@ class TestRejectionWhenPrerequisiteMissing:
         recorded and that it carries the actionable error message.
         """
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _mitigation_first_case()
+        case = _mitigation_case()
 
         mock_llm.generate.return_value = _llm_response_setting_milestones(
             {"mitigation_verified": True}
@@ -261,7 +261,7 @@ class TestRejectionWhenPrerequisiteMissing:
         nothing to reject.
         """
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _mitigation_first_case()
+        case = _mitigation_case()
         mock_llm.generate.return_value = _llm_response_setting_milestones(
             {"mitigation_verified": True}
         )
@@ -293,7 +293,7 @@ class TestPrerequisiteSatisfiedPasses:
         ``mitigation_verified`` check sees the prerequisite met.
         Both get set."""
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _mitigation_first_case()
+        case = _mitigation_case()
         mock_llm.generate.return_value = _llm_response_setting_milestones(
             {"mitigation_accepted": True, "mitigation_verified": True}
         )
@@ -303,8 +303,8 @@ class TestPrerequisiteSatisfiedPasses:
 
         assert _stab_accepted(updated) is True
         assert _stab_verified(updated) is True
-        # Side effects ran: stabilization completion boundary stamped
-        assert updated.progress.stabilization.completed_at_turn is not None
+        # Side effects ran: mitigation completion boundary stamped
+        assert updated.progress.mitigation.completed_at_turn is not None
 
     @pytest.mark.asyncio
     async def test_verified_alone_succeeds_when_accepted_already_true(
@@ -313,12 +313,12 @@ class TestPrerequisiteSatisfiedPasses:
         """When ``mitigation_accepted`` was set on a prior turn, a
         verified-only update on a later turn passes the ordering check
         cleanly — no rejection, no system_feedback noise."""
-        from faultmaven.modules.case.domain.models import StabilizationRecord
+        from faultmaven.modules.case.domain.models import MitigationRecord
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _mitigation_first_case()
-        # Accept signalled on a prior turn -> stabilization already accepted.
-        case.progress.stabilization = StabilizationRecord(
+        case = _mitigation_case()
+        # Accept signalled on a prior turn -> mitigation already accepted.
+        case.progress.mitigation = MitigationRecord(
             proposed_at_turn=case.current_turn, accepted=True
         )
         mock_llm.generate.return_value = _llm_response_setting_milestones(
@@ -339,7 +339,7 @@ class TestPrerequisiteSatisfiedPasses:
         Setting just ``mitigation_accepted`` must pass through normally.
         """
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = _mitigation_first_case()
+        case = _mitigation_case()
         mock_llm.generate.return_value = _llm_response_setting_milestones(
             {"mitigation_accepted": True}
         )

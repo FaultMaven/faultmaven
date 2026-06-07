@@ -91,8 +91,18 @@ def base_case():
 
 
 def _make_resolution_ready(case):
-    """Add root cause and solution to a case so it passes resolution readiness check."""
+    """Make a case genuinely RESOLVED-ready.
+
+    Adds root cause + solution AND a ``causal_absence_evidence`` row — the
+    latter is THE gate: RESOLVED requires the root cause to be confirmed
+    ELIMINATED (recorded as a causal_absence_evidence row), not merely that a
+    solution exists. A case that was only stabilized has a solution but no
+    causal_absence row and is CLOSE-only.
+    """
     from faultmaven.modules.case.contracts import (
+        Evidence,
+        EvidenceCategory,
+        EvidenceSourceType,
         RootCauseConclusion,
         Solution,
         SolutionType,
@@ -111,6 +121,24 @@ def _make_resolution_ready(case):
             longterm_fix="Update pool timeout in application config",
         )
     ]
+    # The required RESOLVED proof: the root cause is confirmed gone after the fix.
+    case.evidence.append(
+        Evidence(
+            evidence_id="ev_ca5a1ab5e0ce",
+            summary="Post-fix logs confirm connection pool timeouts no longer occur",
+            content_ref="postfix.log",
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at=datetime.now(UTC),
+            collected_by="user_123",
+            primary_purpose="Confirm root cause eliminated",
+            preprocessed_content="No timeout errors after fix",
+            content_size_bytes=50,
+            preprocessing_method="manual",
+            source_file_id="file_a05f1c000001",
+            collected_at_turn=2,
+        )
+    )
     return case
 
 
@@ -1236,11 +1264,22 @@ class TestReadinessAssessments:
         assert "solution" in result.missing
 
     def test_resolution_readiness_needs_info_when_partial(self):
-        """Has root cause but no solution → needs info."""
+        """Has root cause + evidence but no causal_absence → needs info.
+
+        The case has substance (root cause + some evidence) but no
+        ``causal_absence_evidence`` row confirming the cause was eliminated,
+        so the gate asks the user to confirm elimination rather than
+        returning READY.
+        """
         from faultmaven.core.investigation.terminal_transitions import (
             assess_resolution_readiness,
         )
-        from faultmaven.modules.case.contracts import RootCauseConclusion
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+            RootCauseConclusion,
+        )
 
         case = self._make_case()
         case.root_cause_conclusion = RootCauseConclusion(
@@ -1248,6 +1287,24 @@ class TestReadinessAssessments:
             confidence_level="verified",
             likelihood=0.9,
             mechanism="Pool limit too low for concurrent requests",
+        )
+        # Substance, but NOT causal_absence — service evidence only.
+        case.evidence.append(
+            Evidence(
+                evidence_id="ev_5717301e0001",
+                summary="Timeouts observed in app logs",
+                content_ref="app.log",
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                source_type=EvidenceSourceType.LOGS,
+                collected_at=datetime.now(UTC),
+                collected_by="user_123",
+                primary_purpose="Symptom record",
+                preprocessed_content="timeout",
+                content_size_bytes=10,
+                preprocessing_method="manual",
+                source_file_id="file_5717301e0001",
+                collected_at_turn=1,
+            )
         )
         result = assess_resolution_readiness(case)
         assert result.verdict == result.NEEDS_INFO
@@ -2066,7 +2123,7 @@ class TestNeedsInfoFollowupProposesClose:
 
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "closed"
-        # closure_reason is auto-derived; no mitigation path → closed_after_investigation
+        # closure_reason is auto-derived; no mitigation → closed_after_investigation
         assert case.pending_transition["closure_reason"] == "closed_after_investigation"
         assert metadata.get("resolution_suggest_close") is True
         assert metadata.get("transition_proposed_this_turn") is True
@@ -2114,10 +2171,13 @@ class TestNeedsInfoFollowupProposesClose:
         assert case.pending_transition["closure_reason"] == "closed_after_investigation"
         assert metadata.get("resolution_suggest_close") is True
         assert metadata.get("transition_proposed_this_turn") is True
-        # The hardcoded second-ask message is what the user sees
+        # The hardcoded second-ask message is what the user sees — it now
+        # frames the gate as "root cause eliminated", not "documented solution".
         assert (
-            "Without a documented solution" in metadata["resolution_readiness_message"]
+            "Without confirmation that the root cause"
+            in metadata["resolution_readiness_message"]
         )
+        assert "eliminated" in metadata["resolution_readiness_message"]
 
     @pytest.mark.asyncio
     async def test_ready_branch_unchanged(self):

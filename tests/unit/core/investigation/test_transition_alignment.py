@@ -68,8 +68,14 @@ def _make_investigating_case():
 
 
 def _fill_for_resolution_ready(case):
-    """Promote an investigating case to assess_resolution_readiness=READY:
-    root cause + at least one solution. Mutates and returns ``case``."""
+    """Promote an investigating case to assess_resolution_readiness=READY.
+
+    READY now requires the root cause to be confirmed ELIMINATED — recorded
+    as a ``causal_absence_evidence`` row — not merely that a solution exists.
+    So this attaches root cause + solution AND a causal_absence evidence row.
+    A case with only root cause + solution (no causal_absence) is CLOSE-grade
+    (stabilized / deferred), not resolution-grade. Mutates and returns ``case``.
+    """
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="Alignment test root cause",
         confidence_level=ConfidenceLevel.CONFIDENT,
@@ -81,6 +87,22 @@ def _fill_for_resolution_ready(case):
             solution_type=SolutionType.CONFIG_CHANGE,
             title="Alignment test solution",
             longterm_fix="Apply correct configuration",
+        )
+    )
+    # The required RESOLVED proof: the root cause is confirmed gone after the fix.
+    case.evidence.append(
+        Evidence(
+            summary="Post-fix verification confirms the root cause is gone",
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            collected_at=datetime.now(timezone.utc),
+            collected_by="user_test",
+            primary_purpose="Confirm root cause eliminated",
+            preprocessed_content="cause absent after fix",
+            content_size_bytes=80,
+            preprocessing_method="manual",
+            source_file_id="file_a1b2c3d4e5f6",
+            collected_at_turn=2,
         )
     )
     return case
@@ -262,10 +284,11 @@ async def test_ui_dropdown_close_pivots_to_resolve_when_resolution_grade():
 
 @pytest.mark.asyncio
 async def test_ui_dropdown_resolve_needs_info_keeps_resolve_pair():
-    """NEEDS_INFO branch: case has evidence (one of the four readiness checks)
-    but is missing root cause / solution. Engine keeps the resolve intent so a
-    follow-up turn carrying the missing detail can move forward, and shows the
-    RESOLVED confirm pair while flagging needs_info."""
+    """NEEDS_INFO branch: case has substance (root cause + evidence) but no
+    ``causal_absence_evidence`` row confirming the cause was eliminated.
+    Engine keeps the resolve intent so a follow-up turn confirming the cause
+    is gone can move forward, and shows the RESOLVED confirm pair while
+    flagging needs_info."""
     engine = MilestoneEngine(
         MagicMock(),
         _make_repo(),
@@ -273,9 +296,15 @@ async def test_ui_dropdown_resolve_needs_info_keeps_resolve_pair():
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
-    # Add a piece of evidence so we're missing root cause + solution but
-    # have_evidence=True → readiness routes to NEEDS_INFO instead of
+    # Substance (root cause + evidence) but NO causal_absence row → readiness
+    # routes to NEEDS_INFO (ask user to confirm elimination) instead of
     # SUGGEST_CLOSE.
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="Alignment test root cause",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.8,
+        mechanism="Test mechanism",
+    )
     case.evidence.append(
         Evidence(
             summary="Test evidence",
@@ -413,7 +442,7 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
 async def test_check_automatic_transitions_closure_reason_stabilized_investigation():
     """A case stabilized then closed from INVESTIGATING yields the unified
     closure reason 'closed_after_investigation' (the redesign folds the
-    former 'mitigation_sufficient' reason into this one). The stabilization
+    former 'mitigation_sufficient' reason into this one). The mitigation
     record marks the case as stabilized; closure_reason is engine-derived
     from case.state."""
     engine = MilestoneEngine(
@@ -422,9 +451,9 @@ async def test_check_automatic_transitions_closure_reason_stabilized_investigati
         investigation_tools=MagicMock(),
     )
     case = _make_investigating_case()
-    from faultmaven.modules.case.domain.models import StabilizationRecord
+    from faultmaven.modules.case.domain.models import MitigationRecord
 
-    case.progress.stabilization = StabilizationRecord(
+    case.progress.mitigation = MitigationRecord(
         proposed_at_turn=case.current_turn,
         accepted=True,
         verified=True,
@@ -523,11 +552,11 @@ async def test_llm_emit_closed_pivots_to_resolved_when_resolution_grade():
 
 @pytest.mark.asyncio
 async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
-    """LLM proposes RESOLVED on a case with evidence but no root cause /
-    solution (NEEDS_INFO). Engine keeps the resolve intent, sets
-    needs_info=True, and surfaces the readiness message via the
-    resolution_needs_info_first_pass metadata so the response builder can
-    override the LLM's agent_response."""
+    """LLM proposes RESOLVED on a case with substance (root cause + evidence)
+    but no ``causal_absence_evidence`` row (NEEDS_INFO). Engine keeps the
+    resolve intent, sets needs_info=True, and surfaces the readiness message
+    via the resolution_needs_info_first_pass metadata so the response builder
+    can override the LLM's agent_response."""
     engine = MilestoneEngine(
         MagicMock(),
         _make_repo(),
@@ -535,6 +564,12 @@ async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
     )
     case = _make_investigating_case()
     case.progress.symptom_verified = True
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="Alignment test root cause",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.8,
+        mechanism="Test mechanism",
+    )
     case.evidence.append(
         Evidence(
             summary="Test evidence",

@@ -88,6 +88,7 @@ from faultmaven.modules.case.contracts import (
     JournalEntry,
     KnowledgeMatch,
     KnowledgeResolution,
+    MitigationRecord,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -98,7 +99,6 @@ from faultmaven.modules.case.contracts import (
     SolutionFeasible,
     SolutionState,
     SolutionType,
-    StabilizationRecord,
     TemporalState,
     TurnOutcome,
     TurnProgress,
@@ -185,16 +185,16 @@ def _determine_action_type(
 
     Used when creating ProposedAction from SolutionToAdd. The action_type
     determines which stage-gate behavior follows:
-    - MITIGATION → stabilization insert (Stabilizing)
+    - MITIGATION → mitigation insert (Mitigating)
     - SOLUTION → solution_accepted → enters TREATMENT stage
 
     Logic:
-    1. WORKAROUND solution_type → MITIGATION (explicitly temporary stabilization)
+    1. WORKAROUND solution_type → MITIGATION (explicitly temporary)
     2. Otherwise → SOLUTION
 
-    The old MITIGATION_FIRST-path branch is removed (redesign R5): there is
-    no prospective path fork. A stabilization is an opportunistic insert
-    driven by the prompt, surfaced via a WORKAROUND solution_type.
+    There is no prospective path fork (redesign R5). A mitigation is an
+    opportunistic insert driven by the prompt, surfaced via a WORKAROUND
+    solution_type.
     """
     if solution_type == SolutionType.WORKAROUND:
         return InvestigationActionType.MITIGATION
@@ -242,13 +242,13 @@ def _apply_stage_gate_side_effects(
             f"type={pending_action.action_type.value})"
         )
 
-    # 3B: Stabilization-verified side effects (optional propose-close).
+    # 3B: Mitigation-verified side effects (optional propose-close).
     #
-    # Redesign R5: there is no Gate-3 post-mitigation choice. After a
-    # stabilization verifies, the case simply continues opportunistically.
-    # The pre-stabilization evidence boundary is carried by
-    # ``progress.stabilization.completed_at_turn`` (set in the apply-loop where
-    # the record is materialized), not a separate path_selection field.
+    # Redesign R5: there is no post-mitigation path choice. After a
+    # mitigation verifies, the case simply continues opportunistically.
+    # The pre-mitigation evidence boundary is carried by
+    # ``progress.mitigation.completed_at_turn`` (set in the apply-loop where
+    # the record is materialized).
     if "mitigation_verified" in completed_gates:
         # rca_infeasible advisory signal: propose closure as stabilized rather
         # than push RCA on a problem the LLM has flagged as intractable.
@@ -269,7 +269,7 @@ def _apply_stage_gate_side_effects(
             )
             closure_message = (
                 "The mitigation is verified and stable. "
-                f"Since {rationale}, shall we close this case as mitigated?"
+                f"Since {rationale}, shall we close this case as stabilized?"
             )
             from faultmaven.core.investigation.terminal_transitions import (
                 propose_transition,
@@ -876,7 +876,7 @@ def engine_owned_affordances(
 
     Gate 2 (investigation path) and Gate 3 (post-mitigation continuation)
     were removed (redesign R5): there is no prospective path fork, and a
-    stabilization simply continues the flow when verified.
+    mitigation simply continues the flow when verified.
 
     Returns ``None`` when no gate is pending — the LLM's own COOPERATIVE /
     EVIDENCE / FREE_SPEECH suggestions pass through unmodified.
@@ -3016,9 +3016,8 @@ class MilestoneEngine:
                 follow_ups = metadata["override_suggestions"]
 
             # Engine-owned gate affordances. When a state-machine gate is
-            # pending (Gate 1 — problem-statement confirmation; Gate 2 —
-            # investigation path; Gate 3 — post-mitigation continuation;
-            # or a pending_transition disposition handshake), the engine
+            # pending (Gate 1 — problem-statement confirmation; or a
+            # pending_transition disposition handshake), the engine
             # emits the canonical clickable affordance pair regardless of
             # LLM compliance with the prompt's suggestion-emission
             # directives. The consolidator is a single source of truth that
@@ -5426,9 +5425,9 @@ class MilestoneEngine:
             # (alphabetical sort, regrouping) would silently shift the
             # same-turn case onto the rejection path. See the ordering
             # guard inside the loop below.
-            # Stabilization signals (mitigation_accepted / mitigation_verified)
+            # Mitigation signals (mitigation_accepted / mitigation_verified)
             # are NOT plain progress booleans anymore (redesign R2). They are
-            # routed into progress.stabilization below, after the generic loop.
+            # routed into progress.mitigation below, after the generic loop.
             # The LLM-facing MilestoneUpdates field NAMES are unchanged.
             milestone_fields = [
                 # Progress indicators (LLM context, non-stage-driving)
@@ -5453,9 +5452,8 @@ class MilestoneEngine:
             # NOTE (redesign R1): the cause-identification signal
             # ``root_cause_identified`` → ``cause_state=IDENTIFIED`` is a TRUTH
             # signal and is NEVER rejected by investigation state. The former
-            # path-conditional RCA-milestone ban (which rejected it in
-            # ``pre_mitigation_mitigation_first`` / Gate-3-pending states) was
-            # the S1 trap mechanism and has been removed. Whether the diagnostic
+            # path-conditional RCA-milestone ban was the S1 trap mechanism and
+            # has been removed. Whether the diagnostic
             # *labor* (hypotheses/causal_evidence) runs is gated on cause
             # uncertainty, handled where those emissions are applied.
 
@@ -5483,26 +5481,26 @@ class MilestoneEngine:
                         setattr(p, field, True)
                         metadata["milestones_completed"].append(field)
 
-            # Stabilization signals (redesign R2): the LLM still emits the
+            # Mitigation signals (redesign R2): the LLM still emits the
             # ``mitigation_accepted`` / ``mitigation_verified`` MilestoneUpdates
             # fields (compliance detection); the engine materializes the
-            # progress.stabilization record from them rather than setting
+            # progress.mitigation record from them rather than setting
             # progress booleans. The milestone NAMEs are still appended to
             # ``milestones_completed`` (telemetry symbol unchanged).
             stab_accepted_signal = bool(getattr(m, "mitigation_accepted", False))
             stab_verified_signal = bool(getattr(m, "mitigation_verified", False))
 
             if stab_accepted_signal or stab_verified_signal:
-                # Guard: stabilization signals require a pending ProposedAction
+                # Guard: mitigation signals require a pending ProposedAction
                 # (no hallucinated compliance).
                 if not has_pending_action:
                     logger.warning(
-                        f"Rejected stabilization signal(s) for case "
+                        f"Rejected mitigation signal(s) for case "
                         f"{case.case_id}: no pending ProposedAction exists"
                     )
                 else:
                     if stab_accepted_signal:
-                        if p.stabilization is None:
+                        if p.mitigation is None:
                             # proposed_at_turn = the turn the latest workaround
                             # ProposedAction was proposed, else current_turn.
                             proposed_turn = case.current_turn
@@ -5513,11 +5511,11 @@ class MilestoneEngine:
                                 ):
                                     proposed_turn = action.proposed_in_turn
                                     break
-                            p.stabilization = StabilizationRecord(
+                            p.mitigation = MitigationRecord(
                                 proposed_at_turn=proposed_turn
                             )
-                        if not p.stabilization.accepted:
-                            p.stabilization.accepted = True
+                        if not p.mitigation.accepted:
+                            p.mitigation.accepted = True
                             metadata["milestones_completed"].append(
                                 "mitigation_accepted"
                             )
@@ -5527,9 +5525,9 @@ class MilestoneEngine:
                         # If accept wasn't signalled (now or earlier), reject and
                         # surface to the LLM via system_feedback for retry,
                         # instead of crashing the turn on the record validator.
-                        if p.stabilization is None or not p.stabilization.accepted:
+                        if p.mitigation is None or not p.mitigation.accepted:
                             logger.warning(
-                                f"Rejected stabilization 'mitigation_verified' "
+                                f"Rejected mitigation 'mitigation_verified' "
                                 f"for case {case.case_id}: prerequisite "
                                 f"'mitigation_accepted' is not set "
                                 f"(state-machine ordering)."
@@ -5553,9 +5551,9 @@ class MilestoneEngine:
                                 "Rejected mitigation_verified "
                                 "(prerequisite mitigation_accepted not set)"
                             )
-                        elif not p.stabilization.verified:
-                            p.stabilization.verified = True
-                            p.stabilization.completed_at_turn = case.current_turn
+                        elif not p.mitigation.verified:
+                            p.mitigation.verified = True
+                            p.mitigation.completed_at_turn = case.current_turn
                             metadata["milestones_completed"].append(
                                 "mitigation_verified"
                             )
@@ -5883,8 +5881,8 @@ class MilestoneEngine:
                 # The LLM receives the downgrade_reason in next-turn context
                 # and can recover by gathering symptom data and re-proposing.
                 # See Behavioral Rule 2 (Evidence-Grounded) and
-                # investigation-lifecycle-logic.md §2.3 (MITIGATION_FIRST
-                # minimum-evidence discipline).
+                # investigation-lifecycle-logic.md §2.3 (minimum-evidence
+                # discipline).
                 #
                 # Scope of this gate (what it does NOT do): the action's
                 # ``description`` and ``commands`` are preserved verbatim
@@ -6573,11 +6571,14 @@ class MilestoneEngine:
                     # suggestion with no pending transition to confirm.
                     cancel_pending_transition(case)
                     close_message = (
-                        "I understand you don't have additional details. "
-                        "Without a documented solution, I can't mark this "
-                        "as **resolved**.\n\n"
+                        "I understand. Without confirmation that the root cause "
+                        "was **eliminated** (e.g. the original error is now "
+                        "absent after the fix), I can't mark this as "
+                        "**resolved** — a restored-but-stabilized or "
+                        "deferred-fix case isn't a resolution.\n\n"
                         "You can **close** the case instead — this preserves "
-                        "the root cause analysis and investigation history."
+                        "the root cause analysis and the documented (or "
+                        "deferred) solution."
                     )
                     propose_transition(
                         case=case,
