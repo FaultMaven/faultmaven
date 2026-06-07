@@ -929,6 +929,20 @@ pool. No special intent type is required.
 unnecessary API surface changes and keeps the intent dispatch table
 honest.
 
+**Frontend contract decision (2026-06-07).** The copilot's `IntentType`
+enum lists only the intent types the frontend actually *emits* — the
+same rule by which `greeting` (a backend-only classifier result) is
+absent from it. Because the EVIDENCE_NEED *emit* path is deferred (there
+is no click-to-upload / "tell me more" affordance yet, per §6.2), no
+copilot code path constructs this intent, so the enum member should
+**not** be carried for parity; it is added back — alongside the emitter
+and the backend dispatch flip out of `NOT_IMPLEMENTED` — when the
+feature actually ships. This is distinct from the **live**
+`SuggestedFollowUp.evidence_need_id` field (§6.2), which the frontend
+*does* use for visual linkage of EVIDENCE-type suggestions and which is
+unaffected by the deferred emit path. Removing the deferred intent
+member must not touch that display-linkage field.
+
 ### 9.4 Pool Model over Per-Hypothesis Anchoring
 
 A single evidence need is often relevant to multiple hypotheses, and
