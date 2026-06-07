@@ -801,6 +801,15 @@ class ProposedTransition(BaseModel):
         description="Evidence IDs supporting this transition proposal",
     )
 
+    @field_validator("to_state", mode="before")
+    @classmethod
+    def _normalize_to_state(cls, v):
+        # LLMs are inconsistent with case ('RESOLVED' vs 'resolved'). The engine
+        # compares to_state against the lowercase CaseState values, so a raw
+        # 'RESOLVED' is spuriously rejected as 'not a valid edge'. Normalize at
+        # parse time so the edge check is case-tolerant.
+        return v.strip().lower() if isinstance(v, str) else v
+
 
 class RootCauseConclusionUpdate(BaseModel):
     """Final root cause conclusion."""

@@ -31,8 +31,39 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
     CaseState,
+    CauseState,
     EvidenceCategory,
 )
+
+
+def _cause_identified(case: "Case") -> bool:
+    """Whether the root cause is known, per the authoritative signal.
+
+    The engine-derived ``progress.cause_state`` (CauseState.IDENTIFIED) is the
+    truth signal for cause-knowledge — recomputed every turn and never
+    path-stripped (investigation-flow-redesign.md §4.1 / R1, #411). It is the
+    primary check here. The ``root_cause_conclusion`` / ``working_conclusion``
+    fields are kept as a fallback only: the LLM does not always populate the
+    documented conclusion even when the cause IS identified (cause_state is set
+    but root_cause_conclusion is empty), so relying on those proxies alone
+    under-reports a known cause and stalls an otherwise resolvable case. See the
+    k8s-pvc gate failure — the same stale-signal trap the redesign set out to
+    remove.
+    """
+    if (
+        case.progress
+        and getattr(case.progress, "cause_state", None) == CauseState.IDENTIFIED
+    ):
+        return True
+    if case.root_cause_conclusion and getattr(
+        case.root_cause_conclusion, "root_cause", None
+    ):
+        return True
+    return bool(
+        case.working_conclusion
+        and getattr(case.working_conclusion, "statement", None)
+        and getattr(case.working_conclusion, "likelihood", 0) >= 0.6
+    )
 
 
 def _has_causal_absence(case: "Case") -> bool:
@@ -480,14 +511,7 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     # agent records as causal_absence) the case becomes READY. A case that can
     # only be stabilized — no causal_absence after being asked — converges to
     # Close. Close is offered up front as the alternative.
-    has_cause = bool(
-        case.root_cause_conclusion
-        and getattr(case.root_cause_conclusion, "root_cause", None)
-    ) or bool(
-        case.working_conclusion
-        and getattr(case.working_conclusion, "statement", None)
-        and getattr(case.working_conclusion, "likelihood", 0) >= 0.6
-    )
+    has_cause = _cause_identified(case)
     has_solution = bool(case.solutions and len(case.solutions) > 0)
     has_evidence = bool(case.evidence and len(case.evidence) > 0)
     has_resolution_confirmation = _has_causal_absence(case)
@@ -628,10 +652,7 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     milestones_completed = (
         len(case.progress.completed_milestones) if case.progress else 0
     )
-    has_root_cause = bool(
-        case.root_cause_conclusion
-        and getattr(case.root_cause_conclusion, "root_cause", None)
-    )
+    has_root_cause = _cause_identified(case)
     has_solutions = bool(case.solutions and len(case.solutions) > 0)
 
     # SUGGEST_RESOLVE — the case is "resolution-grade" (matches the minimum
@@ -644,7 +665,10 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     # was only stabilized (failover/workaround) has a solution on record but the
     # cause persists; closing it is correct and must NOT pivot to resolve.
     if has_root_cause and has_solutions and _has_causal_absence(case):
-        rc = getattr(case.root_cause_conclusion, "root_cause", "")
+        rc = (
+            getattr(case.root_cause_conclusion, "root_cause", None)
+            or "the identified root cause"
+        )
         sol_titles = _solution_display_titles(case.solutions)
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
@@ -670,7 +694,10 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     if milestones_completed > 0:
         parts.append(f"- **Milestones completed**: {milestones_completed}")
     if has_root_cause:
-        rc = getattr(case.root_cause_conclusion, "root_cause", "")
+        rc = (
+            getattr(case.root_cause_conclusion, "root_cause", None)
+            or "the identified root cause"
+        )
         parts.append(f"- **Root cause identified**: {rc}")
     if has_solutions:
         sol_titles = _solution_display_titles(case.solutions)

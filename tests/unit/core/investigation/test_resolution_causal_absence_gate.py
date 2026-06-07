@@ -103,3 +103,69 @@ class TestClosureSuggestResolveSymmetry:
             )
         )
         assert r.verdict != ClosureReadiness.SUGGEST_RESOLVE
+
+
+class TestCauseStateAuthoritative:
+    """The gate must read the authoritative engine-derived ``cause_state``
+    (CauseState.IDENTIFIED), not only the ``root_cause_conclusion`` /
+    ``working_conclusion`` proxies. The LLM may leave the documented conclusion
+    empty even when the cause IS identified — the k8s-pvc gate failure: with
+    cause_state=IDENTIFIED + causal_absence + a solution, the empty
+    root_cause_conclusion made the gate read 'no root cause' and stall.
+    """
+
+    @staticmethod
+    def _identified_case(cats):
+        from faultmaven.modules.case.contracts import CauseState
+
+        return SimpleNamespace(
+            problem_verification=SimpleNamespace(symptom_statement="pvc pending"),
+            root_cause_conclusion=None,  # LLM left the documented conclusion empty
+            working_conclusion=SimpleNamespace(statement="x", likelihood=0.167),
+            solutions=[SimpleNamespace(title="fix storageclass")],
+            evidence=[SimpleNamespace(category=c) for c in cats],
+            hypotheses={},
+            progress=SimpleNamespace(
+                completed_milestones=[], cause_state=CauseState.IDENTIFIED
+            ),
+        )
+
+    def test_identified_with_causal_absence_is_ready(self):
+        # k8s-pvc shape: cause known via cause_state, causal_absence recorded,
+        # solution on record, but root_cause_conclusion empty -> READY.
+        r = assess_resolution_readiness(
+            self._identified_case([EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE])
+        )
+        assert r.verdict == ResolutionReadiness.READY
+
+    def test_identified_without_absence_asks_only_confirmation(self):
+        # cause known + solution but no causal_absence -> NEEDS_INFO, and the
+        # ONLY missing essential is the confirmation (root cause is NOT missing).
+        r = assess_resolution_readiness(
+            self._identified_case([EvidenceCategory.CAUSAL_EVIDENCE])
+        )
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+        assert "root cause" not in r.missing
+        assert "confirmation the problem is now resolved" in r.missing
+
+    def test_closure_suggest_resolve_uses_cause_state(self):
+        # close request on a resolution-grade case (cause_state IDENTIFIED +
+        # solution + causal_absence) pivots to resolve even with empty
+        # root_cause_conclusion.
+        r = assess_closure_readiness(
+            self._identified_case([EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE])
+        )
+        assert r.verdict == ClosureReadiness.SUGGEST_RESOLVE
+
+
+class TestProposedTransitionCaseNormalization:
+    """LLMs emit inconsistent case ('RESOLVED' vs 'resolved'); the engine's
+    edge check compares against lowercase CaseState values, so to_state must be
+    normalized at parse time or a valid resolve proposal is spuriously rejected.
+    """
+
+    def test_uppercase_to_state_normalized(self):
+        from faultmaven.core.investigation.schemas import ProposedTransition
+
+        assert ProposedTransition(to_state="RESOLVED").to_state == "resolved"
+        assert ProposedTransition(to_state=" Closed ").to_state == "closed"
