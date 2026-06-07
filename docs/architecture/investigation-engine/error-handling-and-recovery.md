@@ -12,6 +12,7 @@
 This document defines error handling and recovery strategies for the FaultMaven investigation framework, ensuring graceful degradation and automatic recovery from failure conditions.
 
 **Related Documents**:
+
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) - Core architecture
 - [Investigation Data Models](./investigation-data-models.md) - Data structures
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) - State transitions
@@ -71,6 +72,7 @@ This document defines error handling and recovery strategies for the FaultMaven 
 **Strategy**: Log error, notify monitoring, suggest escalation
 
 ### 1.5 Logic Errors (Investigation Stalls)
+
 - No progress for 5+ turns
 - Hypothesis anchoring (same category tested repeatedly)
 - Evidence contradictions
@@ -330,6 +332,17 @@ Some LLMs (notably Fireworks/DeepSeek V3) return shapes that would otherwise fai
 | `state_updates` (top-level) | Coerced to `{}` when the LLM returns `null` or an unparseable string (see `milestone_engine.py` JSON repair passes) | Allows Pydantic field defaults to fire when the LLM truncates output mid-object. |
 
 The rule: defensive coercion is reserved for fields where the server has an authoritative or safe-default value. Fields whose values genuinely come from the LLM (`agent_response`, `evidence_to_add` entries, milestone justifications) stay strict — they cannot be quietly defaulted without losing fidelity, so they remain required and surface as a validation error when missing.
+
+### 3.4 Never-500 Backstop for Parse-Time Validation Errors
+
+A single malformed sub-record emitted by the LLM (e.g. `evidence_to_add` with `source_type=text` and no `source_file_id`; `evidence_need_updates{state: FULFILLED}` with no `fulfilling_evidence_id`) makes the *whole* `InvestigationResponse_*` fail `model_validate_json` — an unhandled `ValidationError` that 500s the turn **before any milestone logic runs**, so the per-milestone surgical strip never gets a chance. The cross-field invariants themselves are correct and stay (they gate on real facts); what's added is a general parse-time recovery policy, `_validate_with_degradation` (general, not per-invariant):
+
+1. Validate as-is.
+2. On failure, **prune the exact list entries the `ValidationError` loc points at** (general across `evidence_to_add` / `evidence_need_updates` / `hypotheses_to_add` / any list field) and re-validate — the bad sub-records are quarantined and logged (`structured_output_degraded`), the rest of the turn survives.
+3. Else drop `state_updates` entirely and keep the conversational `agent_response`.
+4. Else re-raise.
+
+Wired into both the schema-tool-call and text-fallback parse paths. This is distinct from the field-level defensive coercion in §3.3 (which handles known per-field LLM quirks): the backstop is the general safety net for *any* schema with cross-field validators. Provider-native constrained generation remains the upstream mitigation; the backstop is the safety net, not a per-variant patch.
 
 ---
 
@@ -853,6 +866,7 @@ class MilestoneEngine:
 ```
 
 **Key characteristics:**
+
 - Locks are per-case, not global — different cases process concurrently
 - Uses `asyncio.Lock` (cooperative, not OS-level) — suitable for the async architecture
 - Lock is acquired at the top of `process_turn()` before any state reads

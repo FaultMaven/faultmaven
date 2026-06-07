@@ -14,10 +14,9 @@ Both operate together. A rule says "never claim to execute code." The playbook s
 **Related Documents**:
 
 - [Agent Behavioral Rules](./agent-behavioral-rules.md) — Cross-cutting behavioral constraints (Rules 1–8)
-- [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) — State transitions, gate milestones, the unified opportunistic flow
-- [Investigation Flow Redesign](./investigation-flow-redesign.md) — Design rationale for the unified flow + assessment variables (supersedes the former path fork)
+- [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) — State transitions, gate milestones, and the unified opportunistic flow (§2 carries the design rationale + assessment variables for the retired path fork)
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) — Evidence classification design
-- [Prompt Templates](./prompt-templates.md) — Where this playbook's content is encoded
+- [Prompt Assembly Architecture](./prompt-assembly-architecture.md) — Where this playbook's content is encoded
 
 ---
 
@@ -113,7 +112,7 @@ The GPS map. At any turn the agent reads this table to know where the investigat
 | | | 3 | `solution_proposed` | Action | Row 2 true — agent reasons to fix | — | [Zone 3](#zone-3-solution-proposal) |
 | | | 4 | `mitigation_accepted` (→ `stabilization.accepted`) | Trigger | User acknowledges executing the stabilization | COOPERATIVE → Stabilizing | [Zone 3](#zone-3-solution-proposal) |
 | | | 6 | `solution_accepted` | Trigger | User acknowledges executing fix | COOPERATIVE → TREATMENT | [Zone 3](#zone-3-solution-proposal) |
-| MITIGATION ("Stabilizing") | `MITIGATION_INSTRUCTIONS` | 5 | `mitigation_verified` (→ `stabilization.verified`) | Gate | User confirms the stabilization worked | EVIDENCE → DIAGNOSIS | [MITIGATION](#mitigation-stage) |
+| MITIGATION ("Stabilizing") | `MITIGATION_INSTRUCTIONS` | 5 | `mitigation_verified` (→ `stabilization.verified`) | Gate | User confirms the stabilization worked | EVIDENCE → DIAGNOSIS | [MITIGATION](#mitigation-stage--the-stabilization-insert-display-stabilizing) |
 | TREATMENT | `TREATMENT_INSTRUCTIONS` | 7 | `solution_verified` | Gate | User confirms solution worked | COOPERATIVE → TERMINAL | [TREATMENT](#treatment-stage) |
 | TERMINAL | `TERMINAL_TEMPLATE` | — | — | — | No milestone tracking | — | [TERMINAL](#terminal-state) |
 

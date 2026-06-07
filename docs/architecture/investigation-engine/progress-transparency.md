@@ -6,7 +6,7 @@ This document specifies the progress transparency feature for the FaultMaven inv
 
 - [Agent Behavioral Rules](./agent-behavioral-rules.md) — The 8 rules governing agent behavior (output, resilience, and input reading)
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) — Stage transitions and milestones
-- [Prompt Templates](./prompt-templates.md) — Where progress transparency is injected
+- [Prompt Assembly Architecture](./prompt-assembly-architecture.md) — Where progress transparency is injected
 - [Error Handling and Recovery](./error-handling-and-recovery.md) — System-level safety nets
 
 ---
@@ -116,7 +116,7 @@ These patterns are checked **only while transparent mode is active** — if prog
 
 Progress transparency is the container. The repair patterns are specific diagnoses within it:
 
-```
+```text
 Silent Mode (progress being made)
   └── No checks needed
 
@@ -178,7 +178,7 @@ Transparent Mode (progress stalled)
 
 **Turn 10 (Transparent mode — user sees guidance):** User sends a message. The LLM receives the `system_feedback` injection:
 
-```
+```text
 PROGRESS TRANSPARENCY: The investigation has been in DIAGNOSIS for 5 
 investigative turns without reaching the next milestone.
 Pending milestone: root_cause_identified — Validated hypothesis with 

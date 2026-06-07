@@ -37,6 +37,6 @@ These four documents are the authoritative source for their respective domains. 
 
 - **New to FaultMaven?** → Start with [Architecture Overview](./architecture-overview.md)
 - **Understanding an investigation turn?** → [Investigation Lifecycle Logic](investigation-engine/investigation-lifecycle-logic.md)
-- **Writing or changing a prompt?** → [Prompt Templates](investigation-engine/prompt-templates.md) + [Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)
+- **Writing or changing a prompt?** → [Prompt Assembly Architecture](investigation-engine/prompt-assembly-architecture.md) + [Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)
 - **Touching module boundaries?** → [Module Organization Design](core-architecture/module-organization-design.md) + `.importlinter`
 - **Schema questions?** → [data-and-storage/schemas/](data-and-storage/schemas/) + `alembic/versions/`

@@ -3,6 +3,7 @@
 This document defines the core data models used in FaultMaven's evidence-driven investigation framework.
 
 **Related Documents**:
+
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) - Overview and philosophy
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) - State transitions and path routing
 
@@ -29,6 +30,7 @@ To ensure consistency across the codebase, use these standard field names:
 | `confidence_level` | `ConfidenceLevel` | enum | Categorical confidence (derived from `likelihood`) |
 
 **Conversion Rules** (implemented in `ConfidenceLevel.from_score()`):
+
 - `likelihood < 0.5` → `SPECULATION`
 - `likelihood 0.5-0.69` → `PROBABLE`
 - `likelihood 0.7-0.89` → `CONFIDENT`
@@ -104,6 +106,7 @@ class CaseState(str, Enum):
 ```
 
 **Key Points**:
+
 - **RESOLVED** and **CLOSED** are both dispositions (terminal — no further case actions)
 - **RESOLVED** = Problem fixed (has solution, solution_verified=True)
 - **CLOSED** = Problem not fixed (no solution, or mitigation-only, or inquiry-only)
@@ -112,7 +115,7 @@ class CaseState(str, Enum):
 ### 1.2 InvestigationProgress
 
 Under the unified opportunistic flow (see
-[investigation-flow-redesign.md](./investigation-flow-redesign.md)), progress
+[investigation-lifecycle-logic.md §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert)), progress
 tracking carries three kinds of state: **action-compliance gates** (did the user
 accept/verify a proposed action), **progress indicators** (advisory, non-driving),
 and **assessment variables** (engine-derived truth signals about what we know).
@@ -308,6 +311,7 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 | `solution_verified` | `solution_verified` | User confirmed fix worked (User-Agent Handshake) |
 
 **How progress milestone validation works:**
+
 1. LLM sets progress milestone = True in structured output
 2. System extracts evidence IDs from `internal_reasoning.evidence_analyzed`
 3. System counts cited evidence matching expected categories
@@ -412,7 +416,7 @@ prospective fork conflated two independent questions — "do we know the cause?"
 (stabilization gap). The redesign decouples them: **assessment variables** encode
 certainty (engine-derived, never path-stripped), and a **stabilization record**
 captures the optional inserted stabilization sub-activity. See
-[investigation-flow-redesign.md](./investigation-flow-redesign.md) for the design
+[investigation-lifecycle-logic.md §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert) for the design
 rationale.
 
 ```python
@@ -1671,7 +1675,7 @@ class HypothesisState(str, Enum):
 | `INCONCLUSIVE` → `RETIRED` | Deadlock repair — all hypotheses inconclusive, repair retires them en masse to free the LLM to generate fresh ones | **System-automated** (`progress_monitor.py:691`) |
 | `ACTIVE` → `RETIRED` | User clicks a "retire" COOPERATIVE suggestion (`hypothesis_action` intent) | **Engine** (sets `retirement_reason = user_message`) |
 
-The system-automated `INCONCLUSIVE` and decay-based `RETIRED` transitions run after each evidence update in `HypothesisManager.update_hypothesis()`. They are mechanically applied thresholds, not LLM judgment calls — they prevent stale low-confidence hypotheses from consuming LLM context across turns when no new evidence is advancing them. The user-intent paths (validate / refute / retire) apply the state change **before** LLM processing on the same turn so the agent's reply sees the updated hypothesis and can acknowledge it — see [Intent Resolution §5.2](./intent-resolution.md#52-state-transitions-applied-by-the-engine).
+The system-automated `INCONCLUSIVE` and decay-based `RETIRED` transitions run after each evidence update in `HypothesisManager.update_hypothesis()`. They are mechanically applied thresholds, not LLM judgment calls — they prevent stale low-confidence hypotheses from consuming LLM context across turns when no new evidence is advancing them. The user-intent paths (validate / refute / retire) apply the state change **before** LLM processing on the same turn so the agent's reply sees the updated hypothesis and can acknowledge it — see [Choice-Response Resolution §5.2](./choice-response-resolution.md#52-state-transitions-applied-by-the-engine).
 
 ```python
 class HypothesisGenerationMode(str, Enum):
