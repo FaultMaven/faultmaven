@@ -424,11 +424,13 @@ class TestResolveProposalRequiresCausalAbsence:
     def test_completion_block_requires_causal_absence_for_resolved(self):
         # The governing COMPLETION rule must tie any resolved proposal to a
         # causal_absence emission and accept a verbal source.
-        assert "RESOLVED REQUIRES CAUSAL-ABSENCE" in TREATMENT_INSTRUCTIONS, (
+        assert "RESOLVED IS BACKED BY CAUSAL-ABSENCE" in TREATMENT_INSTRUCTIONS, (
             "COMPLETION lost the governing rule that every resolved proposal "
             "must emit causal_absence_evidence."
         )
-        rule_start = TREATMENT_INSTRUCTIONS.index("RESOLVED REQUIRES CAUSAL-ABSENCE")
+        rule_start = TREATMENT_INSTRUCTIONS.index(
+            "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
+        )
         rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1500]
         assert "causal_absence_evidence" in rule
         assert "user_description" in rule, (
@@ -439,10 +441,30 @@ class TestResolveProposalRequiresCausalAbsence:
     def test_stabilization_proposes_closed_not_resolved(self):
         # The same rule must route a stabilization to symptom_absence + closed,
         # so the agent only proposes the transition the case can complete.
-        rule_start = TREATMENT_INSTRUCTIONS.index("RESOLVED REQUIRES CAUSAL-ABSENCE")
-        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 1500]
+        rule_start = TREATMENT_INSTRUCTIONS.index(
+            "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
+        )
+        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 2200]
         assert "symptom_absence_evidence" in rule
         assert "closed" in rule, (
             "A stabilization must propose closed (not resolved); the rule no "
             "longer states that routing."
+        )
+
+    def test_causal_absence_is_verification_not_application_or_fabrication(self):
+        # causal_absence is the VERIFICATION fact, distinct from applying a fix,
+        # and must never be fabricated to force a resolve. Locks in the
+        # "provoked, not solicited" semantics: applied != verified, and an
+        # unverified resolve request is solicited (NEEDS_INFO), not manufactured.
+        rule_start = TREATMENT_INSTRUCTIONS.index(
+            "RESOLVED IS BACKED BY CAUSAL-ABSENCE"
+        )
+        rule = TREATMENT_INSTRUCTIONS[rule_start : rule_start + 2200]
+        assert "APPLYING A FIX IS NOT VERIFYING IT" in rule, (
+            "The rule must distinguish solution-applied (solution_accepted) from "
+            "verified — the agent must not emit causal_absence at application."
+        )
+        assert "DO NOT MANUFACTURE" in rule, (
+            "The rule must forbid fabricating causal_absence to force a resolve; "
+            "an unverified resolve request is solicited via the engine, not faked."
         )

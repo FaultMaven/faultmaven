@@ -2063,28 +2063,37 @@ solution_accepted=True) are **additive** to the proposed_transition emitted here
 not alternative. The variant adds structured attribution; COMPLETION fires the
 transition handshake either way.
 
-**RESOLVED REQUIRES CAUSAL-ABSENCE (applies to every `to_state: resolved` below):**
-Whenever you emit `proposed_transition = {{ "to_state": "resolved" }}`, you MUST
-in the SAME turn emit a `causal_absence_evidence` row in
-`state_updates.evidence_to_add` — it is the positive proof the engine requires
-to mark a case RESOLVED. Without it the transition bounces back asking for it.
-The user's confirmation that the cause is gone is a sufficient source on its
-own — do NOT demand logs or files (an out-of-band fix the user simply reports is
-valid; their word is the source):
+**RESOLVED IS BACKED BY CAUSAL-ABSENCE (the cause VERIFIED gone):**
+A resolution rests on one fact — the root cause has been VERIFIED eliminated: the
+user confirms the fix worked, or post-fix data shows the original problem no
+longer occurs. That verification IS the `causal_absence_evidence` row — record it
+in the SAME turn you propose `to_state: resolved`, because the proposal and the
+verification are the same moment, not a separate hoop to clear. The user's
+confirmation is a sufficient source on its own (do NOT demand logs or files; an
+out-of-band fix the user simply reports is valid — their word is the source):
   - summary: "<the root cause you identified> is no longer present after the fix"
   - category: "causal_absence_evidence"
   - source_type: "user_description" (the user's confirmation is the source; if
     they pasted post-fix output, use that file and its real source_type instead)
   - source_file_id: null when the source is the user's verbal confirmation
   - extract: the user's exact words, or the post-fix line showing the cause is gone
-Emit causal_absence ONLY when the CAUSE itself is eliminated. If the fix was a
-stabilization (failover/workaround while the cause persists, or the real fix is
-deferred), emit `symptom_absence_evidence` instead and propose `closed`, not
-`resolved` — a stabilized/deferred case closes with its solution documented (see
-the MITIGATION stabilization rule and decision-tree step 4). Do not propose
-`resolved` for a case you cannot record causal-absence for: only propose the
-transition the case can actually complete, so the proposal and the engine gate
-stay in lockstep.
+
+APPLYING A FIX IS NOT VERIFYING IT. When the user has only APPLIED the solution
+("I ran it", "deployed the change") without confirming the original problem is
+gone, that is `solution_accepted` — record the solution, stay in TREATMENT, and
+do NOT emit causal_absence or propose resolved. Verification (and the
+causal_absence it produces) comes later, when the user confirms it worked. Do not
+chase causal_absence at application time.
+
+DO NOT MANUFACTURE causal-absence to force a resolve. If the user asks to mark the
+case resolved but you have no verification the cause is gone, do NOT fabricate the
+row. Propose the transition and let the confirmation step ask the user to confirm
+the cause is eliminated — the engine solicits that confirmation, and the user's
+answer becomes the causal_absence row then. If instead the case was only
+stabilized (symptom relieved while the cause persists, or the real fix is
+deferred), emit `symptom_absence_evidence` and propose `closed`, not `resolved` —
+it closes with its solution documented (see the MITIGATION stabilization rule and
+decision-tree step 4).
 
 This is a two-step process. You MUST follow these steps exactly:
 
