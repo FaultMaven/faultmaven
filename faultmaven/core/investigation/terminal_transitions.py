@@ -654,26 +654,34 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     # discard the resolution attribution. Engine pivots; user still confirms.
     # Symmetric to ResolutionReadiness.SUGGEST_CLOSE.
     #
-    # Gate on causal_absence (cause confirmed ELIMINATED), the same bar as
-    # assess_resolution_readiness — NOT merely "has a solution row". A case that
-    # was only stabilized (failover/workaround) has a solution on record but the
-    # cause persists; closing it is correct and must NOT pivot to resolve.
-    if has_root_cause and has_solutions and _has_causal_absence(case):
+    # Gate on causal_absence — the SAME bar as assess_resolution_readiness READY.
+    # A close request on a resolution-ready case pivots to resolve: "resolved" is
+    # a closed case WITH a resolution, and it is always safe to resolve a case the
+    # user moved to close. We do NOT require a separate root-cause/solution record
+    # (an out-of-band fix yields causal_absence with neither) — that was the same
+    # over-constraint the resolution gate carried. A merely stabilized case has
+    # symptom_absence but no causal_absence, so it correctly does NOT pivot.
+    if _has_causal_absence(case):
         rc = (
             getattr(case.root_cause_conclusion, "root_cause", None)
             or "the identified root cause"
         )
-        sol_titles = _solution_display_titles(case.solutions)
+        detail = f"- **Root cause**: {rc}\n"
+        if has_solutions:
+            detail += (
+                "- **Solution**: "
+                + ", ".join(_solution_display_titles(case.solutions))
+                + "\n"
+            )
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
             message=(
-                "This case has a documented root cause and a fix confirmed to "
-                "have eliminated it — it qualifies for **resolved** status "
-                "rather than closed. Closing it would discard the resolution "
-                "attribution.\n\n"
-                f"- **Root cause**: {rc}\n"
-                f"- **Solution**: {', '.join(sol_titles)}\n\n"
-                "Would you like to mark it **resolved** instead?"
+                "This case has a fix confirmed to have eliminated the root "
+                "cause — it qualifies for **resolved** status rather than "
+                "closed. Closing would record it as unresolved and discard the "
+                "resolution.\n\n"
+                + detail
+                + "\nWould you like to mark it **resolved** instead?"
             ),
         )
 

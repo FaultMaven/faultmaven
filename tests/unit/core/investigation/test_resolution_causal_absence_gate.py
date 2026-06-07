@@ -193,3 +193,25 @@ class TestCausalAbsenceIsSufficient:
         )
         assert r.verdict == ResolutionReadiness.NEEDS_INFO
         assert "confirmation the problem is now resolved" in r.missing
+
+
+class TestClosurePivotMatchesResolutionBar:
+    """SUGGEST_RESOLVE (close-request pivot) must use the SAME bar as
+    assess_resolution_readiness READY: causal_absence alone. Otherwise a close
+    request on an out-of-band case (causal_absence, no solution record) wrongly
+    closes while a resolve request on the same case resolves — the asymmetry the
+    'resolved is a safe special case of closed' rule forbids.
+    """
+
+    def test_close_pivots_to_resolve_with_causal_absence_no_solution(self):
+        r = assess_closure_readiness(
+            _case(cats=[EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE], solutions=0)
+        )
+        assert r.verdict == ClosureReadiness.SUGGEST_RESOLVE
+
+    def test_close_does_not_pivot_without_causal_absence(self):
+        # stabilized (symptom_absence, no causal_absence) -> close is correct
+        r = assess_closure_readiness(
+            _case(cats=[EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE], solutions=1)
+        )
+        assert r.verdict != ClosureReadiness.SUGGEST_RESOLVE
