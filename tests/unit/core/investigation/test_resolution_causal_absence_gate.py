@@ -169,3 +169,27 @@ class TestProposedTransitionCaseNormalization:
 
         assert ProposedTransition(to_state="RESOLVED").to_state == "resolved"
         assert ProposedTransition(to_state=" Closed ").to_state == "closed"
+
+
+class TestCausalAbsenceIsSufficient:
+    """causal_absence alone is the resolution bar. Requiring a separate
+    SolutionToAdd record on top blocked the out-of-band path: the user reports a
+    verbal fix -> agent records causal_absence (user_description) but no solution
+    record -> gate said missing=['solution'] -> stuck-loop -> wrongly CLOSED
+    (case_e5f5849b9e4d, the rate-limit out-of-band scenario).
+    """
+
+    def test_causal_absence_without_any_solution_record_is_ready(self):
+        # Out-of-band: causal_absence recorded, cause known, but NO solution row.
+        r = assess_resolution_readiness(
+            _case(cats=[EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE], solutions=0)
+        )
+        assert r.verdict == ResolutionReadiness.READY
+
+    def test_no_absence_still_asks_for_essentials(self):
+        # Without causal_absence the documentation-gap-fill ask still fires.
+        r = assess_resolution_readiness(
+            _case(cats=[EvidenceCategory.CAUSAL_EVIDENCE], solutions=0)
+        )
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+        assert "confirmation the problem is now resolved" in r.missing
