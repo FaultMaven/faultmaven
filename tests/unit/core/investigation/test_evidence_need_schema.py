@@ -7,7 +7,7 @@ Pins:
 - ``SuggestedFollowUp.evidence_need_id`` field + action-type guard +
   coercion.
 - ``evidence_need_updates`` field is present on each non-INQUIRY stage
-  state-update class (Diagnosis / Mitigation / Treatment / General) and
+  state-update class (Diagnosis / Stabilization / Treatment / General) and
   absent from ``InquiryStateUpdate`` (per INV-07).
 
 Run:
@@ -23,7 +23,7 @@ from faultmaven.core.investigation.schemas import (
     EvidenceNeedUpdate,
     InvestigationResponse_Diagnosis,
     InvestigationResponse_General,
-    InvestigationResponse_Mitigation,
+    InvestigationResponse_Stabilization,
     InvestigationResponse_Treatment,
     SuggestedFollowUp,
 )
@@ -230,8 +230,10 @@ class TestEvidenceNeedUpdateStageHooks:
         fields = InvestigationResponse_Diagnosis.DiagnosisStateUpdate.model_fields
         assert "evidence_need_updates" in fields
 
-    def test_mitigation_stage_has_field(self):
-        fields = InvestigationResponse_Mitigation.MitigationStateUpdate.model_fields
+    def test_stabilization_stage_has_field(self):
+        fields = (
+            InvestigationResponse_Stabilization.StabilizationStateUpdate.model_fields
+        )
         assert "evidence_need_updates" in fields
 
     def test_treatment_stage_has_field(self):

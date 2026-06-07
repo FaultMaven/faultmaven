@@ -316,7 +316,7 @@ class ReportGenerationService:
         when the surrounding ``"\\n".join`` produces ``\\n\\n`` between
         them (every string ends with ``\\n``). Used by both the
         resolution summary's "Solution Applied" section and the closure
-        summary's "Mitigation Status" section — the rendering is
+        summary's "Stabilization Status" section — the rendering is
         identical; only the surrounding heading differs.
         """
         sol_title = getattr(sol, "title", f"Solution {index}")
@@ -407,7 +407,7 @@ class ReportGenerationService:
                         parts.append(f"{h.rationale}\n")
                 # Last line already ends with \n; no extra separator needed.
 
-        # Solution Applied — same renderer as closure's Mitigation Status.
+        # Solution Applied — same renderer as closure's Stabilization Status.
         if solutions:
             parts.append("## Solution Applied\n")
             for i, sol in enumerate(solutions, 1):

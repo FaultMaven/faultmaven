@@ -55,12 +55,12 @@ def _case(*, evidence=True):
 class TestSurgicalStrip:
     def test_unjustified_milestone_is_offending_justified_one_is_preserved(self):
         """The S1 mechanism: root_cause_identified (unjustified) must not drag
-        a justified mitigation_accepted into the strip."""
+        a justified stabilization_accepted into the strip."""
         milestones = MilestoneUpdates(
-            root_cause_identified=True, mitigation_accepted=True
+            root_cause_identified=True, stabilization_accepted=True
         )
-        # Only mitigation_accepted is justified; root_cause_identified is not.
-        justifications = {"mitigation_accepted": "User applied the fix (ev_1)"}
+        # Only stabilization_accepted is justified; root_cause_identified is not.
+        justifications = {"stabilization_accepted": "User applied the fix (ev_1)"}
 
         is_valid, errors, offending = validate_reasoning_first(
             _response(milestones, justifications), _case()
@@ -68,18 +68,20 @@ class TestSurgicalStrip:
 
         assert is_valid is False
         assert offending == {"root_cause_identified"}
-        # mitigation_accepted was justified -> NOT stripped.
-        assert "mitigation_accepted" not in offending
+        # stabilization_accepted was justified -> NOT stripped.
+        assert "stabilization_accepted" not in offending
 
     def test_no_internal_reasoning_strips_all_completed(self):
-        milestones = MilestoneUpdates(symptom_verified=True, mitigation_accepted=True)
+        milestones = MilestoneUpdates(
+            symptom_verified=True, stabilization_accepted=True
+        )
         resp = _response(milestones, {})
         resp.internal_reasoning = None
 
         is_valid, errors, offending = validate_reasoning_first(resp, _case())
 
         assert is_valid is False
-        assert offending == {"symptom_verified", "mitigation_accepted"}
+        assert offending == {"symptom_verified", "stabilization_accepted"}
 
     def test_no_actionable_evidence_strips_all_completed(self):
         milestones = MilestoneUpdates(symptom_verified=True)

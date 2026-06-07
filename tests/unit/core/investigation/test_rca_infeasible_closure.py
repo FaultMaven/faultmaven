@@ -1,7 +1,7 @@
 """Tests for the rca_infeasible propose-closure flow.
 
 When the LLM marks rca_infeasible=True on ProblemVerification and the
-``mitigation_verified`` stabilization gate later fires, the engine must
+``stabilization_verified`` stabilization gate later fires, the engine must
 propose closing the case as stabilized (User-Agent Handshake).
 Reference: investigation-lifecycle-logic.md §2.4.
 
@@ -35,15 +35,15 @@ def _make_case(
     *,
     rca_infeasible: bool,
     rationale: str | None = "third-party API outage",
-    mitigation_verified: bool = True,
+    stabilization_verified: bool = True,
     no_problem_verification: bool = False,
 ) -> Case:
     """Build a Case with a verified stabilization and an optional
     rca_infeasible signal.
 
     The unified flow tracks the stabilization via
-    ``progress.stabilization`` (a forward-only record) rather than the old
-    mitigation booleans + ``path_selection``.
+    ``progress.stabilization`` (a forward-only record) rather than the
+    legacy path-coupled stabilization gates.
     """
     pv = (
         None
@@ -60,8 +60,8 @@ def _make_case(
     stabilization = StabilizationRecord(
         proposed_at_turn=1,
         accepted=True,
-        verified=mitigation_verified,
-        completed_at_turn=1 if mitigation_verified else None,
+        verified=stabilization_verified,
+        completed_at_turn=1 if stabilization_verified else None,
     )
     return Case(
         case_id="case_1234567890ab",
@@ -82,7 +82,7 @@ def _make_case(
 
 
 def test_rca_infeasible_creates_pending_closure():
-    """mitigation_verified gate + rca_infeasible=True → pending_transition
+    """stabilization_verified gate + rca_infeasible=True → pending_transition
     to CLOSED.
 
     closure_reason is engine-derived from case state: closing from
@@ -92,7 +92,7 @@ def test_rca_infeasible_creates_pending_closure():
     metadata: dict = {}
 
     _apply_stage_gate_side_effects(
-        case, {"mitigation_verified"}, "mitigation worked", metadata
+        case, {"stabilization_verified"}, "stabilization worked", metadata
     )
 
     assert case.pending_transition is not None
@@ -100,7 +100,7 @@ def test_rca_infeasible_creates_pending_closure():
     assert case.pending_transition["closure_reason"] == "closed_after_investigation"
     assert "third-party API outage" in case.pending_transition["summary"]
     assert (
-        "shall we close this case as mitigated?" in case.pending_transition["summary"]
+        "shall we close this case as stabilized?" in case.pending_transition["summary"]
     )
 
     assert metadata["transition_proposed"] is True
@@ -115,12 +115,12 @@ def test_rca_infeasible_creates_pending_closure():
 
 
 def test_rca_infeasible_false_does_not_propose_closure():
-    """mitigation_verified gate + rca_infeasible=False → no pending_transition."""
+    """stabilization_verified gate + rca_infeasible=False → no pending_transition."""
     case = _make_case(rca_infeasible=False)
     metadata: dict = {}
 
     _apply_stage_gate_side_effects(
-        case, {"mitigation_verified"}, "mitigation worked", metadata
+        case, {"stabilization_verified"}, "stabilization worked", metadata
     )
 
     assert case.pending_transition is None
@@ -135,7 +135,7 @@ def test_no_problem_verification_does_not_propose_closure():
     metadata: dict = {}
 
     _apply_stage_gate_side_effects(
-        case, {"mitigation_verified"}, "mitigation worked", metadata
+        case, {"stabilization_verified"}, "stabilization worked", metadata
     )
 
     assert case.pending_transition is None
@@ -146,7 +146,7 @@ def test_confirm_pending_transition_closes_after_investigation():
     """User confirmation drives CLOSED with
     closure_reason=closed_after_investigation."""
     case = _make_case(rca_infeasible=True, rationale="deprecated legacy system")
-    _apply_stage_gate_side_effects(case, {"mitigation_verified"}, "ok", {})
+    _apply_stage_gate_side_effects(case, {"stabilization_verified"}, "ok", {})
 
     confirmed = confirm_pending_transition(case, "user_123")
 
@@ -159,7 +159,7 @@ def test_confirm_pending_transition_closes_after_investigation():
 def test_decline_clears_pending_and_keeps_case_investigating():
     """User decline clears pending_transition; case remains INVESTIGATING for RCA."""
     case = _make_case(rca_infeasible=True)
-    _apply_stage_gate_side_effects(case, {"mitigation_verified"}, "ok", {})
+    _apply_stage_gate_side_effects(case, {"stabilization_verified"}, "ok", {})
 
     cancelled = cancel_pending_transition(case)
 
@@ -181,7 +181,7 @@ def test_closure_message_uses_rationale_or_fallback(rationale, expected_phrase):
     metadata: dict = {}
 
     _apply_stage_gate_side_effects(
-        case, {"mitigation_verified"}, "mitigation worked", metadata
+        case, {"stabilization_verified"}, "stabilization worked", metadata
     )
 
     assert expected_phrase in metadata["rca_infeasible_closure_message"]

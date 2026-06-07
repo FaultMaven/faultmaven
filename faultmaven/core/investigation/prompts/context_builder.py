@@ -1633,9 +1633,9 @@ def _build_verbatim_history(messages: list) -> str:
 # Cap on rendered needs per section to keep token cost bounded. Each
 # rendered need is ~80 chars of header (capped via
 # ``_REQUEST_TEXT_RENDER_CAP``) + ~80 chars of motivator line.
-# Single-section case (DIAGNOSIS, or MITIGATION/TREATMENT with one of
+# Single-section case (DIAGNOSIS, or STABILIZATION/TREATMENT with one of
 # outstanding/re-verification empty): ~600 tokens worst case at 15
-# needs. Both-sections case (MITIGATION/TREATMENT with both populated):
+# needs. Both-sections case (STABILIZATION/TREATMENT with both populated):
 # up to 30 needs total, ~1200 tokens worst case. Typical cases stay
 # well under either bound because the LLM emits short request_text.
 _EVIDENCE_NEEDS_RENDER_CAP = 15
@@ -1693,7 +1693,7 @@ def _render_need_line(need) -> tuple[str, str]:
 def _render_finding_line(ev) -> str:
     """Render one confirmed presence-evidence row as a re-check line.
 
-    The re-verification checklist (MITIGATION/TREATMENT) is anchored on
+    The re-verification checklist (STABILIZATION/TREATMENT) is anchored on
     the confirmed ``symptom_evidence`` / ``causal_evidence`` rows — the
     canonical record of what was established — NOT on FULFILLED needs.
     Needs are demand-side and gap-conditional (created only when the
@@ -1718,7 +1718,7 @@ def _build_evidence_needs_block(case: Case) -> str:
     - The pool is empty.
     - All needs are filtered out by status (no PENDING/PARTIALLY_MET
       in DIAGNOSIS; no PENDING/PARTIALLY_MET/FULFILLED in
-      MITIGATION/TREATMENT).
+      STABILIZATION/TREATMENT).
     - The case is not INVESTIGATING (terminal/inquiry have their own
       surfaces).
 
@@ -1727,7 +1727,7 @@ def _build_evidence_needs_block(case: Case) -> str:
     - Default (DIAGNOSIS stage): render PENDING + PARTIALLY_MET needs as
       "outstanding needs" — data to look for during upload review.
       FULFILLED and SUPERSEDED are excluded to save tokens.
-    - MITIGATION / TREATMENT: render two clearly-labelled sections —
+    - STABILIZATION / TREATMENT: render two clearly-labelled sections —
       outstanding needs as above, plus a "re-verification checklist"
       built from the confirmed presence-evidence rows
       (``symptom_evidence`` / ``causal_evidence``) so the agent can
@@ -1752,7 +1752,7 @@ def _build_evidence_needs_block(case: Case) -> str:
               motivated_by: [hyp_001, hyp_003]
         </evidence_needs>
 
-    Output shape (MITIGATION/TREATMENT, both sections populated):
+    Output shape (STABILIZATION/TREATMENT, both sections populated):
 
         <evidence_needs>
         Unexpected findings outside the entries below are equally
@@ -1773,13 +1773,13 @@ def _build_evidence_needs_block(case: Case) -> str:
     if case.state != CaseState.INVESTIGATING:
         return ""
     # NOTE: do NOT early-return on an empty `evidence_needs` pool. The
-    # MITIGATION/TREATMENT re-verification checklist is sourced from
+    # STABILIZATION/TREATMENT re-verification checklist is sourced from
     # presence-evidence rows, which exist even when no need was ever
     # created (the common gap-free case). The `not outstanding and not
     # re_verification` check below is the correct emptiness gate.
 
     in_post_diagnosis = case.current_stage in (
-        InvestigationStage.MITIGATION,
+        InvestigationStage.STABILIZATION,
         InvestigationStage.TREATMENT,
     )
 
@@ -1951,12 +1951,12 @@ def build_investigation_context(
         p = case.progress
 
         # Stage-gate milestones (drive transitions). Post-redesign the
-        # mitigation gates live on the stabilization record, not progress
+        # stabilization gates live on the stabilization record, not progress
         # booleans; derive the same telemetry symbols from it.
         _stab = p.stabilization
         stage_gates = {
-            "mitigation_accepted": bool(_stab is not None and _stab.accepted),
-            "mitigation_verified": bool(_stab is not None and _stab.verified),
+            "stabilization_accepted": bool(_stab is not None and _stab.accepted),
+            "stabilization_verified": bool(_stab is not None and _stab.verified),
             "solution_accepted": p.solution_accepted,
             "solution_verified": p.solution_verified,
         }
@@ -2054,10 +2054,10 @@ def build_investigation_context(
                         pending_action_str += f"  - {cmd}\n"
                 pending_action_str += f"PROPOSED_IN_TURN: {action.proposed_in_turn}\n"
                 # Map action type → milestone so the LLM knows exactly what to set
-                if action_type_upper == "MITIGATION":
+                if action_type_upper == "STABILIZATION":
                     pending_action_str += (
-                        "MILESTONE_TO_SET: mitigation_accepted (set True when user "
-                        "submits results of executing this mitigation)\n"
+                        "MILESTONE_TO_SET: stabilization_accepted (set True when user "
+                        "submits results of executing this stabilization)\n"
                     )
                 elif action_type_upper == "SOLUTION":
                     pending_action_str += (
@@ -2175,8 +2175,10 @@ def build_investigation_context(
                         hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%, State: {h.state.value})\n"
                     hypothesis_str += "</working_hypotheses>"
 
-        elif stage == InvestigationStage.MITIGATION:
-            logger.debug("Stage-specific loading: MITIGATION - condensing hypotheses")
+        elif stage == InvestigationStage.STABILIZATION:
+            logger.debug(
+                "Stage-specific loading: STABILIZATION - condensing hypotheses"
+            )
             active_validated = [
                 h
                 for h in case.hypotheses.values()

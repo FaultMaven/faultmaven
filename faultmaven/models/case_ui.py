@@ -91,11 +91,11 @@ class InvestigationProgressSummary(BaseModel):
 
     completed_stage_gates: List[str] = Field(
         default_factory=list,
-        description="Completed stage-gate milestones (e.g. mitigation_accepted, solution_verified)",
+        description="Completed stage-gate milestones (e.g. stabilization_accepted, solution_verified)",
     )
 
     current_stage: InvestigationStage = Field(
-        description="Current stage: DIAGNOSIS | MITIGATION | TREATMENT"
+        description="Current stage: DIAGNOSIS | STABILIZATION | TREATMENT"
     )
 
     turns_without_progress: int = Field(

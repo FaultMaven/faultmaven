@@ -159,7 +159,7 @@ class TestPostDropCategories:
         Post-013, the absence-of-symptom and absence-of-cause categories
         joined the presumption-evidence model (see
         evidence-needs-design.md §4.3). The legacy stage-named
-        ``mitigation_evidence`` / ``solution_evidence`` are still
+        ``stabilization_evidence`` / ``solution_evidence`` are still
         present pending the Phase 5 prompt cutover, after which they
         will be removed in favor of the absence categories alone.
         """
@@ -167,7 +167,7 @@ class TestPostDropCategories:
         assert values == {
             "symptom_evidence",
             "causal_evidence",
-            "mitigation_evidence",
+            "stabilization_evidence",
             "solution_evidence",
             "symptom_absence_evidence",
             "causal_absence_evidence",

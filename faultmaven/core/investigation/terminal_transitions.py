@@ -737,7 +737,7 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
 
     Enriches quality (not required, but flagged if missing):
     - Diagnostic Steps: evidence items with summaries
-    - Mitigation: action_attempts with MITIGATION type, or immediate_action
+    - Mitigation: action_attempts with STABILIZATION type, or immediate_action
     - Verification: verification_method on any solution
 
     Always available (LLM generates from context):
@@ -758,11 +758,11 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
     has_diagnostic_steps = evidence_count >= 1 or hypothesis_count >= 1
     coverage["diagnostic_steps"] = has_diagnostic_steps
 
-    # Mitigation ← action_attempts with MITIGATION type, or solutions[].immediate_action
+    # Mitigation ← action_attempts with STABILIZATION type, or solutions[].immediate_action
     has_mitigation = False
     if case.action_attempts:
         has_mitigation = any(
-            getattr(a, "action_type", "").upper() == "MITIGATION"
+            getattr(a, "action_type", "").upper() == "STABILIZATION"
             for a in case.action_attempts
         )
     if not has_mitigation and case.solutions:

@@ -1048,7 +1048,7 @@ class EvidenceNeedFulfillmentModel(Base):
 
     Records which evidence rows fulfill which needs. Many-to-many:
     a single need accumulates multiple fulfillments across DIAGNOSIS
-    (presence evidence) and MITIGATION/TREATMENT (absence evidence);
+    (presence evidence) and STABILIZATION/TREATMENT (absence evidence);
     a single evidence row can fulfill multiple needs when the same
     data answers multiple hypotheses (cross-hypothesis sharing per
     evidence-needs-design.md §5.2).

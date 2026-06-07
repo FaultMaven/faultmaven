@@ -132,14 +132,12 @@ class TestINV03_DispositionHandshake:
 
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "closed"
-        # closure_reason is engine-derived at propose time (one of the three
-        # canonical values: inquiry_only | closed_after_investigation |
-        # mitigation_sufficient)
+        # closure_reason is engine-derived at propose time (one of the two
+        # canonical values: inquiry_only | closed_after_investigation)
         assert "closure_reason" in case.pending_transition
         assert case.pending_transition["closure_reason"] in (
             "inquiry_only",
             "closed_after_investigation",
-            "mitigation_sufficient",
         )
         # Status unchanged
         assert case.state == CaseState.INVESTIGATING
@@ -376,10 +374,10 @@ class TestINV04_NoDirectInquiryToResolved:
 # =============================================================================
 #
 # Source: §1.4 line 488 — "Disposition actions are NEVER automatic."
-#   Stage transitions within INVESTIGATING (DIAGNOSIS → MITIGATION →
+#   Stage transitions within INVESTIGATING (DIAGNOSIS → STABILIZATION →
 #   TREATMENT), by contrast, ARE automatic: the engine acts directly on
 #   the gate milestone the LLM emits, without a propose/confirm round-trip.
-# Statement: Setting a stage-gate milestone (mitigation_accepted,
+# Statement: Setting a stage-gate milestone (stabilization_accepted,
 #   solution_accepted) advances ``case.current_stage`` immediately. No
 #   pending_transition is written, no user confirmation turn is required.
 # Enforcement: Prompt-only via gate milestone semantics — the engine acts
@@ -411,7 +409,7 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
 
     def test_inv05_stabilization_accepted_advances_stage_immediately(self):
         """An accepted-but-unverified stabilization advances
-        ``current_stage`` to MITIGATION immediately. No propose+confirm
+        ``current_stage`` to STABILIZATION immediately. No propose+confirm
         round-trip; no pending_transition is written; no user-confirmation
         turn is required. Asymmetric with INV-03's disposition handshake.
         """
@@ -431,7 +429,7 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
 
         # Stage advances immediately (computed from the gate record, no
         # state machine in between)
-        assert case.current_stage == InvestigationStage.MITIGATION
+        assert case.current_stage == InvestigationStage.STABILIZATION
         # Critically: no handshake artifacts
         assert case.pending_transition is None
         # And disposition is unchanged — stage transition does NOT touch
@@ -441,7 +439,7 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
     def test_inv05_solution_accepted_advances_stage_immediately(self):
         """Setting ``solution_accepted=True`` advances ``current_stage``
         to TREATMENT immediately. Same auto-fire semantics as
-        mitigation_accepted; same absence of handshake artifacts.
+        stabilization_accepted; same absence of handshake artifacts.
         """
         from faultmaven.modules.case.domain.models import InvestigationStage
 
@@ -1765,8 +1763,8 @@ class TestINV16_LLMSoleAuthorityForMilestoneAdvancement:
             "case.progress.symptom_verified =",
             "case.progress.root_cause_identified =",
             "case.progress.solution_proposed =",
-            "case.progress.mitigation_accepted =",
-            "case.progress.mitigation_verified =",
+            "case.progress.stabilization_accepted =",
+            "case.progress.stabilization_verified =",
             "case.progress.solution_accepted =",
             "case.progress.solution_verified =",
         ]

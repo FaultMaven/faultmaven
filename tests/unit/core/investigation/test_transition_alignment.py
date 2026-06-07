@@ -234,7 +234,7 @@ async def test_ui_dropdown_resolve_pivots_to_close_when_thin():
     pending = result["case_updated"].pending_transition
     assert pending is not None
     assert pending["to_state"] == "closed"
-    # closure_reason engine-derived: investigating + no mitigation
+    # closure_reason engine-derived: investigating + no stabilization
     assert pending.get("closure_reason") == "closed_after_investigation"
     _assert_canonical_confirm_pair(result["suggested_follow_ups"], "close")
 
@@ -405,7 +405,7 @@ async def test_check_automatic_transitions_sets_override_for_closed():
     assert case.pending_transition is not None
     assert case.pending_transition["to_state"] == "closed"
     # Regression guard: closure_reason is engine-derived from
-    # (case.state, mitigation_verified). Investigating + no mitigation
+    # (case.state, stabilization_verified). Investigating + no stabilization
     # → closed_after_investigation.
     assert case.pending_transition.get("closure_reason") == "closed_after_investigation"
     _assert_canonical_confirm_pair(metadata["override_suggestions"], "close")
@@ -468,7 +468,7 @@ async def test_check_automatic_transitions_closure_reason_stabilized_investigati
     metadata: dict = {"response_obj": fake_response}
 
     await engine._check_automatic_transitions(
-        case=case, metadata=metadata, user_message="ok closing — mitigation worked"
+        case=case, metadata=metadata, user_message="ok closing — stabilization worked"
     )
 
     assert case.pending_transition is not None

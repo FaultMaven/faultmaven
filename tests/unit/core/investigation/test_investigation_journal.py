@@ -15,7 +15,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
 from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Diagnosis,
     InvestigationResponse_General,
-    InvestigationResponse_Mitigation,
+    InvestigationResponse_Stabilization,
     InvestigationResponse_Treatment,
     JournalEntryOutput,
 )
@@ -305,8 +305,8 @@ class TestSchemaJournalEntries:
         schema = InvestigationResponse_Diagnosis.DiagnosisStateUpdate
         assert "journal_entries" in schema.model_fields
 
-    def test_mitigation_has_journal_entries(self):
-        schema = InvestigationResponse_Mitigation.MitigationStateUpdate
+    def test_stabilization_has_journal_entries(self):
+        schema = InvestigationResponse_Stabilization.StabilizationStateUpdate
         assert "journal_entries" in schema.model_fields
 
     def test_treatment_has_journal_entries(self):

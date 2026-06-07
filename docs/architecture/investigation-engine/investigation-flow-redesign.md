@@ -13,7 +13,7 @@ now the unified-flow spec) and [investigation-data-models.md](./investigation-da
 **As-built reconciliation (read first):**
 
 - **No engine GATE on hypothesis emission.** The proposal framed the diagnostic-machinery rule (§2) as something the engine could enforce. As built, the engine **removed the path-conditional emission ban entirely** — the `cause_state` rule is **prompt-guided**, not a hard engine reject. `cause_state` is still recomputed and never path-stripped (the truth-signal linchpin holds), but "run hypothesis work iff cause uncertain" is guidance, not a backstop. This is the deliberate R6 tier shift.
-- **Schema kept the `mitigation_accepted` / `mitigation_verified` emission names.** The LLM-facing `MilestoneUpdates` schema did **not** rename them to `stabilization_*` (R2 anticipated a rename). The engine materializes those existing emission symbols into the `StabilizationRecord`.
+- **Emission names renamed to `stabilization_accepted` / `stabilization_verified` (R2 complete).** The earlier as-built kept the legacy `mitigation_*` emission names on `MilestoneUpdates`; that deferral was reversed in a post-redesign cleanup. The LLM now emits `stabilization_*`, the `EvidenceCategory` value is `stabilization_evidence`, and the stage/action enums are `STABILIZATION` (migration 017 renames the persisted `evidence.category`). No `mitigation` identifier remains in the investigation-flow code. (The runbook "Mitigation" authoring section — a separate KB concept — is unaffected.)
 - **`StabilizationRecord` lives on `progress`.** It is `InvestigationProgress.stabilization`, persisted inside the `progress` JSON (no new DB column). Migration 016 only **drops** `cases.path_selection`.
 - **Prompt dispatcher kept its old name.** `_select_diagnosis_block(case)` survives as a thin wrapper returning `focus_emphasis + _RCA_DIAGNOSIS_BLOCK`; it is no longer a path selector. `investigation_router.py` was deleted.
 - **`SolutionState.CANDIDATES` is reserved, not produced.** Only `UNKNOWN | SELECTED` ship this round (R3).
@@ -221,14 +221,14 @@ work** (that is gated by `cause_state` per §2).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `stabilization` | optional record `{proposed_at_turn, accepted, verified, completed_at_turn}` on `progress` (R2) | A stabilization insert. Its *existence* marks the case "stabilized". `completed_at_turn` (set when `verified`) is the boundary for up-weighting pre-stabilization evidence in later RCA. Replaces `mitigation_accepted` / `mitigation_verified` / `path_selection.mitigation_completed_at_turn`. Its own validator enforces `verified ⇒ accepted` (forward-only). |
+| `stabilization` | optional record `{proposed_at_turn, accepted, verified, completed_at_turn}` on `progress` (R2) | A stabilization insert. Its *existence* marks the case "stabilized". `completed_at_turn` (set when `verified`) is the boundary for up-weighting pre-stabilization evidence in later RCA. Replaces the legacy path-coupled stabilization gates. Its own validator enforces `verified ⇒ accepted` (forward-only). |
 | `solution_accepted` | bool | User accepted the permanent solution → "Resolving" |
 | `solution_verified` | bool | User confirmed the permanent solution worked → RESOLVED |
 
-**As-built (R2):** the LLM still **emits** `mitigation_accepted` / `mitigation_verified`
-in `MilestoneUpdates` (the schema names were *not* renamed to `stabilization_*`);
-the engine materializes the `StabilizationRecord` from those emission symbols plus
-the `solution_type=workaround` ProposedAction. `solution_proposed` is derived:
+**As-built (R2, rename complete):** the LLM **emits** `stabilization_accepted` /
+`stabilization_verified` in `MilestoneUpdates`; the engine materializes the
+`StabilizationRecord` from those emission symbols plus the
+`solution_type=workaround` ProposedAction. `solution_proposed` is derived:
 `solution_state == SELECTED` AND a Solution record exists.
 
 ### 4.3 Removed / re-derived

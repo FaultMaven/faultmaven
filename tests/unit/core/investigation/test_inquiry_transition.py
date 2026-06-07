@@ -122,7 +122,6 @@ class TestInquiryTransitionLogic:
                         "is_ongoing": True,
                         "is_incident_report": True,
                         "impact_assessment": "All users blocked from accessing production",
-                        "mitigation_hint": "Consider rollback or service restart",
                     },
                 },
             }

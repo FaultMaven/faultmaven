@@ -70,7 +70,7 @@ class CaseState(str, Enum):
     Phase: Active formal investigation.
 
     Characteristics:
-    - Working through stages (DIAGNOSIS, MITIGATION, TREATMENT)
+    - Working through stages (DIAGNOSIS, STABILIZATION, TREATMENT)
     - Gathering evidence
     - Testing hypotheses
     - Applying solutions
@@ -275,7 +275,7 @@ class InvestigationStrategy(str, Enum):
     Service is down NOW. Priority: Speed over completeness.
 
     Characteristics:
-    - Accept hypothesis with TESTING state for quick mitigation
+    - Accept hypothesis with TESTING state for quick stabilization
     - Skip to solution phase even without complete root cause analysis
     - Escalate after 3 failed attempts
     - Evidence threshold: SUPPORTS is sufficient (not STRONGLY_SUPPORTS)
@@ -387,7 +387,7 @@ class SolutionFeasible(str, Enum):
 class StabilizationRecord(BaseModel):
     """A single forward-only stabilization (the inserted "stop the bleeding" move).
 
-    Replaces the path-coupled mitigation gates + ``path_selection.mitigation_completed_at_turn``
+    Replaces the legacy path-coupled stabilization gates
     (redesign R2). The engine materializes this record from the LLM's accept/verify
     gate signals plus the workaround ProposedAction:
     - ``proposed_at_turn`` is set when a ``solution_type=workaround`` action is created.
@@ -445,8 +445,8 @@ class InvestigationProgress(BaseModel):
         description=(
             "Stabilization insert record (redesign R2). Materialized by the "
             "engine from the LLM's stabilization accept/verify gate signals "
-            "plus the workaround ProposedAction. Replaces the mitigation_* "
-            "booleans + path_selection.mitigation_completed_at_turn."
+            "plus the workaround ProposedAction. Replaces the legacy "
+            "path-coupled stabilization gates."
         ),
     )
 
@@ -560,7 +560,7 @@ class InvestigationProgress(BaseModel):
         label re-derived from the action-compliance gates.
 
         Returns one of 3 InvestigationStage enum values:
-        - MITIGATION: a stabilization is accepted but not yet verified
+        - STABILIZATION: a stabilization is accepted but not yet verified
         - TREATMENT: solution accepted but not yet verified
         - DIAGNOSIS: everything else (default investigating view)
 
@@ -568,13 +568,13 @@ class InvestigationProgress(BaseModel):
         ``symptom_verified`` / ``cause_state``, not by the stage enum.
         Callers needing the phase distinction must consult those signals.
         """
-        # MITIGATION: stabilization accepted but not yet verified.
+        # STABILIZATION: stabilization accepted but not yet verified.
         if (
             self.stabilization is not None
             and self.stabilization.accepted
             and not self.stabilization.verified
         ):
-            return InvestigationStage.MITIGATION
+            return InvestigationStage.STABILIZATION
 
         # TREATMENT: solution_accepted but not yet verified
         if self.solution_accepted and not self.solution_verified:
@@ -590,13 +590,13 @@ class InvestigationProgress(BaseModel):
         User-facing stage name for UI display (redesign R4).
 
         - DIAGNOSIS → "Investigating"
-        - MITIGATION → "Stabilizing"
+        - STABILIZATION → "Stabilizing"
         - TREATMENT → "Resolving"
         """
         stage = self.current_stage
         if stage == InvestigationStage.DIAGNOSIS:
             return "Investigating"
-        elif stage == InvestigationStage.MITIGATION:
+        elif stage == InvestigationStage.STABILIZATION:
             return "Stabilizing"
         else:  # TREATMENT
             return "Resolving"
@@ -621,10 +621,10 @@ class InvestigationProgress(BaseModel):
         """Get list of completed milestone and indicator names."""
         milestone_map = {
             # Stage-gate milestones
-            "mitigation_accepted": bool(
+            "stabilization_accepted": bool(
                 self.stabilization is not None and self.stabilization.accepted
             ),
-            "mitigation_verified": bool(
+            "stabilization_verified": bool(
                 self.stabilization is not None and self.stabilization.verified
             ),
             "solution_accepted": self.solution_accepted,
@@ -703,23 +703,17 @@ class InvestigationStage(str, Enum):
     """
     Investigation stage within the Investigating Phase.
 
-    2-stage model with mitigation detour:
-    - DIAGNOSIS: Understand, diagnose, propose actions (core stage)
-    - TREATMENT: Verify permanent fix, resolve case (core stage)
-    - MITIGATION: Apply and verify temporary fix (optional detour)
+    These three stages are pure DERIVED DISPLAY labels in the unified
+    opportunistic flow. They are re-derived from the action-compliance
+    gates (see ``InvestigationProgress.current_stage``); they do NOT drive
+    prompt dispatch and there is NO path fork or prospective routing.
 
-    DIAGNOSIS and TREATMENT are the two core stages every investigation
-    passes through. MITIGATION is an optional detour that temporarily
-    narrows focus to "stop the bleeding" before returning to DIAGNOSIS.
+    - DIAGNOSIS → "Investigating" (default view)
+    - STABILIZATION → "Stabilizing" (an optional inserted sub-activity)
+    - TREATMENT → "Resolving"
 
-    Computed from stage-gate milestones. Stage transitions are
-    inference-based — user compliance with proposed actions triggers
-    transitions via compliance detection. The stage determines which
-    prompt template the LLM receives.
-
-    Investigation Paths:
-    - ROOT_CAUSE: DIAGNOSIS → TREATMENT
-    - MITIGATION_FIRST: DIAGNOSIS → MITIGATION (detour) → DIAGNOSIS → TREATMENT
+    STABILIZATION is not a separate path — it is an optional "stop the
+    bleeding" insert that surfaces while the investigation continues.
     """
 
     DIAGNOSIS = "diagnosis"
@@ -734,28 +728,28 @@ class InvestigationStage(str, Enum):
     - Assess scope and timeline
     - Form and test hypotheses
     - Identify root cause
-    - Propose a concrete action (solution or mitigation)
+    - Propose a concrete action (solution or stabilization)
 
     Transitions:
     - User complies with proposed solution → TREATMENT (solution_accepted)
-    - User accepts mitigation offer → MITIGATION (mitigation_accepted)
-    - Returns here from MITIGATION after mitigation verified
+    - User accepts stabilization offer → STABILIZATION (stabilization_accepted)
+    - Returns here from STABILIZATION after stabilization verified
     """
 
-    MITIGATION = "mitigation"
+    STABILIZATION = "stabilization"
     """
     Apply and verify a temporary fix to stop the bleeding.
 
-    Optional stage — only entered when user accepts a mitigation proposal
+    Optional stage — only entered when user accepts a stabilization proposal
     during DIAGNOSIS. The goal is to stabilize, NOT to find root cause.
 
     Activities:
     - Guide user through applying temporary fix
-    - Verify mitigation effectiveness
+    - Verify stabilization effectiveness
     - Communicate that this is temporary
 
     Transitions:
-    - User confirms mitigation worked → back to DIAGNOSIS (mitigation_verified)
+    - User confirms stabilization worked → back to DIAGNOSIS (stabilization_verified)
     - For root cause analysis and permanent fix
     """
 
@@ -781,7 +775,7 @@ class InvestigationStage(str, Enum):
 class TemporalState(str, Enum):
     """
     Problem temporal classification.
-    Used for investigation path routing.
+    Context signal only — does not drive a path fork.
     """
 
     ONGOING = "ongoing"
@@ -791,9 +785,7 @@ class TemporalState(str, Enum):
     Characteristics:
     - Active user impact
     - Real-time symptoms
-    - Urgency to mitigate
-
-    Routing: Likely MITIGATION path if high urgency
+    - Urgency to stabilize
     """
 
     HISTORICAL = "historical"
@@ -804,8 +796,6 @@ class TemporalState(str, Enum):
     - No current impact
     - Post-mortem investigation
     - Can take time for thorough RCA
-
-    Routing: Likely ROOT_CAUSE path
     """
 
 
@@ -816,15 +806,11 @@ class TemporalState(str, Enum):
 
 class UrgencyLevel(str, Enum):
     """
-    Urgency classification for path routing.
+    Urgency classification.
 
-    Used with TemporalState to recommend an investigation path:
-    - ONGOING + HIGH/CRITICAL -> MITIGATION_FIRST
-    - All other matched combinations -> ROOT_CAUSE
-    - Missing temporal or UNKNOWN urgency -> ROOT_CAUSE (with auto_selected=False)
-
-    The recommendation is surfaced through Gate 2 for user confirmation
-    before INQUIRY -> INVESTIGATING.
+    Context signal used (with TemporalState) to inform how the agent
+    prioritizes stabilization vs. root-cause work within the unified
+    opportunistic flow. It does not select a path — there is no path fork.
     """
 
     CRITICAL = "critical"
@@ -1239,9 +1225,8 @@ class ProblemVerification(BaseModel):
             "Advisory signal: root cause analysis is infeasible for this problem. "
             "Set by the LLM during verification when the problem involves "
             "uncontrollable external dependencies, deprecated/EOL systems, "
-            "or known intractable conditions where mitigation is the accepted "
-            "strategy. Does NOT affect path selection — influences post-mitigation "
-            "agent behavior only."
+            "or known intractable conditions where stabilization is the accepted "
+            "strategy. Influences post-stabilization agent behavior only."
         ),
     )
 
@@ -1331,7 +1316,7 @@ class EvidenceCategory(str, Enum):
     Six claim-attached categories: the presence/absence verification
     quartet (``symptom_evidence``, ``causal_evidence``,
     ``symptom_absence_evidence``, ``causal_absence_evidence``) plus two
-    legacy stage-completion categories (``mitigation_evidence``,
+    legacy stage-completion categories (``stabilization_evidence``,
     ``solution_evidence``) retained from the post-010 model and slated
     for removal once prompts stop emitting them. Every row is the LLM's
     deliberate decision to record a specific extract as evidence for a
@@ -1372,14 +1357,14 @@ class EvidenceCategory(str, Enum):
     Advances Milestones: root_cause_identified
     """
 
-    MITIGATION_EVIDENCE = "mitigation_evidence"
+    STABILIZATION_EVIDENCE = "stabilization_evidence"
     """
     Shows whether a temporary fix worked.
 
-    Purpose: Verify mitigation effectiveness during MITIGATION stage.
+    Purpose: Verify stabilization effectiveness during STABILIZATION stage.
 
     Examples:
-    - Post-mitigation metrics showing improvement
+    - Post-stabilization metrics showing improvement
     - Error rates dropping after temporary fix
     - User confirmation that bleeding stopped
     - Logs showing stabilization after workaround
@@ -1407,7 +1392,7 @@ class EvidenceCategory(str, Enum):
     user-visible problem gone?" The cause may or may not still be
     there; this category answers symptom presence, not causation.
 
-    Collected during MITIGATION (sufficient for mitigation_verified)
+    Collected during STABILIZATION (sufficient for stabilization_verified)
     and during TREATMENT (defense-in-depth confirmation alongside
     causal-absence evidence).
 
@@ -1417,7 +1402,7 @@ class EvidenceCategory(str, Enum):
     - Error rate trending to zero in monitoring after rollback
     - User confirms "the dashboard loads now"
 
-    Advances Milestones: mitigation_verified (primary), contributes to
+    Advances Milestones: stabilization_verified (primary), contributes to
     solution_verified.
     """
 
@@ -1429,7 +1414,7 @@ class EvidenceCategory(str, Enum):
     cause eliminated?" This is distinct from symptom absence — a
     cause can be removed without an immediate symptom change (cached
     state, downstream debris), and a symptom can be masked without
-    the cause being removed (mitigation).
+    the cause being removed (stabilization).
 
     Collected during TREATMENT.
 
@@ -1588,7 +1573,7 @@ class UploadedFile(BaseModel):
     - **Evidence**: the claim-anchored extract-of-record. Created only
       during INVESTIGATING when the LLM extracts a focused slice via
       ``evidence_to_add`` to support a specific claim (symptom, cause,
-      mitigation, or solution).
+      stabilization, or solution).
 
     Files are not evidence. An evidence row references its source file
     via ``Evidence.source_file_id``; the file row holds the file-level
@@ -1770,7 +1755,7 @@ class Evidence(BaseModel):
         description=(
             "Claim-anchored category declared by the LLM: "
             "SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | "
-            "MITIGATION_EVIDENCE | SOLUTION_EVIDENCE"
+            "STABILIZATION_EVIDENCE | SOLUTION_EVIDENCE"
         )
     )
 
@@ -2014,7 +1999,7 @@ class NeedPurpose(str, Enum):
 
     A symptom_verification need produces SYMPTOM_EVIDENCE (presence)
     initially and SYMPTOM_ABSENCE_EVIDENCE (absence) on re-check after
-    mitigation/solution. A causal_verification need produces
+    stabilization/solution. A causal_verification need produces
     CAUSAL_EVIDENCE (presence) initially and CAUSAL_ABSENCE_EVIDENCE
     (absence) on re-check after solution.
 
@@ -2157,7 +2142,7 @@ class EvidenceNeed(BaseModel):
             "Evidence rows that fulfill this need. Multiple entries may "
             "accumulate across stages: presence evidence collected during "
             "DIAGNOSIS plus absence evidence collected during "
-            "MITIGATION/TREATMENT. The list is append-only in practice — "
+            "STABILIZATION/TREATMENT. The list is append-only in practice — "
             "the need's state stays FULFILLED once fulfilled even when "
             "post-fix absence evidence is added."
         ),
@@ -2671,7 +2656,7 @@ class Hypothesis(BaseModel):
 
 
 class SolutionType(str, Enum):
-    """Type of solution/mitigation"""
+    """Type of solution/stabilization"""
 
     ROLLBACK = "rollback"
     """Revert to previous version/state"""
@@ -2703,7 +2688,7 @@ class SolutionType(str, Enum):
 
 class Solution(BaseModel):
     """
-    Proposed or applied solution/mitigation.
+    Proposed or applied solution/stabilization.
     """
 
     solution_id: str = Field(
@@ -2723,7 +2708,9 @@ class Solution(BaseModel):
     title: str = Field(description="Short solution title", min_length=1, max_length=200)
 
     immediate_action: Optional[str] = Field(
-        default=None, description="Quick fix or mitigation (temporary)", max_length=2000
+        default=None,
+        description="Quick fix or stabilization (temporary)",
+        max_length=2000,
     )
 
     longterm_fix: Optional[str] = Field(
@@ -2828,7 +2815,7 @@ class Solution(BaseModel):
 class InvestigationActionType(str, Enum):
     """Type of action proposed during investigation."""
 
-    MITIGATION = "mitigation"
+    STABILIZATION = "stabilization"
     """Temporary fix to stop the bleeding."""
 
     SOLUTION = "solution"
@@ -2855,7 +2842,7 @@ class ProposedAction(BaseModel):
     case_id: str = Field(description="Case this action belongs to")
 
     action_type: InvestigationActionType = Field(
-        description="Whether this is a mitigation or solution action"
+        description="Whether this is a stabilization or solution action"
     )
 
     description: str = Field(
@@ -2886,7 +2873,7 @@ class ProposedAction(BaseModel):
         default=None,
         description=(
             "If the engine downgraded action_type from the LLM's intent "
-            "(e.g. MITIGATION → DIAGNOSTIC because no SYMPTOM_EVIDENCE "
+            "(e.g. STABILIZATION → DIAGNOSTIC because no SYMPTOM_EVIDENCE "
             "existed yet), this carries the explanation. Rendered to the "
             "LLM via context_builder on the next turn so the agent can "
             "recover (gather the missing evidence and re-propose). None "

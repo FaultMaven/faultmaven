@@ -60,7 +60,7 @@ BANNED PHRASES: "Let me check", "I will run", "Let me look at", "I'll execute".
 # Consolidates the former stage-scoped SAFE DIAGNOSTICS block: classify-first
 # (diagnostic vs state-modifying), annotate impact on state-modifying recommendations,
 # warn on destructive commands. Cross-template so the classification applies in
-# MITIGATION and TREATMENT too, not just DIAGNOSIS.
+# STABILIZATION and TREATMENT too, not just DIAGNOSIS.
 _ACTION_IMPACT_BLOCK = """\
 ACTION IMPACT (Responsibility of advice):
 When recommending an action, classify it first:
@@ -699,7 +699,7 @@ When your analysis reveals a new claim-relevant slice, create
 evidence records:
 - Required fields:
   * summary: Brief description of the finding
-  * category: symptom_evidence | causal_evidence | mitigation_evidence | solution_evidence
+  * category: symptom_evidence | causal_evidence | stabilization_evidence | solution_evidence
   * source_type: logs | metrics | configuration | code | text | image | user_description
   * source_file_id: REQUIRED unless source_type=user_description.
                     Copy verbatim from the <evidence file_id="..."> or
@@ -857,7 +857,7 @@ an evidence row.
      hatch.
 
 3. Was this evidence submitted AFTER you proposed a specific action?
-   Post-mitigation action → mitigation_evidence
+   Post-stabilization action → stabilization_evidence
    Post-solution action   → solution_evidence
 
 4. Is this evidence RE-CHECKING a previously verified symptom or cause to
@@ -894,7 +894,7 @@ captured:
 - Required fields:
   * summary: Brief description of the finding
   * category: One of: symptom_evidence, causal_evidence,
-              mitigation_evidence, solution_evidence,
+              stabilization_evidence, solution_evidence,
               symptom_absence_evidence, causal_absence_evidence
               (the last two are emitted on stabilization or treatment
               re-verification — see step 4 of the decision tree).
@@ -1171,7 +1171,7 @@ log files that always arrive together).
 
 # Universal evidence-needs lifecycle rules — composed into the
 # INVESTIGATING dispatch blocks (_RCA_DIAGNOSIS_BLOCK,
-# MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS).
+# STABILIZATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS).
 # Stage-specific behavior (when to emit causal vs symptom needs,
 # re-verification framing) lives in per-stage addenda; this block is
 # the cross-stage contract.
@@ -1237,14 +1237,14 @@ existing pool against it in the SAME turn:
 """
 
 
-# Mitigation/Treatment addendum — re-verification framing only.
-# Used by both MITIGATION_INSTRUCTIONS and TREATMENT_INSTRUCTIONS.
+# Stabilization/Treatment addendum — re-verification framing only.
+# Used by both STABILIZATION_INSTRUCTIONS and TREATMENT_INSTRUCTIONS.
 # context_builder renders the confirmed presence-evidence rows
 # (symptom_evidence / causal_evidence) under "Re-verification checklist"
 # in those stages — NOT FULFILLED needs (those are gap-rare and would
 # leave the checklist incomplete).
 #
-# Causal-need gating is stage-specific (gated in MITIGATION, permitted
+# Causal-need gating is stage-specific (gated in STABILIZATION, permitted
 # in TREATMENT's failure path under extended diagnosis), so it lives
 # inline at each stage's existing "no hypothesis formation" anchor
 # rather than in this shared addendum.
@@ -1284,7 +1284,7 @@ If production or customers are actively affected:
        if specific steps will be determined during stabilization.
    This creates a tracked pending action — the acceptance gate requires it to exist
    before the user's next turn.
-→ When the user accepts/agrees to apply the temporary fix, set `mitigation_accepted=True`.
+→ When the user accepts/agrees to apply the temporary fix, set `stabilization_accepted=True`.
    The stabilization stage begins only when this is set.
    (Accept = "yes", "let's do it", "apply the fix now" — not "I've already done it".
    Execution happens during stabilization. Acceptance is what gets you there.)
@@ -1413,7 +1413,7 @@ variables. Variable type determines which data source to search:
   knowledge. Same as answering a runbook or procedural question: call `kb_qa` to
   find known diagnostic approaches and fix steps.
 - **Data-driven variables** (`symptom_verified`, `root_cause_identified`,
-  `mitigation_verified`) — search the evidence files the user submitted. Same as
+  `stabilization_verified`) — search the evidence files the user submitted. Same as
   answering a telemetric question: call `search_file` or `case_evidence_qa` to find
   facts in logs, metrics, and configs.
 - **Confirmation-driven variables** (`user_confirmed_investigation`, `solution_accepted`,
@@ -1713,7 +1713,7 @@ problem and identifies what's needed next is a valuable outcome.
 )
 
 
-MITIGATION_INSTRUCTIONS = (
+STABILIZATION_INSTRUCTIONS = (
     """
 **FOCUS: STABILIZATION** (Stop the Bleeding)
 
@@ -1733,7 +1733,7 @@ goal is to stabilize the situation, NOT to find or fix the root cause.
    - Emit a SolutionToAdd record in solutions_to_add with solution_type: workaround
      describing the specific temporary fix (description, estimated_impact, risks, commands).
      The backend uses this to track the proposed action and open the verification gate —
-     without it, `mitigation_verified` cannot be set no matter what the user reports.
+     without it, `stabilization_verified` cannot be set no matter what the user reports.
    - Provide numbered implementation steps for the user to follow
    - Suggest commands the user should run
    - Warn about risks and side effects of the temporary fix
@@ -1747,18 +1747,18 @@ goal is to stabilize the situation, NOT to find or fix the root cause.
 
 3. **Verify Effectiveness:**
    - Analyze the user's feedback on whether the fix helped
-   - If `mitigation_evidence` shows improvement or the user confirms stabilization:
+   - If `stabilization_evidence` shows improvement or the user confirms stabilization:
      1. Analyze the submitted data from the structural index in <evidence_collected>.
         Call search_file if you need specific patterns (e.g., error rate after the fix).
         Verbal confirmation ("It's stable", "errors dropped") is sufficient — no file
         required for source data.
-     2. Create a `mitigation_evidence` record in evidence_to_add:
+     2. Create a `stabilization_evidence` record in evidence_to_add:
         summary: "Stabilization result: [what improved or stabilized, with key indicators]"
-        category: mitigation_evidence
+        category: stabilization_evidence
         source_type: logs | metrics | text (use text for verbal confirmation only)
         Skip this step if the user's submitted file was already classified as
-        `mitigation_evidence` in a prior turn — do not create a duplicate.
-     3. Set `mitigation_verified=True` in your state updates. The return to DIAGNOSIS
+        `stabilization_evidence` in a prior turn — do not create a duplicate.
+     3. Set `stabilization_verified=True` in your state updates. The return to DIAGNOSIS
         happens only when this is set — do not narrate the transition without setting it.
    - ACCEPT SUBJECTIVE CONFIRMATION: "It's stabilized" or "errors dropped" is
      sufficient — specific metric values are not required.
@@ -1780,9 +1780,9 @@ do not continue proposing further fixes. Acknowledge the situation directly:
 direct intervention beyond what I can guide remotely."
 
 Offer the user exactly two COOPERATIVE suggestions:
-1. "Accept current state and proceed to root cause" — first create a `mitigation_evidence`
+1. "Accept current state and proceed to root cause" — first create a `stabilization_evidence`
    record in evidence_to_add (summary: "Stabilization exhausted, partial or none",
-   category: mitigation_evidence, source_type: text), then set `mitigation_verified=True`
+   category: stabilization_evidence, source_type: text), then set `stabilization_verified=True`
    to return to DIAGNOSIS. The situation isn't fully stable, but root-cause work can
    begin; set this even if stabilization is only partial.
 2. "Escalate to a human expert" — acknowledge the investigation has hit its limit and
@@ -1791,7 +1791,7 @@ Offer the user exactly two COOPERATIVE suggestions:
 Do NOT continue proposing further variants after offering this choice.
 
 **EVIDENCE TYPES FOR THIS STAGE:**
-- **mitigation_evidence**: Data showing whether the temporary fix worked
+- **stabilization_evidence**: Data showing whether the temporary fix worked
   (post-fix metrics, error rates, user confirmation of improvement)
 - **symptom_absence_evidence**: Re-verification row confirming the symptom is
   no longer present after the stabilization (service restored). This is the
@@ -2474,11 +2474,11 @@ def get_prompt_for_case(
         if processing_mode == "knowledge_query":
             adaptive_instr = KNOWLEDGE_QUERY_INSTRUCTIONS
         else:
-            # Dispatch to stage instructions (2-stage model with mitigation detour)
+            # Dispatch to stage instructions (derived display stage; no path fork)
             if stage == InvestigationStage.DIAGNOSIS:
                 adaptive_instr = _select_diagnosis_block(case)
-            elif stage == InvestigationStage.MITIGATION:
-                adaptive_instr = MITIGATION_INSTRUCTIONS
+            elif stage == InvestigationStage.STABILIZATION:
+                adaptive_instr = STABILIZATION_INSTRUCTIONS
             elif stage == InvestigationStage.TREATMENT:
                 adaptive_instr = TREATMENT_INSTRUCTIONS
             else:
