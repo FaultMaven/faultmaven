@@ -753,7 +753,7 @@ class InvestigationService:
                 SuggestedActionResponse(
                     label=f["label"],
                     type=f["action_type"],
-                    payload=f["payload"],
+                    payload=f.get("payload"),
                     body=f.get("body"),
                     cooperative_action=f.get("cooperative_action"),
                     hints=f.get("hints"),
@@ -1256,7 +1256,6 @@ class InvestigationService:
                 {
                     "label": "Describe your issue",
                     "action_type": "FREE_SPEECH",
-                    "payload": "What problem are you experiencing?",
                     "hints": [
                         "symptoms",
                         "error messages",
@@ -1265,9 +1264,8 @@ class InvestigationService:
                     ],
                 },
                 {
-                    "label": "Share error logs",
+                    "label": "Share error logs from the affected service",
                     "action_type": "EVIDENCE",
-                    "payload": "Application error logs from the affected service",
                     "body": "Error logs will help identify the root cause faster.",
                 },
             ],

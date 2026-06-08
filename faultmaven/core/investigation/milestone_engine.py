@@ -7160,8 +7160,9 @@ class MilestoneEngine:
             suggestion: dict[str, Any] = {
                 "label": f.label,
                 "action_type": f.action_type,
-                "payload": f.payload,
             }
+            if f.payload:
+                suggestion["payload"] = f.payload
             if f.body:
                 suggestion["body"] = f.body
             if f.cooperative_action:

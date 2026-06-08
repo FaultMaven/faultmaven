@@ -134,22 +134,32 @@ FOLLOW-UP SUGGESTIONS (suggested_follow_ups):
 Generate 2-4 suggestions to guide the user's next action. For each, think about what
 you want the user to do next — the type follows from your intent.
 
+Every suggestion's `label` is the USER's next move, phrased in the USER's own voice —
+what they would say or do next. Never phrase a label as a question YOU ask the user;
+that belongs in your agent_response.
+  BAD:  "Is this happening in your environment?"   (you asking the user)
+  GOOD: "Share what I'm seeing in my environment"  (the user's move)
+
 COOPERATIVE — You want the user to engage with your analysis or steer the investigation.
   cooperative_action is REQUIRED and determines behavior:
-  - "query_submit": Payload is sent as the user's message to you. Phrase as the user speaking.
-  - "command_copy": HOW to get data. Payload is a shell command the user runs externally. Copied on click.
+  - "query_submit": payload is sent verbatim as the user's message to you. Phrase it as the user speaking.
+  - "command_copy": payload is a shell command the user runs externally. Copied to clipboard on click.
   Use "command_copy" when the payload is a command/script. Use "query_submit" for everything else.
+  payload is REQUIRED here (the text a click submits or copies) and used ONLY for COOPERATIVE.
   {{"label": "Validate the config hypothesis", "action_type": "COOPERATIVE", "cooperative_action": "query_submit", "payload": "Let's focus on validating the config change hypothesis", "body": "Test whether the recent config change correlates with the failure window."}}
   {{"label": "Get pod logs", "action_type": "COOPERATIVE", "cooperative_action": "command_copy", "payload": "kubectl logs <pod-name> --tail=100", "body": "Inspect recent pod output for crash loops or OOM kill messages."}}
 
 EVIDENCE — WHAT data you need. The user might already have it (file, dashboard page,
   command output); you do NOT provide a command. If you have a specific command in mind,
   use COOPERATIVE+command_copy instead. The user decides how to submit (upload, paste, capture).
-  {{"label": "Share error logs", "action_type": "EVIDENCE", "payload": "Application error logs from the affected service", "body": "Error logs will help identify the failing component and stack trace."}}
+  Do NOT set payload — put the user-voiced action in label and the reason in body.
+  {{"label": "Share error logs from the affected service", "action_type": "EVIDENCE", "body": "Error logs will help identify the failing component and stack trace."}}
 
 FREE_SPEECH — You need the user's own knowledge, judgment, or observations.
-  Ask an open-ended question. hints: 2-5 short tags (1-3 words) to guide their thinking.
-  {{"label": "Describe the symptoms", "action_type": "FREE_SPEECH", "payload": "What specific behavior are you seeing?", "hints": ["symptoms", "error messages", "timeline", "affected services"]}}
+  Phrase label as the user offering it ("Share what I'm seeing", "Describe the symptoms").
+  Do NOT set payload. hints: 2-5 short tags (1-3 words) naming aspects of the PROBLEM to
+  cover — not your own intent categories, mode labels, or yes/no options.
+  {{"label": "Describe the symptoms", "action_type": "FREE_SPEECH", "hints": ["symptoms", "error messages", "timeline", "affected services"]}}
 
 Before marking a suggestion COOPERATIVE, ask: if the user sends this message, can I
 deliver what it implies? If the response would require data not in this case, use
@@ -1112,9 +1122,9 @@ You MUST respond with valid JSON matching these fields:
   * Ground diagnostic claims in evidence (see DIAGNOSTIC REASONING above)
   * Reference evidence by its label (filename, description) — NEVER by ev_ IDs
 - **suggested_follow_ups**: 2-4 suggestions guiding the user's next action.
-  * COOPERATIVE: engage with analysis (label, payload as user request, cooperative_action, optional body)
-  * EVIDENCE: provide external data (label, payload describing data needed, optional body)
-  * FREE_SPEECH: share knowledge/judgment (label, payload as question, hints as short tags, optional body)
+  * COOPERATIVE: engage with analysis (user-voiced label, payload = text a click submits/copies, cooperative_action, optional body)
+  * EVIDENCE: provide external data (user-voiced label, optional body — no payload)
+  * FREE_SPEECH: share knowledge/judgment (user-voiced label, hints as short tags, optional body — no payload)
 - **internal_reasoning**: REQUIRED when completing milestones (otherwise optional).
   - evidence_analyzed: References to evidence considered when completing a milestone.
     * Current-turn evidence (submitted this turn): leave as empty list []

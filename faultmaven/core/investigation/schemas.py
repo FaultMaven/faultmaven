@@ -842,7 +842,13 @@ class SuggestedFollowUp(BaseModel):
     """A follow-up suggestion for the user, classified by intended user action."""
 
     label: str = Field(
-        description="Short card title (3-8 words, e.g., 'Search KB for incidents')"
+        description=(
+            "The user's next move, phrased in the user's own voice (3-8 words) "
+            "— what they would say or do next, e.g. 'Search KB for incidents', "
+            "'Share what I'm seeing'. This is the only text shown to the user. "
+            "Never phrase it as a question you ask the user (that belongs in "
+            "agent_response)."
+        )
     )
     action_type: Literal["COOPERATIVE", "EVIDENCE", "FREE_SPEECH"] = Field(
         default="COOPERATIVE",
@@ -852,12 +858,13 @@ class SuggestedFollowUp(BaseModel):
             "FREE_SPEECH = informational, asks user a question with framework hints"
         ),
     )
-    payload: str = Field(
+    payload: Optional[str] = Field(
+        default=None,
         description=(
-            "COOPERATIVE: pre-composed query text or shell command; "
-            "EVIDENCE: description of what data to provide and why; "
-            "FREE_SPEECH: the question text shown to the user"
-        )
+            "COOPERATIVE only: the text a click submits (query_submit) or "
+            "copies (command_copy). Required for COOPERATIVE; omit for EVIDENCE "
+            "and FREE_SPEECH — those carry everything in label + body/hints."
+        ),
     )
     body: Optional[str] = Field(
         default=None,
@@ -941,10 +948,31 @@ class SuggestedFollowUp(BaseModel):
                 self.cooperative_action = "query_submit"
         return self
 
+    @model_validator(mode="after")
+    def _enforce_payload_scope(self) -> "SuggestedFollowUp":
+        """``payload`` is meaningful only for COOPERATIVE (the text a click
+        submits or copies). Require it there; drop it for EVIDENCE and
+        FREE_SPEECH so a stray agent-voiced question/description the LLM put
+        in ``payload`` never lingers on a field the user never sees."""
+        if self.action_type == "COOPERATIVE":
+            if not self.payload:
+                raise ValueError(
+                    "COOPERATIVE suggestion requires payload "
+                    "(the text a click submits or copies)"
+                )
+        else:
+            self.payload = None
+        return self
+
     # FREE_SPEECH fields
     hints: Optional[List[str]] = Field(
         default=None,
-        description="Short framework tags guiding what aspects the user should address (e.g., 'symptoms', 'timeline', 'affected services')",
+        description=(
+            "FREE_SPEECH only: 2-5 short tags (1-3 words) naming aspects of the "
+            "PROBLEM the user should cover (e.g. 'symptoms', 'timeline', "
+            "'affected services'). NOT your own intent categories, mode labels, "
+            "or yes/no options."
+        ),
     )
 
     # EVIDENCE-suggestion-to-need linkage (Phase 6: engine resolves

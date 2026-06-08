@@ -31,6 +31,7 @@ from faultmaven.core.investigation.schemas import (
     InvestigationResponse_General,
     InvestigationResponse_Mitigation,
     InvestigationResponse_Treatment,
+    SuggestedFollowUp,
 )
 from faultmaven.modules.case.contracts import EvidenceStance, TurnOutcome
 
@@ -153,6 +154,60 @@ class TestSuggestedFollowUpsCoercion:
         """Baseline: field is Optional with default=None — absence is fine."""
         parsed = InvestigationResponse_General.model_validate(_minimal_payload())
         assert parsed.suggested_follow_ups is None
+
+
+class TestSuggestedFollowUpPayloadScope:
+    """``payload`` is meaningful only for COOPERATIVE (the text a click
+    submits/copies). The ``_enforce_payload_scope`` validator requires it
+    there and drops it for EVIDENCE/FREE_SPEECH so a stray agent-voiced
+    question/description never lingers on a field the user never sees.
+    """
+
+    def test_free_speech_payload_is_dropped(self):
+        """Even if the LLM stuffs a question into payload (the item-1 bug),
+        it is nulled — FREE_SPEECH carries everything in label + hints."""
+        f = SuggestedFollowUp(
+            label="Share what I'm seeing in my environment",
+            action_type="FREE_SPEECH",
+            payload="Is this happening in your environment?",
+            hints=["symptoms", "timeline"],
+        )
+        assert f.payload is None
+        assert f.hints == ["symptoms", "timeline"]
+
+    def test_evidence_payload_is_dropped(self):
+        f = SuggestedFollowUp(
+            label="Share the auth-service error logs",
+            action_type="EVIDENCE",
+            payload="Application error logs from the affected service",
+            body="Helps pinpoint the failing component.",
+        )
+        assert f.payload is None
+        assert f.body == "Helps pinpoint the failing component."
+
+    def test_cooperative_keeps_payload_and_infers_action(self):
+        f = SuggestedFollowUp(
+            label="Get pod logs",
+            action_type="COOPERATIVE",
+            payload="kubectl logs <pod> --tail=100",
+        )
+        assert f.payload == "kubectl logs <pod> --tail=100"
+        assert f.cooperative_action == "command_copy"
+
+    def test_cooperative_query_submit_keeps_payload(self):
+        f = SuggestedFollowUp(
+            label="Validate the config hypothesis",
+            action_type="COOPERATIVE",
+            payload="Let's validate the config change hypothesis",
+        )
+        assert f.payload == "Let's validate the config change hypothesis"
+        assert f.cooperative_action == "query_submit"
+
+    def test_cooperative_without_payload_raises(self):
+        """COOPERATIVE is defined by the submit/copy text — it cannot exist
+        without one."""
+        with pytest.raises(ValidationError):
+            SuggestedFollowUp(label="Do the thing", action_type="COOPERATIVE")
 
 
 # ============================================================
