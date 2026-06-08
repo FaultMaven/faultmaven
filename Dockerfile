@@ -29,6 +29,9 @@ COPY pyproject.toml .
 COPY faultmaven/ ./faultmaven/
 COPY alembic/ ./alembic/
 COPY alembic.ini .
+# Built-in knowledge (59 runbooks) — copied to data/knowledge on first startup
+# and ingested by the KB bootstrap. Without this the knowledge base is empty.
+COPY resources/ ./resources/
 
 # Install the package itself (no deps — already installed from lockfile)
 RUN pip install --no-cache-dir --no-deps .
