@@ -9,9 +9,9 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.infrastructure.persistence.db_compat import dialect_insert
 from faultmaven.infrastructure.persistence.models import (
     OrganizationMemberModel,
     OrganizationModel,
@@ -171,7 +171,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
     ) -> bool:
         """Add user to organization with role (upsert)."""
         now = datetime.now(timezone.utc)
-        stmt = sqlite_insert(OrganizationMemberModel).values(
+        stmt = dialect_insert(self.db, OrganizationMemberModel).values(
             user_id=user_id,
             organization_id=organization_id,
             role_id=role_id,

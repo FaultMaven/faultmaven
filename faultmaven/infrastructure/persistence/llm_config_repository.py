@@ -9,9 +9,9 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import delete, select
-from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
 
 from faultmaven.infrastructure.persistence.database import get_db_session
+from faultmaven.infrastructure.persistence.db_compat import dialect_insert
 from faultmaven.infrastructure.persistence.models import LLMConfigOverrideModel
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ async def set_override(key: str, value: str, user_id: Optional[str] = None) -> N
         now = datetime.now(timezone.utc)
 
         # Use SQLite-compatible upsert
-        stmt = sqlite_upsert(LLMConfigOverrideModel).values(
+        stmt = dialect_insert(session, LLMConfigOverrideModel).values(
             key=key,
             value=value,
             updated_at=now,
@@ -71,7 +71,7 @@ async def set_overrides(
         now = datetime.now(timezone.utc)
 
         for key, value in overrides.items():
-            stmt = sqlite_upsert(LLMConfigOverrideModel).values(
+            stmt = dialect_insert(session, LLMConfigOverrideModel).values(
                 key=key,
                 value=value,
                 updated_at=now,

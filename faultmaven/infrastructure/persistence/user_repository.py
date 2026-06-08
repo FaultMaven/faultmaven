@@ -361,15 +361,14 @@ class PostgreSQLUserRepository(UserRepository):
 
     async def save(self, user: User) -> User:
         """Save user via ORM merge (upsert)."""
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-
+        from faultmaven.infrastructure.persistence.db_compat import dialect_insert
         from faultmaven.infrastructure.persistence.models import UserModel
 
         user.updated_at = datetime.now(timezone.utc)
         values = self._domain_to_dict(user)
 
-        # Use SQLAlchemy insert with on_conflict_do_update for upsert
-        stmt = sqlite_insert(UserModel).values(**values)
+        # Dialect-aware upsert (portable across SQLite and PostgreSQL)
+        stmt = dialect_insert(self.db, UserModel).values(**values)
         stmt = stmt.on_conflict_do_update(
             index_elements=["user_id"],
             set_={

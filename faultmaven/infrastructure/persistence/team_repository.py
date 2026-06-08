@@ -8,9 +8,9 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.infrastructure.persistence.db_compat import dialect_insert
 from faultmaven.infrastructure.persistence.models import TeamMemberModel, TeamModel
 from faultmaven.models.interfaces_user import ITeamRepository, Team, TeamMember
 
@@ -144,7 +144,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
     ) -> bool:
         """Add user to team (upsert)."""
         now = datetime.now(timezone.utc)
-        stmt = sqlite_insert(TeamMemberModel).values(
+        stmt = dialect_insert(self.db, TeamMemberModel).values(
             user_id=user_id,
             team_id=team_id,
             team_role=team_role,
