@@ -47,14 +47,13 @@ class PostgresTokenRevocationStore(ITokenRevocationStore):
         self.session_factory = db_session_factory
 
     async def add_revoked_token(self, jti: str, ttl: int) -> None:
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-
+        from faultmaven.infrastructure.persistence.db_compat import dialect_insert
         from faultmaven.infrastructure.persistence.models import OAuthRevokedTokenModel
 
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
 
         async with self.session_factory() as session:
-            stmt = sqlite_insert(OAuthRevokedTokenModel).values(
+            stmt = dialect_insert(session, OAuthRevokedTokenModel).values(
                 jti=jti,
                 expires_at=expires_at,
             )
