@@ -40,7 +40,7 @@ This document defines the investigation architecture for FaultMaven's investigat
 
 ## 1. Motivation: Problems Solved
 
-During lifecycle testing (a high-urgency, stabilization-first scenario), several design flaws emerged in the previous 4-stage milestone-driven architecture:
+During lifecycle testing (a high-urgency, mitigation-first scenario), several design flaws emerged in the previous 4-stage milestone-driven architecture:
 
 ### 1.1 LLM "Jump Ahead" Inconsistency
 
@@ -206,7 +206,7 @@ preprocessing artifacts and is visible to the agent via the
 structural index. No Evidence row is created until a slice is
 extracted in support of a specific claim.
 
-**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is **prompt guidance** (no Python validator rejects orphan `causal_evidence`). The runtime prompt-side guidance lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (in `templates.py`), composed into the single unified DIAGNOSIS block (`_RCA_DIAGNOSIS_BLOCK`) reached by all INVESTIGATING turns. Under the unified opportunistic flow (the path fork and its emission bans are retired — see [Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert) and the retirement note on INV-17/INV-21 in the [Invariant Enforcement Matrix](./investigation-invariants.md#invariant-enforcement-matrix)), there is no longer a pre-mitigation block that forbids `hypotheses_to_add` / `causal_evidence` emission; the diagnostic machinery runs whenever the cause is uncertain (`cause_state ∈ {UNKNOWN, CANDIDATES}`).
+**Ordering constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`. If the cause is immediately obvious, the agent creates a hypothesis AND classifies causal evidence in the same turn. This is **prompt guidance** (no Python validator rejects orphan `causal_evidence`). The runtime prompt-side guidance lives in `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK` (in `templates.py`), composed into the single unified DIAGNOSIS block (`_RCA_DIAGNOSIS_BLOCK`) reached by all INVESTIGATING turns. Under the unified opportunistic flow (the path fork and its emission bans are retired — see [Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert) and the retirement note on INV-17/INV-21 in the [Invariant Enforcement Matrix](./investigation-invariants.md#invariant-enforcement-matrix)), there is no longer a pre-mitigation block that forbids `hypotheses_to_add` / `causal_evidence` emission; the diagnostic machinery runs whenever the cause is uncertain (`cause_state ∈ {UNKNOWN, CANDIDATES}`).
 
 **Exit conditions** (inference-based — action over words):
 
@@ -241,7 +241,7 @@ Mitigation is **not assumed to be one-shot**. It is dynamic, interactive, and po
 
 **Exit condition**: User verifies mitigation is effective → post-mitigation behavior depends on `rca_infeasible` (see [Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal)). Default: return to **DIAGNOSIS** for root cause analysis. When `rca_infeasible=True`: agent proposes closure as mitigated (User-Agent Handshake). The user can always override in either direction.
 
-**No re-entry under forward-only design**: Once the stabilization is verified, the case returns to the unified flow for the rest of the investigation. As shipped, the LLM still emits `mitigation_accepted` / `mitigation_verified` symbols, which the engine materializes into the single forward-only `progress.stabilization: StabilizationRecord` (INV-24) — acceptance/verification are set-once, the engine does not reset them, and the case does not re-enter a "Stabilizing" detour on the same investigation. The `current_stage` display property falls through to "Investigating" once the stabilization is verified. If a regression occurs afterward, the agent handles it opportunistically in-flow (analogous to extended diagnosis after a failed fix); if the regression is fundamentally a different problem, the user opens a new linked case. Stabilization attempts are preserved in the `action_attempts` list for history and audit.
+**No re-entry under forward-only design**: Once the mitigation is verified, the case returns to the unified flow for the rest of the investigation. As shipped, the LLM still emits `mitigation_accepted` / `mitigation_verified` symbols, which the engine materializes into the single forward-only `progress.mitigation: MitigationRecord` (INV-24) — acceptance/verification are set-once, the engine does not reset them, and the case does not re-enter a "Mitigating" detour on the same investigation. The `current_stage` display property falls through to "Investigating" once the mitigation is verified. If a regression occurs afterward, the agent handles it opportunistically in-flow (analogous to extended diagnosis after a failed fix); if the regression is fundamentally a different problem, the user opens a new linked case. Mitigation attempts are preserved in the `action_attempts` list for history and audit.
 
 **Scope**: The agent should NOT pursue root cause analysis during MITIGATION. Focus solely on applying and verifying the temporary fix.
 
@@ -338,7 +338,7 @@ The state of an investigation at any point in time is defined by two dimensions:
 
 **Stage** is a computed property derived from 4 gate milestones. It determines which prompt template the LLM receives and what kind of work is expected.
 
-**Investigation Milestones** are 7 boolean flags (grouped into gate milestones and progress indicators) that track the investigation's advancement. Gate milestones drive stage transitions; progress indicators provide the LLM with context about what has been established so far.
+**Investigation Milestones** are the signals (grouped into gate milestones and progress indicators) that track the investigation's advancement. Gate milestones drive stage transitions; progress indicators provide the LLM with context about what has been established so far.
 
 Together, these dimensions fully describe investigation state:
 
@@ -346,7 +346,7 @@ Together, these dimensions fully describe investigation state:
 |-----------|--------|--------|
 | **Stage** | DIAGNOSIS, MITIGATION, TREATMENT | LLM prompt selection, evidence expectations |
 | **Gate Milestones** (4) | mitigation_accepted, mitigation_verified, solution_accepted, solution_verified | Stage transitions |
-| **Progress Indicators** (3) | symptom_verified, root_cause_identified, solution_proposed | LLM focus within DIAGNOSIS stage, analytics |
+| **Progress Indicators** (3) | symptom_verified, cause_state, solution_proposed | LLM focus within DIAGNOSIS stage, analytics |
 
 Note: Stage is not independent — it is *computed from* gate milestones. But it is the primary abstraction users and the LLM interact with, while milestones are the underlying state.
 
@@ -374,14 +374,14 @@ Gate milestones drive stage transitions. They are **set by the LLM in structured
 
 #### Progress Indicators (3)
 
-Progress indicators track what has been established during the DIAGNOSIS stage. They are set by the LLM in structured output and do NOT drive stage transitions. They serve two purposes: (1) inform LLM focus within DIAGNOSIS, (2) provide analytics and dashboard progress.
+Progress indicators track what has been established during the DIAGNOSIS stage. They do NOT drive stage transitions. `symptom_verified` is set by the LLM and `solution_proposed` programmatically; `cause_state` is engine-derived — recomputed each turn from the LLM's grounded cause signal plus the active-hypothesis count, and never path-stripped. They serve two purposes: (1) inform LLM focus within DIAGNOSIS, (2) provide analytics and dashboard progress.
 
 Only variables that pass both design tests are progress indicators: (a) they must be mandatory — their absence genuinely blocks forward progress, and (b) they must require an independent evidence search (not just extracted as a byproduct of another search).
 
 | Indicator | What It Tracks | Evidence Category |
 |-----------|----------------|-------------------|
 | `symptom_verified` | Problem confirmed with concrete evidence (logs, metrics, user reports) | SYMPTOM_EVIDENCE |
-| `root_cause_identified` | Root cause determined (directly or via hypothesis validation) | CAUSAL_EVIDENCE |
+| `cause_state` | Root-cause knowledge state — `UNKNOWN`/`CANDIDATES`/`IDENTIFIED`, engine-derived from the LLM's grounded cause signal (kept as an emission) plus the active-hypothesis count | CAUSAL_EVIDENCE |
 | `solution_proposed` | Set programmatically when ProposedAction with action_type=SOLUTION is created | (programmatic, not evidence-driven) |
 
 **What about scope, timeline, and changes?** Scope and timeline are facts *extracted* from symptom evidence — they are attributes of the investigation context, not independent evidence searches. Change events (deployments, config updates) are *contextual triggers* that inform hypothesis prioritization, not mandatory gate conditions. All three are valuable context that the agent captures opportunistically when present in evidence; none of them gate progress when absent.
@@ -412,7 +412,7 @@ In the current model:
 
 - **symptom_verified**: Retained as a progress indicator — confirms the problem exists before any hypothesis work begins.
 - **scope_assessed, timeline_established, changes_identified**: **Removed.** These failed both design tests: (a) their absence does not block progress (investigation continues without them), and (b) they don't require independent evidence searches — scope and timeline are extracted facts from symptom evidence, and change events are contextual triggers that live on `uploaded_files` (as file-level metadata) rather than as a synthetic evidence category. The agent captures this context opportunistically; it never stalls waiting for it.
-- **root_cause_identified**: Retained as a progress indicator. Also reflected in hypothesis state (VALIDATED with high confidence ≥ 70%).
+- **root_cause_identified**: **Replaced** by the engine-derived `cause_state` enum (`UNKNOWN`/`CANDIDATES`/`IDENTIFIED`). The LLM still emits a grounded "cause identified" signal (kept as an emission symbol); the engine recomputes `cause_state` each turn (never path-stripped). Also reflected in hypothesis state (VALIDATED with high confidence ≥ 70%).
 - **solution_proposed**: Retained as a progress indicator, set programmatically (not by LLM) when a `ProposedAction` with `action_type=SOLUTION` is created. Tells the LLM "you already proposed a solution" without scanning conversation history.
 - **solution_applied**: Tracked as part of TREATMENT workflow. Not a milestone.
 - **mitigation_applied**: Replaced by the MITIGATION stage with its own lifecycle.
@@ -640,9 +640,9 @@ Hypotheses are not used during MITIGATION (focused on applying and verifying the
 
 ## 7. Workflow Paths
 
-> **Note (unified flow):** The two "paths" below are retrospective *descriptions of what happened* (direct vs stabilized), not prospective forks chosen up front. There is no path enum and no path-selection gate — the agent records what it learns opportunistically and inserts a stabilization only when an impact-now gap exists. See [Investigation Lifecycle Logic §2 / §4.3–4.4](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert) for the canonical unified-flow spec.
+> **Note (unified flow):** The two "paths" below are retrospective *descriptions of what happened* (direct vs mitigated), not prospective forks chosen up front. There is no path enum and no path-selection gate — the agent records what it learns opportunistically and inserts a mitigation only when an impact-now gap exists. See [Investigation Lifecycle Logic §2 / §4.3–4.4](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert) for the canonical unified-flow spec.
 
-### 7.1 Direct Investigation (no stabilization)
+### 7.1 Direct Investigation (no mitigation)
 
 For historical problems or cases with no impact-now gap:
 
@@ -656,29 +656,29 @@ INQUIRY → INVESTIGATING (diagnose + permanent fix) → RESOLVED
 4. User executes and pastes results → inferred transition to "Resolving"
 5. Agent verifies fix worked, user confirms → RESOLVED
 
-### 7.2 Stabilized Investigation (impact-now gap)
+### 7.2 Mitigated Investigation (impact-now gap)
 
 For ongoing production incidents where something is hurting now that can't be fully resolved this session:
 
 ```text
-INQUIRY → INVESTIGATING (stabilization insert, then RCA + permanent fix) → RESOLVED
+INQUIRY → INVESTIGATING (mitigation insert, then RCA + permanent fix) → RESOLVED
 ```
 
 1. User describes urgent problem, confirms investigation
-2. Agent recognizes the impact-now gap and *proposes* a stabilization action
-3. User executes the stabilization and pastes results → "Stabilizing"
-4. Agent verifies the stabilization worked
-5. Return to the unified flow for root cause analysis (forwarding per [Lifecycle Logic §2.3](./investigation-lifecycle-logic.md#23-stabilization-triggers-and-forwarding))
+2. Agent recognizes the impact-now gap and *proposes* a mitigation action
+3. User executes the mitigation and pastes results → "Mitigating"
+4. Agent verifies the mitigation worked
+5. Return to the unified flow for root cause analysis (forwarding per [Lifecycle Logic §2.3](./investigation-lifecycle-logic.md#23-mitigation-triggers-and-forwarding))
 6. Agent proposes permanent solution action
 7. User executes and pastes results → "Resolving"
 8. Agent verifies fix worked, user confirms → RESOLVED
 9. Agent reminds user to revert the temporary workaround
 
-### 7.3 Direct vs Stabilized (no prospective fork)
+### 7.3 Direct vs Mitigated (no prospective fork)
 
-There is no system-determined path selection and no `InvestigationPath` enum. Whether a stabilization is inserted is an agent judgment re-evaluated turn-by-turn — most commonly assessed right after `symptom_verified` (the same point the old Gate 2 fired), but never an irreversible commitment. The agent *proposes* a stabilization when an Axis-B (impact-now) gap exists; the user accepts or declines. The descriptor `investigation_shape: DIRECT | STABILIZED` is derived retrospectively from `progress.stabilization is not None`.
+There is no system-determined path selection and no `InvestigationPath` enum. Whether a mitigation is inserted is an agent judgment re-evaluated turn-by-turn — most commonly assessed right after `symptom_verified` (the same point the old Gate 2 fired), but never an irreversible commitment. The agent *proposes* a mitigation when an Axis-B (impact-now) gap exists; the user accepts or declines. The descriptor `investigation_shape: DIRECT | MITIGATED` is derived retrospectively from `progress.mitigation is not None`.
 
-See **[Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert)** for the canonical unified-flow spec (assessment variables, stabilization triggers, and forwarding).
+See **[Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert)** for the canonical unified-flow spec (assessment variables, mitigation triggers, and forwarding).
 
 ### 7.4 Edge Cases
 
@@ -690,7 +690,7 @@ See **[Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-s
 
 **New symptoms emerge in TREATMENT**: User discovers the fix caused a new problem. Agent stays in TREATMENT, treats this as failure evidence requiring extended diagnosis, and follows the same process: failure analysis → gap identification → targeted evidence request → new hypothesis → corrective action.
 
-**Stabilization-only resolution**: After a stabilization is verified, the case can close without RCA in two ways: (1) When `rca_infeasible=True`, the agent proactively proposes closure once the stabilization is verified — *"The stabilization is verified. Since [rationale], shall we close this case?"* (2) The user can always close via UI regardless of `rca_infeasible`. Both lead to CLOSED with `closure_reason="closed_after_investigation"` (the `mitigation_sufficient` reason was dropped and folded into this single reason). The documented stabilization is preserved on the closed case. The auto-generated Closure Summary captures what was learned; no runbook is generated for CLOSED cases.
+**Mitigation-only resolution**: After a mitigation is verified, the case can close without RCA in two ways: (1) When `rca_infeasible=True`, the agent proactively proposes closure once the mitigation is verified — *"The mitigation is verified. Since [rationale], shall we close this case?"* (2) The user can always close via UI regardless of `rca_infeasible`. Both lead to CLOSED with `closure_reason="closed_after_investigation"` (the `mitigation_sufficient` reason was dropped and folded into this single reason). The documented mitigation is preserved on the closed case. The auto-generated Closure Summary captures what was learned; no runbook is generated for CLOSED cases.
 
 ---
 
@@ -725,7 +725,7 @@ RESOLVED case
               PII scan → Admin review → Approve → KnowledgeItem
 ```
 
-**Only RESOLVED cases are runbook-eligible.** Runbooks codify a complete root-cause-to-solution chain. CLOSED cases — including those closed after a verified stabilization (`closure_reason=closed_after_investigation`) — lack a confirmed root cause, so they do not qualify. The auto-generated Closure Summary captures what was learned without risking low-quality knowledge base entries.
+**Only RESOLVED cases are runbook-eligible.** Runbooks codify a complete root-cause-to-solution chain. CLOSED cases — including those closed after a verified mitigation (`closure_reason=closed_after_investigation`) — lack a confirmed root cause, so they do not qualify. The auto-generated Closure Summary captures what was learned without risking low-quality knowledge base entries.
 
 **Runbook generation is never automatic.** Design: suggest first, evaluate on acceptance.
 
@@ -821,14 +821,14 @@ Your primary goal this turn is to gather logs, confirm symptoms, and
 establish the scope and timeline. Ask the user for the specific evidence
 needed to prove the problem exists.
 """
-    elif progress.symptom_verified and not progress.root_cause_identified:
+    elif progress.symptom_verified and progress.cause_state != CauseState.IDENTIFIED:
         return """
 **CURRENT FOCUS: ROOT CAUSE ANALYSIS**
 The problem is verified. Your primary goal this turn is to form and test
 hypotheses. Look at the causal evidence, form a theory, and actively seek
 the data needed to prove or disprove it.
 """
-    elif progress.root_cause_identified and not progress.solution_proposed:
+    elif progress.cause_state == CauseState.IDENTIFIED and not progress.solution_proposed:
         return """
 **CURRENT FOCUS: PROPOSE A SOLUTION**
 You have identified the root cause. Your primary goal this turn is to
@@ -945,15 +945,15 @@ class InvestigationProgress(BaseModel):
     mitigation_applied: bool = False
 
 # Current (as-built, unified flow): assessment variables + a single
-# stabilization record. The LLM still EMITS mitigation_accepted /
+# mitigation record. The LLM still EMITS mitigation_accepted /
 # mitigation_verified symbols, but the engine materializes them into the
-# `stabilization` record (no booleans persisted). `root_cause_identified`
+# `mitigation` record (no booleans persisted). `root_cause_identified`
 # is cut cleanly — replaced by the engine-derived `cause_state` enum.
 class InvestigationProgress(BaseModel):
-    # Gate signals → materialized into the single stabilization record
+    # Gate signals → materialized into the single mitigation record
     solution_accepted: bool = False       # → "Resolving" (user acknowledges executing solution)
     solution_verified: bool = False       # → RESOLVED (User-Agent Handshake)
-    stabilization: StabilizationRecord | None = None   # single forward-only insert (INV-24)
+    mitigation: MitigationRecord | None = None   # single forward-only insert (INV-24)
 
     # Assessment variables (engine-derived / recomputed each turn — never path-stripped)
     symptom_verified: bool = False                     # Problem symptoms confirmed with evidence
@@ -965,8 +965,8 @@ class InvestigationProgress(BaseModel):
     @property
     def current_stage(self) -> str:
         # Pure UI view (derived, not driving) — see §12
-        if self.stabilization and self.stabilization.accepted and not self.stabilization.verified:
-            return "Stabilizing"
+        if self.mitigation and self.mitigation.accepted and not self.mitigation.verified:
+            return "Mitigating"
         if self.solution_accepted and not self.solution_verified:
             return "Resolving"
         return "Investigating"
@@ -988,8 +988,8 @@ class EvidenceCategory(str, Enum):
 
 The `InvestigationPath` enum (`MITIGATION_FIRST` / `ROOT_CAUSE`), the `PathSelection`
 row, Gate 2, and `investigation_router.py` are **all removed** under the unified
-opportunistic flow ([Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert)).
-There is no prospective fork: whether a stabilization is inserted is an agent
+opportunistic flow ([Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert)).
+There is no prospective fork: whether a mitigation is inserted is an agent
 judgment re-evaluated each turn, not a path committed up front. Migration 016 drops
 the `cases.path_selection` column.
 
@@ -1000,11 +1000,11 @@ What replaces it:
   the overloaded boolean `root_cause_identified`. Never path-stripped (INV-22).
 - **`solution_state` / `solution_feasible`** — knowledge of the fix and whether it
   can be applied this session.
-- **`progress.stabilization: StabilizationRecord`** — a single forward-only insert
+- **`progress.mitigation: MitigationRecord`** — a single forward-only insert
   (INV-24) that materializes from the LLM's `mitigation_accepted` / `mitigation_verified`
   emission symbols (the schema names were *not* renamed).
-- **`investigation_shape: DIRECT | STABILIZED`** — a *retrospective* descriptor
-  derived from `progress.stabilization is not None`, not a prospective fork.
+- **`investigation_shape: DIRECT | MITIGATED`** — a *retrospective* descriptor
+  derived from `progress.mitigation is not None`, not a prospective fork.
 
 See [Investigation Data Models](./investigation-data-models.md) and Lifecycle Logic
 §2 for the full assessment-variable model.
@@ -1034,7 +1034,7 @@ class ProposedAction(BaseModel):
 
 The `action_type` is determined by the system when creating the ProposedAction from a SolutionToAdd:
 
-- `WORKAROUND` solution type → `MITIGATION` (a stabilization insert)
+- `WORKAROUND` solution type → `MITIGATION` (a mitigation insert)
 - Otherwise → `SOLUTION`
 - Downgraded to `DIAGNOSTIC` if no hypothesis exists (prevents premature TREATMENT entry)
 
@@ -1178,10 +1178,10 @@ evidence category. See §5.1 and §5.4.
 | Derived stage (`current_stage`) | Driven by | Description |
 |----------------|-----------------|-------------|
 | "Investigating" | else (default) | Understanding the problem and finding the cause |
-| "Stabilizing" | `stabilization.accepted ∧ ¬stabilization.verified` | Applying a temporary stabilization |
+| "Mitigating" | `mitigation.accepted ∧ ¬mitigation.verified` | Applying a temporary mitigation |
 | "Resolving" | `solution_accepted ∧ ¬solution_verified` | Applying the permanent solution |
 
-`current_stage` is a pure UI view derived from the stabilization record and the solution gates — it does not drive behavior (INV-05). The UI renders the label as secondary detail under the primary "Investigating" status badge.
+`current_stage` is a pure UI view derived from the mitigation record and the solution gates — it does not drive behavior (INV-05). The UI renders the label as secondary detail under the primary "Investigating" status badge.
 
 ---
 
@@ -1216,8 +1216,9 @@ Existing cases with old milestone fields need migration:
 ```python
 # Progress indicators: copy the two retained fields
 new.symptom_verified = old.symptom_verified
-new.root_cause_identified = old.root_cause_identified
 new.solution_proposed = old.solution_proposed
+# root_cause_identified is NOT copied — cause_state is engine-recomputed each
+# turn (cut cleanly, no compat shim); the old boolean has no successor field.
 # Note: scope_assessed, timeline_established, changes_identified are not migrated
 # (fields removed — they failed the mandatory-gate and distinct-search-target tests)
 
@@ -1249,7 +1250,7 @@ new.action_attempts = []
 | Evidence categories | 4 types | 4 claim-attached types: symptom, causal, mitigation, solution (contextual material moves to `uploaded_files`; rejection is the absence of an Evidence row) |
 | Prompt stage instructions | 4 templates | 3 templates (TREATMENT includes extended diagnosis) |
 | Mitigation | Path modifier (one-shot) | Distinct stage (iterative until verified) |
-| Path selection | USER_CHOICE in matrix | Removed — no prospective fork. Stabilization is an opportunistic insert; `investigation_shape: DIRECT / STABILIZED` is derived retrospectively (see [Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert)) |
+| Path selection | USER_CHOICE in matrix | Removed — no prospective fork. Mitigation is an opportunistic insert; `investigation_shape: DIRECT / MITIGATED` is derived retrospectively (see [Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert)) |
 | Milestone validation | Consistency check (blocking) | Gate milestones inferred from behavior; progress milestones set by LLM (advisory, non-blocking) |
 | Compliance detection | N/A (explicit confirmation) | Post-LLM, default no-transition when ambiguous (Section 15, decisions 5-6) |
 | "Jump ahead" | Allowed and encouraged | Removed (no sub-stages to jump between) |
@@ -1278,9 +1279,9 @@ new.action_attempts = []
 
 All open questions from the initial draft have been resolved.
 
-1. **Progress indicators trimmed to 3.** Three original flags (scope_assessed, timeline_established, changes_identified) were removed from InvestigationProgress. They failed both design tests: (a) their absence does not block forward progress (mandatory-gate test), and (b) they do not require an independent evidence search — scope and timeline are facts extracted as byproducts of symptom evidence, and change events are contextual triggers (sourced from the structural index of uploaded files post-010, not their own evidence row), not a distinct mandatory milestone. The three retained flags (symptom_verified, root_cause_identified, solution_proposed) each require their own evidence search and each signals a distinct diagnostic shift. These are called "progress indicators" rather than "progress milestones" to avoid confusion with the gate milestones (solution_accepted, solution_verified, mitigation_accepted, mitigation_verified) that drive stage transitions.
+1. **Progress indicators trimmed to 3.** Three original flags (scope_assessed, timeline_established, changes_identified) were removed from InvestigationProgress. They failed both design tests: (a) their absence does not block forward progress (mandatory-gate test), and (b) they do not require an independent evidence search — scope and timeline are facts extracted as byproducts of symptom evidence, and change events are contextual triggers (sourced from the structural index of uploaded files post-010, not their own evidence row), not a distinct mandatory milestone. The three retained signals (symptom_verified, the grounded cause signal → `cause_state`, solution_proposed) each require their own evidence search and each signals a distinct diagnostic shift. These are called "progress indicators" rather than "progress milestones" to avoid confusion with the gate milestones (solution_accepted, solution_verified, mitigation_accepted, mitigation_verified) that drive stage transitions.
 
-2. **Stabilization returns to the unified flow for RCA by default; `rca_infeasible` overrides.** After a stabilization is verified, the default behavior directs the user back to root cause analysis. However, when `rca_infeasible=True` on `ProblemVerification` (set by the LLM when the problem involves uncontrollable external dependencies, deprecated systems, or known intractable conditions), the agent proposes closure instead of pushing RCA. This is an advisory signal, not a forced path — the user can still request RCA. The terminal state for these cases is `CLOSED(closed_after_investigation)`, and an auto-generated Closure Summary captures the operational knowledge. See [Investigation Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal).
+2. **Mitigation returns to the unified flow for RCA by default; `rca_infeasible` overrides.** After a mitigation is verified, the default behavior directs the user back to root cause analysis. However, when `rca_infeasible=True` on `ProblemVerification` (set by the LLM when the problem involves uncontrollable external dependencies, deprecated systems, or known intractable conditions), the agent proposes closure instead of pushing RCA. This is an advisory signal, not a forced path — the user can still request RCA. The terminal state for these cases is `CLOSED(closed_after_investigation)`, and an auto-generated Closure Summary captures the operational knowledge. See [Investigation Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal).
 
 3. **Escalation via capability exhaustion, not a fixed counter.** The agent suggests escalation when it has no more viable options — not after a fixed number of cycles. The principle: do not repeat a task without new input. For genuine external blockers (limited data, hypothesis deadlock, external dependencies), the agent communicates limitations naturally in its responses and suggests escalation. Simple lack of progress (5+ turns) receives a gentle stagnation nudge — a prompt hint, not a mode change. FaultMaven is a copilot that patiently serves the user while keeping the diagnostic thread visible.
 
@@ -1303,9 +1304,9 @@ All open questions from the initial draft have been resolved.
 | **State/CaseState** | A complete technical snapshot of the case at a point in time. |
 | **Investigation State** | The current state of an investigation, defined by two dimensions: Stage (where the investigation is) and Investigation Milestones (what has been established and acted upon). See §4.1. |
 | **Stage** | One of DIAGNOSIS, MITIGATION, or TREATMENT (within the INVESTIGATING phase only). Computed from gate milestones. Determines which prompt the LLM receives. |
-| **Investigation Milestone** | Collective term for the 7 boolean flags that track investigation advancement. Two sub-types: gate milestones (4, drive transitions) and progress indicators (3, LLM context). |
+| **Investigation Milestone** | Collective term for the signals that track investigation advancement. Two sub-types: gate milestones (4, drive transitions) and progress indicators (3, LLM context). |
 | **Gate Milestone** | A milestone that drives stage transitions (mitigation_accepted, mitigation_verified, solution_accepted, solution_verified). Set by the LLM in structured output when it detects user compliance. |
-| **Progress Indicator** | A flag that tracks diagnostic advancement without driving stage transitions (symptom_verified, root_cause_identified, solution_proposed). Set by the LLM, used for focus guidance and analytics. |
+| **Progress Indicator** | A signal that tracks diagnostic advancement without driving stage transitions (symptom_verified, cause_state, solution_proposed). `symptom_verified`/`solution_proposed` are LLM-set/programmatic; `cause_state` is engine-derived from the LLM's grounded cause signal. Used for focus guidance and analytics. |
 | **Evidence** | Data submitted by the user, classified by the LLM into categories. |
 | **Hypothesis** | A testable theory about the root cause, with confidence scoring and evidence links. |
 | **Inference-based transition** | A stage change inferred from user compliance with a proposed action (executing a command and submitting results). |

@@ -263,10 +263,10 @@ inferred, `EvidenceCategory` carries four categories:
 |---|---|---|---|
 | `SYMPTOM_EVIDENCE` | presence | `symptom_verified` | `kubectl get pods` shows `CrashLoopBackOff` |
 | `CAUSAL_EVIDENCE` | presence | grounded cause signal (→ `cause_state=IDENTIFIED`) | `cat config.yaml` shows `max_connections=1` |
-| `SYMPTOM_ABSENCE_EVIDENCE` | absence | `mitigation_verified` → `stabilization.verified` (and contributes to `solution_verified`) | `kubectl get pods` shows `Running` |
+| `SYMPTOM_ABSENCE_EVIDENCE` | absence | `mitigation_verified` → `mitigation.verified` (and contributes to `solution_verified`) | `kubectl get pods` shows `Running` |
 | `CAUSAL_ABSENCE_EVIDENCE` | absence | `solution_verified` | `cat config.yaml` shows `max_connections=100` |
 
-Gate signals (`mitigation_verified` → `stabilization.verified`,
+Gate signals (`mitigation_verified` → `mitigation.verified`,
 `solution_verified`) remain LLM-set judgment calls. The new categories give the gate decision a
 structural audit trail and let downstream consumers (e.g., the
 runbook-generation pipeline's `Verification` section) extract
@@ -591,7 +591,7 @@ emitted freely during early INVESTIGATING (§5.1). Orphan-need avoidance
 now rests on the prompt mandate that couples hypothesis emission to the
 uncertainty signal, plus the per-milestone surgical reasoning strip,
 rather than on a reject-and-resurface backstop. This is the intentional
-tier shift documented in [investigation-lifecycle-logic.md §2](./investigation-lifecycle-logic.md#2-stabilization-as-an-insert)
+tier shift documented in [investigation-lifecycle-logic.md §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert)
 and the INV-17/INV-21 retirement note in the lifecycle invariant matrix.
 
 ### 7.4 Hypothesis Retirement → Motivator-Based Supersession
@@ -681,13 +681,13 @@ CATEGORY_MILESTONE_MAP = {
 The map keys are the LLM **emission symbols** (`root_cause_identified` is
 the grounded cause signal that the engine materializes into
 `cause_state=IDENTIFIED`; `mitigation_verified` materializes into
-`stabilization.verified`) — the schema retained these names through the
+`mitigation.verified`) — the schema retained these names through the
 flow redesign.
 
 **Attribution, not auto-advancement.** The map is consumed via
 intersection with milestones the LLM has *already completed this turn*
 (via `MilestoneUpdates`). It does not cause the engine to advance a
-milestone on evidence emission alone — the stabilization/solution gate
+milestone on evidence emission alone — the mitigation/solution gate
 signals (`mitigation_verified`, `solution_verified`) remain LLM-set via
 the compliance-detection / handshake mechanism documented in
 investigation-lifecycle-logic.md §1.4. The map answers *"when the LLM

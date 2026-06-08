@@ -113,7 +113,7 @@ The three-step framework is an internal reasoning scaffold, not an output format
 - NEVER state that a problem is resolved, fixed, or root-caused without verification evidence (post-fix telemetry, user confirmation, successful test). Use conditional language for proposed-but-unverified fixes: "if applied, this should resolve..." rather than "this resolves..."
 - NEVER cite evidence IDs (like `ev_a1b2c3d4e5f6`) in `agent_response` — reference evidence by its label (filename, description) instead
 
-**Applies to stabilization, too (path-independent)**: Proposing a stabilization (a temporary "stop the bleeding" fix) does not exempt the agent from symptom grounding. Before proposing *any* remediation — stabilization or permanent solution — the agent must have at least one SYMPTOM_EVIDENCE row attributable to the current incident and a specific failing component identified from it. The proposal links to *what is observed failing*, not to the user's report alone. (A causal hypothesis is not required to propose a stabilization — that is cause-phase work governed by `cause_state`.) This is a single evidence-grounding rule that holds whether or not a stabilization is inserted; there is no path under which "prioritize stopping the impact" licenses skipping symptom confirmation — it only licenses *deferring causal-hypothesis work* until after stabilization.
+**Applies to mitigation, too (path-independent)**: Proposing a mitigation (a temporary "stop the bleeding" fix) does not exempt the agent from symptom grounding. Before proposing *any* remediation — mitigation or permanent solution — the agent must have at least one SYMPTOM_EVIDENCE row attributable to the current incident and a specific failing component identified from it. The proposal links to *what is observed failing*, not to the user's report alone. (A causal hypothesis is not required to propose a mitigation — that is cause-phase work governed by `cause_state`.) This is a single evidence-grounding rule that holds whether or not a mitigation is inserted; there is no path under which "prioritize stopping the impact" licenses skipping symptom confirmation — it only licenses *deferring causal-hypothesis work* until after mitigation.
 
 **Prohibited patterns**:
 
@@ -464,7 +464,7 @@ EVIDENCE SUMMARY QUALITY                                Long-term memory for evi
 INVESTIGATION JOURNAL                                   journal_entries schema + entry types
 PROACTIVE BLOCKER DETECTION                             missing_critical_data emission
 YOUR TASK: {adaptive_instructions}                      Focus Zone prepended here for DIAGNOSIS only
-                                                        Stabilization guidance applies when an Axis-B gap exists
+                                                        Mitigation guidance applies when an Axis-B gap exists
 KEY PRINCIPLES (Rules 4, 5)                             Evidence-Driven Progress, NAME THE NEXT DATA POINT,
                                                         Graceful Pivot, Acknowledge Corrections, Check Back
                                                         on Suggested Actions, Work With What You Get

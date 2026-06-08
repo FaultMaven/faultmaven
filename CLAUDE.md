@@ -628,8 +628,8 @@ The investigation engine uses a **data-driven, milestone-based** approach:
 - **Confidence decay** - Stagnant hypotheses decay via `0.85^iterations` formula
 - **Anchoring detection** - Prevents fixation on weak theories
 
-**Progress Indicators (3)** — LLM-settable, non-stage-driving. Inform focus and analytics within DIAGNOSIS:
-`symptom_verified`, `root_cause_identified`, `solution_proposed`
+**Progress Indicators (3)** — non-stage-driving; inform focus and analytics within DIAGNOSIS:
+`symptom_verified`, `cause_state`, `solution_proposed` — `symptom_verified` is LLM-set and `solution_proposed` programmatic; `cause_state` is an engine-derived enum (`UNKNOWN | CANDIDATES | IDENTIFIED`) that replaced the old `root_cause_identified` boolean, recomputed each turn from the LLM's grounded cause signal (never path-stripped).
 
 **Gate Milestones (4)** — Drive stage transitions when LLM detects user compliance:
 `mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`

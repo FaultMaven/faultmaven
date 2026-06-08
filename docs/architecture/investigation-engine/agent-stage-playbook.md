@@ -31,8 +31,8 @@ A **phase** is a distinct operational mode of the investigation. Each phase has 
 | `case.state` | Phase Marker | Phase Name | Prompt Assembly |
 | ------------- | ------------ | ---------- | --------------- |
 | `INQUIRY` | *(none — starting phase)* | INQUIRY | `INQUIRY_TEMPLATE` |
-| `INVESTIGATING` | `problem_statement_confirmed = True` | DIAGNOSIS | `INVESTIGATION_BASE` + the unified investigation guidance, selected by `cause_state` / `solution_state` / `stabilization` (see §5 *cause_state-driven investigation guidance*) |
-| `INVESTIGATING` | `stabilization.accepted = True` | MITIGATION (display: "Stabilizing") | `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS` (stabilization guidance) |
+| `INVESTIGATING` | `problem_statement_confirmed = True` | DIAGNOSIS | `INVESTIGATION_BASE` + the unified investigation guidance, selected by `cause_state` / `solution_state` / `mitigation` (see §5 *cause_state-driven investigation guidance*) |
+| `INVESTIGATING` | `mitigation.accepted = True` | MITIGATION (display: "Mitigating") | `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS` (mitigation guidance) |
 | `INVESTIGATING` | `solution_accepted = True` | TREATMENT | `INVESTIGATION_BASE` + `TREATMENT_INSTRUCTIONS` |
 | `RESOLVED` | *(none — `case.state` is authoritative)* | TERMINAL | `TERMINAL_TEMPLATE` |
 | `CLOSED` | *(none — `case.state` is authoritative)* | TERMINAL | `TERMINAL_TEMPLATE` |
@@ -67,8 +67,8 @@ INQUIRY
 INVESTIGATING
   ├─ DIAGNOSIS [marker: problem_statement_confirmed]
   │    ├─ Zone 1: Symptom Verification  [symptom_verified = False]
-  │    ├─ Zone 2: Root Cause Analysis   [symptom_verified = True, root_cause_identified = False]
-  │    └─ Zone 3: Solution Proposal     [root_cause_identified = True, solution_proposed = False]
+  │    ├─ Zone 2: Root Cause Analysis   [symptom_verified = True, cause_state ∈ {UNKNOWN, CANDIDATES}]
+  │    └─ Zone 3: Solution Proposal     [cause_state = IDENTIFIED, solution_proposed = False]
   │    ├── → MITIGATION  (inferred: mitigation_accepted)
   │    └── → TREATMENT   (inferred: solution_accepted)
   │
@@ -106,13 +106,13 @@ The GPS map. At any turn the agent reads this table to know where the investigat
 | ----- | ------ | - | -------- | ---- | ------------- | ---------- | - |
 | INQUIRY | `INQUIRY_TEMPLATE` | — | — | — | Starting phase — no gate to enter | — | [INQUIRY](#inquiry-phase) |
 | | | G | `problem_statement_confirmed` | Gate | User confirms problem statement | COOPERATIVE → INVESTIGATING | [INQUIRY](#inquiry-phase) |
-| DIAGNOSIS | unified investigation guidance (selected by `cause_state` / `solution_state` / `stabilization`) | 1 | `symptom_verified` | Diagnostic | User submits symptom evidence | EVIDENCE | [Zone 1](#zone-1-symptom-verification) |
+| DIAGNOSIS | unified investigation guidance (selected by `cause_state` / `solution_state` / `mitigation`) | 1 | `symptom_verified` | Diagnostic | User submits symptom evidence | EVIDENCE | [Zone 1](#zone-1-symptom-verification) |
 | | | 8 | Hypothesis state | Analytical | Row 1 true ∧ cause uncertain — agent reasons from context + KB | — | [Zone 2](#zone-2-root-cause-analysis) |
 | | | 2 | grounded cause signal (→ `cause_state=IDENTIFIED`) | Diagnostic | User submits causal evidence (or the error is self-naming) | EVIDENCE | [Zone 2](#zone-2-root-cause-analysis) |
 | | | 3 | `solution_proposed` | Action | Row 2 true — agent reasons to fix | — | [Zone 3](#zone-3-solution-proposal) |
-| | | 4 | `mitigation_accepted` (→ `stabilization.accepted`) | Trigger | User acknowledges executing the stabilization | COOPERATIVE → Stabilizing | [Zone 3](#zone-3-solution-proposal) |
+| | | 4 | `mitigation_accepted` (→ `mitigation.accepted`) | Trigger | User acknowledges executing the mitigation | COOPERATIVE → Mitigating | [Zone 3](#zone-3-solution-proposal) |
 | | | 6 | `solution_accepted` | Trigger | User acknowledges executing fix | COOPERATIVE → TREATMENT | [Zone 3](#zone-3-solution-proposal) |
-| MITIGATION ("Stabilizing") | `MITIGATION_INSTRUCTIONS` | 5 | `mitigation_verified` (→ `stabilization.verified`) | Gate | User confirms the stabilization worked | EVIDENCE → DIAGNOSIS | [MITIGATION](#mitigation-stage--the-stabilization-insert-display-stabilizing) |
+| MITIGATION ("Mitigating") | `MITIGATION_INSTRUCTIONS` | 5 | `mitigation_verified` (→ `mitigation.verified`) | Gate | User confirms the mitigation worked | EVIDENCE → DIAGNOSIS | [MITIGATION](#mitigation-stage--the-mitigation-insert-display-mitigating) |
 | TREATMENT | `TREATMENT_INSTRUCTIONS` | 7 | `solution_verified` | Gate | User confirms solution worked | COOPERATIVE → TERMINAL | [TREATMENT](#treatment-stage) |
 | TERMINAL | `TERMINAL_TEMPLATE` | — | — | — | No milestone tracking | — | [TERMINAL](#terminal-state) |
 
@@ -205,9 +205,9 @@ Establish a shared understanding of the problem before investigation begins. The
 ### DIAGNOSIS Stage
 
 **Phase marker:** `problem_statement_confirmed = True`  
-**Prompt assembly:** `INVESTIGATION_BASE` + the unified investigation guidance, selected by `cause_state` / `solution_state` / `stabilization` (no path fork). See §5 *cause_state-driven investigation guidance* for the routing.
+**Prompt assembly:** `INVESTIGATION_BASE` + the unified investigation guidance, selected by `cause_state` / `solution_state` / `mitigation` (no path fork). See §5 *cause_state-driven investigation guidance* for the routing.
 
-DIAGNOSIS has three internal zones. Zone membership is determined by the diagnostic variables; the agent reads the current state and applies the corresponding zone duties. The single rule that governs the zones: **hypothesis formation (Zone 2) runs iff the cause is uncertain** (`cause_state ∈ {UNKNOWN, CANDIDATES}`). When `cause_state == IDENTIFIED` — including self-naming errors where the cause is known at Zone 1 — the agent skips straight to solution work (Zone 3). There is no pre-mitigation restriction and no Gate-3 gating; a stabilization, when inserted, does not change which zones are reachable.
+DIAGNOSIS has three internal zones. Zone membership is determined by the diagnostic variables; the agent reads the current state and applies the corresponding zone duties. The single rule that governs the zones: **hypothesis formation (Zone 2) runs iff the cause is uncertain** (`cause_state ∈ {UNKNOWN, CANDIDATES}`). When `cause_state == IDENTIFIED` — including self-naming errors where the cause is known at Zone 1 — the agent skips straight to solution work (Zone 3). There is no pre-mitigation restriction and no Gate-3 gating; a mitigation, when inserted, does not change which zones are reachable.
 
 ---
 
@@ -276,7 +276,7 @@ DIAGNOSIS has three internal zones. Zone membership is determined by the diagnos
 | ----- | ------- | ----------- |
 | `CAPTURED` | Just recorded, not yet under investigation | — |
 | `ACTIVE` | Under active investigation | — |
-| `VALIDATED` | likelihood ≥ 0.70 + 2+ supporting evidence | Enables `root_cause_identified` |
+| `VALIDATED` | likelihood ≥ 0.70 + 2+ supporting evidence | Enables the grounded cause signal (`cause_state = IDENTIFIED`) |
 | `REFUTED` | Evidence directly disproves it | Requires `refutation_reason` citing specific evidence |
 | `INCONCLUSIVE` | likelihood 0.3–0.5, stagnant 3+ turns without new evidence | Set by progress monitor |
 | `RETIRED` | Abandoned without disproof | No reason required |
@@ -290,7 +290,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 1. **Search KB first (once, at Zone 2 entry)** — call `kb_qa` for the confirmed symptom before generating hypotheses. If a runbook matches, follow its diagnostic steps as the default approach. Do not call `kb_qa` in Zone 1 — KB contains procedures, not incident facts.
 2. **Use scope to prioritise hypothesis categories.** Wide scope (multiple services, regions, pods) → systemic hypotheses first: shared dependency failure, network issue, config push affecting all instances. Narrow scope (single pod, user, endpoint) → isolated hypotheses first: pod-specific config, user-specific data, targeted code path.
 3. **Use timeline as the search anchor.** Every evidence request in Zone 2 must reference the timeline window established in Zone 1. Before generating hypotheses, run a targeted search for change events just before the timeline: deployments, updates, config pushes, scaling events. A change event near the timeline raises confidence in a deployment/change hypothesis. It is a trigger signal sourced from the structural index of uploaded files — not its own evidence row. Drill into the specific changes made to find the candidate root cause; when a specific change links to the symptom mechanism, classify that slice as `causal_evidence` (post-migration-010 evidence-category set: `symptom_evidence`, `causal_evidence`, `mitigation_evidence`, `solution_evidence`).
-4. Apply the hypothesis-evidence ordering: form hypothesis → apply three-step pattern for `root_cause_identified` → validate or refute.
+4. Apply the hypothesis-evidence ordering: form hypothesis → apply three-step pattern for the grounded cause signal (`cause_state = IDENTIFIED`) → validate or refute.
 5. **Single-shot vs multi-hypothesis:** if the root cause is obvious from existing evidence (clear error chain, strong timing correlation, specific change found), form one hypothesis and validate in the same turn. If ambiguous, form 2–4 hypotheses across different categories and request targeted evidence per hypothesis.
 6. Each evidence request must be tied to a specific hypothesis and follow the specificity standard.
 7. Refute with reason; retire without. Never use `REFUTED` without evidence of disproof.
@@ -313,7 +313,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 - Partial support: "The timing matches — [deployment at 14:28, errors at 14:31] — but I need [specific log] from [source] for [timeframe] to confirm the mechanism."
 - Two hypotheses tied: "This could be [A] or [B]. [Specific file or metric] would distinguish them — can you provide that?"
 
-**Evidence and variable sequence:** when root cause is confirmed, the agent must follow the hypothesis-evidence ordering: (1) create hypothesis in `hypotheses_to_add`, (2) classify evidence as `causal_evidence` in `evidence_to_add` and link to the hypothesis, (3) set `root_cause_identified=True` if confidence ≥ 0.7. The variable cannot be set without a corresponding hypothesis and causal evidence record.
+**Evidence and variable sequence:** when root cause is confirmed, the agent must follow the hypothesis-evidence ordering: (1) create hypothesis in `hypotheses_to_add`, (2) classify evidence as `causal_evidence` in `evidence_to_add` and link to the hypothesis, (3) emit the grounded cause signal (which the engine materializes into `cause_state = IDENTIFIED`) if confidence ≥ 0.7. The signal cannot be emitted without a corresponding hypothesis and causal evidence record.
 
 **User instruction patterns:**
 
@@ -330,7 +330,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 - Using `REFUTED` when there is no evidence of disproof (use `RETIRED`)
 - Requesting evidence not tied to a specific hypothesis
 - Treating a change event (deployment, update) as a root cause — it is a trigger; the root cause is the specific change within it
-- Setting `root_cause_identified` with only a trigger observation and no mechanism
+- Emitting the grounded cause signal (`cause_state = IDENTIFIED`) with only a trigger observation and no mechanism
 
 ---
 
@@ -345,7 +345,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 1. State the root cause in one sentence before proposing a fix.
 2. Propose a direct, executable action — instruction form, not a question ("Run: [command]", not "Would you like to try X?").
 3. State impact: reversible or not, blast radius (single pod, cluster, database, shared service).
-4. Do not request further evidence after `root_cause_identified` is set. Hold until the user executes or raises an objection.
+4. Do not request further evidence after `cause_state = IDENTIFIED`. Hold until the user executes or raises an objection.
 5. `solution_proposed` does not require a new `evidence_to_add` record — it is set when the proposal is issued, derived from causal evidence already linked to the hypothesis.
 6. While awaiting compliance (`solution_proposed=True`), offer exactly two COOPERATIVE suggestions: (1) the user reports the outcome ("I ran the command — here's the result"), (2) the user asks for clarification about the fix. Do not offer EVIDENCE or FREE_SPEECH suggestions in this state.
 
@@ -378,7 +378,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 
 - Proposing a fix as a question
 - Proposing multiple competing fixes simultaneously
-- Requesting more evidence after `root_cause_identified`
+- Requesting more evidence after `cause_state = IDENTIFIED`
 
 ---
 
@@ -394,32 +394,32 @@ A well-documented partial investigation that narrows the problem is a valid outc
 
 ---
 
-### MITIGATION Stage — the Stabilization Insert (display: "Stabilizing")
+### MITIGATION Stage — the Mitigation Insert (display: "Mitigating")
 
-**Phase marker:** `stabilization.accepted = True` (materialized from the `mitigation_accepted` emission)  
-**Prompt assembly:** `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS` (the stabilization-guidance block; symbol name retained from the pre-redesign code)
+**Phase marker:** `mitigation.accepted = True` (materialized from the `mitigation_accepted` emission)  
+**Prompt assembly:** `INVESTIGATION_BASE` + `MITIGATION_INSTRUCTIONS` (the mitigation-guidance block; symbol name retained from the pre-redesign code)
 
-The **stabilization insert** (formerly "mitigation"): apply a temporary fix to stop active impact when an Axis-B gap exists — something is hurting now that can't be fully resolved this session. Goal is stabilization, not resolution. This is an optional inserted sub-activity in the one unified flow, not a path (see lifecycle §2).
+The **mitigation insert**: apply a temporary fix to stop active impact when an Axis-B gap exists — something is hurting now that can't be fully resolved this session. Goal is stabilization, not resolution. This is an optional inserted sub-activity in the one unified flow, not a path (see lifecycle §2).
 
 **Agent Duties:**
 
-1. **Search KB first** — call `kb_qa` for the symptom to find known stabilization procedures or workarounds before suggesting steps. If a match is found, follow those steps. If not, proceed with general knowledge for the technology stack.
+1. **Search KB first** — call `kb_qa` for the symptom to find known mitigation procedures or workarounds before suggesting steps. If a match is found, follow those steps. If not, proceed with general knowledge for the technology stack.
 2. Provide numbered steps framed as user instructions, not agent actions.
 3. State rollback: what to do if the fix makes things worse. State the fix is temporary.
 4. Request `mitigation_evidence` — post-fix metrics, error rates, user observation.
-5. Accept subjective confirmation for `stabilization.verified`. When confirmed: (1) create a `mitigation_evidence` record in `evidence_to_add`, (2) emit `mitigation_verified=True` (materializes `stabilization.verified` + `completed_at_turn`).
-6. Iterate if ineffective — propose a modified approach, stay in the stabilization insert.
-7. Whether to form hypotheses here follows the single rule: do so iff `cause_state ∈ {UNKNOWN, CANDIDATES}`. There is no separate ban tied to being mid-stabilization.
+5. Accept subjective confirmation for `mitigation.verified`. When confirmed: (1) create a `mitigation_evidence` record in `evidence_to_add`, (2) emit `mitigation_verified=True` (materializes `mitigation.verified` + `completed_at_turn`).
+6. Iterate if ineffective — propose a modified approach, stay in the mitigation insert.
+7. Whether to form hypotheses here follows the single rule: do so iff `cause_state ∈ {UNKNOWN, CANDIDATES}`. There is no separate ban tied to being mid-mitigation.
 
-**`mitigation_verified`** — Emitted when the user confirms stabilization. Subjective confirmation is sufficient: "it's better", "errors dropped", "seems stable". Specific metric values are not required. Forward-only: `stabilization.accepted`/`.verified` are never reset. The case returns to DIAGNOSIS via the `current_stage` property's fall-through (the "Stabilizing" branch requires `NOT stabilization.verified`).
+**`mitigation_verified`** — Emitted when the user confirms stabilization. Subjective confirmation is sufficient: "it's better", "errors dropped", "seems stable". Specific metric values are not required. Forward-only: `mitigation.accepted`/`.verified` are never reset. The case returns to DIAGNOSIS via the `current_stage` property's fall-through (the "Mitigating" branch requires `NOT mitigation.verified`).
 
-**When stabilization stalls:** If multiple attempts have failed and safe options are exhausted, do not continue proposing variants. The single-record constraint is not a dead-end (lifecycle §2.3, INV-24): offer exactly two COOPERATIVE suggestions — (1) "Accept current state and continue" — creates a `mitigation_evidence` record (source_type: text) and emits `mitigation_verified=True` to return to DIAGNOSIS even with partial stabilization; (2) "Escalate to a human expert" — acknowledges the investigation has reached its limit.
+**When mitigation stalls:** If multiple attempts have failed and safe options are exhausted, do not continue proposing variants. The single-record constraint is not a dead-end (lifecycle §2.3, INV-24): offer exactly two COOPERATIVE suggestions — (1) "Accept current state and continue" — creates a `mitigation_evidence` record (source_type: text) and emits `mitigation_verified=True` to return to DIAGNOSIS even with partial stabilization; (2) "Escalate to a human expert" — acknowledges the investigation has reached its limit.
 
 **Gate Conditions:**
 
 | To | Mechanism | Condition |
 | -- | --------- | --------- |
-| DIAGNOSIS (Zone 2 or 3) | Inference-based | `mitigation_verified = True` → `stabilization.verified` — forward-only; the "Stabilizing" property branch fails its `NOT stabilization.verified` clause and the case falls through to DIAGNOSIS. Forwarding after stabilization follows the §2.3 table (cause uncertain → RCA; cause + solution known → propose solution / close). No Gate-3 gating — the cause_state rule alone governs whether hypothesis work resumes. |
+| DIAGNOSIS (Zone 2 or 3) | Inference-based | `mitigation_verified = True` → `mitigation.verified` — forward-only; the "Mitigating" property branch fails its `NOT mitigation.verified` clause and the case falls through to DIAGNOSIS. Forwarding after mitigation follows the §2.3 table (cause uncertain → RCA; cause + solution known → propose solution / close). No Gate-3 gating — the cause_state rule alone governs whether hypothesis work resumes. |
 | TERMINAL (CLOSED) | User-Agent Handshake | User selects escalation from stall-breaker or abandons |
 
 **Anti-Patterns:**
@@ -535,7 +535,7 @@ There is no single complete prompt. Each turn assembles a prompt from a fixed ou
 | --- | --- | --- | --- | --- | --- |
 | INQUIRY | `INQUIRY_TEMPLATE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | (built into shell) | ✗ | ✗ |
 | DIAGNOSIS (unified — no path fork) | `INVESTIGATION_BASE` | `_READING_DISCIPLINE` `_DATA_CITATION` `_ADVISOR_ROLE` `_ACTION_IMPACT` | `focus_emphasis()` + `_RCA_DIAGNOSIS_BLOCK` (single block; carries `_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
-| MITIGATION ("Stabilizing") | `INVESTIGATION_BASE` | same | `MITIGATION_INSTRUCTIONS` (stabilization guidance) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
+| MITIGATION ("Mitigating") | `INVESTIGATION_BASE` | same | `MITIGATION_INSTRUCTIONS` (mitigation guidance) | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
 | TREATMENT | `INVESTIGATION_BASE` | same | `TREATMENT_INSTRUCTIONS` | `_EVIDENCE_GROUNDING` | `_DIAGNOSTIC_REASONING` |
 | Knowledge query (mode bypass) | `INVESTIGATION_BASE` | same | `KNOWLEDGE_QUERY_INSTRUCTIONS` | ✗ (suppressed) | ✗ (suppressed) |
 | TERMINAL | `TERMINAL_TEMPLATE` | `_ADVISOR_ROLE` only | (built into shell) | ✗ | ✗ |
