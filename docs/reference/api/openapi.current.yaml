@@ -920,7 +920,7 @@ paths:
       description: 'Update case details
 
 
-        Updates case metadata such as title, description, status, priority, and tags.
+        Updates case metadata such as title, description, state, priority, and tags.
 
         Requires edit permissions on the case.'
       operationId: update_case_api_v1_cases__case_id__put
@@ -7552,11 +7552,6 @@ components:
           title: Message Count
           description: Total number of messages (user + agent combined)
           default: 0
-        path_selection:
-          anyOf:
-          - $ref: '#/components/schemas/PathSelection'
-          - type: 'null'
-          description: Selected investigation path (MITIGATION vs ROOT_CAUSE)
         investigation_strategy:
           $ref: '#/components/schemas/InvestigationStrategy'
           description: 'Investigation approach: ACTIVE_INCIDENT (speed) vs POST_MORTEM
@@ -8296,17 +8291,6 @@ components:
             \ available; hide the affordance entirely.\n\nDifferent from ``valid_next_states``\
             \ \u2014 that field is the structural action graph (which edges exist),\
             \ this field is the content-readiness layer on top."
-        path_selection:
-          anyOf:
-          - $ref: '#/components/schemas/PathSelection'
-          - type: 'null'
-          description: "Investigation path commitment. Post-INV-19 redesign Gate 2\
-            \ fires inside INVESTIGATING after ``symptom_verified=True``, so INQUIRY-stage\
-            \ cases ALWAYS have ``path_selection=None`` \u2014 the field is never\
-            \ written during INQUIRY. Existence of this field IS the Gate 2 commit;\
-            \ the recommendation that powers the Gate 2 chip is computed on-demand\
-            \ by the engine and rendered into the affordance pair, never stored on\
-            \ the case."
         inquiry:
           $ref: '#/components/schemas/InquiryResponseData'
           description: Nested inquiry phase data
@@ -8403,17 +8387,6 @@ components:
           title: Problem Statement
           description: Confirmed problem statement carried over from INQUIRY (sourced
             from case.description).
-        path_selection:
-          anyOf:
-          - $ref: '#/components/schemas/PathSelection'
-          - type: 'null'
-          description: Investigation path commitment + Gate-3 state. Post-INV-19 redesign
-            Gate 2 fires INSIDE INVESTIGATING after ``symptom_verified=True``, so
-            this field is ``None`` during the pre-path window (INVESTIGATING + symptom_verified=False,
-            and the brief INVESTIGATING + symptom_verified=True window before the
-            user clicks a Gate 2 button). Existence of this field IS the commit signal.
-            mitigation_completed_at_turn is set after mitigation_verified; rca_after_mitigation_confirmed
-            drives Gate 3 prompts on the mitigation-first path.
         working_conclusion:
           anyOf:
           - $ref: '#/components/schemas/WorkingConclusionSummary'
@@ -8554,14 +8527,6 @@ components:
           title: Problem Statement
           description: Confirmed problem statement carried over from INQUIRY (sourced
             from case.description).
-        path_selection:
-          anyOf:
-          - $ref: '#/components/schemas/PathSelection'
-          - type: 'null'
-          description: Investigation path that was followed. Lets the terminal UI
-            display 'Mitigation-first' or 'Root-cause' retrospectively, and exposes
-            mitigation_completed_at_turn for resolved cases that detoured through
-            MITIGATION.
         root_cause:
           $ref: '#/components/schemas/RootCauseSummary'
           description: What caused the problem
@@ -8624,6 +8589,20 @@ components:
       type: object
       title: CaseUpdateRequest
       description: Request to update an existing case.
+    CauseState:
+      type: string
+      enum:
+      - unknown
+      - candidates
+      - identified
+      title: CauseState
+      description: "Engine-derived knowledge state of the root cause (assessment variable).\n\
+        \nRecomputed every turn from the LLM's grounded cause-identification signal\n\
+        plus the active-hypothesis count (see investigation-flow-redesign.md R1).\n\
+        NEVER path-stripped \u2014 recording a cause the engine legitimately knows\
+        \ is a\ntruth signal, not an earned process milestone. Drives whether the\
+        \ diagnostic\nmachinery (hypothesis formulation + evidence-needs) runs this\
+        \ turn."
     Change:
       properties:
         description:
@@ -9426,7 +9405,7 @@ components:
         \ (causal needs).\n- Updated by the LLM as evidence arrives (state, fulfilling\n\
         \  evidence linkage, motivating hypothesis IDs).\n- Auto-superseded by the\
         \ engine on hypothesis retirement when the\n  motivating list becomes empty\
-        \ AND purpose is CAUSAL_VERIFICATION\n  AND status is not FULFILLED. Symptom\
+        \ AND purpose is CAUSAL_VERIFICATION\n  AND state is not FULFILLED. Symptom\
         \ needs (empty motivating\n  list by design) are exempt \u2014 they're motivated\
         \ by the problem\n  statement, not by a hypothesis."
     EvidenceSourceType:
@@ -10027,39 +10006,15 @@ components:
 
         Calculated from recent progress patterns (evidence collection, hypothesis
         updates).'
-    InvestigationPath:
-      type: string
-      enum:
-      - mitigation_first
-      - root_cause
-      title: InvestigationPath
-      description: "Investigation routing strategy (2-stage model with mitigation\
-        \ detour).\n\nPath is SYSTEM-RECOMMENDED from the (temporal_state x urgency_level)\
-        \ matrix\nand USER-CONFIRMED via Gate 2. The LLM provides inputs (temporal_state,\n\
-        urgency_level) during inquiry; the router in investigation_router.py\nproduces\
-        \ a deterministic recommendation from those user-stated inputs;\nthe user\
-        \ accepts or overrides via a COOPERATIVE suggestion (Gate 2).\nPost-INV-19\
-        \ redesign, Gate 2 fires inside INVESTIGATING after the agent\nsets ``symptom_verified=True``,\
-        \ so the user's accept/override decision\nhappens with the agent's symptom-validation\
-        \ work visible in the\ntranscript. The recommendation algorithm itself is\
-        \ unchanged \u2014 it\nstill reads ``case.inquiry.preliminary_urgency``; what\
-        \ the timing\nmove changed is the *override context the user sees*. Making\
-        \ the\nrecommendation evidence-derived is deferred follow-up. LLM does NOT\n\
-        choose the path directly."
     InvestigationProgress:
       properties:
-        mitigation_accepted:
-          type: boolean
-          title: Mitigation Accepted
-          description: "User complied with proposed temp fix (inferred from submission).\
-            \ Triggers DIAGNOSIS \u2192 MITIGATION transition."
-          default: false
-        mitigation_verified:
-          type: boolean
-          title: Mitigation Verified
-          description: "User confirmed mitigation worked. Triggers MITIGATION \u2192\
-            \ DIAGNOSIS return for RCA."
-          default: false
+        mitigation:
+          anyOf:
+          - $ref: '#/components/schemas/MitigationRecord'
+          - type: 'null'
+          description: Mitigation insert record (redesign R2). Materialized by the
+            engine from the LLM's mitigation accept/verify gate signals plus the workaround
+            ProposedAction. Replaces the legacy path-coupled mitigation gates.
         solution_accepted:
           type: boolean
           title: Solution Accepted
@@ -10079,17 +10034,31 @@ components:
           description: Symptom confirmed with concrete evidence (logs, metrics, user
             reports)
           default: false
-        root_cause_identified:
-          type: boolean
-          title: Root Cause Identified
-          description: Root cause determined (directly or via hypothesis validation)
-          default: false
         solution_proposed:
           type: boolean
           title: Solution Proposed
           description: Set programmatically when ProposedAction with action_type=SOLUTION
             is created. Not directly set by LLM.
           default: false
+        cause_state:
+          $ref: '#/components/schemas/CauseState'
+          description: Engine-derived knowledge state of the root cause (UNKNOWN |
+            CANDIDATES | IDENTIFIED). Replaces the boolean root_cause_identified.
+            IDENTIFIED is the grounded cause-known signal; CANDIDATES is derived from
+            >=2 ACTIVE hypotheses. Drives whether the diagnostic machinery runs. Recomputed
+            each turn by the engine; never path-stripped.
+          default: unknown
+        solution_state:
+          $ref: '#/components/schemas/SolutionState'
+          description: Knowledge state of the fix (UNKNOWN | SELECTED). CANDIDATES
+            (multi-solution deliberation) is reserved for a follow-on and not produced
+            this round.
+          default: unknown
+        solution_feasible:
+          $ref: '#/components/schemas/SolutionFeasible'
+          description: Whether the SELECTED solution can be applied this session (NOW
+            | DEFERRED). DEFERRED routes to CLOSE-with-documented-solution.
+          default: now
         root_cause_likelihood:
           type: number
           maximum: 1.0
@@ -10264,18 +10233,14 @@ components:
       - mitigation
       - treatment
       title: InvestigationStage
-      description: "Investigation stage within the Investigating Phase.\n\n2-stage\
-        \ model with mitigation detour:\n- DIAGNOSIS: Understand, diagnose, propose\
-        \ actions (core stage)\n- TREATMENT: Verify permanent fix, resolve case (core\
-        \ stage)\n- MITIGATION: Apply and verify temporary fix (optional detour)\n\
-        \nDIAGNOSIS and TREATMENT are the two core stages every investigation\npasses\
-        \ through. MITIGATION is an optional detour that temporarily\nnarrows focus\
-        \ to \"stop the bleeding\" before returning to DIAGNOSIS.\n\nComputed from\
-        \ stage-gate milestones. Stage transitions are\ninference-based \u2014 user\
-        \ compliance with proposed actions triggers\ntransitions via compliance detection.\
-        \ The stage determines which\nprompt template the LLM receives.\n\nInvestigation\
-        \ Paths:\n- ROOT_CAUSE: DIAGNOSIS \u2192 TREATMENT\n- MITIGATION_FIRST: DIAGNOSIS\
-        \ \u2192 MITIGATION (detour) \u2192 DIAGNOSIS \u2192 TREATMENT"
+      description: "Investigation stage within the Investigating Phase.\n\nThese three\
+        \ stages are pure DERIVED DISPLAY labels in the unified\nopportunistic flow.\
+        \ They are re-derived from the action-compliance\ngates (see ``InvestigationProgress.current_stage``);\
+        \ they do NOT drive\nprompt dispatch and there is NO path fork or prospective\
+        \ routing.\n\n- DIAGNOSIS \u2192 \"Investigating\" (default view)\n- MITIGATION\
+        \ \u2192 \"Mitigating\" (an optional inserted sub-activity)\n- TREATMENT \u2192\
+        \ \"Resolving\"\n\nMITIGATION is not a separate path \u2014 it is an optional\
+        \ \"stop the\nbleeding\" insert that surfaces while the investigation continues."
     InvestigationStrategy:
       type: string
       enum:
@@ -10966,6 +10931,42 @@ components:
       - redis_operation_time_ms
       title: MessageRetrievalDebugInfo
       description: Debug information for message retrieval operations.
+    MitigationRecord:
+      properties:
+        proposed_at_turn:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Proposed At Turn
+          description: Turn a workaround mitigation was first proposed
+        accepted:
+          type: boolean
+          title: Accepted
+          description: User complied with the proposed mitigation
+          default: false
+        verified:
+          type: boolean
+          title: Verified
+          description: User confirmed the mitigation stabilized the situation
+          default: false
+        completed_at_turn:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Completed At Turn
+          description: Turn `verified` flipped True (Gate-3-equivalent boundary)
+      type: object
+      title: MitigationRecord
+      description: "A single forward-only mitigation (the inserted \"stop the bleeding\"\
+        \ move).\n\nReplaces the legacy path-coupled mitigation gates\n(redesign R2).\
+        \ The engine materializes this record from the LLM's accept/verify\ngate signals\
+        \ plus the workaround ProposedAction:\n- ``proposed_at_turn`` is set when\
+        \ a ``solution_type=workaround`` action is created.\n- ``accepted`` / ``verified``\
+        \ mirror the LLM gate signals (compliance detection).\n- ``completed_at_turn``\
+        \ is set the turn ``verified`` flips True (the boundary for\n  up-weighting\
+        \ pre-mitigation evidence in any later RCA).\n\nSingle record per investigation\
+        \ for now (redesign \xA73.2.1); the flow stays open\nto user-led action so\
+        \ a non-mitigating insert is never a dead-end."
     NeedPriority:
       type: string
       enum:
@@ -11199,83 +11200,6 @@ components:
       type: object
       title: OrganizationUpdateRequest
       description: Request to update organization details
-    PathSelection:
-      properties:
-        path:
-          $ref: '#/components/schemas/InvestigationPath'
-          description: Selected investigation path (system-determined from matrix)
-        auto_selected:
-          type: boolean
-          title: Auto Selected
-          description: True if system auto-selected, False if user chose
-        rationale:
-          type: string
-          maxLength: 500
-          title: Rationale
-          description: Why this path was selected
-        alternate_path:
-          anyOf:
-          - $ref: '#/components/schemas/InvestigationPath'
-          - type: 'null'
-          description: Alternative path user could have chosen (if auto-selected)
-        selected_at:
-          type: string
-          format: date-time
-          title: Selected At
-          description: When path was selected
-        selected_by:
-          type: string
-          title: Selected By
-          description: 'Who selected: ''system'' for auto, or user_id for manual'
-          default: system
-        rca_after_mitigation_confirmed:
-          type: boolean
-          title: Rca After Mitigation Confirmed
-          description: User has confirmed continuing to RCA after mitigation verified
-            (Gate 3). Mitigation-first path only.
-          default: false
-        rca_after_mitigation_confirmed_at_turn:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Rca After Mitigation Confirmed At Turn
-          description: Turn number when the user confirmed post-mitigation RCA.
-        mitigation_completed_at_turn:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Mitigation Completed At Turn
-          description: Turn at which mitigation_verified first became True. Boundary
-            for the pre-mitigation evidence window used by the context builder on
-            post-mitigation RCA runs.
-        temporal_state:
-          anyOf:
-          - $ref: '#/components/schemas/TemporalState'
-          - type: 'null'
-          description: Temporal state used in decision
-        urgency_level:
-          anyOf:
-          - $ref: '#/components/schemas/UrgencyLevel'
-          - type: 'null'
-          description: Urgency level used in decision
-      type: object
-      required:
-      - path
-      - auto_selected
-      - rationale
-      title: PathSelection
-      description: 'Path selection details.
-
-        Records how investigation path was chosen.
-
-
-        IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
-
-        LLM provides inputs (temporal_state, urgency_level) during verification.
-
-        System calls determine_investigation_path() to select path deterministically.
-
-        LLM does NOT choose the path directly!'
     PermissionCheckRequest:
       properties:
         permission:
@@ -11480,12 +11404,11 @@ components:
         rca_infeasible:
           type: boolean
           title: Rca Infeasible
-          description: "Advisory signal: root cause analysis is infeasible for this\
-            \ problem. Set by the LLM during verification when the problem involves\
-            \ uncontrollable external dependencies, deprecated/EOL systems, or known\
-            \ intractable conditions where mitigation is the accepted strategy. Does\
-            \ NOT affect path selection \u2014 influences post-mitigation agent behavior\
-            \ only."
+          description: 'Advisory signal: root cause analysis is infeasible for this
+            problem. Set by the LLM during verification when the problem involves
+            uncontrollable external dependencies, deprecated/EOL systems, or known
+            intractable conditions where mitigation is the accepted strategy. Influences
+            post-mitigation agent behavior only.'
           default: false
         rca_infeasible_rationale:
           anyOf:
@@ -12606,6 +12529,26 @@ components:
       - title
       title: Solution
       description: Proposed or applied solution/mitigation.
+    SolutionFeasible:
+      type: string
+      enum:
+      - now
+      - deferred
+      title: SolutionFeasible
+      description: "Whether the SELECTED solution can be applied within this session.\n\
+        \nLLM-settable. DEFERRED routes to CLOSE-with-documented-solution (redesign\
+        \ \xA76 Q2)."
+    SolutionState:
+      type: string
+      enum:
+      - unknown
+      - candidates
+      - selected
+      title: SolutionState
+      description: "Engine-derived knowledge state of the fix (assessment variable).\n\
+        \nUNKNOWN | SELECTED only this round. CANDIDATES (multi-solution deliberation,\n\
+        redesign \xA76) is reserved for the follow-on that reuses the hypothesis machinery\n\
+        and is intentionally not produced yet."
     SolutionSummary:
       properties:
         description:
@@ -12833,9 +12776,8 @@ components:
       - ongoing
       - historical
       title: TemporalState
-      description: 'Problem temporal classification.
-
-        Used for investigation path routing.'
+      description: "Problem temporal classification.\nContext signal only \u2014 does\
+        \ not drive a path fork."
     TemporalStateData:
       properties:
         started_at:
@@ -13370,21 +13312,10 @@ components:
       - low
       - unknown
       title: UrgencyLevel
-      description: 'Urgency classification for path routing.
-
-
-        Used with TemporalState to recommend an investigation path:
-
-        - ONGOING + HIGH/CRITICAL -> MITIGATION_FIRST
-
-        - All other matched combinations -> ROOT_CAUSE
-
-        - Missing temporal or UNKNOWN urgency -> ROOT_CAUSE (with auto_selected=False)
-
-
-        The recommendation is surfaced through Gate 2 for user confirmation
-
-        before INQUIRY -> INVESTIGATING.'
+      description: "Urgency classification.\n\nContext signal used (with TemporalState)\
+        \ to inform how the agent\nprioritizes mitigation vs. root-cause work within\
+        \ the unified\nopportunistic flow. It does not select a path \u2014 there\
+        \ is no path fork."
     UserDetailResponse:
       properties:
         user_id:
