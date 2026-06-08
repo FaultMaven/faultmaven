@@ -404,7 +404,7 @@ class StateValidator:
 
         Gate milestones: mitigation_accepted, mitigation_verified,
             solution_accepted, solution_verified
-        Progress indicators: symptom_verified, root_cause_identified, solution_proposed
+        Progress indicators: symptom_verified, cause_state, solution_proposed
 
         Milestones can only go False → True, never revert.
         Some milestones have logical dependencies.
@@ -441,25 +441,31 @@ class StateValidator:
                 suggested_fix="Set solution_accepted=True or reset solution_verified=False"
             ))
 
-        # mitigation_verified requires mitigation_accepted (stage-gate dependency)
-        if progress.mitigation_verified and not progress.mitigation_accepted:
+        # mitigation_verified requires mitigation_accepted (stage-gate dependency).
+        # Post-redesign the mitigation gates live on the single mitigation record.
+        _mit = progress.mitigation
+        if _mit is not None and _mit.verified and not _mit.accepted:
             issues.append(ValidationIssue(
                 code="MILESTONE_ORDER_004",
                 message="mitigation_verified=True but mitigation_accepted=False",
                 severity=ValidationSeverity.ERROR,
-                field="progress.mitigation_verified",
+                field="progress.mitigation",
                 suggested_fix="Set mitigation_accepted=True or reset mitigation_verified=False"
             ))
 
-        # root_cause_identified should have likelihood (progress milestone consistency)
-        if progress.root_cause_identified and progress.root_cause_likelihood is None:
-            issues.append(ValidationIssue(
-                code="MILESTONE_INCOMPLETE_001",
-                message="root_cause_identified=True but root_cause_likelihood is None",
-                severity=ValidationSeverity.WARNING,
-                field="progress.root_cause_likelihood",
-                suggested_fix="Set root_cause_likelihood to confidence value"
-            ))
+        # cause_state == IDENTIFIED should have a likelihood (progress consistency).
+        # The LLM's grounded cause signal materializes into cause_state; the
+        # boolean root_cause_identified field was removed (replaced by the enum).
+        if progress.cause_state == CauseState.IDENTIFIED:
+            likelihood = getattr(progress, "root_cause_likelihood", None)
+            if likelihood is None or likelihood == 0.0:
+                issues.append(ValidationIssue(
+                    code="MILESTONE_INCOMPLETE_001",
+                    message="root_cause_identified=True but root_cause_likelihood is not set",
+                    severity=ValidationSeverity.WARNING,
+                    field="progress.root_cause_likelihood",
+                    suggested_fix="Set root_cause_likelihood to confidence value"
+                ))
 
         return issues
 
