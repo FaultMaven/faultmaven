@@ -452,7 +452,7 @@ class SuggestedActionResponse(BaseModel):
 
     label: str
     type: str  # "COOPERATIVE" | "EVIDENCE" | "FREE_SPEECH"
-    payload: str
+    payload: Optional[str] = None  # COOPERATIVE only: text a click submits/copies
     body: Optional[str] = None
     cooperative_action: Optional[str] = None  # "query_submit" | "command_copy"
     hints: Optional[List[str]] = None  # FREE_SPEECH: short framework tags
