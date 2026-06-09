@@ -333,8 +333,22 @@ jobs:
           fi
           echo "✅ Dockerfile found"
 
-      - name: Build Docker Image
-        run: docker build -t faultmaven .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Docker Image (with layer cache)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: faultmaven:ci
+          # GitHub Actions layer cache. The heavy layers (deps install, the
+          # ~2GB bundled BGE-M3 model) are content-addressed and only rebuild
+          # when requirements/Dockerfile change — code-only PRs reuse them and
+          # restore from main's cache, so no per-PR model re-download.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   # ============================================================================
   # SECURITY SCANNING

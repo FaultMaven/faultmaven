@@ -19,8 +19,16 @@ WORKDIR /app
 # Copy lockfile first for better layer caching
 COPY requirements/enterprise.txt requirements.txt
 
-# Install Python dependencies from lockfile
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies from the lockfile, with CPU-only torch.
+# The lockfile pins the default (CUDA) torch wheel, which drags in ~4-5GB of
+# nvidia-*/cuda-*/triton libraries. FaultMaven runs BGE-M3 on CPU — there is no
+# GPU code path, and neither local nor cloud requests a GPU — so those are dead
+# weight. Install the CPU torch wheel from the PyTorch CPU index, then the rest
+# of the locked deps with the GPU-only lines stripped (all are "via torch").
+RUN grep -vE '^(torch==|triton==|nvidia-|cuda-)' requirements.txt > /tmp/req-cpu.txt \
+    && pip install --no-cache-dir torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r /tmp/req-cpu.txt \
+    && rm -f /tmp/req-cpu.txt
 
 # Create the non-root user early so the HuggingFace cache it owns is written
 # once and never re-copied by a later `chown -R /app` (copy-up would otherwise
@@ -43,7 +51,7 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
     && for f in "$HF_HOME"/hub/models--BAAI--bge-m3/snapshots/*/*.safetensors; do \
          [ -e "$f" ] && { readlink -f "$f" | xargs -r rm -f; rm -f "$f"; }; \
        done \
-    && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -c "from sentence_transformers import SentenceTransformer; print('offline reload dim =', len(SentenceTransformer('BAAI/bge-m3').encode('ok')))"
+    && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3'); print('offline model load OK')"
 USER root
 
 # Note: spaCy model no longer needed - PII protection uses K8s Presidio microservice
