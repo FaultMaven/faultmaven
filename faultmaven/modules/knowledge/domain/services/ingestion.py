@@ -29,9 +29,10 @@ Core Design Principles:
 import logging
 import os
 import re
+import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import chromadb
 import pandas as pd
@@ -43,6 +44,34 @@ from faultmaven.infrastructure.model_cache import model_cache
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import KnowledgeBaseDocument
+
+
+def _call_with_timeout(fn: Callable[[], Any], timeout_s: float, what: str) -> Any:
+    """Run ``fn()`` on a daemon thread, raising ``TimeoutError`` if it has not
+    returned within ``timeout_s`` seconds.
+
+    ChromaDB's ``HttpClient`` performs blocking network round-trips with no
+    caller-facing timeout, so an unreachable server would otherwise hang
+    application startup until a readiness probe gives up. The worker thread is
+    a daemon: on timeout we abandon it (it dies with the process or when the
+    underlying socket finally errors) and return control to the caller.
+    """
+    box: Dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised to caller below
+            box["error"] = exc
+
+    worker = threading.Thread(target=_run, name="chromadb-connect", daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive():
+        raise TimeoutError(f"{what} did not respond within {timeout_s:.0f}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 class KnowledgeIngester:
@@ -84,22 +113,62 @@ class KnowledgeIngester:
                 context={"settings_available": settings is not None},
             )
 
+        # Degraded state: when an external ChromaDB is configured but
+        # unreachable, we do NOT block startup. self._collection stays None and
+        # the `collection` property raises a typed error on use; callers (and
+        # the KB bootstrap) treat that as "KB temporarily unavailable".
+        self.degraded = False
+        self.chroma_client = None
+        self._collection = None
+        connect_timeout = float(
+            getattr(settings.database, "chromadb_connect_timeout", 5.0)
+        )
+
+        # Single unified collection for all KB scopes (global, team, personal).
+        # Must match UnifiedKBConfig.get_collection_name() = "faultmaven_kb".
+        # Scope isolation via metadata filtering, not separate collections.
+        def _open_http(label: str, **client_kwargs: Any) -> None:
+            self.logger.info(f"Using ChromaDB HTTP client at {label}")
+
+            def _build():
+                client = chromadb.HttpClient(**client_kwargs)
+                # Force a real round-trip here so an unreachable / mis-auth'd
+                # server fails inside the timeout guard, not on first query.
+                collection = client.get_or_create_collection(
+                    name="faultmaven_kb",
+                    metadata={"description": "FaultMaven Knowledge Base"},
+                )
+                return client, collection
+
+            try:
+                self.chroma_client, self._collection = _call_with_timeout(
+                    _build, connect_timeout, f"ChromaDB at {label}"
+                )
+            except Exception as exc:  # unreachable, timeout, auth failure
+                self.degraded = True
+                self.logger.error(
+                    "ChromaDB unavailable at %s (%r) — knowledge ingestion and "
+                    "search are disabled until it recovers; startup continues.",
+                    label,
+                    exc,
+                )
+
         if chromadb_url:
-            # Legacy URL-based configuration
-            self.logger.info(f"Using ChromaDB HTTP client at {chromadb_url}")
-            self.chroma_client = chromadb.HttpClient(
-                host=chromadb_url.replace("http://", "")
+            host = (
+                chromadb_url.replace("http://", "")
                 .replace("https://", "")
-                .split(":")[0],
+                .split(":")[0]
+            )
+            _open_http(
+                chromadb_url,
+                host=host,
                 port=int(chromadb_url.split(":")[-1]),
                 settings=Settings(anonymized_telemetry=False, allow_reset=True),
             )
         elif chromadb_host != "localhost":
-            # K8s cluster or external HTTP client (default)
-            self.logger.info(
-                f"Using ChromaDB HTTP client at {chromadb_host}:{chromadb_port}"
-            )
-            self.chroma_client = chromadb.HttpClient(
+            # K8s cluster or external HTTP client
+            _open_http(
+                f"{chromadb_host}:{chromadb_port}",
                 host=chromadb_host,
                 port=chromadb_port,
                 settings=Settings(
@@ -110,7 +179,7 @@ class KnowledgeIngester:
                 ),
             )
         else:
-            # Local development with persistent client — use KB persist dir from settings
+            # Local development with persistent client (no network — cannot hang)
             kb_dir = getattr(
                 settings.database, "chromadb_kb_persist_dir", chroma_persist_directory
             )
@@ -119,15 +188,10 @@ class KnowledgeIngester:
                 path=kb_dir,
                 settings=Settings(anonymized_telemetry=False, allow_reset=True),
             )
-
-        # Get or create collection
-        # Single unified collection for all KB scopes (global, team, personal).
-        # Must match UnifiedKBConfig.get_collection_name() = "faultmaven_kb".
-        # Scope isolation via metadata filtering, not separate collections.
-        self.collection = self.chroma_client.get_or_create_collection(
-            name="faultmaven_kb",
-            metadata={"description": "FaultMaven Knowledge Base"},
-        )
+            self._collection = self.chroma_client.get_or_create_collection(
+                name="faultmaven_kb",
+                metadata={"description": "FaultMaven Knowledge Base"},
+            )
 
         # Initialize sentence transformer for embeddings using cached model
         self.embedding_model = model_cache.get_bge_m3_model()
@@ -150,6 +214,24 @@ class KnowledgeIngester:
             ".yaml": self._extract_text_yaml,
             ".yml": self._extract_text_yaml,
         }
+
+    @property
+    def collection(self):
+        """The ChromaDB collection, or a typed error if the store is degraded.
+
+        When an external ChromaDB was configured but unreachable at startup,
+        ``_collection`` is None and any access raises ``KnowledgeBaseError``.
+        Existing per-method try/except blocks turn that into a graceful
+        "KB unavailable" outcome instead of a crash or hang.
+        """
+        if self._collection is None:
+            from faultmaven.models.exceptions import KnowledgeBaseError
+
+            raise KnowledgeBaseError(
+                "Knowledge base vector store is unavailable (ChromaDB not reachable)",
+                error_code="KNOWLEDGE_STORE_UNAVAILABLE",
+            )
+        return self._collection
 
     @trace("knowledge_base_ingest_document")
     async def ingest_document(

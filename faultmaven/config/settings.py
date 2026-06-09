@@ -630,6 +630,12 @@ class DatabaseSettings(BaseSettings):
     # different configuration — local must not reach for a remote ChromaDB.
     chromadb_host: str = Field(default="localhost")
     chromadb_port: int = Field(default=8000)
+    # Max seconds to wait for an external (HTTP) ChromaDB to answer the initial
+    # connect/heartbeat. On timeout the ingestion service degrades (KB disabled)
+    # instead of blocking startup. Ignored for the local PersistentClient.
+    chromadb_connect_timeout: float = Field(
+        default=5.0, validation_alias="CHROMADB_CONNECT_TIMEOUT"
+    )
     # Empty default = no external ChromaDB server configured → go straight to
     # local PersistentClient. Cloud deployments set CHROMADB_URL explicitly to
     # opt in to HttpClient.
