@@ -86,13 +86,12 @@ python -m faultmaven.main
 uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**First startup** takes 2-3 minutes longer than usual. FaultMaven automatically:
+**First startup** is fast. FaultMaven automatically:
 - Creates data directories and runs database migrations
 - Creates a default admin account (`admin` / `admin@local.faultmaven`)
-- Copies 59 built-in troubleshooting runbooks into the knowledge base
-- Generates vector embeddings for all runbooks (this is the slow part)
+- Ingests the 59 built-in runbooks from the **KB pack** — they ship pre-chunked and pre-embedded, so this is just vector writes (seconds), **not** an embedding run
 
-Subsequent startups are fast (~5 seconds). You'll see:
+Subsequent startups skip already-ingested runbooks (content-hash). You'll see:
 
 ```
 INFO:     ✅ Auto-ingested 59 built-in runbooks into knowledge base

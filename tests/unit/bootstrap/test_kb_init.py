@@ -8,6 +8,8 @@ contract is fully describable in terms of those collaborators.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,19 +18,10 @@ import pytest
 
 from faultmaven.bootstrap import kb_init
 
-RUNBOOK_FRONTMATTER = """---
+RUNBOOK_MD = """---
 id: example-runbook
 title: "Example Runbook"
-domain: database
-service: postgresql
-symptom_class:
-  - latency
-severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-26"
-verified_by: "test"
-status: draft
 tags: [postgres, latency]
 ---
 
@@ -36,14 +29,58 @@ tags: [postgres, latency]
 """
 
 
-@pytest.fixture
-def project_root_with_one_runbook(tmp_path: Path) -> Path:
-    """Create a fake project root containing a single runbook under
-    data/knowledge/global/."""
-    kb_dir = tmp_path / "data" / "knowledge" / "global"
-    kb_dir.mkdir(parents=True)
-    (kb_dir / "example.md").write_text(RUNBOOK_FRONTMATTER, encoding="utf-8")
-    return tmp_path
+def _write_pack(
+    tmp_path: Path,
+    *,
+    content: str = RUNBOOK_MD,
+    title: str = "Example Runbook",
+    scope: str = "global",
+    relpath: str = "global/example.md",
+    chunk_texts: tuple = ("section one", "section two"),
+    dim: int = 8,
+) -> Path:
+    """Write a minimal but valid KB pack under ``tmp_path/pack`` and return it.
+
+    Vectors are zeros (shape only matters for the loader); chunk texts +
+    content_hash are what the bootstrap asserts on.
+    """
+    import numpy as np
+
+    item_id = kb_init._item_id_from_runbook_id("example-runbook")
+    pack_dir = tmp_path / "pack"
+    md_dest = pack_dir / "runbooks" / relpath
+    md_dest.parent.mkdir(parents=True, exist_ok=True)
+    md_dest.write_text(content, encoding="utf-8")
+
+    np.savez(
+        pack_dir / "vectors.npz",
+        vectors=np.zeros((len(chunk_texts), dim), dtype=np.float32),
+    )
+    manifest = {
+        "pack_format": 1,
+        "version": "test",
+        "model": "BAAI/bge-m3",
+        "dim": dim,
+        "runbooks": [
+            {
+                "item_id": item_id,
+                "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "title": title,
+                "scope": scope,
+                "relpath": relpath,
+                "tags": ["postgres", "latency"],
+                "source_url": None,
+                "owner_id": None,
+                "team_id": None,
+                "chunks": [
+                    {"chunk_index": i, "vector_row": i, "text": t}
+                    for i, t in enumerate(chunk_texts)
+                ],
+            }
+        ],
+    }
+    (pack_dir / "pack.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return pack_dir
 
 
 class FakeSession:
@@ -77,117 +114,121 @@ def _make_session_factory(existing_row=None):
     return factory
 
 
-@pytest.fixture
-def patch_model_cache():
-    """Pretend BGE-M3 loaded successfully."""
-    with patch.object(
-        kb_init, "_enumerate_runbook_files", wraps=kb_init._enumerate_runbook_files
-    ):
-        with patch(
-            "faultmaven.infrastructure.model_cache.model_cache"
-        ) as model_cache_mock:
-            model_cache_mock.get_bge_m3_model.return_value = MagicMock(name="bge_m3")
-            yield model_cache_mock
-
-
 @pytest.mark.asyncio
-async def test_bootstrap_ingests_new_runbook(
-    project_root_with_one_runbook, patch_model_cache
-):
-    """A fresh runbook (no DB row) is ingested and counted."""
+async def test_bootstrap_ingests_new_runbook(tmp_path: Path):
+    """A fresh pack runbook (no DB row) is ingested, with the pack's pre-chunked
+    text + vectors passed straight through to ingest_runbook."""
+    pack_dir = _write_pack(tmp_path)
     knowledge_service = MagicMock()
-    knowledge_service.ingest_runbook = AsyncMock(return_value=4)
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
 
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=None),
         organization_id="org-test",
-        project_root=project_root_with_one_runbook,
+        project_root=tmp_path,
+        pack_dir=pack_dir,
     )
 
-    assert len(result.ingested) == 1
+    assert result.ingested == ["global/example.md"]
     assert result.skipped_unchanged == []
     assert result.failed == []
     knowledge_service.ingest_runbook.assert_awaited_once()
-    # Verify deterministic item_id was passed (kb_<sha256(id)[:12]>).
-    call_kwargs = knowledge_service.ingest_runbook.await_args.kwargs
-    assert call_kwargs["document_id"] == kb_init._item_id_from_runbook_id(
-        "example-runbook"
-    )
-    assert call_kwargs["title"] == "Example Runbook"
+    kw = knowledge_service.ingest_runbook.await_args.kwargs
+    assert kw["document_id"] == kb_init._item_id_from_runbook_id("example-runbook")
+    assert kw["title"] == "Example Runbook"
+    # The pack's (text, vector) pairs are forwarded verbatim — vectors are the
+    # zeros written by _write_pack (dim 8).
+    assert kw["prechunked"] == [
+        ("section one", [0.0] * 8),
+        ("section two", [0.0] * 8),
+    ]
     # Platform-shipped runbooks carry COMMUNITY trust via verification_level,
-    # NOT a fake verified_by — verified_by is an FK to users.user_id and must
-    # be a real user or NULL (regression: verified_by="system" failed the FK
-    # once foreign_keys=ON landed in #378).
+    # NOT a fake verified_by (an FK to users.user_id — real user or NULL; #378).
     from faultmaven.modules.knowledge.domain.models.knowledge_item import (
         VerificationLevel,
     )
 
-    assert call_kwargs["verified_by"] is None
-    assert call_kwargs["verification_level"] == VerificationLevel.COMMUNITY
+    assert kw["verified_by"] is None
+    assert kw["verification_level"] == VerificationLevel.COMMUNITY
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_skips_unchanged_runbook(
-    project_root_with_one_runbook, patch_model_cache
-):
-    """Re-running with the same file content skips ingestion."""
+async def test_bootstrap_never_loads_model(tmp_path: Path):
+    """Ingesting a pack NEVER loads BGE-M3 — the fast, model-free boot path."""
+    pack_dir = _write_pack(tmp_path)
     knowledge_service = MagicMock()
-    knowledge_service.ingest_runbook = AsyncMock(return_value=4)
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
 
-    # Existing row whose `content` matches the file on disk verbatim.
+    with patch("faultmaven.infrastructure.model_cache.model_cache") as model_cache_mock:
+        result = await kb_init.bootstrap_kb(
+            knowledge_service=knowledge_service,
+            db_session_factory=_make_session_factory(existing_row=None),
+            organization_id="org-test",
+            project_root=tmp_path,
+            pack_dir=pack_dir,
+        )
+
+    model_cache_mock.get_bge_m3_model.assert_not_called()
+    assert result.ingested == ["global/example.md"]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_skips_unchanged_runbook(tmp_path: Path):
+    """An existing row whose content hash equals the pack's is skipped."""
+    pack_dir = _write_pack(tmp_path)
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+
     existing = MagicMock()
-    existing.content = (
-        project_root_with_one_runbook / "data" / "knowledge" / "global" / "example.md"
-    ).read_text(encoding="utf-8")
+    existing.content = RUNBOOK_MD  # identical to the pack's runbook content
 
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=existing),
         organization_id="org-test",
-        project_root=project_root_with_one_runbook,
+        project_root=tmp_path,
+        pack_dir=pack_dir,
     )
 
     assert result.ingested == []
-    assert len(result.skipped_unchanged) == 1
+    assert result.skipped_unchanged == ["global/example.md"]
     assert result.failed == []
     knowledge_service.ingest_runbook.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_re_ingests_changed_runbook(
-    project_root_with_one_runbook, patch_model_cache
-):
-    """Content drift on disk triggers re-ingestion (delete + re-create)."""
+async def test_bootstrap_re_ingests_changed_runbook(tmp_path: Path):
+    """Content drift (existing row != pack content) triggers delete + re-create."""
+    pack_dir = _write_pack(tmp_path)
     knowledge_service = MagicMock()
-    knowledge_service.ingest_runbook = AsyncMock(return_value=4)
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
     knowledge_service._vector_store = MagicMock()
     knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
 
-    # Existing DB row whose content differs from disk.
     existing = MagicMock()
-    existing.content = "STALE CONTENT — does not match disk"
+    existing.content = "STALE CONTENT — does not match the pack"
 
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=existing),
         organization_id="org-test",
-        project_root=project_root_with_one_runbook,
+        project_root=tmp_path,
+        pack_dir=pack_dir,
     )
 
-    assert len(result.ingested) == 1
+    assert result.ingested == ["global/example.md"]
     assert result.skipped_unchanged == []
     knowledge_service.ingest_runbook.assert_awaited_once()
-    # Stale chunks should have been cleaned out of ChromaDB.
+    # Stale chunks cleaned out of ChromaDB before re-ingest.
     knowledge_service._vector_store.delete_documents_by_parent_id.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_raises_on_zero_chunks(
-    project_root_with_one_runbook, patch_model_cache
-):
-    """If ingest_runbook reports 0 chunks (silent failure), the file is
-    recorded as failed AND the orphan-cleanup path is invoked."""
+async def test_bootstrap_raises_on_zero_chunks(tmp_path: Path):
+    """If ingest_runbook reports 0 chunks, the runbook is recorded as failed
+    and the orphan-cleanup path runs."""
+    pack_dir = _write_pack(tmp_path)
     knowledge_service = MagicMock()
     knowledge_service.ingest_runbook = AsyncMock(return_value=0)
     knowledge_service._vector_store = MagicMock()
@@ -197,57 +238,34 @@ async def test_bootstrap_raises_on_zero_chunks(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=None),
         organization_id="org-test",
-        project_root=project_root_with_one_runbook,
+        project_root=tmp_path,
+        pack_dir=pack_dir,
     )
 
     assert result.ingested == []
     assert len(result.failed) == 1
     failed_file, reason = result.failed[0]
-    assert "example.md" in failed_file
-    assert "0 chunks" in reason or "RuntimeError" in reason
+    assert failed_file == "global/example.md"
+    assert "0 chunks" in reason
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_no_knowledge_dir_is_safe(tmp_path: Path, patch_model_cache):
-    """If data/knowledge/ does not exist, bootstrap returns an empty result
-    without attempting ingestion or raising."""
+async def test_bootstrap_no_pack_is_safe(tmp_path: Path):
+    """If no pack is present, bootstrap returns an empty result without
+    attempting ingestion or raising."""
     knowledge_service = MagicMock()
-    knowledge_service.ingest_runbook = AsyncMock(return_value=4)
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
 
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=None),
         organization_id="org-test",
         project_root=tmp_path,
+        pack_dir=tmp_path / "no-such-pack",
     )
 
     assert result.ingested == []
     assert result.skipped_unchanged == []
-    assert result.failed == []
-    knowledge_service.ingest_runbook.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_bootstrap_aborts_when_bge_m3_unavailable(
-    project_root_with_one_runbook,
-):
-    """If BGE-M3 fails to load, the bootstrap aborts without attempting
-    any ingestion (the silent-0-chunks failure mode is unavoidable in this
-    state, so the right behaviour is fail-fast)."""
-    knowledge_service = MagicMock()
-    knowledge_service.ingest_runbook = AsyncMock(return_value=4)
-
-    with patch("faultmaven.infrastructure.model_cache.model_cache") as model_cache_mock:
-        model_cache_mock.get_bge_m3_model.return_value = None
-
-        result = await kb_init.bootstrap_kb(
-            knowledge_service=knowledge_service,
-            db_session_factory=_make_session_factory(existing_row=None),
-            organization_id="org-test",
-            project_root=project_root_with_one_runbook,
-        )
-
-    assert result.ingested == []
     assert result.failed == []
     knowledge_service.ingest_runbook.assert_not_awaited()
 

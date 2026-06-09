@@ -476,9 +476,12 @@ status: draft
 
 # Runbook: {Title}
 
-## Problem Definition
+## Symptom Recognition
 - Exact alert names, error messages as they appear in logs, metric patterns.
 - Be specific: include the actual strings a user would grep for.
+
+## Applicability
+- Concrete system/version, required tools, access/permissions.
 
 ## Diagnostic Steps
 
@@ -491,32 +494,32 @@ status: draft
 ### Step 2: {description}
 ...
 
-## Mitigation
-**Risk**: {what could go wrong}
+## Causes
+
+### Cause A: {name}
+**Statement:** {one declarative sentence — the cause, not a symptom; ≤300 chars}
+**Mechanism:** {how the cause produces the symptom; ≤800 chars}
+**Indicator:** {what in the Diagnostic Steps confirms THIS cause}
+**Mitigation:** {fast, reversible relief}
 ```{language}
 {mitigation command}
 ```
-**Verify**: {how to confirm mitigation worked}
-**Duration**: {how long the mitigation is safe}
-
-## Root Cause Resolution
-**If** {diagnostic finding from Step N}:
+**Resolution:** {the permanent fix}
 ```{language}
-{permanent fix command}
+{resolution command}
 ```
+**Verification:** {how to confirm this cause is resolved}
 
-**If** {alternative diagnostic finding}:
-...
-
-## Verification
-- {specific metric or command to confirm the fix}
-- {observation period}
-- {what "back to normal" looks like}
+### Cause Z: Unidentified
+**Statement:** Root cause not determined from the indicators above.
+**Mechanism:** N/A.
+**Indicator:** None of the above indicators match.
+**Mitigation:** {safest general mitigation}
+**Verification:** N/A.
 
 ## Prevention
 - {configuration change to prevent recurrence}
 - {monitoring alert to add}
-- {process change}
 
 ## Sources
 - {source_filename} -- primary source document for this runbook
@@ -525,12 +528,14 @@ status: draft
 
 RULES:
 1. Every section MUST contain content. No empty sections.
-2. Diagnostic Steps and Root Cause Resolution MUST contain fenced code blocks.
-3. Root Cause Resolution MUST use "If X then Y" structure linking to findings
-   from Diagnostic Steps.
-4. Section sizes: aim for 400-900 characters per section so each fits within
-   1-2 retrieval chunks (structure-aware splitting on section headers).
-5. If the source material does not provide enough information for a section,
+2. ## Causes MUST contain at least one real ### Cause A AND the fallback
+   ### Cause Z: Unidentified.
+3. Each ### Cause (except Z) needs all six bolded sub-fields: Statement,
+   Mechanism, Indicator, Mitigation, Resolution, Verification.
+4. Keep Statement ≤300 chars and Mechanism ≤800 chars — they are copied verbatim
+   into engine state (RootCauseConclusion). Each ## section / ### Cause should fit
+   1-2 retrieval chunks (structure-aware splitting on headers).
+5. If the source material does not provide enough information for a field,
    write "[INSUFFICIENT SOURCE DATA -- manual completion required]" and
    continue. Do not fabricate commands or procedures.
 6. The Sources section MUST reference the uploaded filename as the primary

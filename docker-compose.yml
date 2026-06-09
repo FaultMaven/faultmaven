@@ -23,10 +23,18 @@ services:
       - "8090:8090"
     environment:
       - HOST=0.0.0.0  # Container must bind all interfaces for port mapping
+      # KB pack override (optional): update the knowledge base offline WITHOUT
+      # rebuilding the image. Extract a pack (kb-pack-<version>.tar.gz, built by
+      # faultmaven-kb-toolkit `kb-build-pack --tar`) into ./kb-pack so it contains
+      # pack.json + vectors.npz + runbooks/, uncomment the line below AND the
+      # ./kb-pack mount, then `docker compose up -d` to re-ingest. Unset → the
+      # baseline pack bundled in the image is used (zero-config default).
+      # - KB_PACK_DIR=/kb-pack
     env_file:
       - .env
     volumes:
       - ./data:/app/data
+      # - ./kb-pack:/kb-pack:ro   # see KB_PACK_DIR above
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8090/health"]

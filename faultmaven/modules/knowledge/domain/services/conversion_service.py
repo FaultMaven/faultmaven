@@ -790,9 +790,9 @@ class ConversionService:
             if not any(
                 h in runbook_content
                 for h in [
-                    "## Problem Definition",
+                    "## Symptom Recognition",
                     "## Diagnostic Steps",
-                    "## Mitigation",
+                    "## Causes",
                 ]
             ):
                 return ConversionError(

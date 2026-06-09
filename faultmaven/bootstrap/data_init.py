@@ -18,7 +18,6 @@ Design Notes:
 
 import logging
 import os
-import shutil
 from pathlib import Path
 from typing import Any, Optional
 
@@ -83,55 +82,6 @@ def ensure_data_directories() -> None:
         if not path.exists():
             path.mkdir(parents=True, exist_ok=True)
             logger.info(f"Created data directory: {path}")
-
-
-def seed_builtin_runbooks() -> int:
-    """Copy built-in runbooks to data/knowledge/global/ if the directory is empty.
-
-    Ships 59 runbooks from resources/knowledge/builtin/ (checked into the repo)
-    into the runtime data directory. Only copies if the target directory has no
-    .md files, so user modifications are preserved on subsequent startups.
-
-    Returns:
-        Number of runbooks copied (0 if already populated).
-    """
-    project_root = get_project_root()
-    builtin_dir = project_root / "resources" / "knowledge" / "builtin"
-    target_dir = project_root / "data" / "knowledge" / "global"
-
-    if not builtin_dir.exists():
-        logger.debug("No built-in runbooks directory found — skipping seed")
-        return 0
-
-    # Check all of data/knowledge/ for any .md files (not just global/)
-    # If personal runbooks exist but global is empty, user chose not to have global ones
-    knowledge_root = project_root / "data" / "knowledge"
-    sources_dir = knowledge_root / "sources"
-    existing = []
-    if knowledge_root.exists():
-        existing = [
-            p for p in knowledge_root.rglob("*.md") if not p.is_relative_to(sources_dir)
-        ]
-    if existing:
-        logger.debug(
-            f"Knowledge directory has {len(existing)} runbooks — skipping seed"
-        )
-        return 0
-
-    # Copy built-in runbooks preserving subdirectory structure
-    target_dir.mkdir(parents=True, exist_ok=True)
-    copied = 0
-    for src_file in sorted(builtin_dir.rglob("*.md")):
-        relative = src_file.relative_to(builtin_dir)
-        dest = target_dir / relative
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_file, dest)
-        copied += 1
-
-    if copied:
-        logger.info(f"Seeded {copied} built-in runbooks into data/knowledge/global/")
-
-    return copied
 
 
 def run_alembic_migrations() -> bool:
@@ -345,8 +295,11 @@ async def initialize_data_layer(container: Any) -> None:
     # Step 1: Ensure data directories exist
     ensure_data_directories()
 
-    # Step 2: Seed built-in runbooks if global KB directory is empty
-    seed_builtin_runbooks()
+    # Step 2: (removed) Built-in runbooks are no longer copied to
+    # data/knowledge/global. They ship pre-chunked + pre-embedded in the KB pack
+    # (resources/knowledge/pack, or KB_PACK_DIR) and are ingested directly into
+    # knowledge_items + ChromaDB by the KB bootstrap. data/knowledge/ remains the
+    # workspace for authored/converted runbooks and the /knowledge/scan flow.
 
     # Step 3: Run database migrations
     # Note: This uses synchronous Alembic - runs in the event loop's executor
