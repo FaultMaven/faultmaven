@@ -333,10 +333,9 @@ pip install -e ".[dev]"           # Install dependencies
 
 **Auto-Initialization:** On first startup, FaultMaven automatically:
 - Creates `data/` directories (database, ChromaDB, evidence, knowledge)
-- Copies 59 built-in runbooks from `resources/knowledge/builtin/` to `data/knowledge/global/`
 - Runs database migrations
 - Creates a default admin account (`admin@local.faultmaven`)
-- Bootstraps the KB: atomic + idempotent ingestion of `data/knowledge/{scope}/**/*.md` into both `knowledge_items` and ChromaDB. Implementation: `faultmaven/bootstrap/kb_init.py`; runs on every startup but skips unchanged files via content-hash. See [`docs/architecture/knowledge-and-ai/kb-ingestion-architecture.md`](docs/architecture/knowledge-and-ai/kb-ingestion-architecture.md).
+- Bootstraps the KB from the **KB pack**: a self-contained bundle of shipped runbooks + build-time BGE-M3 vectors (`resources/knowledge/pack`, or `KB_PACK_DIR`). Ingestion is atomic + idempotent (content-hash skip) and writes the pack's pre-chunked, pre-embedded chunks straight into `knowledge_items` + ChromaDB — **no embedding model at startup**, so it runs in seconds. Implementation: `faultmaven/bootstrap/kb_init.py` + `kb_pack.py`. The pack is built/owned by `faultmaven-kb-toolkit` (`kb-build-pack`) and vendored here; override `KB_PACK_DIR` to update the KB offline without rebuilding the image. See [`docs/architecture/knowledge-and-ai/kb-ingestion-architecture.md`](docs/architecture/knowledge-and-ai/kb-ingestion-architecture.md).
 
 Login via dev-login: `POST /api/v1/auth/dev-login` with `{"username": "admin"}`
 

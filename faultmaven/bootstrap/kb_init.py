@@ -1,47 +1,42 @@
-"""Knowledge Base Bootstrap — atomic, idempotent ingestion of shipped runbooks.
+"""Knowledge Base Bootstrap — atomic, idempotent ingestion of the shipped KB pack.
 
 Runs at application startup after the DI container has wired up the
-``KnowledgeService``. Walks ``data/knowledge/{scope}/**/*.md`` and ensures
-every runbook on disk has a corresponding row in ``knowledge_items`` and
-embeddings in ChromaDB. Pre-deployed runbooks (built-ins, toolkit-deployed,
-community contributions) ingest **directly** without passing through the
-``conversion_drafts`` table — that table is reserved for case-generated and
-document-converted drafts that legitimately need human review.
+``KnowledgeService``. Loads the **KB pack** (a self-contained bundle of shipped
+runbooks + build-time chunk vectors — see ``faultmaven/bootstrap/kb_pack.py``)
+and ensures every runbook in it has a row in ``knowledge_items`` and its chunks
+in ChromaDB. Because the pack ships pre-chunked and pre-embedded, ingestion is
+pure SQL + vector writes — **no chunking and no embedding model at startup**, so
+it runs in seconds instead of the ~tens of minutes that on-pod CPU embedding of
+~1244 chunks would take (the rollout-timeout bug; see
+``docs/working/ANALYSIS-kb-ingestion-perf.md``).
+
+The pack location is configurable (``KB_PACK_DIR``): empty → the baseline pack
+bundled in the image at ``resources/knowledge/pack``; an override points at an
+external, replaceable pack so the KB can be updated offline WITHOUT rebuilding
+the app image (local bind-mounts a dir; cloud has an init container populate it).
 
 Design Notes
 ============
 
 Why a separate flow from ``conversion_drafts``?
-    Pre-deployed `.md` files are already authored, validated, and scored
-    by the time they hit ``data/knowledge/{scope}/``. Requiring the user
-    to click "Activate" in the dashboard for every shipped runbook is
-    ceremony for content the platform vendor (or admin) has already
-    approved. Conflating the two flows is what produced the bugs traced
-    in ``docs/architecture/knowledge-and-ai/kb-ingestion-architecture.md``.
+    Pack runbooks are already authored, validated, and scored by build time.
+    Requiring a dashboard "Activate" click per shipped runbook is ceremony for
+    content the platform vendor (or admin) already approved. ``conversion_drafts``
+    is reserved for case-generated / document-converted drafts that need review.
 
 Atomicity
-    Each file's ingestion is all-or-nothing:
-      1. Verify BGE-M3 model is loaded (eager pre-load at bootstrap entry).
-      2. Compute deterministic ``item_id`` from runbook frontmatter ``id``.
-      3. Check ``knowledge_items`` — if present AND content matches, skip.
-      4. Call ``KnowledgeService.ingest_runbook()`` — SQL row first,
-         ChromaDB embeddings second.
-      5. Validate ``chunks_created > 0``; on failure, surface loudly
-         (don't silently leave a half-state — that bug history is what
-         this bootstrap exists to prevent).
+    Each runbook's ingestion is all-or-nothing:
+      1. Compute the deterministic ``item_id`` (carried by the pack).
+      2. Check ``knowledge_items`` — if present AND content hash matches, skip.
+      3. Call ``KnowledgeService.ingest_runbook(prechunked=...)`` — SQL row
+         first, ChromaDB chunks (pack vectors) second.
+      4. Validate ``chunks_created > 0``; on failure, surface loudly and clean
+         up — never leave half-state.
 
 Idempotency
-    Re-running the bootstrap is safe. Files that haven't changed get
-    skipped; new/changed files get (re-)ingested. Deleted files are
-    NOT removed from the KB by the bootstrap — that's a separate
-    concern owned by the dashboard's explicit delete path.
-
-BGE-M3 race avoidance
-    The most common silent-failure mode in the previous design was
-    ``_index_document_in_vector_store`` returning 0 chunks because the
-    BGE-M3 model wasn't yet loaded. We eagerly load it here, **before**
-    any ingestion attempt, so the lazy-load race can't happen on the
-    bootstrap path.
+    Re-running is safe. Unchanged runbooks (content-hash match) are skipped;
+    changed ones are re-ingested (delete + re-create). Runbooks removed from the
+    pack are pruned from ``knowledge_items`` + ChromaDB (orphan prune below).
 """
 
 from __future__ import annotations
@@ -57,20 +52,13 @@ from sqlalchemy import select
 logger = logging.getLogger(__name__)
 
 
-# Scopes whose `data/knowledge/{scope}/` directories the bootstrap will walk.
-# ``global`` is the only one currently shipped from the repo; ``team`` and
-# ``personal`` are listed defensively so an admin who manually drops a file
-# into those directories gets the same auto-ingest behaviour.
-_BOOTSTRAP_SCOPES = ("global", "team", "personal")
-
-
 class BootstrapResult:
     """Per-run summary. Logged at INFO; returned for tests."""
 
     def __init__(self) -> None:
         self.ingested: list[str] = []
         self.skipped_unchanged: list[str] = []
-        self.failed: list[tuple[str, str]] = []  # (filename, reason)
+        self.failed: list[tuple[str, str]] = []  # (relpath, reason)
         self.pruned: list[str] = []  # orphaned built-in item_ids removed
 
     def __repr__(self) -> str:
@@ -87,96 +75,81 @@ async def bootstrap_kb(
     db_session_factory: Callable[[], Awaitable[Any]],
     organization_id: str,
     project_root: Optional[Path] = None,
+    pack_dir: Optional[Path] = None,
 ) -> BootstrapResult:
-    """Run the KB ingestion bootstrap.
+    """Run the KB ingestion bootstrap from the shipped pack.
 
     Args:
         knowledge_service: The wired-up KnowledgeService (post-DI).
         db_session_factory: Async session factory (``get_db_session``).
-        organization_id: Default org for the global-scope runbooks. In
-            single-tenant mode this is the platform-default org id.
-        project_root: Override the project root path (test injection).
+        organization_id: Default org for the global-scope runbooks.
+        project_root: Override the project root (test injection).
+        pack_dir: Explicit pack directory (test injection). When None, resolves
+            from ``KB_PACK_DIR`` settings, falling back to the bundled baseline.
 
     Returns:
-        BootstrapResult — per-file outcomes (counts + failure reasons).
+        BootstrapResult — per-runbook outcomes (counts + failure reasons).
 
     Failure handling:
-        Individual file failures are logged and recorded in the result
-        but do NOT abort the bootstrap — a single bad runbook shouldn't
-        block the other 58 from ingesting. Caller can inspect
-        ``result.failed`` to surface failures (e.g., at API healthcheck
-        time).
+        Individual runbook failures are logged and recorded but do NOT abort the
+        bootstrap — one bad runbook shouldn't block the others.
     """
     from faultmaven.bootstrap.data_init import get_project_root
+    from faultmaven.bootstrap.kb_pack import KbPack, resolve_pack_dir
 
     result = BootstrapResult()
     root = project_root or get_project_root()
-    knowledge_dir = root / "data" / "knowledge"
 
-    if not knowledge_dir.exists():
-        logger.info("No data/knowledge/ directory found — nothing to bootstrap")
-        return result
+    if pack_dir is None:
+        configured = ""
+        try:
+            from faultmaven.config.settings import get_settings
 
-    # Eager-load BGE-M3 so the lazy-load race that produced silent
-    # ``chunks_created=0`` failures in the previous design can't happen.
-    # ``startup`` is the canonical triggered_by string for this path.
-    from faultmaven.infrastructure.model_cache import model_cache
+            configured = get_settings().database.kb_pack_dir
+        except Exception as exc:  # settings unavailable in some test contexts
+            logger.debug(f"Could not read KB_PACK_DIR from settings: {exc}")
+        pack_dir = resolve_pack_dir(root, configured)
 
-    embed_model = model_cache.get_bge_m3_model(triggered_by="startup")
-    if embed_model is None:
-        logger.error(
-            "BGE-M3 model failed to load — KB bootstrap aborted. "
-            "Runbooks on disk will not be queryable until the model loads "
-            "and the bootstrap re-runs (restart API)."
+    pack = KbPack.load(Path(pack_dir))
+    if pack is None:
+        logger.warning(
+            "KB bootstrap: no pack loaded from %s — knowledge base will be "
+            "empty until a valid pack is present.",
+            pack_dir,
         )
-        # Don't iterate files when we know ingestion will fail. The result
-        # carries an empty ingested list which the caller can surface.
-        return result
-
-    files_to_ingest = _enumerate_runbook_files(knowledge_dir)
-    if not files_to_ingest:
-        logger.info("No runbook files found under data/knowledge/{scope}/")
         return result
 
     logger.info(
-        f"Bootstrap: found {len(files_to_ingest)} runbook file(s) "
-        f"across {_BOOTSTRAP_SCOPES} scopes"
+        "KB bootstrap: ingesting %d runbook(s) from pack %s (version=%s)",
+        len(pack),
+        pack.source_dir,
+        pack.version,
     )
 
-    for scope, md_path in files_to_ingest:
-        relative = md_path.relative_to(knowledge_dir)
+    for runbook in pack.runbooks:
         try:
-            outcome = await _ingest_one(
-                md_path=md_path,
-                scope=scope,
+            outcome = await _ingest_pack_runbook(
+                runbook=runbook,
                 knowledge_service=knowledge_service,
                 db_session_factory=db_session_factory,
                 organization_id=organization_id,
             )
             if outcome == "ingested":
-                result.ingested.append(str(relative))
+                result.ingested.append(runbook.relpath)
             else:  # "skipped"
-                result.skipped_unchanged.append(str(relative))
+                result.skipped_unchanged.append(runbook.relpath)
         except Exception as exc:
-            # Per-file failures don't abort the bootstrap.
             reason = f"{type(exc).__name__}: {exc}"
             logger.error(
-                f"Bootstrap failed for {relative}: {reason}",
+                f"Bootstrap failed for {runbook.relpath}: {reason}",
                 exc_info=True,
             )
-            result.failed.append((str(relative), reason))
+            result.failed.append((runbook.relpath, reason))
 
-    # Reconcile: prune built-in rows whose source runbook no longer maps to
-    # any on-disk file (e.g. the runbook's frontmatter ``id`` changed,
-    # orphaning the old deterministic item_id). Keyed off the SAME on-disk
-    # set we just walked, independent of per-file ingest success.
-    keep_ids: set[str] = set()
-    for _scope, md_path in files_to_ingest:
-        iid = _item_id_for_file(md_path)
-        if iid:
-            keep_ids.add(iid)
+    # Prune built-in rows whose runbook is no longer in the pack (e.g. removed or
+    # its frontmatter ``id`` changed). Keyed off the pack's item_ids.
     result.pruned = await _prune_orphan_builtins(
-        keep_ids, knowledge_service, db_session_factory
+        pack.item_ids, knowledge_service, db_session_factory
     )
 
     logger.info(
@@ -188,23 +161,74 @@ async def bootstrap_kb(
     return result
 
 
-def _item_id_for_file(md_path: Path) -> Optional[str]:
-    """Derive the deterministic built-in item_id a runbook file maps to.
+async def _ingest_pack_runbook(
+    runbook: Any,  # kb_pack.PackRunbook
+    knowledge_service: Any,
+    db_session_factory: Callable[[], Awaitable[Any]],
+    organization_id: str,
+) -> str:
+    """Ingest one pack runbook. Returns ``"ingested"`` or ``"skipped"``.
 
-    Returns None if the file has no frontmatter ``id`` (such a file can't
-    produce a row, so it contributes nothing to the keep-set).
+    Idempotent: skips when an existing row's content hashes equal to the pack's
+    ``content_hash``. Writes the SQL row + the pack's pre-embedded chunks; never
+    loads the embedding model.
     """
-    try:
-        import frontmatter
+    from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
 
-        post = frontmatter.load(str(md_path))
-        runbook_id = post.metadata.get("id")
-    except Exception as exc:
-        logger.warning(f"Could not read frontmatter id from {md_path.name}: {exc}")
-        return None
-    if not runbook_id:
-        return None
-    return _item_id_from_runbook_id(str(runbook_id))
+    # Idempotency: skip if the item exists and content is unchanged.
+    async with db_session_factory() as session:
+        existing = await session.execute(
+            select(KnowledgeItemModel).where(
+                KnowledgeItemModel.item_id == runbook.item_id
+            )
+        )
+        existing_row = existing.scalar_one_or_none()
+
+    if existing_row is not None:
+        existing_hash = hashlib.sha256(existing_row.content.encode("utf-8")).hexdigest()
+        if existing_hash == runbook.content_hash:
+            logger.debug(f"Skipping {runbook.relpath}: unchanged")
+            return "skipped"
+        logger.info(
+            f"{runbook.relpath}: content changed since last ingest — re-ingesting"
+        )
+        await _delete_existing(runbook.item_id, knowledge_service, db_session_factory)
+
+    prechunked = [(c.text, c.embedding) for c in runbook.chunks]
+
+    chunks_created = await knowledge_service.ingest_runbook(
+        document_id=runbook.item_id,
+        title=runbook.title,
+        content=runbook.content,
+        organization_id=organization_id,
+        document_type="runbook",
+        tags=runbook.tags,
+        source_url=runbook.source_url,
+        scope=runbook.scope,
+        owner_id=runbook.owner_id,
+        team_id=runbook.team_id,
+        # Pre-deployed runbooks carry COMMUNITY trust via verification_level, not
+        # a fake verified_by (an FK to users.user_id — must be a real user or
+        # NULL). See the FK regression history in #378.
+        verified_by=None,
+        verification_level=VerificationLevel.COMMUNITY,
+        prechunked=prechunked,
+    )
+
+    if chunks_created <= 0:
+        await _delete_existing(runbook.item_id, knowledge_service, db_session_factory)
+        raise RuntimeError(
+            f"Vector indexing produced 0 chunks for {runbook.relpath} "
+            f"(pack supplied {len(prechunked)} chunks). SQL row cleaned up."
+        )
+
+    logger.info(
+        f"Ingested {runbook.relpath} ({chunks_created} chunks, scope={runbook.scope})"
+    )
+    return "ingested"
 
 
 # Built-in rows carry a deterministic ``kb_<12 hex>`` item_id (see
@@ -215,26 +239,24 @@ _BUILTIN_ITEM_ID_RE = re.compile(r"^kb_[0-9a-f]{12}$")
 
 
 async def _prune_orphan_builtins(
-    keep_ids: set[str],
+    keep_ids: set,
     knowledge_service: Any,
     db_session_factory: Callable[[], Awaitable[Any]],
 ) -> list[str]:
-    """Delete built-in knowledge_items (+ vectors) with no on-disk source.
+    """Delete built-in knowledge_items (+ vectors) not present in the pack.
 
-    A built-in row is an orphan when its deterministic ``kb_<hash>`` id maps
-    to no current runbook file — typically because the runbook's frontmatter
-    ``id`` changed, leaving the old row behind (the bootstrap otherwise only
-    adds/updates, never removes). Authored/uuid items are out of scope: the
-    id pattern can't match them.
+    A built-in row is an orphan when its deterministic ``kb_<hash>`` id is not in
+    ``keep_ids`` (the pack's item_ids) — typically because the runbook was
+    removed from the pack or its frontmatter ``id`` changed. Authored/uuid items
+    are out of scope: the id pattern can't match them.
 
-    Safety: if ``keep_ids`` is empty (every file failed to yield an id — a
-    disk/parse anomaly, not a legitimate "remove everything" signal), prune
-    NOTHING. Mirrors the scan's "would discard all" abort guard.
+    Safety: if ``keep_ids`` is empty (a pack-load anomaly, not a legitimate
+    "remove everything" signal), prune NOTHING.
     """
     if not keep_ids:
         logger.warning(
-            "Orphan prune skipped: no on-disk runbook ids resolved "
-            "(possible data-dir/parse problem). No rows removed."
+            "Orphan prune skipped: pack yielded no item_ids "
+            "(possible pack problem). No rows removed."
         )
         return []
 
@@ -251,137 +273,9 @@ async def _prune_orphan_builtins(
             pruned.append(item_id)
             logger.info(
                 f"Pruned orphaned built-in knowledge_item {item_id} "
-                f"(no on-disk runbook maps to it)"
+                f"(not in current pack)"
             )
     return pruned
-
-
-def _enumerate_runbook_files(knowledge_dir: Path) -> list[tuple[str, Path]]:
-    """Return all (scope, .md path) pairs under data/knowledge/{scope}/.
-
-    Skips:
-      - data/knowledge/sources/ (toolkit-staged sources, not runbooks)
-      - non-scope subdirectories (anything not in _BOOTSTRAP_SCOPES)
-    """
-    pairs: list[tuple[str, Path]] = []
-    for scope in _BOOTSTRAP_SCOPES:
-        scope_dir = knowledge_dir / scope
-        if not scope_dir.exists():
-            continue
-        for md in sorted(scope_dir.rglob("*.md")):
-            pairs.append((scope, md))
-    return pairs
-
-
-async def _ingest_one(
-    md_path: Path,
-    scope: str,
-    knowledge_service: Any,
-    db_session_factory: Callable[[], Awaitable[Any]],
-    organization_id: str,
-) -> str:
-    """Ingest a single runbook file. Returns ``"ingested"`` or ``"skipped"``.
-
-    Raises if any step fails; the caller records the failure and continues
-    to the next file.
-
-    Idempotency: a stable ``item_id`` is derived from frontmatter ``id``
-    so re-runs find existing rows. Content comparison (SHA-256) skips
-    re-ingestion when the file is unchanged.
-    """
-    from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
-
-    # Parse frontmatter to get the canonical runbook id and metadata.
-    try:
-        import frontmatter
-    except ImportError:  # pragma: no cover - dep is in pyproject
-        raise RuntimeError("python-frontmatter is required for KB bootstrap")
-
-    post = frontmatter.load(str(md_path))
-    metadata = post.metadata
-    content = md_path.read_text(encoding="utf-8")  # full file incl. frontmatter
-
-    runbook_id = metadata.get("id")
-    title = metadata.get("title")
-    if not runbook_id or not title:
-        raise ValueError(
-            f"Missing required frontmatter (id or title) in {md_path.name}"
-        )
-
-    # Deterministic item_id keyed off the runbook's stable identity.
-    # Same runbook id → same item_id across runs.
-    item_id = _item_id_from_runbook_id(runbook_id)
-
-    # Idempotency check: skip if the item exists and content is unchanged.
-    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    async with db_session_factory() as session:
-        existing = await session.execute(
-            select(KnowledgeItemModel).where(KnowledgeItemModel.item_id == item_id)
-        )
-        existing_row = existing.scalar_one_or_none()
-
-    if existing_row is not None:
-        existing_hash = hashlib.sha256(existing_row.content.encode("utf-8")).hexdigest()
-        if existing_hash == content_hash:
-            logger.debug(f"Skipping {md_path.name}: unchanged")
-            return "skipped"
-        # Changed content — remove the existing row (and its ChromaDB
-        # chunks) so the fresh ingestion writes clean state.
-        logger.info(f"{md_path.name}: content changed since last ingest — re-ingesting")
-        await _delete_existing(item_id, knowledge_service, db_session_factory)
-
-    # Atomic ingest: writes knowledge_items row + ChromaDB embeddings.
-    # `ingest_runbook` raises on any failure (including 0-chunk silent
-    # failure) and cleans up its own SQL row before raising. The
-    # `chunks_created <= 0` branch below is defence-in-depth in case that
-    # contract regresses — the bootstrap should never tolerate half-state.
-    tags = metadata.get("tags") or []
-    if not isinstance(tags, list):
-        tags = [str(tags)]
-
-    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-        VerificationLevel,
-    )
-
-    chunks_created = await knowledge_service.ingest_runbook(
-        document_id=item_id,
-        title=title,
-        content=content,
-        organization_id=organization_id,
-        document_type="runbook",
-        tags=tags,
-        source_url=metadata.get("source_url"),
-        scope=scope,
-        owner_id=metadata.get("owner_id"),
-        team_id=metadata.get("team_id"),
-        # Pre-deployed runbooks bypass per-user verification — they ship
-        # in the repo or are admin-deployed; the platform is the verifier.
-        # verified_by is an FK to users.user_id, so it MUST be a real user
-        # or NULL — never a sentinel string. The platform-verifier intent
-        # is expressed via verification_level=COMMUNITY instead. A fake
-        # verified_by="system" violated the FK once foreign_keys=ON landed
-        # in #378 and failed every shipped-runbook ingest.
-        verified_by=None,
-        verification_level=VerificationLevel.COMMUNITY,
-    )
-
-    if chunks_created <= 0:
-        # Should be unreachable — `ingest_runbook` raises on this case.
-        # If we land here, the contract has regressed; clean up defensively
-        # and surface a loud error so the regression is visible.
-        logger.error(
-            f"ingest_runbook returned 0 chunks for {md_path.name} without raising — "
-            f"contract violation. Cleaning up orphaned SQL row defensively."
-        )
-        await _delete_existing(item_id, knowledge_service, db_session_factory)
-        raise RuntimeError(
-            f"Vector indexing produced 0 chunks for {md_path.name} (contract "
-            f"violation: ingest_runbook should have raised). ChromaDB or "
-            f"chunker may be misbehaving."
-        )
-
-    logger.info(f"Ingested {md_path.name} ({chunks_created} chunks, scope={scope})")
-    return "ingested"
 
 
 async def _delete_existing(
@@ -422,9 +316,8 @@ async def _delete_existing(
 def _item_id_from_runbook_id(runbook_id: str) -> str:
     """Stable item_id derived from the runbook's frontmatter ``id``.
 
-    Thin wrapper over the shared
-    :func:`faultmaven.utils.runbook_id.item_id_from_runbook_id` so the scan
-    path can derive the same id without importing the bootstrap module.
+    Thin wrapper over :func:`faultmaven.utils.runbook_id.item_id_from_runbook_id`
+    so the pack builder and bootstrap derive the same id.
     """
     from faultmaven.utils.runbook_id import item_id_from_runbook_id
 

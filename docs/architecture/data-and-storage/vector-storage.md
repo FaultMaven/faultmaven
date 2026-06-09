@@ -241,26 +241,22 @@ Redis is not used for KB document storage. Document metadata persists in SQLite 
 
 ### 3.3 Global-Scope Admin Ingestion
 
-**Batch Ingestion Flow**:
+**Bootstrap Ingestion Flow** (built-in / pre-deployed runbooks):
 
-```python
-# Admin ingests curated global content into the unified KB
-from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
-
-ingester = container.get_knowledge_ingester()
-await ingester.ingest_directory(
-    path="./resources/knowledge/builtin/",
-    scope="global",
-)
-
-# Steps:
-# 1. Parse markdown files
-# 2. Extract frontmatter metadata
-# 3. Generate embeddings (BGE-M3, 1024-dim)
-# 4. Batch insert to faultmaven_kb with scope="global"
+```text
+# faultmaven/bootstrap/kb_init.py — bootstrap_kb()
+# 1. Load the KB pack (resources/knowledge/pack, or KB_PACK_DIR) via KbPack.load
+# 2. For each runbook (idempotent by content_hash):
+#      ingest_runbook(prechunked=[(chunk_text, vector), ...], scope=<from pack>)
+#      → writes the knowledge_items SQL row + the pack's pre-computed chunks/vectors
+#        into faultmaven_kb. NO embedding model — vectors ship in the pack.
+# 3. Prune built-in rows no longer present in the pack.
 ```
 
-On first startup, FaultMaven auto-ingests 59 built-in runbooks from `resources/knowledge/builtin/` with `scope="global"`.
+On first startup, FaultMaven ingests the 59 built-in runbooks from the **KB pack**
+in seconds (no model load on the readiness path). The pack is built by
+`faultmaven-kb-toolkit` (`kb-build-pack`). See
+[`kb-pack-architecture.md`](../knowledge-and-ai/kb-pack-architecture.md).
 
 ---
 
@@ -356,13 +352,14 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
 **Creation**:
 
 ```bash
-# Automatic at deployment. On first startup, FaultMaven auto-ingests the 59
-# built-in runbooks from resources/knowledge/builtin/ with scope="global".
+# Automatic at deployment. On first startup, FaultMaven ingests the 59 built-in
+# runbooks from the KB pack (resources/knowledge/pack, or KB_PACK_DIR) — pre-
+# chunked + pre-embedded, no model load. See kb-pack-architecture.md.
 ```
 
 **Updates**:
 
-- Global-scope content: admin-only, ingested via the `KnowledgeIngester` service
+- Global-scope built-in content: ships in the KB pack, ingested by the startup bootstrap (`kb_init.py`)
 - Personal-scope content: added via `POST /api/v1/knowledge/documents` by the owner
 - Team-scope content: added via the same endpoint with `scope=team` and a `team_id`
 - Deletion of individual documents via `delete_documents_by_parent_id()`

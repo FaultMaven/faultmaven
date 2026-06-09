@@ -226,26 +226,22 @@ Global runbooks and methodologies live in the unified `faultmaven_kb` collection
 - Methodology guides (SRE, DevOps)
 - Tool usage examples
 
-### 3.2 Admin Batch Ingestion
+### 3.2 Startup Bootstrap Ingestion (built-in runbooks)
 
-```python
-# Admin uploads curated content via the knowledge ingester
-from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
-
-ingester = KnowledgeIngester()
-await ingester.ingest_directory(
-    path="./resources/knowledge/builtin/",
-    scope="global",
-)
-
-# Pipeline steps:
-# 1. Parse markdown files
-# 2. Extract frontmatter metadata
-# 3. Generate BGE-M3 embeddings (1024-dim, multilingual)
-# 4. Batch insert to faultmaven_kb with scope="global"
+```text
+# faultmaven/bootstrap/kb_init.py — bootstrap_kb()
+# Built-ins ship in the KB pack (resources/knowledge/pack, or KB_PACK_DIR),
+# pre-chunked + pre-embedded by faultmaven-kb-toolkit (kb-build-pack).
+#
+# Per runbook (idempotent by content_hash):
+#   ingest_runbook(prechunked=[(chunk_text, vector), ...], scope=<from pack>)
+#   → knowledge_items SQL row + the pack's chunks/vectors into faultmaven_kb.
+#   NO embedding model runs at startup.
 ```
 
-On first startup FaultMaven auto-ingests 59 built-in runbooks from `resources/knowledge/builtin/` into `faultmaven_kb` under `scope="global"`.
+On first startup FaultMaven ingests the 59 built-in runbooks from the **KB pack**
+into `faultmaven_kb` (`scope="global"`) in seconds — no model load. See
+[`kb-pack-architecture.md`](../../knowledge-and-ai/kb-pack-architecture.md).
 
 ### 3.3 Access Control
 

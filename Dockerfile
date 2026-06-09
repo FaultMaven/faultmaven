@@ -29,8 +29,10 @@ COPY pyproject.toml .
 COPY faultmaven/ ./faultmaven/
 COPY alembic/ ./alembic/
 COPY alembic.ini .
-# Built-in knowledge (59 runbooks) — copied to data/knowledge on first startup
-# and ingested by the KB bootstrap. Without this the knowledge base is empty.
+# Knowledge resources, including the baseline KB pack at
+# resources/knowledge/pack (runbooks + build-time vectors). The KB bootstrap
+# ingests this pack at startup in seconds (no embedding model). Override at
+# runtime with KB_PACK_DIR to ship an updated pack without rebuilding the image.
 COPY resources/ ./resources/
 
 # Install the package itself (no deps — already installed from lockfile)

@@ -138,26 +138,31 @@ The KB Toolkit and FaultMaven runtime use different directories:
 
 | Path | Purpose | Who writes | Who reads |
 |------|---------|-----------|-----------|
-| `faultmaven-kb-toolkit/data/runbooks/` | Authoring workspace — draft, validate, score | KB Toolkit (`kb-init`, `kb-researcher`) | Toolkit CLI (`kb-validate`, `kb-quality`) |
-| `faultmaven/data/knowledge/{scope}/` | Runtime storage — ingested into ChromaDB via the startup bootstrap (pre-deployed) or the draft → verify flow (case-generated / document-converted) | Bootstrap (auto), conversion feature, manual file drop | FaultMaven API |
+| `faultmaven/resources/knowledge/runbooks/<domain>/` | **Authoritative built-in runbook sources** (public, transparent, PR-able). Edit/contribute here. | Maintainers, community PRs; KB Toolkit tools | KB Toolkit (`kb-validate`, `kb-quality`, `kb-build-pack`) |
+| `faultmaven/resources/knowledge/pack/` (or `KB_PACK_DIR`) | The **KB pack** — generated from the sources above (runbooks + build-time vectors), ingested at startup with no embedding model | `kb-build-pack` (toolkit), vendored here | FaultMaven API |
+| `faultmaven/data/knowledge/{scope}/` | Runtime workspace for **authored / converted** runbooks (draft → verify flow) and `/knowledge/scan` reconciliation. Pre-deployed runbooks no longer use this directory. | Conversion feature, manual file drop | FaultMaven API |
 | `faultmaven/docs/operations/runbooks/` | Community contributions — shared with the open-source community | Community members | Human readers (not ingested) |
 
-To move toolkit-generated runbooks into FaultMaven for ingestion:
+To add/update a built-in runbook: edit the source in this repo, rebuild the **KB
+pack** with the toolkit, and deliver it — no app-image rebuild needed:
 
 ```bash
-# Copy validated runbooks from toolkit to FaultMaven's global KB storage
-cp faultmaven-kb-toolkit/data/runbooks/**/*.md faultmaven/data/knowledge/global/
+# 1. Edit the authoritative source (public, PR-able):
+#    faultmaven/resources/knowledge/runbooks/<domain>/<runbook>.md
 
-# Restart the API — the startup bootstrap ingests every .md under
-# data/knowledge/{scope}/ atomically into knowledge_items + ChromaDB.
-# Idempotent: unchanged files are skipped via content-hash on every run.
+# 2. Rebuild the pack in faultmaven-kb-toolkit (it reads the public sources):
+kb-build-pack --version 2026-06-09 --tar
+
+# 3. Vendor it as the committed baseline (or deliver to a running deployment's
+#    KB_PACK_DIR — see kb-pack-architecture.md for local/cloud delivery):
+cp -r dist/kb-pack/* faultmaven/resources/knowledge/pack/
+
+# 4. Restart the API — the startup bootstrap ingests the pack idempotently
+#    (no model; unchanged runbooks skipped, removed ones pruned).
 ./faultmaven.sh restart
-
-# For a hot-rebuild without API restart:
-python scripts/reset_kb.py --yes --rebuild
 ```
 
-Pre-deployed runbooks bypass the `conversion_drafts` table entirely — see [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the two-path model and atomicity guarantees.
+Pre-deployed runbooks bypass the `conversion_drafts` table entirely. See [`kb-pack-architecture.md`](./kb-pack-architecture.md) for the pack format, `KB_PACK_DIR`, build and delivery, and [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the two-path ingestion model and atomicity guarantees.
 
 ---
 
@@ -189,7 +194,7 @@ Live (during investigation):
 | Chunking | Structure-aware splitting on markdown headers (3000-char max, 100-char min, sentence-boundary fallback) |
 | Supported formats | Markdown, TXT, PDF, DOCX, CSV, JSON, YAML |
 | Ingestion entry point | `KnowledgeService.ingest_runbook()` (atomic: SQL row + ChromaDB chunks or neither) |
-| Pre-deployed runbooks | Startup bootstrap — `faultmaven/bootstrap/kb_init.py` walks `data/knowledge/{scope}/`, ingests via `ingest_runbook`, content-hash idempotent |
+| Pre-deployed runbooks | Startup bootstrap — `faultmaven/bootstrap/kb_init.py` ingests the **KB pack** (pre-chunked + pre-embedded; no model) via `ingest_runbook(prechunked=...)`, content-hash idempotent |
 | Case-generated drafts | `conversion_drafts` → `ConversionService.verify_draft()` (atomic: status flips to VERIFIED only after successful ingestion) |
 | Architecture detail | [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) |
 
@@ -340,7 +345,7 @@ Adding a new KB tier requires:
 
 Global-tier ingestion runs automatically at API startup via the **KB bootstrap** (`faultmaven/bootstrap/kb_init.py`). The bootstrap walks `data/knowledge/global/` for `.md` files and ingests each one directly into `knowledge_items` + ChromaDB via `KnowledgeService.ingest_runbook()`. Idempotent: unchanged files are skipped via content-hash comparison on every restart.
 
-Tier-1-specific notes: Global runbooks are written by the platform admin and apply across all organizations. On first startup, `seed_builtin_runbooks()` copies 59 built-in runbooks from `resources/knowledge/builtin/` into `data/knowledge/global/`. The bootstrap then ingests them in the same pass — no separate "verify" step is needed because the platform vendor / admin is the verifier for pre-deployed content. The verify-via-Dashboard flow is reserved for case-generated and document-converted drafts that need a human gate.
+Tier-1-specific notes: Global runbooks are written by the platform admin and apply across all organizations. The 59 built-in runbooks ship pre-chunked and pre-embedded in the **KB pack** (`resources/knowledge/pack`, or `KB_PACK_DIR`); on startup the bootstrap ingests them directly — no separate "verify" step is needed because the platform vendor / admin is the verifier for pre-deployed content. The verify-via-Dashboard flow is reserved for case-generated and document-converted drafts that need a human gate.
 
 Each ingestion (whether from bootstrap or the conversion-drafts path) triggers YAML frontmatter parsing, structural validation (per [runbook-content-architecture.md §4 Quality Gates](./runbook-content-architecture.md#4-quality-gates)), chunking, embedding, and an atomic write to both stores — see [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the atomicity contract.
 

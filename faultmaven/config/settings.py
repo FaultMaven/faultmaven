@@ -638,6 +638,15 @@ class DatabaseSettings(BaseSettings):
     chromadb_kb_persist_dir: str = Field(default="./data/chroma-kb")
     chromadb_evidence_persist_dir: str = Field(default="./data/chroma-evidence")
 
+    # KB pack: a self-contained, replaceable bundle of shipped runbooks +
+    # build-time embeddings (see docs + faultmaven/bootstrap/kb_pack.py). Empty
+    # default → the baseline pack bundled in the image at
+    # resources/knowledge/pack. Override (KB_PACK_DIR) points at an external,
+    # replaceable pack so the KB can be updated offline WITHOUT rebuilding the
+    # app image: local bind-mounts a host dir; cloud has an init container
+    # populate it from object storage. Same core, different configuration.
+    kb_pack_dir: str = Field(default="", validation_alias="KB_PACK_DIR")
+
     # Vector Database Settings
     embedding_model: str = Field(default="BAAI/bge-m3")
     similarity_threshold: float = Field(default=0.7)

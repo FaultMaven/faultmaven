@@ -17,11 +17,11 @@ This guide is a navigation pointer. The previous content (template, taxonomy, th
 
 ## Ingestion in one paragraph
 
-There are two ingestion paths, by source. **Pre-deployed runbooks** — files you place directly under `data/knowledge/{global|team_<id>|user_<id>}/` — are ingested automatically at API startup by the [KB bootstrap](../architecture/knowledge-and-ai/kb-ingestion-architecture.md). The bootstrap is idempotent: unchanged files are skipped via content-hash on every restart. **Case-generated drafts** (from the Convert-from-Case feature) and **document-converted drafts** (from a file upload) land in the `conversion_drafts` table and require a human "Verify" click in the Dashboard Drafts tab before they reach the KB. Both paths produce chunks (structure-aware, 100–3000 chars), BGE-M3 embeddings (1024 dims), and rows in the single `faultmaven_kb` ChromaDB collection with metadata-based scope filtering.
+There are two ingestion paths, by source. **Pre-deployed runbooks** ship in the **KB pack** (`resources/knowledge/pack`, or `KB_PACK_DIR`) — a bundle of runbooks + pre-computed vectors that the [KB bootstrap](../architecture/knowledge-and-ai/kb-ingestion-architecture.md) ingests automatically at API startup with **no embedding model** (so it takes seconds). The bootstrap is idempotent: unchanged runbooks are skipped via content-hash on every restart. **Case-generated drafts** (from the Convert-from-Case feature) and **document-converted drafts** (from a file upload) land in the `conversion_drafts` table and require a human "Verify" click in the Dashboard Drafts tab before they reach the KB. Both paths produce chunks (structure-aware, 100–3000 chars), BGE-M3 embeddings (1024 dims), and rows in the single `faultmaven_kb` ChromaDB collection with metadata-based scope filtering.
 
-## Auto-seeded built-in runbooks
+## Built-in runbooks (the KB pack)
 
-On first startup, FaultMaven copies 59 runbooks from `resources/knowledge/builtin/` to `data/knowledge/global/`, and the startup bootstrap then ingests them automatically — no Dashboard step is required. To deploy additional runbooks from the KB Toolkit or hand-authored sources, drop them into `data/knowledge/{scope}/` and restart the API (or run `python scripts/reset_kb.py --yes --rebuild` for a hot rebuild without restart).
+The 59 built-in runbooks ship pre-chunked and pre-embedded in the KB pack and are ingested automatically on startup — no Dashboard step is required. To add or update pre-deployed runbooks, rebuild the pack in the [KB Toolkit](../architecture/knowledge-and-ai/kb-pack-architecture.md) (`kb-build-pack`) and deliver it — vendor the committed baseline, or update a running deployment's `KB_PACK_DIR` (local bind-mount / cloud MinIO) with no app-image rebuild. See [KB Pack Architecture](../architecture/knowledge-and-ai/kb-pack-architecture.md).
 
 ## Tools the agent uses during investigation
 

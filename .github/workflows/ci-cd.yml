@@ -101,6 +101,12 @@ jobs:
           black --check faultmaven/ tests/
           ruff check faultmaven/ tests/ --select E9,F63,F7,F82,I
 
+      - name: KB pack is structurally valid
+        # The KB pack is built + freshness-checked by faultmaven-kb-toolkit and
+        # vendored here; this verifies the committed pack isn't corrupt (loads,
+        # content hashes match bundled markdown, chunks have full-dim vectors).
+        run: python scripts/check_kb_pack.py
+
   # ============================================================================
   # COMMUNITY EDITION TESTING
   # Test with minimal dependencies (pip install faultmaven)

@@ -8,6 +8,7 @@ Documentation for FaultMaven's knowledge management, vector search, and AI agent
 | ----------- | ---------- |
 | Storing, scoping, or managing access to runbooks | [Knowledge Base Architecture](./knowledge-base-architecture.md) |
 | Understanding how runbooks reach the KB (bootstrap vs verify) | [KB Ingestion Architecture](./kb-ingestion-architecture.md) |
+| The KB pack — format, `KB_PACK_DIR`, build & offline delivery | [KB Pack Architecture](./kb-pack-architecture.md) |
 | Tuning retrieval — embeddings, hybrid search, reranker | [Vector Retrieval Architecture](./vector-retrieval-architecture.md) |
 | Writing runbook content (template, taxonomy, validation) | [Runbook Content Architecture](./runbook-content-architecture.md) |
 | Implementing the document-to-runbook conversion feature | [Document-to-Runbook Conversion](./document-to-runbook-conversion.md) |
@@ -22,6 +23,7 @@ Each cross-cutting topic has one canonical document. Other documents reference i
 | 3-tier scope model (Global / Team / Personal) + scope safety invariant | [knowledge-base-architecture.md](./knowledge-base-architecture.md) |
 | Single-collection design (`faultmaven_kb`) + tier scoping | [knowledge-base-architecture.md](./knowledge-base-architecture.md) |
 | Ingestion paths (bootstrap vs verify), atomicity, idempotency | [kb-ingestion-architecture.md](./kb-ingestion-architecture.md) |
+| KB pack format, `KB_PACK_DIR`, build (toolkit), offline delivery (local/cloud) | [kb-pack-architecture.md](./kb-pack-architecture.md) |
 | Federated search — access control, team-membership resolution | [knowledge-base-architecture.md](./knowledge-base-architecture.md) |
 | Embedding model (BGE-M3) + dimensions reference | [vector-retrieval-architecture.md](./vector-retrieval-architecture.md) |
 | Two-stage hybrid search + four-signal reranker mechanics | [vector-retrieval-architecture.md](./vector-retrieval-architecture.md) |

@@ -1084,12 +1084,22 @@ class KnowledgeService:
         return extract_frontmatter_metadata(content)
 
     async def _index_document_in_vector_store(
-        self, document: KnowledgeBaseDocument
+        self,
+        document: KnowledgeBaseDocument,
+        prechunked: Optional[List[tuple[str, List[float]]]] = None,
     ) -> int:
-        """Index document in vector store with structure-aware chunking.
+        """Index a document's chunks + embeddings into the vector store.
 
-        Splits the document into semantically meaningful chunks, generates
-        BGE-M3 embeddings for each, and stores them with enriched metadata.
+        Args:
+            prechunked: Build-time ``(chunk_text, embedding)`` pairs from a KB
+                pack. When supplied, the document is NOT re-chunked or
+                re-embedded — these exact chunk texts and vectors are written.
+                This is the fast, model-free boot path for shipped runbooks
+                (embedding 1244 chunks on a CPU-limited pod otherwise takes
+                ~tens of minutes). When None, the document is chunked with
+                :class:`ContentChunker` and embedded with BGE-M3 — the
+                upload/draft path. Per-chunk metadata is derived from the
+                document frontmatter either way (it is not carried in the pack).
 
         Returns:
             Number of chunks indexed (0 on failure).
@@ -1098,32 +1108,37 @@ class KnowledgeService:
             return 0
 
         try:
-            from faultmaven.infrastructure.model_cache import model_cache
-            from faultmaven.modules.knowledge.domain.services.content_chunker import (
-                ContentChunker,
-            )
-
             # Remove old chunks for this document (safe for re-ingestion)
             if hasattr(self._vector_store, "delete_documents_by_parent_id"):
                 await self._vector_store.delete_documents_by_parent_id(
                     document.document_id
                 )
 
-            # Chunk the content
-            chunker = ContentChunker()
-            chunks = chunker.split(document.content)
-            if not chunks:
-                logger.warning(
-                    f"No chunks produced for document {document.document_id}"
+            if prechunked is not None:
+                # Pack fast path: write the pack's chunk texts + vectors as-is.
+                # No ContentChunker, no model load.
+                chunks = [text for text, _ in prechunked]
+                embeddings = [embedding for _, embedding in prechunked]
+                if not chunks:
+                    logger.warning(f"Pack supplied 0 chunks for {document.document_id}")
+                    return 0
+            else:
+                from faultmaven.infrastructure.model_cache import model_cache
+                from faultmaven.modules.knowledge.domain.services.content_chunker import (  # noqa: E501
+                    ContentChunker,
                 )
-                return 0
 
-            # Generate BGE-M3 embeddings
-            bge_model = model_cache.get_bge_m3_model()
-            if bge_model is None:
-                logger.error("BGE-M3 model unavailable, skipping vector indexing")
-                return 0
-            embeddings = [bge_model.encode(chunk).tolist() for chunk in chunks]
+                chunks = ContentChunker().split(document.content)
+                if not chunks:
+                    logger.warning(
+                        f"No chunks produced for document {document.document_id}"
+                    )
+                    return 0
+                bge_model = model_cache.get_bge_m3_model()
+                if bge_model is None:
+                    logger.error("BGE-M3 model unavailable, skipping vector indexing")
+                    return 0
+                embeddings = [bge_model.encode(chunk).tolist() for chunk in chunks]
 
             # Extract RAG-enrichment fields from frontmatter
             fm_meta = self._extract_frontmatter_for_rag(document.content)
@@ -1204,6 +1219,7 @@ class KnowledgeService:
         team_id: Optional[str] = None,
         verified_by: Optional[str] = None,
         verification_level: "Optional[VerificationLevel]" = None,
+        prechunked: Optional[List[tuple[str, List[float]]]] = None,
     ) -> int:
         """Promote runbook content to a fully-published KnowledgeItem.
 
@@ -1229,6 +1245,10 @@ class KnowledgeService:
                 ship as COMMUNITY without a verified_by FK value. When None,
                 falls back to the legacy derive so upload callers are
                 unchanged.
+            prechunked: Optional build-time ``(chunk_text, embedding)`` pairs
+                from a KB pack. When provided, the runbook is written without
+                chunking or loading BGE-M3 — the fast boot path for shipped
+                runbooks. See :meth:`_index_document_in_vector_store`.
 
         Returns:
             Number of chunks indexed in ChromaDB. The SQL row exists either
@@ -1320,7 +1340,9 @@ class KnowledgeService:
             updated_at=to_json_compatible(now),
         )
         try:
-            chunks_created = await self._index_document_in_vector_store(doc_model)
+            chunks_created = await self._index_document_in_vector_store(
+                doc_model, prechunked=prechunked
+            )
         except Exception:
             await self._delete_knowledge_item_row(document_id)
             raise
