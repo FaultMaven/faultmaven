@@ -620,10 +620,16 @@ class DatabaseSettings(BaseSettings):
     }
 
     # ============================================
-    # ChromaDB Configuration (K8s Ingress for HTTP)
+    # ChromaDB Configuration
     # ============================================
-    chromadb_host: str = Field(default="chromadb.faultmaven.local")
-    chromadb_port: int = Field(default=30080)
+    # Default "localhost" → the embedded PersistentClient (no network), matching
+    # the documented "PersistentClient by default" local model and the KB/case
+    # vector stores. Any non-"localhost" host opts the ingestion service into an
+    # HTTP client: cloud/k8s deployments set CHROMADB_HOST to the in-cluster
+    # ChromaDB service (see faultmaven-enterprise-infra configmap). Same core,
+    # different configuration — local must not reach for a remote ChromaDB.
+    chromadb_host: str = Field(default="localhost")
+    chromadb_port: int = Field(default=8000)
     # Empty default = no external ChromaDB server configured → go straight to
     # local PersistentClient. Cloud deployments set CHROMADB_URL explicitly to
     # opt in to HttpClient.

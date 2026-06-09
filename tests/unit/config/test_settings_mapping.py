@@ -254,8 +254,11 @@ class TestChromaDBSettingsMapping:
 
         settings = get_settings()
 
-        assert settings.database.chromadb_host == "chromadb.faultmaven.local"
-        assert settings.database.chromadb_port == 30080
+        # Local-safe defaults: "localhost" routes the ingestion service to the
+        # embedded PersistentClient (no network). Cloud/k8s overrides CHROMADB_HOST
+        # to the in-cluster service.
+        assert settings.database.chromadb_host == "localhost"
+        assert settings.database.chromadb_port == 8000
         assert settings.database.chromadb_kb_persist_dir == "./data/chroma-kb"
         assert (
             settings.database.chromadb_evidence_persist_dir == "./data/chroma-evidence"
