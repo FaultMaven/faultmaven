@@ -281,9 +281,9 @@ class TestDatabaseSettings:
         assert settings.redis_db == 0
         assert settings.redis_password is None
         assert settings.redis_url is None
-        assert settings.chromadb_host == "chromadb.faultmaven.local"
-        assert settings.chromadb_port == 30080
-        assert settings.chromadb_url == "http://chromadb.faultmaven.local:30080"
+        assert settings.chromadb_host == "localhost"
+        assert settings.chromadb_port == 8000
+        assert settings.chromadb_url == ""
         assert settings.chromadb_api_key is None
         assert settings.chromadb_auth_token is None
         assert settings.chromadb_collection == "faultmaven_kb"
