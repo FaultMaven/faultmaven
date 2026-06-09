@@ -43,6 +43,15 @@ RUN useradd --create-home --shell /bin/bash faultmaven \
     && chown -R faultmaven:faultmaven /app
 USER faultmaven
 
+# Container runtime defaults. With no explicit config the app applies the
+# zero-config "local" preset, which is tuned for a laptop (127.0.0.1:8000,
+# reload on). Setting these here makes the image serve on the exposed port
+# (0.0.0.0:8090) without a file-watching reloader. Preset application respects
+# already-set env vars, so these win; cloud/compose can still override them.
+ENV HOST=0.0.0.0 \
+    PORT=8090 \
+    RELOAD=false
+
 # Expose port
 EXPOSE 8090
 

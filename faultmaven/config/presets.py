@@ -70,7 +70,14 @@ PRESETS: Dict[str, PresetDefinition] = {
             "HOST": "127.0.0.1",
             "PORT": "8000",
             "RELOAD": "true",
-            "SKIP_SERVICE_CHECKS": "true",
+            # NOTE: do NOT set SKIP_SERVICE_CHECKS here. That flag makes the DI
+            # container skip *creating* the ChromaDB vector stores (returns None),
+            # which silently disables the knowledge base — the embedded
+            # PersistentClient this preset relies on never gets built, so the KB
+            # pack cannot be ingested at startup. Redis already degrades to
+            # FakeRedis and ChromaDB defaults to a local PersistentClient, so no
+            # external service is required without skipping. SKIP_SERVICE_CHECKS
+            # remains opt-in (e.g. pytest) for genuinely store-less runs.
             # Storage - minimal external deps (FakeRedis for sessions, local ChromaDB PersistentClient for vectors)
             "VECTOR_STORAGE_TYPE": "chromadb",
             "CASE_STORAGE_TYPE": "inmemory",
