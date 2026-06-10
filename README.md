@@ -55,9 +55,17 @@ cp .env.example .env
 ```
 
 **What happens:**
-1. Docker pulls images and starts services.
-2. The API automatically initializes the database and runs migrations.
+1. Docker pulls the images (one-time, ~5.4 GB for the API — it bundles the
+   embedding model and a starter Knowledge Base, so the stack runs fully
+   offline with no model download at runtime) and starts the services.
+2. On first start (~1 minute) the API initializes the database, runs
+   migrations, loads the bundled embedding model, and seeds 59 starter
+   troubleshooting runbooks into the Knowledge Base. Restarts are faster — the
+   database and vectors persist under `./data`.
 3. A default admin user is created: `admin` / `admin@local.faultmaven`
+
+> **First run is slower** because of the one-time image pull. After that,
+> startup is ~1 minute and needs no internet access for the model or KB.
 
 ### Step 2: Log In
 

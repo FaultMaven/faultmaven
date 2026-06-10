@@ -58,8 +58,12 @@ class TestPresetDefinitions:
         assert defaults.get("CHAT_PROVIDER") == "local"
         assert "localhost" in defaults.get("LOCAL_LLM_URL", "")
 
-        # Should skip service checks
-        assert defaults.get("SKIP_SERVICE_CHECKS") == "true"
+        # Must NOT set SKIP_SERVICE_CHECKS: that flag makes the DI container skip
+        # creating the ChromaDB vector stores, which disables the knowledge base
+        # the preset otherwise relies on (embedded PersistentClient). Redis still
+        # degrades to FakeRedis and ChromaDB defaults to a local PersistentClient,
+        # so nothing external is required without skipping store creation.
+        assert "SKIP_SERVICE_CHECKS" not in defaults
 
     def test_local_preset_no_required_keys_for_local_provider(self):
         """Test that local preset has no required keys for local provider."""
