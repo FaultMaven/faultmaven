@@ -52,7 +52,12 @@ services:
     ports:
       - "3333:80"
     environment:
-      - API_URL=http://api:8090
+      # Browser-facing API URL injected into the SPA at startup (the dashboard
+      # reads VITE_API_URL → window.ENV.API_URL). It must be reachable from the
+      # USER'S BROWSER, so the host-published API port — NOT the internal `api`
+      # compose hostname, which the browser cannot resolve. Override for
+      # LAN/remote access, e.g. http://<host-ip>:8090.
+      - VITE_API_URL=http://localhost:8090
     depends_on:
       api:
         condition: service_healthy
