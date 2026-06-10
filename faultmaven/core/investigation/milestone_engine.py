@@ -2184,11 +2184,40 @@ class MilestoneEngine:
                                 "progress_made": False,
                             },
                         }
+                    elif self._message_supersedes_pending_transition(user_message):
+                        # User typed a substantive message (a real question or
+                        # request) instead of answering the confirmation. This
+                        # is an implicit "not now" — they've moved on. Cancel
+                        # the pending transition and fall through to normal
+                        # processing so their message actually gets answered,
+                        # instead of swallowing it under a re-presented gate.
+                        #
+                        # This extends the "contradicting intent cancels
+                        # pending transition" principle (handled above for
+                        # clicked status_transition intents) to free-text
+                        # input from users who type instead of clicking. The
+                        # agent re-proposes the transition later if it's still
+                        # warranted — answering the user first is never wrong.
+                        from faultmaven.core.investigation.terminal_transitions import (
+                            cancel_pending_transition,
+                        )
+
+                        old_target = case.pending_transition.get("to_state")
+                        cancel_pending_transition(case)
+                        logger.info(
+                            f"Pending transition to '{old_target}' superseded — "
+                            f"user sent a substantive message instead of "
+                            f"confirming/declining for case {case.case_id}. "
+                            f"Cancelling and processing the message normally."
+                        )
+                        # Fall through to normal processing (sections 0c+).
                     else:
-                        # User said something that isn't a clear yes/no.
-                        # Re-present the confirmation — don't fall through
-                        # to the LLM tool loop, which crashes on short or
-                        # ambiguous messages (tool_choice=required fails).
+                        # User said something that isn't a clear yes/no AND
+                        # isn't substantive enough to supersede the gate (e.g.
+                        # a terse "hmm" or "what?"). Re-present the
+                        # confirmation — don't fall through to the LLM tool
+                        # loop, which crashes on short or ambiguous messages
+                        # (tool_choice=required fails).
                         to_state = case.pending_transition.get("to_state", "resolved")
                         summary = case.pending_transition.get("summary", "")
 
@@ -6886,6 +6915,39 @@ class MilestoneEngine:
             "stop",
         ]
         return any(msg.startswith(p) or msg == p for p in decline_patterns)
+
+    def _message_supersedes_pending_transition(self, user_message: str) -> bool:
+        """Decide whether a non-yes/no message should cancel a pending
+        transition and be processed normally, rather than re-presenting the
+        confirmation gate.
+
+        Called only when the message is neither a confirm nor a decline.
+        The question we're answering: did the user ANSWER the gate (ambiguously)
+        or did they MOVE ON to a substantive request?
+
+        A substantive message — a real question or a multi-word request —
+        signals the user has moved on and wants help, not closure. Swallowing
+        it under a re-presented gate is the "out of context suggestions" bug
+        (case_28d15d4ab5f4): the user asked "how do I verify cert-manager
+        picked up the new token?" while a stale ``inquiry_only`` close gate was
+        pending, and the engine kept replying "are you sure you want to close?"
+
+        Conservative heuristic — only clearly-substantive input supersedes, so
+        terse ambiguous replies ("hmm", "what?", "ok?") still re-present and
+        don't hit the ``tool_choice=required`` crash path:
+
+        - >= 6 words (a real sentence, well beyond a terse gate answer), OR
+        - ends with "?" AND >= 4 words (a genuine question, not "what?")
+        """
+        if not user_message:
+            return False
+        msg = user_message.strip()
+        word_count = len(msg.split())
+        if word_count >= 6:
+            return True
+        if msg.endswith("?") and word_count >= 4:
+            return True
+        return False
 
     # v3: `_check_fast_track_resolution` and `KB_FAST_TRACK_THRESHOLD` removed.
     # KB-driven cases route through INVESTIGATING via same-turn milestone

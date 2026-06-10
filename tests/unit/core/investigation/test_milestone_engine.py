@@ -1831,6 +1831,98 @@ class TestContradictingIntentCancelsPendingTransition:
         assert updated_case.state == CaseState.CLOSED
         assert updated_case.pending_transition is None
 
+    @pytest.mark.asyncio
+    async def test_substantive_typed_message_supersedes_pending_close(
+        self, mock_llm, mock_repo
+    ):
+        """Regression (case_28d15d4ab5f4): user has a pending inquiry_only
+        CLOSE, then TYPES a substantive question instead of clicking
+        confirm/decline. The engine must cancel the pending close and
+        process the question normally — NOT re-present the close gate and
+        swallow the question. This was the 'out of context suggestions'
+        bug: every substantive turn got the same 'are you sure you want to
+        close?' reply + close/continue affordances."""
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+        )
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test Case",
+            state=CaseState.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="Test",
+            inquiry=InquiryData(
+                thread_id="thread_123",
+                proposed_problem_statement="Rotate exposed Cloudflare token",
+                problem_statement_confirmed=False,
+                decided_to_investigate=False,
+            ),
+        )
+        case.pending_transition = {
+            "to_state": "closed",
+            "summary": "This case has minimal investigation data. Are you sure you want to close it?",
+            "evidence_ids": [],
+            "proposed_at": "2026-05-26T00:00:00+00:00",
+            "closure_reason": "inquiry_only",
+        }
+
+        # LLM would answer the actual question on the normal path.
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "To verify cert-manager picked up the new token, check the Certificate resource status and the cert-manager logs.",
+                "state_updates": {},
+            }
+        )
+
+        # User TYPES a substantive question (no clicked intent) — this is
+        # the path that previously got swallowed by the re-presented gate.
+        result = await engine.process_turn(
+            case,
+            "How do I verify cert-manager actually picked up the new token "
+            "before the Aug 9 renewal?",
+        )
+
+        updated_case = result["case_updated"]
+
+        # Pending close must be cancelled — user moved on.
+        assert updated_case.pending_transition is None
+        # Case must NOT have closed.
+        assert updated_case.state != CaseState.CLOSED
+        # The reply must be the actual answer, NOT the re-presented gate.
+        assert "select one of the options above" not in (
+            result["agent_response"] or ""
+        ).lower()
+
+    def test_message_supersedes_pending_transition_heuristic(
+        self, mock_llm, mock_repo
+    ):
+        """Unit-level: the supersede predicate fires for substantive input
+        and stays quiet for terse/ambiguous replies (which must still
+        re-present the gate rather than hit the tool_choice=required crash
+        path)."""
+        engine = MilestoneEngine(
+            mock_llm, mock_repo, investigation_tools=MagicMock()
+        )
+        sup = engine._message_supersedes_pending_transition
+
+        # Substantive — supersede.
+        assert sup(
+            "How do I verify cert-manager actually picked up the new token?"
+        )
+        assert sup("Can you walk me through the rollback steps one more time")
+        assert sup("what does the DestinationRule override actually do?")  # 6 words
+
+        # Terse / ambiguous — do NOT supersede (re-present the gate).
+        assert not sup("hmm")
+        assert not sup("what?")
+        assert not sup("ok?")
+        assert not sup("")
+        assert not sup("   ")
+
 
 class TestRootCauseConclusionPersistence:
     """Verify that root_cause_conclusion from LLM output is saved to the case.
