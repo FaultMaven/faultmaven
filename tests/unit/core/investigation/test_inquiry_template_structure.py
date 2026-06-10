@@ -113,6 +113,30 @@ class TestInquiryIntentRecognition:
                 f"identified in the PR #375 design discussion."
             )
 
+    def test_malfunction_discriminator_present(self):
+        """The intent decision pivots on one question — is a system
+        MALFUNCTIONING? — stated once at the top of RECOGNIZING USER
+        INTENT. This is the load-bearing discriminator: without it,
+        task/operational help (rotate a credential, configure a setting)
+        gets mis-read as a fault, a problem statement is proposed, and the
+        engine then re-emits the Gate-1 confirm/refine pair every turn
+        (INV-01) — the 'same suggestions repeated' bug on case_28d15d4ab5f4
+        (Cloudflare token rotation). Whitespace-normalized so prompt
+        re-wrapping doesn't break it."""
+        normalized = " ".join(INQUIRY_TEMPLATE.split())
+        assert "is a system MALFUNCTIONING" in normalized
+        # The verbs-are-not-faults clause is the operational teeth.
+        assert "are not faults by themselves" in normalized
+
+    def test_knowledge_exploratory_covers_task_help(self):
+        """Task/operational help folds INTO the KNOWLEDGE / EXPLORATORY
+        mode rather than getting its own bullet — a planned operation
+        with nothing broken is the 'no fault' branch. Pins that the mode
+        explicitly names task help so the fold-in can't silently regress
+        to a questions-only definition."""
+        normalized = " ".join(INQUIRY_TEMPLATE.split())
+        assert "wants help performing a task" in normalized
+
     def test_exploratory_indefinite_inquiry_legitimacy_stated(self):
         """Pins the principle that a case staying in INQUIRY with no
         problem detected is a legitimate state (a successful consultation),
