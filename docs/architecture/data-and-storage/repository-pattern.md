@@ -138,6 +138,33 @@ Configuration Example:
 | **Independent Configuration** | Each data type configured separately |
 | **Technology-Appropriate** | PostgreSQL for relational, Redis for caching, ChromaDB for vectors |
 | **Abstraction Layers** | Repository/Store interfaces hide implementation details |
+| **Dialect-portable writes** | Upserts must work on both SQLite and PostgreSQL — see §1.5 |
+
+### 1.5 Dialect-portable upserts
+
+`INSERT ... ON CONFLICT` is **dialect-specific** in SQLAlchemy: a construct from
+`sqlalchemy.dialects.sqlite.insert` does **not** compile under the PostgreSQL dialect
+(it raises `'OnConflictDoUpdate' object has no attribute 'constraint_target'`). Hardcoding
+`from sqlalchemy.dialects.sqlite import insert` therefore works on local SQLite but breaks
+on the production PostgreSQL backend — this regressed default-admin creation and
+org/team/llm-config/token-revocation writes until fixed in 2026-06.
+
+**Rule:** never import a dialect-specific `insert` directly for an upsert. Use the helper
+`faultmaven.infrastructure.persistence.db_compat.dialect_insert(session, model)`, which
+returns the insert construct matching the session's bound engine. Both dialects share the
+`on_conflict_do_update(index_elements=…, set_=…)` / `on_conflict_do_nothing(index_elements=…)`
+signature, so call sites are otherwise identical:
+
+```python
+from faultmaven.infrastructure.persistence.db_compat import dialect_insert
+
+stmt = dialect_insert(session, UserModel).values(**values)
+stmt = stmt.on_conflict_do_update(index_elements=["user_id"], set_={...})
+await session.execute(stmt)
+```
+
+Covered by `tests/unit/infrastructure/persistence/test_db_compat.py` (includes a regression
+that a PG-bound upsert compiles under the PostgreSQL dialect).
 
 ---
 
