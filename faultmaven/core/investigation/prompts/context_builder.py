@@ -2254,7 +2254,9 @@ def build_investigation_context(
                     inquiry_state_str += (
                         "NOT_YET_CONFIRMED: You proposed this problem statement previously. "
                         "The user has not confirmed it yet. Do NOT re-propose the same statement. "
-                        "Focus on answering the user's current message.\n"
+                        "Focus on answering the user's current message. Your suggested_follow_ups "
+                        "should address that message — do NOT emit confirm / refine / 'let's "
+                        "investigate' suggestions; the system supplies those buttons.\n"
                     )
             inquiry_state_str += "</inquiry_state>"
 
