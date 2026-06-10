@@ -41,12 +41,14 @@ Runs once at API startup, immediately after the DI container has wired up `Knowl
 
 Bootstrap ingests the **KB pack** — a self-contained bundle of runbooks +
 build-time vectors loaded via `KbPack.load(KB_PACK_DIR)`. Because every chunk
-ships its **text and its vector** in the pack, ingestion is pure SQL + ChromaDB
-writes: **no chunking and no embedding model at startup**. This is what turns
+ships its **text and its vector** in the pack, **ingestion itself uses no
+embedding model and no chunking** — pure SQL + ChromaDB writes. This is what turns
 ~tens of minutes of on-pod CPU embedding into seconds (see
-[`kb-pack-architecture.md`](./kb-pack-architecture.md)). The model is loaded only
-for *query-time* search and the conversion/verify path, never on the readiness
-path. Built-ins are no longer copied to `data/knowledge/global` — that directory
+[`kb-pack-architecture.md`](./kb-pack-architecture.md)). The BGE-M3 model *is*
+still loaded once at boot (~5s) — from the cache **baked into the image** (CPU-only
+torch, `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`, so no HuggingFace fetch — works
+air-gapped) — but it serves *query-time* search and the conversion/verify path; the
+pre-embedded pack is ingested without it. Built-ins are no longer copied to `data/knowledge/global` — that directory
 is now solely the workspace for authored/converted runbooks and `/knowledge/scan`.
 
 ### Algorithm
@@ -140,7 +142,7 @@ Default behaviour is conservative: SQL `knowledge_items` are deleted, ChromaDB i
 | No row in `knowledge_items` without corresponding ChromaDB chunks | `KnowledgeService.ingest_runbook` rolls back SQL on 0-chunk result |
 | No draft with `status = VERIFIED` but `knowledge_item_id = NULL` | `ConversionService.verify_draft` commits status only after ingestion succeeds |
 | Re-running bootstrap produces no churn for unchanged runbooks | `kb_init._ingest_pack_runbook` content-hash comparison vs the pack |
-| No embedding model loaded on the startup/readiness path | Pack ships pre-computed vectors; `ingest_runbook(prechunked=...)` skips `model.encode` |
+| No embedding model used to *ingest* the pack | Pack ships pre-computed vectors; `ingest_runbook(prechunked=...)` skips `model.encode` (the model still loads at boot for query-time search) |
 | Pre-deployed runbooks never appear in the user's "Drafts" UI | Bootstrap writes directly to `knowledge_items`, not `conversion_drafts` |
 | Half-state legacy rows are visible to operators, not silently mutated | `_scan_for_runbooks_impl` logs warning instead of reverting |
 

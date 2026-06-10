@@ -33,8 +33,10 @@ back (the KB stayed nearly empty).
 
 Embedding is deterministic, so the fix is to do it **once at build time** and
 ship the vectors. First-boot ingestion then writes pre-computed vectors straight
-to ChromaDB — no chunking, no model — and completes in seconds. The embedding
-model is never loaded on the readiness path. (Investigation trail:
+to ChromaDB — no chunking, no model — and completes in seconds. (The BGE-M3 model
+itself still loads once at boot, in ~5s, from the cache **baked into the image** —
+CPU-only torch, `HF_HUB_OFFLINE`, so no HuggingFace fetch — for query-time search;
+*ingestion* just doesn't use it.) (Investigation trail:
 `docs/working/ANALYSIS-kb-ingestion-perf.md`.)
 
 ---
