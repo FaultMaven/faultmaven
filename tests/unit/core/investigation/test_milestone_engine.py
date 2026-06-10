@@ -1181,9 +1181,7 @@ class TestInquiryConfirmation:
         suggestions are clickable), but it must no longer crowd out what's
         relevant to the user's message. Regression for the 'same two
         suggestions every turn, nothing contextual' report (case_28d15d4ab5f4)."""
-        engine = MilestoneEngine(
-            mock_llm, mock_repo, investigation_tools=MagicMock()
-        )
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         case = Case(
             case_id="case_1234567890ab",
             title="Gate1 augment",
@@ -1223,9 +1221,7 @@ class TestInquiryConfirmation:
         )
         # The confirm affordance carries confirmation intent (deterministic
         # click path — INV-01 clickability preserved).
-        confirm = next(
-            f for f in follow_ups if f["label"] == "Yes, let's investigate"
-        )
+        confirm = next(f for f in follow_ups if f["label"] == "Yes, let's investigate")
         assert confirm["intent"]["type"] == "confirmation"
         assert confirm["intent"]["confirmation_value"] is True
 
@@ -1235,9 +1231,7 @@ class TestInquiryConfirmation:
     ):
         """Many LLM suggestions are capped so the total stays tidy, but the
         confirm/refine pair is always retained in full."""
-        engine = MilestoneEngine(
-            mock_llm, mock_repo, investigation_tools=MagicMock()
-        )
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         case = Case(
             case_id="case_1234567890ab",
             title="Gate1 cap",

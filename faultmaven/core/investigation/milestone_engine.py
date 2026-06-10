@@ -3056,9 +3056,7 @@ class MilestoneEngine:
                     #
                     # Contextual-first keeps the turn relevant to what the user
                     # just said; the gate stays available at the end.
-                    contextual = (follow_ups or [])[
-                        :_GATE1_CONTEXTUAL_SUGGESTION_CAP
-                    ]
+                    contextual = (follow_ups or [])[:_GATE1_CONTEXTUAL_SUGGESTION_CAP]
                     follow_ups = contextual + gate_affordances
                 else:
                     # disposition (terminal close/resolve handshake): replace.
