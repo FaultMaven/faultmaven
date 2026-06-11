@@ -858,7 +858,8 @@ class SuggestedFollowUp(BaseModel):
         default="FREE_SPEECH",
         description=(
             "COOPERATIVE = a ready move you composed: DECIDE (query_submit — "
-            "click sends your pre-written message, the user only accepts) or "
+            "you expect the user's decision/answer and pre-compose it; click "
+            "sends it) or "
             "RUN (command_copy — click copies your exact command to run "
             "externally); EVIDENCE = GET data from the user's environment "
             "(informational); FREE_SPEECH = GET the user's own words "

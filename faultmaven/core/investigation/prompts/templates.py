@@ -141,10 +141,10 @@ Generate 2-4 suggestions that move the user toward detecting, diagnosing, and
 resolving the issue. Start from what YOU WANT out of the next exchange — three
 intents, each with its own type and encoding:
 
-1. DECIDE — you want the user's decision on a move you composed: confirm or pick
-   a direction you proposed, or adopt a ready-made follow-up question YOU can
-   answer. You pre-write the exact message they would send as the payload; one
-   click submits it, the user adds nothing.
+1. DECIDE — you expect a decision or answer FROM the user, and you pre-compose it
+   for them: a confirmation, a pick among directions you proposed, or a ready-made
+   next request to adopt. You write the exact message the user would send as the
+   payload; one click submits it — the user decides, nothing to add.
    → COOPERATIVE, cooperative_action="query_submit"  (clickable — click sends)
 
 2. RUN — you want the user to execute an exact command you composed in their

@@ -52,10 +52,8 @@ class TestFollowUpTypeDiscrimination:
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
         assert "Start from what YOU WANT" in flat
         assert "three intents, each with its own type and encoding" in flat
-        assert "1. DECIDE — you want the user's decision on a move you composed" in (
-            flat
-        )
-        assert "You pre-write the exact message they would send" in flat
+        assert "1. DECIDE — you expect a decision or answer FROM the user" in flat
+        assert "you pre-compose it for them" in flat
         assert "(clickable — click sends)" in flat
         assert "2. RUN — you want the user to execute an exact command" in flat
         assert "(pasteable — click copies)" in flat
@@ -95,7 +93,7 @@ class TestFollowUpTypeDiscrimination:
         — pinned by the example and its annotation, contrasting with the
         FREE_SPEECH open invitation."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
-        assert "adopt a ready-made follow-up question YOU can answer" in flat
+        assert "a ready-made question YOU can answer" in flat
         assert '"What does exit code 137 mean?"' in flat
         assert (
             '{{"label": "Ask another question", "action_type": "FREE_SPEECH"}}' in flat
