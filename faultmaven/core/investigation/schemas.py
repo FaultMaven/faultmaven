@@ -857,12 +857,12 @@ class SuggestedFollowUp(BaseModel):
         # action_type therefore degrades to non-clickable.
         default="FREE_SPEECH",
         description=(
-            "COOPERATIVE = click submits query or copies command (any message "
-            "you can fully word for the user, including a specific question); "
-            "EVIDENCE = informational, tells user what data to provide; "
-            "FREE_SPEECH = informational, invites the user to speak in their "
-            "own words (content only the user can author). When unsure, use "
-            "FREE_SPEECH."
+            "COOPERATIVE = GIVE the user a ready next move: click submits or "
+            "copies a complete message/command you composed, needing nothing "
+            "from the user; EVIDENCE = GET data from the user's environment "
+            "(informational); FREE_SPEECH = GET the user's own words "
+            "(informational). If the user must add anything — data or words — "
+            "the type is never COOPERATIVE. When unsure, use FREE_SPEECH."
         ),
     )
     payload: Optional[str] = Field(
