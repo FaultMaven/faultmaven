@@ -840,13 +840,6 @@ def _supersede_needs_on_hypothesis_retirement(
     return superseded_count
 
 
-# Max LLM-emitted contextual suggestions kept alongside the engine-owned
-# Gate-1 confirm/refine pair when augmenting (see the gate1 branch in
-# process_turn). The pair takes 2 slots; capping contextual at 2 keeps the
-# total within the 2-4 norm the prompt asks the LLM to produce.
-_GATE1_CONTEXTUAL_SUGGESTION_CAP = 2
-
-
 def _gate1_is_pending(case: "Case") -> bool:
     """Whether Gate 1 (problem-statement confirmation) is open for this case.
 
@@ -3037,32 +3030,40 @@ class MilestoneEngine:
             gate_result = engine_owned_affordances(case_updated, metadata)
             if gate_result is not None:
                 gate_name, gate_affordances = gate_result
-                if gate_name == "gate1":
-                    # AUGMENT, don't replace. While Gate 1 is pending the
-                    # NOT_YET_CONFIRMED prompt tells the LLM to focus on the
-                    # user's current message, so its suggested_follow_ups are
-                    # contextual — keep them and append the engine-owned
-                    # confirm/refine pair instead of discarding them (the old
-                    # full-replace produced the "same two suggestions every
-                    # turn, nothing relevant to what I asked" complaint).
-                    #
-                    # The pair must STILL re-appear on every pending turn:
-                    # only current-turn COOPERATIVE suggestions are clickable
-                    # in the UI (SuggestionCard.isClickable requires
-                    # isCurrentTurn), so dropping it on a later turn would make
-                    # the user unable to confirm — exactly the stall INV-01's
-                    # every-pending-turn emission was added to prevent. INV-01
-                    # is preserved: the pair is present and clickable each turn.
-                    #
-                    # Contextual-first keeps the turn relevant to what the user
-                    # just said; the gate stays available at the end.
-                    contextual = (follow_ups or [])[:_GATE1_CONTEXTUAL_SUGGESTION_CAP]
-                    follow_ups = contextual + gate_affordances
-                else:
-                    # disposition (terminal close/resolve handshake): replace.
-                    # The canonical confirm/decline pair IS the whole turn —
-                    # the user is being asked a yes/no, not offered tangents.
-                    follow_ups = gate_affordances
+                # REPLACE the LLM's suggestions with the engine-owned gate
+                # affordances. This is the engine↔LLM suggestion-ownership
+                # boundary:
+                #
+                #   A suggestion answers "what is the user's next move?"
+                #   - STATE-MACHINE moves (confirm/refine a gate, close,
+                #     resolve) advance the case's formal lifecycle. The ENGINE
+                #     owns them: only it knows the valid transitions, can
+                #     attach deterministic ``intent``, and can guarantee the
+                #     affordance is clickable every turn (INV-01).
+                #   - CONTENT moves (share data, explore an angle, describe
+                #     symptoms) advance the investigation's content. The LLM
+                #     owns these — but only when NO gate is pending, in which
+                #     case ``engine_owned_affordances`` returns None and the
+                #     LLM's suggestions pass through untouched (above).
+                #
+                # When a gate IS pending the case is BLOCKED on a state-machine
+                # decision, so the gate moves are the only meaningful next
+                # moves — content moves are premature (you cannot gather
+                # investigation data before the problem is even confirmed).
+                # The engine therefore owns the whole list. A tangential user
+                # question on a gate turn is answered in the agent's PROSE, not
+                # via suggestions; the next-move affordances stay confirm/refine.
+                #
+                # We do NOT augment (append the LLM's suggestions). The LLM,
+                # asked to confirm, naturally emits its OWN confirm/decline
+                # suggestions ("Yes, that's correct. Let's investigate." / "No,
+                # that's not quite right."), which carry no ``intent`` and would
+                # render as duplicate, overlapping buttons beside the engine's
+                # authoritative pair (observed on case_d22ebbd63784). Relevance
+                # on a gate turn comes from the gate opening ONLY when it should
+                # (intent detection — Answer First), not from mixing in the
+                # LLM's premature/duplicate suggestions.
+                follow_ups = gate_affordances
                 engine_owned_affordance_served_total.labels(gate=gate_name).inc()
                 logger.info(
                     "engine_owned_affordances_served",
@@ -3071,7 +3072,6 @@ class MilestoneEngine:
                         "turn": case_updated.current_turn,
                         "gate": gate_name,
                         "affordance_count": len(gate_affordances),
-                        "total_suggestions": len(follow_ups),
                     },
                 )
 
