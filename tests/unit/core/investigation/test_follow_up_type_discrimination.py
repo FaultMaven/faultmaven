@@ -49,36 +49,45 @@ class TestFollowUpTypeDiscrimination:
         """A query_submit payload submits verbatim, so it must stand alone.
         Placeholder/template payloads (the under-typing failure) are
         excluded and redirected to FREE_SPEECH."""
-        block = _FOLLOW_UP_SUGGESTIONS_BLOCK
-        assert "stand alone" in block
-        assert "nothing left for the user to add or edit" in block
-        assert "a template or preamble that still needs the user's words" in block
+        flat = " ".join(_FOLLOW_UP_SUGGESTIONS_BLOCK.split())
+        assert "stand alone" in flat
+        assert "nothing left for the user to add or edit" in flat
+        assert "A template or preamble that still needs the user's words" in flat
         # BAD/GOOD payload contrast — typical placeholder shapes as
         # counterexamples (the strongest steering artifact from both
         # observed incidents).
-        assert 'BAD:  payload "I have another question"' in block
-        assert 'BAD:  payload "How do I..."' in block
-        assert 'GOOD: payload "What does exit code 137 mean?"' in block
+        assert 'BAD: payload "I have another question"' in flat
+        assert 'BAD: payload "How do I..."' in flat
+        assert 'GOOD: payload "What does exit code 137 mean?"' in flat
 
     def test_composed_questions_are_cooperative(self):
-        """A fully-worded question the agent composes is a complete payload
+        """A question the user would ask the agent is a complete payload
         (the over-correction failure demoted these to FREE_SPEECH). Pinned
         by the qualifier sentence and the question-payload example, which
         contrasts with the FREE_SPEECH open invitation."""
-        block = _FOLLOW_UP_SUGGESTIONS_BLOCK
-        assert "A fully-worded question" in block
-        assert '"What does exit code 137 mean?"' in block
+        flat = " ".join(_FOLLOW_UP_SUGGESTIONS_BLOCK.split())
+        assert "a question the user would ask you qualifies" in flat
+        assert '"What does exit code 137 mean?"' in flat
         assert (
-            '{{"label": "Ask another question", "action_type": "FREE_SPEECH"}}' in block
+            '{{"label": "Ask another question", "action_type": "FREE_SPEECH"}}' in flat
         )
 
-    def test_undeliverable_payloads_route_to_evidence(self):
-        """COOPERATIVE must not promise answers the agent can't deliver —
-        when answering needs data the case doesn't have, the type is
-        EVIDENCE."""
-        assert "if answering would need data you don't have, use EVIDENCE" in (
-            _FOLLOW_UP_SUGGESTIONS_BLOCK
-        )
+    def test_question_payloads_gated_on_who_answers(self):
+        """A question payload qualifies only when the AGENT can answer it.
+        A question whose answer lives with the user (their history,
+        environment, judgment) is the agent's question to ask in
+        agent_response — the suggestion is EVIDENCE or FREE_SPEECH, never
+        clickable. Observed live in case_27e448b278ae turn 2: clickable
+        'Have similar test failures happened before?' submitted itself and
+        the agent had to answer 'I can't determine that from the current
+        evidence' — a wasted turn by construction."""
+        # Collapse whitespace so assertions don't depend on line wrapping.
+        flat = " ".join(_FOLLOW_UP_SUGGESTIONS_BLOCK.split())
+        assert "For a question payload, check who ANSWERS it" in flat
+        assert "a question whose answer must come from the user" in flat
+        assert 'BAD: payload "Has this happened before?"' in flat
+        # The agent-deliverability requirement survives for all payloads.
+        assert "a message YOU can act on from this case or your own knowledge" in flat
 
     def test_solution_hold_directive_agrees_with_type_system(self):
         """The DIAGNOSIS solution-hold directive must not prescribe

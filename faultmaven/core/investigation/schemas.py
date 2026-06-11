@@ -871,9 +871,10 @@ class SuggestedFollowUp(BaseModel):
             "COOPERATIVE only: the text a click submits (query_submit) or "
             "copies (command_copy). query_submit payloads are sent verbatim "
             "and must be the user's complete message — never a placeholder "
-            "or preamble the user would need to edit. Required for "
-            "COOPERATIVE; omit for EVIDENCE and FREE_SPEECH — those carry "
-            "everything in label + body/hints."
+            "or preamble the user would need to edit, and never a question "
+            "only the user can answer. Required for COOPERATIVE; omit for "
+            "EVIDENCE and FREE_SPEECH — those carry everything in label + "
+            "body/hints."
         ),
     )
     body: Optional[str] = Field(
