@@ -19,6 +19,7 @@ import time
 from typing import Optional
 from uuid import uuid4
 
+import structlog
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
@@ -45,9 +46,17 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         # Headers object is immutable and mutating internal _list is fragile.
         request.state.request_id = request_id
 
+        # Bind into structlog contextvars so every log line emitted while
+        # handling this request carries request_id (merge_contextvars is the
+        # first processor in the structlog chain — see logging/config.py).
+        structlog.contextvars.bind_contextvars(request_id=request_id)
+
         # Process request
         start_time = time.time()
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        finally:
+            structlog.contextvars.unbind_contextvars("request_id")
         processing_time = time.time() - start_time
 
         # Add response headers

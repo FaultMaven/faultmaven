@@ -13,10 +13,12 @@ from faultmaven.infrastructure.observability.metrics_exporters.prometheus import
     FORBIDDEN_LABELS,
     create_prometheus_metrics_endpoint,
     get_prometheus_response,
+    register_scrape_hook,
 )
 
 __all__ = [
     "create_prometheus_metrics_endpoint",
     "get_prometheus_response",
+    "register_scrape_hook",
     "FORBIDDEN_LABELS",
 ]

@@ -62,8 +62,14 @@ from .metrics import (  # Pre-defined common metrics
     knowledge_queries,
     llm_latency,
     llm_requests,
+    llm_tokens,
     request_counter,
     request_duration,
+    sla_active_breaches,
+    sla_availability_ratio,
+    sla_error_rate_ratio,
+    sla_response_time_p95_seconds,
+    sla_status,
 )
 from .observability import OPIK_AVAILABLE, get_tracing_status, is_tracing_active, track
 from .security import PRESIDIO_AVAILABLE, PIIRedactor, get_pii_redaction_status
@@ -95,4 +101,10 @@ __all__ = [
     "knowledge_queries",
     "llm_requests",
     "llm_latency",
+    "llm_tokens",
+    "sla_status",
+    "sla_availability_ratio",
+    "sla_response_time_p95_seconds",
+    "sla_error_rate_ratio",
+    "sla_active_breaches",
 ]

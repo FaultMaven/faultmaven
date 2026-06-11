@@ -19,11 +19,34 @@ Usage:
 """
 
 import logging
-from typing import Optional, Set
+from typing import Callable, List, Optional, Set
 
 from fastapi import APIRouter, Response
 
 logger = logging.getLogger(__name__)
+
+
+# Hooks invoked at every /metrics scrape, before the registry is serialized.
+# Lets gauge owners (e.g. the SLA tracker) publish fresh values at scrape time
+# instead of relying on a background refresh. Registered at composition root.
+_scrape_hooks: List[Callable[[], None]] = []
+
+
+def register_scrape_hook(hook: Callable[[], None]) -> None:
+    """Register a callable to run before each /metrics scrape response."""
+    _scrape_hooks.append(hook)
+    logger.info(
+        f"Registered metrics scrape hook: {getattr(hook, '__qualname__', hook)}"
+    )
+
+
+def _run_scrape_hooks() -> None:
+    """Run all scrape hooks; a failing hook never breaks the scrape."""
+    for hook in _scrape_hooks:
+        try:
+            hook()
+        except Exception as e:
+            logger.warning(f"Metrics scrape hook failed (non-fatal): {e}")
 
 
 # Labels that are FORBIDDEN in metrics to ensure bounded cardinality
@@ -66,6 +89,8 @@ def get_prometheus_response() -> Response:
     """
     try:
         from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
+
+        _run_scrape_hooks()
 
         # Generate metrics in Prometheus text exposition format
         metrics_output = generate_latest(REGISTRY)

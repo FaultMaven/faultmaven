@@ -6,11 +6,15 @@ with configurable thresholds and alerting capabilities.
 """
 
 import logging
-import statistics
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
+
+# Bound per-component memory: at a sustained 100 req/min this covers >24h,
+# which is the widest SLA window we calculate over.
+_MAX_OBSERVATIONS_PER_COMPONENT = 200_000
 
 
 class SLAStatus(Enum):
@@ -77,6 +81,9 @@ class SLATracker:
         self.sla_history: Dict[str, List[Tuple[datetime, SLAMetrics]]] = {}
         self.active_breaches: Dict[str, List[SLABreach]] = {}
         self.breach_history: List[SLABreach] = []
+        # Raw request observations per component: (timestamp, duration_ms, success).
+        # This is the single data source for all SLA calculations.
+        self._observations: Dict[str, Deque[Tuple[datetime, float, bool]]] = {}
         self._initialize_default_thresholds()
 
     def _initialize_default_thresholds(self) -> None:
@@ -157,29 +164,22 @@ class SLATracker:
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
 
-        # Initialize component metrics if not exists
-        if component_name not in self.component_metrics:
-            self.component_metrics[component_name] = SLAMetrics(
-                component_name=component_name,
-                availability_percentage=100.0,
-                response_time_p50=response_time_ms,
-                response_time_p95=response_time_ms,
-                response_time_p99=response_time_ms,
-                error_rate_percentage=0.0,
-                throughput_per_minute=0.0,
-                status=SLAStatus.MEETING,
+        if component_name not in self._observations:
+            self._observations[component_name] = deque(
+                maxlen=_MAX_OBSERVATIONS_PER_COMPONENT
             )
-
-        # Update metrics will be called periodically to recalculate all metrics
-        # For now, we'll update basic tracking
-        self.logger.debug(
-            f"Recorded request for {component_name}: {response_time_ms}ms, success={success}"
+        self._observations[component_name].append(
+            (timestamp, response_time_ms, success)
         )
 
     def calculate_sla_metrics(
         self, component_name: str, time_window_hours: int = 24
     ) -> SLAMetrics:
-        """Calculate current SLA metrics for a component.
+        """Calculate current SLA metrics for a component from recorded observations.
+
+        Components with no observations in the window return UNKNOWN status
+        with zeroed values — never fabricated data — and are excluded from
+        breach detection.
 
         Args:
             component_name: Name of the component
@@ -188,22 +188,46 @@ class SLATracker:
         Returns:
             Current SLA metrics for the component
         """
-        # In a real implementation, this would pull data from monitoring/metrics store
-        # For now, we'll simulate realistic metrics
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=time_window_hours)
+        window = [
+            (ts, duration_ms, success)
+            for ts, duration_ms, success in self._observations.get(component_name, ())
+            if ts >= cutoff
+        ]
 
-        # Simulate data based on component type
-        if component_name == "api":
-            metrics = self._simulate_api_metrics()
-        elif component_name == "llm_provider":
-            metrics = self._simulate_llm_metrics()
-        elif component_name == "database":
-            metrics = self._simulate_database_metrics()
-        elif component_name == "knowledge_base":
-            metrics = self._simulate_knowledge_base_metrics()
-        elif component_name == "session_store":
-            metrics = self._simulate_session_store_metrics()
-        else:
-            metrics = self._simulate_generic_metrics(component_name)
+        if not window:
+            metrics = SLAMetrics(
+                component_name=component_name,
+                availability_percentage=0.0,
+                response_time_p50=0.0,
+                response_time_p95=0.0,
+                response_time_p99=0.0,
+                error_rate_percentage=0.0,
+                throughput_per_minute=0.0,
+                status=SLAStatus.UNKNOWN,
+            )
+            self.component_metrics[component_name] = metrics
+            return metrics
+
+        durations = sorted(d for _, d, _ in window)
+        successes = sum(1 for _, _, ok in window if ok)
+        total = len(window)
+
+        availability = (successes / total) * 100.0
+        # Observed span, floored at one minute so a burst doesn't inflate rate
+        span_minutes = max((window[-1][0] - window[0][0]).total_seconds() / 60.0, 1.0)
+
+        metrics = SLAMetrics(
+            component_name=component_name,
+            availability_percentage=availability,
+            response_time_p50=self._percentile(durations, 0.50),
+            response_time_p95=self._percentile(durations, 0.95),
+            response_time_p99=self._percentile(durations, 0.99),
+            error_rate_percentage=100.0 - availability,
+            throughput_per_minute=total / span_minutes,
+            status=SLAStatus.MEETING,
+            breaches_24h=self._count_breaches_24h(component_name),
+        )
 
         # Determine SLA status
         metrics.status = self._determine_sla_status(component_name, metrics)
@@ -217,125 +241,33 @@ class SLATracker:
         # Check for SLA breaches
         self._check_sla_breaches(component_name, metrics)
 
+        # breaches_24h may have changed if a breach just started/ended
+        metrics.breaches_24h = self._count_breaches_24h(component_name)
+
         return metrics
 
-    def _simulate_api_metrics(self) -> SLAMetrics:
-        """Simulate API layer metrics."""
-        import random
+    @staticmethod
+    def _percentile(sorted_values: List[float], fraction: float) -> float:
+        """Nearest-rank percentile over an already-sorted list."""
+        if not sorted_values:
+            return 0.0
+        rank = max(int(round(fraction * len(sorted_values) + 0.5)) - 1, 0)
+        return sorted_values[min(rank, len(sorted_values) - 1)]
 
-        # Simulate good performance with occasional degradation
-        base_availability = 99.95
-        availability_variance = random.uniform(-0.1, 0.05)
-
-        return SLAMetrics(
-            component_name="api",
-            availability_percentage=base_availability + availability_variance,
-            response_time_p50=random.uniform(80, 120),
-            response_time_p95=random.uniform(150, 250),
-            response_time_p99=random.uniform(300, 500),
-            error_rate_percentage=random.uniform(0.1, 0.8),
-            throughput_per_minute=random.uniform(150, 300),
-            status=SLAStatus.MEETING,
-            breaches_24h=random.randint(0, 2),
+    def _count_breaches_24h(self, component_name: str) -> int:
+        """Count breaches (active + ended) that started in the last 24h."""
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        ended = sum(
+            1
+            for breach in self.breach_history
+            if breach.component_name == component_name and breach.breach_start >= cutoff
         )
-
-    def _simulate_llm_metrics(self) -> SLAMetrics:
-        """Simulate LLM provider metrics."""
-        import random
-
-        # LLM providers can be more variable
-        base_availability = 99.2
-        availability_variance = random.uniform(-0.5, 0.3)
-
-        return SLAMetrics(
-            component_name="llm_provider",
-            availability_percentage=base_availability + availability_variance,
-            response_time_p50=random.uniform(1200, 1800),
-            response_time_p95=random.uniform(2500, 4000),
-            response_time_p99=random.uniform(5000, 8000),
-            error_rate_percentage=random.uniform(0.5, 3.0),
-            throughput_per_minute=random.uniform(25, 60),
-            status=SLAStatus.MEETING,
-            breaches_24h=random.randint(1, 5),
+        active = sum(
+            1
+            for breach in self.active_breaches.get(component_name, [])
+            if breach.breach_start >= cutoff
         )
-
-    def _simulate_database_metrics(self) -> SLAMetrics:
-        """Simulate database metrics."""
-        import random
-
-        # Databases should be very reliable
-        base_availability = 99.98
-        availability_variance = random.uniform(-0.02, 0.01)
-
-        return SLAMetrics(
-            component_name="database",
-            availability_percentage=base_availability + availability_variance,
-            response_time_p50=random.uniform(15, 35),
-            response_time_p95=random.uniform(60, 120),
-            response_time_p99=random.uniform(150, 250),
-            error_rate_percentage=random.uniform(0.01, 0.2),
-            throughput_per_minute=random.uniform(800, 1200),
-            status=SLAStatus.MEETING,
-            breaches_24h=random.randint(0, 1),
-        )
-
-    def _simulate_knowledge_base_metrics(self) -> SLAMetrics:
-        """Simulate knowledge base metrics."""
-        import random
-
-        base_availability = 98.8
-        availability_variance = random.uniform(-0.3, 0.2)
-
-        return SLAMetrics(
-            component_name="knowledge_base",
-            availability_percentage=base_availability + availability_variance,
-            response_time_p50=random.uniform(200, 400),
-            response_time_p95=random.uniform(600, 1000),
-            response_time_p99=random.uniform(1200, 2000),
-            error_rate_percentage=random.uniform(0.3, 1.5),
-            throughput_per_minute=random.uniform(80, 150),
-            status=SLAStatus.MEETING,
-            breaches_24h=random.randint(0, 3),
-        )
-
-    def _simulate_session_store_metrics(self) -> SLAMetrics:
-        """Simulate session store (Redis) metrics."""
-        import random
-
-        # Redis should be very fast and reliable
-        base_availability = 99.95
-        availability_variance = random.uniform(-0.05, 0.02)
-
-        return SLAMetrics(
-            component_name="session_store",
-            availability_percentage=base_availability + availability_variance,
-            response_time_p50=random.uniform(5, 15),
-            response_time_p95=random.uniform(20, 50),
-            response_time_p99=random.uniform(60, 120),
-            error_rate_percentage=random.uniform(0.01, 0.3),
-            throughput_per_minute=random.uniform(400, 800),
-            status=SLAStatus.MEETING,
-            breaches_24h=random.randint(0, 1),
-        )
-
-    def _simulate_generic_metrics(self, component_name: str) -> SLAMetrics:
-        """Simulate generic component metrics."""
-        import random
-
-        base_availability = 99.0
-        availability_variance = random.uniform(-1.0, 0.5)
-
-        return SLAMetrics(
-            component_name=component_name,
-            availability_percentage=base_availability + availability_variance,
-            response_time_p50=random.uniform(100, 300),
-            response_time_p95=random.uniform(400, 800),
-            response_time_p99=random.uniform(1000, 2000),
-            error_rate_percentage=random.uniform(0.5, 2.0),
-            throughput_per_minute=random.uniform(50, 200),
-            status=SLAStatus.MEETING,
-            breaches_24h=random.randint(0, 4),
-        )
+        return ended + active
 
     def _determine_sla_status(
         self, component_name: str, metrics: SLAMetrics
@@ -369,8 +301,9 @@ class SLATracker:
         if metrics.error_rate_percentage > thresholds.max_error_rate:
             breaches.append("error_rate")
 
-        if metrics.throughput_per_minute < thresholds.min_throughput:
-            breaches.append("throughput")
+        # Throughput is deliberately NOT a breach condition: a quiet system
+        # (low demand) is not violating its SLA. min_throughput stays in the
+        # thresholds for display/capacity context only.
 
         # Determine status
         if breaches:
@@ -381,8 +314,10 @@ class SLATracker:
             metrics.availability_percentage / thresholds.min_availability
         ) * 100
         response_time_margin = (
-            thresholds.max_response_time_p95 / metrics.response_time_p95
-        ) * 100
+            (thresholds.max_response_time_p95 / metrics.response_time_p95) * 100
+            if metrics.response_time_p95 > 0
+            else 100.0
+        )
 
         if (
             availability_margin < thresholds.alert_threshold
@@ -446,12 +381,7 @@ class SLATracker:
                 thresholds.max_error_rate,
                 "greater_than",
             ),
-            (
-                "throughput",
-                metrics.throughput_per_minute,
-                thresholds.min_throughput,
-                "less_than",
-            ),
+            # throughput intentionally excluded — see _determine_sla_status
         ]
 
         for metric_type, actual_value, threshold_value, comparison in breach_checks:
@@ -515,10 +445,11 @@ class SLATracker:
         # Calculate how far the breach is from the threshold
         if metric_type in ["response_time_p95", "response_time_p99", "error_rate"]:
             # For metrics where higher is worse
-            ratio = actual_value / threshold_value
+            ratio = actual_value / threshold_value if threshold_value > 0 else 2.0
         else:
-            # For metrics where lower is worse (availability, throughput)
-            ratio = threshold_value / actual_value
+            # For metrics where lower is worse (availability); an actual of 0
+            # (total outage) is the worst possible breach
+            ratio = threshold_value / actual_value if actual_value > 0 else 2.0
 
         if ratio >= 2.0:
             return "critical"
@@ -676,6 +607,47 @@ class SLATracker:
                 "total_breaches_7d": len(recent_breaches),
             },
         }
+
+    # Mapping for the sla_status gauge: higher is healthier (alert on < 3)
+    _STATUS_GAUGE_VALUES = {
+        SLAStatus.MEETING: 3,
+        SLAStatus.AT_RISK: 2,
+        SLAStatus.BREACHED: 1,
+        SLAStatus.UNKNOWN: 0,
+    }
+
+    def update_prometheus_gauges(self) -> None:
+        """Recompute SLA metrics and publish them as Prometheus gauges.
+
+        Registered as a /metrics scrape hook (see main.py) so the gauges are
+        fresh at every Prometheus scrape and /health/sla becomes alertable.
+        No-ops when metrics are disabled (shim returns no-op metrics).
+        """
+        from faultmaven.infrastructure.shims import (
+            sla_active_breaches,
+            sla_availability_ratio,
+            sla_error_rate_ratio,
+            sla_response_time_p95_seconds,
+            sla_status,
+        )
+
+        for component_name in self.component_thresholds.keys():
+            metrics = self.calculate_sla_metrics(component_name)
+            sla_status.labels(component=component_name).set(
+                self._STATUS_GAUGE_VALUES[metrics.status]
+            )
+            sla_availability_ratio.labels(component=component_name).set(
+                metrics.availability_percentage / 100.0
+            )
+            sla_response_time_p95_seconds.labels(component=component_name).set(
+                metrics.response_time_p95 / 1000.0
+            )
+            sla_error_rate_ratio.labels(component=component_name).set(
+                metrics.error_rate_percentage / 100.0
+            )
+            sla_active_breaches.labels(component=component_name).set(
+                len(self.active_breaches.get(component_name, []))
+            )
 
 
 # Global SLA tracker instance

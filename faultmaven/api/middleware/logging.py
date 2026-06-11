@@ -16,6 +16,7 @@ from typing import Callable, Optional
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.logging.config import get_logger
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
 
@@ -118,6 +119,12 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             # Calculate duration
             duration = time.time() - start_time
 
+            # Feed the SLA tracker: 5xx counts against availability, 4xx is a
+            # served (client-side) outcome
+            sla_tracker.record_request_metrics(
+                "api", duration * 1000.0, success=response.status_code < 500
+            )
+
             # Track performance in coordinator
             if context.performance_tracker:
                 exceeds_threshold, threshold = (
@@ -184,6 +191,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             # Calculate duration for failed requests
             duration = time.time() - start_time
+
+            # Unhandled exception = failed request for SLA purposes
+            sla_tracker.record_request_metrics("api", duration * 1000.0, success=False)
 
             # Add error to context for cascade prevention
             if context.error_context:

@@ -96,6 +96,10 @@ class FaultMavenLogger:
 
         # Build processor list based on configuration
         processors = [
+            # Merge structlog contextvars (e.g. request_id bound by
+            # RequestIdMiddleware) into every event — must run first so
+            # later processors can see/override the merged keys.
+            structlog.contextvars.merge_contextvars,
             # Standard processors
             structlog.stdlib.filter_by_level,
             structlog.stdlib.add_logger_name,

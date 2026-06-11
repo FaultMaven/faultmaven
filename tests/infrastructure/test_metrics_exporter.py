@@ -187,6 +187,85 @@ class TestPrometheusExporter:
 
 
 # =============================================================================
+# Scrape Hook Tests
+# =============================================================================
+
+
+class TestScrapeHooks:
+    """Tests for register_scrape_hook / _run_scrape_hooks at /metrics scrape."""
+
+    @pytest.fixture(autouse=True)
+    def isolate_scrape_hooks(self):
+        """Save/restore module-global _scrape_hooks so tests don't leak."""
+        from faultmaven.infrastructure.observability.metrics_exporters import (
+            prometheus,
+        )
+
+        original = list(prometheus._scrape_hooks)
+        prometheus._scrape_hooks.clear()
+        yield
+        prometheus._scrape_hooks[:] = original
+
+    def test_registered_hook_invoked_on_scrape(self):
+        """A registered hook runs when get_prometheus_response() is called."""
+        pytest.importorskip("prometheus_client")
+
+        from faultmaven.infrastructure.observability.metrics_exporters.prometheus import (
+            get_prometheus_response,
+            register_scrape_hook,
+        )
+
+        hook = MagicMock()
+        register_scrape_hook(hook)
+
+        response = get_prometheus_response()
+
+        hook.assert_called_once_with()
+        assert response is not None
+        assert "text/plain" in response.media_type
+
+    def test_failing_hook_does_not_break_response(self):
+        """A raising hook is non-fatal: response returned, other hooks run."""
+        pytest.importorskip("prometheus_client")
+
+        from faultmaven.infrastructure.observability.metrics_exporters.prometheus import (
+            get_prometheus_response,
+            register_scrape_hook,
+        )
+
+        failing_hook = MagicMock(side_effect=RuntimeError("hook exploded"))
+        surviving_hook = MagicMock()
+        register_scrape_hook(failing_hook)
+        register_scrape_hook(surviving_hook)
+
+        response = get_prometheus_response()
+
+        # Response is still produced despite the failing hook
+        assert response is not None
+        assert "text/plain" in response.media_type
+        # Both hooks were attempted, in order
+        failing_hook.assert_called_once_with()
+        surviving_hook.assert_called_once_with()
+
+    def test_hook_runs_on_each_scrape(self):
+        """Hooks run at every scrape, not just the first."""
+        pytest.importorskip("prometheus_client")
+
+        from faultmaven.infrastructure.observability.metrics_exporters.prometheus import (
+            get_prometheus_response,
+            register_scrape_hook,
+        )
+
+        hook = MagicMock()
+        register_scrape_hook(hook)
+
+        get_prometheus_response()
+        get_prometheus_response()
+
+        assert hook.call_count == 2
+
+
+# =============================================================================
 # Label Cardinality Tests
 # =============================================================================
 

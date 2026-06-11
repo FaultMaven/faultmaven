@@ -12,11 +12,14 @@ circuit breaker patterns for external LLM provider calls.
 import functools
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.security.redaction import DataSanitizer
+from faultmaven.infrastructure.shims import llm_latency, llm_requests, llm_tokens
 from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
 
@@ -169,9 +172,15 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 self._update_opik_span(
                     cached_response, sanitized_prompt=sanitized_prompt, cached=True
                 )
+                llm_requests.labels(
+                    provider=cached_response.provider,
+                    model=cached_response.model,
+                    status="cached",
+                ).inc()
                 return cached_response
 
         # Route through registry with BaseExternalClient wrapping
+        request_started = time.monotonic()
         try:
             # Initialize registry and log provider info only once
             if not self._router_initialized:
@@ -224,9 +233,33 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 sanitized_messages=sanitized_messages,
             )
 
+            # Prometheus + SLA accounting (no-ops when metrics are disabled)
+            llm_requests.labels(
+                provider=response.provider, model=response.model, status="success"
+            ).inc()
+            llm_latency.labels(
+                provider=response.provider, model=response.model
+            ).observe(response.response_time_ms / 1000.0)
+            if response.tokens_used:
+                llm_tokens.labels(provider=response.provider, model=response.model).inc(
+                    response.tokens_used
+                )
+            sla_tracker.record_request_metrics(
+                "llm_provider", response.response_time_ms, success=True
+            )
+
             return response
 
         except Exception as e:
+            # Provider unknown on failure (the whole fallback chain failed)
+            llm_requests.labels(
+                provider="unknown", model=model or "unknown", status="error"
+            ).inc()
+            sla_tracker.record_request_metrics(
+                "llm_provider",
+                (time.monotonic() - request_started) * 1000.0,
+                success=False,
+            )
             self.logger.error(
                 f"❌ LLM Router: All providers failed: {type(e).__name__}: {e}",
                 exc_info=True,

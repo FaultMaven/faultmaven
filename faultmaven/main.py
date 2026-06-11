@@ -1221,11 +1221,15 @@ try:
 
     _metrics_settings = get_settings()
     if _metrics_settings.providers.metrics_exporter == MetricsExporter.PROMETHEUS_HTTP:
+        from .infrastructure.health.sla_tracker import sla_tracker
         from .infrastructure.observability.metrics_exporters import (
             create_prometheus_metrics_endpoint,
+            register_scrape_hook,
         )
 
         app.include_router(create_prometheus_metrics_endpoint(), tags=["metrics"])
+        # SLA gauges are recomputed at every scrape so /health/sla is alertable
+        register_scrape_hook(sla_tracker.update_prometheus_gauges)
         logger.info(
             "✅ Prometheus /metrics endpoint mounted (METRICS_EXPORTER=prometheus_http)"
         )
@@ -2186,6 +2190,9 @@ if __name__ == "__main__":
     # Start server
     # Note: workers parameter is only used if > 1 (uvicorn defaults to 1 worker if not specified)
     # Validation happens in lifespan startup, which will catch invalid configurations
+    # access_log=False: uvicorn's plaintext access lines duplicate the
+    # structured (JSON) request start/completion logs emitted by
+    # LoggingMiddleware — one access log, structured, with correlation IDs.
     if workers > 1:
         uvicorn.run(
             "faultmaven.main:app",
@@ -2194,8 +2201,14 @@ if __name__ == "__main__":
             reload=reload,
             workers=workers,
             log_level="info",
+            access_log=False,
         )
     else:
         uvicorn.run(
-            "faultmaven.main:app", host=host, port=port, reload=reload, log_level="info"
+            "faultmaven.main:app",
+            host=host,
+            port=port,
+            reload=reload,
+            log_level="info",
+            access_log=False,
         )

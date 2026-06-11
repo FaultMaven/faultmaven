@@ -61,6 +61,15 @@ except Exception as e:
 
 ## Structure
 - JSON logs with fields: timestamp, level, component, session_id, case_id, event, payload
+- `request_id` (from the `X-Request-ID` header, or generated) is bound into
+  structlog contextvars by `RequestIdMiddleware` for the duration of each
+  request — every log line emitted while handling a request carries it.
+
+## Access logs
+- Uvicorn's plaintext access log is **disabled** (`access_log=False` in
+  `main.py`). The single access log is the structured request
+  start/completion pair emitted by `LoggingMiddleware` (method, path,
+  status_code, duration_seconds, correlation_id, request_id).
 
 ## Redaction
 - Strip or hash PII/session identifiers; avoid storing raw user content in logs
