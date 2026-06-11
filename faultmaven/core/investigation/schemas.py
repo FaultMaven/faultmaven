@@ -857,9 +857,10 @@ class SuggestedFollowUp(BaseModel):
         # action_type therefore degrades to non-clickable.
         default="FREE_SPEECH",
         description=(
-            "COOPERATIVE = GIVE the user a ready next move: you pre-write "
-            "their exact message/command as payload, they only decide to "
-            "click; EVIDENCE = GET data from the user's environment "
+            "COOPERATIVE = a ready move you composed: DECIDE (query_submit — "
+            "click sends your pre-written message, the user only accepts) or "
+            "RUN (command_copy — click copies your exact command to run "
+            "externally); EVIDENCE = GET data from the user's environment "
             "(informational); FREE_SPEECH = GET the user's own words "
             "(informational). If the user would have to supply content — "
             "data or words — the type is never COOPERATIVE. When unsure, "

@@ -1,22 +1,24 @@
 """Follow-up suggestion type-discrimination guardrail.
 
 The rules are GENERATIVE: the model decides the type from its intent
-BEFORE drafting text — every suggestion is either a GIVE (hand the user
-a ready, complete next move → COOPERATIVE) or a GET (obtain input from
-the user: data → EVIDENCE, words → FREE_SPEECH). Classifier-style rules
+BEFORE drafting text — three intent lanes, each binding intent to type
+AND encoding: DECIDE (user accepts a pre-written message → COOPERATIVE
+query_submit, clickable), RUN (user executes a composed command →
+COOPERATIVE command_copy, pasteable), GET CONTENT (user supplies data →
+EVIDENCE or words → FREE_SPEECH, informational). Classifier-style rules
 (inspect drafted text, then type it) caused repeated mistyping because
 surface form misleads — observed shapes:
 
 - "I have another question" / unfinished "How do I..." emitted clickable
-  (case_a5af93054820): a GET (their question) cast as a GIVE.
+  (case_a5af93054820): a content-GET (their question) cast as clickable.
 - Fully-worded answerable questions demoted to non-clickable FREE_SPEECH
-  (case_3e8c9eccf2c8): a GIVE mistaken for a GET.
+  (case_3e8c9eccf2c8): a DECIDE move mistaken for a GET.
 - "Have similar test failures happened before?" emitted clickable
   (case_27e448b278ae): agent-worded, but the ANSWER lives with the user —
-  a GET cast as a GIVE; the click submitted a question the agent itself
-  could not answer.
+  a GET cast as clickable; the click submitted a question the agent
+  itself could not answer.
 
-These pin the GIVE/GET fork, the litmus, the tie-breaker, the BAD
+These pin the intent lanes, the litmus, the tie-breaker, the BAD
 GET-as-payload contrast set, and that the block reaches both the INQUIRY
 and INVESTIGATING prompts.
 
@@ -42,24 +44,41 @@ def _flat(text: str) -> str:
 
 @pytest.mark.unit
 class TestFollowUpTypeDiscrimination:
-    def test_give_get_fork_heads_the_block(self):
-        """The generative fork — start from intent, GIVE vs GET — must lead
-        the rules, with the three types assigned inside it."""
+    def test_intent_lanes_head_the_block(self):
+        """The generative rules — start from intent — must lead the block,
+        with three lanes each binding intent to type AND encoding:
+        DECIDE (clickable, sends), RUN (pasteable, copies), GET CONTENT
+        (informational)."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
         assert "Start from what YOU WANT" in flat
-        assert "GIVE the user a ready next move" in flat
-        # GIVE needs the user's DECISION only — the content is pre-written.
-        assert "all you need from them is a DECISION" in flat
-        assert "you pre-write the exact message they would send" in flat
-        assert "GET content from the user" in flat
-        assert "What you need picks the type" in flat
+        assert "three intents, each with its own type and encoding" in flat
+        assert "1. DECIDE — you want the user's decision on a move you composed" in (
+            flat
+        )
+        assert "You pre-write the exact message they would send" in flat
+        assert "(clickable — click sends)" in flat
+        assert "2. RUN — you want the user to execute an exact command" in flat
+        assert "(pasteable — click copies)" in flat
+        assert "3. GET CONTENT" in flat
+        assert "what you need picks the type" in flat
+
+    def test_run_lane_owns_command_copy_and_output_return_trip(self):
+        """RUN is its own intent lane, not buried under DECIDE: command
+        execution happens externally, and the output coming back is a
+        separate EVIDENCE ask — never folded into the command suggestion
+        (the 'I ran it — here's the result' failure shape)."""
+        flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
+        assert 'cooperative_action="command_copy"' in flat
+        assert "That return trip is a separate EVIDENCE ask" in flat
 
     def test_litmus_blocks_get_as_clickable(self):
         """The litmus is the single residual check: any CONTENT the user
         must supply (data or words, beyond the click itself) makes the
         suggestion a GET — never COOPERATIVE."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
-        assert "beyond clicking, would the user have to supply any CONTENT" in flat
+        assert (
+            "beyond the click (send or copy), must the user supply any CONTENT" in flat
+        )
         assert "never COOPERATIVE" in flat
 
     def test_get_miscast_examples_cover_observed_shapes(self):
@@ -76,7 +95,7 @@ class TestFollowUpTypeDiscrimination:
         — pinned by the example and its annotation, contrasting with the
         FREE_SPEECH open invitation."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
-        assert "take up a follow-up question YOU can answer" in flat
+        assert "adopt a ready-made follow-up question YOU can answer" in flat
         assert '"What does exit code 137 mean?"' in flat
         assert (
             '{{"label": "Ask another question", "action_type": "FREE_SPEECH"}}' in flat
@@ -132,7 +151,7 @@ class TestFollowUpTypeDiscrimination:
         externally (e.g. kubectl logs <pod-name>)."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
         assert "<placeholders>" in flat
-        assert "the user edits them externally" in flat
+        assert "the user edits them in their terminal" in flat
 
     @pytest.mark.parametrize(
         "template,name",
@@ -143,12 +162,12 @@ class TestFollowUpTypeDiscrimination:
     )
     def test_rules_reach_suggestion_generating_prompts(self, template, name):
         """Both suggestion-generating prompts compose the shared block, so
-        the GIVE/GET fork and the litmus must be present in each assembled
+        the intent lanes and the litmus must be present in each assembled
         template."""
         flat = _flat(template)
         assert (
-            "GIVE the user a ready next move" in flat
-        ), f"{name} lost the GIVE/GET generative fork."
+            "three intents, each with its own type and encoding" in flat
+        ), f"{name} lost the intent-lane generative rules."
         assert (
-            "beyond clicking, would the user have to supply any CONTENT" in flat
+            "beyond the click (send or copy), must the user supply any CONTENT" in flat
         ), f"{name} lost the litmus."
