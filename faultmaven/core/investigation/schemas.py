@@ -853,10 +853,11 @@ class SuggestedFollowUp(BaseModel):
     action_type: Literal["COOPERATIVE", "EVIDENCE", "FREE_SPEECH"] = Field(
         default="COOPERATIVE",
         description=(
-            "COOPERATIVE = click submits query or copies command; "
+            "COOPERATIVE = click submits query or copies command (any message "
+            "you can fully word for the user, including a specific question); "
             "EVIDENCE = informational, tells user what data to provide; "
-            "FREE_SPEECH = informational, invites the user to answer in their "
-            "own words (open or follow-up questions, descriptions, judgment)"
+            "FREE_SPEECH = informational, invites the user to speak in their "
+            "own words (content only the user can author)"
         ),
     )
     payload: Optional[str] = Field(
