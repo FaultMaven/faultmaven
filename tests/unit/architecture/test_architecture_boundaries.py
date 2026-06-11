@@ -59,6 +59,14 @@ class TestArchitectureBoundaries:
                             # Allow logging imports for middleware (cross-cutting concerns)
                             elif "middleware" in str(file) and "logging" in module:
                                 pass  # Middleware can use logging infrastructure
+                            # SLA observation recording is a cross-cutting
+                            # observability concern like logging/tracing —
+                            # middleware is the single HTTP chokepoint that
+                            # can observe every request outcome
+                            elif "middleware" in str(file) and module.endswith(
+                                "health.sla_tracker"
+                            ):
+                                pass
                             else:
                                 violations.append(
                                     f"{file}: imports from infrastructure layer ({module})"

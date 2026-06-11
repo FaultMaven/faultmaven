@@ -151,7 +151,10 @@ def Counter(
             namespace=namespace,
             subsystem=subsystem,
             unit=unit,
-            registry=registry,
+            # registry=None must fall through to prometheus_client's default
+            # REGISTRY — passing None explicitly leaves the metric unregistered
+            # and therefore invisible to /metrics.
+            **({"registry": registry} if registry is not None else {}),
         )
     else:
         logger.debug(
@@ -209,8 +212,11 @@ def Histogram(
             "namespace": namespace,
             "subsystem": subsystem,
             "unit": unit,
-            "registry": registry,
         }
+        # registry=None must fall through to prometheus_client's default
+        # REGISTRY — an explicit None leaves the metric unregistered.
+        if registry is not None:
+            kwargs["registry"] = registry
         if buckets is not None:
             kwargs["buckets"] = buckets
         return PrometheusHistogram(**kwargs)
@@ -270,7 +276,10 @@ def Gauge(
             namespace=namespace,
             subsystem=subsystem,
             unit=unit,
-            registry=registry,
+            # registry=None must fall through to prometheus_client's default
+            # REGISTRY — passing None explicitly leaves the metric unregistered
+            # and therefore invisible to /metrics.
+            **({"registry": registry} if registry is not None else {}),
         )
     else:
         logger.debug(
@@ -326,7 +335,10 @@ def Summary(
             namespace=namespace,
             subsystem=subsystem,
             unit=unit,
-            registry=registry,
+            # registry=None must fall through to prometheus_client's default
+            # REGISTRY — passing None explicitly leaves the metric unregistered
+            # and therefore invisible to /metrics.
+            **({"registry": registry} if registry is not None else {}),
         )
     else:
         logger.debug(
@@ -375,7 +387,10 @@ def Info(
             labelnames=labelnames or [],
             namespace=namespace,
             subsystem=subsystem,
-            registry=registry,
+            # registry=None must fall through to prometheus_client's default
+            # REGISTRY — passing None explicitly leaves the metric unregistered
+            # and therefore invisible to /metrics.
+            **({"registry": registry} if registry is not None else {}),
         )
     else:
         logger.debug(
@@ -450,4 +465,43 @@ llm_latency = Histogram(
     "llm_request_duration_seconds",
     "LLM request duration in seconds",
     labelnames=["provider", "model"],
+)
+
+llm_tokens = Counter(
+    "llm_tokens_total",
+    "Total LLM tokens consumed (provider-reported total per request)",
+    labelnames=["provider", "model"],
+)
+
+# SLA gauges — exported from the SLA tracker at /metrics scrape time so the
+# values behind /health/sla become alertable. Status mapping: 3=meeting,
+# 2=at_risk, 1=breached, 0=unknown (alert on `sla_status < 3`).
+sla_status = Gauge(
+    "sla_status",
+    "SLA compliance status per component (3=meeting, 2=at_risk, 1=breached, 0=unknown)",
+    labelnames=["component"],
+)
+
+sla_availability_ratio = Gauge(
+    "sla_availability_ratio",
+    "Observed availability per component over the SLA window (0-1)",
+    labelnames=["component"],
+)
+
+sla_response_time_p95_seconds = Gauge(
+    "sla_response_time_p95_seconds",
+    "Observed p95 response time per component over the SLA window",
+    labelnames=["component"],
+)
+
+sla_error_rate_ratio = Gauge(
+    "sla_error_rate_ratio",
+    "Observed error rate per component over the SLA window (0-1)",
+    labelnames=["component"],
+)
+
+sla_active_breaches = Gauge(
+    "sla_active_breaches",
+    "Number of currently active SLA breaches per component",
+    labelnames=["component"],
 )
