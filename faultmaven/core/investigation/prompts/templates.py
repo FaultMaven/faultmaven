@@ -149,6 +149,9 @@ COOPERATIVE — payload REQUIRED (used ONLY here): the complete text a click sub
     qualifies; a template or preamble that still needs the user's words does not
     (that is FREE_SPEECH). Emit only payloads you can usefully answer from this case
     or your own knowledge — if answering would need data you don't have, use EVIDENCE.
+      BAD:  payload "I have another question"        (placeholder — the question is still missing → FREE_SPEECH)
+      BAD:  payload "How do I..."                    (unfinished — the user must complete it → FREE_SPEECH)
+      GOOD: payload "What does exit code 137 mean?"  (complete — one click submits, you answer)
   - "command_copy": payload is a shell command, copied to clipboard. <placeholders>
     are fine — the user edits them externally. Use for any command/script payload.
   {{"label": "Validate the config hypothesis", "action_type": "COOPERATIVE", "cooperative_action": "query_submit", "payload": "Let's focus on validating the config change hypothesis", "body": "Test whether the recent config change correlates with the failure window."}}

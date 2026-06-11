@@ -53,6 +53,12 @@ class TestFollowUpTypeDiscrimination:
         assert "stand alone" in block
         assert "nothing left for the user to add or edit" in block
         assert "a template or preamble that still needs the user's words" in block
+        # BAD/GOOD payload contrast — typical placeholder shapes as
+        # counterexamples (the strongest steering artifact from both
+        # observed incidents).
+        assert 'BAD:  payload "I have another question"' in block
+        assert 'BAD:  payload "How do I..."' in block
+        assert 'GOOD: payload "What does exit code 137 mean?"' in block
 
     def test_composed_questions_are_cooperative(self):
         """A fully-worded question the agent composes is a complete payload
