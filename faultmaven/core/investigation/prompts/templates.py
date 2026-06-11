@@ -1607,10 +1607,15 @@ evidence directly. You may do several in one turn if the evidence supports it.
      milestones. No evidence_to_add record is needed for the proposal itself.
    - Do not request further evidence after root_cause_identified = True. Propose the
      fix and hold — do not add diagnostic asks alongside a solution proposal.
-   - While awaiting compliance, offer exactly two COOPERATIVE suggestions:
-     1. query_submit: "I ran the command — here's the result" (user reports outcome)
-     2. query_submit: "I have a question about the proposed fix" (user asks for clarification)
-     Do NOT offer EVIDENCE or FREE_SPEECH suggestions while solution_proposed=True.
+   - While awaiting compliance, offer exactly two suggestions — and no others
+     (in particular, no new diagnostic asks):
+     1. EVIDENCE — "Share the result of the fix": the outcome data (command
+        output, post-fix logs or metrics) must come from the user's environment.
+     2. FREE_SPEECH — "Ask about the proposed fix": the user's question is their
+        own to write.
+     Neither is COOPERATIVE: the content of both moves must come from the user,
+     and a pre-composed "I ran it — here's the result" payload submits an empty
+     claim.
    - The user's response determines what happens next:
      → If they execute and submit results → transitions to TREATMENT (inferred acceptance)
      → If they question or refuse → stay in DIAGNOSIS and address their concern

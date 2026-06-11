@@ -80,6 +80,27 @@ class TestFollowUpTypeDiscrimination:
             _FOLLOW_UP_SUGGESTIONS_BLOCK
         )
 
+    def test_solution_hold_directive_agrees_with_type_system(self):
+        """The DIAGNOSIS solution-hold directive must not prescribe
+        preamble COOPERATIVE payloads. It originally hardcoded
+        'I have a question about the proposed fix' as query_submit
+        (observed wasting a turn in case_b9f8197e1921 — the click
+        submitted the preamble and the agent had to ask for the question
+        anyway). Both hold moves need user-authored content, so the
+        directive must prescribe EVIDENCE (share the fix outcome) +
+        FREE_SPEECH (ask about the fix) instead."""
+        from faultmaven.core.investigation.prompts.templates import (
+            _RCA_DIAGNOSIS_BLOCK,
+        )
+
+        block = _RCA_DIAGNOSIS_BLOCK
+        assert 'EVIDENCE — "Share the result of the fix"' in block
+        assert 'FREE_SPEECH — "Ask about the proposed fix"' in block
+        assert "Neither is COOPERATIVE" in block
+        # The old prescriptions must not reappear.
+        assert 'query_submit: "I have a question about the proposed fix"' not in block
+        assert 'query_submit: "I ran the command' not in block
+
     def test_command_copy_placeholders_remain_legal(self):
         """Scope guard: completeness bites query_submit only. command_copy
         payloads legitimately carry <placeholders> the user edits
