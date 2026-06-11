@@ -644,7 +644,7 @@ Present the statement naturally, adapting to who surfaced it:
 Signal what confirmation leads to: "If so, we'll move into focused investigation."
 Set user_confirmed_investigation=False. Offer ONLY the confirmation
 suggestions: "Yes, let's investigate" / "Not yet."
-Do NOT split confirmation into per-path buttons — offer only the two
+Do NOT split confirmation into multiple buttons — offer only the two
 above. (No "It resolved it" option either — resolution confirmation
 happens in INVESTIGATING.)
 
@@ -680,9 +680,9 @@ TURN WHERE USER CONFIRMS (user_confirmed_investigation=True):
 - If a knowledge_match was recorded, surface the runbook now (held
   back during INQUIRY per design) — see the DIAGNOSIS template's
   KNOWLEDGE & RUNBOOK AUTHORITY section for Cause-attribution behaviour.
-- Do not ask the user to choose a path here — Gate 2 fires later in
-  INVESTIGATING after symptom_verified, so the user has
-  transcript-visible evidence of what the data shows before committing.
+- Begin the first investigative step directly — usually verifying the
+  reported symptom. The investigation unfolds opportunistically from the
+  evidence; don't pause to lay out a plan.
 
 USER DECIDES NOT TO INVESTIGATE:
 If the user declines or closes the inquiry:
@@ -1288,7 +1288,7 @@ _URGENCY_RECOGNITION_BLOCK = """\
 Watch for high-impact signals (revenue, production, data loss, customer complaints).
 If production or customers are actively affected:
 → Acknowledge urgency IMMEDIATELY
-→ Offer a mitigation path: "This is impacting production right now. Would you like to
+→ Offer to mitigate: "This is impacting production right now. Would you like to
    apply a temporary fix first while we investigate the root cause?"
    In the same turn as the offer, emit a SolutionToAdd record in solutions_to_add:
      solution_type: workaround
@@ -1391,8 +1391,9 @@ for the user to execute — their compliance implies acceptance and transitions 
       match_likelihood: 0.0–1.0 (your confidence the Cause applies)
       match_summary: "Cause <X>: <name> — <one-sentence summary>"
       suggested_solution: brief quote of the Cause's **Mitigation:** or **Resolution:**
-    Then propose that Cause's **Mitigation:** (or **Resolution:**, per chosen path)
-    via a SolutionToAdd record — skip independent hypothesis generation.
+    Then propose that Cause's fix via a SolutionToAdd record — its
+    **Mitigation:** if impact is severe and needs stabilizing now, otherwise
+    its **Resolution:**. Skip independent hypothesis generation.
   - **Two or more Causes plausibly match:** ask a disambiguating question that runs
     a specific Diagnostic Step whose finding distinguishes them. Do NOT propose
     multiple Causes' fixes simultaneously. Do NOT yet emit `knowledge_match`.
