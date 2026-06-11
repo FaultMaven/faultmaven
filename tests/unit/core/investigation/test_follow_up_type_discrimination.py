@@ -101,6 +101,22 @@ class TestFollowUpTypeDiscrimination:
         assert 'query_submit: "I have a question about the proposed fix"' not in block
         assert 'query_submit: "I ran the command' not in block
 
+    def test_uncertainty_defaults_to_free_speech(self):
+        """Failure costs are asymmetric: a wrongly-clickable suggestion
+        submits a broken message as the user; a wrongly-informational one
+        only makes the user type. The tie-breaker must point at FREE_SPEECH,
+        and the schema default must match it."""
+        from faultmaven.core.investigation.schemas import SuggestedFollowUp
+
+        assert "When unsure which type fits, use FREE_SPEECH" in (
+            _FOLLOW_UP_SUGGESTIONS_BLOCK
+        )
+        # Omitted action_type degrades safely to non-clickable: the field
+        # defaults to FREE_SPEECH and any stray payload is dropped.
+        s = SuggestedFollowUp(label="Do the thing", payload="something")
+        assert s.action_type == "FREE_SPEECH"
+        assert s.payload is None
+
     def test_command_copy_placeholders_remain_legal(self):
         """Scope guard: completeness bites query_submit only. command_copy
         payloads legitimately carry <placeholders> the user edits

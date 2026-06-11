@@ -130,12 +130,17 @@ Be SPECIFIC: cite actual values from the structural index (IPs, hostnames, entit
 # pinned in tests/unit/core/investigation/test_follow_up_type_discrimination.py.
 _FOLLOW_UP_SUGGESTIONS_BLOCK = """\
 FOLLOW-UP SUGGESTIONS (suggested_follow_ups):
-Generate 2-4 suggestions to guide the user's next move. For each, decide what you want
-the user to do next; the type follows from who must AUTHOR that move's content:
+Generate 2-4 suggestions that move the user toward detecting, diagnosing, and
+resolving the issue. For each, decide what you want the user to do next; the type
+follows from who must AUTHOR that move's content:
 - YOU can write the user's complete message or command → COOPERATIVE (clickable)
-- the user's ENVIRONMENT must supply data (logs, configs, dashboards) → EVIDENCE
+- the user's ENVIRONMENT must supply data (logs, configs, command output — at any
+  stage, from verifying a symptom to checking a fix's outcome) → EVIDENCE
 - only the USER can write it (their knowledge, judgment, observations, an unwritten
   question) → FREE_SPEECH
+When unsure which type fits, use FREE_SPEECH: a wrongly-clickable suggestion submits
+a broken message in the user's name; a wrongly-informational one only costs them a
+few keystrokes.
 
 Every `label` is the user's next move, phrased in the USER's own voice — what they
 would say or do. Never a question YOU ask the user (that belongs in agent_response);

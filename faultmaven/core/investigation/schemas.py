@@ -851,13 +851,18 @@ class SuggestedFollowUp(BaseModel):
         )
     )
     action_type: Literal["COOPERATIVE", "EVIDENCE", "FREE_SPEECH"] = Field(
-        default="COOPERATIVE",
+        # FREE_SPEECH is the safe default: a suggestion wrongly treated as
+        # clickable submits a broken message in the user's name; one wrongly
+        # treated as informational merely makes the user type. An omitted
+        # action_type therefore degrades to non-clickable.
+        default="FREE_SPEECH",
         description=(
             "COOPERATIVE = click submits query or copies command (any message "
             "you can fully word for the user, including a specific question); "
             "EVIDENCE = informational, tells user what data to provide; "
             "FREE_SPEECH = informational, invites the user to speak in their "
-            "own words (content only the user can author)"
+            "own words (content only the user can author). When unsure, use "
+            "FREE_SPEECH."
         ),
     )
     payload: Optional[str] = Field(
