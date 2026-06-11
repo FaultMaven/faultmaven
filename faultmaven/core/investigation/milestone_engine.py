@@ -613,7 +613,7 @@ def _get_solution_summary(case) -> str:
 
 
 def _investigation_confirmation_suggestions() -> list:
-    """Generate COOPERATIVE follow-up suggestions for investigation confirmation.
+    """Generate DECIDE follow-up suggestions for investigation confirmation.
 
     Used when the dropdown triggers INQUIRY → INVESTIGATING and a problem
     statement already exists. One positive (confirm) and one mild negative (refine).
@@ -621,16 +621,14 @@ def _investigation_confirmation_suggestions() -> list:
     return [
         {
             "label": "Yes, let's investigate",
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
+            "action_type": "DECIDE",
             "payload": "Yes, that's correct. Let's investigate.",
             "body": "Confirm the problem statement and start the investigation.",
             "intent": {"type": "confirmation", "confirmation_value": True},
         },
         {
             "label": "Not quite, let me clarify",
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
+            "action_type": "DECIDE",
             "payload": "Not quite — let me clarify the problem before we investigate.",
             "body": "Refine the problem statement before starting the investigation.",
             "intent": {"type": "confirmation", "confirmation_value": False},
@@ -878,7 +876,7 @@ def engine_owned_affordances(
     were removed (redesign R5): there is no prospective path fork, and a
     mitigation simply continues the flow when verified.
 
-    Returns ``None`` when no gate is pending — the LLM's own COOPERATIVE /
+    Returns ``None`` when no gate is pending — the LLM's own DECIDE /
     EVIDENCE / FREE_SPEECH suggestions pass through unmodified.
 
     Gate identifiers (telemetry-stable labels):
@@ -953,7 +951,7 @@ def _build_resolution_confirmation(case) -> str:
 
 
 def _resolution_confirmation_suggestions() -> list:
-    """Generate COOPERATIVE follow-up suggestions for resolution confirmation.
+    """Generate DECIDE follow-up suggestions for resolution confirmation.
 
     Mirrors the INQUIRY confirmation pattern: one positive (confirm resolution)
     and one mild negative (continue investigating).
@@ -966,16 +964,14 @@ def _resolution_confirmation_suggestions() -> list:
     return [
         {
             "label": "Yes, mark as resolved",
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
+            "action_type": "DECIDE",
             "payload": "Yes, the issue is resolved. Please mark this case as resolved.",
             "body": "Confirm resolution and close the investigation.",
             "intent": {"type": "confirmation", "confirmation_value": True},
         },
         {
             "label": "Not yet, continue investigating",
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
+            "action_type": "DECIDE",
             "payload": "Not yet — I'd like to continue investigating before resolving.",
             "body": "Decline resolution and continue refining the root cause or exploring alternative solutions.",
             "intent": {"type": "confirmation", "confirmation_value": False},
@@ -984,7 +980,7 @@ def _resolution_confirmation_suggestions() -> list:
 
 
 def _close_confirmation_suggestions() -> list:
-    """Generate COOPERATIVE follow-up suggestions for close (abandon) confirmation.
+    """Generate DECIDE follow-up suggestions for close (abandon) confirmation.
 
     Mirrors the INQUIRY and RESOLVED confirmation patterns: one positive
     (confirm close) and one mild negative (continue investigating).
@@ -998,16 +994,14 @@ def _close_confirmation_suggestions() -> list:
     return [
         {
             "label": "Yes, close this case",
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
+            "action_type": "DECIDE",
             "payload": "Yes, close this case without resolution.",
             "body": "Confirm closing the case. Closing is irreversible — the case becomes read-only.",
             "intent": {"type": "confirmation", "confirmation_value": True},
         },
         {
             "label": "Not yet, continue investigating",
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
+            "action_type": "DECIDE",
             "payload": "Not yet — I'd like to continue investigating.",
             "body": "Keep the investigation open and continue working toward a solution.",
             "intent": {"type": "confirmation", "confirmation_value": False},
@@ -1071,18 +1065,17 @@ GENERATE_RUNBOOK_PAYLOAD = "Generate a runbook from this resolved case"
 
 
 def _runbook_suggestion() -> dict:
-    """The runbook-generation COOPERATIVE suggestion (RESOLVED-only)."""
+    """The runbook-generation DECIDE suggestion (RESOLVED-only)."""
     return {
         "label": "Generate runbook from this case",
-        "action_type": "COOPERATIVE",
-        "cooperative_action": "query_submit",
+        "action_type": "DECIDE",
         "payload": GENERATE_RUNBOOK_PAYLOAD,
         "body": "Create a reusable troubleshooting runbook from the root cause and solution.",
     }
 
 
 def _regenerate_resolution_summary_suggestion(remaining: int) -> dict | None:
-    """Regenerate-resolution-summary COOPERATIVE suggestion.
+    """Regenerate-resolution-summary DECIDE suggestion.
 
     Returns None when ``remaining <= 0`` so the caller can drop the
     affordance from the list entirely — the user has exhausted the
@@ -1095,8 +1088,7 @@ def _regenerate_resolution_summary_suggestion(remaining: int) -> dict | None:
         return None
     return {
         "label": "Regenerate resolution summary",
-        "action_type": "COOPERATIVE",
-        "cooperative_action": "query_submit",
+        "action_type": "DECIDE",
         "payload": REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
         "body": "Re-create the resolution report.",
     }
@@ -1200,8 +1192,7 @@ def _closed_suggestions(case, remaining: int) -> list:
     return [
         {
             "label": "Regenerate closure summary",
-            "action_type": "COOPERATIVE",
-            "cooperative_action": "query_submit",
+            "action_type": "DECIDE",
             "payload": REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
             "body": (
                 "Re-create the closure report. View the current report in the Dashboard."
@@ -1445,7 +1436,7 @@ class MilestoneEngine:
                 True,
             )
 
-    # Only the precomposed payloads submitted by the COOPERATIVE regen
+    # Only the precomposed payloads submitted by the DECIDE regen
     # suggestions reach this set. Free-typed summary-shaped requests
     # (e.g. "give me a recap", "summarize what we discussed") fall through
     # to terminal Q&A on purpose: typing should never produce a persisted
@@ -1457,7 +1448,7 @@ class MilestoneEngine:
     )
 
     # Same exact-match policy as _REPORT_REGEN_PATTERNS: only the
-    # precomposed COOPERATIVE-suggestion payload reaches the runbook
+    # precomposed DECIDE-suggestion payload reaches the runbook
     # creation path. Free-typed paraphrases ("create a runbook please")
     # fall through to Q&A. This keeps the principle consistent across
     # terminal-state actions: clicking triggers persisted side effects;
@@ -1483,14 +1474,14 @@ class MilestoneEngine:
         msg_lower = user_message.lower().strip().rstrip(".!? ")
 
         # Scenario 1: Report regeneration. Strict exact-match against the
-        # COOPERATIVE suggestion payloads — free-typed paraphrases fall
+        # DECIDE suggestion payloads — free-typed paraphrases fall
         # through to Q&A so typing can never produce a persisted Report
         # side effect.
         if msg_lower in self._REPORT_REGEN_PATTERNS:
             return await self._handle_report_regeneration(case, metadata)
 
         # Scenario 2: Runbook creation. Strict exact-match (same policy
-        # as regen): only the COOPERATIVE suggestion's precomposed
+        # as regen): only the DECIDE suggestion's precomposed
         # payload triggers persisted runbook generation; paraphrases
         # fall through to Q&A. RESOLVED-only — runbooks codify a
         # confirmed root-cause-to-solution chain.
@@ -2040,7 +2031,7 @@ class MilestoneEngine:
             # from blocking the confirmation.
             #
             # Two detection paths (checked in order):
-            # 1. Intent-based: COOPERATIVE suggestion clicks carry
+            # 1. Intent-based: DECIDE suggestion clicks carry
             #    intent_type="confirmation" + confirmation_value — deterministic
             # 2. Pattern-based: fallback for users who type instead of clicking
             if hasattr(case, "pending_transition") and case.pending_transition:
@@ -2420,7 +2411,7 @@ class MilestoneEngine:
 
                     if readiness.verdict == readiness.SUGGEST_CLOSE:
                         # Case lacks fundamentals — pivot to CLOSED. Propose the
-                        # closed transition so the COOPERATIVE pair the user
+                        # closed transition so the DECIDE pair the user
                         # sees matches what they will be confirming.
                         logger.info(
                             f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} "
@@ -6839,7 +6830,7 @@ class MilestoneEngine:
                 # Override LLM-emitted suggestions with the canonical
                 # confirm/decline pair, so all three trigger paths
                 # (UI click, NL via this branch, agent-initiated) produce
-                # the same structured COOPERATIVE confirmation UX. The
+                # the same structured DECIDE confirmation UX. The
                 # response builder consumes metadata["override_suggestions"]
                 # at the final assembly point.
                 if effective_to_status == "resolved":
@@ -6856,9 +6847,9 @@ class MilestoneEngine:
         return case
 
     def _user_confirms_transition(self, user_message: str) -> bool:
-        """Fallback check for typed confirmations (not COOPERATIVE clicks).
+        """Fallback check for typed confirmations (not DECIDE clicks).
 
-        COOPERATIVE suggestion clicks now carry intent metadata and route
+        DECIDE suggestion clicks now carry intent metadata and route
         through IntentType.CONFIRMATION deterministically. This matcher
         is a safety net for users who type instead of clicking.
 
@@ -7198,8 +7189,6 @@ class MilestoneEngine:
                 suggestion["payload"] = f.payload
             if f.body:
                 suggestion["body"] = f.body
-            if f.cooperative_action:
-                suggestion["cooperative_action"] = f.cooperative_action
             if f.hints:
                 suggestion["hints"] = f.hints
             if getattr(f, "evidence_need_id", None):

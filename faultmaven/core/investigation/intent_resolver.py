@@ -1,6 +1,6 @@
 """Bounded choice matching for typed responses to offered suggestions.
 
-When the agent presents COOPERATIVE suggestions with intent metadata (e.g.,
+When the agent presents DECIDE suggestions with intent metadata (e.g.,
 "Yes, mark as resolved" with confirmation intent), and the user types a
 response instead of clicking, this module determines whether the typed text
 is answering one of those choices or is unrelated conversational input.

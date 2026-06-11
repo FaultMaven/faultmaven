@@ -240,7 +240,7 @@ _CLARIFICATION_FALLBACK_LONG = "unstructured text"
 def _build_classification_clarification_suggestions(
     preprocess_results: List["_PreprocessedAttachment"],
 ) -> List[SuggestedActionResponse]:
-    """Emit COOPERATIVE suggestions when an attachment hit classification_failed.
+    """Emit DECIDE suggestions when an attachment hit classification_failed.
 
     Per-turn file limit is 1, so we expect at most one classification_failed
     result. Generates up to 3 type-specific suggestions from the classifier's
@@ -272,8 +272,7 @@ def _build_classification_clarification_suggestions(
         suggestions.append(
             SuggestedActionResponse(
                 label=friendly["label"],
-                type="COOPERATIVE",
-                cooperative_action="query_submit",
+                type="DECIDE",
                 payload=(
                     f'Treat the previously uploaded file ("{filename}") as '
                     f'{friendly["long"]} and analyze it.'
@@ -288,8 +287,7 @@ def _build_classification_clarification_suggestions(
     suggestions.append(
         SuggestedActionResponse(
             label=_CLARIFICATION_FALLBACK_LABEL,
-            type="COOPERATIVE",
-            cooperative_action="query_submit",
+            type="DECIDE",
             payload=(
                 f'Treat the previously uploaded file ("{filename}") as '
                 f"{_CLARIFICATION_FALLBACK_LONG} and try to analyze it."
@@ -755,7 +753,6 @@ class InvestigationService:
                     type=f["action_type"],
                     payload=f.get("payload"),
                     body=f.get("body"),
-                    cooperative_action=f.get("cooperative_action"),
                     hints=f.get("hints"),
                     intent=f.get("intent"),
                 )

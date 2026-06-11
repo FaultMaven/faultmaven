@@ -451,10 +451,11 @@ class SuggestedActionResponse(BaseModel):
     """A follow-up suggestion returned with agent responses."""
 
     label: str
-    type: str  # "COOPERATIVE" | "EVIDENCE" | "FREE_SPEECH"
-    payload: Optional[str] = None  # COOPERATIVE only: text a click submits/copies
+    type: str  # "DECIDE" | "RUN" | "EVIDENCE" | "FREE_SPEECH"
+    payload: Optional[str] = (
+        None  # DECIDE: text a click sends; RUN: command a click copies
+    )
     body: Optional[str] = None
-    cooperative_action: Optional[str] = None  # "query_submit" | "command_copy"
     hints: Optional[List[str]] = None  # FREE_SPEECH: short framework tags
     intent: Optional[Dict[str, Any]] = (
         None  # QueryIntent metadata for deterministic routing

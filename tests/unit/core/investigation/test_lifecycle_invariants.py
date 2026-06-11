@@ -1280,10 +1280,10 @@ class TestINV10_SubmitTurnRejectionRules:
 # =============================================================================
 #
 # Source: §1.7.3 *Regeneration* — "Free text routes to Q&A: the regen handler
-#   is reached only via the COOPERATIVE suggestion's precomposed payload
+#   is reached only via the DECIDE suggestion's precomposed payload
 #   (exact-match). Free-typed paraphrases like 'give me a recap' or 'new
 #   summary please' route to terminal Q&A."
-# Statement: Only exact-match of the COOPERATIVE payload triggers a
+# Statement: Only exact-match of the DECIDE payload triggers a
 #   persisted Report or Runbook side effect. Everything else routes to
 #   the Q&A handler.
 # Enforcement: Code-guarded — _REPORT_REGEN_PATTERNS and
@@ -1294,7 +1294,7 @@ class TestINV10_SubmitTurnRejectionRules:
 
 
 class TestINV12_FreeTextRoutesToQA:
-    """INV-12: only exact-match COOPERATIVE payloads produce persisted side effects.
+    """INV-12: only exact-match DECIDE payloads produce persisted side effects.
 
     The dispatcher in ``_process_terminal_turn`` routes by exact-match
     against ``_REPORT_REGEN_PATTERNS`` / ``_RUNBOOK_CREATION_PATTERNS``.
@@ -1378,7 +1378,7 @@ class TestINV12_FreeTextRoutesToQA:
     @pytest.mark.asyncio
     async def test_inv12_runbook_paraphrase_routes_to_qa(self):
         """Runbook-creation paraphrases route to Q&A — only the exact
-        COOPERATIVE payload triggers the persisted runbook side effect."""
+        DECIDE payload triggers the persisted runbook side effect."""
         repo = MagicMock()
         repo.save = AsyncMock(side_effect=lambda c: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
@@ -1412,7 +1412,7 @@ class TestINV12_FreeTextRoutesToQA:
 
     def test_inv12_patterns_match_cooperative_suggestion_payloads(self):
         """The dispatcher's exact-match tuples must equal the precomposed
-        payloads of the COOPERATIVE suggestions. If a payload string changes
+        payloads of the DECIDE suggestions. If a payload string changes
         (in milestone_engine.py module-level constants) the dispatcher
         constants must change in lockstep, or clicking the suggestion would
         stop triggering its action.
@@ -1427,7 +1427,7 @@ class TestINV12_FreeTextRoutesToQA:
         regen_patterns = MilestoneEngine._REPORT_REGEN_PATTERNS
         runbook_patterns = MilestoneEngine._RUNBOOK_CREATION_PATTERNS
 
-        # Every COOPERATIVE payload must appear in the dispatcher's tuple
+        # Every DECIDE payload must appear in the dispatcher's tuple
         # (lowercased, since user_message is lower-cased before matching)
         assert REGENERATE_CLOSURE_SUMMARY_PAYLOAD.lower() in regen_patterns, (
             "REGENERATE_CLOSURE_SUMMARY_PAYLOAD constant changed but "
@@ -1835,7 +1835,7 @@ class TestINV18_RunbookEligibilityResolvedOnly:
             }
         )
 
-        # Submit the exact COOPERATIVE runbook payload on a CLOSED case
+        # Submit the exact DECIDE runbook payload on a CLOSED case
         await engine._process_terminal_turn(case, GENERATE_RUNBOOK_PAYLOAD, {})
 
         # Runbook handler NOT called — eligibility gate refused the dispatch

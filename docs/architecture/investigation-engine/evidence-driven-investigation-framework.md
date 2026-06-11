@@ -729,7 +729,7 @@ RESOLVED case
 
 **Runbook generation is never automatic.** Design: suggest first, evaluate on acceptance.
 
-1. **Agent offers at terminal transition** — For RESOLVED cases: COOPERATIVE suggestions "Regenerate resolution summary" and "Generate runbook from this case." For CLOSED cases with an auto-generated summary: "Regenerate closure summary" only. For CLOSED cases that failed the substance check (no summary generated): no suggestions are offered — there's nothing to regenerate. Report viewing is via Dashboard link. No evaluation happens at suggestion time.
+1. **Agent offers at terminal transition** — For RESOLVED cases: DECIDE suggestions "Regenerate resolution summary" and "Generate runbook from this case." For CLOSED cases with an auto-generated summary: "Regenerate closure summary" only. For CLOSED cases that failed the substance check (no summary generated): no suggestions are offered — there's nothing to regenerate. Report viewing is via Dashboard link. No evaluation happens at suggestion time.
 2. **Evaluation on acceptance** — When the user accepts, the system checks readiness + deduplication. Four outcomes: `SUCCESS` (draft created), `NOT_SUITABLE` (not enough data), `EXISTING_COVERS` (similar runbook exists), `GENERATION_FAILED`.
 3. **User requests** — Via copilot chat or Dashboard KB page, same evaluation applies.
 

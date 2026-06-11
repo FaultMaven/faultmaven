@@ -1,11 +1,11 @@
 """Follow-up suggestion type-discrimination guardrail.
 
 The rules are GENERATIVE: the model decides the type from its intent
-BEFORE drafting text — three intent lanes, each binding intent to type
-AND encoding: DECIDE (user accepts a pre-written message → COOPERATIVE
-query_submit, clickable), RUN (user executes a composed command →
-COOPERATIVE command_copy, pasteable), GET CONTENT (user supplies data →
-EVIDENCE or words → FREE_SPEECH, informational). Classifier-style rules
+BEFORE drafting text — the four wire types ARE the intents: DECIDE (user
+accepts a pre-written message; clickable, click sends), RUN (user
+executes a composed command; clickable, click copies), EVIDENCE (user
+supplies environment data; informational), FREE_SPEECH (user supplies
+their own words; informational). Classifier-style rules
 (inspect drafted text, then type it) caused repeated mistyping because
 surface form misleads — observed shapes:
 
@@ -51,12 +51,12 @@ class TestFollowUpTypeDiscrimination:
         (informational)."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
         assert "Start from what YOU WANT" in flat
-        assert "three intents, each with its own type and encoding" in flat
+        assert "the TYPE names your intent, and the encoding follows from it" in flat
         assert "1. DECIDE — you expect a decision or answer FROM the user" in flat
         assert "you pre-compose it for them" in flat
-        assert "(clickable — click sends)" in flat
+        assert "DECIDE (clickable — click sends)" in flat
         assert "2. RUN — you want the user to execute an exact command" in flat
-        assert "(pasteable — click copies)" in flat
+        assert "RUN (pasteable — click copies)" in flat
         assert "3. GET CONTENT" in flat
         assert "what you need picks the type" in flat
 
@@ -66,18 +66,18 @@ class TestFollowUpTypeDiscrimination:
         separate EVIDENCE ask — never folded into the command suggestion
         (the 'I ran it — here's the result' failure shape)."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
-        assert 'cooperative_action="command_copy"' in flat
+        assert "RUN (pasteable — click copies)" in flat
         assert "That return trip is a separate EVIDENCE ask" in flat
 
     def test_litmus_blocks_get_as_clickable(self):
         """The litmus is the single residual check: any CONTENT the user
         must supply (data or words, beyond the click itself) makes the
-        suggestion a GET — never COOPERATIVE."""
+        suggestion a GET — never clickable."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
         assert (
             "beyond the click (send or copy), must the user supply any CONTENT" in flat
         )
-        assert "never COOPERATIVE" in flat
+        assert "never DECIDE or RUN" in flat
 
     def test_get_miscast_examples_cover_observed_shapes(self):
         """The BAD contrast set pins the three observed GET-as-payload
@@ -94,7 +94,10 @@ class TestFollowUpTypeDiscrimination:
         FREE_SPEECH open invitation."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
         assert "a ready-made question YOU can answer" in flat
-        assert '"What does exit code 137 mean?"' in flat
+        assert (
+            '"action_type": "DECIDE", "payload": "What does exit code 137 mean?"'
+            in flat
+        )
         assert (
             '{{"label": "Ask another question", "action_type": "FREE_SPEECH"}}' in flat
         )
@@ -124,7 +127,7 @@ class TestFollowUpTypeDiscrimination:
 
     def test_solution_hold_directive_agrees_with_type_system(self):
         """The DIAGNOSIS solution-hold directive must not prescribe
-        preamble COOPERATIVE payloads. It originally hardcoded
+        preamble clickable payloads. It originally hardcoded
         'I have a question about the proposed fix' as query_submit
         (observed wasting a turn in case_b9f8197e1921 — the click
         submitted the preamble and the agent had to ask for the question
@@ -138,7 +141,7 @@ class TestFollowUpTypeDiscrimination:
         block = _RCA_DIAGNOSIS_BLOCK
         assert 'EVIDENCE — "Share the result of the fix"' in block
         assert 'FREE_SPEECH — "Ask about the proposed fix"' in block
-        assert "Neither is COOPERATIVE" in block
+        assert "Neither is clickable (DECIDE/RUN)" in block
         # The old prescriptions must not reappear.
         assert 'query_submit: "I have a question about the proposed fix"' not in block
         assert 'query_submit: "I ran the command' not in block
@@ -164,7 +167,7 @@ class TestFollowUpTypeDiscrimination:
         template."""
         flat = _flat(template)
         assert (
-            "three intents, each with its own type and encoding" in flat
+            "the TYPE names your intent, and the encoding follows from it" in flat
         ), f"{name} lost the intent-lane generative rules."
         assert (
             "beyond the click (send or copy), must the user supply any CONTENT" in flat

@@ -3681,7 +3681,7 @@ class Case(BaseModel):
     last_suggestions: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         description=(
-            "COOPERATIVE suggestions with intent metadata from the last agent turn. "
+            "DECIDE suggestions with intent metadata from the last agent turn. "
             "Used by the intent resolver to match typed responses against offered choices. "
             "Updated after each turn; only suggestions carrying intent metadata are stored."
         ),

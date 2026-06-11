@@ -7490,10 +7490,10 @@ components:
             type: array
           - type: 'null'
           title: Last Suggestions
-          description: COOPERATIVE suggestions with intent metadata from the last
-            agent turn. Used by the intent resolver to match typed responses against
-            offered choices. Updated after each turn; only suggestions carrying intent
-            metadata are stored.
+          description: DECIDE suggestions with intent metadata from the last agent
+            turn. Used by the intent resolver to match typed responses against offered
+            choices. Updated after each turn; only suggestions carrying intent metadata
+            are stored.
         kb_context:
           anyOf:
           - items:
@@ -12613,18 +12613,15 @@ components:
           type: string
           title: Type
         payload:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Payload
         body:
           anyOf:
           - type: string
           - type: 'null'
           title: Body
-        cooperative_action:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Cooperative Action
         hints:
           anyOf:
           - items:
@@ -12646,7 +12643,6 @@ components:
       required:
       - label
       - type
-      - payload
       title: SuggestedActionResponse
       description: A follow-up suggestion returned with agent responses.
     TeamCreateRequest:

@@ -50,7 +50,7 @@ def assert_handshake_deferred_at(case: Case, expected_turn: int) -> None:
 def assert_has_confirmation_suggestions(follow_ups: Iterable[dict[str, Any]]) -> None:
     """Assert the response includes a clickable confirmation pair.
 
-    Required shape: at least one COOPERATIVE suggestion carrying
+    Required shape: at least one DECIDE suggestion carrying
     ``intent.type == "confirmation"`` with ``confirmation_value == True``
     (the positive click), and ideally a companion with
     ``confirmation_value == False``. This is the structural contract
@@ -68,7 +68,7 @@ def assert_has_confirmation_suggestions(follow_ups: Iterable[dict[str, Any]]) ->
         and (f.get("intent") or {}).get("confirmation_value") is True
     ]
     assert positive, (
-        f"Expected at least one COOPERATIVE suggestion with "
+        f"Expected at least one DECIDE suggestion with "
         f"intent={{type: 'confirmation', confirmation_value: True}}, "
         f"got: {fups!r}"
     )

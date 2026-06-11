@@ -176,14 +176,14 @@ Never recommend destructive commands (`rm -rf`, `DROP`, `TRUNCATE`, `kill -9` on
 
 ### Suggestion Type Boundary
 
-A COOPERATIVE suggestion is a clickable pre-composed message. When sent, the agent is expected to act on it — steer the investigation, confirm a transition, engage with analysis, acknowledge a step. The failure mode is generating a COOPERATIVE suggestion whose implied outcome the agent cannot deliver.
+A DECIDE suggestion is a clickable pre-composed message. When sent, the agent is expected to act on it — steer the investigation, confirm a transition, engage with analysis, acknowledge a step. The failure mode is generating a DECIDE suggestion whose implied outcome the agent cannot deliver.
 
-**Prescribed behavior**: Before marking a suggestion COOPERATIVE, ask: *if the user clicks this, can I actually deliver what it implies?* If delivering the response would require data not present in the case, use EVIDENCE to ask the user to collect and submit it.
+**Prescribed behavior**: Before marking a suggestion DECIDE, ask: *if the user clicks this, can I actually deliver what it implies?* If delivering the response would require data not present in the case, use EVIDENCE to ask the user to collect and submit it.
 
 **Prompt injection** (FOLLOW-UP SUGGESTIONS section, both INQUIRY and INVESTIGATION_BASE):
 
 ```text
-Before marking a suggestion COOPERATIVE, ask: if the user sends this message,
+Before marking a suggestion DECIDE, ask: if the user sends this message,
 can I deliver what it implies? If the response would require data not in this
 case, use EVIDENCE instead — ask the user to collect and submit it.
 ```

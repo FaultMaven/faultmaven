@@ -2,7 +2,7 @@
 
 The three triggers for a state transition (UI dropdown click, agent-initiated
 proposal, LLM-emitted ``proposed_transition``) must all converge on the same
-deterministic confirmation UX: a COOPERATIVE confirm/decline pair carrying
+deterministic confirmation UX: a DECIDE confirm/decline pair carrying
 ``intent={"type": "confirmation", "confirmation_value": …}`` so the next-turn
 click routes through ``IntentResolver`` Tier-1 deterministically.
 
@@ -109,10 +109,10 @@ def _fill_for_resolution_ready(case):
 
 
 def _assert_canonical_confirm_pair(suggestions, expected_label_substring):
-    """Every alignment site must emit exactly two COOPERATIVE suggestions
+    """Every alignment site must emit exactly two DECIDE suggestions
     carrying confirmation intent metadata."""
     assert len(suggestions) == 2
-    assert all(s["action_type"] == "COOPERATIVE" for s in suggestions)
+    assert all(s["action_type"] == "DECIDE" for s in suggestions)
     assert all("intent" in s for s in suggestions)
     assert suggestions[0]["intent"] == {
         "type": "confirmation",

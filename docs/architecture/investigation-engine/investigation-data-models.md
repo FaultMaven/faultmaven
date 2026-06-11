@@ -1659,21 +1659,21 @@ class HypothesisState(str, Enum):
 
 **Hypothesis state transitions — LLM-driven, system-automated, and user-intent paths:**
 
-`ACTIVE → RETIRED` is the one transition with multiple legitimate paths. The LLM picks RETIRED for "no disproof" cases (`HypothesisUpdate` schema accepts this — see the schema's `refutation_reason` docstring). The system auto-retires on low confidence, anchoring drift, and deadlock repair. The engine sets RETIRED when the user explicitly clicks a retire COOPERATIVE suggestion. All five paths converge on the same final state; only the rationale and the actor differ.
+`ACTIVE → RETIRED` is the one transition with multiple legitimate paths. The LLM picks RETIRED for "no disproof" cases (`HypothesisUpdate` schema accepts this — see the schema's `refutation_reason` docstring). The system auto-retires on low confidence, anchoring drift, and deadlock repair. The engine sets RETIRED when the user explicitly clicks a retire DECIDE suggestion. All five paths converge on the same final state; only the rationale and the actor differ.
 
 | Status | Trigger | Who sets it |
 |---|---|---|
 | `CAPTURED` → `ACTIVE` | LLM starts investigating the hypothesis | LLM (structured output) |
 | `ACTIVE` → `VALIDATED` | likelihood ≥ 0.70 with 2+ supporting evidence links | LLM (structured output) |
-| `ACTIVE` → `VALIDATED` | User clicks a "validate" COOPERATIVE suggestion (`hypothesis_action` intent) | **Engine** (`milestone_engine.py` `hypothesis_action` handler — sets `likelihood = 1.0`) |
+| `ACTIVE` → `VALIDATED` | User clicks a "validate" DECIDE suggestion (`hypothesis_action` intent) | **Engine** (`milestone_engine.py` `hypothesis_action` handler — sets `likelihood = 1.0`) |
 | `ACTIVE` → `REFUTED` | likelihood ≤ 0.20 with 2+ refuting evidence links | LLM (structured output) |
-| `ACTIVE` → `REFUTED` | User clicks a "refute" COOPERATIVE suggestion (`hypothesis_action` intent) | **Engine** (delegates to `hypothesis_manager.refute_hypothesis(...)` with `reason=user_message`) |
+| `ACTIVE` → `REFUTED` | User clicks a "refute" DECIDE suggestion (`hypothesis_action` intent) | **Engine** (delegates to `hypothesis_manager.refute_hypothesis(...)` with `reason=user_message`) |
 | `ACTIVE` → `INCONCLUSIVE` | likelihood 0.3–0.5 **and** `iterations_without_progress ≥ 3` | **System-automated** (`hypothesis_manager.py`) |
 | `ACTIVE` → `RETIRED` | LLM judgment: abandoning without disproof (no `refutation_reason` required) | LLM (structured output via `HypothesisUpdate.status = RETIRED`) |
 | `ACTIVE` → `RETIRED` | likelihood < 0.30 (low-confidence decay) | **System-automated** (`hypothesis_manager.py:396`) |
 | `ACTIVE` → `RETIRED` | Anchoring prevention — too many hypotheses in one category, low progress | **System-automated** (`hypothesis_manager.py:584`, retires the lowest-progress members of the over-represented category) |
 | `INCONCLUSIVE` → `RETIRED` | Deadlock repair — all hypotheses inconclusive, repair retires them en masse to free the LLM to generate fresh ones | **System-automated** (`progress_monitor.py:691`) |
-| `ACTIVE` → `RETIRED` | User clicks a "retire" COOPERATIVE suggestion (`hypothesis_action` intent) | **Engine** (sets `retirement_reason = user_message`) |
+| `ACTIVE` → `RETIRED` | User clicks a "retire" DECIDE suggestion (`hypothesis_action` intent) | **Engine** (sets `retirement_reason = user_message`) |
 
 The system-automated `INCONCLUSIVE` and decay-based `RETIRED` transitions run after each evidence update in `HypothesisManager.update_hypothesis()`. They are mechanically applied thresholds, not LLM judgment calls — they prevent stale low-confidence hypotheses from consuming LLM context across turns when no new evidence is advancing them. The user-intent paths (validate / refute / retire) apply the state change **before** LLM processing on the same turn so the agent's reply sees the updated hypothesis and can acknowledge it — see [Choice-Response Resolution §5.2](./choice-response-resolution.md#52-state-transitions-applied-by-the-engine).
 
