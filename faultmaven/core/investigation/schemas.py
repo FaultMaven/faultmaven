@@ -857,12 +857,15 @@ class SuggestedFollowUp(BaseModel):
         # action_type therefore degrades to non-clickable.
         default="FREE_SPEECH",
         description=(
-            "COOPERATIVE = click submits query or copies command (any message "
-            "you can fully word for the user, including a specific question); "
-            "EVIDENCE = informational, tells user what data to provide; "
-            "FREE_SPEECH = informational, invites the user to speak in their "
-            "own words (content only the user can author). When unsure, use "
-            "FREE_SPEECH."
+            "COOPERATIVE = a ready move you composed: DECIDE (query_submit — "
+            "you expect the user's decision/answer and pre-compose it; click "
+            "sends it) or "
+            "RUN (command_copy — click copies your exact command to run "
+            "externally); EVIDENCE = GET data from the user's environment "
+            "(informational); FREE_SPEECH = GET the user's own words "
+            "(informational). If the user would have to supply content — "
+            "data or words — the type is never COOPERATIVE. When unsure, "
+            "use FREE_SPEECH."
         ),
     )
     payload: Optional[str] = Field(
@@ -871,9 +874,10 @@ class SuggestedFollowUp(BaseModel):
             "COOPERATIVE only: the text a click submits (query_submit) or "
             "copies (command_copy). query_submit payloads are sent verbatim "
             "and must be the user's complete message — never a placeholder "
-            "or preamble the user would need to edit. Required for "
-            "COOPERATIVE; omit for EVIDENCE and FREE_SPEECH — those carry "
-            "everything in label + body/hints."
+            "or preamble the user would need to edit, and never a question "
+            "only the user can answer. Required for COOPERATIVE; omit for "
+            "EVIDENCE and FREE_SPEECH — those carry everything in label + "
+            "body/hints."
         ),
     )
     body: Optional[str] = Field(
