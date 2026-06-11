@@ -847,16 +847,17 @@ class SuggestedFollowUp(BaseModel):
             "— what they would say or do next, e.g. 'Search KB for incidents', "
             "'Share what I'm seeing'. This is the only text shown to the user. "
             "Never phrase it as a question you ask the user (that belongs in "
-            "agent_response)."
+            "agent_response); a question the user asks you is fine."
         )
     )
     action_type: Literal["COOPERATIVE", "EVIDENCE", "FREE_SPEECH"] = Field(
         default="COOPERATIVE",
         description=(
-            "COOPERATIVE = click submits query or copies command; "
+            "COOPERATIVE = click submits query or copies command (any message "
+            "you can fully word for the user, including a specific question); "
             "EVIDENCE = informational, tells user what data to provide; "
-            "FREE_SPEECH = informational, invites the user to answer in their "
-            "own words (open or follow-up questions, descriptions, judgment)"
+            "FREE_SPEECH = informational, invites the user to speak in their "
+            "own words (content only the user can author)"
         ),
     )
     payload: Optional[str] = Field(
