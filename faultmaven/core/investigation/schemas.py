@@ -855,15 +855,19 @@ class SuggestedFollowUp(BaseModel):
         description=(
             "COOPERATIVE = click submits query or copies command; "
             "EVIDENCE = informational, tells user what data to provide; "
-            "FREE_SPEECH = informational, asks user a question with framework hints"
+            "FREE_SPEECH = informational, invites the user to answer in their "
+            "own words (open or follow-up questions, descriptions, judgment)"
         ),
     )
     payload: Optional[str] = Field(
         default=None,
         description=(
             "COOPERATIVE only: the text a click submits (query_submit) or "
-            "copies (command_copy). Required for COOPERATIVE; omit for EVIDENCE "
-            "and FREE_SPEECH — those carry everything in label + body/hints."
+            "copies (command_copy). query_submit payloads are sent verbatim "
+            "and must be the user's complete message — never a placeholder "
+            "or preamble the user would need to edit. Required for "
+            "COOPERATIVE; omit for EVIDENCE and FREE_SPEECH — those carry "
+            "everything in label + body/hints."
         ),
     )
     body: Optional[str] = Field(

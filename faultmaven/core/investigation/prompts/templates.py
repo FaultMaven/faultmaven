@@ -125,10 +125,12 @@ Be SPECIFIC: cite actual values from the structural index (IPs, hostnames, entit
 # across stages (drift here previously caused subtle inconsistencies in suggestion
 # shape). Examples lean diagnostic/remedial since INVESTIGATION_BASE is the
 # heaviest user of this block; the FREE_SPEECH "Describe the symptoms" example
-# also fits INQUIRY triage. INQUIRY's pre-confirmation flow constrains the
-# suggestion shape anyway via the explicit confirmation-option enumerations
-# in the INQUIRY_TEMPLATE TWO-STEP CONFIRMATION section, so the example
-# bias rarely surfaces in practice.
+# also fits INQUIRY triage, and the payload-free "Ask another question" example
+# anchors the consultation lane (a click-submitted "I have another question"
+# COOPERATIVE was observed wasting a full turn). INQUIRY's pre-confirmation
+# flow constrains the suggestion shape anyway via the explicit
+# confirmation-option enumerations in the INQUIRY_TEMPLATE TWO-STEP
+# CONFIRMATION section, so the example bias rarely surfaces in practice.
 _FOLLOW_UP_SUGGESTIONS_BLOCK = """\
 FOLLOW-UP SUGGESTIONS (suggested_follow_ups):
 Generate 2-4 suggestions to guide the user's next action. For each, think about what
@@ -140,7 +142,9 @@ that belongs in your agent_response.
   BAD:  "Is this happening in your environment?"   (you asking the user)
   GOOD: "Share what I'm seeing in my environment"  (the user's move)
 
-COOPERATIVE — You want the user to engage with your analysis or steer the investigation.
+COOPERATIVE — You want the user to engage with your analysis or steer the investigation,
+  and you can compose their entire message (or the exact command) for them — one click,
+  nothing for the user to add.
   cooperative_action is REQUIRED and determines behavior:
   - "query_submit": payload is sent verbatim as the user's message to you. Phrase it as the user speaking.
   - "command_copy": payload is a shell command the user runs externally. Copied to clipboard on click.
@@ -160,15 +164,27 @@ EVIDENCE — WHAT data you need. The user might already have it (file, dashboard
   submits the page's content for analysis.
   {{"label": "Share error logs from the affected service", "action_type": "EVIDENCE", "body": "Error logs will help identify the failing component and stack trace."}}
 
-FREE_SPEECH — You need the user's own knowledge, judgment, or observations.
+FREE_SPEECH — You need the user to speak in their OWN words: their knowledge, judgment,
+  observations, or their next question. If the content of the message must come from
+  the user, the type is FREE_SPEECH — an invitation to ask another question belongs
+  here, never in COOPERATIVE.
   Phrase label as the user offering it ("Share what I'm seeing", "Describe the symptoms").
-  Do NOT set payload. hints: 2-5 short tags (1-3 words) naming aspects of the PROBLEM to
-  cover — not your own intent categories, mode labels, or yes/no options.
+  Do NOT set payload. hints (optional): 2-5 short tags (1-3 words) naming aspects of the
+  PROBLEM to cover — not your own intent categories, mode labels, or yes/no options.
   {{"label": "Describe the symptoms", "action_type": "FREE_SPEECH", "hints": ["symptoms", "error messages", "timeline", "affected services"]}}
+  {{"label": "Ask another question", "action_type": "FREE_SPEECH"}}
 
-Before marking a suggestion COOPERATIVE, ask: if the user sends this message, can I
-deliver what it implies? If the response would require data not in this case, use
-EVIDENCE instead — ask the user to collect and submit it.
+Before marking a suggestion COOPERATIVE, apply BOTH tests:
+1. COMPLETE (query_submit): a click sends the payload verbatim — the user cannot edit
+   it first. The payload must be the user's complete message, meaningful exactly as
+   written. If the user would still need to supply content in their own words (their
+   question, their description, a blank to fill), it is NOT COOPERATIVE — use
+   FREE_SPEECH. Never emit a placeholder or preamble as a query_submit payload
+   ("I have another question", "How do I...", "My error is:").
+   (command_copy payloads MAY contain <placeholders> — the user edits those externally.)
+2. DELIVERABLE: if the user sends this message, can you deliver what it implies? If
+   the response would require data not in this case, use EVIDENCE instead — ask the
+   user to collect and submit it.
 
 Keep labels concise (3-8 words). body is optional but recommended for non-obvious
 suggestions. YOU are the expert — never suggest the user look for information
@@ -1131,9 +1147,9 @@ You MUST respond with valid JSON matching these fields:
   * Ground diagnostic claims in evidence (see DIAGNOSTIC REASONING above)
   * Reference evidence by its label (filename, description) — NEVER by ev_ IDs
 - **suggested_follow_ups**: 2-4 suggestions guiding the user's next action.
-  * COOPERATIVE: engage with analysis (user-voiced label, payload = text a click submits/copies, cooperative_action, optional body)
+  * COOPERATIVE: engage with analysis (user-voiced label, payload = the user's complete pre-composed message/command a click submits/copies, cooperative_action, optional body)
   * EVIDENCE: provide external data (user-voiced label, optional body — no payload)
-  * FREE_SPEECH: share knowledge/judgment (user-voiced label, hints as short tags, optional body — no payload)
+  * FREE_SPEECH: speak in own words — knowledge, judgment, or a next question (user-voiced label, optional hints as short tags, optional body — no payload)
 - **internal_reasoning**: REQUIRED when completing milestones (otherwise optional).
   - evidence_analyzed: References to evidence considered when completing a milestone.
     * Current-turn evidence (submitted this turn): leave as empty list []
