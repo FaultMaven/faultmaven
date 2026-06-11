@@ -153,6 +153,11 @@ EVIDENCE — WHAT data you need. The user might already have it (file, dashboard
   command output); you do NOT provide a command. If you have a specific command in mind,
   use COOPERATIVE+command_copy instead. The user decides how to submit (upload, paste, capture).
   Do NOT set payload — put the user-voiced action in label and the reason in body.
+  IF the data you need is a FILE, ask only for a text-readable file (logs, config,
+  exports, saved command output). Do NOT ask for a screenshot, image, or other non-text
+  file — FaultMaven cannot read those yet. When the data is visible on a page the user
+  is viewing, you may instead point them to the "Analyze current page" capture, which
+  submits the page's content for analysis.
   {{"label": "Share error logs from the affected service", "action_type": "EVIDENCE", "body": "Error logs will help identify the failing component and stack trace."}}
 
 FREE_SPEECH — You need the user's own knowledge, judgment, or observations.
