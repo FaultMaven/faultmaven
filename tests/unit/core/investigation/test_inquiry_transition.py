@@ -1052,11 +1052,11 @@ class TestEngineOwnedGate1OnFirstDetect:
         self, mock_llm, mock_repo, inquiry_case
     ):
         """LLM proposes a problem statement on turn 1 and emits arbitrary
-        (intent-less) suggestions; engine must AUGMENT them with the canonical
-        confirmation pair carrying intent metadata. The pair is always present
-        and clickable (INV-01); the LLM's own contextual suggestions are
-        preserved (capped) rather than discarded — that's the augment
-        behavior that keeps suggestions relevant to the user's message.
+        (intent-less) suggestions; engine must REPLACE them with the canonical
+        confirmation pair carrying intent metadata. On a gate-pending turn the
+        engine owns the suggestion list — the LLM's own (often confirm-shaped)
+        suggestions must not pass through, or they render as duplicate buttons
+        beside the engine's authoritative pair (case_d22ebbd63784).
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -1115,14 +1115,14 @@ class TestEngineOwnedGate1OnFirstDetect:
 
         follow_ups = result["suggested_follow_ups"]
 
-        # Augment: the LLM's contextual suggestions are preserved (capped),
-        # not discarded — so the turn stays relevant to the user's message.
+        # Engine-owned: the LLM's suggestions must NOT have passed through —
+        # the gate-pending turn's suggestion list is owned by the engine.
         llm_labels = {f.get("label") for f in follow_ups}
-        assert "LLM Suggestion A" in llm_labels
+        assert "LLM Suggestion A" not in llm_labels
+        assert "LLM Suggestion B" not in llm_labels
 
-        # Engine must ALSO append the canonical confirmation pair with intent
-        # metadata that hits the deterministic CONFIRMATION routing (present
-        # and clickable every pending turn — INV-01).
+        # Engine must have substituted the canonical confirmation pair with
+        # intent metadata that hits the deterministic CONFIRMATION routing.
         positive = next(
             (
                 f

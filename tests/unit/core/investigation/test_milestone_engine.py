@@ -1172,19 +1172,25 @@ class TestInquiryConfirmation:
         assert updated_case.inquiry.problem_statement_confirmed is False
 
     @pytest.mark.asyncio
-    async def test_gate1_augments_contextual_suggestions_with_confirm_pair(
+    async def test_gate1_pending_replaces_llm_suggestions_no_overlap(
         self, mock_llm, mock_repo
     ):
-        """Gate-1 pending: the engine KEEPS the LLM's contextual suggestions
-        and APPENDS the confirm/refine pair (augment, not replace). The pair
-        must appear every pending turn (only current-turn COOPERATIVE
-        suggestions are clickable), but it must no longer crowd out what's
-        relevant to the user's message. Regression for the 'same two
-        suggestions every turn, nothing contextual' report (case_28d15d4ab5f4)."""
+        """Gate-1 pending: the engine OWNS the suggestion list and REPLACES
+        whatever the LLM emitted — including the LLM's own confirm/decline
+        suggestions, which it naturally produces when asked to confirm.
+
+        Regression for case_d22ebbd63784: augmenting (appending the engine's
+        pair to the LLM's) rendered FOUR overlapping buttons —
+            'Yes, that's correct. Let's investigate.'   (LLM, no intent)
+            'No, that's not quite right.'                (LLM, no intent)
+            'Yes, let's investigate'                     (engine, intent)
+            'Not quite, let me clarify'                  (engine, intent)
+        The engine owns state-machine moves on a blocked (gate-pending) turn;
+        the LLM's premature/duplicate moves must not coexist with them."""
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         case = Case(
             case_id="case_1234567890ab",
-            title="Gate1 augment",
+            title="Gate1 replace",
             state=CaseState.INQUIRY,
             user_id="user_123",
             organization_id="org_123",
@@ -1192,76 +1198,40 @@ class TestInquiryConfirmation:
         )
         case.inquiry.proposed_problem_statement = "API returning 503 errors"
 
+        # LLM emits its OWN confirm/decline suggestions (the case_d22 shape).
         mock_llm.generate.return_value = json.dumps(
             {
-                "agent_response": "Here's what I'd look at next.",
+                "agent_response": "I understand the problem to be... Is that accurate?",
                 "state_updates": {},
                 "suggested_follow_ups": [
                     {
-                        "label": "Share the nginx error log",
-                        "action_type": "EVIDENCE",
-                        "body": "The error log shows the failing upstream.",
-                    }
+                        "label": "Yes, that's correct. Let's investigate.",
+                        "action_type": "COOPERATIVE",
+                        "cooperative_action": "query_submit",
+                        "payload": "Yes, that's correct. Let's investigate.",
+                    },
+                    {
+                        "label": "No, that's not quite right.",
+                        "action_type": "COOPERATIVE",
+                        "cooperative_action": "query_submit",
+                        "payload": "No, that's not quite right.",
+                    },
                 ],
             }
         )
 
-        result = await engine.process_turn(case, "what should I check first?")
+        result = await engine.process_turn(case, "<analysis of the DNS issue>")
         follow_ups = result["suggested_follow_ups"]
         labels = [f["label"] for f in follow_ups]
 
-        # Contextual suggestion preserved (not discarded by the gate).
-        assert "Share the nginx error log" in labels
-        # Engine-owned confirm/refine pair still present (clickable each turn).
-        assert "Yes, let's investigate" in labels
-        assert "Not quite, let me clarify" in labels
-        # Contextual first, gate pair appended at the end.
-        assert labels.index("Share the nginx error log") < labels.index(
-            "Yes, let's investigate"
-        )
-        # The confirm affordance carries confirmation intent (deterministic
-        # click path — INV-01 clickability preserved).
+        # Exactly the engine's canonical pair — no LLM duplicates, no overlap.
+        assert labels == ["Yes, let's investigate", "Not quite, let me clarify"]
+        assert "Yes, that's correct. Let's investigate." not in labels
+        assert "No, that's not quite right." not in labels
+        # The pair carries confirmation intent (deterministic click path).
         confirm = next(f for f in follow_ups if f["label"] == "Yes, let's investigate")
         assert confirm["intent"]["type"] == "confirmation"
         assert confirm["intent"]["confirmation_value"] is True
-
-    @pytest.mark.asyncio
-    async def test_gate1_caps_contextual_but_always_keeps_confirm_pair(
-        self, mock_llm, mock_repo
-    ):
-        """Many LLM suggestions are capped so the total stays tidy, but the
-        confirm/refine pair is always retained in full."""
-        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        case = Case(
-            case_id="case_1234567890ab",
-            title="Gate1 cap",
-            state=CaseState.INQUIRY,
-            user_id="user_123",
-            organization_id="org_123",
-            description="",
-        )
-        case.inquiry.proposed_problem_statement = "API returning 503 errors"
-
-        mock_llm.generate.return_value = json.dumps(
-            {
-                "agent_response": "Several angles here.",
-                "state_updates": {},
-                "suggested_follow_ups": [
-                    {"label": f"Contextual {i}", "action_type": "FREE_SPEECH"}
-                    for i in range(4)
-                ],
-            }
-        )
-
-        result = await engine.process_turn(case, "where do I start?")
-        labels = [f["label"] for f in result["suggested_follow_ups"]]
-
-        # Gate pair always present in full.
-        assert "Yes, let's investigate" in labels
-        assert "Not quite, let me clarify" in labels
-        # Contextual portion capped (the pair takes the remaining 2 slots).
-        contextual = [lbl for lbl in labels if lbl.startswith("Contextual")]
-        assert len(contextual) <= 2
 
     @pytest.mark.asyncio
     async def test_llm_path_takes_priority_over_fallback(self, mock_llm, mock_repo):
