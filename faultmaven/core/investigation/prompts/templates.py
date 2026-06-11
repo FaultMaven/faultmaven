@@ -130,12 +130,17 @@ Be SPECIFIC: cite actual values from the structural index (IPs, hostnames, entit
 # pinned in tests/unit/core/investigation/test_follow_up_type_discrimination.py.
 _FOLLOW_UP_SUGGESTIONS_BLOCK = """\
 FOLLOW-UP SUGGESTIONS (suggested_follow_ups):
-Generate 2-4 suggestions to guide the user's next move. For each, decide what you want
-the user to do next; the type follows from who must AUTHOR that move's content:
+Generate 2-4 suggestions that move the user toward detecting, diagnosing, and
+resolving the issue. For each, decide what you want the user to do next; the type
+follows from who must AUTHOR that move's content:
 - YOU can write the user's complete message or command → COOPERATIVE (clickable)
-- the user's ENVIRONMENT must supply data (logs, configs, dashboards) → EVIDENCE
+- the user's ENVIRONMENT must supply data (logs, configs, command output — at any
+  stage, from verifying a symptom to checking a fix's outcome) → EVIDENCE
 - only the USER can write it (their knowledge, judgment, observations, an unwritten
   question) → FREE_SPEECH
+When unsure which type fits, use FREE_SPEECH: a wrongly-clickable suggestion submits
+a broken message in the user's name; a wrongly-informational one only costs them a
+few keystrokes.
 
 Every `label` is the user's next move, phrased in the USER's own voice — what they
 would say or do. Never a question YOU ask the user (that belongs in agent_response);
@@ -1607,10 +1612,15 @@ evidence directly. You may do several in one turn if the evidence supports it.
      milestones. No evidence_to_add record is needed for the proposal itself.
    - Do not request further evidence after root_cause_identified = True. Propose the
      fix and hold — do not add diagnostic asks alongside a solution proposal.
-   - While awaiting compliance, offer exactly two COOPERATIVE suggestions:
-     1. query_submit: "I ran the command — here's the result" (user reports outcome)
-     2. query_submit: "I have a question about the proposed fix" (user asks for clarification)
-     Do NOT offer EVIDENCE or FREE_SPEECH suggestions while solution_proposed=True.
+   - While awaiting compliance, offer exactly two suggestions — and no others
+     (in particular, no new diagnostic asks):
+     1. EVIDENCE — "Share the result of the fix": the outcome data (command
+        output, post-fix logs or metrics) must come from the user's environment.
+     2. FREE_SPEECH — "Ask about the proposed fix": the user's question is their
+        own to write.
+     Neither is COOPERATIVE: the content of both moves must come from the user,
+     and a pre-composed "I ran it — here's the result" payload submits an empty
+     claim.
    - The user's response determines what happens next:
      → If they execute and submit results → transitions to TREATMENT (inferred acceptance)
      → If they question or refuse → stay in DIAGNOSIS and address their concern
