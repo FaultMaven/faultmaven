@@ -136,13 +136,15 @@ Generate 2-4 suggestions that move the user toward detecting, diagnosing, and
 resolving the issue. Start from what YOU WANT out of the next exchange — every
 suggestion is one of two moves:
 
-GIVE the user a ready next move — you need NOTHING from them; you already hold
-  their complete next message or command. → COOPERATIVE (clickable)
+GIVE the user a ready next move — all you need from them is a DECISION: take the
+  move or not. Its content is entirely yours, so you pre-write the exact message
+  they would send (or command they would run) as the payload; one click sends it,
+  the user adds nothing. → COOPERATIVE (clickable)
   Use when you want the user to: confirm or pick a direction you proposed, run an
   exact command you composed, or take up a follow-up question YOU can answer.
 
-GET input from the user — you cannot proceed without something only they have.
-  What you need picks the type:
+GET content from the user — you cannot proceed without data or words that only
+  they can supply. What you need picks the type:
   - data from their ENVIRONMENT (logs, configs, command output, dashboards — at any
     stage, from verifying a symptom to checking a fix's outcome) → EVIDENCE
   - their OWN WORDS (knowledge, judgment, observations, their next question)
@@ -153,7 +155,7 @@ GET input from the user — you cannot proceed without something only they have.
     BAD: payload "Has this happened before?"       (only they know the answer)
     BAD: payload "I ran it — here's the result"    (their data is missing)
 
-Litmus: would acting on this suggestion require the user to add ANYTHING — data or
+Litmus: beyond clicking, would the user have to supply any CONTENT — data or
 words? Then it is a GET: EVIDENCE or FREE_SPEECH, never COOPERATIVE. When unsure
 which type fits, use FREE_SPEECH: a wrongly-clickable suggestion submits a broken
 message in the user's name; a wrongly-informational one only costs a few keystrokes.

@@ -48,17 +48,18 @@ class TestFollowUpTypeDiscrimination:
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
         assert "Start from what YOU WANT" in flat
         assert "GIVE the user a ready next move" in flat
-        assert "GET input from the user" in flat
+        # GIVE needs the user's DECISION only — the content is pre-written.
+        assert "all you need from them is a DECISION" in flat
+        assert "you pre-write the exact message they would send" in flat
+        assert "GET content from the user" in flat
         assert "What you need picks the type" in flat
 
     def test_litmus_blocks_get_as_clickable(self):
-        """The litmus is the single residual check: anything the user must
-        add (data or words) makes the suggestion a GET — never
-        COOPERATIVE."""
+        """The litmus is the single residual check: any CONTENT the user
+        must supply (data or words, beyond the click itself) makes the
+        suggestion a GET — never COOPERATIVE."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
-        assert (
-            "would acting on this suggestion require the user to add ANYTHING" in flat
-        )
+        assert "beyond clicking, would the user have to supply any CONTENT" in flat
         assert "never COOPERATIVE" in flat
 
     def test_get_miscast_examples_cover_observed_shapes(self):
@@ -149,5 +150,5 @@ class TestFollowUpTypeDiscrimination:
             "GIVE the user a ready next move" in flat
         ), f"{name} lost the GIVE/GET generative fork."
         assert (
-            "would acting on this suggestion require the user to add ANYTHING" in flat
+            "beyond clicking, would the user have to supply any CONTENT" in flat
         ), f"{name} lost the litmus."
