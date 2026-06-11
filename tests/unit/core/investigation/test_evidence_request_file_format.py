@@ -62,7 +62,7 @@ class TestEvidenceFileRequestGuardrail:
         """Evidence requests are generated in both the INQUIRY and INVESTIGATING
         prompts (both compose _FOLLOW_UP_SUGGESTIONS_BLOCK), so the guardrail
         must be present in each assembled template."""
-        assert "Do NOT ask for a screenshot" in template, (
-            f"{name} lost the non-text-file evidence-request guardrail."
-        )
+        assert (
+            "Do NOT ask for a screenshot" in template
+        ), f"{name} lost the non-text-file evidence-request guardrail."
         assert "Analyze current page" in template
