@@ -138,9 +138,11 @@ the user to do next; the type follows from who must AUTHOR that move's content:
   question) → FREE_SPEECH
 
 Every `label` is the user's next move, phrased in the USER's own voice — what they
-would say or do. Never a question YOU ask the user (that belongs in agent_response).
+would say or do. Never a question YOU ask the user (that belongs in agent_response);
+a question the USER asks you is fine.
   BAD:  "Is this happening in your environment?"   (you asking the user)
   GOOD: "Share what I'm seeing in my environment"  (the user's move)
+  GOOD: "What does exit code 137 mean?"            (the user asking you)
 
 COOPERATIVE — payload REQUIRED (used ONLY here): the complete text a click submits or
   copies. cooperative_action is REQUIRED and determines behavior:

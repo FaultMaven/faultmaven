@@ -847,7 +847,7 @@ class SuggestedFollowUp(BaseModel):
             "— what they would say or do next, e.g. 'Search KB for incidents', "
             "'Share what I'm seeing'. This is the only text shown to the user. "
             "Never phrase it as a question you ask the user (that belongs in "
-            "agent_response)."
+            "agent_response); a question the user asks you is fine."
         )
     )
     action_type: Literal["COOPERATIVE", "EVIDENCE", "FREE_SPEECH"] = Field(
