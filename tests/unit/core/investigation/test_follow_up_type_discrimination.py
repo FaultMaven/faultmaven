@@ -47,18 +47,24 @@ class TestFollowUpTypeDiscrimination:
     def test_intent_lanes_head_the_block(self):
         """The generative rules — start from intent — must lead the block,
         with three lanes each binding intent to type AND encoding:
-        DECIDE (clickable, sends), RUN (pasteable, copies), GET CONTENT
+        DECIDE (clickable, sends), RUN (clickable, copies), GET CONTENT
         (informational)."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
         assert "Start from what YOU WANT" in flat
         assert "the TYPE names your intent, and the encoding follows from it" in flat
-        assert "1. DECIDE — you expect a decision or answer FROM the user" in flat
+        assert (
+            "1. DECIDE (clickable — click sends) — you expect a decision or answer"
+            in flat
+        )
         assert "you pre-compose it for them" in flat
         assert "DECIDE (clickable — click sends)" in flat
-        assert "2. RUN — you want the user to execute an exact command" in flat
-        assert "RUN (pasteable — click copies)" in flat
+        assert (
+            "2. RUN (clickable — click copies) — you want the user to execute an exact command"
+            in flat
+        )
+        assert "RUN (clickable — click copies)" in flat
         assert "3. GET CONTENT" in flat
-        assert "what you need picks the type" in flat
+        assert "What you need picks the type" in flat
 
     def test_run_lane_owns_command_copy_and_output_return_trip(self):
         """RUN is its own intent lane, not buried under DECIDE: command
@@ -66,7 +72,7 @@ class TestFollowUpTypeDiscrimination:
         separate EVIDENCE ask — never folded into the command suggestion
         (the 'I ran it — here's the result' failure shape)."""
         flat = _flat(_FOLLOW_UP_SUGGESTIONS_BLOCK)
-        assert "RUN (pasteable — click copies)" in flat
+        assert "RUN (clickable — click copies)" in flat
         assert "That return trip is a separate EVIDENCE ask" in flat
 
     def test_litmus_blocks_get_as_clickable(self):

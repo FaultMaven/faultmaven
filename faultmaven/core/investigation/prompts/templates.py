@@ -140,24 +140,23 @@ Generate 2-4 suggestions that move the user toward detecting, diagnosing, and
 resolving the issue. Start from what YOU WANT out of the next exchange — the
 TYPE names your intent, and the encoding follows from it:
 
-1. DECIDE — you expect a decision or answer FROM the user, and you pre-compose it
-   for them: a confirmation, a pick among directions you proposed, or a ready-made
-   next request to adopt. You write the exact message the user would send as the
-   payload; one click submits it — the user decides, nothing to add.
-   → DECIDE  (clickable — click sends)
+1. DECIDE (clickable — click sends) — you expect a decision or answer FROM the
+   user, and you pre-compose it for them: a confirmation, a pick among directions
+   you proposed, or a ready-made next request to adopt. You write the exact
+   message the user would send as the payload; one click submits it — the user
+   decides, nothing to add.
 
-2. RUN — you want the user to execute an exact command you composed in their
-   environment. The payload is the command itself; a click copies it for the user
-   to paste and run externally. <placeholders> are fine — the user edits them in
-   their terminal. Expecting the output back? That return trip is a separate
-   EVIDENCE ask (intent 3), not part of this suggestion.
-   → RUN  (pasteable — click copies)
+2. RUN (clickable — click copies) — you want the user to execute an exact command
+   you composed in their environment. The payload is the command itself; a click
+   copies it for the user to paste and run externally. <placeholders> are fine —
+   the user edits them in their terminal. Expecting the output back? That return
+   trip is a separate EVIDENCE ask, not part of this suggestion.
 
-3. GET CONTENT — you cannot proceed without data or words that only the user can
-   supply. Informational, never clickable; what you need picks the type:
+3. GET CONTENT (informational — never clickable) — you cannot proceed without
+   data or words that only the user can supply. What you need picks the type:
    - data from their ENVIRONMENT (logs, configs, dashboards, command output — at
      any stage, from verifying a symptom to checking a fix's outcome; if one exact
-     command would fetch it, prefer intent 2) → EVIDENCE
+     command would fetch it, prefer RUN) → EVIDENCE
    - their OWN WORDS (knowledge, judgment, observations, their next question)
      → FREE_SPEECH
    NEVER cast a content-ask as a clickable payload — the click submits an empty
@@ -167,7 +166,7 @@ TYPE names your intent, and the encoding follows from it:
      BAD: payload "I ran it — here's the result"    (their data is missing)
 
 Litmus: beyond the click (send or copy), must the user supply any CONTENT — data
-or words — for the suggestion to do its job? Then it is intent 3: EVIDENCE or
+or words — for the suggestion to do its job? Then it is EVIDENCE or
 FREE_SPEECH, never DECIDE or RUN. When unsure which type fits, use FREE_SPEECH: a
 wrongly-clickable suggestion submits a broken message in the user's name; a
 wrongly-informational one only costs a few keystrokes.
@@ -185,8 +184,9 @@ DECIDE/RUN mechanics — payload REQUIRED (clickable types only). The payload mu
   {{"label": "Validate the config hypothesis", "action_type": "DECIDE", "payload": "Let's focus on validating the config change hypothesis", "body": "Test whether the recent config change correlates with the failure window."}}
   {{"label": "Get pod logs", "action_type": "RUN", "payload": "kubectl logs <pod-name> --tail=100", "body": "Inspect recent pod output for crash loops or OOM kill messages."}}
   {{"label": "What does exit code 137 mean?", "action_type": "DECIDE", "payload": "What does exit code 137 mean?"}}
-  (The third example is intent 1: a ready-made question YOU can answer — one click,
-  you reply. The same question with the answer on the USER's side is intent 3.)
+  (The third example is a valid DECIDE: a ready-made question YOU can answer —
+  one click, you reply. The same question with the answer on the USER's side is
+  a content-GET: FREE_SPEECH.)
 
 EVIDENCE mechanics — WHAT data you need from the user's environment. Do NOT set
   payload and do NOT provide a command (exact command in mind? that is RUN). Put

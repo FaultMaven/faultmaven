@@ -570,7 +570,7 @@ When the heuristic classifier returns `classification_failed=True`, every failur
 
 The agent still attempts the investigation in the same turn — classification uncertainty is not a hard block. After the turn runs, `InvestigationService` injects **DECIDE clarification suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
 
-- Up to 3 pre-composed `query_submit` messages like *"Treat the previously uploaded file (`foo.txt`) as application logs and analyze it."* — one per suggested type.
+- Up to 3 pre-composed click-to-send messages like *"Treat the previously uploaded file (`foo.txt`) as application logs and analyze it."* — one per suggested type.
 - Plus a **"Something else"** fallback that submits *"Treat the previously uploaded file as unstructured text and try to analyze it."*
 
 The user clicks a card; the next turn runs normally with the pre-composed message. The agent reads the raw file via its existing tools (`search_file`, `deep_analysis`) using the user-provided type hint. There is no re-classification at the classifier layer, no evidence mutation, no new LLM integration — just the existing DECIDE suggestion plumbing driving a deterministic post-turn injector in `InvestigationService`.

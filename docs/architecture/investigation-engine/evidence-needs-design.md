@@ -754,7 +754,7 @@ investigation — that is the intended completeness, not a regression.
 
 Evidence-gathering suggestions **may draw from the pool** (optional — see
 §6.2; `evidence_need_id` is set only when a suggestion matches a pending
-need, else `None`). DECIDE and FREE_SPEECH suggestions remain
+need, else `None`). DECIDE, RUN, and FREE_SPEECH suggestions remain
 LLM-improvised. The `SuggestedFollowUp` schema gains one optional field:
 
 ```python

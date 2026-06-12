@@ -512,7 +512,7 @@ One primary ask per turn. Stack only when items are genuinely parallel (e.g., tw
 | ----- | -------------------- |
 | INQUIRY | 2 DECIDE (yes/no confirmation) |
 | DIAGNOSIS Zone 1 | 1–2 EVIDENCE + 1 FREE_SPEECH |
-| DIAGNOSIS Zone 2 | 1 EVIDENCE (targeted to hypothesis) + optionally 1 DECIDE (command) |
+| DIAGNOSIS Zone 2 | 1 EVIDENCE (targeted to hypothesis) + optionally 1 RUN (command) |
 | DIAGNOSIS Zone 3 (proposing fix) | 1 RUN (the fix) |
 | DIAGNOSIS Zone 3 (pending — fix already proposed) | 1 EVIDENCE (share fix outcome) + 1 FREE_SPEECH (ask about the fix); no new diagnostic asks |
 | MITIGATION (guiding) | 1 RUN + 1 EVIDENCE (post-fix verification) |

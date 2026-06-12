@@ -383,7 +383,7 @@ Every classification_failed path populates `ClassificationResult.suggested_types
 
 The agent still runs the turn using its file-reading tools (`search_file`, `deep_analysis`), producing a best-effort answer from the raw bytes. After the turn runs, `InvestigationService._build_classification_clarification_suggestions` injects **DECIDE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
 
-- Up to 3 pre-composed `query_submit` messages, one per suggested type: *"Treat the previously uploaded file ('foo.csv') as metrics or performance data and analyze it."*
+- Up to 3 pre-composed click-to-send messages, one per suggested type: *"Treat the previously uploaded file ('foo.csv') as metrics or performance data and analyze it."*
 - Plus a **"Something else"** fallback that submits *"Treat the previously uploaded file as unstructured text and try to analyze it."*
 
 When the user clicks a card, the next turn runs normally with the pre-composed message. The agent reads the raw file again with the user-provided type hint in its context. No re-classification at the classifier layer, no Evidence mutation, no new LLM integration — deterministic post-turn injection using the existing DECIDE suggestion plumbing.

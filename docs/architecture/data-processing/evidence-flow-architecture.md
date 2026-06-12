@@ -352,7 +352,7 @@ User          API(/turns)    Investigation    Preprocessing    Case Repository
 
 ## Sequence Diagram: Classification Failed → Cooperative Clarification
 
-Triggered when Tier 0 classification produces `confidence < 0.50` — the file cannot be routed to an extractor with enough certainty to auto-accept. The agent still attempts to answer the user's query using its file-reading tools. After the turn runs, `InvestigationService._build_classification_clarification_suggestions` injects DECIDE suggestions (pre-composed `query_submit` payloads) so the user can re-prompt the agent with the correct type using a single click. No frontend modal, no re-classification — just additional follow-up suggestions ahead of the engine's own follow-ups.
+Triggered when Tier 0 classification produces `confidence < 0.50` — the file cannot be routed to an extractor with enough certainty to auto-accept. The agent still attempts to answer the user's query using its file-reading tools. After the turn runs, `InvestigationService._build_classification_clarification_suggestions` injects DECIDE suggestions (pre-composed click-to-send payloads) so the user can re-prompt the agent with the correct type using a single click. No frontend modal, no re-classification — just additional follow-up suggestions ahead of the engine's own follow-ups.
 
 ```
 User          API(/turns)    Investigation    Preprocessing    Agent LLM
@@ -386,17 +386,17 @@ User          API(/turns)    Investigation    Preprocessing    Agent LLM
  │              │                │<──────────────────────────────│
  │              │                │                               │
  │              │                │ (post-turn injector builds    │
- │              │                │  DECIDE suggestions from │
+ │              │                │  DECIDE suggestions from      │
  │              │                │  suggested_types + "Something │
  │              │                │  else" fallback; prepends to  │
  │              │                │  suggested_actions)           │
  │              │<─TurnResponse──│                               │
  │              │  {                                              │
  │              │    suggested_actions: [                         │
- │              │      {type:"DECIDE",                       │
+ │              │      {type:"DECIDE",                            │
  │              │       label:"Metrics",                          │
  │              │       payload:"Treat file as metrics..."},      │
- │              │      {type:"DECIDE",                       │
+ │              │      {type:"DECIDE",                            │
  │              │       label:"Something else",                   │
  │              │       payload:"Treat as unstructured text..."}, │
  │              │      ...engine follow-ups                       │
@@ -405,7 +405,7 @@ User          API(/turns)    Investigation    Preprocessing    Agent LLM
  │<─200 OK─────│                │                │               │
  │              │                                                 │
  │ (user clicks "Metrics" — frontend submits the suggestion's     │
- │  query_submit payload as the next user turn)                   │
+ │  DECIDE payload as the next user turn)                         │
  │─POST turn───>│                                                 │
  │ {query:"Treat the previously uploaded file as metrics..."}    │
  │              │─process_turn──>│ (normal turn, agent uses the  │
