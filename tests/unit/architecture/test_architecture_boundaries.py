@@ -67,6 +67,13 @@ class TestArchitectureBoundaries:
                                 "health.sla_tracker"
                             ):
                                 pass
+                            # The metrics shim is the canonical cross-cutting
+                            # metrics facade (no-ops when disabled) — same
+                            # family as logging/tracing
+                            elif "middleware" in str(file) and module.endswith(
+                                "infrastructure.shims"
+                            ):
+                                pass
                             else:
                                 violations.append(
                                     f"{file}: imports from infrastructure layer ({module})"
