@@ -161,7 +161,7 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
     Handle structured updates during INQUIRY.
 
     Confirmation routing (two-tier):
-      1. Click path — COOPERATIVE confirmation suggestions carry
+      1. Click path — DECIDE confirmation suggestions carry
          intent metadata. A click sends intent_type="confirmation"
          + confirmation_value=True, which the engine routes
          deterministically through IntentResolver (see §1.5.3).
@@ -364,7 +364,7 @@ exists (not `needs_info`), the user's response is handled without LLM involvemen
 - **Clear yes** (pattern match or intent metadata) → execute transition
 - **Clear no** (pattern match or intent metadata) → cancel transition, acknowledge
 - **Anything else** (ambiguous, long message, unrelated question) → re-present the
-  confirmation with COOPERATIVE suggestions (clickable Yes/No with intent metadata)
+  confirmation with DECIDE suggestions (clickable Yes/No with intent metadata)
 
 No message falls through to the LLM tool loop when a `pending_transition` exists. This
 prevents crashes from the LLM failing to produce tool calls on short ambiguous messages.
@@ -571,7 +571,7 @@ async def process_turn(case: Case, user_message: str) -> str:
 
     # 1. Handle pending transition confirmation from previous turn
     #    Two detection paths (checked in order):
-    #    a. Intent-based: COOPERATIVE suggestion clicks carry
+    #    a. Intent-based: DECIDE suggestion clicks carry
     #       intent_type="confirmation" + confirmation_value (deterministic)
     #    b. Pattern-based: fallback for users who type instead of clicking
     if case.pending_transition:
@@ -911,14 +911,13 @@ Let me start by verifying the scope and impact. What services are affected?"
 └─────────────────────────────────────────────────┘
 ```
 
-**Confirmation actions are rendered as COOPERATIVE suggestions** with `intent` metadata:
+**Confirmation actions are rendered as DECIDE suggestions** with `intent` metadata:
 
 ```python
 # Resolution confirmation suggestions carry intent for deterministic routing
 {
     "label": "Yes, mark as resolved",
-    "action_type": "COOPERATIVE",
-    "cooperative_action": "query_submit",
+    "action_type": "DECIDE",
     "payload": "Yes, the issue is resolved. Please mark this case as resolved.",
     "intent": {"type": "confirmation", "confirmation_value": True},
 }
@@ -1170,7 +1169,7 @@ async def _process_turn_impl(self, case, user_message, ...):
     # Normal investigation flow...
 ```
 
-**Report regeneration**: The summary report is auto-generated at closure time and rendered inline in the closure-turn chat reply. The COOPERATIVE *"Regenerate &lt;type&gt; summary"* affordance is the only chat-side path — free-typed paraphrases like *"give me a recap"* route to Q&A and never produce a persisted Report. Regeneration overwrites the existing report — there is always exactly one summary per case. Where the affordance appears depends on whether initial generation succeeded; see *Where it's offered* in §1.7.3 below.
+**Report regeneration**: The summary report is auto-generated at closure time and rendered inline in the closure-turn chat reply. The DECIDE *"Regenerate &lt;type&gt; summary"* affordance is the only chat-side path — free-typed paraphrases like *"give me a recap"* route to Q&A and never produce a persisted Report. Regeneration overwrites the existing report — there is always exactly one summary per case. Where the affordance appears depends on whether initial generation succeeded; see *Where it's offered* in §1.7.3 below.
 
 **API-level enforcement** (`submit_turn` endpoint):
 
@@ -1207,7 +1206,7 @@ RESOLVED transitions always generate — a confirmed solution is meaningful cont
 
 The gate is intentionally **substance-only**. Conversation depth (`message_count`) is *not* a signal: terminal Q&A turns inflate it, so including it would let post-closure chat flip the verdict. The three substance signals are naturally frozen in CLOSED state (the API rejects new evidence/transitions), so the gate is stable across the terminal lifetime without needing a snapshot field. The case description is also excluded — creation-time metadata, not investigation output.
 
-**Pre-close confirmation prompt**: the confirmation prompt that asks *"are you sure?"* before a terminal transition speaks only to the irreversibility of closing — it does not mention the summary. Conditional promises ("a summary will be generated *if*…") would muddy the decision; the summary is a downstream Dashboard artifact and the only chat-side reference to it is the COOPERATIVE regen affordance offered after closure (when applicable).
+**Pre-close confirmation prompt**: the confirmation prompt that asks *"are you sure?"* before a terminal transition speaks only to the irreversibility of closing — it does not mention the summary. Conditional promises ("a summary will be generated *if*…") would muddy the decision; the summary is a downstream Dashboard artifact and the only chat-side reference to it is the DECIDE regen affordance offered after closure (when applicable).
 
 **Skip-reason surfacing**: when a closed case fails the substance gate and has no Report row, `terminal_summary_skip_reason(case)` in `terminal_transitions.py` returns a human-readable note. The case UI adapter populates the Dashboard Report tab with `status="skipped"` and this derived note. The closure-turn chat reply also embeds the skip note inline so the user gets the explanation where they are.
 
@@ -1217,7 +1216,7 @@ The gate is intentionally **substance-only**. Conversation depth (`message_count
   - *Success path*: regen is **not** on the closure-acknowledgment turn (the freshly-generated summary is rendered inline above; a regen card alongside it would be noise). It's offered on subsequent terminal Q&A turns via `_resolved_suggestions` (RESOLVED) or `_closed_suggestions` (CLOSED, when the substance gate would PASS).
   - *Failure path*: regen **is** offered on the closure-acknowledgment turn itself — synchronous generation raised an exception, no summary was rendered inline, so the "noise" rationale doesn't apply. `_select_ack_follow_ups` in `milestone_engine.py` selects the right set: minimal suggestions on success (`_resolved_ack_suggestions` / `[]`), full Q&A-turn suggestions on failure (`_resolved_suggestions` / `_closed_suggestions`). For CLOSED, failure implies the substance gate had already PASSED (otherwise generation would have been skipped, not attempted), so `_closed_suggestions` reliably returns the regen affordance.
 - **Strict gating**: regeneration re-applies the same substance check. Low-substance closures can't be regenerated into existence by clicking around; the gate is one-way and consistent.
-- **Free text routes to Q&A**: the regen handler is reached only via the COOPERATIVE suggestion's precomposed payload (exact-match). Free-typed paraphrases like *"give me a recap"* or *"new summary please"* route to terminal Q&A, where the prompt instructs the agent not to produce a competing summary and instead redirect to the existing summary + regen affordance. This keeps the rule clean: typing never produces a persisted Report side effect; clicking always does.
+- **Free text routes to Q&A**: the regen handler is reached only via the DECIDE suggestion's precomposed payload (exact-match). Free-typed paraphrases like *"give me a recap"* or *"new summary please"* route to terminal Q&A, where the prompt instructs the agent not to produce a competing summary and instead redirect to the existing summary + regen affordance. This keeps the rule clean: typing never produces a persisted Report side effect; clicking always does.
 
 **Runbook generation — chat-side trigger + completion notification** (RESOLVED only):
 
@@ -1809,13 +1808,13 @@ Summaries are built from case data fields (hypotheses, solutions, evidence, mile
 
 **Eligibility**: RESOLVED cases only. CLOSED cases are not eligible regardless of `closure_reason` — they lack the confirmed root-cause-to-solution chain that a future investigator can apply. On subsequent terminal Q&A turns, a CLOSED case offers "Regenerate closure summary" when the substance gate would PASS (independent of whether the Report row currently exists — the same affordance handles both re-roll and failed-generation retry). For low-substance closures, no suggestion is offered — there's nothing to summarize.
 
-**Design**: Suggest first, evaluate on acceptance. The agent always offers a COOPERATIVE suggestion at resolution time. Readiness assessment and deduplication happen only when the user accepts — not upfront. This avoids wasted computation and gives the user a clear accept/decline choice.
+**Design**: Suggest first, evaluate on acceptance. The agent always offers a DECIDE suggestion at resolution time. Readiness assessment and deduplication happen only when the user accepts — not upfront. This avoids wasted computation and gives the user a clear accept/decline choice.
 
 **Trigger flow (Copilot)**:
 
 ```text
 User confirms resolution
-    → Agent offers COOPERATIVE suggestion: "Would you like me to create a runbook?"
+    → Agent offers DECIDE suggestion: "Would you like me to create a runbook?"
     → User accepts
         → System evaluates readiness + deduplication
         → Four possible outcomes:

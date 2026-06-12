@@ -157,10 +157,11 @@ class TestSuggestedFollowUpsCoercion:
 
 
 class TestSuggestedFollowUpPayloadScope:
-    """``payload`` is meaningful only for COOPERATIVE (the text a click
-    submits/copies). The ``_enforce_payload_scope`` validator requires it
-    there and drops it for EVIDENCE/FREE_SPEECH so a stray agent-voiced
-    question/description never lingers on a field the user never sees.
+    """``payload`` is meaningful only for the clickable types (DECIDE — the
+    message a click sends; RUN — the command a click copies). The
+    ``_enforce_payload_scope`` validator requires it there and drops it for
+    EVIDENCE/FREE_SPEECH so a stray agent-voiced question/description never
+    lingers on a field the user never sees.
     """
 
     def test_free_speech_payload_is_dropped(self):
@@ -185,29 +186,43 @@ class TestSuggestedFollowUpPayloadScope:
         assert f.payload is None
         assert f.body == "Helps pinpoint the failing component."
 
-    def test_cooperative_keeps_payload_and_infers_action(self):
+    def test_run_keeps_command_payload(self):
         f = SuggestedFollowUp(
             label="Get pod logs",
-            action_type="COOPERATIVE",
+            action_type="RUN",
             payload="kubectl logs <pod> --tail=100",
         )
         assert f.payload == "kubectl logs <pod> --tail=100"
-        assert f.cooperative_action == "command_copy"
+        assert f.action_type == "RUN"
 
-    def test_cooperative_query_submit_keeps_payload(self):
+    def test_decide_keeps_payload(self):
         f = SuggestedFollowUp(
             label="Validate the config hypothesis",
-            action_type="COOPERATIVE",
+            action_type="DECIDE",
             payload="Let's validate the config change hypothesis",
         )
         assert f.payload == "Let's validate the config change hypothesis"
-        assert f.cooperative_action == "query_submit"
+        assert f.action_type == "DECIDE"
 
-    def test_cooperative_without_payload_raises(self):
-        """COOPERATIVE is defined by the submit/copy text — it cannot exist
+    def test_decide_with_command_payload_coerced_to_run(self):
+        """Encoding safety net: a DECIDE whose payload is a shell command
+        would SUBMIT the command as a chat message on click — the validator
+        coerces it to RUN so the click copies instead."""
+        f = SuggestedFollowUp(
+            label="Get pod logs",
+            action_type="DECIDE",
+            payload="kubectl logs <pod> --tail=100",
+        )
+        assert f.action_type == "RUN"
+        assert f.payload == "kubectl logs <pod> --tail=100"
+
+    def test_clickable_without_payload_raises(self):
+        """DECIDE/RUN are defined by the send/copy text — they cannot exist
         without one."""
         with pytest.raises(ValidationError):
-            SuggestedFollowUp(label="Do the thing", action_type="COOPERATIVE")
+            SuggestedFollowUp(label="Do the thing", action_type="DECIDE")
+        with pytest.raises(ValidationError):
+            SuggestedFollowUp(label="Run the check", action_type="RUN")
 
 
 # ============================================================

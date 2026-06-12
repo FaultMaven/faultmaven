@@ -48,7 +48,6 @@ def _make_follow_up(**overrides):
         action_type="EVIDENCE",
         payload="kubectl top pods",
         body=None,
-        cooperative_action=None,
         hints=None,
         evidence_need_id=None,
     )
@@ -247,17 +246,14 @@ class TestDropCounterObservability:
 class TestExistingFieldsFlattenedUnchanged:
     """The Phase 6 refactor extracted the duplicated flattening loops
     into a single helper. The original behavior on label / type /
-    payload / body / cooperative_action / hints must round-trip
-    unchanged."""
+    payload / body / hints must round-trip unchanged."""
 
     def test_label_type_payload_required_fields(self):
         engine = _make_engine()
-        follow_ups = [
-            _make_follow_up(label="L", action_type="COOPERATIVE", payload="P")
-        ]
+        follow_ups = [_make_follow_up(label="L", action_type="DECIDE", payload="P")]
         out = engine._flatten_follow_ups(follow_ups, _empty_metadata())
         assert out[0]["label"] == "L"
-        assert out[0]["action_type"] == "COOPERATIVE"
+        assert out[0]["action_type"] == "DECIDE"
         assert out[0]["payload"] == "P"
 
     def test_body_propagated_when_present(self):
@@ -271,12 +267,6 @@ class TestExistingFieldsFlattenedUnchanged:
         follow_ups = [_make_follow_up(body=None)]
         out = engine._flatten_follow_ups(follow_ups, _empty_metadata())
         assert "body" not in out[0]
-
-    def test_cooperative_action_propagated_when_present(self):
-        engine = _make_engine()
-        follow_ups = [_make_follow_up(cooperative_action="query_submit")]
-        out = engine._flatten_follow_ups(follow_ups, _empty_metadata())
-        assert out[0]["cooperative_action"] == "query_submit"
 
     def test_hints_propagated_when_present(self):
         engine = _make_engine()

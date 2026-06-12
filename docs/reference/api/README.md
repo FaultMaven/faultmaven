@@ -79,7 +79,7 @@ All data submitted to the API is processed through privacy-first pipelines with:
 
 **Version:** 1.0.0  
 **Base URL:** `/`  
-**Generated:** 2026-05-16T06:00:24.389609Z
+**Generated:** 2026-06-11T23:31:37.138956Z
 
 ## Authentication
 
@@ -1023,7 +1023,7 @@ Default Filtering Behavior:
 
 **Parameters:**
 
-- `status` (query) ❌ - Filter by status
+- `state` (query) ❌ - Filter by state
 - `limit` (query) ❌ - Items per page
 - `offset` (query) ❌ - Number of items to skip
 - `include_empty` (query) ❌ - Include cases with current_turn == 0 (newly created)
@@ -1209,7 +1209,7 @@ and completion percentage.
 
 Update case details
 
-Updates case metadata such as title, description, status, priority, and tags.
+Updates case metadata such as title, description, state, priority, and tags.
 Requires edit permissions on the case.
 
 **Tags:** `cases`
@@ -1526,11 +1526,15 @@ structural index, and appends to its extractor.attempts history.
 Gated by ``FAULTMAVEN_RECLASSIFY_ENABLED``. Returns 404 when the
 flag is off so the endpoint is invisible in production by default.
 
-Error responses:
+Error responses (dispatched by ``api/exception_handlers.py``):
 
-- ``404`` — feature disabled, case not found, or evidence not in case.
-- ``409`` — evidence has no ``content_ref`` (can't re-extract).
-- ``400`` — invalid ``data_type`` string, or missing ``data_type``.
+- ``404`` — feature disabled, case not found, or evidence not in case
+  (``NotFoundError``).
+- ``409`` — evidence has no backing file (``ConflictError`` with
+  ``conflict_reason="no_backing_file"``).
+- ``403`` — caller does not own the case (``AuthorizationError``).
+- ``422`` — invalid or missing ``data_type`` (``ValidationException``).
+- ``500`` — storage/preprocessing failure (``ServiceException``).
 
 **Tags:** `cases`
 
@@ -1706,13 +1710,21 @@ Raises:
 
 Retrieve generated reports for a case.
 
+Composite response: includes both the SQL-persisted ``reports`` rows
+(resolution_summary / closure_summary) and a projected view of any
+conversion drafts linked to this case (returned as synthetic
+``report_type=runbook`` entries). The case Report tab uses the
+runbook entries to drive the KB-link banner; the underlying runbook
+content lives in ``conversion_drafts`` (the KB Drafts editor), not
+``reports``.
+
 Args:
     case_id: Case identifier
     include_history: If True, return all report versions; if False, only current
     report_type: Optional filter by report type (resolution_summary, closure_summary, runbook)
 
 Returns:
-    List of CaseReport objects
+    List of CaseReport objects (summaries plus any case-linked runbook drafts)
 
 **Tags:** `cases`
 
@@ -1830,7 +1842,7 @@ Raises:
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
-- `status` (query) ❌ - No description
+- `state` (query) ❌ - No description
 - `limit` (query) ❌ - No description
 - `offset` (query) ❌ - No description
 - `Authorization` (header) ❌ - No description
@@ -2395,10 +2407,12 @@ Generate a concise, case-specific title from case messages and metadata.
 
 **Returns:**
 - 200: TitleResponse with X-Correlation-ID header
-- 422: ErrorResponse with code INSUFFICIENT_CONTEXT and X-Correlation-ID header
-
-**Description:** Returns 422 when insufficient meaningful context; clients SHOULD keep
-existing title unchanged and may retry later.
+- 422: ValidationException body — see ``api/exception_handlers.py``
+  and ``docs/architecture/specifications/exception-contract.md``.
+  Raised when there is insufficient meaningful context to generate
+  a title (pre-LLM length gate, or LLM + fallback both fail).
+  Clients SHOULD keep the existing title unchanged and may retry
+  later.
 
 **Tags:** `cases`
 
@@ -2459,7 +2473,7 @@ Content-Type: `multipart/form-data`
 
 Get phase-adaptive UI-optimized case response.
 
-Returns different response schemas based on case state:
+Returns different response schemas based on case status:
 - INQUIRY: Focus on problem understanding, clarifying questions
 - INVESTIGATING: Milestone progress, hypotheses, evidence, working conclusion
 - RESOLVED: Root cause, solution, verification, resolution summary
@@ -2679,6 +2693,12 @@ Delete a conversion draft.
 **Verify Draft**
 
 Promote draft to verified status and trigger ingestion into ChromaDB.
+
+Service-layer typed exceptions (NotFoundError, ConflictError,
+ValidationException) propagate to the global handlers in
+api/exception_handlers.py for canonical translation to 404 / 409 /
+422 respectively. The route no longer catches ValueError; see
+docs/architecture/specifications/exception-contract.md.
 
 **Tags:** `knowledge-conversion`
 
@@ -5121,7 +5141,7 @@ See: docs/architecture/case-and-session-concepts.md for the three-tier architect
 
 Defines the status of authentication sessions (not investigation sessions).
 
-For investigation session status, see faultmaven.models.investigation_session.SessionStatus
+For investigation session status, see faultmaven.models.investigation_session.SessionState
 
 ---
 
@@ -5270,14 +5290,15 @@ Represents one complete troubleshooting investigation.
         Example: "API experiencing slowness with 30% of requests taking >5s response time
                   across all US regions, started 2 hours ago coinciding with v2.1.3 deployment"
         
-- `status` (unknown) ❌ - Current lifecycle status (phase or disposition)
+- `state` (unknown) ❌ - Current lifecycle state (phase or disposition)
 - `action_history` (array) ❌ - Complete history of case actions (phase transitions and dispositions)
 - `closure_reason` (unknown) ❌ - Why case was closed: resolved | abandoned | escalated | inquiry_only | duplicate | other
+- `disposition_eligibility` (unknown) ❌ - Per-disposition eligibility view for the case-action dropdown. Denormalized read view maintained at the single chokepoint ``CaseRepository.save()`` via ``derive_disposition_eligibility``. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of ``ready`` / ``needs_info`` / ``not_eligible``. Frontend uses this to gate Resolve/Close affordances on the current case content, not just the structural action graph. Always populated for persisted cases; may be None on in-memory Case objects before the first save.
 - `pending_transition` (unknown) ❌ - 
         Pending status transition awaiting user confirmation (User-Agent Handshake pattern).
 
         Used for terminal transitions that require explicit user confirmation:
-        - to_status: Target status (str)
+        - to_state: Target status (str)
         - reason: Why transition is being proposed (str)
         - summary: Agent's explanation to user (str)
         - evidence_ids: Supporting evidence (List[str])
@@ -5286,7 +5307,7 @@ Represents one complete troubleshooting investigation.
 
         Cleared after transition executes or is cancelled.
         
-- `last_suggestions` (unknown) ❌ - COOPERATIVE suggestions with intent metadata from the last agent turn. Used by the intent resolver to match typed responses against offered choices. Updated after each turn; only suggestions carrying intent metadata are stored.
+- `last_suggestions` (unknown) ❌ - DECIDE suggestions with intent metadata from the last agent turn. Used by the intent resolver to match typed responses against offered choices. Updated after each turn; only suggestions carrying intent metadata are stored.
 - `kb_context` (unknown) ❌ - Deterministic KB pre-fetch results injected at key transitions. Populated at INQUIRY→INVESTIGATING (symptom search) and when root_cause_identified completes (remediation search). Included in the LLM context as historical suggestions, not absolute truths.
 - `progress` (unknown) ❌ - Milestone-based progress tracking
 - `current_turn` (integer) ❌ - Current turn number (increments with each user-agent exchange)
@@ -5313,9 +5334,8 @@ Represents one complete troubleshooting investigation.
         - Provides the "what was said" to complement turn_history's "what happened"
         
 - `message_count` (integer) ❌ - Total number of messages (user + agent combined)
-- `path_selection` (unknown) ❌ - Selected investigation path (MITIGATION vs ROOT_CAUSE)
 - `investigation_strategy` (unknown) ❌ - Investigation approach: ACTIVE_INCIDENT (speed) vs POST_MORTEM (thoroughness)
-- `inquiry` (unknown) ❌ - Pre-investigation INQUIRY status data
+- `inquiry` (unknown) ❌ - Pre-investigation INQUIRY state data
 - `problem_verification` (unknown) ❌ - Consolidated verification data (symptom, scope, timeline, changes)
 - `uploaded_files` (array) ❌ - 
         All files uploaded to this case (raw file metadata).
@@ -5328,6 +5348,7 @@ Represents one complete troubleshooting investigation.
         - evidence: Investigation data linked to hypotheses (only in INVESTIGATING phase)
         
 - `evidence` (array) ❌ - All evidence collected during investigation
+- `evidence_needs` (array) ❌ - Demand-side pool: verification requirements the investigation has identified. Created by the LLM at problem-statement confirmation (symptom needs) and at hypothesis creation (causal needs). See evidence-needs-design.md.
 - `hypotheses` (object) ❌ - Generated hypotheses (key = hypothesis_id)
 - `solutions` (array) ❌ - Proposed and applied solutions
 - `proposed_actions` (array) ❌ - Actions proposed by agent for user to execute (evidence-driven framework)
@@ -5341,7 +5362,7 @@ Represents one complete troubleshooting investigation.
 - `updated_at` (string) ❌ - Last modification timestamp
 - `last_activity_at` (string) ❌ - Most recent user/agent interaction (for 'updated Xm ago' display)
 - `version` (integer) ❌ - Optimistic concurrency control token. Incremented on every successful aggregate save. Callers that read-modify-write a case must pass the loaded version back through save(case); `save` raises StaleCaseException on mismatch. Scoped single-row UPDATEs (update_evidence_vectorized, etc.) do NOT bump this field — they operate on child tables.
-- `resolved_at` (unknown) ❌ - When case reached RESOLVED status
+- `resolved_at` (unknown) ❌ - When case reached RESOLVED state
 - `closed_at` (unknown) ❌ - When case reached terminal state (RESOLVED or CLOSED)
 
 ---
@@ -5353,8 +5374,8 @@ Provides audit trail for case lifecycle.
 
 **Properties:**
 
-- `from_status` (unknown) ✅ - Status before the action
-- `to_status` (unknown) ✅ - Status after the action
+- `from_state` (unknown) ✅ - Status before the action
+- `to_state` (unknown) ✅ - Status after the action
 - `triggered_at` (string) ❌ - When the action occurred
 - `triggered_by` (string) ✅ - Who triggered: user_id or 'system' for automatic actions
 - `reason` (string) ✅ - Human-readable reason for the action
@@ -5396,7 +5417,7 @@ Detailed case information for single case view.
 - `case_id` (string) ✅ - No description
 - `title` (string) ✅ - No description
 - `description` (string) ✅ - No description
-- `status` (unknown) ✅ - No description
+- `state` (unknown) ✅ - No description
 - `created_at` (string) ✅ - No description
 - `updated_at` (string) ✅ - No description
 - `last_activity_at` (string) ✅ - No description
@@ -5415,7 +5436,7 @@ Detailed case information for single case view.
 - `solution_count` (integer) ✅ - No description
 - `is_terminal` (boolean) ✅ - No description
 - `escalated` (boolean) ✅ - No description
-- `valid_next_states` (array) ❌ - Allowed status transitions from current state for user-initiated changes
+- `valid_next_states` (array) ❌ - Allowed state transitions from current state for user-initiated changes
 
 ---
 
@@ -5496,14 +5517,14 @@ Request to search cases.
 - `query` (string) ✅ - Search query
 - `user_id` (unknown) ❌ - Limit to user's cases
 - `organization_id` (unknown) ❌ - Limit to organization's cases
-- `status` (unknown) ❌ - Filter by status
+- `state` (unknown) ❌ - Filter by state
 - `limit` (integer) ❌ - Maximum results
 
 ---
 
 ### CaseState
 
-Case lifecycle status — passive label describing a case's current condition.
+Case lifecycle state — passive label describing a case's current condition.
 
 Values fall into two categories:
 - **Phases** (active work): INQUIRY, INVESTIGATING
@@ -5531,7 +5552,7 @@ Minimal case information for list views.
 - `case_id` (string) ✅ - No description
 - `title` (string) ✅ - No description
 - `description` (string) ✅ - No description
-- `status` (unknown) ✅ - No description
+- `state` (unknown) ✅ - No description
 - `created_at` (string) ✅ - No description
 - `updated_at` (string) ✅ - No description
 - `last_activity_at` (string) ✅ - No description
@@ -5544,7 +5565,7 @@ Minimal case information for list views.
 - `milestones_completed` (integer) ✅ - No description
 - `total_milestones` (integer) ❌ - No description
 - `is_terminal` (boolean) ✅ - No description
-- `valid_next_states` (array) ❌ - Allowed status transitions from current state for user-initiated changes
+- `valid_next_states` (array) ❌ - Allowed state transitions from current state for user-initiated changes
 
 ---
 
@@ -5558,13 +5579,20 @@ User hasn't committed to full investigation yet.
 **Properties:**
 
 - `case_id` (string) ✅ - Case identifier
-- `status` (string) ❌ - Always 'inquiry' for this response type
+- `state` (string) ❌ - Always 'inquiry' for this response type
 - `title` (string) ✅ - Case title
 - `current_turn` (integer) ✅ - Current turn counter
 - `created_at` (string) ✅ - When case was created
 - `updated_at` (string) ✅ - Last update timestamp
 - `uploaded_files_count` (integer) ✅ - Total files uploaded
-- `valid_next_states` (array) ❌ - Allowed status transitions from current state for user-initiated changes
+- `valid_next_states` (array) ❌ - Allowed state transitions from current state for user-initiated changes
+- `disposition_eligibility` (unknown) ❌ - Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
+- ``ready`` — disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.
+- ``needs_info`` — disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.
+- ``suggests_alternative`` — disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` — no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution → resolving preserves attribution).
+- ``not_eligible`` — disposition is not available; hide the affordance entirely.
+
+Different from ``valid_next_states`` — that field is the structural action graph (which edges exist), this field is the content-readiness layer on top.
 - `inquiry` (unknown) ✅ - Nested inquiry phase data
 
 ---
@@ -5579,20 +5607,27 @@ User has committed to investigation and agent is working through milestones.
 **Properties:**
 
 - `case_id` (string) ✅ - Case identifier
-- `status` (string) ❌ - Always 'investigating' for this response type
+- `state` (string) ❌ - Always 'investigating' for this response type
 - `title` (string) ✅ - Case title
 - `current_turn` (integer) ✅ - Current turn counter
 - `created_at` (string) ✅ - When case was created
 - `updated_at` (string) ✅ - Last update timestamp
 - `uploaded_files_count` (integer) ❌ - Number of uploaded files
-- `valid_next_states` (array) ❌ - Allowed status transitions from current state for user-initiated changes
+- `valid_next_states` (array) ❌ - Allowed state transitions from current state for user-initiated changes
+- `disposition_eligibility` (unknown) ❌ - Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
+- ``ready`` — disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.
+- ``needs_info`` — disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.
+- ``suggests_alternative`` — disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` — no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution → resolving preserves attribution).
+- ``not_eligible`` — disposition is not available; hide the affordance entirely.
+
+Different from ``valid_next_states`` — that field is the structural action graph (which edges exist), this field is the content-readiness layer on top.
+- `problem_statement` (unknown) ❌ - Confirmed problem statement carried over from INQUIRY (sourced from case.description).
 - `working_conclusion` (unknown) ❌ - Agent's current understanding of the problem
 - `progress` (unknown) ✅ - Milestone-based progress tracking
 - `active_hypotheses` (array) ❌ - Hypotheses currently being tested
 - `latest_evidence` (array) ❌ - Most recent evidence collected (last 5)
 - `next_actions` (array) ❌ - Suggested next steps for investigation
 - `agent_status` (string) ✅ - What agent is currently doing
-- `investigation_strategy` (unknown) ❌ - Investigation strategy with approach and next steps
 - `problem_verification` (unknown) ❌ - Problem verification details (urgency, severity, impact)
 - `progress_transparency` (unknown) ❌ - Progress transparency state. Present when investigation has stalled and agent is surfacing milestone dependencies.
 
@@ -5608,14 +5643,22 @@ Investigation complete, case closed with solution.
 **Properties:**
 
 - `case_id` (string) ✅ - Case identifier
-- `status` (string) ✅ - Case terminal status: 'resolved' (with solution) or 'closed' (without investigation)
+- `state` (string) ✅ - Case terminal state: 'resolved' (with solution) or 'closed' (without investigation)
 - `title` (string) ✅ - Case title
 - `current_turn` (integer) ✅ - Current turn counter
 - `created_at` (string) ✅ - When case was created
 - `updated_at` (string) ✅ - Last update timestamp
 - `resolved_at` (string) ✅ - When case was resolved
 - `uploaded_files_count` (integer) ❌ - Number of uploaded files
-- `valid_next_states` (array) ❌ - Allowed status transitions from current state for user-initiated changes
+- `valid_next_states` (array) ❌ - Allowed state transitions from current state for user-initiated changes
+- `disposition_eligibility` (unknown) ❌ - Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
+- ``ready`` — disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.
+- ``needs_info`` — disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.
+- ``suggests_alternative`` — disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` — no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution → resolving preserves attribution).
+- ``not_eligible`` — disposition is not available; hide the affordance entirely.
+
+Different from ``valid_next_states`` — that field is the structural action graph (which edges exist), this field is the content-readiness layer on top.
+- `problem_statement` (unknown) ❌ - Confirmed problem statement carried over from INQUIRY (sourced from case.description).
 - `root_cause` (unknown) ✅ - What caused the problem
 - `solution_applied` (unknown) ✅ - Solution that fixed the problem
 - `verification_status` (unknown) ✅ - How solution effectiveness was verified
@@ -5632,7 +5675,19 @@ Request to update an existing case.
 
 - `title` (unknown) ❌ - Updated title
 - `description` (unknown) ❌ - Updated description
-- `status` (unknown) ❌ - Updated status (admin only)
+- `state` (unknown) ❌ - Updated state (admin only)
+
+---
+
+### CauseState
+
+Engine-derived knowledge state of the root cause (assessment variable).
+
+Recomputed every turn from the LLM's grounded cause-identification signal
+plus the active-hypothesis count (see investigation-flow-redesign.md R1).
+NEVER path-stripped — recording a cause the engine legitimately knows is a
+truth signal, not an earned process milestone. Drives whether the diagnostic
+machinery (hypothesis formulation + evidence-needs) runs this turn.
 
 ---
 
@@ -5867,11 +5922,16 @@ System fills: evidence_id, collected_at_turn, collected_by,
 
 Evidence classification by investigation purpose.
 
-Four claim-attached categories. Every row is the LLM's deliberate
-decision to record a specific extract as evidence for a specific
-claim, created only during INVESTIGATING. Contextual data lives on
-``uploaded_files`` — no evidence row is needed until the agent
-extracts a claim-relevant slice. Rejection is expressed as the
+Six claim-attached categories: the presence/absence verification
+quartet (``symptom_evidence``, ``causal_evidence``,
+``symptom_absence_evidence``, ``causal_absence_evidence``) plus two
+legacy stage-completion categories (``mitigation_evidence``,
+``solution_evidence``) retained from the post-010 model and slated
+for removal once prompts stop emitting them. Every row is the LLM's
+deliberate decision to record a specific extract as evidence for a
+specific claim, created only during INVESTIGATING. Contextual data
+lives on ``uploaded_files`` — no evidence row is needed until the
+agent extracts a claim-relevant slice. Rejection is expressed as the
 absence of an evidence row; hypothesis-level refutation lives on
 ``hypothesis_evidence.stance``.
 
@@ -5895,6 +5955,48 @@ Detailed evidence information with source and hypothesis linkage.
 - `related_hypotheses` (array) ❌ - No description
 - `extract` (unknown) ❌ - Optional verbatim quote backing the summary. NULL when the LLM omitted it (the summary is self-contained).
 - `analysis` (unknown) ❌ - No description
+
+---
+
+### EvidenceNeed
+
+A verification requirement on a case.
+
+Each need represents "data that would advance the investigation."
+Needs live in a flat pool on the case — not anchored to specific
+hypotheses. ``motivating_hypothesis_ids`` records *why* the need
+exists (which hypotheses motivated creating it) for context and
+for the engine's retirement-supersession rule, but is not a hard
+ownership association.
+
+Lifecycle (see evidence-needs-design.md §7):
+
+- Created by the LLM via ``EvidenceNeedUpdate`` emissions at
+  problem-statement confirmation (symptom needs) and at hypothesis
+  creation (causal needs).
+- Updated by the LLM as evidence arrives (state, fulfilling
+  evidence linkage, motivating hypothesis IDs).
+- Auto-superseded by the engine on hypothesis retirement when the
+  motivating list becomes empty AND purpose is CAUSAL_VERIFICATION
+  AND state is not FULFILLED. Symptom needs (empty motivating
+  list by design) are exempt — they're motivated by the problem
+  statement, not by a hypothesis.
+
+**Properties:**
+
+- `need_id` (string) ❌ - Unique evidence-need identifier
+- `case_id` (string) ✅ - Case this need belongs to
+- `purpose` (unknown) ✅ - Why this need exists: symptom_verification (motivated by the problem statement) or causal_verification (motivated by one or more hypotheses).
+- `request_text` (string) ✅ - What data would fulfill this need, in a form suitable for surfacing to the user as an EVIDENCE-type suggestion. Example: 'kubectl get pods -n production showing current restart counts'.
+- `rationale` (string) ✅ - Why this data would advance the investigation. Used in the LLM's <evidence_needs> context block to remind the LLM why the need was created. Example: 'confirms whether the pod-level OOMKill pattern is still active after the memory-limit increase'.
+- `priority` (unknown) ❌ - LLM hint for surfacing-order on the suggestion side.
+- `state` (unknown) ❌ - Lifecycle state — see NeedState.
+- `motivating_hypothesis_ids` (array) ❌ - Hypothesis IDs that motivated this need's existence. Empty list means the need is motivated by the problem statement (symptom needs). Engine appends/removes IDs as hypotheses share needs (cross-hypothesis evaluation per evidence-needs-design.md §5.2) and as hypotheses are retired (engine auto-supersession rule).
+- `fulfilling_evidence_ids` (array) ❌ - Evidence rows that fulfill this need. Multiple entries may accumulate across stages: presence evidence collected during DIAGNOSIS plus absence evidence collected during MITIGATION/TREATMENT. The list is append-only in practice — the need's state stays FULFILLED once fulfilled even when post-fix absence evidence is added.
+- `superseded_reason` (unknown) ❌ - Human-readable explanation when state=SUPERSEDED. Set by engine auto-supersession ('all motivating hypotheses retired') or by LLM emission ('superseded by refined problem statement'). Required when state=SUPERSEDED, must be None otherwise.
+- `created_at_turn` (integer) ✅ - Turn number when the need was created.
+- `created_at` (string) ❌ - Wall-clock creation time.
+- `updated_at` (string) ❌ - Wall-clock last-update time.
 
 ---
 
@@ -5984,7 +6086,7 @@ Philosophy: Hypotheses are OPTIONAL. Agent may:
 - `hypothesis_id` (string) ❌ - Unique hypothesis identifier
 - `statement` (string) ✅ - Hypothesis statement (what we think caused the problem)
 - `category` (unknown) ✅ - Hypothesis category (for anchoring detection)
-- `status` (unknown) ❌ - Current hypothesis state
+- `state` (unknown) ❌ - Current hypothesis state
 - `likelihood` (number) ❌ - Estimated likelihood this hypothesis is correct (0.0-1.0)
 - `initial_likelihood` (number) ❌ - Original likelihood when hypothesis was generated
 - `evidence_links` (array) ❌ - 
@@ -6005,7 +6107,7 @@ Philosophy: Hypotheses are OPTIONAL. Agent may:
 - `iterations_without_progress` (integer) ❌ - Count of consecutive iterations without progress
 - `generation_mode` (unknown) ✅ - No description
 - `retirement_reason` (unknown) ❌ - Reason if hypothesis was retired
-- `refutation_reason` (unknown) ❌ - Evidence or reasoning that disproves the hypothesis. REQUIRED when status=REFUTED (enforced via model validator). Not used for other statuses. status=REFUTED and refutation_reason travel together — an update carrying one without the other is rejected at the orchestration layer.
+- `refutation_reason` (unknown) ❌ - Evidence or reasoning that disproves the hypothesis. REQUIRED when state=REFUTED (enforced via model validator). Not used for other statuses. state=REFUTED and refutation_reason travel together — an update carrying one without the other is rejected at the orchestration layer.
 - `rationale` (string) ✅ - Why this hypothesis was generated
 - `tested_at` (unknown) ❌ - When hypothesis testing began
 - `concluded_at` (unknown) ❌ - When hypothesis was validated/refuted/retired
@@ -6052,7 +6154,7 @@ How hypothesis was generated
 
 ### HypothesisState
 
-Hypothesis lifecycle status
+Hypothesis lifecycle state
 
 ---
 
@@ -6065,7 +6167,7 @@ Summary of a hypothesis for INVESTIGATING phase UI.
 - `hypothesis_id` (string) ✅ - Hypothesis identifier
 - `text` (string) ✅ - Hypothesis statement
 - `likelihood` (number) ✅ - Likelihood score (0.0-1.0)
-- `status` (unknown) ✅ - Status: CAPTURED | ACTIVE | VALIDATED | REFUTED | INCONCLUSIVE | RETIRED
+- `state` (unknown) ✅ - Status: CAPTURED | ACTIVE | VALIDATED | REFUTED | INCONCLUSIVE | RETIRED
 - `evidence_count` (integer) ✅ - Number of evidence items related to this hypothesis
 - `refutation_reason` (unknown) ❌ - Reason the hypothesis was refuted. Populated only when status=REFUTED; None otherwise. Mirrors the domain model's pair-integrity invariant.
 
@@ -6085,7 +6187,7 @@ Impact assessment for problem scope.
 
 ### InquiryData
 
-Pre-investigation INQUIRY status data.
+Pre-investigation INQUIRY state data.
 Captures early problem exploration before formal investigation commitment.
 
 **Properties:**
@@ -6108,9 +6210,10 @@ Captures early problem exploration before formal investigation commitment.
         
 - `problem_statement_confirmed` (boolean) ❌ - User confirmed the formalized problem statement
 - `problem_statement_confirmed_at` (unknown) ❌ - When user confirmed the problem statement
+- `handshake_deferred_at_turn` (unknown) ❌ - Turn number on which the same-turn-confirmation guard fired. When current_turn == this+1, context_builder injects HANDSHAKE_DEFERRED (re-present + ask) instead of NOT_YET_CONFIRMED, and the engine deterministically emits confirmation suggestions. Self-clears by becoming stale on subsequent turns.
 - `decided_to_investigate` (boolean) ❌ - Whether user committed to formal investigation
 - `decision_made_at` (unknown) ❌ - When user decided to investigate (or not)
-- `inquiry_turns` (integer) ❌ - Number of turns spent in INQUIRY status
+- `inquiry_turns` (integer) ❌ - Number of turns spent in INQUIRY state
 - `knowledge_matches` (array) ❌ - Potential solutions found in KB
 - `knowledge_resolution` (unknown) ❌ - Resolution details if fixed via KB match
 - `preliminary_urgency` (unknown) ❌ - Early urgency assessment
@@ -6146,20 +6249,6 @@ Calculated from recent progress patterns (evidence collection, hypothesis update
 
 ---
 
-### InvestigationPath
-
-Investigation routing strategy (2-stage model with mitigation detour).
-
-IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
-LLM provides inputs (temporal_state, urgency_level) during DIAGNOSIS.
-System calls determine_investigation_path() to select path deterministically.
-
-Two paths through the 2-stage model:
-- MITIGATION_FIRST: DIAGNOSIS → MITIGATION (detour) → DIAGNOSIS → TREATMENT
-- ROOT_CAUSE: DIAGNOSIS → TREATMENT
-
----
-
 ### InvestigationProgress
 
 Evidence-driven progress tracking with two distinct milestone types:
@@ -6173,13 +6262,14 @@ Evidence-driven progress tracking with two distinct milestone types:
 
 **Properties:**
 
-- `mitigation_accepted` (boolean) ❌ - User complied with proposed temp fix (inferred from submission). Triggers DIAGNOSIS → MITIGATION transition.
-- `mitigation_verified` (boolean) ❌ - User confirmed mitigation worked. Triggers MITIGATION → DIAGNOSIS return for RCA.
+- `mitigation` (unknown) ❌ - Mitigation insert record (redesign R2). Materialized by the engine from the LLM's mitigation accept/verify gate signals plus the workaround ProposedAction. Replaces the legacy path-coupled mitigation gates.
 - `solution_accepted` (boolean) ❌ - User complied with proposed solution (inferred from submission). Triggers DIAGNOSIS → TREATMENT transition.
 - `solution_verified` (boolean) ❌ - Solution effectiveness verified via User-Agent Handshake. NOT directly settable by LLM — requires explicit user confirmation. Triggers TREATMENT → RESOLVED transition.
 - `symptom_verified` (boolean) ❌ - Symptom confirmed with concrete evidence (logs, metrics, user reports)
-- `root_cause_identified` (boolean) ❌ - Root cause determined (directly or via hypothesis validation)
 - `solution_proposed` (boolean) ❌ - Set programmatically when ProposedAction with action_type=SOLUTION is created. Not directly set by LLM.
+- `cause_state` (unknown) ❌ - Engine-derived knowledge state of the root cause (UNKNOWN | CANDIDATES | IDENTIFIED). Replaces the boolean root_cause_identified. IDENTIFIED is the grounded cause-known signal; CANDIDATES is derived from >=2 ACTIVE hypotheses. Drives whether the diagnostic machinery runs. Recomputed each turn by the engine; never path-stripped.
+- `solution_state` (unknown) ❌ - Knowledge state of the fix (UNKNOWN | SELECTED). CANDIDATES (multi-solution deliberation) is reserved for a follow-on and not produced this round.
+- `solution_feasible` (unknown) ❌ - Whether the SELECTED solution can be applied this session (NOW | DEFERRED). DEFERRED routes to CLOSE-with-documented-solution.
 - `root_cause_likelihood` (number) ❌ - Likelihood in root cause identification (0.0 = unknown, 1.0 = certain)
 - `root_cause_method` (unknown) ❌ - How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | user_provided | other
 - `verification_completed_at` (unknown) ❌ - When symptom verification milestone was completed
@@ -6207,27 +6297,46 @@ from current_stage if needed.
 
 ---
 
+### InvestigationSessionResponse
+
+Response model for investigation session.
+
+**Properties:**
+
+- `session_id` (string) ✅ - No description
+- `case_id` (string) ✅ - No description
+- `user_id` (string) ✅ - No description
+- `organization_id` (string) ✅ - No description
+- `state` (unknown) ✅ - No description
+- `started_at` (string) ✅ - No description
+- `ended_at` (unknown) ❌ - No description
+- `last_activity_at` (string) ✅ - No description
+- `total_duration_ms` (unknown) ❌ - No description
+- `session_goal` (unknown) ❌ - No description
+- `findings_summary` (unknown) ❌ - No description
+- `total_token_usage` (integer) ✅ - No description
+- `total_agent_executions` (integer) ✅ - No description
+- `token_budget_limit` (unknown) ❌ - No description
+- `created_at` (string) ✅ - No description
+- `updated_at` (string) ✅ - No description
+
+---
+
 ### InvestigationStage
 
 Investigation stage within the Investigating Phase.
 
-2-stage model with mitigation detour:
-- DIAGNOSIS: Understand, diagnose, propose actions (core stage)
-- TREATMENT: Verify permanent fix, resolve case (core stage)
-- MITIGATION: Apply and verify temporary fix (optional detour)
+These three stages are pure DERIVED DISPLAY labels in the unified
+opportunistic flow. They are re-derived from the action-compliance
+gates (see ``InvestigationProgress.current_stage``); they do NOT drive
+prompt dispatch and there is NO path fork or prospective routing.
 
-DIAGNOSIS and TREATMENT are the two core stages every investigation
-passes through. MITIGATION is an optional detour that temporarily
-narrows focus to "stop the bleeding" before returning to DIAGNOSIS.
+- DIAGNOSIS → "Investigating" (default view)
+- MITIGATION → "Mitigating" (an optional inserted sub-activity)
+- TREATMENT → "Resolving"
 
-Computed from stage-gate milestones. Stage transitions are
-inference-based — user compliance with proposed actions triggers
-transitions via compliance detection. The stage determines which
-prompt template the LLM receives.
-
-Investigation Paths:
-- ROOT_CAUSE: DIAGNOSIS → TREATMENT
-- MITIGATION_FIRST: DIAGNOSIS → MITIGATION (detour) → DIAGNOSIS → TREATMENT
+MITIGATION is not a separate path — it is an optional "stop the
+bleeding" insert that surfaces while the investigation continues.
 
 ---
 
@@ -6235,17 +6344,6 @@ Investigation Paths:
 
 Investigation approach mode.
 Affects decision thresholds, workflow behavior, and agent prompts.
-
----
-
-### InvestigationStrategyData
-
-Investigation strategy details for INVESTIGATING phase.
-
-**Properties:**
-
-- `approach` (unknown) ❌ - Investigation approach description (e.g., 'Speed priority - rapid mitigation')
-- `next_steps` (unknown) ❌ - Recommended next steps in investigation
 
 ---
 
@@ -6564,6 +6662,74 @@ Debug information for message retrieval operations.
 
 ---
 
+### MitigationRecord
+
+A single forward-only mitigation (the inserted "stop the bleeding" move).
+
+Replaces the legacy path-coupled mitigation gates
+(redesign R2). The engine materializes this record from the LLM's accept/verify
+gate signals plus the workaround ProposedAction:
+- ``proposed_at_turn`` is set when a ``solution_type=workaround`` action is created.
+- ``accepted`` / ``verified`` mirror the LLM gate signals (compliance detection).
+- ``completed_at_turn`` is set the turn ``verified`` flips True (the boundary for
+  up-weighting pre-mitigation evidence in any later RCA).
+
+Single record per investigation for now (redesign §3.2.1); the flow stays open
+to user-led action so a non-mitigating insert is never a dead-end.
+
+**Properties:**
+
+- `proposed_at_turn` (unknown) ❌ - Turn a workaround mitigation was first proposed
+- `accepted` (boolean) ❌ - User complied with the proposed mitigation
+- `verified` (boolean) ❌ - User confirmed the mitigation stabilized the situation
+- `completed_at_turn` (unknown) ❌ - Turn `verified` flipped True (Gate-3-equivalent boundary)
+
+---
+
+### NeedPriority
+
+Priority hint for surfacing needs as EVIDENCE-type suggestions.
+
+High-priority unfulfilled needs are surfaced first; medium and low
+are deferred until higher priorities are addressed. Priority is an
+LLM hint, not a hard ordering.
+
+---
+
+### NeedPurpose
+
+Why this need was created — maps to evidence categories.
+
+A symptom_verification need produces SYMPTOM_EVIDENCE (presence)
+initially and SYMPTOM_ABSENCE_EVIDENCE (absence) on re-check after
+mitigation/solution. A causal_verification need produces
+CAUSAL_EVIDENCE (presence) initially and CAUSAL_ABSENCE_EVIDENCE
+(absence) on re-check after solution.
+
+The same need produces multiple evidence rows of different
+categories across the case's lifetime; the need's state stays
+FULFILLED once fulfilled — re-check evidence is appended via
+``fulfilling_evidence_ids``, it does not reset the state.
+
+---
+
+### NeedState
+
+Lifecycle states of an evidence need.
+
+PENDING        — Need identified, no evidence yet.
+PARTIALLY_MET  — Some evidence collected but insufficient.
+FULFILLED      — Sufficient evidence collected (terminal-positive).
+SUPERSEDED     — No longer relevant (terminal-negative). Either all
+                 motivating hypotheses retired (engine rule) or LLM
+                 judged irrelevant (LLM update emission).
+
+FULFILLED and SUPERSEDED are terminal — a need cannot resurrect from
+SUPERSEDED. If the LLM later concludes the underlying data is
+relevant again, it must create a new need.
+
+---
+
 ### OAuthConfigResponse
 
 OAuth configuration for cloud mode.
@@ -6649,29 +6815,6 @@ Request to update organization details
 
 ---
 
-### PathSelection
-
-Path selection details.
-Records how investigation path was chosen.
-
-IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
-LLM provides inputs (temporal_state, urgency_level) during verification.
-System calls determine_investigation_path() to select path deterministically.
-LLM does NOT choose the path directly!
-
-**Properties:**
-
-- `path` (unknown) ✅ - Selected investigation path (system-determined from matrix)
-- `auto_selected` (boolean) ✅ - True if system auto-selected, False if user chose
-- `rationale` (string) ✅ - Why this path was selected
-- `alternate_path` (unknown) ❌ - Alternative path user could have chosen (if auto-selected)
-- `selected_at` (string) ❌ - When path was selected
-- `selected_by` (string) ❌ - Who selected: 'system' for auto, or user_id for manual
-- `temporal_state` (unknown) ❌ - Temporal state used in decision
-- `urgency_level` (unknown) ❌ - Urgency level used in decision
-
----
-
 ### PermissionCheckRequest
 
 Request to check user permission
@@ -6752,7 +6895,7 @@ Contains all data gathered during verification phase:
 - `correlation_confidence` (number) ❌ - Confidence in change-symptom correlation (0.0 = no correlation, 1.0 = certain)
 - `urgency_level` (unknown) ❌ - Urgency classification for path routing
 - `urgency_factors` (array) ❌ - Factors contributing to urgency assessment
-- `rca_infeasible` (boolean) ❌ - Advisory signal: root cause analysis is infeasible for this problem. Set by the LLM during verification when the problem involves uncontrollable external dependencies, deprecated/EOL systems, or known intractable conditions where mitigation is the accepted strategy. Does NOT affect path selection — influences post-mitigation agent behavior only.
+- `rca_infeasible` (boolean) ❌ - Advisory signal: root cause analysis is infeasible for this problem. Set by the LLM during verification when the problem involves uncontrollable external dependencies, deprecated/EOL systems, or known intractable conditions where mitigation is the accepted strategy. Influences post-mitigation agent behavior only.
 - `rca_infeasible_rationale` (unknown) ❌ - Why RCA is infeasible. Populated by the LLM when rca_infeasible=True. E.g., 'Black-box 3rd-party API with no internal telemetry'.
 - `verified_at` (unknown) ❌ - When verification was completed
 - `verification_confidence` (number) ❌ - Overall confidence in verification accuracy
@@ -6810,7 +6953,8 @@ triggers stage-gate milestone transitions via compliance detection.
 - `commands` (array) ❌ - Specific commands for the user to execute
 - `proposed_at` (string) ❌ - When the action was proposed
 - `proposed_in_turn` (integer) ✅ - Turn number when this action was proposed
-- `status` (string) ❌ - pending | accepted | rejected | superseded
+- `state` (string) ❌ - pending | accepted | rejected | superseded
+- `downgrade_reason` (unknown) ❌ - If the engine downgraded action_type from the LLM's intent (e.g. MITIGATION → DIAGNOSTIC because no SYMPTOM_EVIDENCE existed yet), this carries the explanation. Rendered to the LLM via context_builder on the next turn so the agent can recover (gather the missing evidence and re-propose). None when no downgrade occurred.
 
 ---
 
@@ -7098,6 +7242,22 @@ Request model for creating investigation session.
 
 ---
 
+### SessionResponse
+
+**Properties:**
+
+- `session_id` (string) ✅ - Unique session identifier
+- `user_id` (string) ❌ - Associated user identifier
+- `client_id` (string) ❌ - Client/device identifier for session resumption
+- `status` (string) ✅ - Current session status
+- `created_at` (string) ❌ - Session creation timestamp
+- `session_resumed` (boolean) ❌ - Indicates if this was an existing session resumed
+- `session_type` (string) ❌ - Type of session (e.g., troubleshooting)
+- `message` (string) ❌ - Status message about session creation/resumption
+- `metadata` (object) ❌ - Session metadata and context
+
+---
+
 ### SessionRestoreRequest
 
 Request model for session restoration.
@@ -7110,7 +7270,7 @@ Request model for session restoration.
 
 ---
 
-### SessionStatus
+### SessionState
 
 Investigation session status.
 
@@ -7197,6 +7357,24 @@ Proposed or applied solution/mitigation.
 
 ---
 
+### SolutionFeasible
+
+Whether the SELECTED solution can be applied within this session.
+
+LLM-settable. DEFERRED routes to CLOSE-with-documented-solution (redesign §6 Q2).
+
+---
+
+### SolutionState
+
+Engine-derived knowledge state of the fix (assessment variable).
+
+UNKNOWN | SELECTED only this round. CANDIDATES (multi-solution deliberation,
+redesign §6) is reserved for the follow-on that reuses the hypothesis machinery
+and is intentionally not produced yet.
+
+---
+
 ### SolutionSummary
 
 Solution information for RESOLVED phase.
@@ -7235,11 +7413,11 @@ A follow-up suggestion returned with agent responses.
 
 - `label` (string) ✅ - No description
 - `type` (string) ✅ - No description
-- `payload` (string) ✅ - No description
+- `payload` (unknown) ❌ - No description
 - `body` (unknown) ❌ - No description
-- `cooperative_action` (unknown) ❌ - No description
 - `hints` (unknown) ❌ - No description
 - `intent` (unknown) ❌ - No description
+- `evidence_need_id` (unknown) ❌ - No description
 
 ---
 
@@ -7308,7 +7486,7 @@ Request to update team details
 ### TemporalState
 
 Problem temporal classification.
-Used for investigation path routing.
+Context signal only — does not drive a path fork.
 
 ---
 
@@ -7357,6 +7535,16 @@ NOTE: Outcomes are LLM-observable only (what happened this turn).
 Workflow control uses direct metrics (turns_without_progress).
 Outcomes are for analytics and prompt context, not control flow.
 
+Each member carries an LLM-facing ``description`` accessible at
+runtime via ``TurnOutcome.MEMBER.description``. The prompt block in
+``SCHEMA_INSTRUCTIONS`` is auto-generated from these descriptions so
+there is no second source of truth to drift against — adding a value
+here automatically extends the prompt.
+
+Maintainer-only notes (implementation details that should NOT reach
+the LLM) live as ``#`` comments next to the value, not in the
+description string.
+
 ---
 
 ### TurnProgress
@@ -7395,7 +7583,7 @@ Response for POST /cases/{id}/turns.
 - `agent_response` (string) ✅ - No description
 - `turn_number` (integer) ✅ - No description
 - `milestones_completed` (array) ✅ - No description
-- `case_status` (unknown) ✅ - No description
+- `case_state` (unknown) ✅ - No description
 - `progress_made` (boolean) ✅ - No description
 - `attachments_processed` (array) ❌ - No description
 - `suggested_actions` (array) ❌ - No description
@@ -7499,12 +7687,11 @@ Paginated list of uploaded files.
 
 ### UrgencyLevel
 
-Urgency classification for path routing.
+Urgency classification.
 
-Used with TemporalState to determine investigation path:
-- ONGOING + HIGH/CRITICAL -> MITIGATION
-- HISTORICAL + LOW/MEDIUM -> ROOT_CAUSE
-- Other combinations -> USER_CHOICE
+Context signal used (with TemporalState) to inform how the agent
+prioritizes mitigation vs. root-cause work within the unified
+opportunistic flow. It does not select a path — there is no path fork.
 
 ---
 
@@ -7670,49 +7857,6 @@ Agent's current understanding during INVESTIGATING phase.
 
 ---
 
-### faultmaven__api__models__SessionResponse
-
-Response model for investigation session.
-
-**Properties:**
-
-- `session_id` (string) ✅ - No description
-- `case_id` (string) ✅ - No description
-- `user_id` (string) ✅ - No description
-- `organization_id` (string) ✅ - No description
-- `status` (unknown) ✅ - No description
-- `started_at` (string) ✅ - No description
-- `ended_at` (unknown) ❌ - No description
-- `last_activity_at` (string) ✅ - No description
-- `total_duration_ms` (unknown) ❌ - No description
-- `session_goal` (unknown) ❌ - No description
-- `findings_summary` (unknown) ❌ - No description
-- `total_token_usage` (integer) ✅ - No description
-- `total_agent_executions` (integer) ✅ - No description
-- `token_budget_limit` (unknown) ❌ - No description
-- `created_at` (string) ✅ - No description
-- `updated_at` (string) ✅ - No description
-
----
-
-### faultmaven__models__api__SessionResponse
-
-Response payload for auth session operations - API spec compliance.
-
-**Properties:**
-
-- `schema_version` (string) ❌ - No description
-- `session_id` (string) ✅ - No description
-- `user_id` (unknown) ❌ - No description
-- `client_id` (unknown) ❌ - No description
-- `status` (unknown) ❌ - No description
-- `created_at` (string) ✅ - No description
-- `expires_at` (unknown) ❌ - No description
-- `metadata` (unknown) ❌ - No description
-- `session_resumed` (unknown) ❌ - No description
-
----
-
 ### ErrorResponse
 
 **Properties:**
@@ -7839,22 +7983,6 @@ Response payload for auth session operations - API spec compliance.
   }
 }
 ```
-
----
-
-### SessionResponse
-
-**Properties:**
-
-- `session_id` (string) ✅ - Unique session identifier
-- `user_id` (string) ❌ - Associated user identifier
-- `client_id` (string) ❌ - Client/device identifier for session resumption
-- `status` (string) ✅ - Current session status
-- `created_at` (string) ❌ - Session creation timestamp
-- `session_resumed` (boolean) ❌ - Indicates if this was an existing session resumed
-- `session_type` (string) ❌ - Type of session (e.g., troubleshooting)
-- `message` (string) ❌ - Status message about session creation/resumption
-- `metadata` (object) ❌ - Session metadata and context
 
 ---
 

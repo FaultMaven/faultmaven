@@ -961,7 +961,7 @@ paths:
       description: 'Update case details
 
 
-        Updates case metadata such as title, description, status, priority, and tags.
+        Updates case metadata such as title, description, state, priority, and tags.
 
         Requires edit permissions on the case.'
       operationId: update_case_api_v1_cases__case_id__put
@@ -1068,16 +1068,16 @@ paths:
         - Use status filter to further refine results'
       operationId: list_cases_api_v1_cases_get
       parameters:
-      - name: status
+      - name: state
         in: query
         required: false
         schema:
           anyOf:
-          - $ref: '#/components/schemas/CaseStatus'
+          - $ref: '#/components/schemas/CaseState'
           - type: 'null'
-          description: Filter by status
-          title: Status
-        description: Filter by status
+          description: Filter by state
+          title: State
+        description: Filter by state
       - name: limit
         in: query
         required: false
@@ -1185,7 +1185,7 @@ paths:
                 - $ref: '#/components/schemas/CaseUIResponse_Investigating'
                 - $ref: '#/components/schemas/CaseUIResponse_Resolved'
                 discriminator:
-                  propertyName: status
+                  propertyName: state
                   mapping:
                     inquiry: '#/components/schemas/CaseUIResponse_Inquiry'
                     investigating: '#/components/schemas/CaseUIResponse_Investigating'
@@ -1208,10 +1208,11 @@ paths:
         12, default 8) - Maximum words in generated title\n- `hint`: string - Optional\
         \ hint to guide title generation\n- `force`: boolean (default false) - Only\
         \ overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse\
-        \ with X-Correlation-ID header\n- 422: ErrorResponse with code INSUFFICIENT_CONTEXT\
-        \ and X-Correlation-ID header\n\n**Description:** Returns 422 when insufficient\
-        \ meaningful context; clients SHOULD keep\nexisting title unchanged and may\
-        \ retry later."
+        \ with X-Correlation-ID header\n- 422: ValidationException body \u2014 see\
+        \ ``api/exception_handlers.py``\n  and ``docs/architecture/specifications/exception-contract.md``.\n\
+        \  Raised when there is insufficient meaningful context to generate\n  a title\
+        \ (pre-LLM length gate, or LLM + fallback both fail).\n  Clients SHOULD keep\
+        \ the existing title unchanged and may retry\n  later."
       operationId: generate_case_title_api_v1_cases__case_id__title_post
       parameters:
       - name: case_id
@@ -1638,10 +1639,12 @@ paths:
         \ overwrites the evidence's\nstructural index, and appends to its extractor.attempts\
         \ history.\n\nGated by ``FAULTMAVEN_RECLASSIFY_ENABLED``. Returns 404 when\
         \ the\nflag is off so the endpoint is invisible in production by default.\n\
-        \nError responses:\n\n- ``404`` \u2014 feature disabled, case not found, or\
-        \ evidence not in case.\n- ``409`` \u2014 evidence has no ``content_ref``\
-        \ (can't re-extract).\n- ``400`` \u2014 invalid ``data_type`` string, or missing\
-        \ ``data_type``."
+        \nError responses (dispatched by ``api/exception_handlers.py``):\n\n- ``404``\
+        \ \u2014 feature disabled, case not found, or evidence not in case\n  (``NotFoundError``).\n\
+        - ``409`` \u2014 evidence has no backing file (``ConflictError`` with\n  ``conflict_reason=\"\
+        no_backing_file\"``).\n- ``403`` \u2014 caller does not own the case (``AuthorizationError``).\n\
+        - ``422`` \u2014 invalid or missing ``data_type`` (``ValidationException``).\n\
+        - ``500`` \u2014 storage/preprocessing failure (``ServiceException``)."
       operationId: reclassify_evidence_api_v1_cases__case_id__evidence__evidence_id__classification_patch
       parameters:
       - name: case_id
@@ -1950,11 +1953,17 @@ paths:
       tags:
       - cases
       summary: Get Case Reports
-      description: "Retrieve generated reports for a case.\n\nArgs:\n    case_id:\
-        \ Case identifier\n    include_history: If True, return all report versions;\
-        \ if False, only current\n    report_type: Optional filter by report type\
-        \ (resolution_summary, closure_summary, runbook)\n\nReturns:\n    List of\
-        \ CaseReport objects"
+      description: "Retrieve generated reports for a case.\n\nComposite response:\
+        \ includes both the SQL-persisted ``reports`` rows\n(resolution_summary /\
+        \ closure_summary) and a projected view of any\nconversion drafts linked to\
+        \ this case (returned as synthetic\n``report_type=runbook`` entries). The\
+        \ case Report tab uses the\nrunbook entries to drive the KB-link banner; the\
+        \ underlying runbook\ncontent lives in ``conversion_drafts`` (the KB Drafts\
+        \ editor), not\n``reports``.\n\nArgs:\n    case_id: Case identifier\n    include_history:\
+        \ If True, return all report versions; if False, only current\n    report_type:\
+        \ Optional filter by report type (resolution_summary, closure_summary, runbook)\n\
+        \nReturns:\n    List of CaseReport objects (summaries plus any case-linked\
+        \ runbook drafts)"
       operationId: get_case_reports_api_v1_cases__case_id__reports_get
       parameters:
       - name: case_id
@@ -2554,7 +2563,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2585,14 +2594,14 @@ paths:
         schema:
           type: string
           title: Case Id
-      - name: status
+      - name: state
         in: query
         required: false
         schema:
           anyOf:
-          - $ref: '#/components/schemas/SessionStatus'
+          - $ref: '#/components/schemas/SessionState'
           - type: 'null'
-          title: Status
+          title: State
       - name: limit
         in: query
         required: false
@@ -2626,7 +2635,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                  $ref: '#/components/schemas/InvestigationSessionResponse'
                 title: Response List Sessions Api V1 Cases  Case Id  Sessions Get
         '422':
           description: Validation Error
@@ -2672,7 +2681,7 @@ paths:
             application/json:
               schema:
                 anyOf:
-                - $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                - $ref: '#/components/schemas/InvestigationSessionResponse'
                 - type: 'null'
                 title: Response Get Active Session Api V1 Cases  Case Id  Sessions
                   Active Get
@@ -2725,7 +2734,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2780,7 +2789,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2830,7 +2839,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2880,7 +2889,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2939,7 +2948,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
+                $ref: '#/components/schemas/InvestigationSessionResponse'
         '422':
           description: Validation Error
           content:
@@ -4048,7 +4057,18 @@ paths:
       tags:
       - knowledge-conversion
       summary: Verify Draft
-      description: Promote draft to verified status and trigger ingestion into ChromaDB.
+      description: 'Promote draft to verified status and trigger ingestion into ChromaDB.
+
+
+        Service-layer typed exceptions (NotFoundError, ConflictError,
+
+        ValidationException) propagate to the global handlers in
+
+        api/exception_handlers.py for canonical translation to 404 / 409 /
+
+        422 respectively. The route no longer catches ValueError; see
+
+        docs/architecture/specifications/exception-contract.md.'
       operationId: verify_draft_api_v1_knowledge_conversions__conversion_id__drafts__draft_id__verify_post
       parameters:
       - name: conversion_id
@@ -5314,7 +5334,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__models__api__SessionResponse'
+                $ref: '#/components/schemas/SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -7247,7 +7267,7 @@ components:
         sessions).
 
 
-        For investigation session status, see faultmaven.models.investigation_session.SessionStatus'
+        For investigation session status, see faultmaven.models.investigation_session.SessionState'
     AuthTokenResponse:
       properties:
         access_token:
@@ -7503,9 +7523,9 @@ components:
             \ >5s response time\n                  across all US regions, started\
             \ 2 hours ago coinciding with v2.1.3 deployment\"\n        "
           default: ''
-        status:
-          $ref: '#/components/schemas/CaseStatus'
-          description: Current lifecycle status (phase or disposition)
+        state:
+          $ref: '#/components/schemas/CaseState'
+          description: Current lifecycle state (phase or disposition)
           default: inquiry
         action_history:
           items:
@@ -7521,6 +7541,20 @@ components:
           title: Closure Reason
           description: 'Why case was closed: resolved | abandoned | escalated | inquiry_only
             | duplicate | other'
+        disposition_eligibility:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Disposition Eligibility
+          description: 'Per-disposition eligibility view for the case-action dropdown.
+            Denormalized read view maintained at the single chokepoint ``CaseRepository.save()``
+            via ``derive_disposition_eligibility``. Shape: ``{''resolved'': str, ''closed'':
+            str}`` where each value is one of ``ready`` / ``needs_info`` / ``not_eligible``.
+            Frontend uses this to gate Resolve/Close affordances on the current case
+            content, not just the structural action graph. Always populated for persisted
+            cases; may be None on in-memory Case objects before the first save.'
         pending_transition:
           anyOf:
           - type: object
@@ -7528,7 +7562,7 @@ components:
           title: Pending Transition
           description: "\n        Pending status transition awaiting user confirmation\
             \ (User-Agent Handshake pattern).\n\n        Used for terminal transitions\
-            \ that require explicit user confirmation:\n        - to_status: Target\
+            \ that require explicit user confirmation:\n        - to_state: Target\
             \ status (str)\n        - reason: Why transition is being proposed (str)\n\
             \        - summary: Agent's explanation to user (str)\n        - evidence_ids:\
             \ Supporting evidence (List[str])\n        - proposed_at: When transition\
@@ -7542,10 +7576,10 @@ components:
             type: array
           - type: 'null'
           title: Last Suggestions
-          description: COOPERATIVE suggestions with intent metadata from the last
-            agent turn. Used by the intent resolver to match typed responses against
-            offered choices. Updated after each turn; only suggestions carrying intent
-            metadata are stored.
+          description: DECIDE suggestions with intent metadata from the last agent
+            turn. Used by the intent resolver to match typed responses against offered
+            choices. Updated after each turn; only suggestions carrying intent metadata
+            are stored.
         kb_context:
           anyOf:
           - items:
@@ -7604,11 +7638,6 @@ components:
           title: Message Count
           description: Total number of messages (user + agent combined)
           default: 0
-        path_selection:
-          anyOf:
-          - $ref: '#/components/schemas/PathSelection'
-          - type: 'null'
-          description: Selected investigation path (MITIGATION vs ROOT_CAUSE)
         investigation_strategy:
           $ref: '#/components/schemas/InvestigationStrategy'
           description: 'Investigation approach: ACTIVE_INCIDENT (speed) vs POST_MORTEM
@@ -7616,7 +7645,7 @@ components:
           default: post_mortem
         inquiry:
           $ref: '#/components/schemas/InquiryData'
-          description: Pre-investigation INQUIRY status data
+          description: Pre-investigation INQUIRY state data
         problem_verification:
           anyOf:
           - $ref: '#/components/schemas/ProblemVerification'
@@ -7640,6 +7669,14 @@ components:
           type: array
           title: Evidence
           description: All evidence collected during investigation
+        evidence_needs:
+          items:
+            $ref: '#/components/schemas/EvidenceNeed'
+          type: array
+          title: Evidence Needs
+          description: 'Demand-side pool: verification requirements the investigation
+            has identified. Created by the LLM at problem-statement confirmation (symptom
+            needs) and at hypothesis creation (causal needs). See evidence-needs-design.md.'
         hypotheses:
           additionalProperties:
             $ref: '#/components/schemas/Hypothesis'
@@ -7721,7 +7758,7 @@ components:
             format: date-time
           - type: 'null'
           title: Resolved At
-          description: When case reached RESOLVED status
+          description: When case reached RESOLVED state
         closed_at:
           anyOf:
           - type: string
@@ -7739,11 +7776,11 @@ components:
         Represents one complete troubleshooting investigation.'
     CaseAction:
       properties:
-        from_status:
-          $ref: '#/components/schemas/CaseStatus'
+        from_state:
+          $ref: '#/components/schemas/CaseState'
           description: Status before the action
-        to_status:
-          $ref: '#/components/schemas/CaseStatus'
+        to_state:
+          $ref: '#/components/schemas/CaseState'
           description: Status after the action
         triggered_at:
           type: string
@@ -7761,8 +7798,8 @@ components:
           description: Human-readable reason for the action
       type: object
       required:
-      - from_status
-      - to_status
+      - from_state
+      - to_state
       - triggered_by
       - reason
       title: CaseAction
@@ -7839,8 +7876,8 @@ components:
         description:
           type: string
           title: Description
-        status:
-          $ref: '#/components/schemas/CaseStatus'
+        state:
+          $ref: '#/components/schemas/CaseState'
         created_at:
           type: string
           format: date-time
@@ -7916,14 +7953,14 @@ components:
             type: string
           type: array
           title: Valid Next States
-          description: Allowed status transitions from current state for user-initiated
+          description: Allowed state transitions from current state for user-initiated
             changes
       type: object
       required:
       - case_id
       - title
       - description
-      - status
+      - state
       - created_at
       - updated_at
       - last_activity_at
@@ -8148,11 +8185,11 @@ components:
           - type: 'null'
           title: Organization Id
           description: Limit to organization's cases
-        status:
+        state:
           anyOf:
-          - $ref: '#/components/schemas/CaseStatus'
+          - $ref: '#/components/schemas/CaseState'
           - type: 'null'
-          description: Filter by status
+          description: Filter by state
         limit:
           type: integer
           maximum: 100.0
@@ -8165,15 +8202,15 @@ components:
       - query
       title: CaseSearchRequest
       description: Request to search cases.
-    CaseStatus:
+    CaseState:
       type: string
       enum:
       - inquiry
       - investigating
       - resolved
       - closed
-      title: CaseStatus
-      description: "Case lifecycle status \u2014 passive label describing a case's\
+      title: CaseState
+      description: "Case lifecycle state \u2014 passive label describing a case's\
         \ current condition.\n\nValues fall into two categories:\n- **Phases** (active\
         \ work): INQUIRY, INVESTIGATING\n- **Dispositions** (terminal resolution):\
         \ RESOLVED, CLOSED\n\nCase Actions (phase transitions and dispositions):\n\
@@ -8195,8 +8232,8 @@ components:
         description:
           type: string
           title: Description
-        status:
-          $ref: '#/components/schemas/CaseStatus'
+        state:
+          $ref: '#/components/schemas/CaseState'
         created_at:
           type: string
           format: date-time
@@ -8250,14 +8287,14 @@ components:
             type: string
           type: array
           title: Valid Next States
-          description: Allowed status transitions from current state for user-initiated
+          description: Allowed state transitions from current state for user-initiated
             changes
       type: object
       required:
       - case_id
       - title
       - description
-      - status
+      - state
       - created_at
       - updated_at
       - last_activity_at
@@ -8277,12 +8314,12 @@ components:
           type: string
           title: Case Id
           description: Case identifier
-        status:
+        state:
           type: string
           enum:
           - inquiry
           const: inquiry
-          title: Status
+          title: State
           description: Always 'inquiry' for this response type
           default: inquiry
         title:
@@ -8315,8 +8352,31 @@ components:
             type: string
           type: array
           title: Valid Next States
-          description: Allowed status transitions from current state for user-initiated
+          description: Allowed state transitions from current state for user-initiated
             changes
+        disposition_eligibility:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Disposition Eligibility
+          description: "Per-disposition eligibility for UI affordance gating. Shape:\
+            \ ``{'resolved': str, 'closed': str}`` where each value is one of:\n-\
+            \ ``ready`` \u2014 disposition is appropriate; render the affordance enabled\
+            \ with the default 'click to confirm' UX.\n- ``needs_info`` \u2014 disposition\
+            \ is allowed but the case is partial; user must ADD information (root\
+            \ cause / solution) before transitioning. UX: prompt the user for the\
+            \ missing data. Currently only the Resolve side surfaces this.\n- ``suggests_alternative``\
+            \ \u2014 disposition is allowed but the system recommends the OTHER disposition\
+            \ for this case. UX: warn and offer the alternative; if the user confirms\
+            \ anyway, proceed. Distinct from ``needs_info`` \u2014 no data is missing;\
+            \ the user is asked to RE-DIRECT, not to add. Currently only the Close\
+            \ side surfaces this (when the case has root cause + solution \u2192 resolving\
+            \ preserves attribution).\n- ``not_eligible`` \u2014 disposition is not\
+            \ available; hide the affordance entirely.\n\nDifferent from ``valid_next_states``\
+            \ \u2014 that field is the structural action graph (which edges exist),\
+            \ this field is the content-readiness layer on top."
         inquiry:
           $ref: '#/components/schemas/InquiryResponseData'
           description: Nested inquiry phase data
@@ -8342,12 +8402,12 @@ components:
           type: string
           title: Case Id
           description: Case identifier
-        status:
+        state:
           type: string
           enum:
           - investigating
           const: investigating
-          title: Status
+          title: State
           description: Always 'investigating' for this response type
           default: investigating
         title:
@@ -8380,8 +8440,39 @@ components:
             type: string
           type: array
           title: Valid Next States
-          description: Allowed status transitions from current state for user-initiated
+          description: Allowed state transitions from current state for user-initiated
             changes
+        disposition_eligibility:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Disposition Eligibility
+          description: "Per-disposition eligibility for UI affordance gating. Shape:\
+            \ ``{'resolved': str, 'closed': str}`` where each value is one of:\n-\
+            \ ``ready`` \u2014 disposition is appropriate; render the affordance enabled\
+            \ with the default 'click to confirm' UX.\n- ``needs_info`` \u2014 disposition\
+            \ is allowed but the case is partial; user must ADD information (root\
+            \ cause / solution) before transitioning. UX: prompt the user for the\
+            \ missing data. Currently only the Resolve side surfaces this.\n- ``suggests_alternative``\
+            \ \u2014 disposition is allowed but the system recommends the OTHER disposition\
+            \ for this case. UX: warn and offer the alternative; if the user confirms\
+            \ anyway, proceed. Distinct from ``needs_info`` \u2014 no data is missing;\
+            \ the user is asked to RE-DIRECT, not to add. Currently only the Close\
+            \ side surfaces this (when the case has root cause + solution \u2192 resolving\
+            \ preserves attribution).\n- ``not_eligible`` \u2014 disposition is not\
+            \ available; hide the affordance entirely.\n\nDifferent from ``valid_next_states``\
+            \ \u2014 that field is the structural action graph (which edges exist),\
+            \ this field is the content-readiness layer on top."
+        problem_statement:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Problem Statement
+          description: Confirmed problem statement carried over from INQUIRY (sourced
+            from case.description).
         working_conclusion:
           anyOf:
           - $ref: '#/components/schemas/WorkingConclusionSummary'
@@ -8413,11 +8504,6 @@ components:
           maxLength: 500
           title: Agent Status
           description: What agent is currently doing
-        investigation_strategy:
-          anyOf:
-          - $ref: '#/components/schemas/InvestigationStrategyData'
-          - type: 'null'
-          description: Investigation strategy with approach and next steps
         problem_verification:
           anyOf:
           - $ref: '#/components/schemas/ProblemVerificationData'
@@ -8451,13 +8537,13 @@ components:
           type: string
           title: Case Id
           description: Case identifier
-        status:
+        state:
           type: string
           enum:
           - resolved
           - closed
-          title: Status
-          description: 'Case terminal status: ''resolved'' (with solution) or ''closed''
+          title: State
+          description: 'Case terminal state: ''resolved'' (with solution) or ''closed''
             (without investigation)'
         title:
           type: string
@@ -8494,8 +8580,39 @@ components:
             type: string
           type: array
           title: Valid Next States
-          description: Allowed status transitions from current state for user-initiated
+          description: Allowed state transitions from current state for user-initiated
             changes
+        disposition_eligibility:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Disposition Eligibility
+          description: "Per-disposition eligibility for UI affordance gating. Shape:\
+            \ ``{'resolved': str, 'closed': str}`` where each value is one of:\n-\
+            \ ``ready`` \u2014 disposition is appropriate; render the affordance enabled\
+            \ with the default 'click to confirm' UX.\n- ``needs_info`` \u2014 disposition\
+            \ is allowed but the case is partial; user must ADD information (root\
+            \ cause / solution) before transitioning. UX: prompt the user for the\
+            \ missing data. Currently only the Resolve side surfaces this.\n- ``suggests_alternative``\
+            \ \u2014 disposition is allowed but the system recommends the OTHER disposition\
+            \ for this case. UX: warn and offer the alternative; if the user confirms\
+            \ anyway, proceed. Distinct from ``needs_info`` \u2014 no data is missing;\
+            \ the user is asked to RE-DIRECT, not to add. Currently only the Close\
+            \ side surfaces this (when the case has root cause + solution \u2192 resolving\
+            \ preserves attribution).\n- ``not_eligible`` \u2014 disposition is not\
+            \ available; hide the affordance entirely.\n\nDifferent from ``valid_next_states``\
+            \ \u2014 that field is the structural action graph (which edges exist),\
+            \ this field is the content-readiness layer on top."
+        problem_statement:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Problem Statement
+          description: Confirmed problem statement carried over from INQUIRY (sourced
+            from case.description).
         root_cause:
           $ref: '#/components/schemas/RootCauseSummary'
           description: What caused the problem
@@ -8517,7 +8634,7 @@ components:
       type: object
       required:
       - case_id
-      - status
+      - state
       - title
       - current_turn
       - created_at
@@ -8550,14 +8667,28 @@ components:
           - type: 'null'
           title: Description
           description: Updated description
-        status:
+        state:
           anyOf:
-          - $ref: '#/components/schemas/CaseStatus'
+          - $ref: '#/components/schemas/CaseState'
           - type: 'null'
-          description: Updated status (admin only)
+          description: Updated state (admin only)
       type: object
       title: CaseUpdateRequest
       description: Request to update an existing case.
+    CauseState:
+      type: string
+      enum:
+      - unknown
+      - candidates
+      - identified
+      title: CauseState
+      description: "Engine-derived knowledge state of the root cause (assessment variable).\n\
+        \nRecomputed every turn from the LLM's grounded cause-identification signal\n\
+        plus the active-hypothesis count (see investigation-flow-redesign.md R1).\n\
+        NEVER path-stripped \u2014 recording a cause the engine legitimately knows\
+        \ is a\ntruth signal, not an earned process milestone. Drives whether the\
+        \ diagnostic\nmachinery (hypothesis formulation + evidence-needs) runs this\
+        \ turn."
     Change:
       properties:
         description:
@@ -9176,14 +9307,20 @@ components:
       - causal_evidence
       - mitigation_evidence
       - solution_evidence
+      - symptom_absence_evidence
+      - causal_absence_evidence
       title: EvidenceCategory
-      description: "Evidence classification by investigation purpose.\n\nFour claim-attached\
-        \ categories. Every row is the LLM's deliberate\ndecision to record a specific\
-        \ extract as evidence for a specific\nclaim, created only during INVESTIGATING.\
-        \ Contextual data lives on\n``uploaded_files`` \u2014 no evidence row is needed\
-        \ until the agent\nextracts a claim-relevant slice. Rejection is expressed\
-        \ as the\nabsence of an evidence row; hypothesis-level refutation lives on\n\
-        ``hypothesis_evidence.stance``."
+      description: "Evidence classification by investigation purpose.\n\nSix claim-attached\
+        \ categories: the presence/absence verification\nquartet (``symptom_evidence``,\
+        \ ``causal_evidence``,\n``symptom_absence_evidence``, ``causal_absence_evidence``)\
+        \ plus two\nlegacy stage-completion categories (``mitigation_evidence``,\n\
+        ``solution_evidence``) retained from the post-010 model and slated\nfor removal\
+        \ once prompts stop emitting them. Every row is the LLM's\ndeliberate decision\
+        \ to record a specific extract as evidence for a\nspecific claim, created\
+        \ only during INVESTIGATING. Contextual data\nlives on ``uploaded_files``\
+        \ \u2014 no evidence row is needed until the\nagent extracts a claim-relevant\
+        \ slice. Rejection is expressed as the\nabsence of an evidence row; hypothesis-level\
+        \ refutation lives on\n``hypothesis_evidence.stance``."
     EvidenceDetailsResponse:
       properties:
         evidence_id:
@@ -9248,6 +9385,115 @@ components:
       - collected_by
       title: EvidenceDetailsResponse
       description: Detailed evidence information with source and hypothesis linkage.
+    EvidenceNeed:
+      properties:
+        need_id:
+          type: string
+          pattern: ^eneed_[a-f0-9]{12}$
+          title: Need Id
+          description: Unique evidence-need identifier
+        case_id:
+          type: string
+          maxLength: 36
+          minLength: 17
+          title: Case Id
+          description: Case this need belongs to
+        purpose:
+          $ref: '#/components/schemas/NeedPurpose'
+          description: 'Why this need exists: symptom_verification (motivated by the
+            problem statement) or causal_verification (motivated by one or more hypotheses).'
+        request_text:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Request Text
+          description: 'What data would fulfill this need, in a form suitable for
+            surfacing to the user as an EVIDENCE-type suggestion. Example: ''kubectl
+            get pods -n production showing current restart counts''.'
+        rationale:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Rationale
+          description: 'Why this data would advance the investigation. Used in the
+            LLM''s <evidence_needs> context block to remind the LLM why the need was
+            created. Example: ''confirms whether the pod-level OOMKill pattern is
+            still active after the memory-limit increase''.'
+        priority:
+          $ref: '#/components/schemas/NeedPriority'
+          description: LLM hint for surfacing-order on the suggestion side.
+          default: medium
+        state:
+          $ref: '#/components/schemas/NeedState'
+          description: "Lifecycle state \u2014 see NeedState."
+          default: pending
+        motivating_hypothesis_ids:
+          items:
+            type: string
+          type: array
+          title: Motivating Hypothesis Ids
+          description: "Hypothesis IDs that motivated this need's existence. Empty\
+            \ list means the need is motivated by the problem statement (symptom needs).\
+            \ Engine appends/removes IDs as hypotheses share needs (cross-hypothesis\
+            \ evaluation per evidence-needs-design.md \xA75.2) and as hypotheses are\
+            \ retired (engine auto-supersession rule)."
+        fulfilling_evidence_ids:
+          items:
+            type: string
+          type: array
+          title: Fulfilling Evidence Ids
+          description: "Evidence rows that fulfill this need. Multiple entries may\
+            \ accumulate across stages: presence evidence collected during DIAGNOSIS\
+            \ plus absence evidence collected during MITIGATION/TREATMENT. The list\
+            \ is append-only in practice \u2014 the need's state stays FULFILLED once\
+            \ fulfilled even when post-fix absence evidence is added."
+        superseded_reason:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Superseded Reason
+          description: Human-readable explanation when state=SUPERSEDED. Set by engine
+            auto-supersession ('all motivating hypotheses retired') or by LLM emission
+            ('superseded by refined problem statement'). Required when state=SUPERSEDED,
+            must be None otherwise.
+        created_at_turn:
+          type: integer
+          minimum: 0.0
+          title: Created At Turn
+          description: Turn number when the need was created.
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+          description: Wall-clock creation time.
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+          description: Wall-clock last-update time.
+      type: object
+      required:
+      - case_id
+      - purpose
+      - request_text
+      - rationale
+      - created_at_turn
+      title: EvidenceNeed
+      description: "A verification requirement on a case.\n\nEach need represents\
+        \ \"data that would advance the investigation.\"\nNeeds live in a flat pool\
+        \ on the case \u2014 not anchored to specific\nhypotheses. ``motivating_hypothesis_ids``\
+        \ records *why* the need\nexists (which hypotheses motivated creating it)\
+        \ for context and\nfor the engine's retirement-supersession rule, but is not\
+        \ a hard\nownership association.\n\nLifecycle (see evidence-needs-design.md\
+        \ \xA77):\n\n- Created by the LLM via ``EvidenceNeedUpdate`` emissions at\n\
+        \  problem-statement confirmation (symptom needs) and at hypothesis\n  creation\
+        \ (causal needs).\n- Updated by the LLM as evidence arrives (state, fulfilling\n\
+        \  evidence linkage, motivating hypothesis IDs).\n- Auto-superseded by the\
+        \ engine on hypothesis retirement when the\n  motivating list becomes empty\
+        \ AND purpose is CAUSAL_VERIFICATION\n  AND state is not FULFILLED. Symptom\
+        \ needs (empty motivating\n  list by design) are exempt \u2014 they're motivated\
+        \ by the problem\n  statement, not by a hypothesis."
     EvidenceSourceType:
       type: string
       enum:
@@ -9434,9 +9680,9 @@ components:
         category:
           $ref: '#/components/schemas/HypothesisCategory'
           description: Hypothesis category (for anchoring detection)
-        status:
-          $ref: '#/components/schemas/HypothesisStatus'
-          description: Current hypothesis status
+        state:
+          $ref: '#/components/schemas/HypothesisState'
+          description: Current hypothesis state
           default: captured
         likelihood:
           type: number
@@ -9501,8 +9747,8 @@ components:
           - type: 'null'
           title: Refutation Reason
           description: "Evidence or reasoning that disproves the hypothesis. REQUIRED\
-            \ when status=REFUTED (enforced via model validator). Not used for other\
-            \ statuses. status=REFUTED and refutation_reason travel together \u2014\
+            \ when state=REFUTED (enforced via model validator). Not used for other\
+            \ statuses. state=REFUTED and refutation_reason travel together \u2014\
             \ an update carrying one without the other is rejected at the orchestration\
             \ layer."
         rationale:
@@ -9622,7 +9868,7 @@ components:
       - forced_alternative
       title: HypothesisGenerationMode
       description: How hypothesis was generated
-    HypothesisStatus:
+    HypothesisState:
       type: string
       enum:
       - captured
@@ -9631,8 +9877,8 @@ components:
       - refuted
       - inconclusive
       - retired
-      title: HypothesisStatus
-      description: Hypothesis lifecycle status
+      title: HypothesisState
+      description: Hypothesis lifecycle state
     HypothesisSummary:
       properties:
         hypothesis_id:
@@ -9650,8 +9896,8 @@ components:
           minimum: 0.0
           title: Likelihood
           description: Likelihood score (0.0-1.0)
-        status:
-          $ref: '#/components/schemas/HypothesisStatus'
+        state:
+          $ref: '#/components/schemas/HypothesisState'
           description: 'Status: CAPTURED | ACTIVE | VALIDATED | REFUTED | INCONCLUSIVE
             | RETIRED'
         evidence_count:
@@ -9672,7 +9918,7 @@ components:
       - hypothesis_id
       - text
       - likelihood
-      - status
+      - state
       - evidence_count
       title: HypothesisSummary
       description: Summary of a hypothesis for INVESTIGATING phase UI.
@@ -9739,6 +9985,17 @@ components:
           - type: 'null'
           title: Problem Statement Confirmed At
           description: When user confirmed the problem statement
+        handshake_deferred_at_turn:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Handshake Deferred At Turn
+          description: Turn number on which the same-turn-confirmation guard fired.
+            When current_turn == this+1, context_builder injects HANDSHAKE_DEFERRED
+            (re-present + ask) instead of NOT_YET_CONFIRMED, and the engine deterministically
+            emits confirmation suggestions. Self-clears by becoming stale on subsequent
+            turns.
         decided_to_investigate:
           type: boolean
           title: Decided To Investigate
@@ -9755,7 +10012,7 @@ components:
           type: integer
           minimum: 0.0
           title: Inquiry Turns
-          description: Number of turns spent in INQUIRY status
+          description: Number of turns spent in INQUIRY state
           default: 0
         knowledge_matches:
           items:
@@ -9775,7 +10032,7 @@ components:
           description: Early urgency assessment
       type: object
       title: InquiryData
-      description: 'Pre-investigation INQUIRY status data.
+      description: 'Pre-investigation INQUIRY state data.
 
         Captures early problem exploration before formal investigation commitment.'
     InquiryResponseData:
@@ -9835,34 +10092,15 @@ components:
 
         Calculated from recent progress patterns (evidence collection, hypothesis
         updates).'
-    InvestigationPath:
-      type: string
-      enum:
-      - mitigation_first
-      - root_cause
-      - user_choice
-      title: InvestigationPath
-      description: "Investigation routing strategy (2-stage model with mitigation\
-        \ detour).\n\nIMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state\
-        \ x urgency_level).\nLLM provides inputs (temporal_state, urgency_level) during\
-        \ DIAGNOSIS.\nSystem calls determine_investigation_path() to select path deterministically.\n\
-        \nTwo paths through the 2-stage model:\n- MITIGATION_FIRST: DIAGNOSIS \u2192\
-        \ MITIGATION (detour) \u2192 DIAGNOSIS \u2192 TREATMENT\n- ROOT_CAUSE: DIAGNOSIS\
-        \ \u2192 TREATMENT"
     InvestigationProgress:
       properties:
-        mitigation_accepted:
-          type: boolean
-          title: Mitigation Accepted
-          description: "User complied with proposed temp fix (inferred from submission).\
-            \ Triggers DIAGNOSIS \u2192 MITIGATION transition."
-          default: false
-        mitigation_verified:
-          type: boolean
-          title: Mitigation Verified
-          description: "User confirmed mitigation worked. Triggers MITIGATION \u2192\
-            \ DIAGNOSIS return for RCA."
-          default: false
+        mitigation:
+          anyOf:
+          - $ref: '#/components/schemas/MitigationRecord'
+          - type: 'null'
+          description: Mitigation insert record (redesign R2). Materialized by the
+            engine from the LLM's mitigation accept/verify gate signals plus the workaround
+            ProposedAction. Replaces the legacy path-coupled mitigation gates.
         solution_accepted:
           type: boolean
           title: Solution Accepted
@@ -9882,17 +10120,31 @@ components:
           description: Symptom confirmed with concrete evidence (logs, metrics, user
             reports)
           default: false
-        root_cause_identified:
-          type: boolean
-          title: Root Cause Identified
-          description: Root cause determined (directly or via hypothesis validation)
-          default: false
         solution_proposed:
           type: boolean
           title: Solution Proposed
           description: Set programmatically when ProposedAction with action_type=SOLUTION
             is created. Not directly set by LLM.
           default: false
+        cause_state:
+          $ref: '#/components/schemas/CauseState'
+          description: Engine-derived knowledge state of the root cause (UNKNOWN |
+            CANDIDATES | IDENTIFIED). Replaces the boolean root_cause_identified.
+            IDENTIFIED is the grounded cause-known signal; CANDIDATES is derived from
+            >=2 ACTIVE hypotheses. Drives whether the diagnostic machinery runs. Recomputed
+            each turn by the engine; never path-stripped.
+          default: unknown
+        solution_state:
+          $ref: '#/components/schemas/SolutionState'
+          description: Knowledge state of the fix (UNKNOWN | SELECTED). CANDIDATES
+            (multi-solution deliberation) is reserved for a follow-on and not produced
+            this round.
+          default: unknown
+        solution_feasible:
+          $ref: '#/components/schemas/SolutionFeasible'
+          description: Whether the SELECTED solution can be applied this session (NOW
+            | DEFERRED). DEFERRED routes to CLOSE-with-documented-solution.
+          default: now
         root_cause_likelihood:
           type: number
           maximum: 1.0
@@ -9981,6 +10233,85 @@ components:
       description: "Progress metrics for INVESTIGATING phase.\n\nPurely descriptive\
         \ \u2014 all backward-looking facts, no speculative\nforward-looking predictions.\
         \ The frontend derives \"what's next\"\nfrom current_stage if needed."
+    InvestigationSessionResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        case_id:
+          type: string
+          title: Case Id
+        user_id:
+          type: string
+          title: User Id
+        organization_id:
+          type: string
+          title: Organization Id
+        state:
+          $ref: '#/components/schemas/SessionState'
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ended At
+        last_activity_at:
+          type: string
+          format: date-time
+          title: Last Activity At
+        total_duration_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Duration Ms
+        session_goal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Goal
+        findings_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Findings Summary
+        total_token_usage:
+          type: integer
+          title: Total Token Usage
+        total_agent_executions:
+          type: integer
+          title: Total Agent Executions
+        token_budget_limit:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Token Budget Limit
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - session_id
+      - case_id
+      - user_id
+      - organization_id
+      - state
+      - started_at
+      - last_activity_at
+      - total_token_usage
+      - total_agent_executions
+      - created_at
+      - updated_at
+      title: InvestigationSessionResponse
+      description: Response model for investigation session.
     InvestigationStage:
       type: string
       enum:
@@ -9988,18 +10319,14 @@ components:
       - mitigation
       - treatment
       title: InvestigationStage
-      description: "Investigation stage within the Investigating Phase.\n\n2-stage\
-        \ model with mitigation detour:\n- DIAGNOSIS: Understand, diagnose, propose\
-        \ actions (core stage)\n- TREATMENT: Verify permanent fix, resolve case (core\
-        \ stage)\n- MITIGATION: Apply and verify temporary fix (optional detour)\n\
-        \nDIAGNOSIS and TREATMENT are the two core stages every investigation\npasses\
-        \ through. MITIGATION is an optional detour that temporarily\nnarrows focus\
-        \ to \"stop the bleeding\" before returning to DIAGNOSIS.\n\nComputed from\
-        \ stage-gate milestones. Stage transitions are\ninference-based \u2014 user\
-        \ compliance with proposed actions triggers\ntransitions via compliance detection.\
-        \ The stage determines which\nprompt template the LLM receives.\n\nInvestigation\
-        \ Paths:\n- ROOT_CAUSE: DIAGNOSIS \u2192 TREATMENT\n- MITIGATION_FIRST: DIAGNOSIS\
-        \ \u2192 MITIGATION (detour) \u2192 DIAGNOSIS \u2192 TREATMENT"
+      description: "Investigation stage within the Investigating Phase.\n\nThese three\
+        \ stages are pure DERIVED DISPLAY labels in the unified\nopportunistic flow.\
+        \ They are re-derived from the action-compliance\ngates (see ``InvestigationProgress.current_stage``);\
+        \ they do NOT drive\nprompt dispatch and there is NO path fork or prospective\
+        \ routing.\n\n- DIAGNOSIS \u2192 \"Investigating\" (default view)\n- MITIGATION\
+        \ \u2192 \"Mitigating\" (an optional inserted sub-activity)\n- TREATMENT \u2192\
+        \ \"Resolving\"\n\nMITIGATION is not a separate path \u2014 it is an optional\
+        \ \"stop the\nbleeding\" insert that surfaces while the investigation continues."
     InvestigationStrategy:
       type: string
       enum:
@@ -10009,27 +10336,6 @@ components:
       description: 'Investigation approach mode.
 
         Affects decision thresholds, workflow behavior, and agent prompts.'
-    InvestigationStrategyData:
-      properties:
-        approach:
-          anyOf:
-          - type: string
-            maxLength: 500
-          - type: 'null'
-          title: Approach
-          description: Investigation approach description (e.g., 'Speed priority -
-            rapid mitigation')
-        next_steps:
-          anyOf:
-          - items:
-              type: string
-            type: array
-          - type: 'null'
-          title: Next Steps
-          description: Recommended next steps in investigation
-      type: object
-      title: InvestigationStrategyData
-      description: Investigation strategy details for INVESTIGATING phase.
     JournalEntry:
       properties:
         turn:
@@ -10711,6 +11017,89 @@ components:
       - redis_operation_time_ms
       title: MessageRetrievalDebugInfo
       description: Debug information for message retrieval operations.
+    MitigationRecord:
+      properties:
+        proposed_at_turn:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Proposed At Turn
+          description: Turn a workaround mitigation was first proposed
+        accepted:
+          type: boolean
+          title: Accepted
+          description: User complied with the proposed mitigation
+          default: false
+        verified:
+          type: boolean
+          title: Verified
+          description: User confirmed the mitigation stabilized the situation
+          default: false
+        completed_at_turn:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Completed At Turn
+          description: Turn `verified` flipped True (Gate-3-equivalent boundary)
+      type: object
+      title: MitigationRecord
+      description: "A single forward-only mitigation (the inserted \"stop the bleeding\"\
+        \ move).\n\nReplaces the legacy path-coupled mitigation gates\n(redesign R2).\
+        \ The engine materializes this record from the LLM's accept/verify\ngate signals\
+        \ plus the workaround ProposedAction:\n- ``proposed_at_turn`` is set when\
+        \ a ``solution_type=workaround`` action is created.\n- ``accepted`` / ``verified``\
+        \ mirror the LLM gate signals (compliance detection).\n- ``completed_at_turn``\
+        \ is set the turn ``verified`` flips True (the boundary for\n  up-weighting\
+        \ pre-mitigation evidence in any later RCA).\n\nSingle record per investigation\
+        \ for now (redesign \xA73.2.1); the flow stays open\nto user-led action so\
+        \ a non-mitigating insert is never a dead-end."
+    NeedPriority:
+      type: string
+      enum:
+      - high
+      - medium
+      - low
+      title: NeedPriority
+      description: 'Priority hint for surfacing needs as EVIDENCE-type suggestions.
+
+
+        High-priority unfulfilled needs are surfaced first; medium and low
+
+        are deferred until higher priorities are addressed. Priority is an
+
+        LLM hint, not a hard ordering.'
+    NeedPurpose:
+      type: string
+      enum:
+      - symptom_verification
+      - causal_verification
+      title: NeedPurpose
+      description: "Why this need was created \u2014 maps to evidence categories.\n\
+        \nA symptom_verification need produces SYMPTOM_EVIDENCE (presence)\ninitially\
+        \ and SYMPTOM_ABSENCE_EVIDENCE (absence) on re-check after\nmitigation/solution.\
+        \ A causal_verification need produces\nCAUSAL_EVIDENCE (presence) initially\
+        \ and CAUSAL_ABSENCE_EVIDENCE\n(absence) on re-check after solution.\n\nThe\
+        \ same need produces multiple evidence rows of different\ncategories across\
+        \ the case's lifetime; the need's state stays\nFULFILLED once fulfilled \u2014\
+        \ re-check evidence is appended via\n``fulfilling_evidence_ids``, it does\
+        \ not reset the state."
+    NeedState:
+      type: string
+      enum:
+      - pending
+      - partially_met
+      - fulfilled
+      - superseded
+      title: NeedState
+      description: "Lifecycle states of an evidence need.\n\nPENDING        \u2014\
+        \ Need identified, no evidence yet.\nPARTIALLY_MET  \u2014 Some evidence collected\
+        \ but insufficient.\nFULFILLED      \u2014 Sufficient evidence collected (terminal-positive).\n\
+        SUPERSEDED     \u2014 No longer relevant (terminal-negative). Either all\n\
+        \                 motivating hypotheses retired (engine rule) or LLM\n   \
+        \              judged irrelevant (LLM update emission).\n\nFULFILLED and SUPERSEDED\
+        \ are terminal \u2014 a need cannot resurrect from\nSUPERSEDED. If the LLM\
+        \ later concludes the underlying data is\nrelevant again, it must create a\
+        \ new need."
     OAuthConfigResponse:
       properties:
         authorize_url:
@@ -10897,63 +11286,6 @@ components:
       type: object
       title: OrganizationUpdateRequest
       description: Request to update organization details
-    PathSelection:
-      properties:
-        path:
-          $ref: '#/components/schemas/InvestigationPath'
-          description: Selected investigation path (system-determined from matrix)
-        auto_selected:
-          type: boolean
-          title: Auto Selected
-          description: True if system auto-selected, False if user chose
-        rationale:
-          type: string
-          maxLength: 500
-          title: Rationale
-          description: Why this path was selected
-        alternate_path:
-          anyOf:
-          - $ref: '#/components/schemas/InvestigationPath'
-          - type: 'null'
-          description: Alternative path user could have chosen (if auto-selected)
-        selected_at:
-          type: string
-          format: date-time
-          title: Selected At
-          description: When path was selected
-        selected_by:
-          type: string
-          title: Selected By
-          description: 'Who selected: ''system'' for auto, or user_id for manual'
-          default: system
-        temporal_state:
-          anyOf:
-          - $ref: '#/components/schemas/TemporalState'
-          - type: 'null'
-          description: Temporal state used in decision
-        urgency_level:
-          anyOf:
-          - $ref: '#/components/schemas/UrgencyLevel'
-          - type: 'null'
-          description: Urgency level used in decision
-      type: object
-      required:
-      - path
-      - auto_selected
-      - rationale
-      title: PathSelection
-      description: 'Path selection details.
-
-        Records how investigation path was chosen.
-
-
-        IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
-
-        LLM provides inputs (temporal_state, urgency_level) during verification.
-
-        System calls determine_investigation_path() to select path deterministically.
-
-        LLM does NOT choose the path directly!'
     PermissionCheckRequest:
       properties:
         permission:
@@ -11158,12 +11490,11 @@ components:
         rca_infeasible:
           type: boolean
           title: Rca Infeasible
-          description: "Advisory signal: root cause analysis is infeasible for this\
-            \ problem. Set by the LLM during verification when the problem involves\
-            \ uncontrollable external dependencies, deprecated/EOL systems, or known\
-            \ intractable conditions where mitigation is the accepted strategy. Does\
-            \ NOT affect path selection \u2014 influences post-mitigation agent behavior\
-            \ only."
+          description: 'Advisory signal: root cause analysis is infeasible for this
+            problem. Set by the LLM during verification when the problem involves
+            uncontrollable external dependencies, deprecated/EOL systems, or known
+            intractable conditions where mitigation is the accepted strategy. Influences
+            post-mitigation agent behavior only.'
           default: false
         rca_infeasible_rationale:
           anyOf:
@@ -11317,11 +11648,22 @@ components:
           type: integer
           title: Proposed In Turn
           description: Turn number when this action was proposed
-        status:
+        state:
           type: string
-          title: Status
+          title: State
           description: pending | accepted | rejected | superseded
           default: pending
+        downgrade_reason:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Downgrade Reason
+          description: "If the engine downgraded action_type from the LLM's intent\
+            \ (e.g. MITIGATION \u2192 DIAGNOSTIC because no SYMPTOM_EVIDENCE existed\
+            \ yet), this carries the explanation. Rendered to the LLM via context_builder\
+            \ on the next turn so the agent can recover (gather the missing evidence\
+            \ and re-propose). None when no downgrade occurred."
       type: object
       required:
       - case_id
@@ -11978,6 +12320,77 @@ components:
       type: object
       title: SessionCreateRequest
       description: Request model for creating investigation session.
+    SessionResponse:
+      type: object
+      required:
+      - session_id
+      - status
+      properties:
+        session_id:
+          type: string
+          description: Unique session identifier
+        user_id:
+          type: string
+          description: Associated user identifier
+          nullable: true
+        client_id:
+          type: string
+          description: Client/device identifier for session resumption
+          nullable: true
+        status:
+          type: string
+          enum:
+          - active
+          - idle
+          - expired
+          description: Current session status
+        created_at:
+          type: string
+          format: date-time
+          description: Session creation timestamp
+        session_resumed:
+          type: boolean
+          description: Indicates if this was an existing session resumed
+          nullable: true
+        session_type:
+          type: string
+          description: Type of session (e.g., troubleshooting)
+        message:
+          type: string
+          description: Status message about session creation/resumption
+        metadata:
+          type: object
+          description: Session metadata and context
+      examples:
+        new_session:
+          summary: New Session Created
+          value:
+            session_id: session_abc123
+            user_id: user_123
+            client_id: browser-client-abc123
+            status: active
+            created_at: '2025-01-15T10:00:00Z'
+            session_resumed: false
+            session_type: troubleshooting
+            message: Session created successfully
+            metadata:
+              environment: production
+              team: platform-team
+        resumed_session:
+          summary: Existing Session Resumed
+          value:
+            session_id: session_existing_456
+            user_id: user_123
+            client_id: browser-client-abc123
+            status: active
+            created_at: '2025-01-15T09:30:00Z'
+            session_resumed: true
+            session_type: troubleshooting
+            message: Session resumed successfully
+            metadata:
+              environment: production
+              team: platform-team
+              investigations_count: 2
     SessionRestoreRequest:
       properties:
         restore_point:
@@ -11999,14 +12412,14 @@ components:
       - restore_point
       title: SessionRestoreRequest
       description: Request model for session restoration.
-    SessionStatus:
+    SessionState:
       type: string
       enum:
       - active
       - paused
       - completed
       - abandoned
-      title: SessionStatus
+      title: SessionState
       description: 'Investigation session status.
 
 
@@ -12224,6 +12637,26 @@ components:
       - title
       title: Solution
       description: Proposed or applied solution/mitigation.
+    SolutionFeasible:
+      type: string
+      enum:
+      - now
+      - deferred
+      title: SolutionFeasible
+      description: "Whether the SELECTED solution can be applied within this session.\n\
+        \nLLM-settable. DEFERRED routes to CLOSE-with-documented-solution (redesign\
+        \ \xA76 Q2)."
+    SolutionState:
+      type: string
+      enum:
+      - unknown
+      - candidates
+      - selected
+      title: SolutionState
+      description: "Engine-derived knowledge state of the fix (assessment variable).\n\
+        \nUNKNOWN | SELECTED only this round. CANDIDATES (multi-solution deliberation,\n\
+        redesign \xA76) is reserved for the follow-on that reuses the hypothesis machinery\n\
+        and is intentionally not produced yet."
     SolutionSummary:
       properties:
         description:
@@ -12288,18 +12721,15 @@ components:
           type: string
           title: Type
         payload:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Payload
         body:
           anyOf:
           - type: string
           - type: 'null'
           title: Body
-        cooperative_action:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Cooperative Action
         hints:
           anyOf:
           - items:
@@ -12312,11 +12742,15 @@ components:
           - type: object
           - type: 'null'
           title: Intent
+        evidence_need_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Evidence Need Id
       type: object
       required:
       - label
       - type
-      - payload
       title: SuggestedActionResponse
       description: A follow-up suggestion returned with agent responses.
     TeamCreateRequest:
@@ -12446,9 +12880,8 @@ components:
       - ongoing
       - historical
       title: TemporalState
-      description: 'Problem temporal classification.
-
-        Used for investigation path routing.'
+      description: "Problem temporal classification.\nContext signal only \u2014 does\
+        \ not drive a path fork."
     TemporalStateData:
       properties:
         started_at:
@@ -12528,14 +12961,15 @@ components:
       - conversation
       - other
       title: TurnOutcome
-      description: 'Turn outcome classification.
-
-
-        NOTE: Outcomes are LLM-observable only (what happened this turn).
-
-        Workflow control uses direct metrics (turns_without_progress).
-
-        Outcomes are for analytics and prompt context, not control flow.'
+      description: "Turn outcome classification.\n\nNOTE: Outcomes are LLM-observable\
+        \ only (what happened this turn).\nWorkflow control uses direct metrics (turns_without_progress).\n\
+        Outcomes are for analytics and prompt context, not control flow.\n\nEach member\
+        \ carries an LLM-facing ``description`` accessible at\nruntime via ``TurnOutcome.MEMBER.description``.\
+        \ The prompt block in\n``SCHEMA_INSTRUCTIONS`` is auto-generated from these\
+        \ descriptions so\nthere is no second source of truth to drift against \u2014\
+        \ adding a value\nhere automatically extends the prompt.\n\nMaintainer-only\
+        \ notes (implementation details that should NOT reach\nthe LLM) live as ``#``\
+        \ comments next to the value, not in the\ndescription string."
     TurnProgress:
       properties:
         turn_number:
@@ -12660,8 +13094,8 @@ components:
             type: string
           type: array
           title: Milestones Completed
-        case_status:
-          $ref: '#/components/schemas/CaseStatus'
+        case_state:
+          $ref: '#/components/schemas/CaseState'
         progress_made:
           type: boolean
           title: Progress Made
@@ -12686,7 +13120,7 @@ components:
       - agent_response
       - turn_number
       - milestones_completed
-      - case_status
+      - case_state
       - progress_made
       title: TurnResponse
       description: Response for POST /cases/{id}/turns.
@@ -12982,16 +13416,10 @@ components:
       - low
       - unknown
       title: UrgencyLevel
-      description: 'Urgency classification for path routing.
-
-
-        Used with TemporalState to determine investigation path:
-
-        - ONGOING + HIGH/CRITICAL -> MITIGATION
-
-        - HISTORICAL + LOW/MEDIUM -> ROOT_CAUSE
-
-        - Other combinations -> USER_CHOICE'
+      description: "Urgency classification.\n\nContext signal used (with TemporalState)\
+        \ to inform how the agent\nprioritizes mitigation vs. root-cause work within\
+        \ the unified\nopportunistic flow. It does not select a path \u2014 there\
+        \ is no path fork."
     UserDetailResponse:
       properties:
         user_id:
@@ -13329,134 +13757,6 @@ components:
       - last_updated
       title: WorkingConclusionSummary
       description: Agent's current understanding during INVESTIGATING phase.
-    faultmaven__api__models__SessionResponse:
-      properties:
-        session_id:
-          type: string
-          title: Session Id
-        case_id:
-          type: string
-          title: Case Id
-        user_id:
-          type: string
-          title: User Id
-        organization_id:
-          type: string
-          title: Organization Id
-        status:
-          $ref: '#/components/schemas/SessionStatus'
-        started_at:
-          type: string
-          format: date-time
-          title: Started At
-        ended_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Ended At
-        last_activity_at:
-          type: string
-          format: date-time
-          title: Last Activity At
-        total_duration_ms:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Total Duration Ms
-        session_goal:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Session Goal
-        findings_summary:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Findings Summary
-        total_token_usage:
-          type: integer
-          title: Total Token Usage
-        total_agent_executions:
-          type: integer
-          title: Total Agent Executions
-        token_budget_limit:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Token Budget Limit
-        created_at:
-          type: string
-          format: date-time
-          title: Created At
-        updated_at:
-          type: string
-          format: date-time
-          title: Updated At
-      type: object
-      required:
-      - session_id
-      - case_id
-      - user_id
-      - organization_id
-      - status
-      - started_at
-      - last_activity_at
-      - total_token_usage
-      - total_agent_executions
-      - created_at
-      - updated_at
-      title: SessionResponse
-      description: Response model for investigation session.
-    faultmaven__models__api__SessionResponse:
-      properties:
-        schema_version:
-          type: string
-          enum:
-          - 3.1.0
-          const: 3.1.0
-          title: Schema Version
-          default: 3.1.0
-        session_id:
-          type: string
-          title: Session Id
-        user_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: User Id
-        client_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Client Id
-        status:
-          $ref: '#/components/schemas/AuthSessionStatus'
-          default: active
-        created_at:
-          type: string
-          title: Created At
-        expires_at:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Expires At
-        metadata:
-          anyOf:
-          - type: object
-          - type: 'null'
-          title: Metadata
-        session_resumed:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Session Resumed
-      type: object
-      required:
-      - session_id
-      - created_at
-      title: SessionResponse
-      description: Response payload for auth session operations - API spec compliance.
     ErrorResponse:
       type: object
       required:
@@ -13680,77 +13980,6 @@ components:
           errors_found: 23
           insights_extracted: 8
           processing_time_ms: 2340
-    SessionResponse:
-      type: object
-      required:
-      - session_id
-      - status
-      properties:
-        session_id:
-          type: string
-          description: Unique session identifier
-        user_id:
-          type: string
-          description: Associated user identifier
-          nullable: true
-        client_id:
-          type: string
-          description: Client/device identifier for session resumption
-          nullable: true
-        status:
-          type: string
-          enum:
-          - active
-          - idle
-          - expired
-          description: Current session status
-        created_at:
-          type: string
-          format: date-time
-          description: Session creation timestamp
-        session_resumed:
-          type: boolean
-          description: Indicates if this was an existing session resumed
-          nullable: true
-        session_type:
-          type: string
-          description: Type of session (e.g., troubleshooting)
-        message:
-          type: string
-          description: Status message about session creation/resumption
-        metadata:
-          type: object
-          description: Session metadata and context
-      examples:
-        new_session:
-          summary: New Session Created
-          value:
-            session_id: session_abc123
-            user_id: user_123
-            client_id: browser-client-abc123
-            status: active
-            created_at: '2025-01-15T10:00:00Z'
-            session_resumed: false
-            session_type: troubleshooting
-            message: Session created successfully
-            metadata:
-              environment: production
-              team: platform-team
-        resumed_session:
-          summary: Existing Session Resumed
-          value:
-            session_id: session_existing_456
-            user_id: user_123
-            client_id: browser-client-abc123
-            status: active
-            created_at: '2025-01-15T09:30:00Z'
-            session_resumed: true
-            session_type: troubleshooting
-            message: Session resumed successfully
-            metadata:
-              environment: production
-              team: platform-team
-              investigations_count: 2
   securitySchemes:
     ApiKeyAuth:
       type: apiKey

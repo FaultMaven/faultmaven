@@ -49,7 +49,7 @@ The system presents close-ended choices to users at critical decision points: in
 
 ### P1: Click-first for state changes
 
-COOPERATIVE suggestions with intent metadata are the primary path for all close-ended decisions. Natural, descriptive labels — not mechanical "Yes/No" — make clicking the obvious choice.
+DECIDE suggestions with intent metadata are the primary path for all close-ended decisions. Natural, descriptive labels — not mechanical "Yes/No" — make clicking the obvious choice.
 
 ### P2: Follow the user
 
@@ -61,7 +61,7 @@ When the last turn offered choices with intent metadata and the user types a sho
 
 ### P4: Cheap and fast classifier, only when needed
 
-The classifier runs only when: (a) the last turn had COOPERATIVE suggestions with intent metadata, (b) the user typed text instead of clicking, and (c) the message is short (under 200 characters). Long messages are almost always conversational. The classifier uses `CLASSIFIER_PROVIDER` (Groq/Fireworks — fast, cheap).
+The classifier runs only when: (a) the last turn had DECIDE suggestions with intent metadata, (b) the user typed text instead of clicking, and (c) the message is short (under 200 characters). Long messages are almost always conversational. The classifier uses `CLASSIFIER_PROVIDER` (Groq/Fireworks — fast, cheap).
 
 ### P5: Default to conversation
 
@@ -198,7 +198,7 @@ Add a `last_suggestions` field to the `Case` model:
 ```python
 last_suggestions: Optional[List[Dict[str, Any]]] = Field(
     default=None,
-    description="COOPERATIVE suggestions with intent metadata from the last agent turn. "
+    description="DECIDE suggestions with intent metadata from the last agent turn. "
     "Used by the intent resolver to match typed responses to offered choices. "
     "Updated after each turn; only suggestions with intent metadata are stored.",
 )

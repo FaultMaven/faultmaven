@@ -121,7 +121,7 @@ Be SPECIFIC: cite actual values from the structural index (IPs, hostnames, entit
 """
 
 # Follow-up suggestions block — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE.
-# Extracted to keep the COOPERATIVE/EVIDENCE/FREE_SPEECH definitions identical
+# Extracted to keep the DECIDE/RUN/EVIDENCE/FREE_SPEECH definitions identical
 # across stages (drift here previously caused subtle inconsistencies in suggestion
 # shape). The rules are GENERATIVE, not classificatory: the model holds an intent
 # before it drafts any text, so the type decision keys off the intent — three
@@ -129,36 +129,34 @@ Be SPECIFIC: cite actual values from the structural index (IPs, hostnames, entit
 # executes a composed command → command_copy), GET CONTENT (user supplies data →
 # EVIDENCE or words → FREE_SPEECH) — not off the surface form of drafted text.
 # Classifier-style rules invited mistyping whenever the draft "looked clickable"
-# (e.g. fully-worded questions only the user can answer). The DECIDE/RUN lanes
-# share the COOPERATIVE wire type; cooperative_action is the encoding
-# discriminator (promoting RUN to its own action_type would be a cross-repo
-# schema/frontend change with no behavioral gain). Failure shapes are
+# (e.g. fully-worded questions only the user can answer). The four wire types
+# ARE the intents — encoding follows from type (DECIDE clickable-sends, RUN
+# clickable-copies, EVIDENCE/FREE_SPEECH informational). Failure shapes are
 # regression-pinned in
 # tests/unit/core/investigation/test_follow_up_type_discrimination.py.
 _FOLLOW_UP_SUGGESTIONS_BLOCK = """\
 FOLLOW-UP SUGGESTIONS (suggested_follow_ups):
 Generate 2-4 suggestions that move the user toward detecting, diagnosing, and
-resolving the issue. Start from what YOU WANT out of the next exchange — three
-intents, each with its own type and encoding:
+resolving the issue. Start from what YOU WANT out of the next exchange — the
+TYPE names your intent, and the encoding follows from it:
 
-1. DECIDE — you expect a decision or answer FROM the user, and you pre-compose it
-   for them: a confirmation, a pick among directions you proposed, or a ready-made
-   next request to adopt. You write the exact message the user would send as the
-   payload; one click submits it — the user decides, nothing to add.
-   → COOPERATIVE, cooperative_action="query_submit"  (clickable — click sends)
+1. DECIDE (clickable — click sends) — you expect a decision or answer FROM the
+   user, and you pre-compose it for them: a confirmation, a pick among directions
+   you proposed, or a ready-made next request to adopt. You write the exact
+   message the user would send as the payload; one click submits it — the user
+   decides, nothing to add.
 
-2. RUN — you want the user to execute an exact command you composed in their
-   environment. The payload is the command itself; a click copies it for the user
-   to paste and run externally. <placeholders> are fine — the user edits them in
-   their terminal. Expecting the output back? That return trip is a separate
-   EVIDENCE ask (intent 3), not part of this suggestion.
-   → COOPERATIVE, cooperative_action="command_copy"  (pasteable — click copies)
+2. RUN (clickable — click copies) — you want the user to execute an exact command
+   you composed in their environment. The payload is the command itself; a click
+   copies it for the user to paste and run externally. <placeholders> are fine —
+   the user edits them in their terminal. Expecting the output back? That return
+   trip is a separate EVIDENCE ask, not part of this suggestion.
 
-3. GET CONTENT — you cannot proceed without data or words that only the user can
-   supply. Informational, never clickable; what you need picks the type:
+3. GET CONTENT (informational — never clickable) — you cannot proceed without
+   data or words that only the user can supply. What you need picks the type:
    - data from their ENVIRONMENT (logs, configs, dashboards, command output — at
      any stage, from verifying a symptom to checking a fix's outcome; if one exact
-     command would fetch it, prefer intent 2) → EVIDENCE
+     command would fetch it, prefer RUN) → EVIDENCE
    - their OWN WORDS (knowledge, judgment, observations, their next question)
      → FREE_SPEECH
    NEVER cast a content-ask as a clickable payload — the click submits an empty
@@ -168,8 +166,8 @@ intents, each with its own type and encoding:
      BAD: payload "I ran it — here's the result"    (their data is missing)
 
 Litmus: beyond the click (send or copy), must the user supply any CONTENT — data
-or words — for the suggestion to do its job? Then it is intent 3: EVIDENCE or
-FREE_SPEECH, never COOPERATIVE. When unsure which type fits, use FREE_SPEECH: a
+or words — for the suggestion to do its job? Then it is EVIDENCE or
+FREE_SPEECH, never DECIDE or RUN. When unsure which type fits, use FREE_SPEECH: a
 wrongly-clickable suggestion submits a broken message in the user's name; a
 wrongly-informational one only costs a few keystrokes.
 
@@ -180,20 +178,20 @@ a question the USER asks you is fine.
   GOOD: "Share what I'm seeing in my environment"  (the user's move)
   GOOD: "What does exit code 137 mean?"            (the user asking you)
 
-COOPERATIVE mechanics — payload REQUIRED (used ONLY here) and cooperative_action
-  REQUIRED ("query_submit" for DECIDE, "command_copy" for RUN). The payload must
-  stand alone — nothing left for the user to add or edit — and, for query_submit,
-  be a message YOU can act on from this case or your own knowledge.
-  {{"label": "Validate the config hypothesis", "action_type": "COOPERATIVE", "cooperative_action": "query_submit", "payload": "Let's focus on validating the config change hypothesis", "body": "Test whether the recent config change correlates with the failure window."}}
-  {{"label": "Get pod logs", "action_type": "COOPERATIVE", "cooperative_action": "command_copy", "payload": "kubectl logs <pod-name> --tail=100", "body": "Inspect recent pod output for crash loops or OOM kill messages."}}
-  {{"label": "What does exit code 137 mean?", "action_type": "COOPERATIVE", "cooperative_action": "query_submit", "payload": "What does exit code 137 mean?"}}
-  (The third example is intent 1: a ready-made question YOU can answer — one click,
-  you reply. The same question with the answer on the USER's side is intent 3.)
+DECIDE/RUN mechanics — payload REQUIRED (clickable types only). The payload must
+  stand alone — nothing left for the user to add or edit — and, for DECIDE, be a
+  message YOU can act on from this case or your own knowledge.
+  {{"label": "Validate the config hypothesis", "action_type": "DECIDE", "payload": "Let's focus on validating the config change hypothesis", "body": "Test whether the recent config change correlates with the failure window."}}
+  {{"label": "Get pod logs", "action_type": "RUN", "payload": "kubectl logs <pod-name> --tail=100", "body": "Inspect recent pod output for crash loops or OOM kill messages."}}
+  {{"label": "What does exit code 137 mean?", "action_type": "DECIDE", "payload": "What does exit code 137 mean?"}}
+  (The third example is a valid DECIDE: a ready-made question YOU can answer —
+  one click, you reply. The same question with the answer on the USER's side is
+  a content-GET: FREE_SPEECH.)
 
 EVIDENCE mechanics — WHAT data you need from the user's environment. Do NOT set
-  payload and do NOT provide a command (exact command in mind? that is intent 2 →
-  COOPERATIVE+command_copy). Put the user-voiced action in label and the reason in
-  body; the user decides how to submit (upload, paste, capture).
+  payload and do NOT provide a command (exact command in mind? that is RUN). Put
+  the user-voiced action in label and the reason in body; the user decides how to
+  submit (upload, paste, capture).
   IF the data you need is a FILE, ask only for a text-readable file (logs, config,
   exports, saved command output). Do NOT ask for a screenshot, image, or other non-text
   file — FaultMaven cannot read those yet. When the data is visible on a page the user
@@ -209,7 +207,7 @@ FREE_SPEECH mechanics — an open invitation for the user's own words. Do NOT se
 
 Keep labels concise (3-8 words). body is optional but recommended for non-obvious
 suggestions. YOU are the expert — never suggest the user look for information
-elsewhere. action_type MUST be exactly "COOPERATIVE", "EVIDENCE", or "FREE_SPEECH".\
+elsewhere. action_type MUST be exactly "DECIDE", "RUN", "EVIDENCE", or "FREE_SPEECH".\
 """
 
 # Active-stage advisor role block — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE
@@ -876,7 +874,7 @@ WORKING WITH EVIDENCE DATA:
 - If the structural index is TRUNCATED (marked with [TRUNCATED]), work with what's
   visible and note that additional detail may exist beyond what's shown.
 - If you need detail the structural index doesn't have: suggest a specific command
-  the user can run to extract it. Use suggested_follow_ups with action_type "COOPERATIVE" and cooperative_action "command_copy".
+  the user can run to extract it. Use suggested_follow_ups with action_type "RUN".
 - PAGE CAPTURES: Evidence captured from web pages (dashboards, alerts, status pages)
   arrives as structured markdown with error-priority ordering. The format:
   • Headings (## / ###) = panel titles or page sections
@@ -1168,7 +1166,8 @@ You MUST respond with valid JSON matching these fields:
   * Ground diagnostic claims in evidence (see DIAGNOSTIC REASONING above)
   * Reference evidence by its label (filename, description) — NEVER by ev_ IDs
 - **suggested_follow_ups**: 2-4 suggestions guiding the user's next action.
-  * COOPERATIVE: DECIDE (query_submit — click sends your pre-written message) or RUN (command_copy — click copies your command) (user-voiced label, complete payload, cooperative_action, optional body)
+  * DECIDE: click sends your pre-written message (user-voiced label, complete payload, optional body)
+  * RUN: click copies your exact command (user-voiced label, command payload, optional body)
   * EVIDENCE: GET data from the user's environment (user-voiced label, optional body — no payload)
   * FREE_SPEECH: GET the user's own words (user-voiced label, optional hints as short tags, optional body — no payload)
 - **internal_reasoning**: REQUIRED when completing milestones (otherwise optional).
@@ -1643,9 +1642,9 @@ evidence directly. You may do several in one turn if the evidence supports it.
         output, post-fix logs or metrics) must come from the user's environment.
      2. FREE_SPEECH — "Ask about the proposed fix": the user's question is their
         own to write.
-     Neither is COOPERATIVE: the content of both moves must come from the user,
-     and a pre-composed "I ran it — here's the result" payload submits an empty
-     claim.
+     Neither is clickable (DECIDE/RUN): the content of both moves must come from
+     the user, and a pre-composed "I ran it — here's the result" payload submits
+     an empty claim.
    - The user's response determines what happens next:
      → If they execute and submit results → transitions to TREATMENT (inferred acceptance)
      → If they question or refuse → stay in DIAGNOSIS and address their concern
@@ -1841,7 +1840,7 @@ do not continue proposing further fixes. Acknowledge the situation directly:
 "I've tried [N] approaches and none have stabilized the situation. This may require
 direct intervention beyond what I can guide remotely."
 
-Offer the user exactly two COOPERATIVE suggestions:
+Offer the user exactly two DECIDE suggestions:
 1. "Accept current state and proceed to root cause" — first create a `mitigation_evidence`
    record in evidence_to_add (summary: "Mitigation exhausted, partial or none",
    category: mitigation_evidence, source_type: text), then set `mitigation_verified=True`

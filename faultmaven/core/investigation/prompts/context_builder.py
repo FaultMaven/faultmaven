@@ -2235,7 +2235,7 @@ def build_investigation_context(
                     # statement and ask for confirmation — overrides the
                     # default NOT_YET_CONFIRMED "don't re-propose" rule.
                     # Note: the engine deterministically attaches the canonical
-                    # COOPERATIVE confirmation pair on this turn (see
+                    # DECIDE confirmation pair on this turn (see
                     # _investigation_confirmation_suggestions in milestone_engine),
                     # so the prompt does not prescribe exact suggestion labels.
                     inquiry_state_str += (

@@ -43,7 +43,7 @@ TERMINAL is not a phase — it is a final state. RESOLVED and CLOSED differ in t
 
 There are two distinct transition mechanisms:
 
-**User-Agent Handshake** — A formal two-step process. The agent sets `proposed_transition` and presents exactly two COOPERATIVE suggestions (Yes/No). The transition completes only when the user selects "Yes." Used when explicit user consent is required.
+**User-Agent Handshake** — A formal two-step process. The agent sets `proposed_transition` and presents exactly two DECIDE suggestions (Yes/No). The transition completes only when the user selects "Yes." Used when explicit user consent is required.
 
 **Inference-based** — The LLM detects user behavior (compliance, confirmation) in its structured output and sets the milestone directly. No confirmation dialog is presented.
 
@@ -92,7 +92,7 @@ TERMINAL — immutable; Q&A only
 
 **Phase marker** — A boolean variable that gates the transition INTO a phase and identifies the phase while active. Phase markers are **set-once monotonic** — once True, they stay True for the rest of the investigation. A phase marker is introduced (as False) in the preceding phase and set to True at the transition boundary. Stage transitions OUT of a phase are computed from the conjunction of markers: e.g., MITIGATION is active when `mitigation_accepted AND NOT mitigation_verified`; once `mitigation_verified` becomes True, that conjunction fails and the case falls through to DIAGNOSIS (post-mitigation cause phase) — no flag reset needed.
 
-**User-Agent Handshake** — The formal two-step confirmation mechanism. The agent proposes a transition by setting `proposed_transition` and presenting exactly two COOPERATIVE suggestions: "Yes" (proceed) and "No" (stay). The transition executes only when the user selects "Yes." This is the only mechanism for INQUIRY→INVESTIGATING, TREATMENT→RESOLVED, and Any→CLOSED.
+**User-Agent Handshake** — The formal two-step confirmation mechanism. The agent proposes a transition by setting `proposed_transition` and presenting exactly two DECIDE suggestions: "Yes" (proceed) and "No" (stay). The transition executes only when the user selects "Yes." This is the only mechanism for INQUIRY→INVESTIGATING, TREATMENT→RESOLVED, and Any→CLOSED.
 
 **Inference-based transition** — The LLM detects a specific user behavior (acknowledging execution, confirming stabilization) directly in its structured output and sets the milestone. No confirmation dialog is presented. Used for `mitigation_accepted`, `solution_accepted`, and `mitigation_verified`.
 
@@ -105,15 +105,15 @@ The GPS map. At any turn the agent reads this table to know where the investigat
 | Stage | Prompt | # | Variable | Type | Blocked until | Suggestion | § |
 | ----- | ------ | - | -------- | ---- | ------------- | ---------- | - |
 | INQUIRY | `INQUIRY_TEMPLATE` | — | — | — | Starting phase — no gate to enter | — | [INQUIRY](#inquiry-phase) |
-| | | G | `problem_statement_confirmed` | Gate | User confirms problem statement | COOPERATIVE → INVESTIGATING | [INQUIRY](#inquiry-phase) |
+| | | G | `problem_statement_confirmed` | Gate | User confirms problem statement | DECIDE → INVESTIGATING | [INQUIRY](#inquiry-phase) |
 | DIAGNOSIS | unified investigation guidance (selected by `cause_state` / `solution_state` / `mitigation`) | 1 | `symptom_verified` | Diagnostic | User submits symptom evidence | EVIDENCE | [Zone 1](#zone-1-symptom-verification) |
 | | | 8 | Hypothesis state | Analytical | Row 1 true ∧ cause uncertain — agent reasons from context + KB | — | [Zone 2](#zone-2-root-cause-analysis) |
 | | | 2 | grounded cause signal (→ `cause_state=IDENTIFIED`) | Diagnostic | User submits causal evidence (or the error is self-naming) | EVIDENCE | [Zone 2](#zone-2-root-cause-analysis) |
 | | | 3 | `solution_proposed` | Action | Row 2 true — agent reasons to fix | — | [Zone 3](#zone-3-solution-proposal) |
-| | | 4 | `mitigation_accepted` (→ `mitigation.accepted`) | Trigger | User acknowledges executing the mitigation | COOPERATIVE → Mitigating | [Zone 3](#zone-3-solution-proposal) |
-| | | 6 | `solution_accepted` | Trigger | User acknowledges executing fix | COOPERATIVE → TREATMENT | [Zone 3](#zone-3-solution-proposal) |
+| | | 4 | `mitigation_accepted` (→ `mitigation.accepted`) | Trigger | User acknowledges executing the mitigation | DECIDE → Mitigating | [Zone 3](#zone-3-solution-proposal) |
+| | | 6 | `solution_accepted` | Trigger | User acknowledges executing fix | DECIDE → TREATMENT | [Zone 3](#zone-3-solution-proposal) |
 | MITIGATION ("Mitigating") | `MITIGATION_INSTRUCTIONS` | 5 | `mitigation_verified` (→ `mitigation.verified`) | Gate | User confirms the mitigation worked | EVIDENCE → DIAGNOSIS | [MITIGATION](#mitigation-stage--the-mitigation-insert-display-mitigating) |
-| TREATMENT | `TREATMENT_INSTRUCTIONS` | 7 | `solution_verified` | Gate | User confirms solution worked | COOPERATIVE → TERMINAL | [TREATMENT](#treatment-stage) |
+| TREATMENT | `TREATMENT_INSTRUCTIONS` | 7 | `solution_verified` | Gate | User confirms solution worked | DECIDE → TERMINAL | [TREATMENT](#treatment-stage) |
 | TERMINAL | `TERMINAL_TEMPLATE` | — | — | — | No milestone tracking | — | [TERMINAL](#terminal-state) |
 
 **Gate** variables are mandatory checkpoints: the investigation cannot leave the current stage until the condition is met (`problem_statement_confirmed`, `mitigation_verified`, `solution_verified`). **Trigger** variables open an optional branch: when the user acknowledges executing the proposed action, the stage redirects — but nothing in the current stage was blocked waiting for it (`mitigation_accepted`, `solution_accepted`).
@@ -249,7 +249,7 @@ DIAGNOSIS has three internal zones. Zone membership is determined by the diagnos
 | Need error logs | EVIDENCE | Log type + service/host + timeframe |
 | Need metrics | EVIDENCE | Metric name + system + window |
 | Clarify if evidence matches the symptom | FREE_SPEECH | Name the specific pattern found; ask if it represents the reported issue |
-| Diagnostic command | COOPERATIVE (command_copy) | Exact command with parameters |
+| Diagnostic command | RUN | Exact command with parameters |
 
 **Anti-patterns:**
 
@@ -320,7 +320,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 | Situation | Type | Specificity requirement |
 | --------- | ---- | ----------------------- |
 | Evidence to test a hypothesis | EVIDENCE | What to find + which log or system + timeframe |
-| Diagnostic command | COOPERATIVE (command_copy) | Exact command targeting the hypothesis |
+| Diagnostic command | RUN | Exact command targeting the hypothesis |
 | Clarify ambiguous evidence | FREE_SPEECH | Name what is ambiguous; ask the specific question |
 
 **Anti-patterns:**
@@ -347,7 +347,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 3. State impact: reversible or not, blast radius (single pod, cluster, database, shared service).
 4. Do not request further evidence after `cause_state = IDENTIFIED`. Hold until the user executes or raises an objection.
 5. `solution_proposed` does not require a new `evidence_to_add` record — it is set when the proposal is issued, derived from causal evidence already linked to the hypothesis.
-6. While awaiting compliance (`solution_proposed=True`), offer exactly two COOPERATIVE suggestions: (1) the user reports the outcome ("I ran the command — here's the result"), (2) the user asks for clarification about the fix. Do not offer EVIDENCE or FREE_SPEECH suggestions in this state.
+6. While awaiting compliance (`solution_proposed=True`), offer exactly two suggestions — and no others (in particular, no new diagnostic asks): (1) EVIDENCE "Share the result of the fix" (the outcome data must come from the user's environment), (2) FREE_SPEECH "Ask about the proposed fix" (the user's question is their own to write). Neither is clickable: the content of both moves must come from the user — a pre-composed "I ran it — here's the result" payload submits an empty claim.
 
 **Trigger variables in Zone 3:**
 
@@ -413,7 +413,7 @@ The **mitigation insert**: apply a temporary fix to stop active impact when an A
 
 **`mitigation_verified`** — Emitted when the user confirms stabilization. Subjective confirmation is sufficient: "it's better", "errors dropped", "seems stable". Specific metric values are not required. Forward-only: `mitigation.accepted`/`.verified` are never reset. The case returns to DIAGNOSIS via the `current_stage` property's fall-through (the "Mitigating" branch requires `NOT mitigation.verified`).
 
-**When mitigation stalls:** If multiple attempts have failed and safe options are exhausted, do not continue proposing variants. The single-record constraint is not a dead-end (lifecycle §2.3, INV-24): offer exactly two COOPERATIVE suggestions — (1) "Accept current state and continue" — creates a `mitigation_evidence` record (source_type: text) and emits `mitigation_verified=True` to return to DIAGNOSIS even with partial stabilization; (2) "Escalate to a human expert" — acknowledges the investigation has reached its limit.
+**When mitigation stalls:** If multiple attempts have failed and safe options are exhausted, do not continue proposing variants. The single-record constraint is not a dead-end (lifecycle §2.3, INV-24): offer exactly two DECIDE suggestions — (1) "Accept current state and continue" — creates a `mitigation_evidence` record (source_type: text) and emits `mitigation_verified=True` to return to DIAGNOSIS even with partial stabilization; (2) "Escalate to a human expert" — acknowledges the investigation has reached its limit.
 
 **Gate Conditions:**
 
@@ -461,7 +461,7 @@ Verify that the applied fix resolves the problem. If it does not, diagnose the f
 **`solution_verified`** requires the explicit User-Agent Handshake. Cannot be set from ambiguous confirmation.
 
 1. When evidence confirms resolution, set `proposed_transition` to RESOLVED.
-2. Offer exactly two COOPERATIVE suggestions: "Yes, mark as resolved" / "Not yet, I want to investigate further."
+2. Offer exactly two DECIDE suggestions: "Yes, mark as resolved" / "Not yet, I want to investigate further."
 3. After user confirms: the backend sets `solution_verified=True` via `confirm_pending_transition`. The agent's job ends at setting `proposed_transition`. Remind the user to revert any mitigation workaround still in place.
 
 **Gate Conditions:**
@@ -501,8 +501,8 @@ No investigation. Answer questions using existing case data (evidence, hypothese
 | ---- | -------------------- |
 | EVIDENCE | What to collect + where/from + timeframe |
 | FREE_SPEECH | What specific knowledge is needed + why it matters for the current variable |
-| COOPERATIVE (command_copy) | Exact command with all parameters filled in |
-| COOPERATIVE (query_submit) | Ready-to-submit request, pre-composed |
+| RUN | Exact command with all parameters filled in |
+| DECIDE | Ready-to-submit request, pre-composed |
 
 One primary ask per turn. Stack only when items are genuinely parallel (e.g., two log files that always come together).
 
@@ -510,16 +510,16 @@ One primary ask per turn. Stack only when items are genuinely parallel (e.g., tw
 
 | Stage | Expected suggestions |
 | ----- | -------------------- |
-| INQUIRY | 2 COOPERATIVE (yes/no confirmation) |
+| INQUIRY | 2 DECIDE (yes/no confirmation) |
 | DIAGNOSIS Zone 1 | 1–2 EVIDENCE + 1 FREE_SPEECH |
-| DIAGNOSIS Zone 2 | 1 EVIDENCE (targeted to hypothesis) + optionally 1 COOPERATIVE (command) |
-| DIAGNOSIS Zone 3 (proposing fix) | 1 COOPERATIVE command_copy (the fix) |
-| DIAGNOSIS Zone 3 (pending — fix already proposed) | 2 COOPERATIVE query_submit (report outcome / ask clarification); no EVIDENCE or FREE_SPEECH |
-| MITIGATION (guiding) | 1 COOPERATIVE command_copy + 1 EVIDENCE (post-fix verification) |
-| MITIGATION (stalled) | 2 COOPERATIVE query_submit (accept partial state / escalate) |
+| DIAGNOSIS Zone 2 | 1 EVIDENCE (targeted to hypothesis) + optionally 1 RUN (command) |
+| DIAGNOSIS Zone 3 (proposing fix) | 1 RUN (the fix) |
+| DIAGNOSIS Zone 3 (pending — fix already proposed) | 1 EVIDENCE (share fix outcome) + 1 FREE_SPEECH (ask about the fix); no new diagnostic asks |
+| MITIGATION (guiding) | 1 RUN + 1 EVIDENCE (post-fix verification) |
+| MITIGATION (stalled) | 2 DECIDE (accept partial state / escalate) |
 | TREATMENT (verifying) | 1 EVIDENCE (post-fix) or 0 if user already confirmed |
-| TREATMENT (completion) | 2 COOPERATIVE (yes resolved / not yet) |
-| TERMINAL | 1–2 COOPERATIVE (report, runbook) |
+| TREATMENT (completion) | 2 DECIDE (yes resolved / not yet) |
+| TERMINAL | 1–2 DECIDE (report, runbook) |
 
 ---
 

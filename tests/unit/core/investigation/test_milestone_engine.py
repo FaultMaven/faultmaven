@@ -676,7 +676,7 @@ class TestMilestoneEngine:
 
         # 5. Canonical CLOSE confirm/decline pair emitted (alignment with
         #    agent-initiated path: every propose_transition surface offers
-        #    deterministic COOPERATIVE confirmation suggestions).
+        #    deterministic DECIDE confirmation suggestions).
         suggestions = result["suggested_follow_ups"]
         assert len(suggestions) == 2
         assert suggestions[0]["intent"] == {
@@ -687,7 +687,7 @@ class TestMilestoneEngine:
             "type": "confirmation",
             "confirmation_value": False,
         }
-        assert all(s["action_type"] == "COOPERATIVE" for s in suggestions)
+        assert all(s["action_type"] == "DECIDE" for s in suggestions)
 
     @pytest.mark.asyncio
     async def test_explicit_status_transition_investigating_to_closed(
@@ -746,7 +746,7 @@ class TestMilestoneEngine:
             "type": "confirmation",
             "confirmation_value": False,
         }
-        assert all(s["action_type"] == "COOPERATIVE" for s in suggestions)
+        assert all(s["action_type"] == "DECIDE" for s in suggestions)
 
     @pytest.mark.asyncio
     async def test_explicit_status_transition_inquiry_to_investigating(
@@ -941,7 +941,7 @@ class TestMilestoneEngine:
 
         When the case lacks root cause / solution / evidence, the readiness
         verdict is SUGGEST_CLOSE. The engine pivots to a CLOSED proposal so
-        the prompt the user sees and the COOPERATIVE confirmation pair both
+        the prompt the user sees and the DECIDE confirmation pair both
         align with what they're actually being asked to do.
         """
         # base_case has no root_cause_conclusion, no solutions, no evidence
@@ -1206,14 +1206,12 @@ class TestInquiryConfirmation:
                 "suggested_follow_ups": [
                     {
                         "label": "Yes, that's correct. Let's investigate.",
-                        "action_type": "COOPERATIVE",
-                        "cooperative_action": "query_submit",
+                        "action_type": "DECIDE",
                         "payload": "Yes, that's correct. Let's investigate.",
                     },
                     {
                         "label": "No, that's not quite right.",
-                        "action_type": "COOPERATIVE",
-                        "cooperative_action": "query_submit",
+                        "action_type": "DECIDE",
                         "payload": "No, that's not quite right.",
                     },
                 ],

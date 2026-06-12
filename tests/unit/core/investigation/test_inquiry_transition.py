@@ -1093,14 +1093,12 @@ class TestEngineOwnedGate1OnFirstDetect:
                 "suggested_follow_ups": [
                     {
                         "label": "LLM Suggestion A",
-                        "action_type": "COOPERATIVE",
-                        "cooperative_action": "query_submit",
+                        "action_type": "DECIDE",
                         "payload": "LLM payload A",
                     },
                     {
                         "label": "LLM Suggestion B",
-                        "action_type": "COOPERATIVE",
-                        "cooperative_action": "query_submit",
+                        "action_type": "DECIDE",
                         "payload": "LLM payload B",
                     },
                 ],

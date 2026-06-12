@@ -295,14 +295,14 @@ class TestSuggestedFollowUpEvidenceNeedId:
         )
         assert s.evidence_need_id == "new_index_1"
 
-    def test_cooperative_with_need_id_rejected(self):
+    def test_decide_with_need_id_rejected(self):
         """``evidence_need_id`` on non-EVIDENCE action types is rejected."""
         with pytest.raises(
             ValidationError, match="only permitted with action_type=EVIDENCE"
         ):
             SuggestedFollowUp(
                 label="Yes resolve",
-                action_type="COOPERATIVE",
+                action_type="DECIDE",
                 payload="Yes",
                 evidence_need_id="eneed_abc123def456",
             )

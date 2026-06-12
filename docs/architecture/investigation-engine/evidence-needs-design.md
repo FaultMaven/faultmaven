@@ -508,7 +508,7 @@ EVIDENCE suggestion. The pool's primary, load-bearing job is the
 file-search agenda (§6.1); surfacing a need as a suggestion is an
 *optional* secondary use of the same structure. The flow stays in the
 existing [3-suggestion-type model](./investigation-data-models.md):
-COOPERATIVE / EVIDENCE / FREE_SPEECH. Evidence needs map to
+DECIDE / RUN / EVIDENCE / FREE_SPEECH. Evidence needs map to
 **EVIDENCE-type** suggestions:
 
 - The LLM owns suggestion emission. When a pending need is worth
@@ -524,7 +524,7 @@ COOPERATIVE / EVIDENCE / FREE_SPEECH. Evidence needs map to
   (highlight, dismiss, group by need). No backend click-to-upload flow
   yet — the intent type (§9.3) stays deferred.
 
-General COOPERATIVE suggestions (path choices, confirmation prompts)
+General DECIDE suggestions (path choices, confirmation prompts)
 and FREE_SPEECH suggestions (open-ended questions) remain unchanged.
 Evidence needs are a *preferred source* for EVIDENCE suggestions, not a
 mandatory one and not a replacement of the suggestion mechanism — the
@@ -754,7 +754,7 @@ investigation — that is the intended completeness, not a regression.
 
 Evidence-gathering suggestions **may draw from the pool** (optional — see
 §6.2; `evidence_need_id` is set only when a suggestion matches a pending
-need, else `None`). COOPERATIVE and FREE_SPEECH suggestions remain
+need, else `None`). DECIDE, RUN, and FREE_SPEECH suggestions remain
 LLM-improvised. The `SuggestedFollowUp` schema gains one optional field:
 
 ```python

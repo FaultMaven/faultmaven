@@ -568,12 +568,12 @@ The `extraction_metadata["evidence_metadata"]` slot carries a structured `Eviden
 
 When the heuristic classifier returns `classification_failed=True`, every failure path populates `ClassificationResult.suggested_types` with up to 3 candidate types from its scoring pass. `PreprocessingService` forwards these via `extraction_metadata["suggested_types"]`.
 
-The agent still attempts the investigation in the same turn — classification uncertainty is not a hard block. After the turn runs, `InvestigationService` injects **COOPERATIVE clarification suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
+The agent still attempts the investigation in the same turn — classification uncertainty is not a hard block. After the turn runs, `InvestigationService` injects **DECIDE clarification suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
 
-- Up to 3 pre-composed `query_submit` messages like *"Treat the previously uploaded file (`foo.txt`) as application logs and analyze it."* — one per suggested type.
+- Up to 3 pre-composed click-to-send messages like *"Treat the previously uploaded file (`foo.txt`) as application logs and analyze it."* — one per suggested type.
 - Plus a **"Something else"** fallback that submits *"Treat the previously uploaded file as unstructured text and try to analyze it."*
 
-The user clicks a card; the next turn runs normally with the pre-composed message. The agent reads the raw file via its existing tools (`search_file`, `deep_analysis`) using the user-provided type hint. There is no re-classification at the classifier layer, no evidence mutation, no new LLM integration — just the existing COOPERATIVE suggestion plumbing driving a deterministic post-turn injector in `InvestigationService`.
+The user clicks a card; the next turn runs normally with the pre-composed message. The agent reads the raw file via its existing tools (`search_file`, `deep_analysis`) using the user-provided type hint. There is no re-classification at the classifier layer, no evidence mutation, no new LLM integration — just the existing DECIDE suggestion plumbing driving a deterministic post-turn injector in `InvestigationService`.
 
 ### 2.6 Reclassification and Sanity-Retry
 
@@ -1406,7 +1406,7 @@ These items are out of scope for the initial v4.0 implementation but are documen
 | **Vectorization cost tracking** | Track per-case vectorization costs for billing | Enterprise feature |
 | **Deep analysis file size cap** | `DEEP_ANALYSIS_MAX_FILE_SIZE_MB` config to reject oversized files before sending to Tier 3 backend | When large file uploads are common |
 | ~~**Content-hash deduplication**~~ | **Done.** Per-case dedup via `ICaseRepository.find_by_content_hash()` short-circuits duplicate uploads. Turn response carries `duplicate_of` + `duplicate_turn`. See §2.4. | Done |
-| ~~**Classifier cooperative clarification**~~ | **Done.** On `classification_failed=True`, `_build_classification_clarification_suggestions` in `InvestigationService` injects COOPERATIVE choices built from the classifier's `suggested_types` + a "Something else" fallback. No LLM call. See §2.5. | Done |
+| ~~**Classifier cooperative clarification**~~ | **Done.** On `classification_failed=True`, `_build_classification_clarification_suggestions` in `InvestigationService` injects DECIDE choices built from the classifier's `suggested_types` + a "Something else" fallback. No LLM call. See §2.5. | Done |
 | **Evidence failure modes** | Orphan-file cleanup (M1) and monitoring scaffolding (M2) **done**. Scenario 2 (async LLM timeout recovery at turn processing) **deferred** — current error-path UX already provides specific error codes + `Retry-After` headers; revisit only if production telemetry shows user harm. See [evidence-failure-modes.md](./evidence-failure-modes.md). | Partial done / revisit on telemetry signal |
 | **DIFF_PATCH extractor** | Parse unified diffs / git patches — files changed, lines added/removed | When deployment-change investigations are common |
 | **THREAD_DUMP extractor** | JVM thread dump parsing — deadlock detection, lock contention | When Java-heavy user base emerges |

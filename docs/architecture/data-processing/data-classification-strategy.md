@@ -42,7 +42,7 @@ Submitted content can have overlapping characteristics (logs contain errors, met
 2. **Robustness** — graceful degradation on ambiguous cases.
 3. **Speed** — <100 ms, zero LLM calls in Tier 0.
 4. **Explainability** — every decision carries a `source` tag (user_override / agent_hint / source_url / browser_context / rule_based / rule_based_best_effort).
-5. **Cooperative-clarification fallback** — when confidence falls below 0.50 the classifier sets `classification_failed=True` and populates `suggested_types`. The agent still runs the turn best-effort on the raw file; after the turn, `InvestigationService` injects COOPERATIVE suggestions the user can click to re-prompt with the correct type.
+5. **Cooperative-clarification fallback** — when confidence falls below 0.50 the classifier sets `classification_failed=True` and populates `suggested_types`. The agent still runs the turn best-effort on the raw file; after the turn, `InvestigationService` injects DECIDE suggestions the user can click to re-prompt with the correct type.
 
 ### Architectural Position
 
@@ -111,7 +111,7 @@ class ClassificationResult(BaseModel):
         "rule_based_best_effort",
     ]
     classification_failed: bool    # True when confidence < 0.50 (triggers cooperative-clarification suggestions)
-    suggested_types: Optional[List[DataType]]  # Populated on every classification_failed path; drives cooperative-clarification COOPERATIVE suggestions
+    suggested_types: Optional[List[DataType]]  # Populated on every classification_failed path; drives cooperative-clarification DECIDE suggestions
     source_type: Optional[str]     # page_capture / text_paste / file_upload
                                    # (propagated from source_metadata)
 ```
@@ -381,14 +381,14 @@ Every classification_failed path populates `ClassificationResult.suggested_types
 - Content: a user-facing text like `[Classification uncertain for 'foo.csv' — requesting user input] Suggested types: metrics_and_performance, unstructured_text`
 - `extraction_metadata.suggested_types`: list of candidate DataType values (as strings)
 
-The agent still runs the turn using its file-reading tools (`search_file`, `deep_analysis`), producing a best-effort answer from the raw bytes. After the turn runs, `InvestigationService._build_classification_clarification_suggestions` injects **COOPERATIVE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
+The agent still runs the turn using its file-reading tools (`search_file`, `deep_analysis`), producing a best-effort answer from the raw bytes. After the turn runs, `InvestigationService._build_classification_clarification_suggestions` injects **DECIDE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
 
-- Up to 3 pre-composed `query_submit` messages, one per suggested type: *"Treat the previously uploaded file ('foo.csv') as metrics or performance data and analyze it."*
+- Up to 3 pre-composed click-to-send messages, one per suggested type: *"Treat the previously uploaded file ('foo.csv') as metrics or performance data and analyze it."*
 - Plus a **"Something else"** fallback that submits *"Treat the previously uploaded file as unstructured text and try to analyze it."*
 
-When the user clicks a card, the next turn runs normally with the pre-composed message. The agent reads the raw file again with the user-provided type hint in its context. No re-classification at the classifier layer, no Evidence mutation, no new LLM integration — deterministic post-turn injection using the existing COOPERATIVE suggestion plumbing.
+When the user clicks a card, the next turn runs normally with the pre-composed message. The agent reads the raw file again with the user-provided type hint in its context. No re-classification at the classifier layer, no Evidence mutation, no new LLM integration — deterministic post-turn injection using the existing DECIDE suggestion plumbing.
 
-A rejected alternative: an "LLM rescue" pass that would auto-classify ambiguous files via a cheap LLM call. Rejected because COOPERATIVE suggestions are zero-cost, user-authoritative (ground truth), and have no telemetry prerequisite. See [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §2.5.
+A rejected alternative: an "LLM rescue" pass that would auto-classify ambiguous files via a cheap LLM call. Rejected because DECIDE suggestions are zero-cost, user-authoritative (ground truth), and have no telemetry prerequisite. See [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §2.5.
 
 A parallel path exists for `UNANALYZABLE`:
 

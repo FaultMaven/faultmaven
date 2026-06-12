@@ -8,7 +8,7 @@ override_suggestions branches in the response builder with one pure function.
 The architectural commitment these tests pin: **intent ↔ gate.** When a gate
 is pending, the engine owns the affordance pair and attaches intent metadata.
 When no gate is pending, the function returns None and the LLM's exploratory
-COOPERATIVE suggestions pass through unmodified.
+LLM suggestions pass through unmodified.
 
 Post-redesign (unified opportunistic flow, R5): Gate 2 (path selection) and
 Gate 3 (post-mitigation choice) were removed along with the path fork. Only
@@ -166,7 +166,7 @@ class TestEngineOwnedAffordances:
         custom = [
             {
                 "label": "Custom override",
-                "action_type": "COOPERATIVE",
+                "action_type": "DECIDE",
                 "payload": "override",
                 "intent": {"type": "confirmation", "confirmation_value": True},
             }

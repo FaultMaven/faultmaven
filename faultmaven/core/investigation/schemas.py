@@ -850,34 +850,34 @@ class SuggestedFollowUp(BaseModel):
             "agent_response); a question the user asks you is fine."
         )
     )
-    action_type: Literal["COOPERATIVE", "EVIDENCE", "FREE_SPEECH"] = Field(
+    action_type: Literal["DECIDE", "RUN", "EVIDENCE", "FREE_SPEECH"] = Field(
         # FREE_SPEECH is the safe default: a suggestion wrongly treated as
         # clickable submits a broken message in the user's name; one wrongly
         # treated as informational merely makes the user type. An omitted
         # action_type therefore degrades to non-clickable.
         default="FREE_SPEECH",
         description=(
-            "COOPERATIVE = a ready move you composed: DECIDE (query_submit — "
-            "you expect the user's decision/answer and pre-compose it; click "
-            "sends it) or "
-            "RUN (command_copy — click copies your exact command to run "
-            "externally); EVIDENCE = GET data from the user's environment "
-            "(informational); FREE_SPEECH = GET the user's own words "
-            "(informational). If the user would have to supply content — "
-            "data or words — the type is never COOPERATIVE. When unsure, "
-            "use FREE_SPEECH."
+            "DECIDE = you expect the user's decision/answer and pre-compose "
+            "it as payload; a click sends it as their message. "
+            "RUN = you composed an exact command; a click copies it for the "
+            "user to run externally. "
+            "EVIDENCE = GET data from the user's environment "
+            "(informational). "
+            "FREE_SPEECH = GET the user's own words (informational). "
+            "If the user would have to supply content — data or words — the "
+            "type is never DECIDE or RUN. When unsure, use FREE_SPEECH."
         ),
     )
     payload: Optional[str] = Field(
         default=None,
         description=(
-            "COOPERATIVE only: the text a click submits (query_submit) or "
-            "copies (command_copy). query_submit payloads are sent verbatim "
-            "and must be the user's complete message — never a placeholder "
-            "or preamble the user would need to edit, and never a question "
-            "only the user can answer. Required for COOPERATIVE; omit for "
-            "EVIDENCE and FREE_SPEECH — those carry everything in label + "
-            "body/hints."
+            "DECIDE/RUN only. DECIDE: the exact message a click sends — "
+            "verbatim, the user's complete message; never a placeholder or "
+            "preamble the user would need to edit, and never a question only "
+            "the user can answer. RUN: the exact command a click copies "
+            "(<placeholders> allowed — the user edits them externally). "
+            "Required for DECIDE and RUN; omit for EVIDENCE and FREE_SPEECH "
+            "— those carry everything in label + body/hints."
         ),
     )
     body: Optional[str] = Field(
@@ -885,13 +885,9 @@ class SuggestedFollowUp(BaseModel):
         description="Reasoning text shown on card (why the user should take this action)",
     )
 
-    # COOPERATIVE fields
-    cooperative_action: Optional[Literal["query_submit", "command_copy"]] = Field(
-        default=None,
-        description="query_submit = auto-submit as user message; command_copy = copy to clipboard",
-    )
-
-    # Shell command prefixes for auto-detection of command_copy
+    # Shell command prefixes — encoding safety net: a DECIDE whose payload is
+    # actually a shell command would SUBMIT the command as a chat message on
+    # click; coerce it to RUN so the click copies instead.
     _COMMAND_PREFIXES: ClassVar[tuple] = (
         "kubectl",
         "redis-cli",
@@ -946,33 +942,29 @@ class SuggestedFollowUp(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _infer_cooperative_action(self) -> "SuggestedFollowUp":
-        """Auto-detect command_copy when payload looks like a shell command.
-
-        When action_type is COOPERATIVE and cooperative_action is not set,
-        check if the payload starts with a known CLI tool prefix. If so,
-        set cooperative_action to "command_copy" so the frontend copies
-        to clipboard instead of submitting as a chat message.
-        """
-        if self.action_type == "COOPERATIVE" and not self.cooperative_action:
-            payload_first_word = self.payload.strip().split()[0] if self.payload else ""
+    def _coerce_command_payload_to_run(self) -> "SuggestedFollowUp":
+        """Encoding safety net: a DECIDE payload that is actually a shell
+        command would be SUBMITTED as a chat message on click. When the
+        payload's first word is a known CLI tool, coerce the type to RUN so
+        the click copies the command instead."""
+        if self.action_type == "DECIDE" and self.payload:
+            payload_first_word = self.payload.strip().split()[0]
             if payload_first_word in self._COMMAND_PREFIXES:
-                self.cooperative_action = "command_copy"
-            else:
-                self.cooperative_action = "query_submit"
+                self.action_type = "RUN"
         return self
 
     @model_validator(mode="after")
     def _enforce_payload_scope(self) -> "SuggestedFollowUp":
-        """``payload`` is meaningful only for COOPERATIVE (the text a click
-        submits or copies). Require it there; drop it for EVIDENCE and
-        FREE_SPEECH so a stray agent-voiced question/description the LLM put
-        in ``payload`` never lingers on a field the user never sees."""
-        if self.action_type == "COOPERATIVE":
+        """``payload`` is meaningful only for the clickable types (DECIDE —
+        the message a click sends; RUN — the command a click copies).
+        Require it there; drop it for EVIDENCE and FREE_SPEECH so a stray
+        agent-voiced question/description the LLM put in ``payload`` never
+        lingers on a field the user never sees."""
+        if self.action_type in ("DECIDE", "RUN"):
             if not self.payload:
                 raise ValueError(
-                    "COOPERATIVE suggestion requires payload "
-                    "(the text a click submits or copies)"
+                    f"{self.action_type} suggestion requires payload "
+                    "(the text a click sends or copies)"
                 )
         else:
             self.payload = None

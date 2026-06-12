@@ -176,16 +176,18 @@ Never recommend destructive commands (`rm -rf`, `DROP`, `TRUNCATE`, `kill -9` on
 
 ### Suggestion Type Boundary
 
-A COOPERATIVE suggestion is a clickable pre-composed message. When sent, the agent is expected to act on it — steer the investigation, confirm a transition, engage with analysis, acknowledge a step. The failure mode is generating a COOPERATIVE suggestion whose implied outcome the agent cannot deliver.
+A DECIDE suggestion is a clickable pre-composed message. When sent, the agent is expected to act on it — confirm a transition, steer the investigation, answer a ready-made request. The failure mode is generating a clickable suggestion whose content the user would still have to supply (a missing question, missing data, an answer only the user knows) — the click then submits an empty claim and wastes the turn.
 
-**Prescribed behavior**: Before marking a suggestion COOPERATIVE, ask: *if the user clicks this, can I actually deliver what it implies?* If delivering the response would require data not present in the case, use EVIDENCE to ask the user to collect and submit it.
+**Prescribed behavior**: the type follows from intent before any text is drafted. DECIDE/RUN are GIVE moves (the agent pre-composes the user's complete message or command); EVIDENCE/FREE_SPEECH are GET moves (content must come from the user). The litmus: beyond the click (send or copy), must the user supply any content — data or words? Then it is EVIDENCE or FREE_SPEECH, never DECIDE or RUN. When unsure, FREE_SPEECH.
 
 **Prompt injection** (FOLLOW-UP SUGGESTIONS section, both INQUIRY and INVESTIGATION_BASE):
 
 ```text
-Before marking a suggestion COOPERATIVE, ask: if the user sends this message,
-can I deliver what it implies? If the response would require data not in this
-case, use EVIDENCE instead — ask the user to collect and submit it.
+Litmus: beyond the click (send or copy), must the user supply any CONTENT — data
+or words — for the suggestion to do its job? Then it is intent 3: EVIDENCE or
+FREE_SPEECH, never DECIDE or RUN. When unsure which type fits, use FREE_SPEECH: a
+wrongly-clickable suggestion submits a broken message in the user's name; a
+wrongly-informational one only costs a few keystrokes.
 ```
 
 **Why all three dimensions live in Rule 3**: The advisor role covers how the agent speaks (voice), what it advises (substance), and what it promises via suggestions (fidelity). Splitting them would fragment a single responsibility — being a trustworthy advisor to an operator standing in front of a production system.
