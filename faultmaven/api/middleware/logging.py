@@ -19,8 +19,21 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.logging.config import get_logger
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
+from faultmaven.infrastructure.shims import request_counter, request_duration
 
 logger = get_logger(__name__)
+
+
+def _endpoint_label(request: Request) -> str:
+    """Bounded-cardinality endpoint label: the matched route template.
+
+    Uses the route's path pattern (e.g. /api/v1/cases/{case_id}), never the
+    raw URL path — raw paths embed IDs and would explode label cardinality
+    (see FORBIDDEN_LABELS in metrics_exporters/prometheus.py). Requests that
+    match no route (404s, scanners) collapse into one bucket.
+    """
+    route = request.scope.get("route")
+    return getattr(route, "path", None) or "unmatched"
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -125,6 +138,17 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 "api", duration * 1000.0, success=response.status_code < 500
             )
 
+            # Prometheus HTTP metrics (no-ops when metrics are disabled)
+            endpoint = _endpoint_label(request)
+            request_counter.labels(
+                method=request.method,
+                endpoint=endpoint,
+                status_code=str(response.status_code),
+            ).inc()
+            request_duration.labels(method=request.method, endpoint=endpoint).observe(
+                duration
+            )
+
             # Track performance in coordinator
             if context.performance_tracker:
                 exceeds_threshold, threshold = (
@@ -194,6 +218,15 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
             # Unhandled exception = failed request for SLA purposes
             sla_tracker.record_request_metrics("api", duration * 1000.0, success=False)
+
+            # Unhandled exceptions surface as 500s
+            endpoint = _endpoint_label(request)
+            request_counter.labels(
+                method=request.method, endpoint=endpoint, status_code="500"
+            ).inc()
+            request_duration.labels(method=request.method, endpoint=endpoint).observe(
+                duration
+            )
 
             # Add error to context for cascade prevention
             if context.error_context:
