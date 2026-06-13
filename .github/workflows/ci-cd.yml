@@ -306,7 +306,19 @@ jobs:
 
       - name: Run PostgreSQL Integration Tests
         run: |
-          pytest tests/ -m postgres -v --no-header
+          # GitHub Actions runs bash with `set -eo pipefail`, so a real test
+          # failure (or a failure of `pytest | tee`) aborts this step.
+          pytest tests/ -m postgres -v --no-header -p no:cacheprovider | tee /tmp/pg.log
+          # Guard against the silent-skip trap: this job exists to actually
+          # exercise the PG-only write paths. If the tests SKIP (DATABASE_URL
+          # or SKIP_SERVICE_CHECKS misconfigured), pytest exits 0 and the
+          # build gate would go green having validated nothing — reopening
+          # the dark-path gap this job was created to close.
+          if grep -qE '[0-9]+ skipped' /tmp/pg.log; then
+            echo "::error::PostgreSQL tests were skipped — check DATABASE_URL / SKIP_SERVICE_CHECKS on this job."
+            exit 1
+          fi
+          grep -qE '[0-9]+ passed' /tmp/pg.log || { echo "::error::No PostgreSQL tests ran."; exit 1; }
 
   # ============================================================================
   # ARCHITECTURE BOUNDARY ENFORCEMENT

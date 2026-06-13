@@ -31,7 +31,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from faultmaven.modules.case.domain.models import (
     Case,
+    CaseEntity,
     CaseState,
+    EntityType,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -165,6 +167,74 @@ async def test_case_save_roundtrip_with_jsonb_columns(pg_repo):
 
 
 @pytest.mark.asyncio
+async def test_upsert_case_entities_roundtrip(pg_repo):
+    """upsert_case_entities() is a standalone path NOT reached by save() — it
+    is the 4th org-id-subquery site, and the one whose enclosing text() was
+    newly converted to an f-string. Exercise it directly so the
+    AmbiguousParameterError fix (and the f-string conversion) is validated."""
+    session = pg_repo.db
+    org_id = f"org_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_organizations(session, [org_id])
+    await seed_users(session, [user_id])
+
+    # The entity FK-references an evidence row, so save a case with one first.
+    case = _make_case(org_id, user_id)
+    file_id = f"file_{uuid4().hex[:12]}"
+    evidence_id = f"ev_{uuid4().hex[:12]}"
+    case.uploaded_files.append(
+        UploadedFile(
+            file_id=file_id,
+            filename="app.log",
+            size_bytes=512,
+            content_type="text/plain",
+            uploaded_at_turn=1,
+            uploaded_by=user_id,
+            upload_source="file_upload",
+            summary="s",
+            structural_index="ERROR: timeout from 10.0.0.5",
+            data_type="logs",
+        )
+    )
+    case.evidence.append(
+        Evidence(
+            evidence_id=evidence_id,
+            category=EvidenceCategory.SYMPTOM_EVIDENCE,
+            primary_purpose="symptom_verified",
+            summary="timeout referencing host 10.0.0.5",
+            extract="ERROR: timeout from 10.0.0.5",
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=file_id,
+            collected_by=user_id,
+            collected_at_turn=1,
+        )
+    )
+    await pg_repo.save(case)
+
+    # The actual path under test: the case_entities INSERT with the reused
+    # :case_id org-id subquery.
+    await pg_repo.upsert_case_entities(
+        case.case_id,
+        evidence_id,
+        [
+            CaseEntity(
+                case_id=case.case_id,
+                entity_type=EntityType.IP,
+                entity_value="10.0.0.5",
+                evidence_id=evidence_id,
+                mention_count=2,
+                in_error_context=True,
+            )
+        ],
+    )
+
+    found = await pg_repo.find_entity(case.case_id, "10.0.0.5")
+    assert len(found) == 1
+    assert found[0].entity_type == EntityType.IP
+    assert found[0].mention_count == 2
+
+
+@pytest.mark.asyncio
 async def test_add_message_roundtrip(pg_repo):
     """add_message() exercises the case_messages metadata JSONB cast."""
     session = pg_repo.db
@@ -217,12 +287,14 @@ async def test_add_report_roundtrip_with_timestamptz(pg_repo):
         version=1,
         linked_to_closure=False,
     )
-    saved = await pg_repo.add_report(report)
-    assert saved.report_id == report.report_id
+    # add_report returns the input object, so don't assert on it (tautology);
+    # the real check is the read-back from PostgreSQL.
+    await pg_repo.add_report(report)
 
     fetched = await pg_repo.get_report(report.report_id)
     assert fetched is not None
     assert fetched.title == "Resolution summary"
+    assert fetched.generation_status == ReportStatus.COMPLETED
 
 
 @pytest.mark.asyncio
