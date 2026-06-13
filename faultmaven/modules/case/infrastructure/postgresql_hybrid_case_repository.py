@@ -67,6 +67,7 @@ from faultmaven.modules.case.infrastructure import (
     _agent_execution_mappers as agent_mappers,
 )
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.utils.datetime import parse_utc_timestamp
 
 # TYPE_CHECKING imports not needed - models imported directly above
 
@@ -214,6 +215,31 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         if self._is_pg:
             return f"CAST(:{name} AS {pg_type})"
         return f":{name}"
+
+    @staticmethod
+    def _as_datetime(value: Any, default: datetime) -> datetime:
+        """Coerce a timestamp value to a tz-aware ``datetime`` for asyncpg.
+
+        Message rows reach the repository as plain dicts (``message_dict`` /
+        ``case.messages`` entries), NOT Pydantic models, so a ``created_at``
+        can arrive as an ISO STRING. asyncpg binds a ``timestamptz`` parameter
+        only from a Python ``datetime`` — a ``str`` raises ``DataError``
+        ("invalid input for query argument"), and (unlike a JSONB cast) it
+        fails even inside ``CAST(:ts AS TIMESTAMPTZ)`` because asyncpg encodes
+        the bind as timestamptz BEFORE the cast applies. Pydantic-backed rows
+        (cases / evidence / hypotheses / solutions / reports / checkpoints)
+        are already datetimes via field validation, so only the dict-sourced
+        message timestamps need this coercion. SQLite's repository already
+        does the same via its own ``_parse_dt`` — this restores parity.
+        """
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return parse_utc_timestamp(value)
+            except ValueError:
+                return default
+        return default
 
     def _org_lookup_case_id(self) -> str:
         """``:case_id`` cast to VARCHAR, for the org-id derivation subquery.
@@ -1357,10 +1383,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 return False
 
             message_id = message_dict.get("message_id", f"msg_{uuid4().hex[:16]}")
-            created_at = (
-                message_dict.get("created_at")
-                or message_dict.get("timestamp")
-                or datetime.now(timezone.utc)
+            # Coerce: message dicts may carry an ISO-STRING created_at, which
+            # asyncpg rejects for the timestamptz column (see _as_datetime).
+            created_at = self._as_datetime(
+                message_dict.get("created_at") or message_dict.get("timestamp"),
+                datetime.now(timezone.utc),
             )
 
             query = text(f"""
@@ -2426,7 +2453,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "turn_number": msg.get("turn_number", idx),
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
-                    "created_at": msg.get("created_at") or datetime.now(timezone.utc),
+                    "created_at": self._as_datetime(
+                        msg.get("created_at"), datetime.now(timezone.utc)
+                    ),
                     "token_count": msg.get("token_count"),
                     "metadata": json.dumps(msg.get("metadata", {})),
                 },
@@ -2480,7 +2509,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                         transition.reason if hasattr(transition, "reason") else None
                     ),
                     "triggered_by": transition.triggered_by,
-                    "transitioned_at": transition.triggered_at,
+                    "transitioned_at": self._as_datetime(
+                        transition.triggered_at, datetime.now(timezone.utc)
+                    ),
                     "metadata": json.dumps({}),
                 },
             )

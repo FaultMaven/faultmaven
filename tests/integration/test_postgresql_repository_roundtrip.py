@@ -151,6 +151,21 @@ async def test_case_save_roundtrip_with_jsonb_columns(pg_repo):
         )
     )
 
+    # case.messages is List[Dict] with an ISO-STRING created_at (exactly how
+    # the live turn flow populates it). save() -> _upsert_messages binds this
+    # to the timestamptz column; a bare str raises asyncpg DataError (the
+    # case-save 500 on the cluster) unless the repo coerces it to a datetime.
+    case.messages.append(
+        {
+            "message_id": f"msg_{uuid4().hex[:12]}",
+            "turn_number": 1,
+            "role": "user",
+            "content": "how to fix the timeout?",
+            "created_at": "2026-06-13T10:15:30.123456+00:00",
+            "metadata": {},
+        }
+    )
+
     saved = await pg_repo.save(case)
     assert saved.version == 1
 
@@ -164,6 +179,9 @@ async def test_case_save_roundtrip_with_jsonb_columns(pg_repo):
     )
     assert len(fetched.evidence) == 1
     assert fetched.evidence[0].source_file_id == file_id
+    # The string-timestamped message persisted (timestamptz coercion worked).
+    persisted = await pg_repo.get_messages(case.case_id)
+    assert any(m.get("content") == "how to fix the timeout?" for m in persisted)
 
 
 @pytest.mark.asyncio
@@ -245,6 +263,10 @@ async def test_add_message_roundtrip(pg_repo):
     case = _make_case(org_id, user_id)
     await pg_repo.save(case)
 
+    # created_at is an ISO STRING here, exactly as the live turn flow passes
+    # it — asyncpg rejects a str for the timestamptz column unless the repo
+    # coerces it to a datetime (the case-save 500 on the cluster). A datetime
+    # would have hidden the bug, so the string form is the regression guard.
     ok = await pg_repo.add_message(
         case.case_id,
         {
@@ -252,6 +274,7 @@ async def test_add_message_roundtrip(pg_repo):
             "turn_number": 1,
             "role": "user",
             "content": "the API returns 500",
+            "created_at": "2026-06-13T10:15:30.123456+00:00",
             "metadata": {"client": "copilot"},
         },
     )
