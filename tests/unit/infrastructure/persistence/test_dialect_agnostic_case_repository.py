@@ -100,7 +100,14 @@ async def test_upsert_case_detects_sqlite_dialect():
 
 @pytest.mark.asyncio
 async def test_upsert_case_detects_postgresql_dialect():
-    """_upsert_case_record emits ::jsonb casts on PostgreSQL."""
+    """_upsert_case_record JSONB-casts via CAST(:name AS JSONB) on PostgreSQL.
+
+    NOT the ``:name::jsonb`` colon-cast form — SQLAlchemy 2.0's text() bind
+    parser silently drops a placeholder immediately followed by ``::``, so
+    the value reaches asyncpg as a literal (the case-save 500 on the first
+    real-Postgres deployment). See test_postgresql_cast_binds_survive.py for
+    the bind-survival regression guard.
+    """
     mock_session = _make_mock_session_with_dialect("postgresql")
     repository = PostgreSQLHybridCaseRepository(mock_session)
 
@@ -110,8 +117,10 @@ async def test_upsert_case_detects_postgresql_dialect():
     sql_text = str(mock_session.execute.call_args[0][0])
 
     assert (
-        "::jsonb" in sql_text
-    ), "PostgreSQL SQL should contain ::jsonb type casts for optimal performance"
+        "CAST(:inquiry AS JSONB)" in sql_text
+    ), "PostgreSQL SQL should cast JSONB columns via CAST(:name AS JSONB)"
+    # The broken colon-cast form must never reappear.
+    assert "::jsonb" not in sql_text, "colon-cast :name::jsonb drops the bind"
     assert "version = :expected_version" in sql_text
 
 

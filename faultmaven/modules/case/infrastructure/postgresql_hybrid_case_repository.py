@@ -171,6 +171,28 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         self.db = db_session
 
+    def _cast(self, name: str, pg_type: str = "JSONB") -> str:
+        """Render a bound-parameter type cast safe on both backends.
+
+        Returns ``CAST(:name AS <pg_type>)`` on PostgreSQL and a bare
+        ``:name`` on SQLite (which stores these columns as TEXT and needs no
+        cast).
+
+        Why never ``:name::pg_type``: SQLAlchemy 2.0's ``text()`` bind parser
+        reads a ``::`` immediately following a placeholder as the start of a
+        PostgreSQL cast and silently DROPS the preceding ``:name`` bind. The
+        value then reaches asyncpg as the literal string ``:name::jsonb``
+        while sibling columns compile to ``$N`` params — the
+        ``syntax error at or near ":"`` that broke every JSONB/timestamptz
+        write on the first real-PostgreSQL deployment. ``CAST(:name AS ...)``
+        keeps the placeholder bound. See
+        ``test_postgresql_cast_binds_survive.py`` for the regression guard.
+        """
+        dialect = self.db.bind.dialect.name if self.db.bind else "sqlite"
+        if dialect == "postgresql":
+            return f"CAST(:{name} AS {pg_type})"
+        return f":{name}"
+
     # ========================================================================
     # Core CRUD Operations
     # ========================================================================
@@ -1091,11 +1113,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         try:
             # Use the upsert_case_participant function from migration 002
-            query = text("""
+            query = text(f"""
                 SELECT upsert_case_participant(
                     :case_id,
                     :user_id,
-                    :role::participant_role,
+                    {self._cast('role', 'participant_role')},
                     :added_by
                 )
             """)
@@ -1300,7 +1322,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 or datetime.now(timezone.utc)
             )
 
-            query = text("""
+            query = text(f"""
                 INSERT INTO case_messages (
                     message_id, case_id, organization_id, turn_number, role, content,
                     created_at, token_count, metadata
@@ -1308,7 +1330,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     :message_id, :case_id,
                     (SELECT organization_id FROM cases WHERE case_id = :case_id),
                     :turn_number, :role, :content,
-                    :created_at, :token_count, :metadata::jsonb
+                    :created_at, :token_count, {self._cast('metadata')}
                 )
             """)
 
@@ -1642,15 +1664,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         save so staleness queries work without scanning JSON.
 
         Deployment-Agnostic Implementation:
-        - Detects database dialect (PostgreSQL vs SQLite)
-        - Uses PostgreSQL ::jsonb type casts when available
-        - Uses plain text/JSON for SQLite compatibility
+        - Detects database dialect (PostgreSQL vs SQLite) via ``_cast()``
+        - Casts JSONB columns with CAST(:name AS JSONB) on PostgreSQL
+          (never :name::jsonb — see ``_cast`` for why)
+        - Uses plain ``:name`` placeholders for SQLite compatibility
         """
-        # Detect database dialect for deployment-agnostic SQL
-        dialect_name = self.db.bind.dialect.name if self.db.bind else "sqlite"
-        is_postgresql = dialect_name == "postgresql"
-
-        jsonb = "::jsonb" if is_postgresql else ""
         last_activity_at = datetime.now(timezone.utc)
         params = self._case_record_params(case, last_activity_at)
         expected_version = case.version
@@ -1678,14 +1696,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 resolved_at = :resolved_at,
                 closed_at = :closed_at,
                 disposition_eligibility = :disposition_eligibility,
-                inquiry = :inquiry{jsonb},
-                problem_verification = :problem_verification{jsonb},
-                working_conclusion = :working_conclusion{jsonb},
-                root_cause_conclusion = :root_cause_conclusion{jsonb},
-                escalation_state = :escalation_state{jsonb},
-                documentation = :documentation{jsonb},
-                progress = :progress{jsonb},
-                metadata = :metadata{jsonb},
+                inquiry = {self._cast('inquiry')},
+                problem_verification = {self._cast('problem_verification')},
+                working_conclusion = {self._cast('working_conclusion')},
+                root_cause_conclusion = {self._cast('root_cause_conclusion')},
+                escalation_state = {self._cast('escalation_state')},
+                documentation = {self._cast('documentation')},
+                progress = {self._cast('progress')},
+                metadata = {self._cast('metadata')},
                 version = :new_version
             WHERE case_id = :case_id AND version = :expected_version
         """)
@@ -1718,9 +1736,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     :state, :closure_reason, :current_turn, :turns_without_progress,
                     :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
                     :disposition_eligibility,
-                    :inquiry{jsonb}, :problem_verification{jsonb}, :working_conclusion{jsonb},
-                    :root_cause_conclusion{jsonb},
-                    :escalation_state{jsonb}, :documentation{jsonb}, :progress{jsonb}, :metadata{jsonb},
+                    {self._cast('inquiry')}, {self._cast('problem_verification')}, {self._cast('working_conclusion')},
+                    {self._cast('root_cause_conclusion')},
+                    {self._cast('escalation_state')}, {self._cast('documentation')}, {self._cast('progress')}, {self._cast('metadata')},
                     1
                 )
             """)
@@ -1841,7 +1859,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         and persists no file metadata.
         """
         for evidence in evidence_list:
-            query = text("""
+            query = text(f"""
                 INSERT INTO evidence (
                     evidence_id, case_id, organization_id, source_file_id,
                     category, source_type,
@@ -1859,7 +1877,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     :is_primary, :reliability_score, :tags,
                     :collected_at_turn, :collected_by, :vectorized,
                     :coverage_start_ts, :coverage_end_ts,
-                    :metadata::jsonb, :created_at, :updated_at
+                    {self._cast('metadata')}, :created_at, :updated_at
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
                     source_file_id = EXCLUDED.source_file_id,
@@ -1933,7 +1951,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         ``evidence.evidence_id`` is satisfied.
         """
         for need in needs_list:
-            query = text("""
+            query = text(f"""
                 INSERT INTO evidence_needs (
                     need_id, case_id, organization_id,
                     purpose, request_text, rationale,
@@ -1945,7 +1963,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     :need_id, :case_id, :organization_id,
                     :purpose, :request_text, :rationale,
                     :priority, :state,
-                    :motivating_hypothesis_ids::jsonb,
+                    {self._cast('motivating_hypothesis_ids')},
                     :superseded_reason,
                     :created_at_turn, :created_at, :updated_at
                 )
@@ -2017,7 +2035,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         are satisfied.
         """
         for hypothesis_id, hypothesis in hypotheses_dict.items():
-            query = text("""
+            query = text(f"""
                 INSERT INTO hypotheses (
                     hypothesis_id, case_id, organization_id, statement, state,
                     likelihood, initial_likelihood,
@@ -2034,7 +2052,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     :iterations_without_progress,
                     :category, :generation_mode, :rationale, :retirement_reason,
                     :refutation_reason,
-                    :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata::jsonb,
+                    :tested_at, :concluded_at, :proposed_at, :updated_at, {self._cast('metadata')},
                     :created_by, :updated_by
                 )
                 ON CONFLICT (hypothesis_id) DO UPDATE SET
@@ -2159,7 +2177,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             verified_at = solution.verified_at
             state = self._derive_solution_state(solution)
 
-            query = text("""
+            query = text(f"""
                 INSERT INTO solutions (
                     solution_id, case_id, organization_id, solution_type, title,
                     immediate_action, longterm_fix, implementation_steps, commands, risks,
@@ -2170,13 +2188,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     proposed_at, applied_at, updated_at, metadata
                 ) VALUES (
                     :solution_id, :case_id, :organization_id, :solution_type, :title,
-                    :immediate_action, :longterm_fix, :implementation_steps::jsonb,
-                    :commands::jsonb, :risks::jsonb,
+                    :immediate_action, :longterm_fix, {self._cast('implementation_steps')},
+                    {self._cast('commands')}, {self._cast('risks')},
                     :description, :state,
                     :proposed_by, :applied_by,
                     :verification_method, :verification_evidence_id, :effectiveness,
                     :verification_result, :verified_at,
-                    :proposed_at, :applied_at, :updated_at, :metadata::jsonb
+                    :proposed_at, :applied_at, :updated_at, {self._cast('metadata')}
                 )
                 ON CONFLICT (solution_id) DO UPDATE SET
                     solution_type = EXCLUDED.solution_type,
@@ -2262,7 +2280,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         verbatim from the call site.
         """
         for file in files_list:
-            query = text("""
+            query = text(f"""
                 INSERT INTO uploaded_files (
                     file_id, case_id, organization_id, uploaded_by,
                     filename, size_bytes, content_type, content_hash,
@@ -2276,7 +2294,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     :filename, :size_bytes, :content_type, :content_hash,
                     :storage_ref, :upload_source,
                     :uploaded_at_turn, :uploaded_at,
-                    :metadata::jsonb,
+                    {self._cast('metadata')},
                     :summary, :structural_index, :data_type,
                     :coverage_start_ts, :coverage_end_ts
                 )
@@ -2343,11 +2361,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if not msg.get("message_id"):
                 continue
 
-            query = text("""
+            query = text(f"""
                 INSERT INTO case_messages (
                     message_id, case_id, organization_id, turn_number, role, content, created_at, token_count, metadata
                 ) VALUES (
-                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :created_at, :token_count, :metadata::jsonb
+                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :created_at, :token_count, {self._cast('metadata')}
                 )
                 ON CONFLICT (message_id) DO UPDATE SET
                     turn_number = EXCLUDED.turn_number,
@@ -2398,13 +2416,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         already_persisted = count_result.scalar() or 0
         new_transitions = transitions[already_persisted:]
         for transition in new_transitions:
-            query = text("""
+            query = text(f"""
                 INSERT INTO case_actions (
                     case_id, organization_id, from_state, to_state, reason,
                     triggered_by, transitioned_at, metadata
                 ) VALUES (
                     :case_id, :organization_id, :from_state, :to_state, :reason,
-                    :triggered_by, :transitioned_at, :metadata::jsonb
+                    :triggered_by, :transitioned_at, {self._cast('metadata')}
                 )
             """)
 
@@ -2673,7 +2691,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         # it from the parent case via subquery so callers don't have to
         # thread it through. ``report_type`` CHECK allows only
         # ('resolution_summary', 'closure_summary').
-        insert_query = text("""
+        insert_query = text(f"""
             INSERT INTO reports (
                 report_id, case_id, organization_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
@@ -2684,8 +2702,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 (SELECT organization_id FROM cases WHERE case_id = :case_id),
                 :report_type, :version, :is_current,
                 :linked_to_closure, :title, :content, :format,
-                :generation_status, :generation_time_ms, :metadata::jsonb,
-                :generated_at::timestamptz, :updated_at::timestamptz, :generated_by
+                :generation_status, :generation_time_ms, {self._cast('metadata')},
+                {self._cast('generated_at', 'TIMESTAMPTZ')}, {self._cast('updated_at', 'TIMESTAMPTZ')}, :generated_by
             )
             ON CONFLICT (report_id) DO UPDATE SET
                 version = EXCLUDED.version,
@@ -2879,7 +2897,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         else:
             updated_at = now  # Default to current time if not set
 
-        update_query = text("""
+        update_query = text(f"""
             UPDATE reports
             SET version = :version,
                 is_current = :is_current,
@@ -2889,8 +2907,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 format = :format,
                 generation_status = :generation_status,
                 generation_time_ms = :generation_time_ms,
-                metadata = :metadata::jsonb,
-                updated_at = :updated_at::timestamptz
+                metadata = {self._cast('metadata')},
+                updated_at = {self._cast('updated_at', 'TIMESTAMPTZ')}
             WHERE report_id = :report_id
         """)
 
@@ -3368,15 +3386,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         from faultmaven.utils.serialization import to_json_compatible
 
         try:
-            query = text("""
+            query = text(f"""
                 INSERT INTO case_checkpoints (
                     checkpoint_id, case_id, organization_id, turn_number, case_snapshot,
                     snapshot_hash, trigger, created_at, metadata
                 ) VALUES (
                     :checkpoint_id, :case_id,
                     (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = :case_id),
-                    :turn_number, :case_snapshot::jsonb,
-                    :snapshot_hash, :trigger, :created_at::timestamptz, :metadata::jsonb
+                    :turn_number, {self._cast('case_snapshot')},
+                    :snapshot_hash, :trigger, {self._cast('created_at', 'TIMESTAMPTZ')}, {self._cast('metadata')}
                 )
             """)
 
