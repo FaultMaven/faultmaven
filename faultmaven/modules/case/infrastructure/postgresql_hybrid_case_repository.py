@@ -170,13 +170,36 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
               Evidence operations are handled directly by this repository.
         """
         self.db = db_session
+        self._is_pg = self._detect_postgresql(db_session)
+
+    @staticmethod
+    def _detect_postgresql(session: AsyncSession) -> bool:
+        """Resolve whether ``session`` is bound to PostgreSQL.
+
+        Tries ``session.bind`` first, then ``session.get_bind()`` — the SAME
+        order the repository-selection factory uses
+        (``sessionless_case_repository.get_repository_for_dialect``). The
+        fallback matters: a session whose ``.bind`` is None but whose
+        ``get_bind()`` resolves to PostgreSQL is routed to THIS repository by
+        the factory, so the cast logic must agree with that decision or it
+        would emit SQLite-style bare ``:name`` on a live PG connection.
+        """
+        try:
+            bind = session.bind
+            if bind is None and hasattr(session, "get_bind"):
+                bind = session.get_bind()
+            return bind is not None and bind.dialect.name == "postgresql"
+        except Exception:
+            # Mirror the factory's safe default: unknown bind -> not PG.
+            return False
 
     def _cast(self, name: str, pg_type: str = "JSONB") -> str:
         """Render a bound-parameter type cast safe on both backends.
 
         Returns ``CAST(:name AS <pg_type>)`` on PostgreSQL and a bare
         ``:name`` on SQLite (which stores these columns as TEXT and needs no
-        cast).
+        cast). Reads the dialect resolved once at construction
+        (``self._is_pg``) — it cannot change for the session's lifetime.
 
         Why never ``:name::pg_type``: SQLAlchemy 2.0's ``text()`` bind parser
         reads a ``::`` immediately following a placeholder as the start of a
@@ -188,8 +211,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         keeps the placeholder bound. See
         ``test_postgresql_cast_binds_survive.py`` for the regression guard.
         """
-        dialect = self.db.bind.dialect.name if self.db.bind else "sqlite"
-        if dialect == "postgresql":
+        if self._is_pg:
             return f"CAST(:{name} AS {pg_type})"
         return f":{name}"
 
@@ -1665,8 +1687,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         Deployment-Agnostic Implementation:
         - Detects database dialect (PostgreSQL vs SQLite) via ``_cast()``
-        - Casts JSONB columns with CAST(:name AS JSONB) on PostgreSQL
-          (never :name::jsonb — see ``_cast`` for why)
+        - Casts JSONB columns with ``CAST(:name AS JSONB)`` on PostgreSQL
+          (never ``:name::jsonb`` — see ``_cast`` for why)
         - Uses plain ``:name`` placeholders for SQLite compatibility
         """
         last_activity_at = datetime.now(timezone.utc)

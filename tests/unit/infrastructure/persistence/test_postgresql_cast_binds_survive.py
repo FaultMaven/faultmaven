@@ -70,6 +70,23 @@ class TestCastHelper:
         # Mirrors _upsert_case_record's "no bind -> sqlite" fallback.
         assert _repo_for(None)._cast("metadata") == ":metadata"
 
+    def test_detects_postgresql_via_get_bind_when_dot_bind_is_none(self):
+        """A session whose ``.bind`` is None but whose ``get_bind()`` resolves
+        to PostgreSQL must still cast. The repo-selection factory uses that
+        same ``.bind`` -> ``get_bind()`` fallback to route such a session to
+        THIS repository, so _cast must agree or it would emit SQLite-style
+        bare ``:name`` (no CAST) on a live PostgreSQL connection — the exact
+        missing-cast failure the fix prevents."""
+        session = MagicMock()
+        session.bind = None
+        pg_bind = MagicMock()
+        pg_bind.dialect.name = "postgresql"
+        session.get_bind = MagicMock(return_value=pg_bind)
+
+        repo = PostgreSQLHybridCaseRepository(session)
+        assert repo._is_pg is True
+        assert repo._cast("metadata") == "CAST(:metadata AS JSONB)"
+
     def test_cast_form_keeps_the_bind_colon_cast_drops_it(self):
         """The crux: CAST(:name AS T) keeps :name bound; :name::T drops it."""
         repo = _repo_for("postgresql")
@@ -86,18 +103,27 @@ class TestCastHelper:
 
 @pytest.mark.unit
 class TestNoColonCastInSource:
+    # Strip only backtick-quoted spans (``...``) before scanning — NOT the
+    # whole physical line. Whole-line skipping (the original guard) had a
+    # hole: an executable ``text("... :x::jsonb ...")`` line that also
+    # carried an unrelated ``:name``-style backtick comment would be skipped
+    # despite a real bug. By design, every doc mention of the anti-pattern in
+    # the repo is backtick-quoted, so span-stripping exempts exactly the prose
+    # and nothing executable.
+    _BACKTICK_SPAN = re.compile(r"``[^`]*``")
+    _COLON_CAST = re.compile(r":[a-zA-Z_][a-zA-Z0-9_]*::")
+
     def test_source_has_no_bindparam_colon_cast(self):
         """Structural guard against the entire class: no ``:name::type`` may
         appear in executable SQL. Casts must go through ``_cast()`` (which
-        renders CAST(...)). Backtick-quoted mentions in docstrings are
-        allowed — those document the anti-pattern."""
+        renders CAST(...))."""
         offenders = []
         for lineno, line in enumerate(_REPO_SOURCE.read_text().splitlines(), start=1):
-            if "``" in line:  # docstring reference to the anti-pattern
-                continue
-            if re.search(r":[a-zA-Z_][a-zA-Z0-9_]*::", line):
+            code = self._BACKTICK_SPAN.sub("", line)
+            if self._COLON_CAST.search(code):
                 offenders.append(f"{lineno}: {line.strip()}")
         assert not offenders, (
             "Found :name::type colon-casts (SQLAlchemy 2.0 drops the bind — "
-            "use self._cast()):\n" + "\n".join(offenders)
+            "use self._cast()). If documenting the anti-pattern, wrap it in "
+            "double backticks:\n" + "\n".join(offenders)
         )
