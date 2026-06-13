@@ -3130,10 +3130,22 @@ async def close_case(
                 # Continue closing case even if report linking fails
 
         # Close case
+        from faultmaven.infrastructure.observability.investigation_metrics import (
+            record_resolution_seconds,
+            record_transition,
+        )
+
+        from_state = case.state  # capture before mutation (funnel telemetry)
         closed_at = datetime.now(timezone.utc)
         case.state = CaseState.CLOSED
         await case_service.update_case_status(
             case_id, CaseState.CLOSED, current_user.user_id
+        )
+        # Throughput telemetry — this is a distinct close path from the
+        # engine's _execute_closed_transition (no double-count).
+        record_transition(from_state.value, CaseState.CLOSED.value)
+        record_resolution_seconds(
+            CaseState.CLOSED.value, (closed_at - case.created_at).total_seconds()
         )
 
         logger.info(
