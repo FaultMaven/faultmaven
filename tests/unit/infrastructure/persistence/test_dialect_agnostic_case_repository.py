@@ -89,10 +89,14 @@ async def test_upsert_case_detects_sqlite_dialect():
     mock_session.execute.assert_called_once()
     sql_text = str(mock_session.execute.call_args[0][0])
 
-    # SQLite branch must not emit PostgreSQL-specific ::jsonb casts.
-    assert (
-        "::jsonb" not in sql_text
-    ), "SQLite SQL should not contain PostgreSQL ::jsonb type casts"
+    # SQLite branch emits a bare placeholder, NOT a cast. Assert both
+    # directions: '::jsonb' alone is vacuous (the CAST() form the fix uses
+    # never contains it either), so a regression that wrongly emitted the PG
+    # CAST() on a SQLite session would slip past it. Pin the bare form and
+    # forbid any cast.
+    assert "inquiry = :inquiry" in sql_text, "SQLite should bind a bare :inquiry"
+    assert "CAST(" not in sql_text, "SQLite SQL must not emit CAST() type casts"
+    assert "::jsonb" not in sql_text
     # Version predicate is the OCC hook — must be present on every
     # UPDATE regardless of dialect.
     assert "version = :expected_version" in sql_text
@@ -135,6 +139,9 @@ async def test_upsert_case_defaults_to_sqlite_when_no_bind():
     mock_session.execute.assert_called_once()
     sql_text = str(mock_session.execute.call_args[0][0])
 
-    assert (
-        "::jsonb" not in sql_text
-    ), "Should default to SQLite SQL when no bind available"
+    # No-bind falls back to the SQLite (bare-placeholder) path. Assert the
+    # bare form positively and forbid CAST(), not just the vacuous
+    # '::jsonb'-absence the fix can never produce on any path.
+    assert "inquiry = :inquiry" in sql_text, "no-bind should bind a bare :inquiry"
+    assert "CAST(" not in sql_text, "no-bind must not emit CAST() type casts"
+    assert "::jsonb" not in sql_text
