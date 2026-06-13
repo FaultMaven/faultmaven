@@ -248,6 +248,67 @@ jobs:
           name: enterprise-coverage
 
   # ============================================================================
+  # POSTGRESQL INTEGRATION
+  # Exercise the PostgreSQL-only write paths against a REAL Postgres. The
+  # PostgreSQLHybridCaseRepository runs only on Postgres (SQLite uses a
+  # different repo) and its raw-SQL casts/binds are invisible to SQLite and
+  # mocked-session tests — three PG-only "dark path" defects shipped before
+  # this job existed (the :name::jsonb bind-drop and the reused-:case_id
+  # AmbiguousParameterError among them). Tests are marked `postgres` and
+  # skip themselves unless DATABASE_URL is a Postgres URL.
+  # ============================================================================
+  test-postgres:
+    needs: [code-quality]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    name: Test PostgreSQL Integration
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fmtest
+          POSTGRES_PASSWORD: fmtest
+          POSTGRES_DB: fmtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fmtest"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: "postgresql+asyncpg://fmtest:fmtest@localhost:5432/fmtest"
+      # Bypass the integration conftest's Redis/API readiness gate — these
+      # tests need only PostgreSQL.
+      SKIP_SERVICE_CHECKS: "true"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+          cache-dependency-path: 'requirements/enterprise.txt'
+
+      - name: Install Enterprise Edition from Lockfile
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/enterprise.txt
+          pip install -e . --no-deps
+
+      - name: Apply Migrations to PostgreSQL
+        run: alembic upgrade head
+
+      - name: Run PostgreSQL Integration Tests
+        run: |
+          pytest tests/ -m postgres -v --no-header
+
+  # ============================================================================
   # ARCHITECTURE BOUNDARY ENFORCEMENT
   # Enforce architectural boundaries with import-linter
   # ============================================================================
@@ -319,7 +380,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [test-community, test-enterprise, architecture-lint, test-packaging]
+    needs: [test-community, test-enterprise, test-postgres, architecture-lint, test-packaging]
 
     steps:
       - name: Checkout Repository

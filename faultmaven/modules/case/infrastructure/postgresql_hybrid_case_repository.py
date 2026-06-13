@@ -996,13 +996,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if not entities:
                 return
 
-            insert_q = text("""
+            insert_q = text(f"""
                 INSERT INTO case_entities (
                     case_id, organization_id, entity_type, entity_value, evidence_id,
                     mention_count, in_error_context, first_seen_ts
                 ) VALUES (
                     :case_id,
-                    (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                    (SELECT organization_id FROM cases WHERE case_id = {self._cast('case_id', 'VARCHAR')}),
                     :entity_type, :entity_value, :evidence_id,
                     :mention_count, :in_error_context, :first_seen_ts
                 )
@@ -1350,7 +1350,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     created_at, token_count, metadata
                 ) VALUES (
                     :message_id, :case_id,
-                    (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                    (SELECT organization_id FROM cases WHERE case_id = {self._cast('case_id', 'VARCHAR')}),
                     :turn_number, :role, :content,
                     :created_at, :token_count, {self._cast('metadata')}
                 )
@@ -2721,7 +2721,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 generated_at, updated_at, generated_by
             ) VALUES (
                 :report_id, :case_id,
-                (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                (SELECT organization_id FROM cases WHERE case_id = {self._cast('case_id', 'VARCHAR')}),
                 :report_type, :version, :is_current,
                 :linked_to_closure, :title, :content, :format,
                 :generation_status, :generation_time_ms, {self._cast('metadata')},
@@ -3414,7 +3414,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     snapshot_hash, trigger, created_at, metadata
                 ) VALUES (
                     :checkpoint_id, :case_id,
-                    (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = :case_id),
+                    (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = {self._cast('case_id', 'VARCHAR')}),
                     :turn_number, {self._cast('case_snapshot')},
                     :snapshot_hash, :trigger, {self._cast('created_at', 'TIMESTAMPTZ')}, {self._cast('metadata')}
                 )
