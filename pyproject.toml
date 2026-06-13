@@ -229,6 +229,7 @@ markers = [
     "integration: Integration tests (cross-layer)",
     "slow: Slow running tests (excluded from fast CI)",
     "enterprise: Tests requiring Redis, PostgreSQL, etc.",
+    "postgres: Tests that require a real PostgreSQL (skipped unless DATABASE_URL is postgresql)",
     "security: Security-related tests",
     "benchmark: Performance benchmarks (baseline tracking)",
     "performance: Performance overhead tests",

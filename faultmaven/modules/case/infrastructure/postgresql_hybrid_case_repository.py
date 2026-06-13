@@ -215,6 +215,25 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             return f"CAST(:{name} AS {pg_type})"
         return f":{name}"
 
+    def _org_lookup_case_id(self) -> str:
+        """``:case_id`` cast to VARCHAR, for the org-id derivation subquery.
+
+        Several INSERTs derive ``organization_id`` via
+        ``(SELECT organization_id FROM cases WHERE case_id = :case_id)`` while
+        ALSO binding ``:case_id`` as a column value in the same statement.
+        SQLAlchemy collapses both occurrences to a single asyncpg ``$N``; with
+        both bare, asyncpg cannot deduce one consistent type and raises
+        ``AmbiguousParameterError`` ("inconsistent types deduced for parameter
+        $N") — which broke every such write on real PostgreSQL.
+
+        Casting the subquery occurrence to VARCHAR gives ``$N`` an explicit
+        type, leaving the column-value occurrence as the sole inference source.
+        The cast is load-bearing, NOT cosmetic: do not simplify it back to a
+        bare ``:case_id``. Covered by
+        ``tests/integration/test_postgresql_repository_roundtrip.py``.
+        """
+        return self._cast("case_id", "VARCHAR")
+
     # ========================================================================
     # Core CRUD Operations
     # ========================================================================
@@ -996,13 +1015,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if not entities:
                 return
 
-            insert_q = text("""
+            insert_q = text(f"""
                 INSERT INTO case_entities (
                     case_id, organization_id, entity_type, entity_value, evidence_id,
                     mention_count, in_error_context, first_seen_ts
                 ) VALUES (
                     :case_id,
-                    (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                    (SELECT organization_id FROM cases WHERE case_id = {self._org_lookup_case_id()}),
                     :entity_type, :entity_value, :evidence_id,
                     :mention_count, :in_error_context, :first_seen_ts
                 )
@@ -1350,7 +1369,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     created_at, token_count, metadata
                 ) VALUES (
                     :message_id, :case_id,
-                    (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                    (SELECT organization_id FROM cases WHERE case_id = {self._org_lookup_case_id()}),
                     :turn_number, :role, :content,
                     :created_at, :token_count, {self._cast('metadata')}
                 )
@@ -2721,7 +2740,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 generated_at, updated_at, generated_by
             ) VALUES (
                 :report_id, :case_id,
-                (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                (SELECT organization_id FROM cases WHERE case_id = {self._org_lookup_case_id()}),
                 :report_type, :version, :is_current,
                 :linked_to_closure, :title, :content, :format,
                 :generation_status, :generation_time_ms, {self._cast('metadata')},
@@ -3414,7 +3433,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     snapshot_hash, trigger, created_at, metadata
                 ) VALUES (
                     :checkpoint_id, :case_id,
-                    (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = :case_id),
+                    (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = {self._org_lookup_case_id()}),
                     :turn_number, {self._cast('case_snapshot')},
                     :snapshot_hash, :trigger, {self._cast('created_at', 'TIMESTAMPTZ')}, {self._cast('metadata')}
                 )
