@@ -3131,7 +3131,7 @@ async def close_case(
 
         # Close case
         from faultmaven.infrastructure.observability.investigation_metrics import (
-            record_resolution_seconds,
+            record_resolution_turns,
             record_transition,
         )
 
@@ -3144,9 +3144,7 @@ async def close_case(
         # Throughput telemetry — this is a distinct close path from the
         # engine's _execute_closed_transition (no double-count).
         record_transition(from_state.value, CaseState.CLOSED.value)
-        record_resolution_seconds(
-            CaseState.CLOSED.value, (closed_at - case.created_at).total_seconds()
-        )
+        record_resolution_turns(CaseState.CLOSED.value, case.current_turn)
 
         logger.info(
             f"Case closed successfully",

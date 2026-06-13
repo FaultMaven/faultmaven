@@ -1,8 +1,11 @@
 """Investigation throughput instrumentation — funnel transition metrics.
 
 Verifies the terminal-transition executors record the case-funnel metrics
-(faultmaven_case_transitions_total / faultmaven_case_resolution_seconds) and
-that the module helpers behave (clamp negative durations).
+(faultmaven_case_transitions_total / faultmaven_case_resolution_turns) and
+that the module helpers behave (clamp negative turn counts).
+
+Resolution is measured in TURNS, not wall-clock: wall-clock is dominated by
+human idle time and measures user availability, not the copilot's effort.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -25,8 +28,8 @@ from faultmaven.modules.case.contracts import (
 )
 
 
-def _investigating_case(created_minutes_ago: int = 30) -> Case:
-    created = datetime.now(UTC) - timedelta(minutes=created_minutes_ago)
+def _investigating_case(current_turn: int = 7) -> Case:
+    created = datetime.now(UTC) - timedelta(minutes=30)
     case = Case(
         case_id="case_1234567890ab",
         title="Test Case",
@@ -50,48 +53,46 @@ def _investigating_case(created_minutes_ago: int = 30) -> Case:
     )
     # created_at is validated/managed by the model; set directly for the test.
     object.__setattr__(case, "created_at", created)
+    object.__setattr__(case, "current_turn", current_turn)
     return case
 
 
 @pytest.mark.unit
 class TestTerminalTransitionInstrumentation:
-    def test_resolved_records_transition_and_duration(self):
-        case = _investigating_case(created_minutes_ago=30)
+    def test_resolved_records_transition_and_turns(self):
+        case = _investigating_case(current_turn=7)
         with (
             patch.object(terminal_transitions, "record_transition") as rt,
-            patch.object(terminal_transitions, "record_resolution_seconds") as rd,
+            patch.object(terminal_transitions, "record_resolution_turns") as rd,
         ):
             _execute_resolved_transition(case, "user_123")
 
         rt.assert_called_once_with("investigating", "resolved")
-        assert rd.call_args[0][0] == "resolved"
-        # ~30 minutes, allow slack
-        assert 1500 < rd.call_args[0][1] < 2100
+        rd.assert_called_once_with("resolved", 7)
 
-    def test_closed_records_transition_and_duration(self):
-        case = _investigating_case(created_minutes_ago=10)
+    def test_closed_records_transition_and_turns(self):
+        case = _investigating_case(current_turn=3)
         with (
             patch.object(terminal_transitions, "record_transition") as rt,
-            patch.object(terminal_transitions, "record_resolution_seconds") as rd,
+            patch.object(terminal_transitions, "record_resolution_turns") as rd,
         ):
             _execute_closed_transition(case, "user_123", "closed_after_investigation")
 
         rt.assert_called_once_with("investigating", "closed")
-        assert rd.call_args[0][0] == "closed"
-        assert 480 < rd.call_args[0][1] < 720
+        rd.assert_called_once_with("closed", 3)
 
 
 @pytest.mark.unit
 class TestMetricHelpers:
-    def test_resolution_seconds_clamps_negative(self):
-        # A clock skew / future created_at must not record a negative duration.
+    def test_resolution_turns_clamps_negative(self):
+        # A defensive guard: a negative turn count must never be observed.
         with patch.object(
-            investigation_metrics.case_resolution_seconds, "labels"
+            investigation_metrics.case_resolution_turns, "labels"
         ) as labels:
-            investigation_metrics.record_resolution_seconds("resolved", -5.0)
+            investigation_metrics.record_resolution_turns("resolved", -5)
         labels.assert_called_once_with(to_state="resolved")
         observed = labels.return_value.observe.call_args[0][0]
-        assert observed == 0.0
+        assert observed == 0
 
     def test_record_transition_labels(self):
         with patch.object(

@@ -5,8 +5,12 @@ These measure the FLOW of investigations (the "throughput" view):
 - ``faultmaven_case_transitions_total`` — case state transitions, i.e. the
   funnel inquiry → investigating → resolved/closed. The rate is throughput;
   the ``to_state`` breakdown is the resolved-vs-closed-unresolved mix.
-- ``faultmaven_case_resolution_seconds`` — wall-clock from case creation to a
-  terminal state; p50/p95 are the investigation throughput SLA.
+- ``faultmaven_case_resolution_turns`` — conversation turns from case creation
+  to a terminal state; p50/p95 are the investigation-effort SLA. Turns, not
+  wall-clock: wall-clock is dominated by human think/idle time (a case left
+  open overnight reads as "hours" for a two-turn investigation), so it
+  measures user availability, not the copilot's effectiveness. Turns measure
+  the effort the agent actually took to drive to resolution.
 - ``faultmaven_investigation_turns_total`` — conversation turns processed, by
   the case state at the time of the turn (activity volume + where effort goes).
 
@@ -30,13 +34,15 @@ case_transitions_total = Counter(
     labelnames=["from_state", "to_state"],
 )
 
-# Investigations span minutes to days — buckets 1m,5m,15m,30m,1h,4h,12h,1d,3d,7d.
-case_resolution_seconds = Histogram(
-    "faultmaven_case_resolution_seconds",
-    "Wall-clock seconds from case creation to a terminal state "
-    "(resolved/closed). p50/p95 are the investigation throughput SLA.",
+# Investigations run a handful to a few dozen turns — Fibonacci-ish buckets
+# give resolution where most cases live (the low single/double digits).
+case_resolution_turns = Histogram(
+    "faultmaven_case_resolution_turns",
+    "Conversation turns from case creation to a terminal state "
+    "(resolved/closed). p50/p95 are the investigation-effort SLA. Turns, not "
+    "wall-clock — wall-clock is dominated by human idle time.",
     labelnames=["to_state"],
-    buckets=[60, 300, 900, 1800, 3600, 14400, 43200, 86400, 259200, 604800],
+    buckets=[1, 2, 3, 5, 8, 13, 21, 34, 55],
 )
 
 investigation_turns_total = Counter(
@@ -52,6 +58,6 @@ def record_transition(from_state: str, to_state: str) -> None:
     case_transitions_total.labels(from_state=from_state, to_state=to_state).inc()
 
 
-def record_resolution_seconds(to_state: str, seconds: float) -> None:
-    """Record time-to-terminal for a resolved/closed case (clamped at >=0)."""
-    case_resolution_seconds.labels(to_state=to_state).observe(max(seconds, 0.0))
+def record_resolution_turns(to_state: str, turns: int) -> None:
+    """Record turns-to-terminal for a resolved/closed case (clamped at >=0)."""
+    case_resolution_turns.labels(to_state=to_state).observe(max(turns, 0))
