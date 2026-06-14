@@ -3059,10 +3059,7 @@ async def close_case(
     Returns:
         CaseClosureResponse with list of archived reports
     """
-    from faultmaven.modules.case.contracts import (
-        ArchivedReport,
-        CaseClosureResponse,
-    )
+    from faultmaven.modules.case.contracts import CaseClosureResponse
 
     case_service = check_case_service_available(case_service)
 
@@ -3071,16 +3068,16 @@ async def close_case(
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
 
-        # Validate state
-        allowed_states = [
-            CaseState.RESOLVED,
-            CaseState.SOLVED,
-            CaseState.DOCUMENTING,
-        ]
-        if case.state not in allowed_states:
+        # Validate state — a case may be closed from any state except an
+        # already-closed one (CLOSED is terminal and unconditional; the only
+        # invalid close is re-closing). RESOLVED, INVESTIGATING and INQUIRY all
+        # close legitimately. (The prior list referenced CaseState.SOLVED /
+        # DOCUMENTING, which do not exist on the enum — every call raised
+        # AttributeError 500 before reaching this check.)
+        if case.state == CaseState.CLOSED:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot close case in {case.state.value} state",
+                detail="Case is already closed",
             )
 
         # Get current reports for closure (TD-001: via CaseRepository)
@@ -3102,15 +3099,9 @@ async def close_case(
                         )
                         await case_repository.update_report(updated_report)
 
-                        # Build archived reports list
-                        archived_reports.append(
-                            ArchivedReport(
-                                report_id=report.report_id,
-                                report_type=report.report_type,
-                                title=report.title,
-                                generated_at=report.generated_at,
-                            )
-                        )
+                        # The linked CaseReport is the closure response payload
+                        # (CaseClosureResponse.archived_reports is List[CaseReport]).
+                        archived_reports.append(updated_report)
 
                     logger.info(
                         f"Linked {len(latest_reports)} reports to case closure",
