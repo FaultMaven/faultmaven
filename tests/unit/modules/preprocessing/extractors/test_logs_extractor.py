@@ -2091,20 +2091,34 @@ class TestSeverityScaleContext:
         carry a `rate:~X/h` annotation alongside `span:`."""
         # Build a syslog-format log with many failed_password events spanning
         # several hours so the event_types section fires with a rate.
-        lines = []
-        # Generate 60 failed_password events over ~3 hours (180 minutes)
-        # spaced 3 minutes apart -> 20 events/hour
-        from datetime import datetime, timedelta
+        import datetime as _dt
+        from unittest.mock import patch
 
-        start = datetime(2024, 6, 14, 10, 0, 0)
+        from faultmaven.modules.preprocessing.extractors import utils
+
+        # Freeze "now" to a point AFTER the synthetic window. The extractor infers
+        # the year of yearless syslog timestamps as the current year and rolls a
+        # timestamp back one year only if it lands in the future. With the real
+        # "now", running this test on the same calendar date as the fixed data
+        # splits events across years — ballooning the per-event span to ~1 year and
+        # collapsing the rate from /h to /day. Freezing makes the test deterministic.
+        class _FrozenDateTime(_dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return _dt.datetime(2026, 6, 14, 23, 0, 0, tzinfo=tz)
+
+        # 60 failed_password events, 3 min apart -> ~3h span -> ~20 events/hour.
+        start = _dt.datetime(2026, 6, 14, 10, 0, 0)
+        lines = []
         for i in range(60):
-            ts = start + timedelta(minutes=i * 3)
+            ts = start + _dt.timedelta(minutes=i * 3)
             stamp = ts.strftime("%b %d %H:%M:%S")
             lines.append(
                 f"{stamp} testhost sshd[{1000 + i}]: "
                 f"Failed password for root from 10.0.0.5 port 2200 ssh2"
             )
-        result = extractor.extract("\n".join(lines))
+        with patch.object(utils, "datetime", _FrozenDateTime):
+            result = extractor.extract("\n".join(lines))
         sm = _sm(result)
         # The event_types section must list failed_password with a rate annotation
         assert "failed_password" in sm
