@@ -82,8 +82,8 @@ async def get_llm_config(
 
         settings = get_settings()
 
-        # Deployment mode determines dashboard behavior
-        is_cloud = getattr(settings.auth, "auth_mode", "local") == "oauth"
+        # Deployment mode determines dashboard behavior (canonical DEPLOYMENT_MODE, ADR-004)
+        is_cloud = settings.is_cloud
         deployment = "cloud" if is_cloud else "local"
         config_readonly = not is_cloud
 
@@ -194,14 +194,14 @@ async def update_llm_config(
             detail="LLM provider not initialized",
         )
 
-    # Local mode: config is read-only (managed via .env file)
+    # Standalone: config is read-only (managed via .env). Cloud manages config in the DB.
     from faultmaven.config.settings import get_settings as _get_settings
 
     _settings = _get_settings()
-    if getattr(_settings.auth, "auth_mode", "local") != "oauth":
+    if not _settings.is_cloud:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Configuration is read-only in local deployment. Edit the .env file and restart the server.",
+            detail="Configuration is read-only in standalone deployment. Edit the .env file and restart the server.",
         )
 
     try:
@@ -391,7 +391,7 @@ async def get_env_config_status(
 
         settings = get_settings()
 
-        deployment = "cloud" if settings.auth.auth_mode == "oauth" else "local"
+        deployment = "cloud" if settings.is_cloud else "local"
 
         # Build feature status
         from faultmaven.api.models import FeatureStatus
