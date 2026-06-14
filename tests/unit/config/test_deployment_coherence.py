@@ -5,6 +5,7 @@ cloud incoherence is fatal, standalone incoherence only warns.
 """
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -31,7 +32,9 @@ def _cloud_ok() -> SimpleNamespace:
             redis_url=None,
             redis_host="faultmaven-redis-master",
         ),
-        providers=SimpleNamespace(tenant_provider="multi"),
+        providers=SimpleNamespace(
+            tenant_provider="single"
+        ),  # cloud may be single-tenant
     )
 
 
@@ -139,3 +142,38 @@ def test_settings_is_cloud_property_reads_deployment_mode(monkeypatch):
 
     monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
     assert FaultMavenSettings(_env_file=None).is_standalone is True  # default
+
+
+# --- Tenancy availability (independent of DEPLOYMENT_MODE) -------------------
+
+_PLUGIN_LOOKUP = "faultmaven.providers.tenancy.factory.find_tenant_provider_plugin"
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_multi_tenant_without_plugin_fails_closed():
+    """TENANT_PROVIDER=multi with no installed plugin -> refuse to boot."""
+    s = _standalone_ok()  # tenancy is independent of deployment mode
+    s.providers = SimpleNamespace(tenant_provider="multi")
+    with patch(_PLUGIN_LOOKUP, return_value=None):
+        with pytest.raises(DeploymentCoherenceError) as exc:
+            validate_deployment_coherence(s)
+    assert "TENANT_PROVIDER='multi'" in str(exc.value)
+    assert "faultmaven-cloud" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_multi_tenant_with_installed_plugin_passes():
+    """TENANT_PROVIDER=multi resolves when a plugin is installed -> no raise."""
+    s = _standalone_ok()
+    s.providers = SimpleNamespace(tenant_provider="multi")
+    with patch(_PLUGIN_LOOKUP, return_value=object()):  # any non-None entry point
+        validate_deployment_coherence(s)
+
+
+@pytest.mark.unit
+def test_single_tenant_needs_no_plugin():
+    """The built-in single provider never requires a plugin."""
+    s = _standalone_ok()
+    s.providers = SimpleNamespace(tenant_provider="single")
+    validate_deployment_coherence(s)
