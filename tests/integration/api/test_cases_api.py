@@ -720,3 +720,57 @@ class TestErrorHandling:
         )
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+# ============================================================
+# POST /api/v1/cases/{case_id}/close Tests
+# ============================================================
+
+
+class TestCloseCase:
+    """Tests for POST /api/v1/cases/{case_id}/close endpoint.
+
+    Regression guard: the state-validation block previously referenced
+    CaseState.SOLVED / CaseState.DOCUMENTING, which do not exist on the enum,
+    so every call raised AttributeError -> 500 before any close occurred.
+    """
+
+    async def test_close_non_terminal_case_succeeds_not_500(
+        self, app, client, mock_case_service, mock_case, headers
+    ):
+        """A closeable case returns 200 (regression: must NOT 500)."""
+        from faultmaven.api.v1.dependencies import get_case_repository
+
+        mock_case.state = CaseState.RESOLVED
+        mock_case.current_turn = 5
+        mock_case_service.get_case.return_value = mock_case
+        mock_case_service.update_case_status.return_value = None
+        # close_case archives reports via the repository; None skips that branch.
+        app.dependency_overrides[get_case_repository] = lambda: None
+
+        response = await client.post(
+            "/api/v1/cases/case_123abc/close", json={}, headers=headers
+        )
+
+        assert response.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["case_id"] == "case_123abc"
+        mock_case_service.update_case_status.assert_called_once()
+
+    async def test_close_already_closed_returns_400(
+        self, app, client, mock_case_service, mock_case, headers
+    ):
+        """Closing an already-CLOSED case is the one invalid close -> 400."""
+        from faultmaven.api.v1.dependencies import get_case_repository
+
+        mock_case.state = CaseState.CLOSED
+        mock_case_service.get_case.return_value = mock_case
+        app.dependency_overrides[get_case_repository] = lambda: None
+
+        response = await client.post(
+            "/api/v1/cases/case_123abc/close", json={}, headers=headers
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "already closed" in response.json()["detail"].lower()
+        mock_case_service.update_case_status.assert_not_called()
