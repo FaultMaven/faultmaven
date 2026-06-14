@@ -317,6 +317,20 @@ class APICaseService(BaseService):
                                 f"state: Invalid status '{value}'. Must be one of: "
                                 f"{[s.value for s in CaseState]}"
                             )
+                    # Close-path integrity: a generic update must not jump a case
+                    # straight into a terminal state. RESOLVED/CLOSED carry
+                    # mandatory closure semantics (resolution gating,
+                    # closure_reason, a case_actions audit row) that only the
+                    # dedicated transition paths apply. A raw PATCH here would
+                    # leave an unclassified, unaudited terminal — the exact gap
+                    # the funnel's "unknown" closure bucket was added to surface.
+                    if value in (CaseState.RESOLVED, CaseState.CLOSED):
+                        raise ValidationException(
+                            f"state: cannot transition to terminal state "
+                            f"'{value.value}' via update. Use the resolve/close "
+                            f"transition (which records closure reason and audit "
+                            f"history)."
+                        )
                     try:
                         case.state = value
                     except PydanticValidationError as e:

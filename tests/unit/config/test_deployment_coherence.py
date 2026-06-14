@@ -84,12 +84,12 @@ def test_cloud_without_redis_fails():
 
 
 @pytest.mark.unit
-def test_cloud_single_tenant_fails():
+def test_cloud_single_tenant_is_valid():
+    # Single-tenant cloud (one org, many users) is valid — tenancy is an
+    # independent axis, not part of the cloud-native infra requirement.
     s = _cloud_ok()
     s.providers.tenant_provider = "single"
-    with pytest.raises(DeploymentCoherenceError) as exc:
-        validate_deployment_coherence(s)
-    assert "TENANT_PROVIDER must be 'multi'" in str(exc.value)
+    validate_deployment_coherence(s)  # must not raise
 
 
 @pytest.mark.unit
@@ -107,11 +107,12 @@ def test_cloud_reports_all_problems_at_once():
     s = _cloud_ok()
     s.auth.auth_mode = "local"
     s.database.database_url = "sqlite:///x"
-    s.providers.tenant_provider = "single"
+    s.database.session_storage_type = "inmemory"
+    s.database.redis_host = None
     with pytest.raises(DeploymentCoherenceError) as exc:
         validate_deployment_coherence(s)
     msg = str(exc.value)
-    assert "AUTH_MODE" in msg and "DATABASE_URL" in msg and "TENANT_PROVIDER" in msg
+    assert "AUTH_MODE" in msg and "DATABASE_URL" in msg and "Redis" in msg
 
 
 @pytest.mark.unit

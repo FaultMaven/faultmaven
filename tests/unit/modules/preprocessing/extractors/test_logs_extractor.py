@@ -2129,10 +2129,14 @@ class TestSeverityScaleContext:
     def test_event_type_rate_omitted_for_low_count(self, extractor):
         """Events with count <50 should not get a rate annotation — the
         sample is too small for a meaningful per-hour rate."""
-        from datetime import datetime, timedelta
+        from datetime import UTC, datetime, timedelta
 
         lines = []
-        start = datetime(2024, 6, 14, 10, 0, 0)
+        # Anchor firmly in the past so year-less syslog stamps don't straddle
+        # "now" (see the rate-annotation test above for the failure mode).
+        start = (datetime.now(tz=UTC) - timedelta(days=2)).replace(
+            hour=10, minute=0, second=0, microsecond=0
+        )
         for i in range(15):  # only 15 events
             ts = start + timedelta(minutes=i * 5)
             stamp = ts.strftime("%b %d %H:%M:%S")
