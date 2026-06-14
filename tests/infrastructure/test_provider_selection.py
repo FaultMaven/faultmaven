@@ -247,30 +247,52 @@ class TestTenantProviderFactory:
 
         assert isinstance(provider, SingleTenantProvider)
 
-    def test_factory_creates_multi_tenant_when_configured(self):
-        """Test factory creates MultiTenantProvider when configured (using dependency injection)."""
+    def test_factory_multi_fails_closed_without_plugin(self):
+        """Multi-tenant requires an installed plugin (ADR-006); absent -> fail closed."""
+        import pytest
         from unittest.mock import MagicMock, patch
 
         from faultmaven.config.settings import TenantProvider as TenantProviderEnum
-        from faultmaven.providers.tenancy.factory import create_tenant_provider
-        from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
+        from faultmaven.providers.tenancy.factory import (
+            TenancyConfigurationError,
+            create_tenant_provider,
+        )
 
-        # Arrange - Create mock settings with multi-tenant configuration
         mock_settings = MagicMock()
         mock_settings.providers = MagicMock()
         mock_settings.providers.tenant_provider = TenantProviderEnum.MULTI
-
         mock_repo = MagicMock()
 
-        # Act - Patch get_settings to return our mock settings
-        with patch(
-            "faultmaven.providers.tenancy.factory.get_settings",
-            return_value=mock_settings,
+        with (
+            patch(
+                "faultmaven.providers.tenancy.factory.get_settings",
+                return_value=mock_settings,
+            ),
+            patch(
+                "faultmaven.providers.tenancy.factory.find_tenant_provider_plugin",
+                return_value=None,
+            ),
         ):
-            provider = create_tenant_provider(mock_repo)
+            with pytest.raises(TenancyConfigurationError):
+                create_tenant_provider(mock_repo)
 
-        # Assert - Verify MultiTenantProvider was created
-        assert isinstance(provider, MultiTenantProvider)
+    def test_di_wrapper_reraises_fatal_tenancy_error(self):
+        """The container DI wrapper must NOT swallow a fatal tenancy misconfig —
+        otherwise gate-less paths (jobs CLI / cron) degrade to tenant_provider=None."""
+        import pytest
+        from unittest.mock import MagicMock, patch
+
+        from faultmaven.container.providers.services import (
+            create_tenant_provider as wrapper,
+        )
+        from faultmaven.providers.tenancy.factory import TenancyConfigurationError
+
+        with patch(
+            "faultmaven.providers.tenancy.factory.create_tenant_provider",
+            side_effect=TenancyConfigurationError("no plugin"),
+        ):
+            with pytest.raises(TenancyConfigurationError):
+                wrapper(MagicMock(), MagicMock())  # org_repo (truthy), settings
 
 
 # =============================================================================
@@ -284,12 +306,14 @@ class TestSettingsPurity:
     def test_tenancy_factory_uses_settings_not_env(
         self, clean_env, reset_settings_cache
     ):
-        """Test that tenancy factory reads from settings, not os.getenv directly."""
+        """Test that the tenancy factory reads from settings, not os.getenv directly."""
         import faultmaven.providers.tenancy.factory as factory_module
 
-        source = inspect.getsource(factory_module.create_tenant_provider)
+        create_src = inspect.getsource(factory_module.create_tenant_provider)
+        resolve_src = inspect.getsource(factory_module.requested_tenant_provider)
 
-        # Should not contain direct os.getenv calls
-        assert "os.getenv" not in source
-        # Should use settings
-        assert "get_settings" in source or "settings" in source
+        # Neither the factory nor its name resolver reads the environment directly.
+        assert "os.getenv" not in create_src
+        assert "os.getenv" not in resolve_src
+        # The provider name is sourced from settings (via the resolver).
+        assert "get_settings" in resolve_src

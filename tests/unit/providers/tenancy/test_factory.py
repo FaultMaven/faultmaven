@@ -15,6 +15,7 @@ from faultmaven.providers.tenancy.factory import (
     create_tenant_provider,
     find_tenant_provider_plugin,
 )
+from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 _SETTINGS = "faultmaven.providers.tenancy.factory.get_settings"
@@ -76,7 +77,7 @@ def test_unknown_non_single_value_fails_closed(org_repo):
 
 @pytest.mark.unit
 def test_multi_loads_plugin_and_forwards_repositories(org_repo):
-    built = object()
+    built = MagicMock(spec=TenantProvider)  # must be a TenantProvider (validated)
     builder = MagicMock(return_value=built)
     fake_ep = SimpleNamespace(load=lambda: builder, value="pkg:build")
 
@@ -107,3 +108,54 @@ def test_provider_value_is_case_insensitive(org_repo):
 def test_find_plugin_returns_none_when_unregistered():
     """No plugin is registered for 'multi' in the core test env."""
     assert find_tenant_provider_plugin("multi") is None
+
+
+@pytest.mark.unit
+def test_discovery_failure_is_fatal_not_masked_as_absent():
+    """A corrupt-metadata discovery failure surfaces its real cause, not 'not installed'."""
+    with patch(
+        "faultmaven.providers.tenancy.factory.entry_points",
+        side_effect=RuntimeError("corrupt dist-info"),
+    ):
+        with pytest.raises(TenancyConfigurationError) as exc:
+            find_tenant_provider_plugin("multi")
+    assert "discover tenancy plugins" in str(exc.value)
+
+
+# --- plugin builder contract ------------------------------------------------
+
+
+@pytest.mark.unit
+def test_plugin_returning_non_provider_fails_closed(org_repo):
+    """A plugin whose builder returns a non-TenantProvider is rejected."""
+    fake_ep = SimpleNamespace(load=lambda: (lambda **kw: object()), value="pkg:bad")
+    with patch(_SETTINGS, return_value=_settings("multi")):
+        with patch(_PLUGIN, return_value=fake_ep):
+            with pytest.raises(TenancyConfigurationError) as exc:
+                create_tenant_provider(organization_repository=org_repo)
+    assert "not a TenantProvider" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_plugin_builder_wrong_signature_fails_closed(org_repo):
+    """An entry point pointing at a class that rejects enterprise_repository
+    (e.g. the provider class itself, not a builder) yields a clear error."""
+
+    def _bad_builder(organization_repository):  # missing enterprise_repository
+        return None
+
+    fake_ep = SimpleNamespace(load=lambda: _bad_builder, value="pkg:WrongSig")
+    with patch(_SETTINGS, return_value=_settings("multi")):
+        with patch(_PLUGIN, return_value=fake_ep):
+            with pytest.raises(TenancyConfigurationError) as exc:
+                create_tenant_provider(organization_repository=org_repo)
+    assert "valid builder" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_coerce_provider_name_handles_enum_str_and_none():
+    from faultmaven.providers.tenancy.factory import coerce_provider_name
+
+    assert coerce_provider_name(None) == "single"  # unset -> built-in default
+    assert coerce_provider_name("MULTI") == "multi"
+    assert coerce_provider_name(SimpleNamespace(value="Multi")) == "multi"

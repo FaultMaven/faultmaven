@@ -4,9 +4,11 @@
 provider (e.g. ``multi``) is a paid/cloud capability supplied by an installed
 plugin that registers itself under the ``faultmaven.providers.tenancy``
 entry-point group — the open-source core never imports the cloud package by
-name. If a non-``single`` provider is configured but its plugin is not
-installed, the factory fails **closed** rather than silently downgrading to
-single-tenant (which would blend access modes).
+name. A plugin's entry point must resolve to a *builder callable*
+``build(organization_repository, enterprise_repository=None) -> TenantProvider``
+(not the provider class itself). If a non-``single`` provider is configured but
+its plugin is not installed, the factory fails **closed** rather than silently
+downgrading to single-tenant (which would blend access modes).
 
 The authoritative fail-closed guard runs earlier, at startup, in the deployment
 coherence gate (``faultmaven.config.deployment_coherence``), which crashes the
@@ -38,23 +40,37 @@ class TenancyConfigurationError(RuntimeError):
     """Fatal: the configured non-``single`` tenant provider is not installed."""
 
 
+def coerce_provider_name(tp: object) -> str:
+    """Normalize a tenant-provider value (enum / str / None) to a lower-case name.
+
+    ``None`` (unset) maps to the built-in ``single`` default. Shared by the
+    factory and the startup coherence gate so they cannot diverge on the naming.
+    """
+    if tp is None:
+        return BUILTIN_SINGLE
+    return str(getattr(tp, "value", tp)).lower()
+
+
 def requested_tenant_provider() -> str:
     """Return the configured tenant-provider name (lower-cased)."""
-    tp = get_settings().providers.tenant_provider
-    return str(getattr(tp, "value", tp)).lower()
+    return coerce_provider_name(get_settings().providers.tenant_provider)
 
 
 def find_tenant_provider_plugin(name: str) -> Optional[EntryPoint]:
     """Return the installed entry point named ``name`` under the tenancy group.
 
-    Returns ``None`` when no such plugin is installed. ``single`` is built in and
-    is never expected to be a plugin.
+    Returns ``None`` only when the plugin is genuinely absent. A discovery
+    failure (e.g. corrupt/duplicate distribution metadata) is fatal and raises
+    ``TenancyConfigurationError`` with the real cause, rather than masquerading
+    as "plugin not installed". ``single`` is built in and is never a plugin.
     """
     try:
         eps = entry_points(group=TENANCY_ENTRY_POINT_GROUP)
-    except Exception as exc:  # pragma: no cover - discovery must not crash callers
-        logger.critical("Tenant provider plugin discovery failed: %s", exc)
-        return None
+    except Exception as exc:
+        raise TenancyConfigurationError(
+            f"Failed to discover tenancy plugins under "
+            f"'{TENANCY_ENTRY_POINT_GROUP}': {exc}"
+        ) from exc
     return next((ep for ep in eps if ep.name == name), None)
 
 
@@ -97,9 +113,22 @@ def create_tenant_provider(
         raise TenancyConfigurationError(msg)
 
     builder = ep.load()
-    provider = builder(
-        organization_repository=organization_repository,
-        enterprise_repository=enterprise_repository,
-    )
+    try:
+        provider = builder(
+            organization_repository=organization_repository,
+            enterprise_repository=enterprise_repository,
+        )
+    except TypeError as exc:
+        raise TenancyConfigurationError(
+            f"Tenancy plugin '{requested}' ({ep.value}) is not a valid builder: it "
+            "must be callable as "
+            "build(organization_repository, enterprise_repository=None) -> "
+            f"TenantProvider, not the provider class itself ({exc})."
+        ) from exc
+    if not isinstance(provider, TenantProvider):
+        raise TenancyConfigurationError(
+            f"Tenancy plugin '{requested}' ({ep.value}) returned "
+            f"{type(provider).__name__}, not a TenantProvider."
+        )
     logger.info("Tenant provider: '%s' loaded from plugin %s", requested, ep.value)
     return provider

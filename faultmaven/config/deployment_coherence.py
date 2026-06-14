@@ -5,9 +5,12 @@ Asserts that the running configuration is coherent with the canonical
 (OAuth auth + RS256 keys, PostgreSQL, real Redis); otherwise the app refuses to
 boot rather than silently running as ``standalone`` on cloud infrastructure.
 
-Tenancy (``TENANT_PROVIDER`` single/multi) is an INDEPENDENT axis and is NOT
-checked here — a cloud deployment may serve a single organization (many users)
-or many isolated tenants (SaaS).
+Tenancy (``TENANT_PROVIDER`` single/multi) is an INDEPENDENT axis: the
+cloud-infra checks above never require multi-tenant (a cloud deployment may
+serve one organization or many isolated tenants). However, a non-``single``
+provider must have its plugin (faultmaven-cloud) installed — that availability
+IS enforced here, fail-closed, regardless of ``DEPLOYMENT_MODE``
+(see ``_check_tenant_provider_installed``).
 
 This closes the failure mode where a cloud k8s deployment whose Secret carried
 ``AUTH_MODE=local`` was silently treated as standalone (auth bypassed, DB
@@ -109,14 +112,19 @@ def _check_tenant_provider_installed(settings: Any) -> None:
     group. If one is configured but absent, refuse to boot rather than silently
     downgrading to single-tenant (which would blend access modes).
     """
-    providers = getattr(settings, "providers", None)
-    tp = getattr(providers, "tenant_provider", "single")
-    requested = str(getattr(tp, "value", tp)).lower()
-    if requested == "single":
-        return
+    # Lazy import: keep this module importable as early as possible at startup,
+    # and reuse the factory's name coercion + built-in constant so the gate and
+    # the factory cannot diverge on what "single" / "installed" means.
+    from faultmaven.providers.tenancy.factory import (
+        BUILTIN_SINGLE,
+        coerce_provider_name,
+        find_tenant_provider_plugin,
+    )
 
-    # Lazy import: keep this module importable as early as possible at startup.
-    from faultmaven.providers.tenancy.factory import find_tenant_provider_plugin
+    providers = getattr(settings, "providers", None)
+    requested = coerce_provider_name(getattr(providers, "tenant_provider", None))
+    if requested == BUILTIN_SINGLE:
+        return
 
     if find_tenant_provider_plugin(requested) is None:
         raise DeploymentCoherenceError(

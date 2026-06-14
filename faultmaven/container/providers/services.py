@@ -470,11 +470,14 @@ def create_tenant_provider(
         logger.debug("TenantProvider skipped (no organization repository)")
         return None
 
-    try:
-        from faultmaven.providers.tenancy.factory import (
-            create_tenant_provider as factory,
-        )
+    from faultmaven.providers.tenancy.factory import (
+        TenancyConfigurationError,
+    )
+    from faultmaven.providers.tenancy.factory import (
+        create_tenant_provider as factory,
+    )
 
+    try:
         provider = factory(
             organization_repository=organization_repository,
             enterprise_repository=enterprise_repository,
@@ -484,6 +487,11 @@ def create_tenant_provider(
             f"enterprise_repo={'yes' if enterprise_repository else 'no'})"
         )
         return provider
+    except TenancyConfigurationError:
+        # Fatal misconfiguration (e.g. TENANT_PROVIDER=multi without its plugin).
+        # Never degrade to None — fail closed on EVERY container path (jobs/CLI
+        # workers, not just the web lifespan that also runs the coherence gate).
+        raise
     except Exception as e:
         logger.warning(f"TenantProvider initialization failed: {e}")
         import traceback
