@@ -2027,6 +2027,19 @@ class EvidenceStorageSettings(BaseSettings):
 # =============================================================================
 
 
+class DeploymentMode(str, Enum):
+    """Canonical deployment architecture (ADR-004, faultmaven-doc-internal).
+
+    The single source of truth for "am I standalone or cloud?". Auth mode,
+    storage backends, and tenancy are CONSEQUENCES that must be coherent with
+    this (enforced by ``faultmaven.config.deployment_coherence``) — never
+    inputs that decide the mode.
+    """
+
+    STANDALONE = "standalone"  # single-process, single-user (default)
+    CLOUD = "cloud"  # orchestrated (k8s), multi-tenant
+
+
 class FaultMavenSettings(BaseSettings):
     """
     Unified configuration for FaultMaven system.
@@ -2038,6 +2051,17 @@ class FaultMavenSettings(BaseSettings):
 
     All configuration access should go through this class via dependency injection.
     """
+
+    # Canonical deployment switch (ADR-004). NOT derived from AUTH_MODE — auth,
+    # storage, and tenancy must be coherent with this (boot-time gate enforces it).
+    deployment_mode: DeploymentMode = Field(
+        default=DeploymentMode.STANDALONE,
+        validation_alias="DEPLOYMENT_MODE",
+        description=(
+            "Canonical deployment architecture: 'standalone' (single-process, "
+            "single-user) or 'cloud' (k8s, multi-tenant)."
+        ),
+    )
 
     # Provider Selectors (PR #3 - doc-aligned vocabulary)
     providers: ProviderSettings = Field(default_factory=ProviderSettings)
@@ -2101,6 +2125,17 @@ class FaultMavenSettings(BaseSettings):
     def allowed_evidence_mime_types(self) -> List[str]:
         """Get allowed evidence MIME types."""
         return self.evidence_storage.allowed_evidence_mime_types
+
+    @property
+    def is_cloud(self) -> bool:
+        """True iff DEPLOYMENT_MODE=cloud — the one canonical deployment check (ADR-004)."""
+        val = getattr(self.deployment_mode, "value", self.deployment_mode)
+        return str(val) == DeploymentMode.CLOUD.value
+
+    @property
+    def is_standalone(self) -> bool:
+        """True iff DEPLOYMENT_MODE=standalone (not cloud)."""
+        return not self.is_cloud
 
     model_config = {
         "env_file": ".env",

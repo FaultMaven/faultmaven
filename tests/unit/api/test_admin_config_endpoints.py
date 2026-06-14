@@ -122,6 +122,7 @@ def mock_settings():
     settings.llm.cohere_api_key = None
     settings.llm.openrouter_api_key = None
     settings.auth.auth_mode = "local"
+    settings.is_cloud = False  # standalone (canonical DEPLOYMENT_MODE, ADR-004)
     settings.server.environment = MagicMock(value="development")
     settings.database.case_storage_type = "sqlite"
     settings.database.session_storage_type = "inmemory"
@@ -246,8 +247,9 @@ class TestUpdateLLMConfig:
 
     @pytest.fixture(autouse=True)
     def _cloud_mode(self, mock_settings):
-        """PUT tests require cloud mode (oauth) since local mode is read-only."""
+        """PUT tests require cloud mode since standalone is read-only."""
         mock_settings.auth.auth_mode = "oauth"
+        mock_settings.is_cloud = True
         with patch(SETTINGS_PATCH, return_value=mock_settings):
             yield
 
@@ -255,8 +257,9 @@ class TestUpdateLLMConfig:
     async def test_local_mode_returns_403(
         self, mock_admin_user, mock_llm_provider, mock_settings
     ):
-        """Local deployment rejects config writes with 403."""
+        """Standalone deployment rejects config writes with 403."""
         mock_settings.auth.auth_mode = "local"
+        mock_settings.is_cloud = False  # override the class-level cloud fixture
         request = LLMConfigUpdateRequest(primary_provider="fireworks")
         with patch(SETTINGS_PATCH, return_value=mock_settings):
             with pytest.raises(HTTPException) as exc_info:
@@ -481,6 +484,7 @@ class TestGetEnvConfigStatus:
     ):
         """Returns correct values for cloud deployment config."""
         mock_settings.auth.auth_mode = "oauth"
+        mock_settings.is_cloud = True
         mock_settings.server.environment = MagicMock(value="production")
         mock_settings.database.case_storage_type = "postgresql"
         mock_settings.database.session_storage_type = "redis"

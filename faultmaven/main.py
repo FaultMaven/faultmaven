@@ -283,6 +283,12 @@ async def lifespan(app: FastAPI):
 
         settings = get_settings()
 
+        # Fail fast if the running config contradicts DEPLOYMENT_MODE (ADR-004):
+        # a cloud deployment must present cloud identity, never silently run as standalone.
+        from .config.deployment_coherence import validate_deployment_coherence
+
+        validate_deployment_coherence(settings)
+
         # Validate workers configuration for in-memory storage
         workers = settings.server.workers
         storage_type = (settings.database.session_storage_type or "inmemory").lower()
@@ -382,8 +388,8 @@ async def lifespan(app: FastAPI):
             logger.debug("✅ Application bootstrap complete")
 
             # Apply config overrides from database (cloud mode only).
-            # Local mode uses .env as the sole source of truth.
-            is_cloud = getattr(settings.auth, "auth_mode", "local") == "oauth"
+            # Standalone uses .env as the sole source of truth.
+            is_cloud = settings.is_cloud
             if is_cloud:
                 try:
                     from .config.llm_config_overrides import apply_overrides_to_settings
@@ -1511,7 +1517,7 @@ async def get_capabilities():
     # Determine deployment mode based on dashboard URL
     # Cloud: https://app.faultmaven.ai (managed SaaS)
     # Self-hosted: localhost or custom domain (customer-managed)
-    is_cloud = settings.auth.dashboard_url == "https://app.faultmaven.ai"
+    is_cloud = settings.is_cloud
     deployment_mode = "cloud" if is_cloud else "self-hosted"
 
     return {

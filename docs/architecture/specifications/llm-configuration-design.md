@@ -2,7 +2,7 @@
 
 ## Status
 
-**Draft** — Design document for review before implementation.
+**Draft** (original 2026-03-20). **Amended 2026-06-14** per ADR-004 (`faultmaven-doc-internal`): deployment mode is now **canonical (`DEPLOYMENT_MODE`)** and **decoupled from `AUTH_MODE`**; a fail-fast **deployment coherence gate** and the **complete config port** are added; terminology aligned to `standalone`/`cloud`. The rest of this design stands except where the amended sections (Deployment Modes, Configuration Completeness) supersede it.
 
 ## Problem Statement
 
@@ -23,17 +23,40 @@ The current LLM configuration system has several design flaws:
 
 ## Deployment Modes
 
-The deployment mode is derived from `AUTH_MODE` in `.env`:
+> **Terminology (per ADR-004):** "Local mode" → **`standalone`**, "Cloud mode" → **`cloud`**. `local` is now reserved for `AUTH_MODE=local` only. Older "Local mode" wording elsewhere in this doc means `standalone`.
 
-- `AUTH_MODE=local` → **Local mode** (self-hosted, single user)
-- `AUTH_MODE=oauth` → **Cloud mode** (managed, multi-user)
+The deployment mode is **canonical**, set explicitly by `DEPLOYMENT_MODE`:
 
-This is already computed at [admin_config.py:365](../../faultmaven/api/routes/admin_config.py):
+- `DEPLOYMENT_MODE=standalone` → single-process, single-user (the default)
+- `DEPLOYMENT_MODE=cloud` → orchestrated (k8s), multi-tenant
+
+**It is NOT derived from `AUTH_MODE`.** The previous design computed `deployment = "cloud" if auth_mode == "oauth" else "local"` — which silently mislabels a cloud deployment as standalone whenever its `AUTH_MODE` is wrong. That exact coupling caused a production incident: a cloud k8s deployment whose Secret carried `AUTH_MODE=local` was treated as standalone (DB overrides skipped, dashboard read-only, auth bypassed) while running on full cloud infrastructure (Postgres/Redis/ChromaDB). See ADR-004 §D and its 2026-06-14 incident note.
+
+`is_cloud` / `is_standalone` derive from `DEPLOYMENT_MODE` **alone**:
+
 ```python
-deployment = "cloud" if settings.auth.auth_mode == "oauth" else "local"
+# faultmaven/config/settings.py
+settings.is_cloud       # deployment_mode == "cloud"
+settings.is_standalone  # not is_cloud
 ```
 
-### Local Mode
+`auth_mode`, the storage backends, and tenancy are **consequences** that must be *coherent* with `DEPLOYMENT_MODE` (enforced by the gate below) — not inputs that decide the mode.
+
+### Deployment Coherence Gate (fail-fast, at boot)
+
+`validate_deployment_coherence(settings)` runs during startup and **refuses to boot** on any mismatch, raising one error that lists every incoherence. No mixed state is representable.
+
+| `DEPLOYMENT_MODE=cloud` requires | Why |
+|---|---|
+| `auth_mode == oauth` | Cloud is multi-user; `local` bypasses auth |
+| RS256 key material present (`JWT_PRIVATE_KEY`/`_PATH` + public) | OAuth tokens are RS256 |
+| `DATABASE_URL` is PostgreSQL | SQLite is single-writer / standalone |
+| real Redis (session storage `redis` + host/url) | FakeRedis is ephemeral / standalone |
+| `tenant_provider == multi` | Cloud isolates tenants |
+
+`DEPLOYMENT_MODE=standalone` keeps the simple defaults (local auth, SQLite, FakeRedis, single tenant); the gate flags only egregious mixes (e.g. standalone declaring `auth_mode=oauth`). The dangerous, asymmetric failure is **cloud silently running as standalone**, which the gate makes impossible. This replaces the three independent, unsynchronized "is cloud?" checks (`auth_mode`, `dashboard_url`, `tenant_provider`) with one canonical switch + one gate.
+
+### Standalone Mode (`DEPLOYMENT_MODE=standalone`)
 
 | Aspect | Behavior |
 |--------|----------|
@@ -100,6 +123,16 @@ Settings that require infrastructure changes or have security implications if ch
 | **Network/Security** | `CORS_ALLOW_ORIGINS`, `CORS_ALLOW_CREDENTIALS` | Security-critical. Wrong CORS config could expose the API. |
 | **PII** | `SANITIZE_PII` | Enabling/disabling mid-session could leak previously-protected data. Requires deliberate restart. |
 | **Provider Base URLs** | `OPENAI_API_BASE`, `ANTHROPIC_API_BASE`, etc. | Rarely changed. Incorrect values break providers silently. |
+
+### Configuration Completeness & the cloud-required set (the port)
+
+The two tables above are *illustrative*, not the full surface. The canonical surface is **`settings.py`** (~150 settings across ~25 classes). Every setting is tagged on three axes so neither deployment surface drifts:
+
+- **scope**: `standalone` | `cloud` | `both`
+- **home**: `bootstrap-env` (ConfigMap) | `secret` | `operational-override` (DB, hot-reload) | `derived`
+- **cloud-required**: must-be-explicit (fails the coherence gate if unset/defaulted) vs safe-to-default
+
+`cloud-required` closes the incident's root cause: the cloud LLM layer (active `*_MODEL`, capability providers, `STRICT_PROVIDER_MODE`) and parts of the data-tier wiring were absent from cloud config and silently fell to stale code defaults (e.g. `gemini-2.0-flash`, now 404). Tagging them `cloud-required` makes a cloud boot fail loudly instead of serving a stale default. The standalone `.env.example` is **generated** from the `standalone`/`both` scope; cloud config is **validated** against the `cloud-required` set (the boot gate + a CI parity check against the k8s ConfigMap/Secret).
 
 ### DB Schema
 
@@ -171,7 +204,7 @@ The `_setup_fallback_chain()` method already handles strict mode correctly for r
 
 ## Dashboard Views
 
-### Local Mode — Read-Only Status
+### Standalone Mode — Read-Only Status
 
 The dashboard shows a summary of the server's current configuration as a reference for the user. No edit controls.
 
