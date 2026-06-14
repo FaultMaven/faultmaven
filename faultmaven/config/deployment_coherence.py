@@ -99,6 +99,34 @@ def _check_standalone(settings: Any) -> List[str]:
     return warnings
 
 
+def _check_tenant_provider_installed(settings: Any) -> None:
+    """Fail closed if a non-``single`` tenant provider is configured without its plugin.
+
+    Tenancy is independent of ``DEPLOYMENT_MODE`` (a cloud deployment may be
+    single- or multi-tenant). ``single`` is built into the core; any other
+    provider (e.g. ``multi``) is supplied by an installed plugin
+    (faultmaven-cloud) under the ``faultmaven.providers.tenancy`` entry-point
+    group. If one is configured but absent, refuse to boot rather than silently
+    downgrading to single-tenant (which would blend access modes).
+    """
+    providers = getattr(settings, "providers", None)
+    tp = getattr(providers, "tenant_provider", "single")
+    requested = str(getattr(tp, "value", tp)).lower()
+    if requested == "single":
+        return
+
+    # Lazy import: keep this module importable as early as possible at startup.
+    from faultmaven.providers.tenancy.factory import find_tenant_provider_plugin
+
+    if find_tenant_provider_plugin(requested) is None:
+        raise DeploymentCoherenceError(
+            f"TENANT_PROVIDER='{requested}' requires a tenancy plugin "
+            "(faultmaven-cloud) registered under 'faultmaven.providers.tenancy', "
+            "but none is installed. Refusing to start rather than silently running "
+            "single-tenant."
+        )
+
+
 def validate_deployment_coherence(settings: Any) -> None:
     """Raise :class:`DeploymentCoherenceError` if config contradicts ``DEPLOYMENT_MODE``.
 
@@ -107,6 +135,10 @@ def validate_deployment_coherence(settings: Any) -> None:
     silently running as standalone, not the reverse. Call once at startup, as
     early as settings are available.
     """
+    # Tenancy availability is independent of DEPLOYMENT_MODE and always fatal:
+    # a non-single provider requires its plugin (faultmaven-cloud), else fail closed.
+    _check_tenant_provider_installed(settings)
+
     if settings.is_cloud:
         problems = _check_cloud(settings)
         if problems:

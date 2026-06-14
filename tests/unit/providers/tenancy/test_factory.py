@@ -1,159 +1,109 @@
-"""Unit tests for TenantProvider Factory (TASK-023).
+"""Unit tests for the TenantProvider factory (ADR-006 entry-point seam).
 
-Test Coverage: 4-6 tests
+`single` is the built-in default; non-`single` providers (e.g. `multi`) come
+from an installed plugin via the `faultmaven.providers.tenancy` entry-point
+group. Missing plugin -> fail closed (never silently downgrade to single).
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.config.settings import TenantProvider
-from faultmaven.providers.tenancy.factory import create_tenant_provider
-from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
+from faultmaven.providers.tenancy.factory import (
+    TenancyConfigurationError,
+    create_tenant_provider,
+    find_tenant_provider_plugin,
+)
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+
+_SETTINGS = "faultmaven.providers.tenancy.factory.get_settings"
+_PLUGIN = "faultmaven.providers.tenancy.factory.find_tenant_provider_plugin"
 
 
 @pytest.fixture
-def mock_organization_repository():
-    """Mock organization repository."""
+def org_repo():
     return AsyncMock()
 
 
-# ============================================================================
-# Test: Factory creates SingleTenantProvider by default
-# ============================================================================
+def _settings(tenant_provider: str) -> MagicMock:
+    s = MagicMock()
+    s.providers = MagicMock()
+    s.providers.tenant_provider = tenant_provider
+    return s
 
 
-def test_factory_creates_single_tenant_by_default(mock_organization_repository):
-    """Test factory creates SingleTenantProvider when tenant_provider is single."""
-    with patch("faultmaven.providers.tenancy.factory.get_settings") as mock_settings:
-        settings = MagicMock()
-        settings.providers = MagicMock()
-        settings.providers.tenant_provider = TenantProvider.SINGLE
-        mock_settings.return_value = settings
+# --- single (built-in) ------------------------------------------------------
 
+
+@pytest.mark.unit
+def test_single_is_builtin_and_gets_repositories(org_repo):
+    with patch(_SETTINGS, return_value=_settings("single")):
         provider = create_tenant_provider(
-            organization_repository=mock_organization_repository
+            organization_repository=org_repo, enterprise_repository="ent"
         )
-
-        assert isinstance(provider, SingleTenantProvider)
-        assert provider.organization_repository == mock_organization_repository
-
-
-# ============================================================================
-# Test: Factory creates SingleTenantProvider when mode is "single-tenant"
-# ============================================================================
+    assert isinstance(provider, SingleTenantProvider)
+    assert provider.organization_repository is org_repo
 
 
-def test_factory_creates_single_tenant_when_mode_is_single_tenant(
-    mock_organization_repository,
-):
-    """Test factory creates SingleTenantProvider when TENANT_PROVIDER=single."""
-    with patch("faultmaven.providers.tenancy.factory.get_settings") as mock_settings:
-        settings = MagicMock()
-        settings.providers = MagicMock()
-        settings.providers.tenant_provider = TenantProvider.SINGLE
-        mock_settings.return_value = settings
-
-        provider = create_tenant_provider(
-            organization_repository=mock_organization_repository
-        )
-
-        assert isinstance(provider, SingleTenantProvider)
-        assert not isinstance(provider, MultiTenantProvider)
+# --- non-single: fail closed without a plugin -------------------------------
 
 
-# ============================================================================
-# Test: Factory creates MultiTenantProvider when mode is "multi-tenant"
-# ============================================================================
+@pytest.mark.unit
+@pytest.mark.security
+def test_multi_without_plugin_fails_closed(org_repo):
+    """No silent downgrade to single-tenant when the multi plugin is absent."""
+    with patch(_SETTINGS, return_value=_settings("multi")):
+        with patch(_PLUGIN, return_value=None):
+            with pytest.raises(TenancyConfigurationError) as exc:
+                create_tenant_provider(organization_repository=org_repo)
+    assert "TENANT_PROVIDER='multi'" in str(exc.value)
+    assert "faultmaven-cloud" in str(exc.value)
 
 
-def test_factory_creates_multi_tenant_when_mode_is_multi_tenant(
-    mock_organization_repository,
-):
-    """Test factory creates MultiTenantProvider when TENANT_PROVIDER=multi."""
-    with patch("faultmaven.providers.tenancy.factory.get_settings") as mock_settings:
-        settings = MagicMock()
-        settings.providers = MagicMock()
-        settings.providers.tenant_provider = TenantProvider.MULTI
-        mock_settings.return_value = settings
-
-        provider = create_tenant_provider(
-            organization_repository=mock_organization_repository
-        )
-
-        assert isinstance(provider, MultiTenantProvider)
-        assert not isinstance(provider, SingleTenantProvider)
+@pytest.mark.unit
+@pytest.mark.security
+def test_unknown_non_single_value_fails_closed(org_repo):
+    """An unrecognized (non-single) value must NOT fall back to single."""
+    with patch(_SETTINGS, return_value=_settings("bogus")):
+        with patch(_PLUGIN, return_value=None):
+            with pytest.raises(TenancyConfigurationError):
+                create_tenant_provider(organization_repository=org_repo)
 
 
-# ============================================================================
-# Test: Factory passes repositories to providers
-# ============================================================================
+# --- non-single: loads the installed plugin ---------------------------------
 
 
-def test_factory_passes_repositories_to_providers(mock_organization_repository):
-    """Test factory correctly passes repository to both provider types."""
-    with patch("faultmaven.providers.tenancy.factory.get_settings") as mock_settings:
-        # Test SingleTenantProvider
-        settings = MagicMock()
-        settings.providers = MagicMock()
-        settings.providers.tenant_provider = TenantProvider.SINGLE
-        mock_settings.return_value = settings
+@pytest.mark.unit
+def test_multi_loads_plugin_and_forwards_repositories(org_repo):
+    built = object()
+    builder = MagicMock(return_value=built)
+    fake_ep = SimpleNamespace(load=lambda: builder, value="pkg:build")
 
-        single_provider = create_tenant_provider(
-            organization_repository=mock_organization_repository
-        )
+    with patch(_SETTINGS, return_value=_settings("multi")):
+        with patch(_PLUGIN, return_value=fake_ep):
+            provider = create_tenant_provider(
+                organization_repository=org_repo, enterprise_repository="ent"
+            )
 
-        assert single_provider.organization_repository == mock_organization_repository
-
-        # Test MultiTenantProvider
-        settings.providers.tenant_provider = TenantProvider.MULTI
-
-        multi_provider = create_tenant_provider(
-            organization_repository=mock_organization_repository
-        )
-
-        assert multi_provider.organization_repository == mock_organization_repository
+    assert provider is built
+    builder.assert_called_once_with(
+        organization_repository=org_repo, enterprise_repository="ent"
+    )
 
 
-# ============================================================================
-# Test: Factory handles case-insensitive deployment mode
-# ============================================================================
+@pytest.mark.unit
+def test_provider_value_is_case_insensitive(org_repo):
+    """'SINGLE' resolves to the built-in single provider."""
+    with patch(_SETTINGS, return_value=_settings("SINGLE")):
+        provider = create_tenant_provider(organization_repository=org_repo)
+    assert isinstance(provider, SingleTenantProvider)
 
 
-def test_factory_handles_case_insensitive_mode(mock_organization_repository):
-    """Test factory creates multi-tenant provider when tenant_provider is MULTI."""
-    with patch("faultmaven.providers.tenancy.factory.get_settings") as mock_settings:
-        settings = MagicMock()
-        settings.providers = MagicMock()
-        settings.providers.tenant_provider = TenantProvider.MULTI
-        mock_settings.return_value = settings
-
-        provider = create_tenant_provider(
-            organization_repository=mock_organization_repository
-        )
-
-        assert isinstance(provider, MultiTenantProvider)
+# --- plugin discovery --------------------------------------------------------
 
 
-# ============================================================================
-# Test: Factory defaults to single-tenant for unknown modes
-# ============================================================================
-
-
-def test_factory_defaults_to_single_tenant_for_unknown_modes(
-    mock_organization_repository,
-):
-    """Test factory defaults to single-tenant for unknown tenant_provider values."""
-    with patch("faultmaven.providers.tenancy.factory.get_settings") as mock_settings:
-        settings = MagicMock()
-        settings.providers = MagicMock()
-        # Invalid/unknown value should default to single-tenant
-        settings.providers.tenant_provider = "invalid-mode"
-        mock_settings.return_value = settings
-
-        provider = create_tenant_provider(
-            organization_repository=mock_organization_repository
-        )
-
-        assert isinstance(provider, SingleTenantProvider)
+@pytest.mark.unit
+def test_find_plugin_returns_none_when_unregistered():
+    """No plugin is registered for 'multi' in the core test env."""
+    assert find_tenant_provider_plugin("multi") is None
