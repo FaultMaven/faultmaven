@@ -2094,9 +2094,17 @@ class TestSeverityScaleContext:
         lines = []
         # Generate 60 failed_password events over ~3 hours (180 minutes)
         # spaced 3 minutes apart -> 20 events/hour
-        from datetime import datetime, timedelta
+        from datetime import UTC, datetime, timedelta
 
-        start = datetime(2024, 6, 14, 10, 0, 0)
+        # Anchor the window two days in the past (fixed morning hour). BSD syslog
+        # stamps carry no year, so the parser assigns one relative to "now"
+        # (future -> previous year). A fixed-date window whose time span contains
+        # the wall-clock "now" (e.g. a Jun-14 10:00-13:00 window on a Jun-14 run)
+        # splits the events across two years -> a ~1-year span -> rate in /day not
+        # /h. Keeping the whole window firmly in the past makes it deterministic.
+        start = (datetime.now(tz=UTC) - timedelta(days=2)).replace(
+            hour=10, minute=0, second=0, microsecond=0
+        )
         for i in range(60):
             ts = start + timedelta(minutes=i * 3)
             stamp = ts.strftime("%b %d %H:%M:%S")
@@ -2115,10 +2123,14 @@ class TestSeverityScaleContext:
     def test_event_type_rate_omitted_for_low_count(self, extractor):
         """Events with count <50 should not get a rate annotation — the
         sample is too small for a meaningful per-hour rate."""
-        from datetime import datetime, timedelta
+        from datetime import UTC, datetime, timedelta
 
         lines = []
-        start = datetime(2024, 6, 14, 10, 0, 0)
+        # Anchor firmly in the past so year-less syslog stamps don't straddle
+        # "now" (see the rate-annotation test above for the failure mode).
+        start = (datetime.now(tz=UTC) - timedelta(days=2)).replace(
+            hour=10, minute=0, second=0, microsecond=0
+        )
         for i in range(15):  # only 15 events
             ts = start + timedelta(minutes=i * 5)
             stamp = ts.strftime("%b %d %H:%M:%S")
