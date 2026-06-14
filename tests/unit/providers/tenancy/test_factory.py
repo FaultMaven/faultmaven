@@ -10,12 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.providers.tenancy.factory import (
     TenancyConfigurationError,
     create_tenant_provider,
     find_tenant_provider_plugin,
 )
-from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 _SETTINGS = "faultmaven.providers.tenancy.factory.get_settings"

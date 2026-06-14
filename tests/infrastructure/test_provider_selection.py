@@ -249,8 +249,9 @@ class TestTenantProviderFactory:
 
     def test_factory_multi_fails_closed_without_plugin(self):
         """Multi-tenant requires an installed plugin (ADR-006); absent -> fail closed."""
-        import pytest
         from unittest.mock import MagicMock, patch
+
+        import pytest
 
         from faultmaven.config.settings import TenantProvider as TenantProviderEnum
         from faultmaven.providers.tenancy.factory import (
@@ -279,8 +280,9 @@ class TestTenantProviderFactory:
     def test_di_wrapper_reraises_fatal_tenancy_error(self):
         """The container DI wrapper must NOT swallow a fatal tenancy misconfig —
         otherwise gate-less paths (jobs CLI / cron) degrade to tenant_provider=None."""
-        import pytest
         from unittest.mock import MagicMock, patch
+
+        import pytest
 
         from faultmaven.container.providers.services import (
             create_tenant_provider as wrapper,
