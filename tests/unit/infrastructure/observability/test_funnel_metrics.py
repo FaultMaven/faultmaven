@@ -89,8 +89,7 @@ class TestSetQuantiles:
         # Two to_states x two quantiles = 4 label/set calls.
         assert g.labels.call_count == 4
         labelled = {
-            (kw["to_state"], kw["quantile"])
-            for _, kw in g.labels.call_args_list
+            (kw["to_state"], kw["quantile"]) for _, kw in g.labels.call_args_list
         }
         assert ("resolved", "0.5") in labelled
         assert ("resolved", "0.95") in labelled

@@ -118,7 +118,9 @@ class FunnelMetricsCollector:
     def _set_quantiles(self, rows: Sequence) -> None:
         buckets: dict = {to_state: [] for to_state in _EFFORT_TO_STATES}
         for state, _reason, turn in rows:
-            to_state = "resolved" if state == "resolved" else "closed_after_investigation"
+            to_state = (
+                "resolved" if state == "resolved" else "closed_after_investigation"
+            )
             buckets[to_state].append(int(turn or 0))
         for to_state in _EFFORT_TO_STATES:
             for qlabel, q in _QUANTILES:

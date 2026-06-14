@@ -752,10 +752,7 @@ async def lifespan(app: FastAPI):
     try:
         from .config.settings import MetricsExporter, get_settings
 
-        if (
-            get_settings().providers.metrics_exporter
-            == MetricsExporter.PROMETHEUS_HTTP
-        ):
+        if get_settings().providers.metrics_exporter == MetricsExporter.PROMETHEUS_HTTP:
             from .infrastructure.observability.funnel_metrics import (
                 collector as funnel_collector,
             )
