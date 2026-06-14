@@ -26,10 +26,6 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Optional
 
-from faultmaven.infrastructure.observability.investigation_metrics import (
-    record_resolution_turns,
-    record_transition,
-)
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
     Case,
@@ -411,10 +407,6 @@ def _execute_resolved_transition(case: Case, user_id: str):
         )
     )
 
-    # Throughput telemetry (the case funnel).
-    record_transition(CaseState.INVESTIGATING.value, CaseState.RESOLVED.value)
-    record_resolution_turns(CaseState.RESOLVED.value, case.current_turn)
-
     logger.info(f"Case {case.case_id} transitioned to RESOLVED (terminal state)")
 
 
@@ -456,10 +448,6 @@ def _execute_closed_transition(case: Case, user_id: str, closure_reason: str):
             reason=f"User confirmed closure ({closure_reason})",
         )
     )
-
-    # Throughput telemetry (the case funnel).
-    record_transition(from_state.value, CaseState.CLOSED.value)
-    record_resolution_turns(CaseState.CLOSED.value, case.current_turn)
 
     logger.info(f"Case {case.case_id} transitioned to CLOSED (terminal state)")
 

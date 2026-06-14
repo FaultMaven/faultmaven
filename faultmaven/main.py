@@ -35,6 +35,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Now import everything else
+import asyncio
 import logging
 import os
 import sys
@@ -744,6 +745,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"KB bootstrap raised (non-fatal): {e}", exc_info=True)
 
+    # Funnel metrics: refresh the case-funnel gauges from the DB on an interval
+    # (a projection of durable state, not transition counters -- see ADR 005).
+    # Only when the Prometheus exporter is mounted; the gauges are no-ops
+    # otherwise. Runs as a background task; cancelled on shutdown.
+    try:
+        from .config.settings import MetricsExporter, get_settings
+
+        if get_settings().providers.metrics_exporter == MetricsExporter.PROMETHEUS_HTTP:
+            from .infrastructure.observability.funnel_metrics import (
+                collector as funnel_collector,
+            )
+
+            app.state.funnel_metrics_task = asyncio.create_task(
+                funnel_collector.run_periodic()
+            )
+            logger.info("✅ Funnel metrics collector started (case-state projection)")
+    except Exception as e:
+        logger.warning(f"Funnel metrics collector not started (non-fatal): {e}")
+
     logger.info(
         "🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!"
     )
@@ -752,6 +772,15 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down FaultMaven API server...")
+
+    # Stop funnel metrics collector
+    _funnel_task = getattr(app.state, "funnel_metrics_task", None)
+    if _funnel_task is not None:
+        _funnel_task.cancel()
+        try:
+            await _funnel_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     # Stop case cleanup scheduler
     if case_cleanup_scheduler:
