@@ -68,10 +68,6 @@ from faultmaven.core.investigation.working_conclusion_generator import (
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
 )
-from faultmaven.infrastructure.observability.investigation_metrics import (
-    investigation_turns_total,
-    record_transition,
-)
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
@@ -1943,9 +1939,6 @@ class MilestoneEngine:
         Raises:
             MilestoneEngineError: If processing fails
         """
-        # Throughput telemetry: one per processed turn, by current case state.
-        investigation_turns_total.labels(case_state=case.state.value).inc()
-
         # G10: Acquire per-case lock to prevent concurrent turns from
         # interleaving reads/writes on the same case state
         async with self._case_locks[case.case_id]:
@@ -6377,9 +6370,6 @@ class MilestoneEngine:
 
         # Change status (Pydantic validation happens here)
         case.state = CaseState.INVESTIGATING
-
-        # Throughput telemetry (the case funnel): inquiry → investigating.
-        record_transition(CaseState.INQUIRY.value, CaseState.INVESTIGATING.value)
 
         # Outcome telemetry for INV-01: count cases that reached
         # INVESTIGATING after a prior same-turn-confirmation guard fire.
