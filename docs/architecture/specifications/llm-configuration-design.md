@@ -52,7 +52,8 @@ settings.is_standalone  # not is_cloud
 | RS256 key material present (`JWT_PRIVATE_KEY`/`_PATH` + public) | OAuth tokens are RS256 |
 | `DATABASE_URL` is PostgreSQL | SQLite is single-writer / standalone |
 | real Redis (session storage `redis` + host/url) | FakeRedis is ephemeral / standalone |
-| `tenant_provider == multi` | Cloud isolates tenants |
+
+**Tenancy is an independent axis.** `cloud` validates cloud-native infra + real auth, *not* tenancy — a cloud deployment may be single-tenant (one organization, many users) or multi-tenant (SaaS). `TENANT_PROVIDER` is chosen separately, and (per the multi-tenancy boundary review) real multi-tenancy is provided by `faultmaven-cloud`, not CE.
 
 `DEPLOYMENT_MODE=standalone` keeps the simple defaults (local auth, SQLite, FakeRedis, single tenant); the gate flags only egregious mixes (e.g. standalone declaring `auth_mode=oauth`). The dangerous, asymmetric failure is **cloud silently running as standalone**, which the gate makes impossible. This replaces the three independent, unsynchronized "is cloud?" checks (`auth_mode`, `dashboard_url`, `tenant_provider`) with one canonical switch + one gate.
 

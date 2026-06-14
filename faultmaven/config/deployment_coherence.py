@@ -1,10 +1,13 @@
 """Deployment coherence gate (ADR-004).
 
 Asserts that the running configuration is coherent with the canonical
-``DEPLOYMENT_MODE``. A ``cloud`` deployment MUST present cloud identity (OAuth
-auth + RS256 keys, PostgreSQL, real Redis, multi-tenant); otherwise the app
-refuses to boot rather than silently running as ``standalone`` on cloud
-infrastructure.
+``DEPLOYMENT_MODE``. A ``cloud`` deployment MUST present cloud-native identity
+(OAuth auth + RS256 keys, PostgreSQL, real Redis); otherwise the app refuses to
+boot rather than silently running as ``standalone`` on cloud infrastructure.
+
+Tenancy (``TENANT_PROVIDER`` single/multi) is an INDEPENDENT axis and is NOT
+checked here — a cloud deployment may serve a single organization (many users)
+or many isolated tenants (SaaS).
 
 This closes the failure mode where a cloud k8s deployment whose Secret carried
 ``AUTH_MODE=local`` was silently treated as standalone (auth bypassed, DB
@@ -40,7 +43,6 @@ def _check_cloud(settings: Any) -> List[str]:
     auth = settings.auth
     db = settings.database
     security = settings.security
-    providers = settings.providers
 
     # 1. Auth must be OAuth (RS256), not the local bypass.
     auth_mode = str(getattr(auth, "auth_mode", "local"))
@@ -80,13 +82,9 @@ def _check_cloud(settings: Any) -> List[str]:
             "REDIS_URL or REDIS_HOST. FakeRedis is ephemeral and standalone-only."
         )
 
-    # 4. Tenancy must be multi.
-    tenant = str(getattr(providers, "tenant_provider", "single"))
-    if tenant != "multi":
-        problems.append(
-            f"TENANT_PROVIDER must be 'multi' for cloud (got '{tenant}'). "
-            "Single-tenant provides no isolation between organizations."
-        )
+    # Tenancy (TENANT_PROVIDER single/multi) is an INDEPENDENT axis — a cloud
+    # deployment may serve a single organization (many users) or many isolated
+    # tenants (SaaS). The gate validates cloud-native infra + real auth, not tenancy.
     return problems
 
 
