@@ -359,6 +359,45 @@ class TestUpdateCase:
             )
 
     @pytest.mark.asyncio
+    async def test_update_case_rejects_terminal_state_resolved(
+        self, case_service, mock_case_repo, sample_case
+    ):
+        """A generic update must not jump a case into RESOLVED (terminal).
+
+        Terminal transitions carry mandatory closure semantics (gating,
+        closure_reason, audit) only the dedicated paths apply.
+        """
+        mock_case_repo.get.return_value = sample_case
+        mock_case_repo.save.side_effect = lambda case: case
+        with pytest.raises(ValidationException) as exc_info:
+            await case_service.update_case(
+                sample_case.case_id,
+                sample_case.organization_id,
+                {"state": CaseState.RESOLVED},
+            )
+        assert "terminal" in str(exc_info.value).lower()
+        mock_case_repo.save.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_case_rejects_terminal_state_closed(
+        self, case_service, mock_case_repo, sample_case
+    ):
+        """A generic update must not jump a case into CLOSED (terminal).
+
+        Guards the string input form too (value is coerced to CaseState first).
+        """
+        mock_case_repo.get.return_value = sample_case
+        mock_case_repo.save.side_effect = lambda case: case
+        with pytest.raises(ValidationException) as exc_info:
+            await case_service.update_case(
+                sample_case.case_id,
+                sample_case.organization_id,
+                {"state": "closed"},
+            )
+        assert "terminal" in str(exc_info.value).lower()
+        mock_case_repo.save.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_update_case_not_found_raises_not_found_error(
         self, case_service, mock_case_repo
     ):
