@@ -51,9 +51,10 @@ CORE_FILES = [
 ]
 
 # (regex, guidance). Patterns mirror brand-messaging.md §3/§7.
+# NOTE: 'AIOps platform' / 'observability platform' / 'playbook' are deliberately
+# NOT grepped — FaultMaven references those categories by contrast (intended
+# positioning), so a substring match false-positives. They stay §3 review rules.
 UNIVERSAL = [
-    (r"\bAIOps platform\b", "use 'troubleshooting copilot', not 'AIOps platform'"),
-    (r"\bobservability platform\b", "use 'troubleshooting copilot', not 'observability platform'"),
     (r"\btroubleshooting assistant\b", "use 'troubleshooting copilot', not 'troubleshooting assistant'"),
     (r"\bmicroservices?\s+backend\b", "FaultMaven is a modular monolith, not microservices"),
     (r"\bLocal Deployment\b", "use 'Standalone' (ADR-004); 'local' is reserved for AUTH_MODE/CHAT_PROVIDER"),
