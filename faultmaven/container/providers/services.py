@@ -294,12 +294,10 @@ def create_organization_repository() -> Any | None:
 def create_enterprise_repository() -> Any | None:
     """Create the sessionless enterprise repository.
 
-    Mirrors create_organization_repository. There is no
-    EnterpriseService yet — enterprise CRUD is bootstrap-only in the
-    current scope (single-tenant default-enterprise seeding,
-    multi-tenant defers to cloud rollout). When that lands, mint a
-    parallel create_enterprise_service that returns
-    (service, repository) like its org counterpart.
+    Mirrors create_organization_repository (repository only). There is no
+    EnterpriseService — enterprise CRUD is bootstrap-only in CE
+    (single-tenant default-enterprise seeding); multi-tenant enterprise
+    management is a faultmaven-cloud concern (ADR-006).
     """
     try:
         from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (
@@ -691,11 +689,10 @@ def register_services(container: BaseDIContainer) -> None:
         logger.info("OAuth service disabled (using dev-login mode)")
 
     # Organization Repository (create before TenantProvider, which resolves the
-    # implicit org through it). Org/team *management* lives in faultmaven-cloud
-    # (ADR-006); CE keeps only the repository substrate.
+    # implicit org through it via constructor injection below). Org/team
+    # *management* lives in faultmaven-cloud (ADR-006); CE keeps only the
+    # repository substrate.
     organization_repository = create_organization_repository()
-    if organization_repository:
-        container._register_service("organization_repository", organization_repository)
 
     # Enterprise Repository (create before TenantProvider; SingleTenantProvider
     # uses it for default-enterprise bootstrap).
