@@ -1,0 +1,28 @@
+name: Brand Lint
+
+# Enforces FaultMaven's canonical product terminology in brand-facing files.
+# Source of truth: .claude/skills/brand-messaging.md (§3 terminology, §7 enforcement).
+# Pure stdlib — no dependencies to install.
+
+on:
+  pull_request:
+    paths:
+      - "README.md"
+      - "CLAUDE.md"
+      - "pyproject.toml"
+      - "docs/README.md"
+      - "scripts/brand_lint.py"
+      - ".github/workflows/brand-lint.yml"
+  push:
+    branches: [main]
+
+jobs:
+  brand-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run brand-messaging lint
+        run: python scripts/brand_lint.py

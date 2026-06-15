@@ -94,7 +94,7 @@ dependencies = [
     # Background task scheduling
     "apscheduler>=3.10.4",
 
-    # In-process Redis (local deployment: API-compatible Redis without external server)
+    # In-process Redis (standalone deployment: API-compatible Redis without external server)
     "fakeredis[lua]>=2.21.0",
 ]
 

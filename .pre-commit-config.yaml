@@ -123,3 +123,13 @@ repos:
         language: system
         pass_filenames: false
         files: ^resources/knowledge/(runbooks/.*\.md|pack/(pack\.json|vectors\.npz))$
+
+      # Brand-messaging terminology lint. Fails on retired terms in brand-facing
+      # files (README, CLAUDE.md, pyproject, docs/README). Canonical source is
+      # .claude/skills/brand-messaging.md §3/§7; this is the downstream check.
+      - id: brand-lint
+        name: brand-messaging terminology lint
+        entry: python scripts/brand_lint.py
+        language: system
+        pass_filenames: false
+        always_run: true

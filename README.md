@@ -239,7 +239,7 @@ FaultMaven is architected to be model-agnostic, giving you the freedom to choose
 It supports a wide variety of backends, including:
 
 - **Frontier Models:** Connect to major cloud providers (OpenAI, Anthropic, Google) for complex reasoning and multimodal analysis.
-- **Inference Providers:** Utilize high-speed inference engines (Groq, Fireworks AI) for low-latency responsiveness.
+- **Inference Providers:** Use high-speed inference engines (Groq, Fireworks AI) for low-latency responsiveness.
 - **Local & Open Source:** Run entirely on your own hardware using local runners (Ollama, vLLM) for maximum data privacy and zero API costs.
 - **Model Routing:** Built-in fallback logic ensures high availability by automatically switching providers if the primary API becomes unavailable.
 
