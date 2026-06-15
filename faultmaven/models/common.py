@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypedDict
 
+from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.utils.serialization import to_json_compatible
 
 
@@ -54,8 +55,8 @@ class SessionContext(BaseModel):
         ..., description="User identifier - REQUIRED for authorization"
     )
     organization_id: str = Field(
-        default="00000000-0000-0000-0000-000000000001",
-        description="Organization ID for multi-tenant isolation",
+        default=STANDALONE_ORG_ID,
+        description="Implicit single-tenant org; multi-tenant isolation is RLS in cloud (ADR-006)",
     )
 
     # Multi-device support fields (spec lines 263-269)

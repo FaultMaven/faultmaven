@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from faultmaven.config.constants import STANDALONE_ORG_ID
+
 
 @dataclass
 class Session:
@@ -38,9 +40,7 @@ class Session:
 
     session_id: str
     user_id: str
-    organization_id: str = (
-        "00000000-0000-0000-0000-000000000001"  # Default org for single-tenant mode
-    )
+    organization_id: str = STANDALONE_ORG_ID  # Implicit single-tenant org
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_accessed: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: Optional[datetime] = None

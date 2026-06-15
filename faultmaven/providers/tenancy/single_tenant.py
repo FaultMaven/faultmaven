@@ -8,6 +8,14 @@ within it), simplifying local development and community edition.
 from datetime import datetime, timezone
 from typing import Optional
 
+from faultmaven.config.constants import (
+    STANDALONE_ENTERPRISE_ID,
+    STANDALONE_ENTERPRISE_NAME,
+    STANDALONE_ENTERPRISE_SLUG,
+    STANDALONE_ORG_ID,
+    STANDALONE_ORG_NAME,
+    STANDALONE_ORG_SLUG,
+)
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.interfaces_user import (
     Enterprise,
@@ -20,7 +28,8 @@ from faultmaven.models.interfaces_user import (
 from faultmaven.modules.auth.domain.models.user import User
 from faultmaven.providers.tenancy.base import TenantProvider
 
-DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
+# Re-exported for callers that import the module-level symbol.
+DEFAULT_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
 
 
 class SingleTenantProvider(TenantProvider):
@@ -41,13 +50,13 @@ class SingleTenantProvider(TenantProvider):
         (see faultmaven/bootstrap/startup.py) and cached for performance.
     """
 
-    DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
-    DEFAULT_ORG_SLUG = "default"
-    DEFAULT_ORG_NAME = "Default Organization"
+    DEFAULT_ORG_ID = STANDALONE_ORG_ID
+    DEFAULT_ORG_SLUG = STANDALONE_ORG_SLUG
+    DEFAULT_ORG_NAME = STANDALONE_ORG_NAME
 
-    DEFAULT_ENTERPRISE_ID = DEFAULT_ENTERPRISE_ID
-    DEFAULT_ENTERPRISE_SLUG = "default"
-    DEFAULT_ENTERPRISE_NAME = "Default Enterprise"
+    DEFAULT_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
+    DEFAULT_ENTERPRISE_SLUG = STANDALONE_ENTERPRISE_SLUG
+    DEFAULT_ENTERPRISE_NAME = STANDALONE_ENTERPRISE_NAME
 
     def __init__(
         self,
