@@ -159,6 +159,45 @@ class TestGetLLMConfig:
         assert result.timestamp is not None
 
     @pytest.mark.asyncio
+    async def test_config_sources_all_env_default_in_standalone(
+        self, mock_admin_user, mock_llm_provider, mock_settings
+    ):
+        """Standalone has no DB overrides: every overridable key is env-default."""
+        from faultmaven.config.llm_config_overrides import _ALLOWED_OVERRIDES
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_llm_config(
+                current_user=mock_admin_user, llm_provider=mock_llm_provider
+            )
+
+        assert set(result.config_sources) == set(_ALLOWED_OVERRIDES)
+        assert all(v == "env-default" for v in result.config_sources.values())
+
+    @pytest.mark.asyncio
+    async def test_config_sources_marks_admin_overrides_in_cloud(
+        self, mock_admin_user, mock_llm_provider, mock_settings
+    ):
+        """Cloud: keys present in the DB are admin-override; the rest env-default."""
+        mock_settings.is_cloud = True
+        overrides = {"gemini_model": "gemini-2.5-flash", "primary_provider": "gemini"}
+
+        with (
+            patch(SETTINGS_PATCH, return_value=mock_settings),
+            patch(
+                "faultmaven.infrastructure.persistence.llm_config_repository.get_all_overrides",
+                new=AsyncMock(return_value=overrides),
+            ),
+        ):
+            result = await get_llm_config(
+                current_user=mock_admin_user, llm_provider=mock_llm_provider
+            )
+
+        assert result.config_sources["gemini_model"] == "admin-override"
+        assert result.config_sources["primary_provider"] == "admin-override"
+        assert result.config_sources["anthropic_model"] == "env-default"
+        assert result.config_sources["openai_api_key"] == "env-default"
+
+    @pytest.mark.asyncio
     async def test_provider_details_structure(
         self, mock_admin_user, mock_llm_provider, mock_settings
     ):

@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "0a1b2c3d4e5f"  # current head (016 — drop path_selection column)
+HEAD_REVISION = "a7c9e1b3d5f7"  # current head (017 — config_overrides source/category)
 
 
 @pytest.fixture(scope="function")
@@ -118,7 +118,7 @@ EXPECTED_TABLES = [
     "investigation_sessions",
     "knowledge_items",
     "knowledge_suggestions",
-    "llm_config_overrides",
+    "config_overrides",
     "oauth_authorization_codes",
     "oauth_revoked_tokens",
     "organization_members",
@@ -229,9 +229,7 @@ class TestAlembicMigrationInfrastructure:
         assert (
             "knowledge_suggestions" in tables
         ), "knowledge_suggestions table should be restored"
-        assert (
-            "llm_config_overrides" in tables
-        ), "llm_config_overrides table should be restored"
+        assert "config_overrides" in tables, "config_overrides table should be restored"
 
         # Verify revision (should be back at head)
         revision = get_current_revision(database_url)
@@ -307,20 +305,20 @@ class TestDatabaseSchemaIntegrity:
         fk_tables = [fk[2] for fk in fks]
         assert "cases" in fk_tables, "Evidence table should have FK to cases table"
 
-    def test_llm_config_overrides_structure(self, clean_database, database_url):
-        """LLM config overrides table has correct structure."""
+    def test_config_overrides_structure(self, clean_database, database_url):
+        """config_overrides table has correct structure (Phase 2: + category/source)."""
         run_alembic("upgrade head", database_url)
 
         conn = sqlite3.connect(TEST_DB)
         cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(llm_config_overrides);")
+        cursor.execute("PRAGMA table_info(config_overrides);")
         columns = {row[1]: row[2] for row in cursor.fetchall()}
         conn.close()
 
-        for col in ["key", "value", "updated_at", "updated_by"]:
+        for col in ["key", "value", "category", "source", "updated_at", "updated_by"]:
             assert (
                 col in columns
-            ), f"Missing column in llm_config_overrides: {col}. Available: {list(columns.keys())}"
+            ), f"Missing column in config_overrides: {col}. Available: {list(columns.keys())}"
 
 
 # Test markers for different categories

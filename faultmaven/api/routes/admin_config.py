@@ -144,6 +144,14 @@ async def get_llm_config(
 
         primary = fallback_chain[0] if fallback_chain else "none"
 
+        # Per-setting provenance ('admin-override' vs 'env-default') — what lets
+        # the admin dashboard show which source is active (the "two silent
+        # sources of truth" fix). Computed in the config layer so the API route
+        # stays free of infrastructure imports (architecture boundary).
+        from faultmaven.config.llm_config_overrides import get_config_source_map
+
+        config_sources = await get_config_source_map(is_cloud)
+
         return LLMConfigResponse(
             deployment=deployment,
             config_readonly=config_readonly,
@@ -151,6 +159,7 @@ async def get_llm_config(
             strict_mode=strict_mode,
             fallback_chain=fallback_chain,
             providers=providers,
+            config_sources=config_sources,
             timestamp=datetime.now(timezone.utc),
         )
 

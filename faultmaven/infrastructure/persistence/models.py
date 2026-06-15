@@ -2122,14 +2122,21 @@ class ConversionDraftModel(Base):
 # ============================================================
 
 
-class LLMConfigOverrideModel(Base):
-    """Dashboard-applied LLM configuration overrides. Hot-reloaded into runtime
-    settings; takes precedence over .env values. Cloud mode only."""
+class ConfigOverrideModel(Base):
+    """Dashboard-applied runtime configuration overrides. Hot-reloaded into
+    runtime settings; takes precedence over .env values. Cloud mode only.
 
-    __tablename__ = "llm_config_overrides"
+    Scope is broader than LLM (llm-configuration-design.md Phase 2): ``category``
+    groups settings ('llm', 'feature', 'operational', 'observability', ...) and
+    ``source`` records provenance ('env-seed' seeded from .env vs 'admin' set
+    explicitly via the dashboard) so the admin UI can show which is active."""
+
+    __tablename__ = "config_overrides"
 
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=False)
+    category = Column(String(50), nullable=False, server_default="llm")
+    source = Column(String(20), nullable=False, server_default="admin")
     updated_by = Column(
         String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
     )
