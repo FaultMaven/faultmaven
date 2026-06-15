@@ -1,7 +1,8 @@
 """Auth Module - Vertical Slice
 
-Contains authentication, authorization, user management, session management,
-team management, and organization management.
+Contains authentication, authorization, user management, and session
+management. (Team/organization management is a cloud collaboration feature —
+see faultmaven-cloud, ADR-006.)
 
 Public API:
     From domain.models:
@@ -11,7 +12,6 @@ Public API:
 
     From domain.services (import directly to avoid circular imports):
         - AuthService, AuthSessionService, UserService
-        - TeamService, OrganizationService
 
 Structure:
 - api/: API routes for auth endpoints

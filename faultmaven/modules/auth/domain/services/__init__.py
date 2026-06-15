@@ -10,6 +10,4 @@ __all__ = [
     "AuthService",
     "AuthSessionService",
     "UserService",
-    "TeamService",
-    "OrganizationService",
 ]

@@ -240,9 +240,7 @@ from .infrastructure.observability.tracing import init_opik_tracing
 from .modules.agent.api.routes import router as agent_router
 from .modules.auth.api.auth import router as auth_router
 from .modules.auth.api.oauth import router as oauth_router
-from .modules.auth.api.organizations import router as organizations_router
 from .modules.auth.api.session import router as session_router
-from .modules.auth.api.teams import router as teams_router
 from .modules.case.api.routes import router as case_router
 from .modules.knowledge.api.conversion_routes import router as conversion_router
 from .modules.knowledge.api.routes import router as knowledge_router
@@ -503,8 +501,6 @@ async def lifespan(app: FastAPI):
             app.state.report_recommendation_service = (
                 container.get_report_recommendation_service()
             )
-            app.state.organization_service = container.get_organization_service()
-            app.state.team_service = container.get_team_service()
             app.state.job_service = container.get_job_service()
             # Query classification engine (optional - may not be available)
             try:
@@ -1217,17 +1213,11 @@ logger.info("✅ Knowledge endpoints added")
 app.include_router(conversion_router, prefix="/api/v1")
 logger.info("✅ Document conversion endpoints added")
 
-app.include_router(organizations_router, prefix="/api/v1")
-logger.info("✅ Organization endpoints added")
-
 app.include_router(report_router, prefix="/api/v1")
 logger.info("✅ Report endpoints added")
 
 app.include_router(session_router, prefix="/api/v1")
 logger.info("✅ Session endpoints added")
-
-app.include_router(teams_router, prefix="/api/v1")
-logger.info("✅ Team endpoints added")
 
 # Admin routes (user management + configuration)
 app.include_router(admin_users_router)  # prefix already set on router: /api/v1/admin
