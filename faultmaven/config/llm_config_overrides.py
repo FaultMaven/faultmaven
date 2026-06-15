@@ -1,8 +1,13 @@
 """Apply LLM configuration overrides from the database to the settings singleton.
 
-Overrides stored in the llm_config_overrides table take precedence over
+Overrides stored in the ``config_overrides`` table take precedence over
 environment variables. This module bridges the DB-stored overrides and
 the pydantic-settings singleton.
+
+NOTE: the table/columns were generalized for future non-LLM categories
+(``config_overrides`` + ``category``/``source``), but the apply + provenance
+logic here is still LLM-scoped (``_ALLOWED_OVERRIDES``). Wiring the broader
+runtime-safe settings is the documented Phase-2 breadth follow-on.
 
 Usage:
     from faultmaven.config.llm_config_overrides import apply_overrides_to_settings
