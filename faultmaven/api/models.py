@@ -600,6 +600,14 @@ class LLMConfigResponse(BaseModel):
     strict_mode: bool
     fallback_chain: List[str]
     providers: Dict[str, LLMProviderDetail]
+    config_sources: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Provenance per overridable setting key: 'admin-override' (set via "
+            "the dashboard, stored in the DB) or 'env-default' (.env / seed). "
+            "Always 'env-default' in standalone (no DB overrides)."
+        ),
+    )
     timestamp: datetime
 
 
