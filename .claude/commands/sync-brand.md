@@ -6,7 +6,7 @@ description: Audit brand-facing content in this repo against the canonical brand
 
 Audit brand-facing content in the `faultmaven` API repo against the canonical brand/messaging skill, and produce a propagation checklist for downstream repos (`faultmaven-copilot`, `faultmaven-dashboard`, `faultmaven-website`).
 
-**Scope:** product messaging and positioning only. Not UI copy, not marketing ads, not visual design.
+**Scope:** product messaging and positioning. Authority is two-tiered (see the skill's "Authority by rule type"): **terminology (§3, incl. the deployment lexicon) is universal** — it applies to every brand-facing surface including the marketing website and SEO meta; **positioning, value props, audience framing, tone, and specific claims (§1, §2, §4, §5) stop at the marketing boundary** — marketing surfaces own their pitch and are only checked for *contradiction* with canonical positioning. Not UI copy, not visual design.
 
 ## Argument
 
@@ -35,6 +35,8 @@ Skip: architecture docs, API reference, test files, log messages, code comments,
 
 For each piece of brand-facing content found, check it against the skill's §1 Positioning, §2 Value Propositions, §3 Terminology, and §4 Audience Framing.
 
+**Apply the two-tier authority (see Scope above):** on **marketing surfaces** (the website, SEO meta), enforce only §3 terminology (incl. the deployment lexicon); for §1/§2/§4 flag only outright *contradictions* of canonical positioning, not stylistic divergence — those surfaces own their pitch. On **core surfaces** (READMEs, product descriptions, API/config description strings), enforce all sections. Remember the cross-repo goal is **consistent, aligned, and corroborative — not duplicated**: never propose making two repos say the same sentence; propagate the terminology/positioning, let each surface phrase it its own way.
+
 List inconsistencies in one of these categories:
 - **Drift from canonical tagline** (e.g., an audience qualifier added)
 - **Terminology substitution** (e.g., "incident" used where the skill says "case")
@@ -53,6 +55,8 @@ Bad:
 - *"Line 37 changed from X to Y."* (File-level — not portable across repos.)
 
 Then list the downstream repos and which of them are likely to carry the changed messaging (README, product description, landing page copy, extension popup copy, etc.). Downstream repos implement the changes their own way — this command does not modify them.
+
+**Close the loop with the automation.** If a change *retires a term* (adds a new banned phrase), note that the skill's §7 pattern list should gain it in the same change, classified **universal** (terminology — runs on marketing files too) or **core-surfaces-only** (positioning/audience/tone). This keeps the pre-commit/CI grep and the canonical skill from drifting apart.
 
 ### 5. Output
 

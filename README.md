@@ -245,46 +245,48 @@ It supports a wide variety of backends, including:
 
 ---
 
-## Editions
+## Deployment Modes
 
-FaultMaven runs on a single, deployment-agnostic **Core**. This engine can be configured for different environments, giving you two distinct ways to use the platform.
+FaultMaven runs on a single, deployment-agnostic **Core**. The same engine powers two deployment architectures — what differs is the infrastructure footprint and who operates it, not the investigation engine itself. The Core is open source (Apache 2.0) in every mode.
 
-### 1. FaultMaven Open Source (Local Deployment)
+### 1. Standalone (Self-Hosted)
 
 **Best for:** Individuals, contributors, and air-gapped environments.
 
-In this configuration, you run the Core on your own hardware—either directly as a server process or inside a Docker container. You maintain full control over the infrastructure.
+Standalone is a monolithic, single-instance deployment you run on your own hardware — directly as a server process or inside a Docker container. It ships with fixed, simple defaults (SQLite, in-process FakeRedis, embedded ChromaDB) so getting started is "pick an LLM provider, paste a key, go."
 
-- **Self-Hosted:** You own the stack. You manage the container, the database (SQLite), and the configuration.
-- **Build Your Own Knowledge:** The local environment starts with a clean slate. It includes all the capabilities to ingest your own runbooks and build a **Personal Knowledge Base** from scratch, tailored exactly to your specific needs.
+- **Self-Hosted:** You own and operate the stack — the container, the database (SQLite), and the configuration via a single `.env` file.
+- **Build Your Own Knowledge:** Ingest your own runbooks and build a **Personal Knowledge Base** tailored exactly to your specific needs.
 - **Offline Capable:** Can run entirely offline (with local LLMs like Ollama), making it ideal for high-restriction environments.
 
 Follow the [Quick Start](#quick-start) guide above to get up and running.
 
-### 2. FaultMaven Cloud (SaaS)
+### 2. Cloud (FaultMaven-Hosted SaaS)
 
 **Best for:** Engineering teams and enterprises requiring collaboration and institutional scale.
 
-The SaaS edition runs the Core in a distributed, production-grade configuration. It provides immediate value out of the box with managed infrastructure and data.
+Cloud is a cloud-native deployment architecture — orchestrated, elastic, and scalable — operated for you as a managed SaaS. It provides immediate value out of the box with managed infrastructure and data.
+
+> **"Cloud" describes the architecture, not the location.** The same cloud-native deployment can run in public cloud (AWS/GCP/Azure) or on-prem as a private cloud.
 
 - **Managed Kubernetes Infrastructure:** We run the Core on a high-availability Kubernetes control plane, handling auto-scaling, encryption, and zero-downtime updates for you.
-- **Pre-Built Intelligence:** Unlike the empty local state, the SaaS version comes with a **Global Knowledge Base** pre-populated with industry-standard troubleshooting guides and best practices.
-- **Collaborative 3-Tier Knowledge:** The cloud platform activates the full 3-tier architecture:
-  1. **Global:** Pre-built system-wide knowledge.
-  2. **Team:** Shared runbooks and incident logs (Institutional Memory).
-  3. **Personal:** Private notes and drafts.
+- **Team Knowledge Sharing:** Multi-tenancy adds the **team** knowledge scope — share personal runbooks across your org. (Both deployments ship with the same global runbook pack.)
+- **Collaborative 3-Tier Knowledge:** The cloud platform activates the full 3-scope model:
+  1. **Global:** System-wide runbooks shipped to every deployment.
+  2. **Team:** Runbooks shared across your organization (Institutional Memory).
+  3. **Personal:** Your private runbooks and drafts.
 
 ### Comparison
 
-| Feature | Open Source (Local) | Cloud (SaaS) |
-| ------- | ------------------- | ------------ |
+| Feature | Standalone (Self-Hosted) | Cloud (FaultMaven-Hosted) |
+| ------- | ------------------------ | ------------------------- |
 | **Configuration** | Single-User / Docker | Multi-User / Managed K8s |
-| **Knowledge Base Start State** | **Empty** (User builds it) | **Pre-Loaded** (Global KB included) |
-| **Knowledge Tiers** | Personal Only | **Global + Team + Personal** |
-| **LLM Configuration** | Dashboard-managed (hot-reload) | Dashboard-managed (hot-reload) |
+| **Knowledge Base Start State** | Ships with the global runbook pack | Ships with the global runbook pack |
+| **Knowledge Scopes** | Global + Personal | **Global + Team + Personal** (team sharing) |
+| **LLM Configuration** | Dashboard-managed (single provider, BYOK) | Dashboard-managed (multi-provider fallback chain, hot-reload) |
 | **Case Management** | Full (with archive) | Full (with archive + org-wide view) |
 | **User Management** | Not applicable (single user) | Full CRUD, invite, roles |
-| **Infrastructure** | User-Managed (SQLite) | Fully Managed (Postgres, S3) |
+| **Infrastructure** | Fixed defaults (SQLite, FakeRedis, embedded ChromaDB) | Fully Managed (Postgres, Redis, S3) |
 | **Security** | Local Auth | SSO (SAML/OIDC), SOC 2 Ready |
 | **Session Persistence** | **Ephemeral** (FakeRedis, resets on restart) | **Persistent** (Redis, saved across sessions) |
 | **Access** | `http://localhost:3333` (localhost only) | `https://app.faultmaven.ai` |
@@ -478,9 +480,9 @@ alembic upgrade head
 |-------|--------------|
 | **Framework** | Python 3.11+, FastAPI, Uvicorn, AsyncIO |
 | **LLM/AI** | OpenAI, Anthropic, Fireworks, Gemini, Groq, Cohere, HuggingFace, OpenRouter |
-| **Database** | SQLAlchemy 2.0, SQLite (local), PostgreSQL (production), Alembic |
+| **Database** | SQLAlchemy 2.0, SQLite (standalone), PostgreSQL (cloud), Alembic |
 | **Vector DB** | ChromaDB, sentence-transformers |
-| **Cache** | Redis (cloud), FakeRedis (local — full API parity) |
+| **Cache** | Redis (cloud), FakeRedis (standalone — full API parity) |
 | **Auth** | JWT (PyJWT), bcrypt, RBAC |
 | **Observability** | Opik tracing, Prometheus metrics, structlog |
 | **Testing** | pytest, pytest-asyncio, pytest-cov |
