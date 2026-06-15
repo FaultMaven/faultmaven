@@ -103,7 +103,8 @@ class CaseRepository(ABC):
 
         Args:
             user_id: Filter by user
-            organization_id: Filter by organization
+            organization_id: Retained for interface symmetry; does NOT scope
+                reads (single-tenant standalone; cloud isolation is RLS, ADR-006)
             state: Filter by state
             limit: Maximum results
             offset: Pagination offset
@@ -324,7 +325,8 @@ class CaseRepository(ABC):
         Args:
             query: Search query
             user_id: Filter by user
-            organization_id: Filter by organization
+            organization_id: Retained for interface symmetry; does NOT scope
+                reads (single-tenant standalone; cloud isolation is RLS, ADR-006)
             limit: Maximum results
 
         Returns:
@@ -800,8 +802,8 @@ class InMemoryCaseRepository(CaseRepository):
         if user_id:
             filtered = [c for c in filtered if c.user_id == user_id]
 
-        if organization_id:
-            filtered = [c for c in filtered if c.organization_id == organization_id]
+        # No org filter: standalone is single-tenant; cloud isolation is RLS
+        # (ADR-006). organization_id param retained for interface symmetry.
 
         if state:
             filtered = [c for c in filtered if c.state == state]
@@ -996,9 +998,8 @@ class InMemoryCaseRepository(CaseRepository):
                 if user_id and case.user_id != user_id:
                     continue
 
-                # Apply org filter
-                if organization_id and case.organization_id != organization_id:
-                    continue
+                # No org filter: single-tenant standalone; cloud isolation is
+                # RLS (ADR-006). organization_id param retained for symmetry.
 
                 filtered.append(case)
 

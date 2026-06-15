@@ -32,6 +32,7 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
     Case,
@@ -1045,9 +1046,11 @@ class SQLiteCaseRepository(CaseRepository):
                 where_clauses.append("user_id = :user_id")
                 params["user_id"] = user_id
 
-            if organization_id:
-                where_clauses.append("organization_id = :organization_id")
-                params["organization_id"] = organization_id
+            # No per-query org filter: standalone is single-tenant (one implicit
+            # org), and cloud tenant isolation is enforced by PostgreSQL RLS in
+            # faultmaven-cloud (ADR-006), not by CE repositories. The
+            # organization_id param is retained for interface symmetry / write
+            # stamping but does not scope reads.
 
             if state:
                 where_clauses.append("state = :state")
@@ -1473,9 +1476,11 @@ class SQLiteCaseRepository(CaseRepository):
                 where_clauses.append("user_id = :user_id")
                 params["user_id"] = user_id
 
-            if organization_id:
-                where_clauses.append("organization_id = :organization_id")
-                params["organization_id"] = organization_id
+            # No per-query org filter: standalone is single-tenant (one implicit
+            # org), and cloud tenant isolation is enforced by PostgreSQL RLS in
+            # faultmaven-cloud (ADR-006), not by CE repositories. The
+            # organization_id param is retained for interface symmetry / write
+            # stamping but does not scope reads.
 
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
@@ -1537,9 +1542,9 @@ class SQLiteCaseRepository(CaseRepository):
             # SQLite-compatible: no ::jsonb type cast
             # organization_id derived from the parent case (already verified
             # to exist by the probe above).
-            query = text("""
+            query = text(f"""
                 INSERT INTO case_messages (message_id, case_id, organization_id, turn_number, role, content, created_at, token_count, metadata)
-                VALUES (:message_id, :case_id, (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = :case_id), :turn_number, :role, :content, :created_at, :token_count, :metadata)
+                VALUES (:message_id, :case_id, (SELECT COALESCE(organization_id, '{STANDALONE_ORG_ID}') FROM cases WHERE case_id = :case_id), :turn_number, :role, :content, :created_at, :token_count, :metadata)
             """)
 
             await self.db.execute(
@@ -1571,13 +1576,13 @@ class SQLiteCaseRepository(CaseRepository):
     async def create_checkpoint(self, checkpoint: CaseCheckpoint) -> CaseCheckpoint:
         """Create a new case checkpoint (SQLite-compatible)."""
         try:
-            query = text("""
+            query = text(f"""
                 INSERT INTO case_checkpoints (
                     checkpoint_id, case_id, organization_id, turn_number, case_snapshot,
                     snapshot_hash, trigger, created_at, metadata
                 ) VALUES (
                     :checkpoint_id, :case_id,
-                    (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = :case_id),
+                    (SELECT COALESCE(organization_id, '{STANDALONE_ORG_ID}') FROM cases WHERE case_id = :case_id),
                     :turn_number, :case_snapshot,
                     :snapshot_hash, :trigger, :created_at, :metadata
                 )

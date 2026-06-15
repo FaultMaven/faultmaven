@@ -28,6 +28,7 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.modules.case.domain.models import (
     ActionAttempt,
     Case,
@@ -800,7 +801,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         Args:
             user_id: Filter by user
-            organization_id: Filter by organization
+            organization_id: Retained for interface symmetry; does NOT scope
+                reads (single-tenant standalone; cloud isolation is RLS, ADR-006)
             state: Filter by state
             limit: Maximum results
             offset: Pagination offset
@@ -817,9 +819,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 where_clauses.append("user_id = :user_id")
                 params["user_id"] = user_id
 
-            if organization_id:
-                where_clauses.append("organization_id = :organization_id")
-                params["organization_id"] = organization_id
+            # No per-query org filter: tenant isolation is enforced by PostgreSQL
+            # RLS in faultmaven-cloud (ADR-006), not by CE repositories;
+            # standalone-on-postgres is single-tenant. The organization_id param
+            # is retained for interface symmetry but does not scope reads.
 
             if state:
                 where_clauses.append("state = :state")
@@ -1306,7 +1309,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Args:
             query: Search query
             user_id: Filter by user
-            organization_id: Filter by organization
+            organization_id: Retained for interface symmetry; does NOT scope
+                reads (single-tenant standalone; cloud isolation is RLS, ADR-006)
             limit: Maximum results
 
         Returns:
@@ -1325,9 +1329,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 where_clauses.append("c.user_id = :user_id")
                 params["user_id"] = user_id
 
-            if organization_id:
-                where_clauses.append("c.organization_id = :organization_id")
-                params["organization_id"] = organization_id
+            # No per-query org filter: tenant isolation is RLS in
+            # faultmaven-cloud (ADR-006); standalone is single-tenant.
 
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
@@ -3464,7 +3467,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     snapshot_hash, trigger, created_at, metadata
                 ) VALUES (
                     :checkpoint_id, :case_id,
-                    (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = {self._org_lookup_case_id()}),
+                    (SELECT COALESCE(organization_id, '{STANDALONE_ORG_ID}') FROM cases WHERE case_id = {self._org_lookup_case_id()}),
                     :turn_number, {self._cast('case_snapshot')},
                     :snapshot_hash, :trigger, {self._cast('created_at', 'TIMESTAMPTZ')}, {self._cast('metadata')}
                 )

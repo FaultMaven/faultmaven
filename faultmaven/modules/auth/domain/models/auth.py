@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
+from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -66,8 +67,8 @@ class DevUser:
             # In production, this should default to ['user']
             self.roles = ["admin"]
         if self.organization_id is None:
-            # Default to SingleTenantProvider.DEFAULT_ORG_ID for local mode
-            self.organization_id = "00000000-0000-0000-0000-000000000001"
+            # Implicit single-tenant org (standalone); see config.constants.
+            self.organization_id = STANDALONE_ORG_ID
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization"""
