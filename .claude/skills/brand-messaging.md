@@ -51,6 +51,21 @@ Use these exact terms. Do not substitute synonyms.
 | status: **INQUIRY → INVESTIGATING → RESOLVED/CLOSED** | in-progress, open, done |
 | FaultMaven API / Dashboard / Copilot / Website | the backend, the frontend, the plugin |
 
+### Deployment terminology (per ADR-004)
+
+| Use | Not |
+|---|---|
+| standalone *(deployment architecture)* | local deployment, on-prem edition, self-managed edition |
+| cloud *(deployment architecture)* | SaaS-only / hosted *as an architecture name* |
+| self-hosted ↔ FaultMaven-hosted *(operator)* | — |
+| modular monolith | microservices, microservice backend |
+| open core *(applies to both deployments)* | "Open Source" as a tier name implying Cloud isn't open |
+
+- `standalone`/`cloud` name the **deployment architecture**; `self-hosted`/`FaultMaven-hosted` name the **operator** (who runs it). These are independent axes.
+- **"cloud" describes the architecture (cloud-native), not the location** — a cloud deployment can run in public cloud *or* on-prem as a private cloud. `cloud` and `on-prem` are not opposites.
+- `local` is reserved for `AUTH_MODE=local` / `CHAT_PROVIDER=local` — **never** a deployment term.
+- The Core is **open core in both deployments.** Do not label a tier "Open Source" as if Cloud were proprietary; name a tier by its architecture (Standalone) or operator (Self-Hosted).
+
 ### Capitalization
 
 The rule of thumb: lowercase as a common noun, Title Case only as a proper product/component name or a literal UI label.
@@ -112,8 +127,10 @@ These secondary documents reinforce the above but do NOT override this skill:
 
 The terminology, capitalization, audience, and verb rules above are currently enforced manually via `/sync-brand`. The grep-style search cues throughout this skill (and in the `/sync-brand` propagation checklist) are written so they can graduate into automated checks:
 
-- **Pre-commit hook** — a regex scan over staged `.md`, `.html`, `package.json`, and `manifest.json` files that fails the commit on any of the violation patterns: `AIOps platform`, `observability platform`, `for SRE teams`, `designed for DevOps`, `playbook` (where it refers to the FaultMaven concept), `troubleshooting assistant`, `leverages`, `utilizes`, etc.
-- **CI lint job** — same patterns, run against all brand-facing files in PRs (a `.github/workflows/brand-lint.yml`-style workflow that greps and posts a comment with offending lines).
+- **Pre-commit hook** — a regex scan over staged `.md`, `.html`, `.tsx`, `package.json`, and `manifest.json` files that fails the commit on a violation. Two pattern classes, matching "Authority by rule type":
+  - **Universal (terminology — runs on ALL brand-facing files, including marketing/website):** `AIOps platform`, `observability platform`, `troubleshooting assistant`, `playbook` (FaultMaven concept), `microservices backend`, `Local Deployment`, `Deploy locally` (deployment context), `Enterprise SaaS` (as the Cloud tier name).
+  - **Core surfaces only (positioning/audience/tone — README + product descriptions, NOT marketing copy):** `for SRE teams`, `designed for DevOps`, `leverages`, `utilizes`, etc.
+- **CI lint job** — same two pattern classes, run against brand-facing files in PRs (a `.github/workflows/brand-lint.yml`-style workflow that greps and posts a comment with offending lines). The universal class runs on marketing files too; the core-surfaces class does not.
 - **Search-cue maintenance** — when a violation pattern is added or retired in this skill, update the corresponding hook/CI rule in the same PR. The skill remains the source of truth; the automation is a downstream check, exactly as `/sync-brand` treats this skill as canonical and downstream-repo copies as derivatives.
 
 Goal: prevent a contributor from ever successfully committing `<meta name="description" content="AIOps platform">` in the first place, rather than catching it in a quarterly audit.
@@ -122,15 +139,22 @@ Goal: prevent a contributor from ever successfully committing `<meta name="descr
 
 ## Scope Boundaries
 
+### Authority by rule type
+
+The skill's authority is **two-tiered**, because the surfaces differ:
+
+- **Terminology (§3, including the deployment lexicon) is universal.** Canonical terms and the deployment lexicon apply to **every** brand-facing surface — README, product descriptions, **and** marketing copy, website pages, SEO meta. A factual term cannot differ across surfaces (you cannot say "microservices" on the website and "modular monolith" in the README). Retired terms are retired everywhere.
+- **Positioning, value props, audience framing, tone, and specific claims (§1, §2, §4, §5) stop at the marketing boundary.** The website and other marketing surfaces own their own pitch, headlines, and claims; the skill does not dictate them. It requires only that they **not contradict** the canonical positioning.
+
 **This skill governs:**
 - Product positioning language (one-liners, elevator pitches, README opening)
-- Canonical terminology for product concepts
+- Canonical terminology for product concepts (universal — see above)
 - Value proposition framing
 - Audience framing (capability-first, not role-first)
 
 **This skill does NOT govern:**
 - UI copy, button labels, tooltip text — product design concern, not messaging
-- Marketing page copy, ads, SEO meta descriptions — specific marketing statements are out of scope
+- Marketing **positioning, claims, ads, and SEO pitch** — the specific marketing message is the website's to own (but its **terminology** must still conform to §3, per "Authority by rule type")
 - Visual design, logos, color
 - Technical documentation (architecture, API reference, runbooks)
 - Code comments, log messages, error messages shown to developers
@@ -141,3 +165,13 @@ Goal: prevent a contributor from ever successfully committing `<meta name="descr
 ## Cross-Repo Canonicality
 
 This file in the `faultmaven` API repo is **canonical**. Copies in downstream repos (`faultmaven-copilot`, `faultmaven-dashboard`, `faultmaven-website`) must be treated as downstream. Use `/sync-brand` to diff this canonical version against those copies and produce a propagation checklist.
+
+### Messages are not duplicated — they are consistent, aligned, and corroborative
+
+Public surfaces do **not** repeat the same copy. Each says what fits its job — the API README is setup-and-architecture, the Copilot README is the in-browser extension, the Dashboard README is KB/case management, the website is the marketing pitch. The cross-surface requirement is:
+
+- **Consistent** — no surface contradicts another. Same facts everywhere: modular monolith, standalone/cloud, open core in **both** deployments.
+- **Aligned** — same canonical terminology (§3) and the same underlying positioning (§1), expressed in each surface's own voice.
+- **Corroborative** — surfaces reinforce and cross-reference each other (the website links to the repo Quick Start; the Copilot README points to the API for the backend), so a reader moving between them gets **one coherent story**, not three overlapping ones.
+
+`/sync-brand` propagates **terminology and positioning**, never copy. It must never make two repos say the same sentence.
