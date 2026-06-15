@@ -29,6 +29,10 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+# Migrations are version-pinned and must stay self-contained (no app imports),
+# so these literals are duplicated intentionally. They MUST match
+# faultmaven.config.constants.STANDALONE_ENTERPRISE_ID / _SLUG / _NAME — the
+# runtime single source of truth. Keep in sync if those ever change.
 DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
 DEFAULT_ENTERPRISE_SLUG = "default"
 DEFAULT_ENTERPRISE_NAME = "Default Enterprise"

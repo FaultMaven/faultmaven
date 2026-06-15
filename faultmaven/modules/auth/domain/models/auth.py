@@ -47,7 +47,7 @@ class DevUser:
         is_dev_user: Flag indicating development account
         is_active: Account active status
         roles: List of user roles for access control (e.g., ['admin'], ['user'])
-        organization_id: Organization UUID (defaults to SingleTenantProvider.DEFAULT_ORG_ID)
+        organization_id: Organization UUID (defaults to config.constants.STANDALONE_ORG_ID)
     """
 
     user_id: str
@@ -58,7 +58,7 @@ class DevUser:
     is_dev_user: bool = True
     is_active: bool = True
     roles: list[str] = None  # Will be set to ['admin'] by default in __post_init__
-    organization_id: str = None  # Will be set to DEFAULT_ORG_ID in __post_init__
+    organization_id: str = None  # Will be set to STANDALONE_ORG_ID in __post_init__
 
     def __post_init__(self):
         """Set default roles and organization_id if not provided"""

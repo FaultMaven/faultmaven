@@ -1049,8 +1049,8 @@ class SQLiteCaseRepository(CaseRepository):
             # No per-query org filter: standalone is single-tenant (one implicit
             # org), and cloud tenant isolation is enforced by PostgreSQL RLS in
             # faultmaven-cloud (ADR-006), not by CE repositories. The
-            # organization_id param is retained for interface symmetry / write
-            # stamping but does not scope reads.
+            # organization_id param is retained for interface symmetry with the
+            # write-path signatures; it does not scope reads.
 
             if state:
                 where_clauses.append("state = :state")
@@ -1479,8 +1479,8 @@ class SQLiteCaseRepository(CaseRepository):
             # No per-query org filter: standalone is single-tenant (one implicit
             # org), and cloud tenant isolation is enforced by PostgreSQL RLS in
             # faultmaven-cloud (ADR-006), not by CE repositories. The
-            # organization_id param is retained for interface symmetry / write
-            # stamping but does not scope reads.
+            # organization_id param is retained for interface symmetry with the
+            # write-path signatures; it does not scope reads.
 
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
