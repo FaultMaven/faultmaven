@@ -788,26 +788,6 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "investigation_service", None)
 
-    def get_organization_service(self):
-        """Get the organization service implementation (optional feature)"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                "Organization service requested but container not initialized"
-            )
-            if not getattr(self, "_initializing", False):
-                pass  # Container must be initialized via await container.initialize() at startup
-        return getattr(self, "organization_service", None)
-
-    def get_team_service(self):
-        """Get the team service implementation (optional feature)"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Team service requested but container not initialized")
-            if not getattr(self, "_initializing", False):
-                pass  # Container must be initialized via await container.initialize() at startup
-        return getattr(self, "team_service", None)
-
     def get_milestone_engine(self):
         """Get the milestone engine implementation (v2.0 core investigation)"""
         if not self._initialized:

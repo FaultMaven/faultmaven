@@ -448,24 +448,6 @@ async def get_classification_engine(request: Request):
     return request.app.state.query_classification_engine
 
 
-async def get_organization_service(request: Request):
-    """Get OrganizationService instance from app.state (Composition Root)"""
-    service = request.app.state.organization_service
-    if service is None:
-        raise HTTPException(
-            status_code=503, detail="Organization service not available"
-        )
-    return service
-
-
-async def get_team_service(request: Request):
-    """Get TeamService instance from app.state (Composition Root)"""
-    service = request.app.state.team_service
-    if service is None:
-        raise HTTPException(status_code=503, detail="Team service not available")
-    return service
-
-
 async def get_llm_provider(request: Request):
     """Get LLM provider instance from app.extra (Composition Root)"""
     try:
