@@ -56,6 +56,32 @@ _API_KEY_FIELDS = {
 }
 
 
+async def get_config_source_map(is_cloud: bool) -> dict[str, str]:
+    """Return provenance per overridable key: 'admin-override' vs 'env-default'.
+
+    A key is 'admin-override' when an explicit value is stored in the DB
+    (cloud only); otherwise it's 'env-default' (.env / seed). Standalone has no
+    DB overrides, so every key is 'env-default'. This lives in the config layer
+    (not the API route) so the read of the infrastructure repository does not
+    cross the API → infrastructure architecture boundary.
+    """
+    db_overrides: dict[str, str] = {}
+    if is_cloud:
+        try:
+            from faultmaven.infrastructure.persistence.llm_config_repository import (
+                get_all_overrides,
+            )
+
+            db_overrides = await get_all_overrides()
+        except Exception as e:  # DB may be unavailable; treat as no overrides
+            logger.debug(f"Could not read config overrides for provenance: {e}")
+
+    return {
+        key: ("admin-override" if key in db_overrides else "env-default")
+        for key in _ALLOWED_OVERRIDES
+    }
+
+
 async def apply_overrides_to_settings(settings) -> None:
     """Read overrides from DB and apply them to the LLM settings object.
 

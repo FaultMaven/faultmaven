@@ -144,28 +144,13 @@ async def get_llm_config(
 
         primary = fallback_chain[0] if fallback_chain else "none"
 
-        # Per-setting provenance: which overridable keys are an explicit admin
-        # override (in the DB) vs the env/seed default. Standalone has no DB
-        # overrides, so every key is env-default. This is what lets the admin
-        # dashboard show which source is active (llm-configuration-design.md
-        # Phase 2 — the "two silent sources of truth" fix).
-        from faultmaven.config.llm_config_overrides import _ALLOWED_OVERRIDES
+        # Per-setting provenance ('admin-override' vs 'env-default') — what lets
+        # the admin dashboard show which source is active (the "two silent
+        # sources of truth" fix). Computed in the config layer so the API route
+        # stays free of infrastructure imports (architecture boundary).
+        from faultmaven.config.llm_config_overrides import get_config_source_map
 
-        db_overrides: dict[str, str] = {}
-        if is_cloud:
-            try:
-                from faultmaven.infrastructure.persistence.llm_config_repository import (
-                    get_all_overrides,
-                )
-
-                db_overrides = await get_all_overrides()
-            except Exception as e:
-                logger.debug(f"Could not read config overrides for provenance: {e}")
-
-        config_sources = {
-            key: ("admin-override" if key in db_overrides else "env-default")
-            for key in _ALLOWED_OVERRIDES
-        }
+        config_sources = await get_config_source_map(is_cloud)
 
         return LLMConfigResponse(
             deployment=deployment,
