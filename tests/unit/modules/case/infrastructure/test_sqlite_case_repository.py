@@ -584,15 +584,18 @@ class TestListAndSearch:
         assert all(c.user_id == "user_a" for c in cases)
 
     @pytest.mark.asyncio
-    async def test_list_filters_by_organization(self, repository):
+    async def test_list_ignores_organization_filter(self, repository):
+        # ADR-006: CE is single-tenant; the organization_id param does NOT scope
+        # reads (cloud tenant isolation is enforced by RLS, not CE repositories).
+        # All cases are returned regardless of the org passed.
         await repository.save(_make_case(organization_id="org_left"))
         await repository.save(_make_case(organization_id="org_left"))
         await repository.save(_make_case(organization_id="org_right"))
 
         cases, total = await repository.list(organization_id="org_right")
 
-        assert total == 1
-        assert cases[0].organization_id == "org_right"
+        assert total == 3
+        assert {c.organization_id for c in cases} == {"org_left", "org_right"}
 
     @pytest.mark.asyncio
     async def test_list_filters_by_status(self, repository):
@@ -697,14 +700,16 @@ class TestListAndSearch:
         assert results[0].user_id == "user_a"
 
     @pytest.mark.asyncio
-    async def test_search_scopes_to_organization(self, repository):
+    async def test_search_ignores_organization_filter(self, repository):
+        # ADR-006: org param does NOT scope reads in CE (single-tenant); both
+        # orgs' matching cases are returned.
         await repository.save(_make_case(organization_id="org_1", title="Net issue"))
         await repository.save(_make_case(organization_id="org_2", title="Net issue"))
 
         results, _ = await repository.search(query="Net", organization_id="org_1")
 
-        assert len(results) == 1
-        assert results[0].organization_id == "org_1"
+        assert len(results) == 2
+        assert {r.organization_id for r in results} == {"org_1", "org_2"}
 
     @pytest.mark.asyncio
     async def test_search_respects_limit(self, repository):

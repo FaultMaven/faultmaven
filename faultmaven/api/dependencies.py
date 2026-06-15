@@ -247,15 +247,9 @@ async def get_agent_orchestration_service(
             ):
                 yield event
     """
-    # Resolve team service for KB scope filtering during agent execution
-    from faultmaven.container import container
-    from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
-        AgentOrchestrationService,
-    )
-
-    team_service = container.get_team_service() if container else None
-
-    return factory.create_agent_orchestration_service(team_service=team_service)
+    # Community Edition has no team collaboration — org/team management lives in
+    # faultmaven-cloud (ADR-006) — so no team service is wired for KB scoping.
+    return factory.create_agent_orchestration_service(team_service=None)
 
 
 # Future service dependencies:

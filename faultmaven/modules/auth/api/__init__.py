@@ -9,7 +9,5 @@ Contains all authentication and authorization API endpoints.
 __all__ = [
     "auth_router",
     "session_router",
-    "teams_router",
-    "organizations_router",
     "oauth_router",
 ]

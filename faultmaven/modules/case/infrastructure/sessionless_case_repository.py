@@ -241,7 +241,11 @@ class SessionlessCaseRepository(CaseRepository):
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Case], int]:
-        """List cases with optional filters."""
+        """List cases (filtered by user_id/state).
+
+        organization_id is forwarded but does NOT scope reads in CE — tenant
+        isolation is cloud RLS (ADR-006); see the underlying repositories.
+        """
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
             return await repo.list(user_id, organization_id, state, limit, offset)
@@ -253,7 +257,11 @@ class SessionlessCaseRepository(CaseRepository):
         organization_id: str | None = None,
         limit: int = 20,
     ) -> tuple[builtins.list[Case], int]:
-        """Search cases by text query."""
+        """Search cases by text query (scoped by user_id).
+
+        organization_id is forwarded but does NOT scope reads in CE — tenant
+        isolation is cloud RLS (ADR-006); see the underlying repositories.
+        """
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
             return await repo.search(query, user_id, organization_id, limit)

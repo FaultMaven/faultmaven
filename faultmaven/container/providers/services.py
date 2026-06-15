@@ -6,7 +6,7 @@ This module contains factory functions for business logic services:
 - Session services
 - Knowledge services
 - Data services
-- Organization/Team services
+- Organization/Enterprise repositories (tenancy substrate; management lives in cloud)
 """
 
 from __future__ import annotations
@@ -266,45 +266,35 @@ def create_knowledge_service(
     )
 
 
-def create_organization_service(
-    db_session: Any | None,
-    settings: FaultMavenSettings,
-) -> tuple[Any | None, Any | None]:
-    """Create organization service and its repository.
+def create_organization_repository() -> Any | None:
+    """Create the sessionless organization repository.
 
-    Returns:
-        Tuple of (organization_service, organization_repository)
+    CE keeps only the organization *repository* (the substrate the tenant
+    factory + SingleTenantProvider need to resolve/stamp the implicit default
+    org). Organization *management* (OrganizationService + routes) is a cloud
+    collaboration feature and lives in faultmaven-cloud (ADR-006), so CE no
+    longer constructs a service here.
     """
-    # Organization repository no longer needs a pre-created db_session
-    # It will use get_db_session() per operation like SessionlessCaseRepository
     try:
         from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
             SessionlessOrganizationRepository,
         )
-        from faultmaven.modules.auth.domain.services.organization_service import (
-            OrganizationService,
-        )
 
         repository = SessionlessOrganizationRepository()
-        service = OrganizationService(
-            organization_repository=repository,
-            audit_repository=None,
-            settings=settings,
-        )
-        logger.debug("OrganizationService initialized with sessionless repository")
-        return service, repository
+        logger.debug("OrganizationRepository initialized (sessionless)")
+        return repository
     except Exception as e:
-        logger.warning(f"OrganizationService initialization failed: {e}")
+        logger.warning(f"OrganizationRepository initialization failed: {e}")
         import traceback
 
         traceback.print_exc()
-        return None, None
+        return None
 
 
 def create_enterprise_repository() -> Any | None:
     """Create the sessionless enterprise repository.
 
-    Mirrors create_organization_service's repo half. There is no
+    Mirrors create_organization_repository. There is no
     EnterpriseService yet — enterprise CRUD is bootstrap-only in the
     current scope (single-tenant default-enterprise seeding,
     multi-tenant defers to cloud rollout). When that lands, mint a
@@ -324,36 +314,6 @@ def create_enterprise_repository() -> Any | None:
         import traceback
 
         traceback.print_exc()
-        return None
-
-
-def create_team_service(
-    db_session: Any | None,
-    organization_repository: Any | None,
-    settings: FaultMavenSettings,
-) -> Any | None:
-    """Create team service for team collaboration."""
-    if not db_session or not organization_repository:
-        logger.debug("TeamService skipped (missing dependencies)")
-        return None
-
-    try:
-        from faultmaven.infrastructure.persistence.team_repository import (
-            PostgreSQLTeamRepository,
-        )
-        from faultmaven.modules.auth.domain.services.team_service import TeamService
-
-        team_repository = PostgreSQLTeamRepository(db_session)
-        service = TeamService(
-            team_repository=team_repository,
-            organization_repository=organization_repository,
-            audit_repository=None,
-            settings=settings,
-        )
-        logger.debug("TeamService initialized")
-        return service
-    except Exception as e:
-        logger.warning(f"TeamService initialization failed: {e}")
         return None
 
 
@@ -473,9 +433,7 @@ def create_tenant_provider(
     from faultmaven.providers.tenancy.factory import (
         TenancyConfigurationError,
     )
-    from faultmaven.providers.tenancy.factory import (
-        create_tenant_provider as factory,
-    )
+    from faultmaven.providers.tenancy.factory import create_tenant_provider as factory
 
     try:
         provider = factory(
@@ -732,13 +690,12 @@ def register_services(container: BaseDIContainer) -> None:
     else:
         logger.info("OAuth service disabled (using dev-login mode)")
 
-    # Organization Service (create first, before TenantProvider which depends on organization_repository)
-    organization_service, organization_repository = create_organization_service(
-        db_session, settings
-    )
-    container.organization_service = organization_service
-    if organization_service:
-        container._register_service("organization_service", organization_service)
+    # Organization Repository (create before TenantProvider, which resolves the
+    # implicit org through it). Org/team *management* lives in faultmaven-cloud
+    # (ADR-006); CE keeps only the repository substrate.
+    organization_repository = create_organization_repository()
+    if organization_repository:
+        container._register_service("organization_repository", organization_repository)
 
     # Enterprise Repository (create before TenantProvider; SingleTenantProvider
     # uses it for default-enterprise bootstrap).
@@ -747,7 +704,7 @@ def register_services(container: BaseDIContainer) -> None:
     if enterprise_repository:
         container._register_service("enterprise_repository", enterprise_repository)
 
-    # Tenant Provider (create after OrganizationService + EnterpriseRepository,
+    # Tenant Provider (create after the Organization + Enterprise repositories,
     # before CaseService)
     tenant_provider = create_tenant_provider(
         organization_repository,
@@ -816,12 +773,6 @@ def register_services(container: BaseDIContainer) -> None:
     container.investigation_service = investigation_service
     if investigation_service:
         container._register_service("investigation_service", investigation_service)
-
-    # Team Service (organization_repository already created above)
-    team_service = create_team_service(db_session, organization_repository, settings)
-    container.team_service = team_service
-    if team_service:
-        container._register_service("team_service", team_service)
 
     # Session Service
     session_service = create_session_service(
