@@ -16,10 +16,10 @@ class TenantProvider(ABC):
 
     Enables deployment-neutral services by abstracting organization context.
 
-    Implementations:
-    - SingleTenantProvider: Returns the default organization (Community Edition)
-    - Multi-tenant providers are supplied by faultmaven-cloud via the
-      ``faultmaven.providers.tenancy`` entry-point seam (ADR-006)
+    Implementations (both in-core, config-selected by ``TENANT_PROVIDER``, ADR-010):
+    - SingleTenantProvider: Returns the default organization (Standalone)
+    - MultiTenantProvider: Resolves and validates the organization from request
+      context (Cloud / multi-tenant)
 
     Design Pattern:
         This follows the Strategy pattern, allowing deployment mode to be

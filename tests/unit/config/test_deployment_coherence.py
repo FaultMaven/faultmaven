@@ -144,36 +144,43 @@ def test_settings_is_cloud_property_reads_deployment_mode(monkeypatch):
     assert FaultMavenSettings(_env_file=None).is_standalone is True  # default
 
 
-# --- Tenancy availability (independent of DEPLOYMENT_MODE) -------------------
-
-_PLUGIN_LOOKUP = "faultmaven.providers.tenancy.factory.find_tenant_provider_plugin"
+# --- Tenancy coherence (ADR-010: single/multi both in-core) -----------------
 
 
 @pytest.mark.unit
 @pytest.mark.security
-def test_multi_tenant_without_plugin_fails_closed():
-    """TENANT_PROVIDER=multi with no installed plugin -> refuse to boot."""
-    s = _standalone_ok()  # tenancy is independent of deployment mode
-    s.providers = SimpleNamespace(tenant_provider="multi")
-    with patch(_PLUGIN_LOOKUP, return_value=None):
-        with pytest.raises(DeploymentCoherenceError) as exc:
-            validate_deployment_coherence(s)
-    assert "TENANT_PROVIDER='multi'" in str(exc.value)
-    assert "faultmaven-cloud" in str(exc.value)
-
-
-@pytest.mark.unit
-def test_multi_tenant_with_installed_plugin_passes():
-    """TENANT_PROVIDER=multi resolves when a plugin is installed -> no raise."""
+def test_multi_tenant_on_standalone_fails_closed():
+    """TENANT_PROVIDER=multi on a standalone deployment -> refuse to boot."""
     s = _standalone_ok()
     s.providers = SimpleNamespace(tenant_provider="multi")
-    with patch(_PLUGIN_LOOKUP, return_value=object()):  # any non-None entry point
+    with pytest.raises(DeploymentCoherenceError) as exc:
         validate_deployment_coherence(s)
+    assert "TENANT_PROVIDER='multi'" in str(exc.value)
+    assert "DEPLOYMENT_MODE=cloud" in str(exc.value)
 
 
 @pytest.mark.unit
-def test_single_tenant_needs_no_plugin():
-    """The built-in single provider never requires a plugin."""
+def test_multi_tenant_on_cloud_passes():
+    """TENANT_PROVIDER=multi is coherent with a fully-coherent cloud deployment."""
+    s = _cloud_ok()
+    s.providers = SimpleNamespace(tenant_provider="multi")
+    validate_deployment_coherence(s)  # must not raise
+
+
+@pytest.mark.unit
+def test_single_tenant_always_passes():
+    """The built-in single provider is valid in any deployment mode."""
     s = _standalone_ok()
     s.providers = SimpleNamespace(tenant_provider="single")
     validate_deployment_coherence(s)
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_unknown_provider_fails_closed():
+    """An unrecognized TENANT_PROVIDER value -> refuse to boot."""
+    s = _standalone_ok()
+    s.providers = SimpleNamespace(tenant_provider="bogus")
+    with pytest.raises(DeploymentCoherenceError) as exc:
+        validate_deployment_coherence(s)
+    assert "not a recognized provider" in str(exc.value)

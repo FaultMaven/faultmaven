@@ -247,35 +247,27 @@ class TestTenantProviderFactory:
 
         assert isinstance(provider, SingleTenantProvider)
 
-    def test_factory_multi_fails_closed_without_plugin(self):
-        """Multi-tenant requires an installed plugin (ADR-006); absent -> fail closed."""
+    def test_factory_multi_resolves_in_core(self):
+        """``multi`` resolves to the in-core MultiTenantProvider (ADR-010), no plugin."""
         from unittest.mock import MagicMock, patch
 
-        import pytest
-
         from faultmaven.config.settings import TenantProvider as TenantProviderEnum
-        from faultmaven.providers.tenancy.factory import (
-            TenancyConfigurationError,
-            create_tenant_provider,
-        )
+        from faultmaven.providers.tenancy.factory import create_tenant_provider
+        from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 
         mock_settings = MagicMock()
         mock_settings.providers = MagicMock()
         mock_settings.providers.tenant_provider = TenantProviderEnum.MULTI
         mock_repo = MagicMock()
 
-        with (
-            patch(
-                "faultmaven.providers.tenancy.factory.get_settings",
-                return_value=mock_settings,
-            ),
-            patch(
-                "faultmaven.providers.tenancy.factory.find_tenant_provider_plugin",
-                return_value=None,
-            ),
+        with patch(
+            "faultmaven.providers.tenancy.factory.get_settings",
+            return_value=mock_settings,
         ):
-            with pytest.raises(TenancyConfigurationError):
-                create_tenant_provider(mock_repo)
+            provider = create_tenant_provider(mock_repo)
+
+        assert isinstance(provider, MultiTenantProvider)
+        assert provider.organization_repository is mock_repo
 
     def test_di_wrapper_reraises_fatal_tenancy_error(self):
         """The container DI wrapper must NOT swallow a fatal tenancy misconfig —

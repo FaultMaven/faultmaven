@@ -1,17 +1,18 @@
-"""Tenancy Provider Module for Deployment Neutrality (TASK-023).
+"""Tenancy provider module — deployment-neutral organization context.
 
-This module provides the TenantProvider abstraction for deployment neutrality.
-The Community Edition ships only ``SingleTenantProvider``; multi-tenant
-implementations are provided by faultmaven-cloud and discovered at runtime via
-the ``faultmaven.providers.tenancy`` entry-point seam (ADR-006).
+Tenancy lives in the core, config-selected by ``TENANT_PROVIDER`` (ADR-010):
+``single`` (the Standalone default, single-tenant) and ``multi`` (multi-tenant,
+Cloud) are both in-core. ``create_tenant_provider`` selects between them.
 """
 
 from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.providers.tenancy.factory import create_tenant_provider
+from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 __all__ = [
     "TenantProvider",
     "SingleTenantProvider",
+    "MultiTenantProvider",
     "create_tenant_provider",
 ]
