@@ -2,42 +2,42 @@
 
 Complete guide for installing and configuring FaultMaven.
 
-**Note**: This guide covers both Community Edition (open source, self-host) and Enterprise Edition (additional features for production deployments). Enterprise features require separate licensing and infrastructure.
+**Note**: This guide covers installing **FaultMaven Standalone** — the self-hosted, single-user, fair-source (FSL-1.1-ALv2) deployment you run on your own hardware with fixed simple defaults. **Cloud** is the separate cloud-native deployment (multi-tenant; run as FaultMaven-hosted SaaS or self-hosted as a private cloud), configured through Kubernetes rather than installed via this guide — see [Scaling Beyond Standalone (Cloud)](#scaling-beyond-standalone-cloud). Standalone and Cloud are the same core engine, differing only by configuration and which composed modules are present.
 
 ## Table of Contents
 
-- [Installation Modes](#installation-modes)
-- [Community Edition](#community-edition)
-- [Enterprise Edition](#enterprise-edition)
+- [Deployment Profiles](#deployment-profiles)
+- [Standalone (Default)](#standalone-default)
+- [Scaling Beyond Standalone (Cloud)](#scaling-beyond-standalone-cloud)
 - [Configuration](#configuration)
-- [Upgrading from Community to Enterprise](#upgrading-from-community-to-enterprise)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
-## Installation Modes
+## Deployment Profiles
 
-FaultMaven offers two installation modes optimized for different use cases:
+FaultMaven is **one codebase**. Standalone and Cloud run the same code and schema, differing only by **configuration** and by **which composed modules are present**. You choose the deployment at install time:
 
-| Feature | Community Edition | Enterprise Edition |
-|---------|------------------|-------------------|
-| **Install Command** | `pip install faultmaven` | `pip install faultmaven[enterprise]` |
-| **Use Case** | Local development, testing, community users | Production deployments, enterprise features |
-| **Database** | SQLite (local file) | SQLite + PostgreSQL support |
-| **Session Management** | In-memory | In-memory + Redis support |
-| **File Storage** | Local filesystem | Local + AWS S3 + Azure Blob |
-| **Observability** | Basic logging | Opik tracing, Prometheus metrics |
-| **PII Protection** | Disabled | Presidio PII redaction |
-| **Installation Size** | ~500 MB | ~1.2 GB |
-| **External Dependencies** | None (standalone) | Optional (Redis, PostgreSQL, Presidio) |
+- **Standalone** — self-hosted, **single-user**, with **fixed simple defaults** (SQLite, in-process FakeRedis, embedded ChromaDB, local filesystem). No scale-backend knobs are surfaced; setup is "pick an LLM provider, paste a key, go." **This guide covers Standalone.**
+- **Cloud** — the cloud-native deployment architecture (multi-tenant, elastic), run as managed SaaS *or* self-hosted as a private cloud. Its production infrastructure (PostgreSQL, Redis, object storage, observability, PII redaction) is configured through **Kubernetes ConfigMaps/Secrets**. See [Scaling Beyond Standalone (Cloud)](#scaling-beyond-standalone-cloud).
+
+| | Standalone | Cloud |
+|---|---|---|
+| **Operator** | Self-hosted | FaultMaven-hosted, or self-hosted private cloud |
+| **Tenancy / users** | Single-tenant, single-user | Multi-tenant, multi-user |
+| **Database** | SQLite (fixed) | PostgreSQL |
+| **Sessions** | In-process FakeRedis (fixed) | Redis |
+| **File storage** | Local filesystem (fixed) | Object storage (S3 / Azure Blob) |
+| **Observability / PII** | Basic logging | Opik tracing, Prometheus, Presidio PII redaction |
+| **Configuration surface** | Single slim `.env` | Kubernetes ConfigMaps + Secrets |
 
 ---
 
-## Community Edition
+## Standalone (Default)
 
 ### Quick Start
 
-Perfect for local development, testing, and community users. Zero external dependencies required.
+Perfect for local development, testing, and single-operator self-hosting. Zero external dependencies required.
 
 ```bash
 # Install FaultMaven
@@ -52,7 +52,7 @@ python -m faultmaven
 
 ### What's Included
 
-The community edition includes all core features:
+The standalone default includes all core features:
 
 - ✅ **FastAPI REST API server**
 - ✅ **Multi-LLM support** (7 providers: Fireworks, OpenAI, Anthropic, Gemini, HuggingFace, OpenRouter, Groq)
@@ -71,7 +71,7 @@ The community edition includes all core features:
 Create a `.env` file in your project directory:
 
 ```bash
-# Minimal configuration for community edition
+# Minimal configuration for standalone
 CHAT_PROVIDER=fireworks
 FIREWORKS_API_KEY=your_fireworks_api_key_here
 
@@ -86,7 +86,7 @@ FIREWORKS_API_KEY=your_fireworks_api_key_here
 
 ### Default Behavior
 
-The community edition uses the following defaults:
+Standalone uses the following defaults:
 
 ```python
 # Storage (no external dependencies)
@@ -97,7 +97,7 @@ case_storage_type = "database"
 # Vectors: ChromaDB PersistentClient (local, no external server needed)
 vector_storage_type = "chromadb"
 
-# Enterprise features (disabled)
+# Production features (disabled by default)
 opik_enabled = False
 prometheus_enabled = False
 tracing_enabled = False
@@ -129,115 +129,16 @@ Once running, access the API at:
 
 ---
 
-## Enterprise Edition
+## Scaling Beyond Standalone (Cloud)
 
-### Installation
+Standalone runs on **fixed simple defaults** (SQLite, in-process FakeRedis, embedded ChromaDB, local filesystem) and is **single-user**. Production-grade, multi-tenant infrastructure (PostgreSQL, Redis, object storage) is provided by the **Cloud** deployment architecture.
 
-```bash
-# Install with all enterprise features
-pip install faultmaven[enterprise]
-```
+Cloud is cloud-native: the same core engine plus the composed proprietary modules (billing, usage metering, hosted IAM/admin), configured through **Kubernetes ConfigMaps and Secrets** (not a `.env` file) and operated either as FaultMaven-hosted SaaS or self-hosted as a private cloud. The data-tier wiring (PostgreSQL, Redis, S3/Azure Blob), observability (Opik, Prometheus), and PII redaction (Presidio) live in the cloud config surface.
 
-### What's Added
+- **Managed SaaS:** [cloud.faultmaven.ai](https://cloud.faultmaven.ai) — no installation required.
+- **Self-hosted Cloud (private cloud):** see the Kubernetes manifests and Helm charts in the **faultmaven-enterprise-infra** repository.
 
-Enterprise edition adds:
-
-- ✅ **Opik tracing** - LLM call tracing and performance monitoring
-- ✅ **Prometheus metrics** - Production-grade metrics export
-- ✅ **PII redaction** - Presidio-powered sensitive data protection
-- ✅ **Redis sessions** - Distributed session management
-- ✅ **PostgreSQL support** - Production database support
-- ✅ **Cloud storage** - AWS S3 and Azure Blob support
-- ✅ **Advanced observability** - Detailed tracing and monitoring
-
-### External Dependencies
-
-For full enterprise functionality, you'll need:
-
-1. **Redis** (optional - for distributed sessions)
-   ```bash
-   # Using Docker
-   docker run -d -p 6379:6379 redis:latest
-   ```
-
-2. **PostgreSQL** (optional - for production database)
-   ```bash
-   # Using Docker
-   docker run -d -p 5432:5432 \
-     -e POSTGRES_PASSWORD=password \
-     -e POSTGRES_DB=faultmaven \
-     postgres:15
-   ```
-
-3. **Presidio** (optional - for PII redaction)
-   ```bash
-   # Using Docker Compose (recommended)
-   # See: https://github.com/microsoft/presidio
-   ```
-
-### Configuration
-
-Create a `.env` file with enterprise settings:
-
-```bash
-# LLM Provider
-CHAT_PROVIDER=fireworks
-FIREWORKS_API_KEY=your_fireworks_api_key_here
-
-# Database Configuration
-DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/faultmaven
-
-# Redis Configuration
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=your_redis_password  # Optional
-
-# Sessions: Real Redis auto-selected when REDIS_HOST is set
-
-# Observability
-OPIK_ENABLED=true
-OPIK_API_KEY=your_opik_api_key  # Optional - for Comet Opik cloud
-PROMETHEUS_ENABLED=true
-TRACING_ENABLED=true
-METRICS_ENABLED=true
-
-# PII Protection
-PROTECTION_ENABLED=true
-SANITIZE_PII=true
-PRESIDIO_ANALYZER_URL=http://localhost:5001
-PRESIDIO_ANONYMIZER_URL=http://localhost:5002
-
-# Cloud Storage (AWS S3)
-STORAGE_BACKEND=s3
-AWS_ACCESS_KEY_ID=your_aws_access_key
-AWS_SECRET_ACCESS_KEY=your_aws_secret_key
-S3_BUCKET=faultmaven-evidence
-
-# Or Cloud Storage (Azure Blob)
-# STORAGE_BACKEND=azure
-# AZURE_STORAGE_CONNECTION_STRING=your_connection_string
-# AZURE_CONTAINER_NAME=faultmaven-evidence
-```
-
-### Running in Production
-
-```bash
-# Using Docker Compose (recommended)
-docker-compose -f docker-compose.prod.yml up -d
-
-# Or with uvicorn (manual)
-uvicorn faultmaven.main:app \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --workers 4 \
-  --log-level info
-```
-
-### Kubernetes Deployment
-
-For Kubernetes deployments, see:
-- [Helm Charts](../../helm/README.md)
-- [Kubernetes Deployment Guide](../operations/KUBERNETES_DEPLOYMENT.md)
+The settings that back this infrastructure still exist in the codebase (see [Configuration](#configuration)); they are simply **not part of the Standalone `.env` surface** and are supplied by the cloud config contract.
 
 ---
 
@@ -266,7 +167,9 @@ For Kubernetes deployments, see:
 | `REDIS_HOST` | _(unset)_ | Sessions: FakeRedis when unset, real Redis when set |
 | `VECTOR_STORAGE_TYPE` | `inmemory` | Vector storage: `inmemory`, `chromadb` |
 
-#### Enterprise Features (Enterprise Edition Only)
+#### Cloud-Surface Settings (configured in Cloud, not the Standalone template)
+
+These settings exist in the codebase but are **not** part of the Standalone `.env` surface — they are supplied by the cloud config contract (Kubernetes ConfigMaps/Secrets). On Standalone they stay at their off defaults.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -277,13 +180,13 @@ For Kubernetes deployments, see:
 | `PROTECTION_ENABLED` | `false` | Enable PII protection |
 | `SANITIZE_PII` | `false` | Enable PII sanitization |
 
-#### Redis Configuration (Enterprise Edition)
+#### Redis Configuration (Cloud)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REDIS_HOST` | `192.168.0.111` | Redis host |
-| `REDIS_PORT` | `30379` | Redis port |
-| `REDIS_PASSWORD` | - | Redis password (optional) |
+| `REDIS_HOST` | — | Redis host (Cloud; set via ConfigMap/Secret) |
+| `REDIS_PORT` | `6379` | Redis port |
+| `REDIS_PASSWORD` | — | Redis password (set via Secret) |
 
 #### Security Settings
 
@@ -295,139 +198,21 @@ For Kubernetes deployments, see:
 
 ---
 
-## Upgrading from Community to Enterprise
-
-### Step 1: Install Enterprise Dependencies
-
-```bash
-# Upgrade installation to include enterprise features
-pip install --upgrade faultmaven[enterprise]
-```
-
-### Step 2: Set Up External Services
-
-```bash
-# Start Redis (for distributed sessions)
-docker run -d -p 6379:6379 --name faultmaven-redis redis:latest
-
-# Start PostgreSQL (for production database)
-docker run -d -p 5432:5432 \
-  -e POSTGRES_PASSWORD=password \
-  -e POSTGRES_DB=faultmaven \
-  --name faultmaven-postgres \
-  postgres:15
-```
-
-### Step 3: Migrate Data (Optional)
-
-If you have existing SQLite data:
-
-```bash
-# Export SQLite data
-python -m faultmaven.scripts.export_data --output data_export.json
-
-# Update .env to use PostgreSQL
-echo "DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/faultmaven" >> .env
-
-# Import data to PostgreSQL
-python -m faultmaven.scripts.import_data --input data_export.json
-```
-
-### Step 4: Update Configuration
-
-Add enterprise settings to `.env`:
-
-```bash
-# Enable enterprise features
-OPIK_ENABLED=true
-PROMETHEUS_ENABLED=true
-TRACING_ENABLED=true
-METRICS_ENABLED=true
-PROTECTION_ENABLED=true
-SANITIZE_PII=true
-
-# Redis for sessions (real Redis auto-selected when host configured)
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# Use PostgreSQL for storage
-USER_STORAGE_TYPE=postgresql
-CASE_STORAGE_TYPE=postgresql
-```
-
-### Step 5: Restart Server
-
-```bash
-# Restart with new configuration
-faultmaven restart
-
-# Or with Docker Compose
-docker-compose restart faultmaven
-```
-
----
-
 ## Troubleshooting
 
 ### Common Issues
 
-#### Issue: `ModuleNotFoundError: No module named 'opik'`
-
-**Cause**: Trying to use enterprise features without enterprise dependencies.
-
-**Solution**:
-```bash
-pip install faultmaven[enterprise]
-```
-
-#### Issue: `Cannot connect to Redis`
-
-**Cause**: Redis not running or wrong connection settings.
-
-**Solution**:
-```bash
-# Check Redis is running
-docker ps | grep redis
-
-# Test connection
-redis-cli -h localhost -p 6379 ping
-# Should return: PONG
-
-# Update .env with correct settings
-REDIS_HOST=localhost
-REDIS_PORT=6379
-```
-
 #### Issue: `SQLite database locked`
 
-**Cause**: Multiple processes accessing SQLite database.
+**Cause**: More than one process is opening the Standalone SQLite database. Standalone is single-user / single-process by design.
 
 **Solution**:
 ```bash
-# For production, use PostgreSQL instead
-pip install faultmaven[enterprise]
-
-# Update .env
-DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/faultmaven
+# Ensure only one FaultMaven instance is running against ./data
+ps aux | grep faultmaven
 ```
 
-#### Issue: `PII redaction not working`
-
-**Cause**: Presidio services not running or `PROTECTION_ENABLED=false`.
-
-**Solution**:
-```bash
-# Check configuration
-grep PROTECTION_ENABLED .env
-grep SANITIZE_PII .env
-
-# Should be:
-PROTECTION_ENABLED=true
-SANITIZE_PII=true
-
-# Start Presidio services (if using local Presidio)
-docker-compose up -d presidio-analyzer presidio-anonymizer
-```
+> For PostgreSQL, Redis, PII redaction (Presidio), and Opik/Prometheus, see [Scaling Beyond Standalone (Cloud)](#scaling-beyond-standalone-cloud) — these are configured on the Cloud deployment surface.
 
 ### Verification Checklist
 

@@ -1,13 +1,13 @@
 """Standalone tenant-isolation guard (ADR-006, refinement #5).
 
-PERMANENT SECURITY GUARD — do not weaken. FaultMaven Community Edition is
+PERMANENT SECURITY GUARD — do not weaken. FaultMaven Standalone is
 strictly single-user / single-tenant: the local operator is the sole owner of
-one instance. The open-source core must therefore NEVER honor a client-supplied
+one instance. The open core must therefore NEVER honor a client-supplied
 tenant context (an injected ``X-Organization-ID`` header or a multi-tenant JWT
 claim) — every request is forced to the one standalone organization.
 
 These tests pin that property at the org-resolution **seam**
-(``SingleTenantProvider`` — the single place CE resolves the current org) and
+(``SingleTenantProvider`` — the single place Standalone resolves the current org) and
 structurally forbid re-introducing request-header tenant extraction in the core.
 Multi-tenancy is a cloud-only capability (ADR-006); if you are tempted to make
 any of these pass by honoring an external org, you are re-opening the boundary

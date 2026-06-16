@@ -1512,7 +1512,7 @@ async def root():
     return {
         "message": "FaultMaven API",
         "version": "1.0.0",
-        "description": "AI-powered troubleshooting assistant",
+        "description": "AI-powered troubleshooting copilot",
         "docs": "/docs",
         "health": "/health",
     }

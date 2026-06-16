@@ -32,12 +32,12 @@ source .venv/bin/activate
 # On Windows:
 .venv\Scripts\activate
 
-# Install FaultMaven (community edition)
+# Install FaultMaven (standalone)
 pip install -e .
 ```
 
 **What's happening?**
-- Community edition installs with **zero external dependencies**
+- Standalone installs with **zero external dependencies**
 - Uses SQLite database (local file)
 - Local file storage for evidence
 - In-memory session management
@@ -161,7 +161,7 @@ curl -X POST http://localhost:8090/api/v1/data \
 
 ## What's Running?
 
-FaultMaven community edition runs entirely on your local machine:
+FaultMaven Standalone runs entirely on your local machine:
 
 | Component | Storage Type | Location |
 |-----------|--------------|----------|
@@ -190,28 +190,16 @@ Visit the interactive API documentation:
 
 ### Read the Guides
 
-- **[Installation Guide](installation/INSTALLATION_GUIDE.md)** - Comprehensive setup instructions
+- **[Installation Guide](installation.md)** - Comprehensive setup instructions
 - **[Architecture Overview](architecture/architecture-overview.md)** - System design and components
 - **[API Documentation](api/)** - Complete API reference
 - **[Development Guide](development/)** - Contributing and development setup
 
-### Upgrade to Enterprise Edition
+### Scaling Beyond Standalone
 
-When ready for production deployment:
+Standalone runs on fixed simple defaults (SQLite, in-process FakeRedis, embedded ChromaDB) and is single-user. Production-grade, multi-tenant infrastructure (PostgreSQL, Redis, object storage) is provided by the **Cloud** deployment — a cloud-native architecture configured via Kubernetes.
 
-```bash
-# Install with enterprise features
-pip install -e .[enterprise]
-
-# Enables:
-# - PostgreSQL database support
-# - Redis session management
-# - Opik tracing and Prometheus metrics
-# - PII redaction (Presidio)
-# - Cloud storage (AWS S3, Azure Blob)
-```
-
-See [Installation Guide - Enterprise Edition](installation/INSTALLATION_GUIDE.md#enterprise-edition) for details.
+See [Installation Guide — Scaling Beyond Standalone (Cloud)](installation.md#scaling-beyond-standalone-cloud) for details.
 
 ### Join the Community
 

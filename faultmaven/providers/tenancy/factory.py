@@ -1,9 +1,9 @@
 """Provider factory for TenantProvider (ADR-006 entry-point seam).
 
-``single`` is FaultMaven Community Edition's built-in default. Any other
-provider (e.g. ``multi``) is a paid/cloud capability supplied by an installed
-plugin that registers itself under the ``faultmaven.providers.tenancy``
-entry-point group — the open-source core never imports the cloud package by
+``single`` is FaultMaven's built-in default (the Standalone deployment). Any
+other provider (e.g. ``multi``) is a paid/cloud capability supplied by an
+installed plugin that registers itself under the ``faultmaven.providers.tenancy``
+entry-point group — the open core never imports the cloud package by
 name. A plugin's entry point must resolve to a *builder callable*
 ``build(organization_repository, enterprise_repository=None) -> TenantProvider``
 (not the provider class itself). If a non-``single`` provider is configured but
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 #: Entry-point group third-party tenancy providers register under.
 TENANCY_ENTRY_POINT_GROUP = "faultmaven.providers.tenancy"
-#: The only provider built into the open-source core.
+#: The only provider built into the open core.
 BUILTIN_SINGLE = "single"
 
 

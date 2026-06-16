@@ -34,21 +34,21 @@ FaultMaven implements a **3-tier knowledge base** system. The tiers differ in sc
 
 | Tier | Scope | Ownership | Content | Deployment |
 |------|-------|-----------|---------|------------|
-| **Global** | System-wide, all organizations | Platform admin | Pre-built troubleshooting guides, industry best practices, vendor documentation | Cloud only (pre-populated) |
+| **Global** | System-wide, all organizations | Platform admin | Pre-built troubleshooting guides, industry best practices, vendor documentation | Both Standalone and Cloud (pre-populated) |
 | **Team** | Shared across team members within an organization | Team admin | Shared runbooks, incident logs, institutional memory | Cloud only |
-| **Personal** | Private to one user within an organization | Individual user | Private notes, personal runbooks, drafts | Both Local and Cloud |
+| **Personal** | Private to one user within an organization | Individual user | Private notes, personal runbooks, drafts | Both Standalone and Cloud |
 
 Team and Personal KBs are scoped to an **organization**. A user belongs to an organization, and their Personal KB and Team KB access are determined by that membership. The Global KB is platform-wide and independent of any organization.
 
 ### Deployment Differences
 
-| | Local (Open Source) | Cloud (SaaS) |
+| | Standalone | Cloud |
 |---|---|---|
-| **Available tiers** | Personal only | Global + Team + Personal |
-| **KB start state** | Empty — user builds from scratch | Pre-loaded Global KB included |
+| **Available scopes** | Global + Personal | Global + Team + Personal |
+| **KB start state** | Ships with the global runbook pack | Ships with the global runbook pack |
 | **Team collaboration** | Not applicable (single-user) | Full team sharing and org-wide access |
 
-In the local deployment, the Personal tier provides all KB functionality. The user builds their own knowledge base using the Dashboard and ingestion tools. In the cloud deployment, the Global tier provides immediate value out of the box, the Team tier captures institutional memory, and the Personal tier remains private.
+Both deployments ship with the same global runbook pack, so neither starts empty. In Standalone, the Global scope provides the shipped runbooks and the Personal scope holds the operator's own runbooks and drafts. In Cloud, multi-tenancy additionally activates the Team scope for runbooks shared across an organization (institutional memory), while the Personal scope remains private.
 
 ---
 
@@ -331,7 +331,7 @@ Adding a new KB tier requires:
 ## Tier 1: Global Knowledge Base
 
 **Scope:** System-wide — accessible to all users, all cases
-**Deployment:** Cloud only (pre-populated with industry-standard content)
+**Deployment:** Both Standalone and Cloud (ships pre-populated with the global runbook pack)
 
 ### Characteristics
 
@@ -339,7 +339,7 @@ Adding a new KB tier requires:
 - **Ownership:** Platform admin. Independent of any organization.
 - **Content:** Pre-built troubleshooting guides, error code references, vendor documentation, industry best practices
 - **Access:** Read by all users across all organizations (auto-searched by agent). Write by platform admin only.
-- **Start state:** Pre-populated in cloud deployment; not available in local deployment.
+- **Start state:** Pre-populated in both deployments via the shipped global runbook pack.
 
 ### Ingestion Pipeline
 
@@ -407,7 +407,7 @@ Team KB scope filtering is **implemented end-to-end**:
 ## Tier 3: Personal Knowledge Base
 
 **Scope:** Private to one user — accessible across all the user's cases
-**Deployment:** Both Local and Cloud
+**Deployment:** Both Standalone and Cloud
 
 ### Personal KB Characteristics
 
@@ -415,9 +415,9 @@ Team KB scope filtering is **implemented end-to-end**:
 - **Ownership:** Individual user within an organization
 - **Content:** Personal runbooks, private notes and drafts, personal checklists, lessons learned
 - **Access:** Owner only. Other users cannot access. User can promote runbooks to Team KB (requires team admin approval).
-- **Start state:** Empty in both deployments — user builds from scratch.
+- **Start state:** The Personal scope starts empty in both deployments — the user builds it up. (The Global scope ships pre-populated; see Tier 1.)
 
-In the local (single-user) deployment, this is the only KB tier available. The user builds their entire knowledge base here. In the cloud deployment, users can additionally promote their personal runbooks to the Team KB for shared access.
+In Standalone, the Personal and Global scopes are available (Team is Cloud-only); the user builds up their Personal KB here, while the Global scope ships pre-populated. In Cloud, users can additionally promote their personal runbooks to the Team KB for shared access.
 
 ### Storage Architecture
 
