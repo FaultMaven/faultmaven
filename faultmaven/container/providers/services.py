@@ -444,7 +444,7 @@ def create_tenant_provider(
         )
         return provider
     except TenancyConfigurationError:
-        # Fatal misconfiguration (e.g. TENANT_PROVIDER=multi without its plugin).
+        # Fatal misconfiguration (e.g. an unrecognized TENANT_PROVIDER value).
         # Never degrade to None — fail closed on EVERY container path (jobs/CLI
         # workers, not just the web lifespan that also runs the coherence gate).
         raise

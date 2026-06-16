@@ -247,8 +247,9 @@ class TestTenantProviderFactory:
 
         assert isinstance(provider, SingleTenantProvider)
 
-    def test_factory_multi_fails_closed_without_plugin(self):
-        """Multi-tenant requires an installed plugin (ADR-006); absent -> fail closed."""
+    def test_factory_multi_fails_closed_until_ready(self):
+        """``multi`` is held closed until P2 ships its isolation (ADR-010) —
+        fail-closed on every container path, incl. the gate-less jobs/CLI path."""
         from unittest.mock import MagicMock, patch
 
         import pytest
@@ -264,15 +265,9 @@ class TestTenantProviderFactory:
         mock_settings.providers.tenant_provider = TenantProviderEnum.MULTI
         mock_repo = MagicMock()
 
-        with (
-            patch(
-                "faultmaven.providers.tenancy.factory.get_settings",
-                return_value=mock_settings,
-            ),
-            patch(
-                "faultmaven.providers.tenancy.factory.find_tenant_provider_plugin",
-                return_value=None,
-            ),
+        with patch(
+            "faultmaven.providers.tenancy.factory.get_settings",
+            return_value=mock_settings,
         ):
             with pytest.raises(TenancyConfigurationError):
                 create_tenant_provider(mock_repo)

@@ -5,12 +5,11 @@ Asserts that the running configuration is coherent with the canonical
 (OAuth auth + RS256 keys, PostgreSQL, real Redis); otherwise the app refuses to
 boot rather than silently running as ``standalone`` on cloud infrastructure.
 
-Tenancy (``TENANT_PROVIDER`` single/multi) is an INDEPENDENT axis: the
-cloud-infra checks above never require multi-tenant (a cloud deployment may
-serve one organization or many isolated tenants). However, a non-``single``
-provider must have its plugin (faultmaven-cloud) installed — that availability
-IS enforced here, fail-closed, regardless of ``DEPLOYMENT_MODE``
-(see ``_check_tenant_provider_installed``).
+Tenancy (``TENANT_PROVIDER`` single/multi) is config-selected in the core
+(ADR-010) — both providers are in-core. ``multi`` is not yet bootable (the
+row-level isolation it requires has not shipped — ADR-010 P2); until then it
+fails closed here, regardless of ``DEPLOYMENT_MODE``
+(see ``_check_tenant_provider_coherent``).
 
 This closes the failure mode where a cloud k8s deployment whose Secret carried
 ``AUTH_MODE=local`` was silently treated as standalone (auth bypassed, DB
@@ -102,23 +101,28 @@ def _check_standalone(settings: Any) -> List[str]:
     return warnings
 
 
-def _check_tenant_provider_installed(settings: Any) -> None:
-    """Fail closed if a non-``single`` tenant provider is configured without its plugin.
+def _check_tenant_provider_coherent(settings: Any) -> None:
+    """Fail closed unless a supported tenant provider is configured.
 
-    Tenancy is independent of ``DEPLOYMENT_MODE`` (a cloud deployment may be
-    single- or multi-tenant). ``single`` is built into the core; any other
-    provider (e.g. ``multi``) is supplied by an installed plugin
-    (faultmaven-cloud) under the ``faultmaven.providers.tenancy`` entry-point
-    group. If one is configured but absent, refuse to boot rather than silently
-    downgrading to single-tenant (which would blend access modes).
+    Tenancy is config-selected in the core (ADR-010): ``single`` (the Standalone
+    default) and ``multi`` are both in-core. ``multi`` is config-selectable and
+    the provider exists, but is **not yet bootable** — the row-level isolation it
+    requires (PostgreSQL RLS) and the request->organization wiring have not
+    shipped (ADR-010 P2), so it is held behind ``MULTI_TENANT_READY`` and fails
+    closed here rather than running with no tenant isolation. ``single`` is always
+    valid; an unrecognized provider name is fatal. (When ``multi`` becomes ready,
+    P2 enforces its cloud preconditions — PostgreSQL+RLS, OAuth/RS256, Redis —
+    here, since multi-tenant requires cloud.)
     """
     # Lazy import: keep this module importable as early as possible at startup,
-    # and reuse the factory's name coercion + built-in constant so the gate and
-    # the factory cannot diverge on what "single" / "installed" means.
+    # and reuse the factory's name coercion + constants so the gate and the
+    # factory cannot diverge on the provider names or the readiness flag.
     from faultmaven.providers.tenancy.factory import (
+        BUILTIN_MULTI,
         BUILTIN_SINGLE,
+        MULTI_NOT_READY_MSG,
+        MULTI_TENANT_READY,
         coerce_provider_name,
-        find_tenant_provider_plugin,
     )
 
     providers = getattr(settings, "providers", None)
@@ -126,13 +130,14 @@ def _check_tenant_provider_installed(settings: Any) -> None:
     if requested == BUILTIN_SINGLE:
         return
 
-    if find_tenant_provider_plugin(requested) is None:
+    if requested != BUILTIN_MULTI:
         raise DeploymentCoherenceError(
-            f"TENANT_PROVIDER='{requested}' requires a tenancy plugin "
-            "(faultmaven-cloud) registered under 'faultmaven.providers.tenancy', "
-            "but none is installed. Refusing to start rather than silently running "
-            "single-tenant."
+            f"TENANT_PROVIDER='{requested}' is not a recognized provider "
+            f"(expected '{BUILTIN_SINGLE}' or '{BUILTIN_MULTI}')."
         )
+
+    if not MULTI_TENANT_READY:
+        raise DeploymentCoherenceError(MULTI_NOT_READY_MSG)
 
 
 def validate_deployment_coherence(settings: Any) -> None:
@@ -143,9 +148,9 @@ def validate_deployment_coherence(settings: Any) -> None:
     silently running as standalone, not the reverse. Call once at startup, as
     early as settings are available.
     """
-    # Tenancy availability is independent of DEPLOYMENT_MODE and always fatal:
-    # a non-single provider requires its plugin (faultmaven-cloud), else fail closed.
-    _check_tenant_provider_installed(settings)
+    # Tenancy coherence is always fatal: 'multi' requires DEPLOYMENT_MODE=cloud,
+    # and an unrecognized provider name fails closed.
+    _check_tenant_provider_coherent(settings)
 
     if settings.is_cloud:
         problems = _check_cloud(settings)

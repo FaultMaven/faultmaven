@@ -1,23 +1,20 @@
-"""Provider factory for TenantProvider (ADR-006 entry-point seam).
+"""Provider factory for TenantProvider (ADR-010).
 
-``single`` is FaultMaven's built-in default (the Standalone deployment). Any
-other provider (e.g. ``multi``) is a paid/cloud capability supplied by an
-installed plugin that registers itself under the ``faultmaven.providers.tenancy``
-entry-point group — the open core never imports the cloud package by
-name. A plugin's entry point must resolve to a *builder callable*
-``build(organization_repository, enterprise_repository=None) -> TenantProvider``
-(not the provider class itself). If a non-``single`` provider is configured but
-its plugin is not installed, the factory fails **closed** rather than silently
+Tenancy lives in the core, config-selected by ``TENANT_PROVIDER``:
+
+- ``single`` — the built-in Standalone default (single-tenant).
+- ``multi``  — the in-core multi-tenant provider (Cloud). Config-selectable and
+  the provider exists, but NOT yet bootable: it is held behind
+  ``MULTI_TENANT_READY`` until the row-level isolation it requires (PostgreSQL
+  RLS) and the request->organization wiring ship (ADR-010 P2). Until then the
+  factory fails **closed** on ``multi`` — here, so the gate-less jobs/CLI path is
+  covered too, not only the startup coherence gate.
+
+An unrecognized provider name also fails **closed** rather than silently
 downgrading to single-tenant (which would blend access modes).
-
-The authoritative fail-closed guard runs earlier, at startup, in the deployment
-coherence gate (``faultmaven.config.deployment_coherence``), which crashes the
-process before the container is built. The check here is the backstop and keeps
-the factory unit-testable in isolation.
 """
 
 import logging
-from importlib.metadata import EntryPoint, entry_points
 from typing import Optional
 
 from faultmaven.config.settings import get_settings
@@ -26,18 +23,36 @@ from faultmaven.models.interfaces_user import (
     IOrganizationRepository,
 )
 from faultmaven.providers.tenancy.base import TenantProvider
+from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 logger = logging.getLogger(__name__)
 
-#: Entry-point group third-party tenancy providers register under.
-TENANCY_ENTRY_POINT_GROUP = "faultmaven.providers.tenancy"
-#: The only provider built into the open core.
+#: The single-tenant provider built into the core (Standalone default).
 BUILTIN_SINGLE = "single"
+#: The multi-tenant provider built into the core (Cloud).
+BUILTIN_MULTI = "multi"
+
+#: ``multi`` is config-selectable and the in-core provider exists, but it is NOT
+#: yet bootable: the row-level isolation it requires (PostgreSQL RLS) and the
+#: request->organization wiring have not shipped, so a multi-tenant deployment
+#: would mis-scope writes and serve unscoped reads. Until then the factory and
+#: the coherence gate both fail closed on ``multi``. Flip to ``True`` in the
+#: phase that lands the RLS migration + tenant-context wiring (ADR-010 P2).
+MULTI_TENANT_READY = False
+
+#: Shared by the factory and the coherence gate so the message cannot diverge.
+MULTI_NOT_READY_MSG = (
+    "TENANT_PROVIDER='multi' is not yet available: multi-tenant row-level "
+    "isolation (PostgreSQL RLS) and request->organization wiring have not "
+    "shipped, so a multi-tenant deployment would mis-scope writes and serve "
+    "unscoped reads. Use TENANT_PROVIDER=single. "
+    "(Tracked: ADR-010 forward-consolidation P2.)"
+)
 
 
 class TenancyConfigurationError(RuntimeError):
-    """Fatal: the configured non-``single`` tenant provider is not installed."""
+    """Fatal: an unrecognized or not-yet-available ``TENANT_PROVIDER``."""
 
 
 def coerce_provider_name(tp: object) -> str:
@@ -56,41 +71,24 @@ def requested_tenant_provider() -> str:
     return coerce_provider_name(get_settings().providers.tenant_provider)
 
 
-def find_tenant_provider_plugin(name: str) -> Optional[EntryPoint]:
-    """Return the installed entry point named ``name`` under the tenancy group.
-
-    Returns ``None`` only when the plugin is genuinely absent. A discovery
-    failure (e.g. corrupt/duplicate distribution metadata) is fatal and raises
-    ``TenancyConfigurationError`` with the real cause, rather than masquerading
-    as "plugin not installed". ``single`` is built in and is never a plugin.
-    """
-    try:
-        eps = entry_points(group=TENANCY_ENTRY_POINT_GROUP)
-    except Exception as exc:
-        raise TenancyConfigurationError(
-            f"Failed to discover tenancy plugins under "
-            f"'{TENANCY_ENTRY_POINT_GROUP}': {exc}"
-        ) from exc
-    return next((ep for ep in eps if ep.name == name), None)
-
-
 def create_tenant_provider(
     organization_repository: IOrganizationRepository,
     enterprise_repository: Optional[IEnterpriseRepository] = None,
 ) -> TenantProvider:
-    """Build the configured tenant provider.
+    """Build the configured tenant provider (``single`` or ``multi``).
 
     Args:
         organization_repository: Organization repository for persistence.
-        enterprise_repository: Enterprise repository (single-tenant default
-            bootstrap). Forwarded to plugins, which may ignore it.
+        enterprise_repository: Enterprise repository, used by the single-tenant
+            default for its default-enterprise bootstrap. The multi-tenant
+            provider does not use it.
 
     Returns:
         The built ``TenantProvider``.
 
     Raises:
-        TenancyConfigurationError: A non-``single`` provider is configured but no
-            matching plugin is installed (fail closed — never downgrades).
+        TenancyConfigurationError: An unrecognized provider is configured
+            (fail closed — never downgrades to single-tenant).
     """
     requested = requested_tenant_provider()
 
@@ -101,34 +99,17 @@ def create_tenant_provider(
             enterprise_repository=enterprise_repository,
         )
 
-    ep = find_tenant_provider_plugin(requested)
-    if ep is None:
-        msg = (
-            f"TENANT_PROVIDER='{requested}' requires a tenancy plugin registered "
-            f"under '{TENANCY_ENTRY_POINT_GROUP}', but none is installed. "
-            "Multi-tenancy is a cloud capability — install faultmaven-cloud. "
-            "Refusing to fall back to single-tenant."
-        )
-        logger.critical(msg)
-        raise TenancyConfigurationError(msg)
+    if requested == BUILTIN_MULTI:
+        if not MULTI_TENANT_READY:
+            logger.critical(MULTI_NOT_READY_MSG)
+            raise TenancyConfigurationError(MULTI_NOT_READY_MSG)
+        logger.info("Tenant provider: built-in 'multi' (multi-tenant)")
+        return MultiTenantProvider(organization_repository=organization_repository)
 
-    builder = ep.load()
-    try:
-        provider = builder(
-            organization_repository=organization_repository,
-            enterprise_repository=enterprise_repository,
-        )
-    except TypeError as exc:
-        raise TenancyConfigurationError(
-            f"Tenancy plugin '{requested}' ({ep.value}) is not a valid builder: it "
-            "must be callable as "
-            "build(organization_repository, enterprise_repository=None) -> "
-            f"TenantProvider, not the provider class itself ({exc})."
-        ) from exc
-    if not isinstance(provider, TenantProvider):
-        raise TenancyConfigurationError(
-            f"Tenancy plugin '{requested}' ({ep.value}) returned "
-            f"{type(provider).__name__}, not a TenantProvider."
-        )
-    logger.info("Tenant provider: '%s' loaded from plugin %s", requested, ep.value)
-    return provider
+    msg = (
+        f"TENANT_PROVIDER='{requested}' is not a recognized provider "
+        f"(expected '{BUILTIN_SINGLE}' or '{BUILTIN_MULTI}'). "
+        "Refusing to start rather than silently downgrading to single-tenant."
+    )
+    logger.critical(msg)
+    raise TenancyConfigurationError(msg)
