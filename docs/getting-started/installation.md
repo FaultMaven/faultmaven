@@ -16,10 +16,10 @@ Complete guide for installing and configuring FaultMaven.
 
 ## Deployment Profiles
 
-FaultMaven is **one codebase**. Standalone and Cloud are the same engine; they differ only by **configuration** and by **which composed modules are present** — never by a separate fork or schema. They are **not** points on an upgrade path: Standalone has fixed simple defaults and does not grow into Cloud in place.
+FaultMaven is **one codebase**. Standalone and Cloud run the same code and schema, differing only by **configuration** and by **which composed modules are present**. You choose the deployment at install time:
 
 - **Standalone** — self-hosted, **single-user**, with **fixed simple defaults** (SQLite, in-process FakeRedis, embedded ChromaDB, local filesystem). No scale-backend knobs are surfaced; setup is "pick an LLM provider, paste a key, go." **This guide covers Standalone.**
-- **Cloud** — the cloud-native deployment architecture (multi-tenant, elastic), run as managed SaaS *or* self-hosted as a private cloud. Its production infrastructure (PostgreSQL, Redis, object storage, observability, PII redaction) is configured through **Kubernetes ConfigMaps/Secrets**, not a Standalone add-on. See [Scaling Beyond Standalone (Cloud)](#scaling-beyond-standalone-cloud).
+- **Cloud** — the cloud-native deployment architecture (multi-tenant, elastic), run as managed SaaS *or* self-hosted as a private cloud. Its production infrastructure (PostgreSQL, Redis, object storage, observability, PII redaction) is configured through **Kubernetes ConfigMaps/Secrets**. See [Scaling Beyond Standalone (Cloud)](#scaling-beyond-standalone-cloud).
 
 | | Standalone | Cloud |
 |---|---|---|
@@ -131,7 +131,7 @@ Once running, access the API at:
 
 ## Scaling Beyond Standalone (Cloud)
 
-Standalone runs on **fixed simple defaults** (SQLite, in-process FakeRedis, embedded ChromaDB, local filesystem) and is **single-user**. It does **not** upgrade in place to PostgreSQL, Redis, or object storage — production-grade, multi-tenant infrastructure is the **Cloud** deployment architecture, not a Standalone add-on.
+Standalone runs on **fixed simple defaults** (SQLite, in-process FakeRedis, embedded ChromaDB, local filesystem) and is **single-user**. Production-grade, multi-tenant infrastructure (PostgreSQL, Redis, object storage) is provided by the **Cloud** deployment architecture.
 
 Cloud is cloud-native: the same core engine plus the composed proprietary modules (billing, usage metering, hosted IAM/admin), configured through **Kubernetes ConfigMaps and Secrets** (not a `.env` file) and operated either as FaultMaven-hosted SaaS or self-hosted as a private cloud. The data-tier wiring (PostgreSQL, Redis, S3/Azure Blob), observability (Opik, Prometheus), and PII redaction (Presidio) live in the cloud config surface.
 
@@ -212,7 +212,7 @@ These settings exist in the codebase but are **not** part of the Standalone `.en
 ps aux | grep faultmaven
 ```
 
-> **Cloud-surface features** (PostgreSQL, Redis, Presidio PII redaction, Opik/Prometheus) are not part of Standalone — see [Scaling Beyond Standalone (Cloud)](#scaling-beyond-standalone-cloud). Their setup and troubleshooting belong to the Cloud config surface, not this guide.
+> For PostgreSQL, Redis, PII redaction (Presidio), and Opik/Prometheus, see [Scaling Beyond Standalone (Cloud)](#scaling-beyond-standalone-cloud) — these are configured on the Cloud deployment surface.
 
 ### Verification Checklist
 

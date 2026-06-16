@@ -197,7 +197,7 @@ Visit the interactive API documentation:
 
 ### Scaling Beyond Standalone
 
-Standalone runs on fixed simple defaults (SQLite, in-process FakeRedis, embedded ChromaDB) and is single-user. Production-grade, multi-tenant infrastructure (PostgreSQL, Redis, object storage) is the **Cloud** deployment — a separate cloud-native architecture configured via Kubernetes, not an in-place upgrade of Standalone.
+Standalone runs on fixed simple defaults (SQLite, in-process FakeRedis, embedded ChromaDB) and is single-user. Production-grade, multi-tenant infrastructure (PostgreSQL, Redis, object storage) is provided by the **Cloud** deployment — a cloud-native architecture configured via Kubernetes.
 
 See [Installation Guide — Scaling Beyond Standalone (Cloud)](installation.md#scaling-beyond-standalone-cloud) for details.
 
