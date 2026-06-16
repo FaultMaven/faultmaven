@@ -60,6 +60,8 @@ UNIVERSAL = [
     (r"\bLocal Deployment\b", "use 'Standalone' (ADR-004); 'local' is reserved for AUTH_MODE/CHAT_PROVIDER"),
     (r"\bdeploy locally\b", "use 'self-host' / 'Standalone' (ADR-004)"),
     (r"\bEnterprise SaaS\b", "use 'FaultMaven Cloud'; there is no Enterprise tier"),
+    (r"\bCommunity Edition\b", "retired tier name — use 'Standalone' (one unified codebase)"),
+    (r"\bEnterprise Edition\b", "retired tier name — use 'Cloud' (one unified codebase)"),
     (r"\bfaultmaven-deploy\b", "obsolete repo — do not reference"),
     (r"\bfm-[a-z]+-service\b", "obsolete microservice repo — do not reference"),
 ]

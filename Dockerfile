@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy lockfile first for better layer caching
-COPY requirements/enterprise.txt requirements.txt
+COPY requirements/cloud.txt requirements.txt
 
 # Install Python dependencies from the lockfile, with CPU-only torch.
 # The lockfile pins the default (CUDA) torch wheel, which drags in ~4-5GB of

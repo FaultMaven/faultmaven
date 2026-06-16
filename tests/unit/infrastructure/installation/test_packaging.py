@@ -104,7 +104,7 @@ def base_dependencies(pyproject_data: dict) -> List[str]:
 @pytest.fixture
 def enterprise_dependencies(pyproject_data: dict) -> List[str]:
     """Get enterprise optional dependencies."""
-    return pyproject_data["project"]["optional-dependencies"]["enterprise"]
+    return pyproject_data["project"]["optional-dependencies"]["cloud"]
 
 
 @pytest.fixture

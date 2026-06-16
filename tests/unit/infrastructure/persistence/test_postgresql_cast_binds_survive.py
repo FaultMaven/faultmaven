@@ -9,7 +9,7 @@ columns became ``$N`` — mixed param styles asyncpg rejects.
 
 The whole class was dark because:
   - this repository runs only on PostgreSQL (SQLite uses a different repo),
-  - its PG path is behind ``@pytest.mark.enterprise`` (no PG in CI), and
+  - its PG path is behind ``@pytest.mark.cloud`` (no PG in CI), and
   - the dialect tests mocked the session and only substring-checked the SQL
     string, never binding params — so a dropped bind was invisible.
 
