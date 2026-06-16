@@ -3,15 +3,15 @@
 Tenancy lives in the core, config-selected by ``TENANT_PROVIDER``:
 
 - ``single`` — the built-in Standalone default (single-tenant).
-- ``multi``  — the in-core multi-tenant provider (Cloud).
+- ``multi``  — the in-core multi-tenant provider (Cloud). Config-selectable and
+  the provider exists, but NOT yet bootable: it is held behind
+  ``MULTI_TENANT_READY`` until the row-level isolation it requires (PostgreSQL
+  RLS) and the request->organization wiring ship (ADR-010 P2). Until then the
+  factory fails **closed** on ``multi`` — here, so the gate-less jobs/CLI path is
+  covered too, not only the startup coherence gate.
 
-Both are in-core; the factory selects between them. Multi-tenancy requires the
-cloud stack (PostgreSQL + RLS, OAuth/RS256, Redis); that precondition is enforced
-at startup by the deployment coherence gate
-(``faultmaven.config.deployment_coherence``), which crashes the process before
-the container is built if ``multi`` is configured outside a cloud deployment. An
-unrecognized provider name fails **closed** rather than silently downgrading to
-single-tenant (which would blend access modes).
+An unrecognized provider name also fails **closed** rather than silently
+downgrading to single-tenant (which would blend access modes).
 """
 
 import logging
@@ -33,9 +33,26 @@ BUILTIN_SINGLE = "single"
 #: The multi-tenant provider built into the core (Cloud).
 BUILTIN_MULTI = "multi"
 
+#: ``multi`` is config-selectable and the in-core provider exists, but it is NOT
+#: yet bootable: the row-level isolation it requires (PostgreSQL RLS) and the
+#: request->organization wiring have not shipped, so a multi-tenant deployment
+#: would mis-scope writes and serve unscoped reads. Until then the factory and
+#: the coherence gate both fail closed on ``multi``. Flip to ``True`` in the
+#: phase that lands the RLS migration + tenant-context wiring (ADR-010 P2).
+MULTI_TENANT_READY = False
+
+#: Shared by the factory and the coherence gate so the message cannot diverge.
+MULTI_NOT_READY_MSG = (
+    "TENANT_PROVIDER='multi' is not yet available: multi-tenant row-level "
+    "isolation (PostgreSQL RLS) and request->organization wiring have not "
+    "shipped, so a multi-tenant deployment would mis-scope writes and serve "
+    "unscoped reads. Use TENANT_PROVIDER=single. "
+    "(Tracked: ADR-010 forward-consolidation P2.)"
+)
+
 
 class TenancyConfigurationError(RuntimeError):
-    """Fatal: an unrecognized ``TENANT_PROVIDER`` was configured."""
+    """Fatal: an unrecognized or not-yet-available ``TENANT_PROVIDER``."""
 
 
 def coerce_provider_name(tp: object) -> str:
@@ -83,6 +100,9 @@ def create_tenant_provider(
         )
 
     if requested == BUILTIN_MULTI:
+        if not MULTI_TENANT_READY:
+            logger.critical(MULTI_NOT_READY_MSG)
+            raise TenancyConfigurationError(MULTI_NOT_READY_MSG)
         logger.info("Tenant provider: built-in 'multi' (multi-tenant)")
         return MultiTenantProvider(organization_repository=organization_repository)
 

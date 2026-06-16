@@ -6,11 +6,10 @@ Asserts that the running configuration is coherent with the canonical
 boot rather than silently running as ``standalone`` on cloud infrastructure.
 
 Tenancy (``TENANT_PROVIDER`` single/multi) is config-selected in the core
-(ADR-010) — both providers are in-core. The cloud-infra checks never require
-multi-tenant (a cloud deployment may serve one organization or many). But
-``multi`` (multi-tenant) requires the cloud stack (PostgreSQL + RLS, OAuth/RS256,
-Redis), so it is only coherent with ``DEPLOYMENT_MODE=cloud`` — enforced here,
-fail-closed (see ``_check_tenant_provider_coherent``).
+(ADR-010) — both providers are in-core. ``multi`` is not yet bootable (the
+row-level isolation it requires has not shipped — ADR-010 P2); until then it
+fails closed here, regardless of ``DEPLOYMENT_MODE``
+(see ``_check_tenant_provider_coherent``).
 
 This closes the failure mode where a cloud k8s deployment whose Secret carried
 ``AUTH_MODE=local`` was silently treated as standalone (auth bypassed, DB
@@ -103,21 +102,26 @@ def _check_standalone(settings: Any) -> List[str]:
 
 
 def _check_tenant_provider_coherent(settings: Any) -> None:
-    """Fail closed if multi-tenant is configured outside a cloud deployment.
+    """Fail closed unless a supported tenant provider is configured.
 
     Tenancy is config-selected in the core (ADR-010): ``single`` (the Standalone
-    default) and ``multi`` are both in-core. Multi-tenancy requires the cloud
-    stack (PostgreSQL + RLS, OAuth/RS256, Redis), so ``multi`` is only coherent
-    with ``DEPLOYMENT_MODE=cloud`` (whose preconditions ``_check_cloud`` enforces).
-    ``cloud`` itself does NOT require ``multi`` — a cloud deployment may serve a
-    single organization. An unrecognized provider name is fatal.
+    default) and ``multi`` are both in-core. ``multi`` is config-selectable and
+    the provider exists, but is **not yet bootable** — the row-level isolation it
+    requires (PostgreSQL RLS) and the request->organization wiring have not
+    shipped (ADR-010 P2), so it is held behind ``MULTI_TENANT_READY`` and fails
+    closed here rather than running with no tenant isolation. ``single`` is always
+    valid; an unrecognized provider name is fatal. (When ``multi`` becomes ready,
+    P2 enforces its cloud preconditions — PostgreSQL+RLS, OAuth/RS256, Redis —
+    here, since multi-tenant requires cloud.)
     """
     # Lazy import: keep this module importable as early as possible at startup,
-    # and reuse the factory's name coercion + built-in constants so the gate and
-    # the factory cannot diverge on the provider names.
+    # and reuse the factory's name coercion + constants so the gate and the
+    # factory cannot diverge on the provider names or the readiness flag.
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
         BUILTIN_SINGLE,
+        MULTI_NOT_READY_MSG,
+        MULTI_TENANT_READY,
         coerce_provider_name,
     )
 
@@ -132,13 +136,8 @@ def _check_tenant_provider_coherent(settings: Any) -> None:
             f"(expected '{BUILTIN_SINGLE}' or '{BUILTIN_MULTI}')."
         )
 
-    if not getattr(settings, "is_cloud", False):
-        raise DeploymentCoherenceError(
-            "TENANT_PROVIDER='multi' (multi-tenant) requires DEPLOYMENT_MODE=cloud "
-            "(PostgreSQL + RLS, OAuth/RS256, Redis). Multi-tenancy is not supported "
-            "on a standalone deployment. Set DEPLOYMENT_MODE=cloud, or "
-            "TENANT_PROVIDER=single."
-        )
+    if not MULTI_TENANT_READY:
+        raise DeploymentCoherenceError(MULTI_NOT_READY_MSG)
 
 
 def validate_deployment_coherence(settings: Any) -> None:

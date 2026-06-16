@@ -149,22 +149,24 @@ def test_settings_is_cloud_property_reads_deployment_mode(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.security
-def test_multi_tenant_on_standalone_fails_closed():
-    """TENANT_PROVIDER=multi on a standalone deployment -> refuse to boot."""
-    s = _standalone_ok()
-    s.providers = SimpleNamespace(tenant_provider="multi")
-    with pytest.raises(DeploymentCoherenceError) as exc:
-        validate_deployment_coherence(s)
-    assert "TENANT_PROVIDER='multi'" in str(exc.value)
-    assert "DEPLOYMENT_MODE=cloud" in str(exc.value)
+def test_multi_tenant_not_yet_available_fails_closed():
+    """TENANT_PROVIDER=multi is held closed until its isolation ships (P2),
+    regardless of DEPLOYMENT_MODE — it must not boot with no tenant isolation."""
+    for base in (_standalone_ok, _cloud_ok):
+        s = base()
+        s.providers = SimpleNamespace(tenant_provider="multi")
+        with pytest.raises(DeploymentCoherenceError) as exc:
+            validate_deployment_coherence(s)
+        assert "not yet available" in str(exc.value)
 
 
 @pytest.mark.unit
-def test_multi_tenant_on_cloud_passes():
-    """TENANT_PROVIDER=multi is coherent with a fully-coherent cloud deployment."""
+def test_multi_tenant_passes_gate_when_ready():
+    """When MULTI_TENANT_READY is flipped (P2), the gate stops blocking multi."""
     s = _cloud_ok()
     s.providers = SimpleNamespace(tenant_provider="multi")
-    validate_deployment_coherence(s)  # must not raise
+    with patch("faultmaven.providers.tenancy.factory.MULTI_TENANT_READY", True):
+        validate_deployment_coherence(s)  # must not raise
 
 
 @pytest.mark.unit

@@ -247,13 +247,18 @@ class TestTenantProviderFactory:
 
         assert isinstance(provider, SingleTenantProvider)
 
-    def test_factory_multi_resolves_in_core(self):
-        """``multi`` resolves to the in-core MultiTenantProvider (ADR-010), no plugin."""
+    def test_factory_multi_fails_closed_until_ready(self):
+        """``multi`` is held closed until P2 ships its isolation (ADR-010) —
+        fail-closed on every container path, incl. the gate-less jobs/CLI path."""
         from unittest.mock import MagicMock, patch
 
+        import pytest
+
         from faultmaven.config.settings import TenantProvider as TenantProviderEnum
-        from faultmaven.providers.tenancy.factory import create_tenant_provider
-        from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
+        from faultmaven.providers.tenancy.factory import (
+            TenancyConfigurationError,
+            create_tenant_provider,
+        )
 
         mock_settings = MagicMock()
         mock_settings.providers = MagicMock()
@@ -264,10 +269,8 @@ class TestTenantProviderFactory:
             "faultmaven.providers.tenancy.factory.get_settings",
             return_value=mock_settings,
         ):
-            provider = create_tenant_provider(mock_repo)
-
-        assert isinstance(provider, MultiTenantProvider)
-        assert provider.organization_repository is mock_repo
+            with pytest.raises(TenancyConfigurationError):
+                create_tenant_provider(mock_repo)
 
     def test_di_wrapper_reraises_fatal_tenancy_error(self):
         """The container DI wrapper must NOT swallow a fatal tenancy misconfig —
