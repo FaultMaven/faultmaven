@@ -63,26 +63,26 @@ CI_MODES = {
     "ci": {
         "description": "Fast tests for CI (unit tests only)",
         "paths": ["tests/unit"],
-        "markers": "not slow and not enterprise",
+        "markers": "not slow and not cloud",
         "parallel": True,
     },
     "ci-full": {
         "description": "Full test suite for CI",
         "paths": ["tests/unit", "tests/integration", "tests/infrastructure"],
-        "markers": "not slow and not enterprise",
+        "markers": "not slow and not cloud",
         "parallel": True,
     },
     "ci-nightly": {
         "description": "Complete test suite including slow tests",
         "paths": ["tests/"],
-        "markers": "not enterprise",
+        "markers": "not cloud",
         "parallel": False,  # Benchmarks may need sequential execution
         "env": {"RUN_PERFORMANCE_TESTS": "true"},
     },
-    "ci-enterprise": {
-        "description": "Enterprise tests requiring Redis, PostgreSQL",
+    "ci-cloud": {
+        "description": "Cloud tests requiring Redis, PostgreSQL",
         "paths": ["tests/"],
-        "markers": "enterprise",
+        "markers": "cloud",
         "parallel": False,
     },
 }
@@ -184,8 +184,8 @@ def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
         ci_mode = "ci-full"
     elif args.ci_nightly:
         ci_mode = "ci-nightly"
-    elif args.ci_enterprise:
-        ci_mode = "ci-enterprise"
+    elif args.ci_cloud:
+        ci_mode = "ci-cloud"
 
     if ci_mode:
         config = CI_MODES[ci_mode]
@@ -435,9 +435,9 @@ def _add_test_arguments(parser):
         help="Nightly mode: all tests including benchmarks",
     )
     ci_exclusive.add_argument(
-        "--ci-enterprise",
+        "--ci-cloud",
         action="store_true",
-        help="Enterprise mode: tests requiring Redis, PostgreSQL",
+        help="Cloud mode: tests requiring Redis, PostgreSQL",
     )
 
     # Test categories

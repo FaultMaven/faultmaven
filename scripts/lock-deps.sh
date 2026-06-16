@@ -26,13 +26,13 @@ uv pip compile pyproject.toml \
     -o requirements/test.txt \
     --quiet
 
-echo "  requirements/enterprise.txt (enterprise + test)"
+echo "  requirements/cloud.txt (cloud + test)"
 uv pip compile pyproject.toml \
-    --extra enterprise \
+    --extra cloud \
     --extra test \
     --python-version "$PYTHON_VERSION" \
     --python-platform linux \
-    -o requirements/enterprise.txt \
+    -o requirements/cloud.txt \
     --quiet
 
 echo "  requirements/dev.txt (dev + test)"

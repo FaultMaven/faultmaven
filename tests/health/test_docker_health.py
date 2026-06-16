@@ -3,13 +3,13 @@
 Smoke tests to verify Docker services (Redis, PostgreSQL, etc.) are accessible.
 These tests are skipped if services are not running.
 
-NOTE: These tests require enterprise edition with infrastructure services.
+NOTE: These tests require the cloud profile with infrastructure services.
 """
 
 import pytest
 from sqlalchemy import create_engine, text
 
-# Conditional redis import - only available in enterprise edition
+# Conditional redis import - only available in the cloud profile
 try:
     import redis
 
@@ -19,9 +19,9 @@ except ImportError:
     REDIS_AVAILABLE = False
 
 pytestmark = [
-    pytest.mark.enterprise,
+    pytest.mark.cloud,
     pytest.mark.skipif(
-        not REDIS_AVAILABLE, reason="Redis not available - requires enterprise edition"
+        not REDIS_AVAILABLE, reason="Redis not available - requires the cloud profile"
     ),
 ]
 
@@ -35,10 +35,10 @@ def test_redis_connection():
     Verifies that Redis is accessible at the default Docker host/port.
     This is a smoke test to catch basic connectivity issues.
 
-    Requires enterprise edition with redis installed.
+    Requires the cloud profile with redis installed.
     """
     if not REDIS_AVAILABLE:
-        pytest.skip("Redis not available - requires enterprise edition")
+        pytest.skip("Redis not available - requires the cloud profile")
     try:
         client = redis.Redis(
             host="redis.faultmaven.local",

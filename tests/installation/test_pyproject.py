@@ -30,7 +30,7 @@ def test_optional_dependencies_structure():
     assert "optional-dependencies" in data["project"]
 
     # Verify expected dependency groups exist
-    expected_groups = ["enterprise", "test", "dev"]
+    expected_groups = ["cloud", "test", "dev"]
     for group in expected_groups:
         assert (
             group in data["project"]["optional-dependencies"]
